@@ -833,3 +833,12 @@ def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
     assert not is_native_gemini_base_url(
         "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
     )
+
+
+def test_usage_from_metadata_includes_thinking_tokens():
+    from agent.gemini_native_adapter import _usage_from_metadata
+
+    usage = _usage_from_metadata({"promptTokenCount": 100, "candidatesTokenCount": 40, "thoughtsTokenCount": 60, "totalTokenCount": 200})
+    assert usage.completion_tokens == 100
+    assert usage.completion_tokens_details.reasoning_tokens == 60
+

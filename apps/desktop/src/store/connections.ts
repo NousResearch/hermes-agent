@@ -1,9 +1,11 @@
 import { atom, computed } from 'nanostores'
 
+import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
 import {
   beginGatewaySwitch,
   endGatewaySwitch,
@@ -12,6 +14,7 @@ import {
 } from '@/store/gateway-switch'
 import {
   $activeGatewayProfile,
+  $freshSessionRequest,
   $newChatProfile,
   $showAllProfiles,
   captureNewChatSource,
@@ -21,7 +24,8 @@ import {
   refreshActiveProfile,
   requestFreshSession
 } from '@/store/profile'
-import { $connection } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
+import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
@@ -184,14 +188,25 @@ function waitForInitialConnection(): Promise<void> {
 }
 
 /**
- * Load the registry once for Sessions and restore the last successfully used
- * source. Later registry refreshes stay side-effect free, so editing Settings
- * in another window never changes the active workspace.
+ * Load the registry once for Sessions and restore the explicit default route,
+ * otherwise the last successfully used source. Later registry refreshes stay
+ * side-effect free, so editing Settings in another window never changes the
+ * active workspace.
  */
 export async function initializeConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
-  const registry = await refreshConnectionsRegistry()
+  const freshSessionRequest = $freshSessionRequest.get()
 
-  if (!registry || restoreAttempted) {
+  const [registry, defaultLoaded] = await Promise.all([
+    refreshConnectionsRegistry(),
+    refreshDefaultProfile().then(
+      () => true,
+      () => false
+    )
+  ])
+
+  // Main may already have opened the explicit default. A failed preference
+  // read is not evidence of an absent preference; keep that live route.
+  if (!registry || !defaultLoaded || restoreAttempted || isPeerInstanceWindow() || windowProfileOverride()) {
     return registry
   }
 
@@ -202,8 +217,32 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   // (statusbar switcher, fleet profile rail) is not drift to "restore" over.
   // The launch preference only decides where a window lands when nobody has
   // said otherwise yet.
-  if (switchRevision > 0 || pendingTarget !== null) {
+  if (switchRevision > 0 || pendingTarget !== null || $freshSessionRequest.get() !== freshSessionRequest) {
     return registry
+  }
+
+  // An explicit default is stronger than the registry's last-used preference,
+  // including the last profile remembered on the SAME source. A legacy null
+  // route is already resolved by main's ensureBackend(profile), including any
+  // per-profile remote override; the registry must not reinterpret it as local.
+  const defaultRoute = $defaultProfileRoute.get()
+
+  if (defaultRoute) {
+    if ($activeSessionId.get() || $selectedStoredSessionId.get()) {
+      return registry
+    }
+
+    const connectionId = defaultRoute.connectionId
+
+    if (connectionId === null) {
+      return registry
+    }
+
+    if (registry.connections.some(connection => connection.id === connectionId)) {
+      await selectConnection(connectionId, { profile: defaultRoute.profile })
+    }
+
+    return $connectionsRegistry.get() ?? registry
   }
 
   // Residual drift: a window can be live on a source the registry cannot name
@@ -242,8 +281,9 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * never probes or opens remote gateways.
  *
  * Two phases, same commit contract as a Settings → Gateway apply (softSwitch):
- *  1. Dial the target WITHOUT activating it. The previous source stays fully
- *     bound and painted, so a dead target fails with nothing lost.
+ *  1. Dial the target — and for OAuth remotes prove a protected REST read —
+ *     WITHOUT activating it. The previous source stays fully bound and
+ *     painted, so a dead target loses nothing.
  *  2. Commit: beginGatewaySwitch() — barrier up, machine-context reset,
  *     session bindings wiped — then activate the already-open socket. The
  *     wipe runs inside the activation's serialized section, synchronously
@@ -290,10 +330,21 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
   const targetKey = `${connectionId}::${targetProfile}`
 
+  // The primary local descriptor (startHermes) historically publishes without
+  // a profile of its own; a profile-less descriptor on the source we are
+  // landing must not strand the switch — the activation already published the
+  // route we asked for, so trust it for the same source instead of comparing
+  // against a "default" it never meant.
   const targetIsActive = () => {
     const active = $connection.get()
 
-    return active?.connectionId === connectionId && normalizeProfileKey(active.profile) === targetProfile
+    if (active?.connectionId !== connectionId) {
+      return false
+    }
+
+    const activeProfile = active.profile === undefined ? null : normalizeProfileKey(active.profile)
+
+    return activeProfile === null || activeProfile === targetProfile
   }
 
   if (pendingTarget === targetKey) {
@@ -348,6 +399,24 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // they picked last; its socket stays warm for that click or idles out.
     if (revision !== switchRevision) {
       return
+    }
+
+    if (
+      targetConnection.authMode === 'oauth' &&
+      (targetConnection.kind === 'remote' || targetConnection.kind === 'cloud')
+    ) {
+      // Retained sockets can outlive cookie/native OAuth REST auth. Prove the
+      // cheapest protected read the target always serves before wiping. Keep
+      // the exact failure for caller UX (network failures are not sign-in errors).
+      await withTimeout(
+        getProfiles({ connectionId, profile: targetProfile }),
+        SWITCH_DIAL_TIMEOUT_MS,
+        `Timed out connecting to "${targetConnection.label}".`
+      )
+
+      if (revision !== switchRevision) {
+        return
+      }
     }
 
     // Phase 2 — commit. The hook runs inside the activation's serialized

@@ -5,7 +5,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { $chatLayoutPicked, assembleChatOnboarding } from '@/components/onboarding-chat/assembly'
@@ -23,11 +23,12 @@ import type { LayoutNode } from '@/components/pane-shell/tree/model'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { SearchField } from '@/components/ui/search-field'
 import { registry } from '@/contrib/registry'
-import { connectorTitle } from '@/lib/connector-tools'
+import { connectorIconUrl, connectorTitle } from '@/lib/connector-tools'
 import { useConnectorCatalog } from '@/store/connector-catalog'
 import { $onboardingAnswers, setOnboardingAnswers } from '@/store/onboarding-answers'
 import { useTheme } from '@/themes'
 import { setAccentOverride } from '@/themes/accent-override'
+import { normalizeHex } from '@/themes/color'
 
 export function ConnectorsCard({ locked }: CardProps) {
   const view = useSessionView()
@@ -42,7 +43,12 @@ export function ConnectorsCard({ locked }: CardProps) {
   // straight to manage_connections; a name the gateway does not carry would be
   // a pick the build chat cannot honour.
   const rows = useMemo(() => (catalog.status === 'ready' ? orderConnectorPicks(catalog.rows) : []), [catalog])
-  const shown = rows.filter(row => connectorTitle(row.connector).toLowerCase().includes(query.toLowerCase()))
+  const search = query.trim().toLowerCase()
+
+  const shown = search
+    ? rows.filter(row => connectorTitle(row.connector).toLowerCase().includes(search))
+    : rows.slice(0, 12)
+
   const picked = rows.filter(row => answers.connectors.includes(row.connector))
 
   const toggle = (id: string) =>
@@ -96,11 +102,15 @@ export function ConnectorsCard({ locked }: CardProps) {
                 icon={
                   <ConnectorLogo
                     className="size-7 rounded-full text-sm"
-                    connector={{ name: row.connector, title: row.name || connectorTitle(row.connector) }}
+                    connector={{
+                      iconUrl: connectorIconUrl(row.connector),
+                      name: row.connector,
+                      title: connectorTitle(row.connector)
+                    }}
                   />
                 }
                 key={row.connector}
-                label={row.name || connectorTitle(row.connector)}
+                label={connectorTitle(row.connector)}
                 on={answers.connectors.includes(row.connector)}
                 onToggle={() => toggle(row.connector)}
               />
@@ -119,7 +129,23 @@ export function ConnectorsCard({ locked }: CardProps) {
   )
 }
 
-export function LookCard({ locked }: CardProps) {
+function pickAccent(value: string, receipt?: string): void {
+  const hex = normalizeHex(value)
+
+  if (!hex) {
+    return
+  }
+
+  const accent = hex === NOUS_ACCENT ? null : hex
+
+  setOnboardingAnswers({
+    accent,
+    ...(receipt ? { committed: [...$onboardingAnswers.get().committed, receipt] } : {})
+  })
+  setAccentOverride(accent)
+}
+
+export function LookCard({ attrs, locked, messageId }: CardProps) {
   const answers = useStore($onboardingAnswers)
   const { renderedMode } = useTheme()
   const { commit, done } = useCardCommit('look')
@@ -127,11 +153,25 @@ export function LookCard({ locked }: CardProps) {
   const accent = answers.accent ?? NOUS_ACCENT
   const picked = accents.find(swatch => swatch.hex === accent.toLowerCase())
 
-  const pickAccent = (hex: string) => {
-    const seed = hex === NOUS_ACCENT ? null : hex
+  const requested = normalizeHex(attrs.value)
+  const receipt = messageId && requested ? `look-color:${JSON.stringify([messageId, requested])}` : null
 
-    setOnboardingAnswers({ accent: seed })
-    setAccentOverride(seed)
+  useEffect(() => {
+    if (locked || done) {
+      return
+    }
+
+    if (requested && receipt && !answers.committed.includes(receipt)) {
+      pickAccent(requested, receipt)
+    } else {
+      // Restore an unfinished choice without replaying a historical directive over a newer pick.
+      setAccentOverride(answers.accent)
+    }
+  }, [answers.accent, answers.committed, done, locked, receipt, requested])
+
+  // Chat choices update the existing picker; they do not create a second question card.
+  if (attrs.value !== undefined) {
+    return null
   }
 
   return (
@@ -146,6 +186,7 @@ export function LookCard({ locked }: CardProps) {
             onPick={() => pickAccent(swatch.hex)}
           />
         ))}
+        <AccentSwatch active={!picked} hex={accent} name="Custom color" onColorChange={pickAccent} />
       </div>
     </CardFrame>
   )

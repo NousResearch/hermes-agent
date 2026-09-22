@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      Escolha [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Tempo esgotado — comando negado"
+  timeout:         "      ⏱ Sem resposta em {waited} — o comando não foi executado. Peça novamente para tentar de novo, ou aumente o limite: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ Permitido uma vez"
   allowed_session: "      ✓ Permitido nesta sessão"
   allowed_always:  "      ✓ Adicionado à lista de permissões permanente"
@@ -86,6 +86,9 @@ gateway:
     switch_failed:         "Ramo criado, mas não foi possível mudar para ele."
     branched_one:          "⑂ Ramificado para **{title}** ({count} mensagem copiada)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
     branched_many:         "⑂ Ramificado para **{title}** ({count} mensagens copiadas)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
+    branched_thread_one:   "⑂ Ramificado para **{title}** em um novo tópico ({count} mensagem copiada)\nTópico: {thread}\nOriginal: `{parent}` — este chat permanece nele\nRamo: `{new}`\nUse `/branch --here` para ramificar neste chat."
+    branched_thread_many:  "⑂ Ramificado para **{title}** em um novo tópico ({count} mensagens copiadas)\nTópico: {thread}\nOriginal: `{parent}` — este chat permanece nele\nRamo: `{new}`\nUse `/branch --here` para ramificar neste chat."
+    thread_fallback:       "Não foi possível criar um tópico aqui, então o ramo substituiu a sessão deste chat."
 
   commands:
     usage:                 "Uso: `/commands [page]`"
@@ -179,7 +182,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."

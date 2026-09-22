@@ -15,13 +15,16 @@ problem. When activated, MCP and plugin tools are replaced in the
 model-visible tools array by three bridge tools, and the model loads each
 specific tool's schema on demand.
 
-:::info Built-in Hermes tools never defer
-The tools that make up Hermes' core capability set (`terminal`,
-`read_file`, `write_file`, `patch`, `search_files`, `todo`, `memory`,
-`browser_*`, `web_search`, `web_extract`, `clarify`, `execute_code`,
-`delegate_task`, `session_search`, and the rest of
-`_HERMES_CORE_TOOLS`) are *always* loaded directly. Only MCP tools and
-non-core plugin tools are eligible for deferral.
+:::info Built-in tools and explicit deferral
+Hermes keeps its working-set core tools (`terminal`, `read_file`, `write_file`,
+`patch`, `search_files`, `todo`, `memory`, `browser_*`, `web_search`,
+`web_extract`, `clarify`, `execute_code`, `delegate_task`, and the rest of
+`_HERMES_CORE_TOOLS`) loaded directly by default. Cold, event-triggered built-ins
+may be deferred when they are named in `tools.tool_search.defer`; the shipped
+curated list covers tools such as `computer_use`, `session_search`, and selected
+desktop helpers. MCP and non-core plugin tools remain eligible automatically.
+An explicit `defer` list replaces the curated list, and `defer: []` keeps every
+tool eager.
 :::
 
 ## How it works
@@ -77,13 +80,14 @@ see the underlying tool, not the bridge.
 
 ## When does it activate?
 
-Tool Search uses **tiered disclosure**: the presence of *any* deferrable
-(MCP/plugin) tool activates the bridge; what scales with catalog size is
-how much of the catalog stays visible, not whether schemas defer.
+Tool Search uses **tiered disclosure**: the presence of *any* deferred
+tool (MCP/plugin or explicitly named built-in) activates the bridge; what
+scales with catalog size is how much of the catalog stays visible, not whether
+schemas defer.
 
 | Tier | Condition | What the model sees |
 | --- | --- | --- |
-| **0** | No MCP/plugin tools | Every tool eager, no bridge. Pass-through. |
+| **0** | No deferred tools | Every tool eager, no bridge. Pass-through. |
 | **1** | Deferred catalog's listing fits the budget | Bridge + a skills-style manifest of every deferred tool (name + short description, degrading to names-only when over budget). Degradation is **per server**: when one oversized server (Cloudflare) is attached alongside small ones (Linear), the small servers keep their per-tool listings and only the oversized server collapses to a summary line. |
 | **2** | Per-tool listing exceeds the budget even names-only for every server (e.g. Cloudflare's flat API surface alone: ~3,300 tools whose names are ~32K tokens) | Bare bridge + a one-line-per-server summary (server name + tool count), so the model knows which domains are reachable; individual tools are discoverable only through `tool_search`. |
 
@@ -103,16 +107,28 @@ tools:
     max_search_limit: 25
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
+    defer:              # replace the curated default; [] keeps every tool eager
+      - computer_use
+      - session_search
+      - image_generate
+      - todo_list
+      - process_manage
+      - cronjob_manage
 ```
+
+The default `defer` list also includes the selected desktop GUI helpers listed
+in `hermes_cli/config_defaults.py`. It is the single source of truth for the
+shipped curated set; the runtime fallback uses the same value.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `auto` | `auto`/`on` activate whenever at least one deferrable tool exists; `off` disables entirely (everything stays eager). `auto` is currently an alias of `on` — it is reserved for a future mode that inlines schemas when they fit the context and defers only when they don't. Pin `on` or `off` if you want today's behavior guaranteed across upgrades. |
+| `enabled` | `auto` | `auto`/`on` activate whenever at least one deferred tool exists; `off` disables entirely (everything stays eager). `auto` is currently an alias of `on` — it is reserved for a future mode that inlines schemas when they fit the context and defers only when they don't. Pin `on` or `off` if you want today's behavior guaranteed across upgrades. |
 | `threshold_pct` | `5` | Listing budget as a percentage of the active model's context length. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned per query when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
+| `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it, and `[]` disables deferral for every tool. |
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.
@@ -167,16 +183,22 @@ account), everything above is invisible: local search behaves exactly as
 described in the rest of this page, with no errors shown to the model.
 
 A connector call that needs an account you haven't linked returns a
-`CONNECTION_REQUIRED` error carrying a connect link. The `manage_connections`
-tool (available on the same condition as the connector bridge) lists
-connectors and their connection state, starts an authorization, and can wait
-for the user to finish it; disconnecting an account is done by the user in
-the Portal.
+`CONNECTION_REQUIRED` error. The `manage_connections` tool lists connectors and
+their connection state and starts an authorization: in the desktop app the call
+shows a card, blocks until each app is connected or skipped, and reports the
+outcomes; elsewhere it returns a connect link per app for the user to open.
+Disconnecting an account is done by the user in the Portal. The same tool also installs, enables and authorizes
+local MCP servers from the catalog (targets with `mcp: true`), so it is
+present whether or not you are signed in; only the managed-connector actions
+need the sign-in.
 
 `tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
 entries (a single call is an array of one). Each connector entry in a batch
 is dispatched as its own gateway request, one after another; local deferred
-tools stay one entry per `tool_call`. Approvals settle per entry before
+tools stay one entry per `tool_call`. A multi-entry batch that names a local
+tool is rejected with a correction that restates the valid shape using the
+caller's own first entry, and a `calls` value emitted as a JSON string is
+parsed like the array form. Approvals settle per entry before
 dispatch, and a `/stop` between entries leaves the unstarted ones unsent
 (their slots report `INTERRUPTED`).
 
@@ -236,6 +258,14 @@ to any progressive-disclosure design, not specific to this implementation:
   token appears in no tool returns an empty group with the connected
   sources and a retry hint, instead of `limit` tools that share one
   common word.
+- **Relevance floor:** a tool must match at least half of a query's
+  *answerable* terms (terms present anywhere in the catalog) before it
+  is offered — sharing one incidental word with a long query is not a
+  match. A hunt for a capability that doesn't exist returns no results
+  instead of a plausible-looking list the model rephrases against
+  forever. The floor only engages from four answerable terms up, so
+  short queries like "list issues" keep full recall, and an exact
+  tool-name query always matches.
 - **Parallel execution unwraps the bridge.** The batch planner decides
   concurrency on the *underlying* tool of a `tool_call`, not on the
   literal bridge name — so an MCP server opted in via

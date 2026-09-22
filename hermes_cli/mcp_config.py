@@ -25,6 +25,160 @@ logger = logging.getLogger(__name__)
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+
+# MCP test/dashboard surfaces must not fingerprint credential header values
+# (firstN/lastN is a reusable fragment). Redact by field identity: once a
+# recognized credential header key is found, replace its complete associated
+# value regardless of scheme, quoting, parameter order, or wire/JSON/Python
+# mapping serialization. Header names come from agent.redact so the lists
+# cannot drift. The generic redactor then runs with force=True.
+_AUTH_SCHEME_PREFIX_RE = re.compile(
+    r"^(?:Bearer|Basic|Token|Digest)\s+",
+    re.IGNORECASE,
+)
+_DIGEST_PARAM_NAMES = (
+    "username|response|opaque|cnonce|nonce|uri|realm|qop|nc|algorithm"
+)
+_DIGEST_PARAM = (
+    rf"(?:{_DIGEST_PARAM_NAMES})\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s,]+)"
+)
+_DIGEST_PARAMS = rf"{_DIGEST_PARAM}(?:\s*,\s*{_DIGEST_PARAM})*"
+_PROBE_REDACTION_RES: Optional[Tuple[re.Pattern[str], ...]] = None
+
+
+def _credential_header_names() -> str:
+    from agent.redact import _SECRET_HEADER_NAMES
+
+    return rf"(?:(?:Proxy-)?Authorization|{_SECRET_HEADER_NAMES})"
+
+
+def _probe_redaction_res() -> Tuple[re.Pattern[str], ...]:
+    global _PROBE_REDACTION_RES
+    if _PROBE_REDACTION_RES is not None:
+        return _PROBE_REDACTION_RES
+    header = _credential_header_names()
+    # Quoted-key mapping/JSON: {'X-Api-Key': '…'} / {"Authorization": "…"}
+    mapping = re.compile(
+        rf"""(['\"])({header})\1(\s*:\s*)(['\"])((?:\\.|(?!\4).)*)\4""",
+        re.IGNORECASE,
+    )
+    unquoted_mapping = re.compile(
+        rf"""(['\"])({header})\1(\s*:\s*)(?!['\"])([^\s,}}\]]+)""",
+        re.IGNORECASE,
+    )
+    # Bare wire header: Authorization: Digest … / X-Api-Key: token
+    wire = re.compile(
+        rf"({header})(\s*:\s*)([^\n\r]+)",
+        re.IGNORECASE,
+    )
+    bare_scheme = re.compile(
+        rf"\b(Bearer|Basic|Token)(\s+)([^\s\"']+)"
+        rf"|\b(Digest)(\s+)({_DIGEST_PARAMS})",
+        re.IGNORECASE,
+    )
+    _PROBE_REDACTION_RES = (mapping, unquoted_mapping, wire, bare_scheme)
+    return _PROBE_REDACTION_RES
+
+
+def _mask_header_field_value(value: str) -> str:
+    """Replace a credential header's complete associated value with ``***``.
+
+    A leading auth scheme word is kept for debugging; Digest parameters are
+    part of the field value and are not tokenized.
+    """
+    scheme = _AUTH_SCHEME_PREFIX_RE.match(value)
+    if scheme:
+        return f"{scheme.group(0)}***"
+    return "***"
+
+
+def _sub_mapping_header(match: re.Match[str]) -> str:
+    return (
+        f"{match.group(1)}{match.group(2)}{match.group(1)}"
+        f"{match.group(3)}{match.group(4)}"
+        f"{_mask_header_field_value(match.group(5))}{match.group(4)}"
+    )
+
+
+def _sub_unquoted_mapping_header(match: re.Match[str]) -> str:
+    return (
+        f"{match.group(1)}{match.group(2)}{match.group(1)}"
+        f"{match.group(3)}{_mask_header_field_value(match.group(4))}"
+    )
+
+
+def _sub_wire_header(match: re.Match[str]) -> str:
+    return f"{match.group(1)}{match.group(2)}{_mask_header_field_value(match.group(3))}"
+
+
+def _sub_bare_scheme(match: re.Match[str]) -> str:
+    if match.group(1):
+        return f"{match.group(1)}{match.group(2)}***"
+    return f"{match.group(4)}{match.group(5)}***"
+
+
+def redact_mcp_probe_text(text: object) -> str:
+    """Fully redact MCP probe/display strings before they leave the process.
+
+    Recognized credential header fields (Authorization / Proxy-Authorization
+    and ``agent.redact._SECRET_HEADER_NAMES``) have their complete associated
+    value replaced with ``***``. Bare Bearer/Basic/Token/Digest spans are
+    covered the same way. The generic secret redactor then runs with
+    ``force=True`` as defense in depth.
+    """
+    raw = "" if text is None else str(text)
+    if not raw:
+        return raw
+    mapping, unquoted_mapping, wire, bare_scheme = _probe_redaction_res()
+    redacted = mapping.sub(_sub_mapping_header, raw)
+    redacted = unquoted_mapping.sub(_sub_unquoted_mapping_header, redacted)
+    redacted = wire.sub(_sub_wire_header, redacted)
+    redacted = bare_scheme.sub(_sub_bare_scheme, redacted)
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(redacted, force=True)
+
+
+def _header_value_is_only_env_refs(value: str) -> bool:
+    """True when every non-scheme span in *value* is a ``${VAR}`` reference."""
+    leftover = _ENV_VAR_PATTERN.sub("", value)
+    leftover = _AUTH_SCHEME_PREFIX_RE.sub("", leftover)
+    return leftover.strip(" \t;,") == ""
+
+
+def redact_mcp_header_display(name: str, value: object) -> str:
+    """Fail-closed CLI display for a credential-shaped MCP header.
+
+    A value that is only ``${ENV}`` references (optionally with an auth scheme
+    word) may be shown — it carries no secret. Anything else, including opaque
+    API keys and mixed template+literal strings, is replaced with ``***``.
+    ``name`` stays paired with the value so callers cannot drop the header
+    identity before this policy runs.
+    """
+    raw = "" if value is None else str(value)
+    if raw and _header_value_is_only_env_refs(raw):
+        return raw
+    # Pair name+value for the generic redactor, then still fail closed — an
+    # opaque token with no recognized scheme must not print.
+    redact_mcp_probe_text(f"{name}: {raw}")
+    return "***"
+
+
+def _redact_probe_exception(exc: BaseException) -> Exception:
+    """Return a raise-able exception whose ``str()`` is safe to print."""
+    root = _unwrap_exception_group(exc)
+    safe = redact_mcp_probe_text(root)
+    if safe == str(root) and isinstance(root, Exception):
+        return root
+    try:
+        rebuilt = type(root)(safe)
+        if str(rebuilt) == safe and isinstance(rebuilt, Exception):
+            return rebuilt
+    except Exception:
+        pass
+    return RuntimeError(safe)
+
+
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
     "codex": {"command": "codex", "args": ["mcp-server"]},
 }
@@ -280,12 +434,36 @@ def _probe_single_server(
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
         except (TypeError, ValueError):
             connect_timeout = 30.0
+    # Deep transport code (tools/mcp_tool_transport.py::_negotiate_session) reads its OWN
+    # session.initialize() bound straight off config["connect_timeout"], independent of the
+    # `connect_timeout` param above. Callers that extend the param to give a user time to finish
+    # an OAuth browser flow (e.g. `hermes mcp login`'s 315s) left that inner bound at the
+    # (unrelated) 60s default, so the still-pending OAuth callback wait got cancelled mid-flow —
+    # surfacing as a retry that re-opens a second authorization against the same callback port.
+    config["connect_timeout"] = connect_timeout
 
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
-        server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
+        from tools import mcp_tool as _core
+
+        claimed = []
+        claim_token = _core._connect_server_claim.set(claimed.append)
+        if details is not None:
+            details["initialized"] = False
+        try:
+            server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
+        except asyncio.TimeoutError:
+            # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
+            raise TimeoutError(
+                f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
+                "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
+            ) from None
+        finally:
+            _core._connect_server_claim.reset(claim_token)
+            if details is not None and claimed:
+                details["initialized"] = claimed[0].initialize_result is not None
         try:
             for t in server._tools:
                 desc = getattr(t, "description", "") or ""
@@ -334,7 +512,7 @@ def _probe_single_server(
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
     except BaseException as exc:
-        raise _unwrap_exception_group(exc) from None
+        raise _redact_probe_exception(exc) from None
     finally:
         _stop_mcp_loop_if_idle()
     return tools_found
@@ -490,7 +668,8 @@ def cmd_mcp_add(args):
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {_probe_failure_reason(exc)}")
+        _info(_probe_failure_next_step(name, exc))
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
             if _save_mcp_server(name, server_config):
@@ -584,12 +763,36 @@ def cmd_mcp_list(args=None):
     print()
 
 
+def _probe_failure_reason(exc: BaseException) -> str:
+    """Plain reason for a failed probe: ``_format_connect_error`` unwraps ExceptionGroups and names a
+    missing executable; the result is redacted like every other probe string."""
+    from tools.mcp_tool_errors import _format_connect_error
+    return redact_mcp_probe_text(_format_connect_error(exc))
+
+
+def _probe_failure_next_step(name: str, exc: BaseException) -> str:
+    """The one command that fixes the common probe failures (sign-in, missing command, everything else)."""
+    from tools.mcp_tool_errors import _format_connect_error, _is_auth_error, _unwrap_exception_group
+    root = _unwrap_exception_group(exc)
+    if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
+        return f"The server rejected the sign-in. Run: hermes mcp login {name}"
+    if "missing executable" in _format_connect_error(exc):
+        return (f"Install that command, or set mcp_servers.{name}.command in {display_hermes_home()}/config.yaml "
+                "to its full path.")
+    return f"Check the server is running and the URL/command in its config, then run: hermes mcp test {name}"
+
+
 def cmd_mcp_test(args):
-    """Test connection to an MCP server."""
+    """Test connection to an MCP server.
+
+    Returns the process exit code so health probes and watchdogs can branch on ``$?`` instead of
+    parsing the output: 0 connected, 1 connection failed, 3 server not in the config (argparse
+    already owns 2 for usage errors, so "no such server" stays distinguishable from "bad flags").
+    """
     name = args.name
     cfg = _lookup_server(name, _get_mcp_servers(), "Available")
     if cfg is None:
-        return
+        return 3
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
@@ -603,10 +806,9 @@ def cmd_mcp_test(args):
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
-                # Mask the value (accepts ${VAR} and Cursor-style ${env:VAR})
-                resolved = _ENV_VAR_PATTERN.sub(lambda m: os.getenv(_env_ref_name(m.group(1)), ""), v)
-                masked = resolved[:4] + "***" + resolved[-4:] if len(resolved) > 8 else "***"
-                print(f"    {k}: {masked}")
+                # Keep header identity with the value. A ${ENV} substring is
+                # not proof the rest of the header is non-secret.
+                print(f"    {k}: {redact_mcp_header_display(k, v)}")
     else:
         _info("Auth: none")
 
@@ -614,14 +816,17 @@ def cmd_mcp_test(args):
     try:
         tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Connection failed ({(time.monotonic() - start) * 1000:.0f}ms): {exc}")
-        return
+        elapsed = time.monotonic() - start
+        _error(f"Connection failed ({elapsed:.1f}s): {_probe_failure_reason(exc)}")
+        _info(_probe_failure_next_step(name, exc))
+        return 1
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
     if tools:
         print()
         _print_tools(tools, 36, 55)
     print()
+    return 0
 
 
 def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = None) -> bool:
@@ -647,32 +852,35 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     try:
         from tools.mcp_oauth_manager import get_manager
         if selected_flow == "browser":
-            get_manager().remove(name)
+            # Tokens, client registration and the CIMD refusal go; the cached authorization-server
+            # metadata stays. A fresh discovery still overwrites it, but when the metadata document
+            # cannot be re-fetched (WAF-fronted split-host servers) it is the only thing that keeps
+            # the announced authorize URL off the SDK's `{mcp-origin}/authorize` guess (#115329).
+            from tools.mcp_oauth import HermesTokenStorage
+            get_manager().evict(name)
+            HermesTokenStorage(name).remove(keep_metadata=True)
     except Exception as exc:
         _warning(f"Could not clear existing OAuth state: {exc}")
 
     print()
     _info(f"Starting OAuth flow for '{name}'...")
 
-    # The probe triggers the OAuth flow (browser redirect + callback capture). Honor the configured
-    # connect_timeout, floored at 315s (the 300s OAuth callback window + headroom) — matching the GUI
-    # re-auth path in web_server.py. force_interactive_oauth: `hermes mcp login` is explicitly
-    # user-initiated even when stdin isn't a TTY (desktop / agent-spawned terminals), where
-    # _is_interactive() alone would refuse to open a browser.
+    # The probe triggers the OAuth flow (browser redirect + callback capture). Its bound must outlast
+    # the oauth.timeout callback window (plus headroom for the token exchange), or a user who raised
+    # oauth.timeout still gets cut off at the old fixed floor — matching the GUI re-auth path in
+    # web_server_mcp.py and tui_gateway/mcp_oauth_sessions.py. force_interactive_oauth: `hermes mcp
+    # login` is explicitly user-initiated even when stdin isn't a TTY (desktop / agent-spawned
+    # terminals), where _is_interactive() alone would refuse to open a browser.
     try:
-        from tools.mcp_oauth import force_interactive_oauth
+        from tools.mcp_oauth import force_interactive_oauth, login_connect_timeout
 
-        try:
-            _login_connect_timeout = float(server_config.get("connect_timeout"))
-        except (TypeError, ValueError):
-            _login_connect_timeout = 0.0
         if selected_flow == "device":
             from tools.mcp_oauth_device import login_device
             asyncio.run(login_device(name, url, oauth_cfg))
         probe_config = {**server_config, "oauth": {**oauth_cfg, "flow": selected_flow}}
         with force_interactive_oauth():
             tools = _probe_single_server(
-                name, probe_config, connect_timeout=max(_login_connect_timeout, 315.0)
+                name, probe_config, connect_timeout=login_connect_timeout(probe_config)
             )
         # A clean probe is NOT proof of authentication: some servers (e.g. Google Drive) serve
         # initialize + tools/list without auth, so the flow may have failed (e.g. DCR 400 for
@@ -706,7 +914,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
         except Exception:
             humanized = None
-        _error(f"Authentication failed: {humanized or exc}")
+        _error(f"Authentication failed: {redact_mcp_probe_text(humanized or exc)}")
         return False
 
 
@@ -801,7 +1009,7 @@ def cmd_mcp_configure(args):
     try:
         all_tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {redact_mcp_probe_text(exc)}")
         return
     if not all_tools:
         _warning("Server reports no tools.")
@@ -905,8 +1113,8 @@ def mcp_command(args):
         "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
     }.get(action)
     if handler:
-        handler(args)
-        return
+        # A handler's int return is the process exit code (``main()`` exits non-zero on it).
+        return handler(args)
     # No subcommand — drop the user into the catalog picker (same UX as `hermes plugin`).
     from hermes_cli.mcp_picker import run_picker
     run_picker()

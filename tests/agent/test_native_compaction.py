@@ -653,8 +653,8 @@ class TestPrunePreCheckpointItems:
         # The checkpoint's own turn content is emitted AFTER the checkpoint
         # in wire order (sidecar items lead the assistant branch), so it
         # survives in the post tail — call pairing for that turn is intact.
-        assert {"role": "assistant", "content": "ok"} in items
-        assert items.index({"role": "assistant", "content": "ok"}) > 0
+        assert {"type": "message", "role": "assistant", "content": "ok"} in items
+        assert items.index({"type": "message", "role": "assistant", "content": "ok"}) > 0
 
     def test_adapter_without_checkpoint_unchanged_shape(self):
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
@@ -721,7 +721,7 @@ class TestCheckpointGatedOnCurrentEligibility:
         assert items == pre_feature
         # Specifically: no checkpoint on the wire, no deleted history.
         assert all(i.get("type") != "compaction" for i in items)
-        assert {"role": "assistant", "content": _CODEX_ON_IT} in items
+        assert {"type": "message", "role": "assistant", "content": _CODEX_ON_IT} in items
 
     def test_eligible_request_still_restructures(self):
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
@@ -739,7 +739,7 @@ class TestCheckpointGatedOnCurrentEligibility:
 
         items = _chat_messages_to_responses_input(self._history())
         assert all(i.get("type") != "compaction" for i in items)
-        assert {"role": "assistant", "content": "on it"} in items
+        assert {"type": "message", "role": "assistant", "content": "on it"} in items
 
     def test_build_kwargs_without_field_does_not_prune(self):
         """Model swapped out of the gpt-5.6 family / kill switch fired:
@@ -753,7 +753,7 @@ class TestCheckpointGatedOnCurrentEligibility:
         )
         assert "context_management" not in kwargs
         assert all(i.get("type") != "compaction" for i in kwargs["input"])
-        assert {"role": "assistant", "content": "on it"} in kwargs["input"]
+        assert {"type": "message", "role": "assistant", "content": "on it"} in kwargs["input"]
 
     def test_build_kwargs_with_field_prunes(self):
         from agent.transports.codex import ResponsesApiTransport
@@ -774,7 +774,7 @@ class TestCheckpointGatedOnCurrentEligibility:
             self._history(), is_codex_backend=True
         )
         assert all(i.get("type") != "compaction" for i in items)
-        assert {"role": "assistant", "content": _CODEX_ON_IT} in items
+        assert {"type": "message", "role": "assistant", "content": _CODEX_ON_IT} in items
 
     def test_auxiliary_responses_adapter_never_prunes(self, monkeypatch):
         """Auxiliary calls (compression, flush_memories, MoA) replay real
@@ -812,4 +812,4 @@ class TestCheckpointGatedOnCurrentEligibility:
 
         assert seen.get("native_compaction_eligible") is False
         assert all(i.get("type") != "compaction" for i in seen["input"])
-        assert {"role": "assistant", "content": _CODEX_ON_IT} in seen["input"]
+        assert {"type": "message", "role": "assistant", "content": _CODEX_ON_IT} in seen["input"]

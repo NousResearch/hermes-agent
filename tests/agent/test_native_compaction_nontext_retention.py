@@ -77,9 +77,9 @@ def test_adapter_preserves_image_only_user_message_across_checkpoint():
 
     assert converted == [
         _CHECKPOINT,
-        {"role": "user", "content": [_RESPONSES_IMAGE_PART]},
-        {"role": "assistant", "content": "checkpoint turn"},
-        {"role": "user", "content": "after checkpoint"},
+        {"type": "message", "role": "user", "content": [_RESPONSES_IMAGE_PART]},
+        {"type": "message", "role": "assistant", "content": "checkpoint turn"},
+        {"type": "message", "role": "user", "content": "after checkpoint"},
     ]
 
 

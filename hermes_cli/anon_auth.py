@@ -333,10 +333,13 @@ def apply_exchange_to_state(state: Dict[str, Any], exchanged: Dict[str, Any]) ->
     claims = _decode_jwt_claims(access_token)
     now = datetime.now(timezone.utc)
     exp = claims.get("exp")
-    if isinstance(exp, (int, float)):
-        expires_at = datetime.fromtimestamp(float(exp), tz=timezone.utc)
-    else:
-        expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
+    try:
+        if isinstance(exp, (int, float)):
+            expires_at = datetime.fromtimestamp(float(exp), tz=timezone.utc)
+        else:
+            expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
+    except (TypeError, ValueError, OverflowError, OSError):
+        expires_at = now + timedelta(seconds=900)
     # NAS names the welcome host on every exchange; absent (older NAS) or outside the allowlist
     # (a staging host without NOUS_INFERENCE_BASE_URL set), the literal stands in. Never the paid
     # host: the gateway cross-refuses an anonymous JWT there.

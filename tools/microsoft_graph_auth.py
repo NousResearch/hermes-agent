@@ -138,15 +138,17 @@ class MicrosoftGraphTokenProvider:
             payload = response.json()
         except ValueError as exc:
             raise MicrosoftGraphTokenError("Microsoft Graph token response was not valid JSON.") from exc
+        if not isinstance(payload, dict):
+            raise MicrosoftGraphTokenError("Microsoft Graph token response was not a JSON object.")
         access_token = str(payload.get("access_token") or "").strip()
         if not access_token:
             raise MicrosoftGraphTokenError("Microsoft Graph token response did not include access_token.")
         try:
             expires_in_seconds = int(payload.get("expires_in"))
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise MicrosoftGraphTokenError(
                 "Microsoft Graph token response did not include a valid expires_in.") from exc
-        return CachedAccessToken(access_token, time.time() + max(0, expires_in_seconds),
+        return CachedAccessToken(access_token, time.time() + min(max(0, expires_in_seconds), 10**15),
                                  str(payload.get("token_type") or "Bearer").strip() or "Bearer")
 
 

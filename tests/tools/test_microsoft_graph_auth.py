@@ -112,3 +112,44 @@ class TestMicrosoftGraphTokenProvider:
         with pytest.raises(MicrosoftGraphTokenError) as exc:
             await provider.get_access_token()
         assert "bad secret" in str(exc.value)
+
+
+@pytest.mark.anyio
+class TestMicrosoftGraphTokenResponseShapes:
+    """A token endpoint returning malformed JSON shapes must raise
+    MicrosoftGraphTokenError, never a raw TypeError/AttributeError."""
+
+    def _provider(self, body: bytes):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=body)
+
+        return MicrosoftGraphTokenProvider(
+            GraphCredentials("tenant", "client", "secret"),
+            transport=httpx.MockTransport(handler),
+        )
+
+    @pytest.mark.parametrize("body", [b"[1, 2]", b'"token"', b"5", b"null"])
+    async def test_non_dict_payload_raises_clean_error(self, body):
+        provider = self._provider(body)
+        with pytest.raises(MicrosoftGraphTokenError):
+            await provider.get_access_token()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"access_token": "t", "expires_in": "soon"}',
+            b'{"access_token": "t", "expires_in": Infinity}',
+            b'{"access_token": "t", "expires_in": 1e400}',
+            b'{"access_token": "t", "expires_in": {"x": 1}}',
+        ],
+    )
+    async def test_bad_expires_in_raises_clean_error(self, body):
+        provider = self._provider(body)
+        with pytest.raises(MicrosoftGraphTokenError):
+            await provider.get_access_token()
+
+    async def test_huge_int_expires_in_clamps_without_overflow(self):
+        provider = self._provider(
+            b'{"access_token": "t", "expires_in": ' + b"1" * 320 + b"}")
+        token = await provider.get_access_token()
+        assert token == "t"

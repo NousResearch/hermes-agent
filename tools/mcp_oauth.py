@@ -387,10 +387,15 @@ def _read_json(path: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         logger.warning("Failed to read %s: %s", path, exc)
         return None
+    if not isinstance(data, dict):
+        logger.warning("Failed to read %s: expected a JSON object, got %s",
+                       path, type(data).__name__)
+        return None
+    return data
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -450,11 +455,11 @@ class HermesTokenStorage:
             cls = DeviceOAuthMetadata
         if cls is None:
             return None
-        if fixup is not None:
-            fixup(data)
         try:
+            if fixup is not None:
+                fixup(data)
             return cls.model_validate(data)
-        except (ValueError, TypeError, KeyError) as exc:
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
             # A pydantic ValidationError's str() echoes the raw input (the token material); log
             # only which fields failed.
             detail = exc
@@ -471,9 +476,15 @@ class HermesTokenStorage:
         to zero (self-heals on the next ``set_tokens``)."""
         absolute_expiry = data.pop("expires_at", None)
         if absolute_expiry is not None:
-            data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
+            try:
+                data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
+            except (TypeError, ValueError, OverflowError):
+                # Corrupt ``expires_at`` is bookkeeping loss, not token loss: expire the
+                # access token so the stored refresh token drives a refresh and the next
+                # ``set_tokens`` self-heals the file.
+                data["expires_in"] = 0
         elif data.get("expires_in") is not None:
-            with contextlib.suppress(OSError, TypeError, ValueError):
+            with contextlib.suppress(OSError, TypeError, ValueError, OverflowError):
                 implied_expiry = self._tokens_path().stat().st_mtime + int(data["expires_in"])
                 data["expires_in"] = int(max(implied_expiry - time.time(), 0))
 
@@ -490,7 +501,7 @@ class HermesTokenStorage:
         payload = _model_json(tokens)
         # Absolute ``expires_at``: see _rebase_expires_in.
         if payload.get("expires_in") is not None:
-            with contextlib.suppress(TypeError, ValueError):  # mock tokens / odd shapes: skip, don't fail persistence
+            with contextlib.suppress(TypeError, ValueError, OverflowError):  # mock tokens / odd shapes: skip, don't fail persistence
                 payload["expires_at"] = time.time() + int(payload["expires_in"])
         if self._bound_issuer:  # which authorization server granted these tokens (never sent on the wire)
             payload["hermes_issuer"] = self._bound_issuer

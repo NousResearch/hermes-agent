@@ -11,6 +11,7 @@ import pytest
 
 from agent.anthropic_credentials import (
     _read_claude_code_credentials_from_keychain,
+    is_claude_code_token_valid,
     read_claude_code_credentials,
     _refresh_oauth_token,
     _find_claude_code_keychain_item,
@@ -452,3 +453,114 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
         assert argv == ["security", "-i"]
         assert json.loads(bytes.fromhex(kwargs["input"].split(" -X ", 1)[1].strip()))["claudeAiOauth"] == {
             "accessToken": "A1", "refreshToken": "R1", "expiresAt": 1}
+
+
+class TestClaudeCodeCorruptExpiresAt:
+    """A non-numeric ``expiresAt`` in a Claude Code credentials payload must not
+    crash the merge: ``is_claude_code_token_valid`` did ``expiresAt - 60_000``
+    unguarded, and the both-invalid freshness compare did ``>=`` on the raw
+    values. Unreadable expiry fails closed (treated as expired)."""
+
+    @pytest.mark.parametrize("expires_at", ["soon", {"x": 1}, [1]])
+    def test_non_numeric_expires_at_is_expired_not_crash(self, expires_at):
+        creds = {"accessToken": "a", "refreshToken": "r", "expiresAt": expires_at}
+        assert is_claude_code_token_valid(creds) is False
+
+    def test_missing_expires_at_still_uses_access_token_presence(self):
+        assert is_claude_code_token_valid({"accessToken": "a"}) is True
+        assert is_claude_code_token_valid({}) is False
+
+    def test_numeric_expires_at_unchanged(self):
+        fresh = {"accessToken": "a", "expiresAt": int(time.time() * 1000) + 600_000}
+        stale = {"accessToken": "a", "expiresAt": 1}
+        assert is_claude_code_token_valid(fresh) is True
+        assert is_claude_code_token_valid(stale) is False
+
+    def _patch_sources(self, monkeypatch, kc_creds, file_creds):
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._read_claude_code_credentials_from_keychain",
+            lambda: kc_creds,
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._read_claude_code_credentials_from_file",
+            lambda: file_creds,
+        )
+
+    def test_merge_corrupt_keychain_fresh_file_returns_file(self, monkeypatch):
+        """Corrupt expiresAt sorts invalid; the valid file credential wins."""
+        self._patch_sources(
+            monkeypatch,
+            {"accessToken": "kc", "expiresAt": "soon"},
+            {"accessToken": "file", "expiresAt": int(time.time() * 1000) + 600_000},
+        )
+        creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["accessToken"] == "file"
+
+    def test_merge_both_corrupt_does_not_crash(self, monkeypatch):
+        """Both-invalid falls to the freshness compare, which must not raise on
+        non-numeric expiresAt values."""
+        self._patch_sources(
+            monkeypatch,
+            {"accessToken": "kc", "expiresAt": "soon"},
+            {"accessToken": "file", "expiresAt": {"x": 1}},
+        )
+        creds = read_claude_code_credentials()
+        assert creds is not None
+        assert creds["accessToken"] == "kc"  # both sort to 0 -> first wins
+
+
+class TestTokenEndpointResponseShapes:
+    """``_post_oauth_token``/``_oauth_token_state`` read a network response:
+    a non-object body or non-numeric ``expires_in`` must not crash the
+    refresh path."""
+
+    def test_non_object_token_response_raises_not_crash(self):
+        from agent.anthropic_credentials import _post_oauth_token
+
+        payload = json.dumps([1, 2]).encode()
+        with patch("urllib.request.urlopen") as mock_open:
+            resp = MagicMock()
+            resp.read.return_value = payload
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value = resp
+            with pytest.raises(Exception):
+                _post_oauth_token(b"data", content_type="application/json",
+                                  timeout=5, what="refresh")
+
+    @pytest.mark.parametrize("expires_in", ["x", {"a": 1}, None])
+    def test_oauth_token_state_bad_expires_in_uses_default(self, expires_in):
+        from agent.anthropic_credentials import _oauth_token_state
+
+        before = int(time.time() * 1000)
+        state = _oauth_token_state({"access_token": "a", "expires_in": expires_in})
+        after = int(time.time() * 1000)
+        assert before + 3_600_000 <= state["expires_at_ms"] <= after + 3_600_000
+
+    def test_refresh_adoption_gate_survives_corrupt_expires_at(
+        self, tmp_path, monkeypatch
+    ):
+        """``_refresh_oauth_token``'s "adopt a fresher token" compare must not
+        raise on a non-numeric ``expiresAt``."""
+        monkeypatch.setattr(
+            "agent.anthropic_credentials.read_claude_code_credentials",
+            lambda: {"accessToken": "other", "refreshToken": "r2",
+                     "expiresAt": "soon"},
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_credentials.claude_code_credentials_path",
+            lambda: tmp_path / "creds.json",
+        )
+        refresh = MagicMock(side_effect=ValueError("offline"))
+        monkeypatch.setattr(
+            "agent.anthropic_credentials.refresh_anthropic_oauth_pure", refresh)
+        from agent.anthropic_credentials import _refresh_oauth_token
+
+        # Corrupt expiresAt must not kill the compare before the refresh attempt:
+        # the refresh path itself is stubbed, so reaching it is the assertion.
+        result = _refresh_oauth_token({"accessToken": "old", "refreshToken": ""})
+        assert result is None
+        assert refresh.called, (
+            "corrupt expiresAt crashed the adoption gate before the refresh attempt"
+        )

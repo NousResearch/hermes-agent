@@ -326,6 +326,7 @@ def _build_catalog_entry(platform_id: str, plugin_entry: Any | None = None) -> d
         "docs_url": override.get("docs_url", ""),
         "env_vars": _merge_platform_env_vars(platform_id, override, plugin_entry),
         "required_env": required_env,
+        "is_plugin": plugin_entry is not None,
     }
 
 

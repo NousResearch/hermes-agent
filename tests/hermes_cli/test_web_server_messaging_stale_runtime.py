@@ -75,3 +75,39 @@ def test_operator_stopped_gateway_does_not_report_retained_startup_failure(clien
     assert telegram["state"] == "gateway_stopped"
     assert telegram["error_code"] is None
     assert telegram["error_message"] is None
+
+
+@pytest.mark.parametrize(
+    ("is_plugin", "expected_state"),
+    [(True, "connected"), (False, "pending_restart")],
+)
+def test_live_platform_without_runtime_entry_uses_platform_kind(monkeypatch, is_plugin, expected_state):
+    """Only plugin adapters can be connected without a runtime status record."""
+    import hermes_cli.web_routers.messaging as messaging
+
+    monkeypatch.setattr(
+        messaging,
+        "resolve_gateway_liveness",
+        lambda **kwargs: type("Liveness", (), {"running": True})(),
+    )
+    monkeypatch.setattr(
+        messaging,
+        "_platform_enablement",
+        lambda *args: (True, True, None),
+    )
+
+    payload = messaging._messaging_platform_payload(
+        {
+            "id": "homeassistant",
+            "name": "Home Assistant",
+            "description": "",
+            "docs_url": "",
+            "env_vars": (),
+            "required_env": (),
+            "is_plugin": is_plugin,
+        },
+        {},
+        {"platforms": {}},
+    )
+
+    assert payload["state"] == expected_state

@@ -2231,6 +2231,7 @@ def test_endpoint_pricing_already_per_million_is_not_inflated():
     catalog = {
         "minimax-m3": {"id": "minimax-m3", "pricing": {"currency": "USD", "prompt": 0.6, "completion": 1.2, "cache_read": 0.12}},
         "glm-x": {"id": "glm-x", "pricing": {"currency": "CNY", "unit": "per_1m_tokens", "prompt": 1, "completion": 2}},
+        "unit-alias": {"id": "unit-alias", "pricing": {"currency": "USD", "unit": "1M_tokens", "input": 0.0006, "output": 0.0008}},
         "crof-a": {"id": "crof-a", "cost": {"input": 0.04, "output": 0.15}},
     }
     meta = {mid: mm._endpoint_model_entry(model, mid, None) for mid, model in catalog.items()}
@@ -2241,6 +2242,12 @@ def test_endpoint_pricing_already_per_million_is_not_inflated():
     assert float(dollars_per_million["minimax-m3"].input_cost_per_million) == pytest.approx(0.6)
     assert float(dollars_per_million["minimax-m3"].cache_read_cost_per_million) == pytest.approx(0.12)
     assert float(dollars_per_million["glm-x"].output_cost_per_million) == pytest.approx(2.0)
+    unit_alias = dollars_per_million["unit-alias"]
+    assert unit_alias is not None
+    assert unit_alias.input_cost_per_million is not None
+    assert unit_alias.output_cost_per_million is not None
+    assert float(unit_alias.input_cost_per_million) == pytest.approx(0.0006)
+    assert float(unit_alias.output_cost_per_million) == pytest.approx(0.0008)
     assert float(dollars_per_million["crof-a"].input_cost_per_million) == pytest.approx(0.04)
 
 

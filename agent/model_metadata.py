@@ -856,7 +856,7 @@ def _context_length_from_model_payload(payload: Dict[str, Any]) -> Optional[int]
 # at or above $0.001/token ($1,000/MTok — no real model charges that) can only be a per-million quote.
 _PRICING_UNIT_DIVISORS = {
     "per_token": 1, "per_1k_tokens": 1_000, "per_thousand_tokens": 1_000,
-    "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
+    "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000, "1m_tokens": 1_000_000,
 }
 _PER_MILLION_QUOTE_MIN = 0.001
 _TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")

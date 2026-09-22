@@ -521,6 +521,7 @@ host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
+host.openBrowser()                         // open or re-front the in-app Browser
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN
                                            //   workspace zone and reveal it; returns a disposer
@@ -537,6 +538,11 @@ host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no fore
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
+
+`host.openBrowser()` opens the existing in-app Browser tab without replacing
+its current page, or creates an `about:blank` Browser tab when none exists.
+Plugins supporting older Desktop versions should feature-detect it with
+`typeof host.openBrowser === 'function'`.
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
 cron, kanban, …). `host.requestProfile` accepts a descriptor from

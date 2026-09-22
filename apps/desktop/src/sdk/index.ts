@@ -61,6 +61,7 @@ import {
   type SpawnPriority
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { openBrowserTab } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -1338,6 +1339,9 @@ export const host = {
     isStaleTile?: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean,
     onlyStoredIds?: readonly string[]
   ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile, onlyStoredIds),
+
+  /** Open (or re-front) the in-app Browser, preserving its current page. */
+  openBrowser: openBrowserTab,
 
   /** Reactive on-screen visibility of a contributed pane: true while it is in
    *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding

@@ -53,9 +53,17 @@ def get_mcp_server_filter() -> Optional[list[str]]:
 def _has_configured_mcp_servers() -> bool:
     """Cheap config probe so non-MCP users avoid importing the MCP stack."""
     try:
-        from hermes_cli.config import read_raw_config
+        # Honor Managed Scope before deciding: mcp_servers published by an
+        # administrator (/etc/hermes/config.yaml) are part of the effective
+        # config and honored at connect time, so the discovery gate must see
+        # them too (#91073). Read through the canonical effective loader —
+        # the no-defaults pipeline presence-sensitive readers must use
+        # (hermes_cli/AGENTS.md) — instead of hand-rolling raw-read + overlay;
+        # its fail-open + last-known-good recovery only widens what the gate
+        # sees (a torn user config keeps its user-declared servers).
+        from hermes_cli.config_effective import load_user_config_effective
 
-        raw_config = read_raw_config() or {}
+        raw_config = load_user_config_effective()
         if isinstance(raw_config.get("mcp_servers"), dict) and raw_config["mcp_servers"]:
             return True
         from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp

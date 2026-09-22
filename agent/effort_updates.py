@@ -16,11 +16,13 @@ which is exactly today's behaviour.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 EFFORT_UPDATE_KEY = "effort_update"
+EFFORT_BASELINE_KEY = "_reasoning_effort_baseline"
 ANTHROPIC_MID_CONVERSATION_EFFORT_BETA = "mid-conversation-output-config-2026-07-01"
 
 
@@ -36,12 +38,21 @@ def effort_update(msg: Any) -> Optional[Dict[str, Any]]:
     return payload if isinstance(payload, dict) and isinstance(payload.get("effort"), str) else None
 
 
-def make_effort_update_message(effort: str, previous: Optional[str]) -> Dict[str, Any]:
+def make_effort_update_message(
+    effort: str, previous: str, *, route: str = "", lineage: str = "", reset: bool = False,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"effort": effort, "previous": previous}
+    if route:
+        payload["route"] = route
+    if lineage:
+        payload["lineage"] = lineage
+    if reset:
+        payload["reset"] = True
     return {
         "role": "system",
         "content": "",
         "display_kind": "hidden",
-        "display_metadata": {EFFORT_UPDATE_KEY: {"effort": effort, "previous": previous}},
+        "display_metadata": {EFFORT_UPDATE_KEY: payload},
     }
 
 
@@ -61,9 +72,15 @@ def resolve_effort_updates(
     updates = [u for m in messages if (u := effort_update(m)) is not None]
     if not updates:
         return messages, current
-    if updates[-1].get("effort") != current:
+    lineage = updates[-1].get("lineage")
+    active = [update for update in updates if not lineage or update.get("lineage") == lineage]
+    if not active or active[-1].get("effort") != current:
         return strip_effort_updates(messages), current
-    return messages, updates[0].get("previous")
+    selected = [
+        message for message in messages
+        if (update := effort_update(message)) is None or update in active
+    ]
+    return (messages if len(selected) == len(messages) else selected), active[0].get("previous")
 
 
 def requested_effort(reasoning_config: Any) -> Optional[str]:
@@ -75,21 +92,61 @@ def requested_effort(reasoning_config: Any) -> Optional[str]:
     return str(effort).lower() if isinstance(effort, str) and effort else None
 
 
-def _baseline_effort(agent: Any) -> Optional[str]:
-    """Effort the session's cached prefix was built with: the session row's ``model_config`` keeps
-    the FIRST ``reasoning_config`` (the upsert never overwrites it), so a re-created gateway agent
-    or a resumed CLI sees the same baseline as the process that started the session."""
+def _effort_route(agent: Any) -> str:
+    """Model/provider identity for one cache lineage."""
+    return "|".join((
+        str(getattr(agent, "provider", "") or "").strip().lower(),
+        str(getattr(agent, "model", "") or "").strip().lower(),
+        str(getattr(agent, "base_url", "") or "").strip().rstrip("/").lower(),
+    ))
+
+
+def _baseline_record(agent: Any) -> Optional[Dict[str, Any]]:
+    """Return the durable effort/route/lineage record for this session."""
     db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     stored = None
     if db is not None and session_id:
         try:
-            stored = db.get_session_model_config_value(session_id, "reasoning_config")
+            stored = db.get_session_model_config_value(session_id, EFFORT_BASELINE_KEY)
         except Exception:
             logger.debug("effort baseline: session model_config unreadable", exc_info=True)
     if stored is None:
-        stored = (getattr(agent, "_session_init_model_config", None) or {}).get("reasoning_config")
-    return requested_effort(stored)
+        initial = getattr(agent, "_session_init_model_config", None)
+        stored = initial.get(EFFORT_BASELINE_KEY) if isinstance(initial, dict) else None
+    if isinstance(stored, dict):
+        return dict(stored)
+
+    # Upgrade path for sessions created before the durable route record existed: #114534's
+    # original implementation stored the first reasoning_config in the session row.
+    legacy = None
+    if db is not None and session_id:
+        try:
+            legacy = db.get_session_model_config_value(session_id, "reasoning_config")
+        except Exception:
+            logger.debug("effort baseline: legacy reasoning_config unreadable", exc_info=True)
+    if legacy is None:
+        initial = getattr(agent, "_session_init_model_config", None)
+        legacy = initial.get("reasoning_config") if isinstance(initial, dict) else None
+    effort = requested_effort(legacy)
+    if effort is None:
+        return None
+    return {
+        "route": _effort_route(agent), "effort": effort, "lineage": str(uuid.uuid4()), "legacy": True,
+    }
+
+
+def _write_baseline_record(agent: Any, record: Dict[str, Any]) -> None:
+    initial = getattr(agent, "_session_init_model_config", None)
+    if isinstance(initial, dict):
+        initial[EFFORT_BASELINE_KEY] = dict(record)
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if db is not None and session_id:
+        try:
+            db.patch_session_model_config(session_id, {EFFORT_BASELINE_KEY: record})
+        except Exception:
+            logger.debug("effort baseline: session model_config write failed", exc_info=True)
 
 
 def record_effort_switch(agent: Any, messages: List[Dict[str, Any]]) -> bool:
@@ -100,21 +157,40 @@ def record_effort_switch(agent: Any, messages: List[Dict[str, Any]]) -> bool:
     its tool_result would break Anthropic's adjacency rule, and an empty history has no cache to
     keep. Returns True when a marker was appended."""
     requested = requested_effort(getattr(agent, "reasoning_config", None))
-    if requested is None or not messages:
+    route = _effort_route(agent)
+    baseline = _baseline_record(agent)
+    if baseline and baseline.pop("legacy", False):
+        _write_baseline_record(agent, baseline)
+    if requested is None:
+        if not baseline or baseline.get("route") != route or baseline.get("effort") is not None:
+            _write_baseline_record(agent, {
+                "route": route, "effort": None, "lineage": str(uuid.uuid4()),
+            })
         return False
-    last = messages[-1]
-    if not isinstance(last, dict) or last.get("role") != "assistant" or last.get("tool_calls"):
+
+    last = messages[-1] if messages else None
+    can_mark = isinstance(last, dict) and last.get("role") == "assistant" and not last.get("tool_calls")
+    if not baseline or baseline.get("route") != route or baseline.get("effort") is None:
+        lineage = str(uuid.uuid4())
+        _write_baseline_record(agent, {"route": route, "effort": requested, "lineage": lineage})
+        if can_mark:
+            messages.append(make_effort_update_message(
+                requested, requested, route=route, lineage=lineage, reset=True,
+            ))
+            return True
         return False
-    previous: Optional[str] = None
-    for msg in reversed(messages):
-        update = effort_update(msg)
-        if update is not None:
+
+    lineage = str(baseline.get("lineage") or uuid.uuid4())
+    previous = baseline.get("effort")
+    for message in reversed(messages):
+        update = effort_update(message)
+        if update is not None and update.get("lineage") == lineage:
             previous = update["effort"]
             break
-    else:
-        previous = _baseline_effort(agent)
-    if previous is None or previous == requested:
+    if not can_mark or not isinstance(previous, str) or previous == requested:
         return False
-    messages.append(make_effort_update_message(requested, previous))
+    messages.append(make_effort_update_message(
+        requested, previous, route=route, lineage=lineage,
+    ))
     logger.info("reasoning effort switched %s -> %s; recorded mid-conversation marker", previous, requested)
     return True

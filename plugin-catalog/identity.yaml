@@ -1,0 +1,24 @@
+name: identity
+repo: https://github.com/indigokarasu/hermes-identity-plugin
+sha: 8f51e0ed7c69992b8494389fb93ec0e02bcca734
+version: "1.0.1"
+description: "View and edit the identity files (SOUL.md, MEMORY.md, USER.md, AGENT.md/HERMES.md) from chat, switch the active profile, and see per-line usage with colour-coded staleness timestamps. Adds six tools, /identity, /identity-switch and /identity-dashboard commands, and a utilization dashboard pane. Disclosure — reads and writes the identity files and a line-utilization record inside the selected profile directory under HERMES_HOME, and can change which profile is active; it performs no network I/O and holds no credentials."
+maintainer: indigokarasu
+tier: community
+category: tools
+docs_url: https://github.com/indigokarasu/hermes-identity-plugin#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - identity_view
+    - identity_edit
+    - identity_switch_profile
+    - identity_list_profiles
+    - identity_dashboard
+    - identity_reset_usage
+  provides_hooks:
+    - post_llm_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

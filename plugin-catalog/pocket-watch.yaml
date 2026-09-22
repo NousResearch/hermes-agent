@@ -1,0 +1,16 @@
+name: pocket-watch
+repo: https://github.com/indigokarasu/hermes-pocket-watch-plugin
+sha: b05178ab1f2d8a39a377581c3dc7562ec8f0c2dc
+version: "1.0.1"
+description: "Dashboard-only cron companion: a Pocket Watch pane showing cron jobs by schedule (daily/weekly/monthly), a health view of run outcomes and consecutive failures, a timeline, and maintenance actions — a read-oriented window onto the scheduler rather than another agent-facing toolset. Disclosure — the pane's API reads the cron jobs file under HERMES_HOME to render schedules and run history; it registers no tools, hooks or middleware, performs no network I/O and holds no credentials."
+maintainer: indigokarasu
+tier: community
+category: desktop
+docs_url: https://github.com/indigokarasu/hermes-pocket-watch-plugin#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

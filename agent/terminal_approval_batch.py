@@ -36,6 +36,7 @@ class _TerminalSlot:
         self.args = None
         self.decision = None
         self.guard_key = None
+        self.regated = False
         self.claimed = False
 
     def check_cancelled(self):
@@ -59,7 +60,13 @@ class _TerminalSlot:
                 )
                 try:
                     self.guard_key = (ref.args["command"], config["env_type"], tt._docker_has_host_access(config))
-                    self.decision = tt._check_all_guards(*self.guard_key)
+                    decision = tt._check_all_guards(*self.guard_key)
+                    # A failed earlier slot may withdraw this request while
+                    # its worker is still blocked in the approval wait.  That
+                    # withdrawal is not a user denial and must not become a
+                    # prepared decision when the wait unwinds.
+                    if not self.regated or (isinstance(decision, dict) and decision.get("outcome") == "denied"):
+                        self.decision = decision
                 finally:
                     reset_current_observability_context(tokens)
         finally:
@@ -128,7 +135,7 @@ class _TerminalBatch:
                 queue = approval._gateway_queues.get(session_key, [])
                 if entry in queue:
                     queue.remove(entry)
-                    entry.result = "deny"
+                    entry.cancelled = "terminal approval batch closed"
                     entry.event.set()
                 if not queue:
                     approval._gateway_queues.pop(session_key, None)
@@ -159,12 +166,13 @@ class _TerminalBatch:
                 queue = approval._gateway_queues.get(session_key, [])
                 if entry in queue:
                     queue.remove(entry)
-                    entry.result = "deny"
+                    entry.cancelled = "superseded after an earlier terminal failure"
                     entry.event.set()
                 if not queue:
                     approval._gateway_queues.pop(session_key, None)
             self.pending_approvals = retained
             for slot in self.slots[failed_slot.index + 1:]:
+                slot.regated = True
                 # A completed denial is a safety boundary, not stale positive
                 # consent.  Keep its key too: otherwise consume_prepared_guard
                 # falls through to a fresh guard, which can auto-approve under

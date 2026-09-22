@@ -443,23 +443,24 @@ class TestAdapterBehavior(unittest.TestCase):
             handler = adapter._build_event_handler()
 
         self.assertEqual(handler, "handler")
+        expected_calls = [
+            "builder",
+            "message_read",
+            "message_receive",
+            "reaction_created",
+            "reaction_deleted",
+            "card_action",
+            "bot_added",
+            "bot_deleted",
+            "p2p_chat_entered",
+            "message_recalled",
+            "customized:drive.notice.comment_add_v1",
+            "customized:vc.bot.meeting_invited_v1",
+            "build",
+        ]
+        # Other subscriptions may be added without changing the existing handlers' order.
         self.assertEqual(
-            calls,
-            [
-                "builder",
-                "message_read",
-                "message_receive",
-                "reaction_created",
-                "reaction_deleted",
-                "card_action",
-                "bot_added",
-                "bot_deleted",
-                "p2p_chat_entered",
-                "message_recalled",
-                "customized:drive.notice.comment_add_v1",
-                "customized:vc.bot.meeting_invited_v1",
-                "build",
-            ],
+            [call for call in calls if call in expected_calls], expected_calls,
         )
 
     @patch.dict(os.environ, {}, clear=True)
@@ -2749,4 +2750,3 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-

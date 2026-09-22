@@ -1,4 +1,8 @@
 """Phase 4: lifecycle guard + per-profile observability."""
+import asyncio
+import logging
+from types import SimpleNamespace
+
 import pytest
 
 from gateway.config import GatewayConfig
@@ -61,6 +65,90 @@ def test_cron_tick_homes_include_active_named_host(tmp_path, monkeypatch):
     assert adapter_names == ["default", "host", "worker"]
     assert cron_names == ["default", "host", "worker"]
     assert cron_by_name["host"] == default_home / "profiles" / "host"
+
+
+def test_gateway_starts_one_ticker_for_the_complete_served_set(tmp_path, monkeypatch):
+    """One gateway creates one supervised ticker whose live enumerator owns every served home."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from gateway import run as gateway_run
+
+    homes = [("default", tmp_path / "default"), ("worker", tmp_path / "worker")]
+    for _name, home in homes:
+        home.mkdir()
+    captured = {"supervisors": 0}
+
+    class _Provider(InProcessCronScheduler):
+        def start(self, stop_event, **kwargs):
+            captured["kwargs"] = kwargs
+
+    class _Supervisor:
+        def __init__(self, target, *, args, kwargs, stop_event, name="cron-scheduler"):
+            captured["supervisors"] += 1
+            self._target, self._args, self._kwargs = target, args, kwargs
+
+        def start(self):
+            self._target(*self._args, **self._kwargs)
+
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: _Provider())
+    monkeypatch.setattr("cron.scheduler_thread.SupervisedTickerThread", _Supervisor)
+    monkeypatch.setattr(gateway_run, "_cron_tick_profile_homes", lambda _cfg: list(homes))
+    monkeypatch.setattr(gateway_run, "_start_gateway_housekeeping", lambda *args, **kwargs: None)
+    runner = SimpleNamespace(
+        config=GatewayConfig(multiplex_profiles=True),
+        adapters={},
+        _profile_adapters={},
+        _primary_profile_name="default",
+        _draining=False,
+        _external_drain_active=False,
+    )
+
+    async def _start():
+        return gateway_run._start_gateway_start_cron_and_housekeeping(runner)
+
+    cron_stop, _provider, cron_thread, housekeeping = asyncio.run(_start())
+    cron_stop.set()
+    cron_thread.join(timeout=5)
+    housekeeping.join(timeout=5)
+
+    assert captured["supervisors"] == 1
+    assert captured["kwargs"]["profile_homes"]() == homes
+
+
+def test_second_gateway_logs_non_owner_and_starts_no_dispatch_loop(tmp_path, monkeypatch, caplog):
+    """The singleton lock loser reports its role and exits before constructing a dispatcher."""
+    import gateway.kanban_watchers as kanban_watchers
+    from hermes_cli import kanban_db as kanban_db
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"kanban": {"dispatch_in_gateway": True}})
+    monkeypatch.setattr(kanban_db, "kanban_home", lambda: tmp_path)
+    first = object.__new__(kanban_watchers.GatewayKanbanWatchersMixin)
+    second = object.__new__(kanban_watchers.GatewayKanbanWatchersMixin)
+
+    class _UnexpectedDispatcher:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("lock loser constructed a dispatcher loop")
+
+    monkeypatch.setattr(kanban_watchers, "_KanbanDispatcher", _UnexpectedDispatcher)
+
+    try:
+        assert first._kanban_dispatcher_boot() is not None
+        with caplog.at_level(logging.INFO, logger="gateway.run"):
+            asyncio.run(second._kanban_dispatcher_watcher())
+
+        assert first._owns_kanban_dispatcher_lock()
+        assert not second._owns_kanban_dispatcher_lock()
+        assert any(
+            "this gateway will NOT dispatch" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        first._release_kanban_dispatcher_lock()
+        second._release_kanban_dispatcher_lock()
 
 
 class TestNamedProfileMultiplexerGuard:
@@ -156,5 +244,3 @@ class TestNamedProfileMultiplexerGuard:
 
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "")
         assert gw.named_profile_served_by_running_multiplexer() is False
-
-

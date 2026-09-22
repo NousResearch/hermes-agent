@@ -92,6 +92,19 @@ def _existing_profile_homes(profile_homes: list) -> list:
     return [entry for entry in profile_homes if Path(_profile_entry(entry)[1]).is_dir()]
 
 
+def _owned_profile_homes(profile_homes, profile_gate=None) -> list[tuple]:
+    """Return existing homes this ticker owns for the current cycle.
+
+    The ownership gate applies before startup recovery as well as ordinary ticks. Otherwise a
+    fallback ticker that correctly stands down in its loop still writes a competing heartbeat and
+    recovers executions in a home owned by a live gateway during startup.
+    """
+    homes = [_profile_entry(entry) for entry in _existing_profile_homes(profile_homes)]
+    if profile_gate is None:
+        return homes
+    return [(name, home) for name, home in homes if profile_gate(name, home)]
+
+
 @contextlib.contextmanager
 def _profile_cron_scope(home):
     """Scope one ticker operation to a profile's home, secrets, terminal policy, and store."""
@@ -612,7 +625,11 @@ class InProcessCronScheduler(CronScheduler):
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
 
-        initial_homes = _existing_profile_homes(profile_homes)
+        try:
+            initial_homes = _owned_profile_homes(profile_homes, profile_gate)
+        except BaseException as e:
+            logger.error("Cron profile enumeration error during startup: %s", e, exc_info=True)
+            initial_homes = []
         logger.info(
             "Multiplex cron scheduler started for %d profile(s): %s%s",
             len(initial_homes),
@@ -665,10 +682,7 @@ class InProcessCronScheduler(CronScheduler):
             # tick the ungated set — the exact stand-down the Desktop gate exists for (#100489).
             cycle_homes: list = []
             try:
-                enumerated = [_profile_entry(e) for e in _existing_profile_homes(profile_homes)]
-                if profile_gate is not None:
-                    enumerated = [(name, home) for name, home in enumerated if profile_gate(name, home)]
-                cycle_homes = enumerated
+                cycle_homes = _owned_profile_homes(profile_homes, profile_gate)
             except BaseException as e:
                 logger.error("Cron profile enumeration error: %s", e, exc_info=True)
                 _tick_error = f"{type(e).__name__}: {e}"

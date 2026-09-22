@@ -662,6 +662,60 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
 
 
+def test_multiplex_profile_gate_owns_startup_and_preserves_aba_scope(tmp_path, monkeypatch):
+    """A fallback ticker never claims startup ownership for a gated home, while the
+    homes it owns stay correctly scoped across successive A -> B -> A ticks."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    home_a = tmp_path / "a"
+    home_b = tmp_path / "b"
+    independently_owned = tmp_path / "own-gateway"
+    for home in (home_a, home_b, independently_owned):
+        (home / "cron").mkdir(parents=True)
+
+    provider = InProcessCronScheduler()
+    stop = threading.Event()
+    recovered: list[str] = []
+    ticked: list[str] = []
+
+    def _recover():
+        recovered.append(str(get_hermes_home()))
+        return 0
+
+    def _tick(*args, **kwargs):
+        ticked.append(str(get_hermes_home()))
+        if len(ticked) == 3:
+            stop.set()
+        return 0
+
+    monkeypatch.setattr(provider, "recover_interrupted", _recover)
+    with patch("cron.scheduler.tick", side_effect=_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [
+                    ("a", home_a),
+                    ("b", home_b),
+                    ("own-gateway", independently_owned),
+                ],
+                "profile_gate": lambda name, home: name != "own-gateway",
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert recovered == [str(home_a), str(home_b)]
+    assert ticked[:3] == [str(home_a), str(home_b), str(home_a)]
+    assert not (independently_owned / "cron" / "ticker_heartbeat").exists()
+
+
 def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
     """A stale profile_homes entry must not recreate a deleted profile."""
     import cron.jobs as jobs

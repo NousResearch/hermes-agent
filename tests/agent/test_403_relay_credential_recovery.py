@@ -21,8 +21,8 @@ PROVIDER = "opencode-go"
 MODEL = "deepseek-v4.1-flash"
 BASE = "https://opencode.ai/zen/go/v1"
 
-# Envelopes captured from the live relay by the reporters on #117869, so the verdict is pinned to
-# the wrapper the relay actually sends instead of a paraphrase of it.
+# Envelopes transcribed from what the reporters on #117869 saw the relay send, so the verdict is
+# pinned to the real wrapper instead of a paraphrase of it.
 RELAY_ENVELOPES = json.loads(
     (Path(__file__).resolve().parents[1] / "fixtures" / "opencode_go_403_relay_envelopes.json").read_text()
 )["envelopes"]
@@ -44,15 +44,15 @@ class _MockAPIError(Exception):
 class _Agent:
     """Session stand-in: real pool + real recovery helper, no client build."""
 
-    provider = PROVIDER
-    model = MODEL
-    base_url = BASE
     _fallback_activated = False
     _fallback_index = 0
-    _primary_runtime = {"provider": PROVIDER, "model": MODEL, "base_url": BASE}
 
-    def __init__(self, pool):
+    def __init__(self, pool, provider=PROVIDER, model=MODEL, base_url=BASE):
         self._credential_pool = pool
+        self.provider = provider
+        self.model = model
+        self.base_url = base_url
+        self._primary_runtime = {"provider": provider, "model": model, "base_url": base_url}
         entry = pool.entries()[0]
         self.api_key = entry.runtime_api_key
         self._credential_pool_entry_id = entry.id
@@ -66,12 +66,12 @@ class _Agent:
         return False
 
 
-def _sole_entry_pool():
-    entry = PooledCredential.from_dict(PROVIDER, {
-        "id": "relay403", "label": "opencode-go-sub", "auth_type": "api_key", "priority": 0,
-        "access_token": "***", "base_url": BASE, "source": "manual",
+def _sole_entry_pool(provider=PROVIDER, base_url=BASE):
+    entry = PooledCredential.from_dict(provider, {
+        "id": "relay403", "label": f"{provider}-sub", "auth_type": "api_key", "priority": 0,
+        "access_token": "***", "base_url": base_url, "source": "manual",
     })
-    return CredentialPool(provider=PROVIDER, entries=[entry])
+    return CredentialPool(provider=provider, entries=[entry])
 
 
 def _verdict_and_context(body):
@@ -83,9 +83,9 @@ def _verdict_and_context(body):
     )
 
 
-def _recover(agent, verdict, context):
+def _recover(agent, verdict, context, status_code=403):
     return recover_with_credential_pool(
-        agent, status_code=403, has_retried_429=False,
+        agent, status_code=status_code, has_retried_429=False,
         classified_reason=verdict.reason, error_context=context, billing_unverified=False,
     )
 
@@ -101,7 +101,7 @@ def test_relay_403_leaves_the_sole_credential_available():
     recovered, _ = _recover(agent, verdict, context)
 
     entry = pool.entries()[0]
-    assert recovered is False, "nothing to rotate to: the pool must not be mutated"
+    assert recovered is False, "the overloaded verdict must skip credential recovery"
     assert entry.last_status is None, "the entry was never written to"
     assert entry.last_error_code is None
     assert entry.last_error_reason is None, "the body's 'server_error' never became a pool verdict"
@@ -132,27 +132,29 @@ def test_auth_403_still_benches_the_credential():
 
 @pytest.mark.parametrize("envelope", RELAY_ENVELOPES, ids=[e["id"] for e in RELAY_ENVELOPES])
 def test_captured_relay_envelope_leaves_the_sole_credential_available(envelope):
-    """The relay's own bytes, not a paraphrase of them: same operator-visible invariant.
+    """A body transcribed from the field report, not a paraphrase of it: same invariant.
 
     The captures carry wrapper prose the synthetic body above does not — ``Error from provider
-    (Console Go):`` and a bracketed ``[server_error]`` marker inside the message — so a future
-    pattern added ahead of the provider-scoped code check would be caught here rather than on a
-    user's desk.
+    (Console Go):`` and a bracketed ``[server_error]`` marker inside the message — so a pattern
+    added ahead of the provider-scoped code check that matched either one would fail here. Every
+    input below is read from the envelope, so the context that classifies and the pool that gets
+    mutated cannot drift apart.
     """
-    pool = _sole_entry_pool()
-    agent = _Agent(pool)
+    provider, model, base_url = envelope["provider"], envelope["model"], envelope["base_url"]
+    pool = _sole_entry_pool(provider, base_url)
+    agent = _Agent(pool, provider, model, base_url)
     error = _MockAPIError("Forbidden", status_code=envelope["status_code"], body=envelope["body"])
-    verdict = classify_api_error(
-        error, provider=envelope["provider"], model=envelope["model"], base_url=envelope["base_url"],
-    )
+    verdict = classify_api_error(error, provider=provider, model=model, base_url=base_url)
     assert verdict.reason == FailoverReason.overloaded
     assert verdict.retryable is True
     assert verdict.should_rotate_credential is False
 
-    recovered, _ = _recover(agent, verdict, extract_api_error_context(error))
+    recovered, _ = _recover(agent, verdict, extract_api_error_context(error), envelope["status_code"])
 
     entry = pool.entries()[0]
-    assert recovered is False, "nothing to rotate to: the pool must not be mutated"
+    assert recovered is False, "the overloaded verdict must skip credential recovery"
     assert entry.last_status is None
+    assert entry.last_error_code is None
     assert entry.last_error_reason is None
-    assert pool.has_available() is True
+    assert entry.failure_reason is None
+    assert pool.has_available(model=model) is True

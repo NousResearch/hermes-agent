@@ -1,12 +1,19 @@
 {
   "_provenance": {
     "issue": "https://github.com/NousResearch/hermes-agent/issues/117869",
-    "why": "Real 403 envelopes captured by two reporters on the OpenCode Go route. The relay's wrapper prose is not the synthetic sentence the other tests use, so the transient-vs-auth verdict is pinned against the bytes the relay actually sent.",
+    "why": "The other 403 tests build their bodies by hand, so they only ever pin the verdict for a paraphrase of what the relay sends. These two are transcribed from what reporters saw on the OpenCode Go route, and they carry wrapper prose the synthetic body does not.",
     "captured": [
       "weidzhou, comment 2026-09-21T15:20:30Z — v0.21.3 (2026.9.14), platform=webui, provider=opencode-go, model=deepseek-v4.1-flash, 22:52:39 local, reproduced twice in one day",
       "foxhoundhcm, comment 2026-09-21T13:34:17Z — Windows desktop install, provider=opencode-go (https://opencode.ai/zen/go/v1), model=deepseek-v4.1-flash, 8 occurrences in one day across 6 clusters"
     ],
-    "normalization": "The 'console_go' message is stored with the reporter's log line-wrap collapsed to single spaces; the '(Console Go)' wrapper, the bracketed [server_error] marker and every JSON key are verbatim. No field was added, renamed or reordered, and no field is invented where the capture did not show one."
+    "transcription": [
+      "Both bodies are transcribed from the reporters' log output, which renders the response as a Python-style dict: every key and value is as transcribed, surrounding log lines are omitted, and the representation here is JSON.",
+      "The 'console_go_wrapper' message is stored with the reporter's log line-wrap collapsed to single spaces; nothing else was reformatted."
+    ],
+    "field_sources": {
+      "status_code, body, provider, model": "quoted by both captures (each shows HTTP 403 and both error fields)",
+      "base_url": "quoted by the desktop capture; the webui capture names the same provider and model but prints no URL, so this is the route both reports are on rather than a quote from that one"
+    }
   },
   "envelopes": [
     {

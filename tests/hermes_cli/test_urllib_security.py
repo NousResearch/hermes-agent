@@ -609,3 +609,35 @@ def test_a_failed_bundle_load_is_not_memoised(monkeypatch, tmp_path):
     assert state["loads"] == 2
     assert urllib_security._resolved_https_context() is recovered
     assert state["loads"] == 2
+
+
+def test_a_fallback_context_is_not_memoised(monkeypatch, tmp_path):
+    """A context built from a fallback bundle (certifi on macOS) must not pin the failed primary."""
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    corporate = str(tmp_path / "corporate-ca.pem")
+    fallback = str(tmp_path / "cacert.pem")
+    for path in (corporate, fallback):
+        (tmp_path / path).write_text("pem")
+    monkeypatch.setattr(urllib_security, "_ca_bundle_candidates", lambda: (corporate, fallback))
+
+    state = {"failing": True, "loads": []}
+
+    def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+        state["loads"].append(cafile)
+        if state["failing"] and cafile == corporate:
+            raise ssl.SSLError("transient read failure")
+
+    monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", load_verify_locations)
+
+    assert urllib_security._resolved_https_context() is not None
+    assert state["loads"] == [corporate, fallback]
+
+    state["failing"] = False
+    recovered = urllib_security._resolved_https_context()
+
+    assert recovered is not None
+    assert state["loads"] == [corporate, fallback, corporate]
+    assert urllib_security._resolved_https_context() is recovered
+    assert state["loads"] == [corporate, fallback, corporate]

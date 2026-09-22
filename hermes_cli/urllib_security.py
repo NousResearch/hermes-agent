@@ -142,22 +142,25 @@ def _resolved_https_context() -> ssl.SSLContext | None:
     cached = _HTTPS_CONTEXT_CACHE
     if cached is not None and cached[0] == key:
         return cached[1]
-    context = _build_https_context(candidates)
-    if context is not None:
-        # A failed (possibly transient) load must not pin default certs until the file changes.
+    context, used_path = _build_https_context(candidates)
+    if context is not None and candidates and used_path == candidates[0]:
+        # Only a context built from the preferred bundle is memoised. A failed (possibly transient)
+        # load — whether it left us with no context or with a fallback bundle (certifi on macOS) —
+        # must be retried on the next request, not pinned until the file's mtime/size changes.
         _HTTPS_CONTEXT_CACHE = (key, context)
     return context
 
 
-def _build_https_context(candidates: tuple[str, ...]) -> ssl.SSLContext | None:
+def _build_https_context(candidates: tuple[str, ...]) -> tuple[ssl.SSLContext | None, str | None]:
+    """Return ``(context, path)`` for the first loadable candidate, or ``(None, None)``."""
     for path in candidates:
         try:
-            return ssl.create_default_context(cafile=path)
+            return ssl.create_default_context(cafile=path), path
         except (OSError, ssl.SSLError) as exc:
             logger.warning(
                 "CA bundle could not be loaded from %s: %s — falling back to default certificates", path, exc
             )
-    return None
+    return None, None
 
 
 def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None):

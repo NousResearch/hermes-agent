@@ -230,8 +230,26 @@ def search_catalog(query: str) -> List[PluginCatalogEntry]:
 
 # ── Removed / blocklist ──────────────────────────────────────────────────────
 
+_SCP_URL_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(?!//)(.+)$")  # git@host:owner/repo
+
+
 def _normalize_repo(url: str) -> str:
-    return url.strip().rstrip("/").removesuffix(".git").lower()
+    """Canonical ``host/path`` for a repo URL: scheme, user, ``www.``, ``.git`` and trailing slashes are
+    spelling, not identity — the kill list must match ``git@github.com:Evil/Bad.git`` when it names
+    ``https://github.com/evil/bad``."""
+    from urllib.parse import urlsplit
+    text = url.strip()
+    scp = _SCP_URL_RE.match(text)
+    if scp:
+        host, path = scp.group(1), scp.group(2)
+    elif "://" in text:
+        parts = urlsplit(text)
+        host, path = parts.hostname or "", parts.path
+    else:
+        host, path = "", text
+    host = host.lower().removeprefix("www.")
+    path = path.strip("/").removesuffix(".git").rstrip("/").lower()
+    return f"{host}/{path}" if host else path
 
 
 def find_removed(name_or_repo: str, catalog_dir: Optional[Path] = None) -> Optional[RemovedEntry]:
@@ -253,6 +271,13 @@ def resolved_removed_entries() -> List[RemovedEntry]:
     — e.g. a plugins-hub rebuild annotating every installed plugin — resolve the list once instead
     of paying a live-catalog fetch per candidate."""
     return load_removed_list() + live_removed_list()
+
+
+def cached_removed_entries() -> List[RemovedEntry]:
+    """In-tree list UNION the last fetched live copy, with NO network round-trip — for the load-time and
+    ``enable`` checks that run in every process and must never block on a dead catalog host."""
+    cached = _stale_live_cache(_live_cache_path()) or {}
+    return load_removed_list() + _removed_from_list(cached.get("removed"))
 
 
 def match_removed(

@@ -43,5 +43,7 @@ def test_a_bullet_with_continuation_lines_is_never_touched():
     provenance under the other and invent a record neither provider reported."""
     raw = ("- prefers draft PRs\n  (logged 12 Jan, source: supermemory)\n"
            "- prefers draft PRs\n  (logged 3 Feb, source: builtin)\n")
+    nested = "- Project A\n  - status: active\n- Project B\n  - status: active\n"
 
     assert _body(build_memory_context_block(raw)) == raw
+    assert _body(build_memory_context_block(nested)) == nested

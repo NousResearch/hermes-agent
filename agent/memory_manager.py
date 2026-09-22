@@ -294,15 +294,18 @@ def _drop_repeated_recall_lines(text: str) -> str:
     kept: list[str] = []
     for index, line in enumerate(lines):
         stripped = line.strip()
+        # An indented line is a continuation of the bullet above it (nested child, provenance,
+        # wrapped prose). It never participates in dedupe and is never dropped.
+        if stripped and line[0].isspace():
+            kept.append(line)
+            continue
         is_bullet = bool(_RECALL_BULLET_RE.match(stripped))
         # Any column-0 non-bullet line (heading, rule, paragraph) opens a fresh dedupe scope.
-        if stripped and not line[0].isspace() and not is_bullet:
+        if stripped and not is_bullet:
             seen.clear()
         if is_bullet:
             following = lines[index + 1] if index + 1 < len(lines) else ""
-            indent = len(line) - len(line.lstrip())
-            carries_continuation = bool(following.strip()) and (
-                len(following) - len(following.lstrip())) > indent
+            carries_continuation = bool(following.strip()) and following[0].isspace()
             if not carries_continuation:
                 if stripped in seen:
                     continue

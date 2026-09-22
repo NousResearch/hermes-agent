@@ -86,6 +86,32 @@ def test_live_endpoint_reloads_file_and_registers_token_before_use(tmp_path, mon
     assert all(secret not in record.getMessage() for record in caplog.records for secret in calls)
 
 
+def test_runtime_file_without_token_connects_without_authorization(tmp_path, monkeypatch):
+    import hermes_cli.agent_plugins as agent_plugins
+    from agent import redact
+    from tools.mcp_tool_transport import _live_endpoint
+
+    runtime = tmp_path / "server.json"
+    declaration.register("example-server", _decl(tmp_path))
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {
+        "kind": "server_json",
+        "path": str(runtime),
+        "fields": {"url": "http", "token": "token", "pid": "pid"},
+    }, raising=False)
+    calls = []
+    monkeypatch.setattr(redact, "register_vault_redaction_value", calls.append)
+    try:
+        runtime.write_text(json.dumps({"http": "http://127.0.0.1:3333", "pid": os.getpid()}))
+        result = _live_endpoint("example-server")
+    finally:
+        declaration.unregister("example-server")
+    assert result is not None
+    url, headers = result
+    assert url == "http://127.0.0.1:3333/mcp"
+    assert "Authorization" not in headers
+    assert calls == []
+
+
 def test_missing_runtime_file_never_falls_back(tmp_path, monkeypatch):
     import hermes_cli.agent_plugins as agent_plugins
     from tools.mcp_tool_transport import LiveEndpointUnavailable, _live_endpoint

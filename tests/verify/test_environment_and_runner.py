@@ -2,6 +2,7 @@
 
 import http.server
 import json
+import os
 import subprocess
 import threading
 import time
@@ -260,3 +261,68 @@ class TestReadiness:
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+class TestTerminateProcessGroupGuard:
+    """_terminate_process_group must never killpg a group the child does not
+    lead: a child spawned without start_new_session shares OUR process group,
+    and the group signal would take the verify runner down with it."""
+
+    def test_shared_group_child_gets_terminate_only(self, monkeypatch):
+        import os as _os
+
+        from agent.verify.runner import _terminate_process_group
+
+        proc = MagicMock()
+        proc.pid = 999
+        proc.poll.return_value = None
+        monkeypatch.setattr(_os, "getpgid", lambda pid: 555)  # != pid: shared group
+        killpg_calls = []
+        monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+        _terminate_process_group(proc)
+
+        assert killpg_calls == []
+        proc.terminate.assert_called_once()
+
+    def test_real_shared_group_child_does_not_signal_us(self):
+        """Real child in our own group: if killpg fired, this test process would
+        be dead before the assertion. The direct child still dies."""
+        import os as _os
+
+        from agent.verify.runner import _terminate_process_group
+
+        proc = subprocess.Popen(
+            ["sleep", "60"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert _os.getpgid(proc.pid) == _os.getpgid(0)  # shared group precondition
+            _terminate_process_group(proc)
+            proc.wait(timeout=5)
+            assert proc.returncode is not None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    def test_real_group_leader_child_is_group_killed(self):
+        """Control: a start_new_session child leads its own group and is killed
+        through the group signal path."""
+        import os as _os
+
+        from agent.verify.runner import _terminate_process_group
+
+        proc = subprocess.Popen(
+            ["sleep", "60"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            process_group=0,
+        )
+        try:
+            assert _os.getpgid(proc.pid) == proc.pid  # leader precondition
+            _terminate_process_group(proc)
+            proc.wait(timeout=5)
+            assert proc.returncode is not None
+        finally:
+            if proc.poll() is None:
+                proc.kill()

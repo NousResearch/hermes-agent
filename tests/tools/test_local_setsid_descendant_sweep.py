@@ -172,3 +172,48 @@ def test_kill_process_never_killpgs_the_callers_own_group(monkeypatch):
 
     assert killpg_calls == []
     assert killed == [12345]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+class TestReapUntrackedGroupGuard:
+    """ProcessRegistry._reap_untracked must never killpg a group the child does
+    not lead: a child that shares our process group would take the whole
+    process tree down with it."""
+
+    def test_shared_group_child_gets_proc_kill_only(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from tools.process_registry import ProcessRegistry
+
+        reg = ProcessRegistry()
+        proc = MagicMock()
+        proc.pid = 999
+        session = SimpleNamespace(systemd_unit="")
+        monkeypatch.setattr(os, "getpgid", lambda pid: 555)  # != pid: shared group
+        killpg_calls = []
+        monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+        reg._reap_untracked(session, proc)
+
+        assert killpg_calls == []
+        proc.kill.assert_called_once()
+
+    def test_group_leader_child_gets_the_group_signal(self, monkeypatch):
+        """Control: a start_new_session child leads its own group and is killed
+        through killpg so its descendants go with it."""
+        from unittest.mock import MagicMock
+
+        from tools.process_registry import ProcessRegistry
+
+        reg = ProcessRegistry()
+        proc = MagicMock()
+        proc.pid = 999
+        session = SimpleNamespace(systemd_unit="")
+        monkeypatch.setattr(os, "getpgid", lambda pid: 999)  # == pid: group leader
+        killpg_calls = []
+        monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+        reg._reap_untracked(session, proc)
+
+        assert len(killpg_calls) == 1 and killpg_calls[0][0] == 999
+        proc.kill.assert_not_called()

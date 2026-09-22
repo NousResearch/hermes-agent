@@ -232,6 +232,10 @@ class PtyBridge:
             pgid = os.getpgid(self._proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
         except Exception:
             pgid = None
+        if pgid is not None and pgid != self._proc.pid:
+            # Not a group leader: the child shares OUR process group, so killpg would
+            # take the TUI down with it. Signal the child directly instead.
+            pgid = None
 
         # Signal the whole process group, not just the PTY leader: the dashboard TUI starts helper
         # children (e.g. the Python slash worker) and killing only the leader strands them.

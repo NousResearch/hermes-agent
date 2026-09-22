@@ -1250,7 +1250,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
             elif not _IS_WINDOWS:
                 try:
                     kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
+                    pgid = os.getpgid(proc.pid)
+                    if pgid == proc.pid:
+                        # The child leads its own group (start_new_session): the
+                        # group signal reaches any descendants with it.
+                        os.killpg(pgid, kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
+                    else:
+                        # Shared our process group — killpg would take the whole
+                        # tree down with it. Kill the direct child only.
+                        proc.kill()
                 except (ProcessLookupError, PermissionError, OSError):
                     proc.kill()
             else:

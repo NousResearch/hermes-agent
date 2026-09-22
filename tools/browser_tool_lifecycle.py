@@ -512,12 +512,22 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
     try:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, OSError):
-        return
-    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
-        try:
-            killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            return
+        pgid = None
+    # Signal the group only when the child leads it (start_new_session / process_group=0):
+    # a child spawned into our group resolves pgid to OUR process group and killpg would
+    # take the whole Hermes tree down with it, and a recycled PID can resolve to a foreign
+    # group. The direct child still gets proc.kill() either way. Same ownership check as
+    # hermes_cli/_subprocess_compat._legacy_kill_process_tree.
+    if pgid is not None and pgid == proc.pid:
+        for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+            try:
+                killpg(pgid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                break
+    try:
+        proc.kill()
+    except Exception:
+        pass
 
 
 def _pid_exists(pid: int) -> bool:

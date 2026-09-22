@@ -281,7 +281,7 @@ class TestPtyBridgeClose:
             sent.append((pgid, sig))
             fake.alive = False
 
-        monkeypatch.setattr(os, "getpgid", lambda pid: 67890)
+        monkeypatch.setattr(os, "getpgid", lambda pid: 12345)
         monkeypatch.setattr(os, "killpg", fake_killpg)
 
         bridge = PtyBridge.__new__(PtyBridge)
@@ -291,7 +291,45 @@ class TestPtyBridgeClose:
 
         bridge.close()
 
-        assert sent == [(67890, signal.SIGHUP)]
+        assert sent == [(12345, signal.SIGHUP)]
+        assert bridge._closed is True
+
+    def test_close_never_killpgs_a_shared_group(self, monkeypatch):
+        """A child that does not lead its own group shares OURS — killpg would
+        signal the TUI's own process tree. The fallback is per-signal proc.kill."""
+        sent: list[tuple[int, signal.Signals]] = []
+        direct: list[signal.Signals] = []
+
+        class _FakeProc:
+            pid = 12345
+            fd = -1
+
+            def __init__(self):
+                self.alive = True
+
+            def isalive(self):
+                return self.alive
+
+            def kill(self, sig):
+                direct.append(sig)
+                self.alive = False
+
+            def close(self, force=False):
+                self.closed = force
+
+        fake = _FakeProc()
+        monkeypatch.setattr(os, "getpgid", lambda pid: 67890)  # foreign/shared group
+        monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append((pgid, sig)))
+
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._proc = fake
+        bridge._fd = -1
+        bridge._closed = False
+
+        bridge.close()
+
+        assert sent == []
+        assert direct == [signal.SIGHUP]
         assert bridge._closed is True
 
 

@@ -1,5 +1,8 @@
 import { createBackendShutdownCoordinator } from './backend-ownership'
 
+/** The deliberate app-quit cancellation reason, not a process failure. */
+export const INTENTIONAL_DESKTOP_SHUTDOWN_MESSAGE = 'Hermes Desktop is quitting.'
+
 /** Observe every branch, but never leave quit parked on a lost exit/SSH callback. */
 export async function waitForTeardown(tasks: readonly Promise<unknown>[], timeoutMs: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -61,7 +64,7 @@ export function createLocalBackendLifecycle<Child>(deps: LocalBackendLifecycleDe
   }
 
   const shutdown = createBackendShutdownCoordinator(() => {
-    controller.abort(new Error('Hermes Desktop is quitting.'))
+    controller.abort(new Error(INTENTIONAL_DESKTOP_SHUTDOWN_MESSAGE))
     deps.cancelSetup()
 
     return waitForTeardown([...starts, ...[...children].map(stop), ...stops.values()], deps.timeoutMs ?? 7_000)

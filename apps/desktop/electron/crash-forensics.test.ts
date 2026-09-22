@@ -62,6 +62,15 @@ describe('installCrashForensics', () => {
     expect(flush).toHaveBeenCalledTimes(1)
   })
 
+  it('does not record the intentional desktop shutdown cancellation as a crash', () => {
+    const { flush, listeners, log } = harness()
+
+    listeners.get('unhandledRejection')?.(new Error('Hermes Desktop is quitting.'))
+
+    expect(log).not.toHaveBeenCalled()
+    expect(flush).not.toHaveBeenCalled()
+  })
+
   it('registers both handlers', () => {
     const { listeners } = harness()
 

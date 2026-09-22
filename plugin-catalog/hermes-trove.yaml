@@ -1,10 +1,10 @@
 name: hermes-trove
 repo: https://github.com/misterdas/hermes-trove
 sha: aebd7b8dcf755883787945f98df530b75d1da046
-description: Lossless context management — DAG-based engine, 15 tools, 9 slash commands, install/uninstall scripts, 3178 tests green
+description: DAG-based context engine that never loses a message — full-text search, semantic recall, assertion-backed evidence compilation, and pre-answer sufficiency gating
 maintainer: GOPAL
 tier: community
-category: context
+category: general
 requires_hermes: '>=0.20'
 docs_url: https://github.com/misterdas/hermes-trove#readme
 version: 1.1.4

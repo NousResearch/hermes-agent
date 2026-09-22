@@ -67,6 +67,8 @@ class AppResolver:
     def locate(self, ctx: LookupContext | None = None) -> Resolution:
         d = self.definition
         target = _expand(d.location)
+        if not os.path.isabs(target) or "%" in target or "$" in target:
+            return Resolution("missing", (Candidate(target, f"app:{d.app_id}", False),))
         if d.presence == "bundle":
             present = os.path.isdir(target) and os.path.isfile(os.path.join(target, "Contents", "Info.plist"))
         else:
@@ -92,7 +94,7 @@ class AppResolver:
                 return _pe_version(path)
             if kind == "uninstall_registry":
                 return _uninstall_registry_version(self.definition.version_arg)
-        except OSError as exc:
+        except Exception as exc:  # a vendor's plist/PE/registry entry is untrusted input; never abort the caller
             return Observation(CheckState.ERROR, detail=exc.__class__.__name__)
         return Observation(CheckState.UNAVAILABLE, detail=f"unknown version kind {kind}")
 

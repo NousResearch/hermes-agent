@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest'
-
 import type { ComposerToken } from '../app/interfaces.js'
-import { prepareSubmission, shouldInterpolateSubmission } from '../app/useSubmission.js'
+import { describe, expect, it, vi } from 'vitest'
+
+import { interruptBusySubmission, prepareSubmission, shouldInterpolateSubmission } from '../app/useSubmission.js'
+import { turnController } from '../app/turnController.js'
+import { patchUiState, resetUiState } from '../app/uiStore.js'
 
 describe('prepareSubmission', () => {
   it('keeps the collapsed paste for display and expands the model payload', () => {
@@ -21,6 +23,29 @@ describe('prepareSubmission', () => {
 
     expect(shouldInterpolateSubmission(submission.display)).toBe(false)
     expect(submission.text).toContain('{!touch /tmp/pwned}')
+  })
+})
+
+describe('interruptBusySubmission', () => {
+  it('preserves a streamed partial reply with an interruption marker before sending the follow-up', () => {
+    resetUiState()
+    patchUiState({ busy: true })
+    turnController.bufRef = 'partial reply'
+    const appended: Array<{ text: string }> = []
+    const send = vi.fn()
+    const gw = { request: vi.fn(() => Promise.resolve({ status: 'interrupted' })) } as any
+
+    interruptBusySubmission({
+      appendMessage: message => appended.push({ text: message.text }),
+      gw,
+      send,
+      sid: 'session-1',
+      sys: vi.fn()
+    })
+
+    expect(appended).toContainEqual({ text: 'partial reply\n\n*[interrupted]*' })
+    expect(gw.request).toHaveBeenCalledWith('session.interrupt', { session_id: 'session-1' })
+    expect(send).toHaveBeenCalledOnce()
   })
 })
 

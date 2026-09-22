@@ -16,7 +16,7 @@ import type {
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
-import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
+import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type BusyInputMode, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -647,6 +647,9 @@ export const sessionCommands: SlashCommand[] = [
           ctx.guarded<ConfigSetResponse>(r => {
             const next = r.value || mode
             ctx.transcript.sys(`busy input mode: ${next}`)
+            const busyInputMode: BusyInputMode =
+              next === 'queue' || next === 'steer' || next === 'interrupt' ? next : (mode as BusyInputMode)
+            patchUiState({ busyInputMode })
           })
         )
         .catch(ctx.guardedErr)

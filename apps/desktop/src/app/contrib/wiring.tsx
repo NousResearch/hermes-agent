@@ -91,7 +91,7 @@ import {
   setMessages
 } from '@/store/session'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
-import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
+import { clearSessionTodos, setRawSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -176,7 +176,6 @@ import { POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
 // Overlay views the controller mounts over the shell — lazy, load on demand.
 // The workspace-route full-page views (skills/messaging/artifacts) are the
 // ChatRoutesSurface's and live in ./surfaces.
-const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('../command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
 const WebhooksView = lazy(async () => ({ default: (await import('../webhooks')).WebhooksView }))
@@ -517,7 +516,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             storedSessionId
           )
 
-          const restored = todosForHydration(latestSessionTodos(messages))
+          const rawTodos = latestSessionTodos(messages)
+          const restored = todosForHydration(rawTodos)
+
+          if (rawTodos) {
+            setRawSessionTodos(runtimeSessionId, rawTodos)
+          }
 
           if (restored) {
             setSessionTodos(runtimeSessionId, restored)
@@ -1428,12 +1432,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
             onOpenSession={sessionId => openSession(sessionId, navigate)}
           />
-        </Suspense>
-      )}
-
-      {agentsOpen && (
-        <Suspense fallback={null}>
-          <AgentsView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
 

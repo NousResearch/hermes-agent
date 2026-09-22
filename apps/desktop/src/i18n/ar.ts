@@ -1302,7 +1302,20 @@ export const ar = defineLocale({
     ageHours: hours => `قبل ${hours} س`,
     durationSeconds: seconds => `${seconds} ث`,
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
-    tokens: value => `${value} رمز`
+    tokens: value => `${value} رمز`,
+    taskOverviewTitle: 'نظرة عامة على المهام',
+    taskOverviewSubtitle: 'قوائم المهام عبر كل جلسة تم فتحها في هذه النافذة.',
+    taskOverviewEmpty: 'لا توجد مهام متتبعة بعد',
+    taskOverviewEmptyDesc: 'عندما تتتبع جلسة قائمة مهام، يظهر تقدمها هنا.',
+    taskOverviewDismiss: 'إخفاء من هذه اللوحة',
+    taskOverviewCancel: 'إلغاء هذه المهمة',
+    taskOverviewCancelled: 'ملغاة',
+    taskOverviewProgress: (done, total) => `${done}/${total}`,
+    taskOverviewShowDone: count => `إظهار ${count} أخرى مكتملة`,
+    taskOverviewHideDone: 'إخفاء المكتملة',
+    backgroundTitle: 'العمليات الخلفية',
+    backgroundStop: 'إيقاف',
+    backgroundDismiss: 'إخفاء'
   },
   commandCenter: {
     close: 'إغلاق',

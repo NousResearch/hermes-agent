@@ -1,15 +1,16 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { type CommandCenterSection } from '@/app/command-center'
 import {
-  AGENTS_ROUTE,
   appViewForPath,
   COMMAND_CENTER_ROUTE,
   isOverlayView,
   NEW_CHAT_ROUTE,
   STARMAP_ROUTE
 } from '@/app/routes'
+import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
 
@@ -20,7 +21,10 @@ export function useOverlayRouting() {
   const currentView = appViewForPath(location.pathname)
   const settingsOpen = currentView === 'settings'
   const commandCenterOpen = currentView === 'command-center'
-  const agentsOpen = currentView === 'agents'
+  // Agents is now a standing right-sidebar panel (see store/agents-panel.ts +
+  // app/contrib/controller.tsx), not a route-based overlay. `agentsOpen`
+  // reads pane visibility so the statusbar button highlights correctly.
+  const agentsOpen = useStore($paneVisible('agents'))
   const starmapOpen = currentView === 'starmap'
   const cronOpen = currentView === 'cron'
   const profilesOpen = currentView === 'profiles'
@@ -66,7 +70,7 @@ export function useOverlayRouting() {
     }
   }, [closeOverlayToPreviousRoute, commandCenterOpen, navigate])
 
-  const openAgents = useCallback(() => navigate(AGENTS_ROUTE), [navigate])
+  const openAgents = useCallback(() => togglePaneVisible('agents'), [])
   const openStarmap = useCallback(() => navigate(STARMAP_ROUTE), [navigate])
 
   return {

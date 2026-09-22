@@ -1810,8 +1810,10 @@ def _get_pre_tool_call_directive_details(
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
     the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
-    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
-    wins; irrelevant returns are ignored."""
+    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). Precedence is
+    ``block`` > ``approve`` > none, not registration order: any plugin's valid veto wins over an
+    earlier plugin's request for human confirmation (#87420); among approves the first valid one
+    wins. Irrelevant returns are ignored."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -1823,6 +1825,7 @@ def _get_pre_tool_call_directive_details(
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
     )
     modified_args: Optional[Dict[str, Any]] = None
+    first_approve: Optional[Tuple[Optional[str], Optional[str]]] = None  # (message, rule_key)
     for result in hook_results:
         if not isinstance(result, dict):
             continue
@@ -1843,9 +1846,15 @@ def _get_pre_tool_call_directive_details(
         # A block directive requires a message (it becomes the tool result); approve's is optional.
         if action == "block" and not message:
             continue
-        rule_key = result.get("rule_key") if action == "approve" else None
-        rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
+        if action == "block":
+            return _PreToolCallDirective(action="block", message=message, modified_args=modified_args)
+        # approve is held back until the whole list has been scanned for a veto.
+        if first_approve is None:
+            rule_key = result.get("rule_key")
+            first_approve = (message, (rule_key.strip() or None) if isinstance(rule_key, str) else None)
+    if first_approve is not None:
+        return _PreToolCallDirective(action="approve", message=first_approve[0], rule_key=first_approve[1],
+                                     modified_args=modified_args)
     return _PreToolCallDirective(modified_args=modified_args)
 
 

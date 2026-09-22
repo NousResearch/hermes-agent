@@ -72,6 +72,19 @@ _SLUG = _arg("slug")
 _TENANT = _arg("--tenant", help="Tenant namespace")
 _PRIORITY = _arg("--priority", type=int, default=0, help="Priority tiebreaker")
 _RECLAIM_REASON = _reason("Human-readable reason (recorded on the reclaimed event)")
+# Shared by ``gc`` and ``reclaim`` so the disk guard and the GC sweep run the
+# very same code path with the very same knobs.
+_WORKTREE_RECLAIM_ARGS = (
+    _arg("--worktree-min-age-hours", type=int, default=6,
+         help="Only reclaim worktrees of cards completed longer ago than N hours (default: 6)"),
+    _arg("--worktree-root", dest="worktree_roots", action="append", metavar="DIR",
+         help="Worktree root to sweep (repeatable). Default: ~/workspace/*-worktrees, "
+              "~/workspace/*/.worktrees and the board's own worktree parents."),
+    _arg("--no-worktrees", action="store_true", help="Skip the done-card worktree reclaim"),
+    _arg("--dry-run", action="store_true", help="Report what would be reclaimed, remove nothing"),
+    _arg("--no-comment", action="store_true",
+         help="Do not record the before/after free space on the reclaimed cards"),
+)
 _NOTIFY_TARGET = (
     _arg("--platform", required=True),
     _arg("--chat-id", required=True),
@@ -245,7 +258,18 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
-    _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
+    _cmd("reclaim", [
+        _arg("task_id", nargs="?",
+             help="Task id whose worker claim to release. Omit to reclaim the "
+                  "worktrees of done cards instead."),
+        _RECLAIM_REASON,
+        *_WORKTREE_RECLAIM_ARGS,
+        _arg("--logs", action="store_true",
+             help="Also move finished cards' sibling *-pi*.log / *-spec*.md files into <root>/logs/"),
+        _arg("--log-min-age-days", type=int, default=7,
+             help="With --logs: only move sibling files of cards done longer ago than N days (default: 7)"),
+    ], help="Release an active worker claim on a running task, or (with no task id) "
+            "reclaim the worktrees of done cards"),
     _cmd("reassign", [
         _TASK_ID,
         _arg("profile", help="New profile name (or 'none' to unassign)"),
@@ -426,7 +450,8 @@ _SPECS = [
         _arg("--event-retention-days", type=int, default=30,
              help="Delete task_events older than N days for terminal tasks (default: 30)"),
         _arg("--log-retention-days", type=int, default=30, help="Delete worker log files older than N days (default: 30)"),
-    ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
+        *_WORKTREE_RECLAIM_ARGS,
+    ], help="Garbage-collect archived-task workspaces, done-card worktrees, old events, and old logs"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",
          description=(

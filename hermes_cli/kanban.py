@@ -29,7 +29,8 @@ from hermes_cli.kanban_output import (
 )
 from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
-    _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
+    _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_reclaim_worktrees, _cmd_repair,
+    _cmd_tail, _cmd_watch,
 )
 from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
 
@@ -605,6 +606,9 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
 
 
 def _cmd_reclaim(args: argparse.Namespace) -> int:
+    # No task id: reclaim the worktrees of done cards (the disk-guard tick).
+    if not getattr(args, "task_id", None):
+        return _cmd_reclaim_worktrees(args)
     with kbc.connect_closing() as conn:
         ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None))
     return _ok_or_err(ok, f"cannot reclaim {args.task_id} (not running or unknown id)",

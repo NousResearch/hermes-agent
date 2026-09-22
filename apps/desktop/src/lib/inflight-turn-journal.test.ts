@@ -671,11 +671,15 @@ describe('recoverInFlightTurnJournal', () => {
   // desktop as "the answer was already there, but it was inputted again".
 
   it('does not re-append committed answers when the journaled user row never persisted', () => {
-    // The prompt projection did not persist, but durable assistant identity
-    // proves this exact answer is already stored. Equal text alone cannot.
+    // A resume projection can journal a `user-inflight-*` row that was never
+    // written to the DB (and may even belong to a different conversation).
+    // Because no base user matches it, the fold used to treat the whole tail
+    // as unknown and append it — duplicating the assistant answers below.
+    // Live rows never carry a durable id; the last committed turn's equal
+    // reply is what proves them stale.
     journalEntry([
       user('user-inflight-a3c2beb1', 'a stray user bubble that never persisted'),
-      assistant('assistant-stream-1', 'the committed answer', { rowId: 42 })
+      assistant('assistant-stream-1', 'the committed answer')
     ])
 
     const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer', { rowId: 42 })]
@@ -693,7 +697,7 @@ describe('recoverInFlightTurnJournal', () => {
     // A tail captured after a partial hydrate can end on assistant rows with
     // no user prompt before them. The old code appended them verbatim, so the
     // transcript ended with a duplicate of an answer that was already settled.
-    journalEntry([assistant('assistant-stream-1', 'the committed answer', { rowId: 42 })])
+    journalEntry([assistant('assistant-stream-1', 'the committed answer')])
 
     const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer', { rowId: 42 })]
     const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })

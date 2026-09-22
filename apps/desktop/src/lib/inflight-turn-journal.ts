@@ -702,8 +702,10 @@ function withoutBaseIds(rows: ChatMessage[], baseMessages: ChatMessage[]): ChatM
   return rows.filter(row => !baseIds.has(row.id))
 }
 
-/** Without a matched user interval, only explicit row identity can establish
- *  coverage. An older turn saying the same thing does not retire this journal. */
+/** Without a matched user interval, a journal can only be stale relative to
+ *  the turn that most recently committed. A live row (no durable id yet) is
+ *  covered by an equal reply in that last turn; a durable row needs identity.
+ *  An older turn saying the same thing does not retire this journal. */
 function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages: ChatMessage[]): boolean {
   const recoverable = tailAssistants.filter(assistantHasRecoverableContent)
 
@@ -711,9 +713,12 @@ function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages
     return false
   }
 
-  return recoverable.every(message => baseMessages.some(base =>
+  const lastTurnStart = baseMessages.findLastIndex(message => message.role === 'user' && !message.hidden)
+
+  return recoverable.every(message => baseMessages.some((base, index) =>
     base.role === 'assistant' && !base.hidden && !isLiveProjectionRow(base) && !base.recovered &&
-    (base.id === message.id || (base.rowId !== undefined && base.rowId === message.rowId)) &&
+    (base.id === message.id ||
+      (message.rowId === undefined ? index > lastTurnStart : base.rowId !== undefined && base.rowId === message.rowId)) &&
     base.error === message.error &&
     normalizedText(chatMessageText(base)) === normalizedText(chatMessageText(message)) &&
     message.parts.every(part => {

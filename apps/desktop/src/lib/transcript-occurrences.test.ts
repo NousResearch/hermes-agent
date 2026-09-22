@@ -88,10 +88,17 @@ it('recovers only the uncommitted journal suffix until the complete reply become
 })
 
 it.each(['missing prompt', 'repeated prompt', 'no prompt'])('does not clear an unknown journal occurrence by global text: %s', shape => {
-  const older = toChatMessages([prompt, { id: 2, role: 'assistant', content: 'Still working.', timestamp: 2 }])
+  // The equal reply belongs to an OLDER turn; only the most recently
+  // committed turn can prove a live journal row stale.
+  const older = toChatMessages([
+    prompt,
+    { id: 2, role: 'assistant', content: 'Still working.', timestamp: 2 },
+    { id: 3, role: 'user', content: 'And then?', timestamp: 3 },
+    { id: 4, role: 'assistant', content: 'Done.', timestamp: 4 }
+  ])
 
   const user: ChatMessage = {
-    id: 'new-user', rowId: 3, role: 'user',
+    id: 'new-user', rowId: 5, role: 'user',
     parts: [{ type: 'text', text: shape === 'repeated prompt' ? 'Inspect each phase' : 'A new question' }]
   }
 
@@ -107,7 +114,7 @@ it.each(['missing prompt', 'repeated prompt', 'no prompt'])('does not clear an u
   vi.advanceTimersByTime(400)
   const recovered = recoverInFlightTurnJournal('repeated-session', older)
   expect(recovered.caughtUp).toBe(false)
-  expect(assistantTexts(recovered.messages)).toEqual(['Still working.', 'Still working.'])
+  expect(assistantTexts(recovered.messages)).toEqual(['Still working.', 'Done.', 'Still working.'])
   expect(readInFlightTurnJournal('repeated-session')).not.toBeNull()
 })
 

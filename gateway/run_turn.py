@@ -2251,18 +2251,18 @@ class GatewayTurnMixin:
         (``multiplex_profiles`` off) still binds once a hosted room has flipped the process-wide
         credential guard — see ``_standalone_launch_scope``."""
         from gateway.run import _profile_runtime_scope
-        home_key = self._profile_scope_key_for_source(source)
-        if home_key is not None:
-            return _profile_runtime_scope(home_key)
+        home = self._profile_scope_key_for_source(source)
+        if home is not None:
+            return _profile_runtime_scope(home)
         return self._standalone_launch_scope()
 
-    def _profile_scope_key_for_source(self, source: SessionSource) -> Optional[str]:
+    def _profile_scope_key_for_source(self, source: SessionSource) -> Optional[Path]:
         """Profile home ``_profile_scope_for_source`` binds for ``source``, or ``None`` when it falls
         back to the standalone launch scope. The single owner of that branch condition: callers that
         group work per scope (heartbeat restore) key on this so they cannot drift from the scope
         actually entered."""
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return str(self._resolve_profile_home_for_source(source))
+            return self._resolve_profile_home_for_source(source)
         return None
 
     @staticmethod

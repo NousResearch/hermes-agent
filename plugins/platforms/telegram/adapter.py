@@ -2662,7 +2662,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 dm_topics.append({"chat_id": chat_id, "topics": [{"name": topic_name, "thread_id": thread_id}]})
                 changed = True
             if changed:
-                atomic_config_write(config_path, config, default_flow_style=False, sort_keys=False)
+                atomic_config_write(config_path, config)
                 logger.info("[%s] Persisted thread_id=%s for topic '%s' in config.yaml", self.name, thread_id, topic_name)
         except Exception as e:
             logger.warning("[%s] Failed to persist thread_id to config: %s", self.name, e, exc_info=True)

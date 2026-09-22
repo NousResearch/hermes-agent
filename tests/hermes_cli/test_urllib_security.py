@@ -580,6 +580,26 @@ def test_rotated_ca_bundle_is_picked_up(monkeypatch, tmp_path):
     assert calls == [str(ca_bundle), str(ca_bundle)]
 
 
+def test_fallback_bundle_change_does_not_invalidate_the_memo(monkeypatch, tmp_path):
+    """The memo keys on the preferred bundle only: certifi was never read, so its rotation is moot."""
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    preferred = tmp_path / "corporate-ca.pem"
+    fallback = tmp_path / "cacert.pem"
+    preferred.write_text("preferred")
+    fallback.write_text("first")
+    factory, calls = _counting_context_factory()
+    monkeypatch.setattr(ssl, "create_default_context", factory)
+    monkeypatch.setattr(urllib_security, "_ca_bundle_candidates", lambda: (str(preferred), str(fallback)))
+
+    first = urllib_security._resolved_https_context()
+    fallback.write_text("a rotated fallback bundle with a different length")
+
+    assert urllib_security._resolved_https_context() is first
+    assert calls == [str(preferred)]
+
+
 @pytest.mark.parametrize(
     ("candidates", "first_load_fails_for", "expected_load_sequence"),
     [

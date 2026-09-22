@@ -85,9 +85,9 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
 
 
 # Building the context parses the whole CA bundle (~4 ms for certifi) on EVERY Hermes-owned request,
-# since no opener is ever installed globally. Memoise on the bundles' ``_bundle_signature`` so a
-# rotated/reconfigured bundle is still picked up. The context is shared and never mutated by callers.
-# No lock: a race costs one duplicate parse.
+# since no opener is ever installed globally. Memoise on the preferred bundle's ``_bundle_signature``
+# (the only file a memoised context was built from) so a rotated/reconfigured bundle is still picked
+# up. The context is shared and never mutated by callers. No lock: a race costs one duplicate parse.
 _HTTPS_CONTEXT_CACHE: tuple[tuple, ssl.SSLContext] | None = None
 
 
@@ -137,18 +137,22 @@ def _bundle_signature(path: str) -> tuple:
 def _resolved_https_context() -> ssl.SSLContext | None:
     """Return the shared explicit-CA context for Hermes-owned urllib openers.
 
-    Memoised on the resolved bundle's signature; the returned context is shared and must not be
+    Memoised on the preferred bundle's signature only: that is the one file a memoised context was
+    built from, so a change to a fallback bundle (certifi on macOS) that was never read must not
+    invalidate it — and costs no stat per request. The returned context is shared and must not be
     mutated by callers.
     """
     global _HTTPS_CONTEXT_CACHE
 
     candidates = _ca_bundle_candidates()
-    key = tuple(_bundle_signature(path) for path in candidates)
+    if not candidates:
+        return None
+    key = _bundle_signature(candidates[0])
     cached = _HTTPS_CONTEXT_CACHE
     if cached is not None and cached[0] == key:
         return cached[1]
     context, used_path = _build_https_context(candidates)
-    if candidates and used_path == candidates[0]:
+    if used_path == candidates[0]:
         # Only a context built from the preferred bundle is memoised (used_path is None whenever
         # context is None, so this also excludes a failed load). A failed (possibly transient)
         # load — whether it left us with no context or with a fallback bundle (certifi on macOS) —

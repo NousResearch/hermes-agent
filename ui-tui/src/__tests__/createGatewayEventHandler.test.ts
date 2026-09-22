@@ -1,7 +1,11 @@
+import type { ConnectionOperationTarget } from '@hermes/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $connectionOperation, resetConnectionOperationsForTests } from '../app/connectionOperationStore.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -58,11 +62,31 @@ const buildCtx = (appended: Msg[]) =>
     }
   }) as any
 
+/** Deliver one server→client request (`tui_gateway/server_requests.py`) to the TUI's request handler. */
+const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
+  const respond = vi.fn()
+
+  const handled = createServerRequestHandler({
+    ringPromptBell: vi.fn(),
+    setStatus: status => patchUiState({ status })
+  })({
+    fail: vi.fn(),
+    id,
+    method,
+    params,
+    respond
+  })
+
+  return { handled, respond }
+}
+
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
     resetTurnState()
+    resetServerRequestsForTests()
+    resetConnectionOperationsForTests()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
   })
@@ -71,11 +95,7 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ sid: 'focused' })
     const onEvent = createGatewayEventHandler(buildCtx([]))
     onEvent({ session_id: 'focused', payload: {}, type: 'message.start' } as any)
-    onEvent({
-      session_id: 'focused',
-      payload: { request_id: 'approval', command: 'test' },
-      type: 'approval.request'
-    } as any)
+    serverRequest('approval', { session_id: 'focused', request_id: 'approval', command: 'test' })
     const busyOverlay = getOverlayState().approval
     expect(getUiState().busy).toBe(true)
     expect(busyOverlay).not.toBeNull()
@@ -90,6 +110,57 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('ready')
     expect(getOverlayState().approval).toBeNull()
     expect(getTurnState().tools).toEqual([])
+
+    const target: ConnectionOperationTarget = { action: 'install', kind: 'mcp', name: 'asana', state: 'pending' }
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        deadline_at: 10,
+        op_id: 'op-1',
+        seq: 2,
+        targets: [target],
+        timeout_seconds: 30
+      },
+      type: 'connection.request'
+    })
+    expect($connectionOperation.get()).toMatchObject({ opId: 'op-1', seq: 2, targets: [target] })
+    expect(getOverlayState().connection).toEqual({ opId: 'op-1' })
+
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        deadline_at: 11,
+        op_id: 'op-1',
+        seq: 1,
+        settled: false,
+        targets: [{ ...target, state: 'failed' }]
+      },
+      type: 'connection.update'
+    })
+    expect($connectionOperation.get()).toMatchObject({ seq: 2, targets: [target] })
+  })
+
+  it('keeps the durable session id when a session.info payload omits it', () => {
+    patchUiState({ sid: 'focused', storedSid: 'durable-1' })
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    // Agent-less producers (_fallback_session_info, lazy cwd switch) send no stored_session_id.
+    onEvent({
+      session_id: 'focused',
+      payload: { cwd: '/tmp/a', model: 'test', skills: {}, tools: {} },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().storedSid).toBe('durable-1')
+    expect(getUiState().info?.stored_session_id).toBe('durable-1')
+
+    // A payload that carries one is authoritative.
+    onEvent({
+      session_id: 'focused',
+      payload: { model: 'test', skills: {}, stored_session_id: 'durable-2', tools: {} },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().storedSid).toBe('durable-2')
+    expect(getUiState().info?.stored_session_id).toBe('durable-2')
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
@@ -104,7 +175,7 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: {}, type: 'message.start' } as any)
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     expect(getTurnState().todos).toEqual(todos)
 
     onEvent({ payload: { text: 'Started a todo list.' }, type: 'message.complete' } as any)
@@ -181,7 +252,7 @@ describe('createGatewayEventHandler', () => {
     const todos = [{ content: 'Serve tiny latte', id: 'serve', status: 'completed' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
     expect(getTurnState().todos).toEqual([])
@@ -200,7 +271,7 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     expect(getTurnState().todos).toEqual(todos)
 
     onEvent({ payload: {}, type: 'message.start' } as any)
@@ -326,7 +397,7 @@ describe('createGatewayEventHandler', () => {
     const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     expect(getTurnState().todos).toEqual(todos)
 
     onEvent({ payload: { name: 'todo', todos: [], tool_id: 'todo-1' }, type: 'tool.complete' } as any)
@@ -345,10 +416,6 @@ describe('createGatewayEventHandler', () => {
       type: 'tool.start'
     } as any)
     onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
-    onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
     } as any)
@@ -360,7 +427,7 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(2)
     expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '', thinking: 'mapped the page' })
     expect(appended[0]?.tools).toHaveLength(1)
-    expect(appended[0]?.tools?.[0]).toContain('hero cards')
+    expect(appended[0]?.tools?.[0]).toContain('home page')
     expect(appended[0]?.toolTokens).toBeGreaterThan(0)
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
@@ -402,10 +469,6 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
     onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
@@ -618,9 +681,13 @@ describe('createGatewayEventHandler', () => {
 
     const messages = getTurnState().activity.map(a => a.text)
 
-    expect(messages.some(m => m.includes('gateway startup timed out'))).toBe(true)
+    // Says it is still waiting and where to look — never the interpreter path or cwd.
+    expect(messages.some(m => /still waiting/i.test(m) && m.includes('/logs'))).toBe(true)
+    expect(messages.some(m => m.includes('/opt/venv/bin/python') || m.includes('/repo'))).toBe(false)
+    // Failure-looking stderr lines are echoed inline; bookkeeping lines are not.
     expect(messages.some(m => m.includes('ModuleNotFoundError'))).toBe(true)
     expect(messages.some(m => m.includes('FileNotFoundError'))).toBe(true)
+    expect(messages.some(m => m.includes('[startup] timed out'))).toBe(false)
   })
 
   it('prefers raw text over Rich-rendered ANSI on message.complete (#16391)', () => {
@@ -1064,12 +1131,17 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
     const resumeById = vi.fn()
+    const resumed = Promise.withResolvers<void>()
     const ctx = buildCtx(appended)
 
     ctx.session.newSession = newSession
     // Mimic resumeById's synchronous status write so the test proves the
     // "recovering session…" label is applied *after* (and survives) it.
-    ctx.session.resumeById = resumeById.mockImplementation(() => patchUiState({ status: 'resuming…' }))
+    ctx.session.resumeById = resumeById.mockImplementation(() => {
+      patchUiState({ status: 'resuming…' })
+
+      return resumed.promise.then(() => patchUiState({ sid: 'sess-recovered', status: 'ready' }))
+    })
     ctx.session.STARTUP_RESUME_ID = ''
     ctx.session.recoverSidRef = ref<null | string>('sess-crashed')
 
@@ -1079,10 +1151,12 @@ describe('createGatewayEventHandler', () => {
 
     await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed'))
     expect(newSession).not.toHaveBeenCalled()
-    // One-shot: the ref is consumed so a later ordinary restart forges/resumes
-    // per config instead of re-resuming the recovered session.
-    expect(ctx.session.recoverSidRef.current).toBeNull()
+    expect(ctx.session.recoverSidRef.current).toBe('sess-crashed')
     expect(getUiState().status).toBe('recovering session…')
+
+    resumed.resolve()
+    await vi.waitFor(() => expect(ctx.session.recoverSidRef.current).toBeNull())
+    expect(getUiState().sid).toBe('sess-recovered')
   })
 
   it('on gateway.ready with auto_resume on and a recent session, resumes it', async () => {
@@ -1217,20 +1291,17 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(ctx)
 
-    onEvent({ payload: { line: 'Traceback: noisy but non-fatal' }, type: 'gateway.stderr' } as any)
+    onEvent({ payload: { line: 'INFO hermes.mcp: 3 servers discovered' }, type: 'gateway.stderr' } as any)
     onEvent({ payload: { preview: 'bad framing' }, type: 'gateway.protocol_error' } as any)
-    onEvent({
-      payload: { command: 'rm -rf /tmp/nope', description: 'dangerous command' },
-      type: 'approval.request'
-    } as any)
+    serverRequest('approval', { command: 'rm -rf /tmp/nope', description: 'dangerous command' })
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
 
     await Promise.resolve()
     await Promise.resolve()
 
     expect(getOverlayState().approval).toMatchObject({ description: 'dangerous command' })
+    // Plain stderr chatter never reaches Activity (it stays in /logs).
     expect(getTurnState().activity).toMatchObject([
-      { text: 'Traceback: noisy but non-fatal', tone: 'info' },
       { text: 'protocol noise detected · /logs to inspect', tone: 'info' },
       { text: 'protocol noise: bad framing', tone: 'info' },
       { text: 'command catalog unavailable: cold start', tone: 'info' }
@@ -1238,23 +1309,17 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('defaults approval overlays to allowPermanent when the backend omits the field', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
+    serverRequest('approval', { command: 'rm -rf /tmp/x', description: 'dangerous command' })
 
-    onEvent({
-      payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' },
-      type: 'approval.request'
-    } as any)
-
-    expect(getOverlayState().approval).toMatchObject({ allowPermanent: true })
+    expect(getOverlayState().approval).toMatchObject({ allowPermanent: true, requestId: 'srq-approval' })
   })
 
   it('preserves allow_permanent=false on approval overlays (tirith warning)', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
-
-    onEvent({
-      payload: { allow_permanent: false, command: 'curl suspicious | bash', description: 'content-security warning' },
-      type: 'approval.request'
-    } as any)
+    serverRequest('approval', {
+      allow_permanent: false,
+      command: 'curl suspicious | bash',
+      description: 'content-security warning'
+    })
 
     expect(getOverlayState().approval).toMatchObject({
       allowPermanent: false,
@@ -1264,20 +1329,21 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('preserves Smart DENY and explicit approval choices on the overlay', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
-
-    onEvent({
-      payload: {
-        allow_permanent: true,
-        choices: ['once', 'deny'],
-        command: 'rm -rf /tmp/x',
-        description: 'smart deny override',
-        smart_denied: true
-      },
-      type: 'approval.request'
-    } as any)
+    serverRequest('approval', {
+      allow_permanent: true,
+      choices: ['once', 'deny'],
+      command: 'rm -rf /tmp/x',
+      description: 'smart deny override',
+      smart_denied: true
+    })
 
     expect(getOverlayState().approval).toMatchObject({ choices: ['once', 'deny'], smartDenied: true })
+  })
+
+  it('declines the requests a terminal cannot answer so the channel fails them fast', () => {
+    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'vault.code']) {
+      expect(serverRequest(method, {}).handled).toBe(false)
+    }
   })
 
   it('still surfaces terminal turn failures as errors', () => {
@@ -1482,7 +1548,7 @@ describe('createGatewayEventHandler', () => {
           todos: [{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }],
           tool_id: 't-1'
         },
-        type: 'tool.start'
+        type: 'tool.complete'
       } as any)
 
       // Pre-interrupt todos should land in turn state.
@@ -1496,7 +1562,7 @@ describe('createGatewayEventHandler', () => {
       })
 
       onEvent({ payload: { text: 'still thinking…' }, type: 'reasoning.delta' } as any)
-      // Post-interrupt tool.start with a todos payload — must NOT mutate todos.
+      // Post-interrupt tool.complete with a todos payload — must NOT mutate todos.
       onEvent({
         payload: {
           context: 'post',
@@ -1504,13 +1570,12 @@ describe('createGatewayEventHandler', () => {
           todos: [{ content: 'late ghost', id: 'todo-ghost', status: 'pending' }],
           tool_id: 't-2'
         },
-        type: 'tool.start'
+        type: 'tool.complete'
       } as any)
       // Late tool.generating must NOT push a 'drafting …' line into the trail.
       const trailBefore = getTurnState().turnTrail.length
       onEvent({ payload: { name: 'browser' }, type: 'tool.generating' } as any)
       expect(getTurnState().turnTrail.length).toBe(trailBefore)
-      onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
       onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
       onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
 
@@ -1638,39 +1703,138 @@ describe('createGatewayEventHandler', () => {
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
   })
 
-  it('clears only the matching sensitive prompt when the gateway expires it', () => {
+  it('clears only the card whose request the gateway withdrew (request.cancel by id)', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
-    patchOverlayState({
-      secret: { envVar: 'NEW_KEY', prompt: 'Enter new key', requestId: 'secret-new' },
-      sudo: { requestId: 'sudo-1' }
-    })
+    serverRequest('secret', { env_var: 'NEW_KEY', prompt: 'Enter new key' }, 'secret-new')
+    serverRequest('sudo', {}, 'sudo-1')
 
-    onEvent({ payload: { request_id: 'secret-old' }, type: 'secret.expire' } as any)
+    onEvent({ payload: { id: 'secret-old', method: 'secret', reason: 'timeout' }, type: 'request.cancel' } as any)
     expect(getOverlayState().secret?.requestId).toBe('secret-new')
 
-    onEvent({ payload: { request_id: 'secret-new' }, type: 'secret.expire' } as any)
+    onEvent({ payload: { id: 'secret-new', method: 'secret', reason: 'timeout' }, type: 'request.cancel' } as any)
     expect(getOverlayState().secret).toBeNull()
+    expect(getOverlayState().sudo?.requestId).toBe('sudo-1')
 
-    onEvent({ payload: { request_id: 'sudo-1' }, type: 'sudo.expire' } as any)
+    onEvent({ payload: { id: 'sudo-1', method: 'sudo', reason: 'interrupted' }, type: 'request.cancel' } as any)
     expect(getOverlayState().sudo).toBeNull()
+  })
+
+  it('tells the user a timed-out password prompt was withdrawn and the step skipped', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    serverRequest('sudo', {}, 'sudo-1')
+    onEvent({ payload: { id: 'sudo-1', method: 'sudo', reason: 'timeout' }, type: 'request.cancel' } as any)
+
+    expect(getOverlayState().sudo).toBeNull()
+    const lines = (ctx.system.sys as any).mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(lines.some((l: string) => /prompt closed/i.test(l) && /skipped/.test(l))).toBe(true)
+
+    // An interrupted prompt is the user's own doing — no notice.
+    serverRequest('sudo', {}, 'sudo-2')
+    onEvent({ payload: { id: 'sudo-2', method: 'sudo', reason: 'interrupted' }, type: 'request.cancel' } as any)
+    expect((ctx.system.sys as any).mock.calls.length).toBe(lines.length)
+  })
+
+  it('renders a failed turn from error_surface instead of the raw provider JSON', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const raw =
+      'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
+
+    onEvent({
+      payload: {
+        error: raw,
+        error_surface: { code: 'auth', layer: 'auth', provider: 'openai', retryable: false },
+        recoverable: true,
+        status: 'error',
+        text: `Error: ${raw}`
+      },
+      type: 'message.complete'
+    } as any)
+
+    const assistant = appended.filter(m => m.role === 'assistant')
+    expect(assistant).toHaveLength(1)
+    const [title, details] = assistant[0]!.text.split('\n')
+    expect(title).not.toMatch(/^Error(?: code)?:/)
+    expect(title).toMatch(/API key/)
+    expect(details).toMatch(/^Details: .*Incorrect API key provided/)
+    expect(assistant[0]!.text).toContain('/model')
+    expect(assistant[0]!.text).toContain('/retry')
+  })
+
+  it('keeps interim assistant segments on a failed turn and replaces only the bare error slot', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { text: 'Let me look that up first.' }, type: 'message.interim' } as any)
+    onEvent({
+      payload: {
+        error: 'boom',
+        error_surface: { code: 'server_error', layer: 'provider', retryable: true },
+        recoverable: true,
+        status: 'error',
+        text: 'Error: boom'
+      },
+      type: 'message.complete'
+    } as any)
+
+    const assistant = appended.filter(m => m.role === 'assistant')
+    expect(assistant.some(m => m.text === 'Let me look that up first.')).toBe(true)
+    expect(assistant.some(m => /^Error: boom/.test(m.text))).toBe(false)
+    expect(assistant.at(-1)!.text).toMatch(/internal error/)
+    expect(assistant.at(-1)!.text).toContain('/retry')
+  })
+
+  it('keeps streamed partial text on a failed turn (only the empty-reply case is rewritten)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { error: 'stream dropped', partial: true, status: 'error', text: 'Here is the first half' },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended.some(m => m.role === 'assistant' && m.text === 'Here is the first half')).toBe(true)
+  })
+
+  it('shows the reconnect countdown from gateway.reconnecting in the status bar', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({ payload: { attempt: 2, delay_ms: 4000 }, type: 'gateway.reconnecting' } as any)
+
+    expect(getUiState().status).toMatch(/retrying in 4s/)
+    expect(getUiState().status).toMatch(/attempt 2/)
+  })
+
+  it('glosses a version-skew error event as an /update pointer', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { message: 'invalid params for prompt.submit: turn_author: Extra inputs are not permitted' },
+      type: 'error'
+    } as any)
+
+    const line = String((ctx.system.sys as any).mock.calls.at(-1)?.[0])
+    expect(line).toContain('/update')
+    expect(line).not.toContain('turn_author')
   })
 
   // ── Batch (multi-question) clarify ─────────────────────────────────
 
-  it('parses a batch clarify.request into a questions overlay', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
-
-    onEvent({
-      payload: {
+  it('parses a batch clarify request into a questions overlay', () => {
+    serverRequest(
+      'clarify',
+      {
         questions: [
           { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
           { choices: null, qid: 'q1', question: 'Two?' }
-        ],
-        request_id: 'req-batch'
+        ]
       },
-      type: 'clarify.request'
-    } as any)
+      'req-batch'
+    )
 
     const clarify = getOverlayState().clarify
     expect(clarify?.requestId).toBe('req-batch')
@@ -1680,39 +1844,35 @@ describe('createGatewayEventHandler', () => {
     expect(clarify?.answers).toEqual({})
   })
 
-  it('seeds locked answers from a reconnect-replay batch clarify.request', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
-
-    onEvent({
-      payload: {
+  it('seeds locked answers from a reconnect-replayed batch clarify request', () => {
+    serverRequest(
+      'clarify',
+      {
         answers: { q0: 'a' },
         questions: [
           { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
           { choices: null, qid: 'q1', question: 'Two?' }
-        ],
-        request_id: 'req-replay'
+        ]
       },
-      type: 'clarify.request'
-    } as any)
+      'req-replay'
+    )
 
     expect(getOverlayState().clarify?.answers).toEqual({ q0: 'a' })
   })
 
   it('drops malformed batch entries and falls back to single-question shape when none survive', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
-
-    onEvent({
-      payload: {
+    serverRequest(
+      'clarify',
+      {
         choices: ['x', 'y'],
         question: 'Fallback?',
         questions: [
           { qid: '', question: 'no qid' },
           { qid: 'q1', question: '   ' }
-        ],
-        request_id: 'req-bad'
+        ]
       },
-      type: 'clarify.request'
-    } as any)
+      'req-bad'
+    )
 
     const clarify = getOverlayState().clarify
     expect(clarify?.questions).toBeUndefined()

@@ -161,7 +161,7 @@ class TestManagerUserPeerOverride:
         mgr = HonchoSessionManager(honcho=MagicMock(), config=HonchoClientConfig(api_key="k", peer_name="eri", ai_peer="hermes"),
                                    runtime_user_peer_name="7654321")
         mgr._get_or_create_peer = MagicMock(side_effect=lambda pid: MagicMock(name=f"peer:{pid}"))
-        mgr._get_or_create_honcho_session = MagicMock(return_value=(MagicMock(), []))
+        mgr._get_or_create_honcho_session = MagicMock(return_value=(MagicMock(), [], None))
 
         session = mgr.get_or_create("Bot-Chat:a2a:bot-coder-0123abcd", user_peer_id="coder")
 
@@ -180,3 +180,27 @@ class TestConfigFlag:
 
     def test_defaults_on(self, tmp_path, monkeypatch):
         assert self._config(tmp_path, monkeypatch, {}).a2a_sessions is True
+
+
+class TestRelayedDmFromALoggedInClient:
+    """A relayed dm whose sender a logged-in client named is attributed to that client's principal —
+    server-derived, unspoofable, and still a BOT author. That last part is what the recipient's memory
+    routes on: the turn lands in the relay principal's own a2a session, never the human's, and the
+    conclusion / profile / mirror guards stay closed for it (#107598 review)."""
+
+    RELAY = None
+
+    @classmethod
+    def setup_class(cls):
+        from tools.bot_relay import relaying_principal_author
+        cls.RELAY = relaying_principal_author("principal:dashboard:0123456789abcdef0123456789abcdef")
+
+    def test_turn_lands_in_its_own_a2a_session_never_the_humans(self):
+        provider = _provider()
+        provider._manager.resolve_author_peer_id.return_value = "relay"
+
+        _sync(provider, turn_author=self.RELAY)
+
+        keys = [c[0][0] for c in provider._manager.get_or_create.call_args_list]
+        assert keys == [provider._a2a_session_key(self.RELAY)]
+        assert "Bot-Chat" not in keys

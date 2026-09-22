@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import secrets
 import threading
 import time
@@ -13,6 +14,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Iterator
 from urllib.parse import parse_qs, urlparse
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -29,6 +32,12 @@ def _event_field():
     return field(default_factory=threading.Event, init=False, repr=False)
 
 
+def exception_message(exc: BaseException) -> str:
+    """``str(exc)``, or the type name when it is empty (bare ``TimeoutError()``/``RuntimeError()``)
+    so ``mark_error`` never records a blank cause."""
+    return str(exc) or type(exc).__name__
+
+
 @dataclass
 class DashboardOAuthFlow:
     flow_id: str
@@ -42,8 +51,11 @@ class DashboardOAuthFlow:
     authorization_url: str | None = None
     error: str | None = None
     tools: list[dict] = field(default_factory=list)
+    discovery_error: str = ""
+    # The user abandoned this flow: terminal for good, never re-minted (see publish_authorization_url).
+    cancelled: bool = field(default=False, init=False)
     expected_state: str | None = field(default=None, init=False)
-    _callback: tuple[str, str | None] | None = field(default=None, init=False, repr=False)
+    _callback: tuple[str, str | None, str | None] | None = field(default=None, init=False, repr=False)
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = _event_field()
     _callback_ready: threading.Event = _event_field()
@@ -51,17 +63,40 @@ class DashboardOAuthFlow:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     async def publish_authorization_url(self, url: str) -> None:
-        """Record the SDK's authorization URL (with its ``state``) for the dashboard to show."""
+        """Record the SDK's authorization URL (with its ``state``) for the dashboard to show.
+
+        A flow whose EARLIER attempt already ended is re-minted here instead of raising: the MCP server
+        task inherits this handle for the whole life of the task, so ``RuntimeError: OAuth flow already
+        ended`` escaped the SDK's auth flow on every retry and parked the server ("failed initial
+        connection after 3 attempts") with no way back short of restarting Hermes (#114739). A flow the
+        user CANCELLED stays terminal — the retrying worker must not reopen what they abandoned.
+        """
         state = parse_qs(urlparse(url).query).get("state", [None])[0]
         if not state:
             raise ValueError("OAuth authorization URL did not include state")
         with self._lock:
+            if self.cancelled:
+                raise RuntimeError("OAuth flow already ended: cancelled by user")
             if self.status in {"approved", "error"}:
-                raise RuntimeError("OAuth flow already ended")
+                self._reopen_ended_attempt()
             self.expected_state = state
             self.authorization_url = url
             self.status = "authorization_required"
             self._authorization_ready.set()
+
+    def _reopen_ended_attempt(self) -> None:
+        """Reset an ended attempt so the next authorization URL mints a fresh state (caller holds
+        ``self._lock``). The ended attempt's URL, state and spent authorization code are dropped —
+        replaying them would hand the SDK a code the provider already burned."""
+        logger.info("MCP OAuth: dashboard flow %s for '%s' ended (%s); re-minting for the next attempt",
+                    self.flow_id, self.server_name, self.status)
+        self.authorization_url = None
+        self.expected_state = None
+        self._callback = None
+        self._callback_error = None
+        self._callback_ready.clear()
+        self.error = None
+        self.status = "starting"
 
     async def wait_for_authorization_url(self, timeout: float = 30.0) -> str:
         if not await asyncio.to_thread(self._authorization_ready.wait, timeout):
@@ -70,8 +105,13 @@ class DashboardOAuthFlow:
             raise RuntimeError(self.error or "MCP OAuth flow ended before authorization")
         return self.authorization_url
 
-    def deliver_callback(self, *, code: str | None, state: str | None, error: str | None) -> None:
-        """Hand the browser redirect to the waiting flow; ``state`` must match exactly."""
+    def deliver_callback(
+        self, *, code: str | None, state: str | None, error: str | None, iss: str | None = None
+    ) -> None:
+        """Hand the browser redirect to the waiting flow; ``state`` must match exactly.
+
+        ``iss`` (RFC 9207) is carried through — see ``tools.mcp_oauth._parse_redirect_query``.
+        """
         with self._lock:
             if self._callback_ready.is_set():
                 raise ValueError("OAuth callback already received")
@@ -80,18 +120,20 @@ class DashboardOAuthFlow:
             if error:
                 self._callback_error = error
             elif code:
-                self._callback = (code, state)
+                self._callback = (code, state, iss)
             else:
                 self._callback_error = "OAuth callback did not include code or error"
             self._callback_ready.set()
 
-    async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None]:
+    async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None, str | None]:
         if not await asyncio.to_thread(self._callback_ready.wait, timeout):
             raise TimeoutError("Timed out waiting for MCP OAuth callback")
         if self._callback_error:
             raise RuntimeError(f"OAuth authorization failed: {self._callback_error}")
         if self._callback is None:
-            raise RuntimeError("OAuth callback did not include an authorization code")
+            raise RuntimeError(
+                f"MCP OAuth flow for '{self.server_name}' ended without an authorization code "
+                f"(status={self.status}, error={self.error!r})")
         return self._callback
 
     def mark_approved(self) -> None:
@@ -101,12 +143,29 @@ class DashboardOAuthFlow:
             self.status = "approved"
             self.error = None
 
-    def mark_error(self, error: str) -> None:
+    def mark_error(self, error: str, *, cancelled: bool = False) -> None:
+        """Fail the flow with *error*; the first reason wins. Waking the callback waiter makes the
+        worker fail too, and its follow-on ``mark_error`` must not clobber the cause the user needs.
+
+        ``cancelled`` marks a user cancellation, which ``publish_authorization_url`` refuses to re-mint
+        (unlike an ordinary failure, which a retry may reopen). It is recorded even when the flow has
+        already ended: the user's "no" outranks the recorded cause and keeps the handle terminal.
+        """
         with self._lock:
-            if self.status == "approved":
+            self.cancelled = self.cancelled or cancelled
+            if self.status in {"approved", "error"}:
                 return
             self.status = "error"
-            self.error = error
+            self.error = error or "MCP OAuth flow failed before the callback was received (empty error message)"
+            # The SDK's callback waiter reads _callback_error, not error — without
+            # this copy, a failure marked before any browser redirect (worker
+            # crash, authorization-URL timeout, user cancel) wakes the waiter
+            # with no callback and no error, surfacing as the generic
+            # "did not include an authorization code" RuntimeError while the
+            # real cause stays unread. Guarded so a late mark_error cannot
+            # override an already delivered callback.
+            if self._callback is None and self._callback_error is None:
+                self._callback_error = self.error
             self._authorization_ready.set()
             self._callback_ready.set()
 

@@ -13,7 +13,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
@@ -31,7 +30,7 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 from hermes_constants import get_hermes_home
-from utils import atomic_replace
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -282,8 +281,33 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
 
 # --- Subprocess callback ---
 
-# Popen failure -> diagnostic; anything else is reported as str(exc).
+# Popen failure -> diagnostic; WinError 193 gets its own below, everything else is str(exc).
 _POPEN_ERRORS = ((FileNotFoundError, "command not found"), (PermissionError, "command not executable"))
+
+# A hook configured as a bare script path runs on POSIX because the kernel reads its shebang.
+# CreateProcess has no such mechanism and answers WinError 193 ("%1 is not a valid Win32
+# application") for a text file, so every ``command: "~/.hermes/agent-hooks/x.sh"`` example in
+# the hooks docs — the canonical shape — fails on Windows while the same config works everywhere
+# else. Map the suffixes that shape uses to their interpreter; unmapped suffixes keep the OS
+# failure so a typo still reads as "command not found" rather than a mystery interpreter error.
+_WINDOWS_SCRIPT_INTERPRETERS = {".sh": "bash", ".bash": "bash", ".py": "python"}
+# WinError 193 raised for a suffix we deliberately do not map.
+_NOT_DIRECTLY_EXECUTABLE = "cannot be run directly on Windows (there is no shebang support): start it with its interpreter, e.g. 'bash <path>'"
+
+
+def _windows_script_argv(argv: list[str]) -> list[str]:
+    """``argv`` with the interpreter prepended when element 0 is an existing script we can name an
+    interpreter for; unchanged otherwise, including on POSIX, where the shebang already works."""
+    suffix = os.path.splitext(argv[0])[1].lower()
+    kind = _WINDOWS_SCRIPT_INTERPRETERS.get(suffix)
+    if kind is None or not os.path.isfile(argv[0]):
+        return argv
+    if kind == "python":
+        return [sys.executable, *argv]
+    # Resolved inside the caller's try: no Git for Windows raises RuntimeError carrying the
+    # installer's own actionable guidance, which is a better diagnostic than any we could add.
+    from tools.environments.local import _find_bash
+    return [_find_bash(), *argv]
 
 
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
@@ -310,17 +334,29 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
     try:
+        if IS_WINDOWS:
+            argv = _windows_script_argv(argv)
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding='utf-8', errors='replace', shell=False,
                                 env=build_subprocess_env(scrub_secrets=is_multiplex_active()), **popen_kwargs)
     except Exception as exc:
-        return failed(next((msg for cls, msg in _POPEN_ERRORS if isinstance(exc, cls)), str(exc)))
+        for cls, msg in _POPEN_ERRORS:
+            if isinstance(exc, cls):
+                return failed(msg)
+        if getattr(exc, "winerror", None) == 193:
+            # Unmapped suffix (.zsh, .fish, .rb, …) — the raw WinError text is localized, so an
+            # operator on a non-English Windows could not act on it at all.
+            return failed(f"{argv[0]!r} {_NOT_DIRECTLY_EXECUTABLE}")
+        return failed(str(exc))
     try:
         stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
-    except Exception as exc:
+    except BaseException as exc:
+        # BaseException: the hook leads its own process group, so Ctrl+C's SIGINT never reaches it — only we can.
         kill_process_tree(proc)  # the whole tree — forked helpers holding the pipes would stall the drain
         with suppress(Exception):
             proc.communicate(timeout=1)
+        if not isinstance(exc, Exception):
+            raise
         if not isinstance(exc, subprocess.TimeoutExpired):  # pragma: no cover — defensive
             return failed(str(exc))
         result.update(timed_out=True, elapsed_seconds=round(time.monotonic() - t0, 3))
@@ -466,16 +502,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
     """Atomic write; on OSError log and keep the in-process approval."""
     p = allowlist_path()
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(prefix=f"{p.name}.", suffix=".tmp", dir=str(p.parent))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(data, indent=2, sort_keys=True))
-            atomic_replace(tmp_path, p)
-        except Exception:
-            with suppress(OSError):
-                os.unlink(tmp_path)
-            raise
+        atomic_json_write(p, data, sort_keys=True, mode=0o600)
     except OSError as exc:
         logger.warning("Failed to persist shell hook allowlist to %s: %s. The approval is in-memory for this run, "
                        "but the next startup will re-prompt (or skip registration on non-TTY runs without "

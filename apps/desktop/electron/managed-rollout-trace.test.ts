@@ -196,5 +196,6 @@ test('a losing controller records no handoff after the journal rejects its autho
 
   assert.equal((await winner.authorize('canary')).ok, true)
   assert.equal((await loser.authorize('canary')).ok, false)
+  assert.equal(loser.snapshot.attempts.canary.state, 'unverified')
   assert.deepEqual(launches, ['winner'])
 })

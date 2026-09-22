@@ -125,6 +125,86 @@ test('failed authorization persistence produces no capability or service handoff
   assert.equal(coordinator.snapshot.attempts.canary.state, 'intent-recorded')
 })
 
+test('capability issuance failure fences a durable authorization without a service handoff', async () => {
+  const fixture = adapters()
+  const coordinator = createManagedRolloutCoordinator(runningState(), {
+    ...fixture.deps,
+    service: {
+      ...fixture.deps.service,
+      issueCapability: () => {
+        throw new Error('capability-unavailable')
+      }
+    }
+  })
+
+  const result = await coordinator.authorize('canary')
+
+  assert.equal(result.ok, false)
+  assert.match(result.reason || '', /capability-issue-failed/)
+  assert.equal(coordinator.snapshot.attempts.canary.state, 'unverified')
+  assert.equal(coordinator.snapshot.phase, 'attention-required')
+  assert.equal(fixture.launches.length, 0)
+})
+
+test('a correlated foreign-owner refusal settles the loser without a service handoff', async () => {
+  const fixture = adapters({
+    persistAuthorization: async authorization => {
+      const error = Object.assign(new Error('foreign-update-owner'), {
+        code: 'foreign-update-owner',
+        correlationId: authorization.correlationId
+      })
+      throw error
+    }
+  })
+  const events: unknown[] = []
+  const coordinator = createManagedRolloutCoordinator(runningState(), {
+    ...fixture.deps,
+    journal: {
+      ...fixture.deps.journal,
+      persistEvent: async event => {
+        events.push(event)
+      }
+    }
+  })
+
+  const result = await coordinator.authorize('canary')
+
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'foreign-update-owner')
+  assert.equal(coordinator.snapshot.attempts.canary.state, 'refused')
+  assert.equal(coordinator.snapshot.attempts.canary.reason, 'foreign-update-owner')
+  assert.deepEqual(events, [
+    {
+      kind: 'authorization-refused',
+      rolloutId: PLAN.id,
+      installId: 'canary',
+      correlationId: 'canary-correlation',
+      reason: 'foreign-update-owner'
+    }
+  ])
+  assert.equal(fixture.launches.length, 0)
+})
+
+test('an explicitly uncorrelated foreign-owner outcome remains unverified', async () => {
+  const fixture = adapters({
+    persistAuthorization: async authorization => {
+      throw Object.assign(new Error('foreign-update-owner'), {
+        code: 'foreign-update-owner',
+        correlationId: authorization.correlationId,
+        correlated: false
+      })
+    }
+  })
+  const coordinator = createManagedRolloutCoordinator(runningState(), fixture.deps)
+
+  const result = await coordinator.authorize('canary')
+
+  assert.equal(result.ok, false)
+  assert.equal(coordinator.snapshot.attempts.canary.state, 'unverified')
+  assert.equal(coordinator.snapshot.attempts.canary.reason, 'foreign-update-owner')
+  assert.equal(fixture.launches.length, 0)
+})
+
 test('a single committed authorization consumes one scoped handoff and enforces serial launch', async () => {
   const fixture = adapters()
   const coordinator = createManagedRolloutCoordinator(runningState(), fixture.deps)
@@ -146,6 +226,18 @@ test('terminal observations require the exact original correlation', async () =>
   assert.equal(invalid.ok, false)
   assert.equal(invalid.reason, 'terminal-correlation-mismatch')
   assert.equal(coordinator.snapshot.attempts.canary.state, 'authorized')
+})
+
+test('restart hold is released only by an explicit resume after reconciliation', () => {
+  let state = runningState()
+  state = reduceManagedRollout(state, { kind: 'restart' }).state
+  state = reduceManagedRollout(state, { kind: 'reconciled', phase: 'paused' }).state
+
+  const resumed = reduceManagedRollout(state, { kind: 'resume' })
+
+  assert.equal(resumed.ok, true)
+  assert.equal(resumed.state.phase, 'running')
+  assert.equal(resumed.state.continuationRequired, false)
 })
 
 test('restart forces explicit continuation and auto cannot bypass the canary', () => {

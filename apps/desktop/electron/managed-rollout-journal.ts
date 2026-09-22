@@ -609,6 +609,9 @@ export class ManagedRolloutJournal {
         if (this.activeOwnerToken !== token) return
         this.activeOwnerToken = null
         try {
+          const raw = this.fs.readFileSync(owner, 'utf8')
+          const marker = JSON.parse(raw) as unknown
+          if (!isPlainObject(marker) || marker.ownerId !== token) return
           this.fs.unlinkSync(owner)
         } catch {
           // Preserve fail-closed semantics if ownership cannot be released.

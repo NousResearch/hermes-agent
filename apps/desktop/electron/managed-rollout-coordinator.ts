@@ -20,6 +20,9 @@ export type ManagedRolloutPhase =
   | 'completed-with-exclusions'
 
 export type ManagedRolloutPolicy = 'manual' | 'auto-after-canary'
+export const REPROBE_COOLDOWN_MS = 60_000
+export const MAX_INCONCLUSIVE_REPROBES = 5
+
 export type ManagedRolloutAttemptState =
   | 'none'
   | 'intent-recorded'
@@ -58,6 +61,8 @@ export interface ManagedRolloutTarget {
 
 export interface ManagedRolloutAttempt extends ManagedRolloutTarget {
   state: ManagedRolloutAttemptState
+  reprobeCount: number
+  reprobeCooldownUntilMono: number | null
   excluded?: boolean
   reason?: string
 }
@@ -87,6 +92,7 @@ export type ManagedRolloutAction =
   | { kind: 'start' }
   | { kind: 'record-intent'; installId: string }
   | { kind: 'launch-authorized'; installId: string }
+  | { kind: 'authorization-refused'; installId: string; outcome: 'refused' | 'unverified'; reason: string }
   | { kind: 'launch-observed'; installId: string }
   | { kind: 'terminal'; installId: string; outcome: 'updated' | 'already-current' | 'failed' | 'refused' | 'unverified' }
   | { kind: 'pause' }
@@ -120,7 +126,13 @@ export type ManagedRolloutLaunchCapability = object
 
 export interface ManagedRolloutJournalAdapter {
   persistAuthorization: (authorization: ManagedRolloutAuthorization) => Promise<void>
-  persistEvent?: (event: { kind: string; rolloutId: string; installId?: string; correlationId?: string }) => Promise<void>
+  persistEvent?: (event: {
+    kind: string
+    rolloutId: string
+    installId?: string
+    correlationId?: string
+    reason?: string
+  }) => Promise<void>
 }
 
 export interface ManagedRolloutServiceAdapter {
@@ -165,6 +177,7 @@ export interface ManagedRolloutCoordinatorDependencies {
   evidence: ManagedRolloutEvidenceAdapter
   recovery?: ManagedRolloutRecoveryAdapter
   processGeneration?: number
+  nowMono?: () => number
 }
 
 function cloneState(state: ManagedRolloutState): ManagedRolloutState {
@@ -268,6 +281,15 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
 
   if (action.kind === 'reconciled') {
     if (state.phase !== 'reconciling') return refuse(state, 'rollout-is-not-reconciling')
+    if (action.phase === 'completed' || action.phase === 'completed-with-exclusions') {
+      const active = Object.values(next.attempts).filter(row => !row.excluded)
+      const hasExclusions = Object.values(next.attempts).some(row => row.excluded)
+      if (!active.length || !active.every(healthy)) return refuse(state, 'reconciled-terminal-not-proven')
+      if ((action.phase === 'completed-with-exclusions') !== hasExclusions) {
+        return refuse(state, 'reconciled-terminal-exclusion-mismatch')
+      }
+      next.continuationRequired = false
+    }
     next.phase = action.phase
     return { ok: true, state: next }
   }
@@ -290,7 +312,7 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
 
   if (action.kind === 'resume') {
     if (state.phase !== 'paused') return refuse(state, 'rollout-is-not-paused')
-    if (state.continuationRequired) return refuse(state, 'restart-requires-explicit-promotion')
+    next.continuationRequired = false
     next.phase = 'running'
     return { ok: true, state: next }
   }
@@ -319,6 +341,17 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
       return refuse(state, 'intent-not-admissible')
     }
     attempt.state = 'intent-recorded'
+    return { ok: true, state: next }
+  }
+
+  if (action.kind === 'authorization-refused') {
+    if (!attempt) return refuse(state, 'unknown-installation')
+    if (state.phase !== 'running' || attempt.state !== 'intent-recorded') {
+      return refuse(state, 'authorization-refusal-not-admissible')
+    }
+    attempt.state = action.outcome
+    attempt.reason = action.reason
+    next.phase = 'attention-required'
     return { ok: true, state: next }
   }
 
@@ -382,8 +415,33 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
   return refuse(state, 'unknown-rollout-action')
 }
 
+function classifyAuthorizationFailure(
+  error: unknown,
+  expectedCorrelationId: string
+): { outcome: 'refused' | 'unverified'; reason: string } | null {
+  const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : null
+  const message = record && typeof record.message === 'string' ? record.message : String(error)
+  const code = record?.code === 'foreign-update-owner' || message.includes('foreign-update-owner')
+    ? 'foreign-update-owner'
+    : null
+  if (!code) return null
+
+  const correlated = record?.correlated === false
+    ? false
+    : record?.correlated === true || record?.correlationId === expectedCorrelationId
+  return {
+    outcome: correlated ? 'refused' : 'unverified',
+    reason: code
+  }
+}
+
 export function createManagedRolloutState(plan: ManagedRolloutPlan): ManagedRolloutState {
-  const attempts = Object.fromEntries(plan.targets.map(target => [target.installId, { ...target, state: 'none' as const }]))
+  const attempts = Object.fromEntries(
+    plan.targets.map(target => [
+      target.installId,
+      { ...target, state: 'none' as const, reprobeCount: 0, reprobeCooldownUntilMono: null }
+    ])
+  )
   return {
     id: plan.id,
     revision: plan.revision,
@@ -406,6 +464,7 @@ export function createManagedRolloutCoordinator(
   let queue = Promise.resolve()
   const acceptedStarts = new Map<string, Promise<ManagedRolloutState>>()
   const processGeneration = deps.processGeneration ?? 1
+  const nowMono = deps.nowMono ?? (() => Number(process.hrtime.bigint() / 1_000_000n))
 
   const admit = <T>(operation: () => Promise<T>): Promise<T> => {
     const next = queue.then(operation, operation)
@@ -442,13 +501,59 @@ export function createManagedRolloutCoordinator(
       try {
         await deps.journal.persistAuthorization(authorization)
       } catch (error) {
+        const foreignOwner = classifyAuthorizationFailure(error, authorization.correlationId)
+        if (foreignOwner) {
+          const refusal = apply({ kind: 'authorization-refused', installId, ...foreignOwner })
+          if (!refusal.ok) return refusal
+          try {
+            await deps.journal.persistEvent?.({
+              kind: 'authorization-refused',
+              rolloutId: authorization.rolloutId,
+              installId: authorization.installId,
+              correlationId: authorization.correlationId,
+              reason: foreignOwner.reason
+            })
+          } catch (eventError) {
+            return {
+              ok: false,
+              state: refusal.state,
+              reason: `authorization-refusal-event-failed:${String(eventError)}`
+            }
+          }
+          return { ok: false, state: refusal.state, reason: foreignOwner.reason }
+        }
         return { ok: false, state, reason: `authorization-persist-failed:${String(error)}` }
       }
 
       const committed = apply({ kind: 'launch-authorized', installId })
       if (!committed.ok) return committed
-      const capability = deps.service.issueCapability(authorization)
-      const launch = deps.service.launch(authorization, capability)
+
+      const settleUnverified = (reason: string): ManagedRolloutTransition => {
+        const unresolved = apply({ kind: 'terminal', installId, outcome: 'unverified' })
+        return unresolved.ok
+          ? { ok: false, state: unresolved.state, reason }
+          : unresolved
+      }
+
+      let capability: ManagedRolloutLaunchCapability
+      try {
+        capability = deps.service.issueCapability(authorization)
+      } catch (error) {
+        return settleUnverified(`capability-issue-failed:${String(error)}`)
+      }
+      if (!capability || typeof capability !== 'object') {
+        return settleUnverified('capability-issue-failed:invalid-capability')
+      }
+
+      let launch: Promise<void>
+      try {
+        launch = deps.service.launch(authorization, capability)
+      } catch (error) {
+        return settleUnverified(`service-handoff-failed:${String(error)}`)
+      }
+      if (!launch || typeof launch.then !== 'function') {
+        return settleUnverified('service-handoff-failed:invalid-promise')
+      }
       void launch.then(
         () => undefined,
         () => {
@@ -497,10 +602,29 @@ export function createManagedRolloutCoordinator(
         return refuse(state, 'reprobe-not-admissible')
       }
       if (!deps.recovery) return refuse(state, 'recovery-adapter-unavailable')
+      const currentMono = nowMono()
+      if (!Number.isFinite(currentMono) || currentMono < 0) return refuse(state, 'reprobe-clock-invalid')
+      if (attempt.reprobeCooldownUntilMono !== null) {
+        if (currentMono < attempt.reprobeCooldownUntilMono) return refuse(state, 'reprobe-cooldown')
+        attempt.reprobeCount = 0
+        attempt.reprobeCooldownUntilMono = null
+      }
       const observation = await deps.recovery.reprobe(authorizationFor(attempt))
       if (observation.correlationId !== attempt.correlationId) return refuse(state, 'reprobe-correlation-mismatch')
-      if (!observation.terminal) return { ok: true, state: cloneState(state) }
-      return apply({ kind: 'terminal', installId, outcome: observation.outcome })
+      if (!observation.terminal) {
+        attempt.reprobeCount += 1
+        if (attempt.reprobeCount >= MAX_INCONCLUSIVE_REPROBES) {
+          attempt.reprobeCooldownUntilMono = currentMono + REPROBE_COOLDOWN_MS
+        }
+        return { ok: true, state: cloneState(state) }
+      }
+      const settled = apply({ kind: 'terminal', installId, outcome: observation.outcome })
+      if (settled.ok) {
+        const current = state.attempts[installId]
+        current.reprobeCount = 0
+        current.reprobeCooldownUntilMono = null
+      }
+      return settled
     })
 
   const recover = (installId: string) =>

@@ -77,12 +77,61 @@ test('recovery requires exact correlation and positive clearance while preservin
   assert.equal(restored.snapshot.attempts.canary.state, 'unverified')
 })
 
+test('reconciliation cannot declare an unresolved committed attempt completed', () => {
+  let state = authorizedState()
+  state = reduceManagedRollout(state, { kind: 'restart' }).state
+
+  const reconciled = reduceManagedRollout(state, { kind: 'reconciled', phase: 'completed' })
+
+  assert.equal(reconciled.ok, false)
+  assert.equal(reconciled.reason, 'reconciled-terminal-not-proven')
+  assert.equal(reconciled.state.phase, 'reconciling')
+})
+
 test('an archive or exclusion cannot erase an authorized attempt or reopen a launch edge', () => {
   const state = authorizedState()
 
   assert.equal(reduceManagedRollout(state, { kind: 'exclude', installId: 'canary' }).ok, false)
   assert.equal(reduceManagedRollout(state, { kind: 'record-intent', installId: 'canary' }).ok, false)
   assert.equal(state.attempts.canary.state, 'authorized')
+})
+
+test('inconclusive reprobes enter a bounded cooldown instead of an eternal lockout', async () => {
+  let state = authorizedState()
+  state = reduceManagedRollout(state, { kind: 'restart' }).state
+  state = reduceManagedRollout(state, { kind: 'reconcile-unknown', installId: 'canary' }).state
+  let nowMono = 1_000
+  let reprobes = 0
+  const reopened = createManagedRolloutCoordinator(state, {
+    journal: { persistAuthorization: async () => {} },
+    service: { issueCapability: () => ({}), launch: async () => {} },
+    evidence: { sweep: async current => ({ rolloutId: current.id, revision: current.revision, queueGeneration: current.queueGeneration, processGeneration: 1, valid: false, reason: 'not-needed', admissions: [] }) },
+    recovery: {
+      reprobe: async authorization => {
+        reprobes += 1
+        return { correlationId: authorization.correlationId, outcome: 'unverified' as const, terminal: false }
+      },
+      recover: async authorization => ({ correlationId: authorization.correlationId, clearanceProved: true })
+    },
+    nowMono: () => nowMono
+  })
+
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal((await reopened.reprobe('canary')).ok, true)
+  }
+  assert.equal(reprobes, 5)
+  assert.equal(reopened.snapshot.attempts.canary.reprobeCount, 5)
+  assert.equal(reopened.snapshot.attempts.canary.reprobeCooldownUntilMono, 61_000)
+
+  const held = await reopened.reprobe('canary')
+  assert.equal(held.ok, false)
+  assert.equal(held.reason, 'reprobe-cooldown')
+  assert.equal(reprobes, 5)
+
+  nowMono = 61_000
+  assert.equal((await reopened.reprobe('canary')).ok, true)
+  assert.equal(reprobes, 6)
+  assert.equal(reopened.snapshot.attempts.canary.reprobeCount, 1)
 })
 
 test('a foreign controller cannot steal a correlation or create a second launch', async () => {

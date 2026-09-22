@@ -475,6 +475,20 @@ test('refuses a second writer while the canonical journal owner marker exists', 
     assert.equal(instance.read(ROLLOUT_A).snapshot.revision, 1)
   })
 })
+test('a released stale lease cannot remove a replacement owner marker', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const first = instance.acquireOwner()
+    const ownerPath = path.join(directory, '.owner')
+
+    fs.unlinkSync(ownerPath)
+    fs.writeFileSync(ownerPath, '{"pid":2,"ownerId":"replacement"}', 'utf8')
+    first.release()
+
+    assert.equal(fs.existsSync(ownerPath), true)
+  })
+})
+
 test('keeps event cursors stable when later events are inserted', () => {
   withTempDirectory(directory => {
     const instance = journal(directory)

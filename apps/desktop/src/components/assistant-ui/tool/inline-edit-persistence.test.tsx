@@ -173,3 +173,52 @@ it.each(Object.entries(receipts))(
     }
   }
 )
+
+it.each([
+  ['object', JSON.stringify({ ok: true })],
+  ['false', 'false'],
+  ['null', 'null'],
+  ['empty-string', '""'],
+  ['zero', '0']
+])('does not let a completed %s result claim a later orphan with a reused id', (_name, firstContent) => {
+  const rows: SessionMessage[] = [
+    { role: 'user', content: 'Read first' },
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        {
+          id: 'reused-call',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"read.py"}' }
+        }
+      ]
+    },
+    {
+      role: 'tool',
+      tool_call_id: 'reused-call',
+      tool_name: 'read_file',
+      content: firstContent,
+      timestamp: 2
+    },
+    { role: 'user', content: 'Write next' },
+    {
+      role: 'tool',
+      name: 'write_file',
+      tool_call_id: 'reused-call',
+      args: { path: 'write.py' },
+      content: JSON.stringify({ success: true, path: 'write.py' }),
+      display_metadata: { tool_result_metadata: { inline_diff: diff } },
+      timestamp: 4
+    }
+  ]
+
+  const parts = toChatMessages(rows)
+    .flatMap(message => message.parts)
+    .filter(part => part.type === 'tool-call')
+
+  expect(parts.map(part => part.toolName)).toEqual(['read_file', 'write_file'])
+  expect(parts[0].result).toEqual(JSON.parse(firstContent))
+  expect(parts[1].result).toEqual({ success: true, path: 'write.py' })
+  expect(parts[1].toolResultMetadata?.inline_diff).toBe(diff)
+})

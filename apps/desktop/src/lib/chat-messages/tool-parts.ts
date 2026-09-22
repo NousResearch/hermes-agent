@@ -846,9 +846,13 @@ export function applyStoredToolResultToParts(
       ? toolMessage.content
       : (toolMessage.text ?? toolMessage.context ?? toolMessage.name)
 
+  // Tool-call ids are not unique across turns (llama.cpp/Hermes reuse them),
+  // so only an unresolved part may own a stored result. Property presence,
+  // not truthiness: `false`/`null`/`''`/`0` are completed results too.
   const partIndex = parts.findIndex(
     part =>
       part.type === 'tool-call' &&
+      !Object.hasOwn(part, 'result') &&
       ((toolCallId && part.toolCallId === toolCallId) || (!toolCallId && part.toolName === toolName))
   )
 

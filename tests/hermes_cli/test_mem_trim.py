@@ -55,7 +55,9 @@ def test_default_config_declares_memory_trim_controls():
 
 
 def test_collect_memory_snapshot_parses_linux_proc_status(monkeypatch):
-    monkeypatch.setattr(mem_trim.sys, "platform", "linux")
+    # No ``sys.platform`` pin: the only platform check lives inside
+    # ``_read_proc_status``, which is replaced below — the subject here is
+    # the /proc/self/status parser, which is host-independent.
     monkeypatch.setattr(
         mem_trim,
         "_read_proc_status",

@@ -22,8 +22,93 @@ class _IdleAgent:
         self.interrupts.append(reason)
 
 
+class _RaisingActivityAgent:
+    """Agent whose activity snapshot read raises (fail-safe case).
+
+    A real AIAgent always carries ``_last_activity_ts``; the snapshot is only
+    missing when the diagnostic read itself fails.  The watchdog must still bound
+    the turn instead of skipping every poll.
+    """
+
+    def __init__(self):
+        self.interrupts = []
+
+    def get_activity_summary(self):
+        raise RuntimeError("activity snapshot unavailable")
+
+    def interrupt(self, reason):
+        self.interrupts.append(reason)
+
+
 def _state():
     return threading.Event(), threading.Event(), threading.Lock()
+
+
+def _run_watchdog(agent_holder, task_id, *, worker_done, timeout_fired, cleanup_lock):
+    watchdog = threading.Thread(
+        target=_watch_gateway_turn_inactivity,
+        kwargs={
+            "agent_holder": agent_holder,
+            "task_id": task_id,
+            "process_baseline": frozenset(),
+            "timeout": 0.03,
+            "worker_done": worker_done,
+            "timeout_fired": timeout_fired,
+            "cleanup_lock": cleanup_lock,
+            "poll_interval": 0.01,
+        },
+    )
+    watchdog.start()
+    watchdog.join(timeout=2)
+    if watchdog.is_alive():
+        worker_done.set()
+        watchdog.join(timeout=2)
+    assert not watchdog.is_alive()
+    return watchdog
+
+
+def test_thread_watchdog_times_out_before_agent_exists(monkeypatch):
+    """``agent_holder`` is still ``[None]`` while the turn is being set up
+    (``run_turn_runner`` fills it later).  A turn wedged in that window has no
+    activity snapshot, so the watchdog must fall back to elapsed wall-clock time
+    and still reap the turn rather than skip every poll forever."""
+    worker_done, timeout_fired, cleanup_lock = _state()
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda task_id, baseline, *, source: calls.append((task_id, baseline, source)) or 0,
+    )
+
+    _run_watchdog(
+        [None], "session-before-agent",
+        worker_done=worker_done, timeout_fired=timeout_fired, cleanup_lock=cleanup_lock,
+    )
+
+    assert timeout_fired.is_set()
+    assert calls == [("session-before-agent", frozenset(), "gateway_turn_timeout")]
+
+
+def test_thread_watchdog_times_out_when_activity_snapshot_raises(monkeypatch):
+    """Fail-safe: a snapshot read that raises must not disable the watchdog; the
+    wall-clock fallback bounds the turn."""
+    agent = _RaisingActivityAgent()
+    worker_done, timeout_fired, cleanup_lock = _state()
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda task_id, baseline, *, source: calls.append((task_id, baseline, source)) or 0,
+    )
+
+    _run_watchdog(
+        [agent], "session-snapshot-raises",
+        worker_done=worker_done, timeout_fired=timeout_fired, cleanup_lock=cleanup_lock,
+    )
+
+    assert timeout_fired.is_set()
+    assert agent.interrupts == ["Execution timed out (inactivity)"]
+    assert calls == [("session-snapshot-raises", frozenset(), "gateway_turn_timeout")]
 
 
 def test_thread_watchdog_reaps_only_processes_created_by_timed_out_turn(monkeypatch):
@@ -232,3 +317,98 @@ def test_timeout_abandon_propagates_is_still_current_to_the_reap(monkeypatch):
     # reap was skipped because a newer turn already claimed the session.
     assert agent.interrupts == ["Execution timed out (inactivity)"]
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Wedged-turn stack dump at reap time (Aug 2026 zombie-turn incident):
+# the reaper's interrupt frees the blocked frame, so the dump must run
+# BEFORE the interrupt and must capture the actual wedged stack.
+# ---------------------------------------------------------------------------
+
+
+def _run_wedged_worker(release: threading.Event, entered: threading.Event):
+    """Worker blocked inside a frame named like turn machinery."""
+
+    def run_sync():  # marker frame the dump filter matches on
+        entered.set()
+        release.wait(timeout=30.0)
+
+    run_sync()
+
+
+def test_reaper_dumps_wedged_worker_stack_before_interrupt(monkeypatch, caplog):
+    import logging
+
+    from gateway.run import _dump_wedged_turn_stacks
+
+    release = threading.Event()
+    entered = threading.Event()
+    worker = threading.Thread(
+        target=_run_wedged_worker,
+        args=(release, entered),
+        name="wedged-test-worker",
+        daemon=True,
+    )
+    worker.start()
+    try:
+        assert entered.wait(timeout=5.0)
+        with caplog.at_level(logging.ERROR, logger="gateway.run"):
+            _dump_wedged_turn_stacks("task-wedge-test")
+        dumps = [
+            r for r in caplog.records if "Wedged-turn stack dump" in r.getMessage()
+        ]
+        assert dumps, "no stack dump was logged"
+        joined = "\n".join(r.getMessage() for r in dumps)
+        assert "wedged-test-worker" in joined
+        assert "run_sync" in joined
+        assert "release.wait" in joined  # the actual blocked line is named
+    finally:
+        release.set()
+        worker.join(timeout=5.0)
+
+
+def test_abandon_timed_out_turn_dumps_stacks_before_interrupt(monkeypatch):
+    """The dump hook runs inside the reaper, before the agent interrupt."""
+    import gateway.run as gateway_run
+
+    order = []
+    monkeypatch.setattr(
+        gateway_run,
+        "_dump_wedged_turn_stacks",
+        lambda task_id: order.append(("dump", task_id)),
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_reap_gateway_turn_processes",
+        lambda *a, **k: order.append(("reap",)),
+    )
+
+    class _Agent:
+        def interrupt(self, reason):
+            order.append(("interrupt", reason))
+
+    worker_done, timeout_fired, cleanup_lock = _state()
+    assert _abandon_timed_out_gateway_turn(
+        agent_holder=[_Agent()],
+        task_id="t-dump-order",
+        process_baseline=frozenset(),
+        worker_done=worker_done,
+        timeout_fired=timeout_fired,
+        cleanup_lock=cleanup_lock,
+    )
+    assert order[0] == ("dump", "t-dump-order")
+    assert ("interrupt", order[1][1]) == order[1]
+    assert order[-1] == ("reap",)
+
+
+def test_dump_wedged_turn_stacks_never_raises(monkeypatch):
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(
+        gateway_run.sys,
+        "_current_frames",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    from gateway.run import _dump_wedged_turn_stacks
+
+    _dump_wedged_turn_stacks("t-no-raise")  # must not raise

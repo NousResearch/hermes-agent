@@ -49,7 +49,7 @@ class _FakeReadResult:
 
 
 def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
-    fake = MagicMock()
+    fake = MagicMock(env=None)
     fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
         content=content, total_lines=total_lines, file_size=file_size,
     )
@@ -423,9 +423,29 @@ class TestFileDedup(unittest.TestCase):
         self.assertNotIn("content", r2)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_background_review_fork_gets_content_and_read_mark_not_stub(self, mock_ops):
+        """The review fork shares the parent's task_id; a dedup stub there would skip the
+        read-mark its read-before-write guard requires (#95976)."""
+        from pathlib import Path
+        from tools.skill_manager_guards import _background_review_has_read, _reset_background_review_read_marks
+        from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+
+        mock_ops.return_value = _make_fake_ops(content="line one\nline two\n", file_size=20)
+        read_file_tool(self._tmpfile, task_id="dup")  # parent's read arms the dedup
+        _reset_background_review_read_marks()
+        token = set_current_write_origin("background_review")
+        try:
+            fork = json.loads(read_file_tool(self._tmpfile, task_id="dup"))
+        finally:
+            reset_current_write_origin(token)
+        self.assertNotIn("dedup", fork)
+        self.assertIn("content", fork)
+        self.assertTrue(_background_review_has_read(Path(self._tmpfile)))
+
+    @patch("tools.file_tools._get_file_ops")
     def test_write_rejects_internal_read_status_text(self, mock_ops):
         """write_file must not persist internal read_file status text."""
-        fake = MagicMock()
+        fake = MagicMock(env=None)
         fake.write_file = MagicMock()
         mock_ops.return_value = fake
 
@@ -786,7 +806,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         read would previously cause the second read to return a stale dedup
         stub because the mtime comparison saw no change.
         """
-        fake = MagicMock()
+        fake = MagicMock(env=None)
         fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
             content="original content\n", total_lines=1, file_size=18,
         )
@@ -815,7 +835,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
     @patch("tools.file_tools._get_file_ops")
     def test_write_invalidates_all_offsets(self, mock_ops):
         """A write invalidates dedup entries for ALL offset/limit combos."""
-        fake = MagicMock()
+        fake = MagicMock(env=None)
         fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
             content="line1\nline2\nline3\n", total_lines=3, file_size=20,
         )

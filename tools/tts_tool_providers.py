@@ -570,7 +570,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     from hermes_cli.config import get_env_value
     from agent.gemini_native_adapter import normalize_gemini_base_url
     base_url = normalize_gemini_base_url(
-        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL
+        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
     )
     persona_prompt = _read_gemini_persona_prompt(gemini_config)
     tts_script = text

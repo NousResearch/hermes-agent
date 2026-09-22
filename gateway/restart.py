@@ -2,7 +2,10 @@
 
 import math
 import os
-from collections.abc import Mapping
+import re
+import subprocess
+import sys
+from collections.abc import Callable, Mapping
 
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -55,6 +58,150 @@ CRON_DRAIN_CLEANUP_RESERVE_S = 10.0
 SYSTEMD_STOP_HEADROOM_S = 30.0
 SYSTEMD_TIMEOUT_STOP_SEC_FLOOR = 60.0
 
+# launchd is the one supervisor whose stop budget the gateway cannot size:
+# ``ExitTimeOut`` lives in the plist, and the per-user (gui) domain CLAMPS
+# it — measured on macOS 26.6.1: plist 215 -> live 60, 90 -> 60, 60 -> 60,
+# 30 -> 30. The gateway can only *read* the live value (``launchctl print
+# gui/<uid>/<label>`` -> ``exit timeout = N``) and fit its SIGTERM-driven
+# stop inside it. Draining past it is not "a longer drain" — launchd
+# SIGKILLs at N seconds, mid-SQLite-write on a busy restart, which is the
+# unclean-exit half of the state.db corruption class.
+LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S = 60
+LAUNCHD_STOP_CLEANUP_RESERVE_S = 10.0
+# How far before launchd's SIGKILL the thread watchdog must fire so its
+# faulthandler dump + os._exit actually land (the dump is sub-second; the
+# margin covers a slow disk).
+LAUNCHD_WATCHDOG_DUMP_MARGIN_S = 2.0
+
+_LAUNCHD_EXIT_TIMEOUT_RE = re.compile(r"^\s*exit timeout\s*=\s*(\d+)\s*$", re.MULTILINE)
+
+
+def parse_launchd_exit_timeout(print_output: object) -> float | None:
+    """Extract ``exit timeout = N`` from ``launchctl print`` output."""
+    match = _LAUNCHD_EXIT_TIMEOUT_RE.search(str(print_output or ""))
+    if match is None:
+        return None
+    return float(match.group(1))
+
+
+def launchd_service_label(environ: Mapping[str, str] | None = None) -> str | None:
+    """Return this process's ``ai.hermes.*`` launchd job label, or ``None``.
+
+    Only labels of the gateway's own jobs count (same predicate as
+    :mod:`gateway.control_socket`). App-coalition labels
+    (``application.<bundle>…``, exported into IDE integrated terminals) also
+    populate ``XPC_SERVICE_NAME``, and ``launchctl print`` reports
+    ``exit timeout = 1`` for them — treating those as a budget would cap the
+    drain to 0 for a gateway Ctrl+C'd in such a terminal.
+    """
+    if sys.platform != "darwin":
+        return None
+    env = os.environ if environ is None else environ
+    label = str(env.get("XPC_SERVICE_NAME", "") or "").strip()
+    if not label.startswith("ai.hermes"):
+        return None
+    return label
+
+
+def read_launchd_exit_timeout_s(
+    label: str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    uid: int | None = None,
+    run: Callable[..., "subprocess.CompletedProcess[str]"] = subprocess.run,
+) -> float | None:
+    """Live ``ExitTimeOut`` (seconds) launchd enforces for this gateway's job.
+
+    Returns ``None`` — meaning "no launchd budget applies" — when the process
+    is not launchd-owned (non-darwin, or no ``ai.hermes`` ``XPC_SERVICE_NAME``), ``launchctl`` is missing
+    or fails, or the print output carries no ``exit timeout`` line. Callers
+    must treat ``None`` as fail-open: the configured drain stands unchanged.
+    """
+    label = label or launchd_service_label(environ)
+    if not label:
+        return None
+    if uid is None:
+        getuid = getattr(os, "getuid", None)  # absent on Windows; label is None there anyway
+        if getuid is None:
+            return None
+        uid = getuid()
+    domain = "system" if uid == 0 else f"gui/{uid}"
+    try:
+        proc = run(
+            ["launchctl", "print", f"{domain}/{label}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return parse_launchd_exit_timeout(proc.stdout)
+
+
+def resolve_launchd_capped_drain(
+    drain_timeout: float,
+    launchd_exit_timeout_s: float | None,
+    *,
+    cleanup_reserve_s: float = LAUNCHD_STOP_CLEANUP_RESERVE_S,
+) -> float:
+    """Clamp a SIGTERM-driven stop drain to what launchd will actually allow.
+
+    ``launchd_exit_timeout_s`` is the live ``exit timeout`` for this job (see
+    :func:`read_launchd_exit_timeout_s`); ``None`` means no launchd budget
+    applies and the configured drain is returned untouched. Otherwise the
+    drain may use at most ``exit_timeout - cleanup_reserve_s`` so the
+    post-drain teardown (interrupt agents, disconnect adapters, checkpoint
+    and close SQLite) still completes before launchd escalates to SIGKILL.
+    Never *extends* the drain — an operator who configured a short one
+    keeps it.
+    """
+
+    drain = _seconds(drain_timeout)
+    budget = _seconds(launchd_exit_timeout_s)  # None / non-numeric → 0.0 → no budget applies
+    if budget <= 0.0:
+        return drain
+    return min(drain, max(budget - _seconds(cleanup_reserve_s), 0.0))
+
+
+def effective_stop_drain_timeout(runner: object) -> float:
+    """Drain budget for the stop in progress on ``runner``.
+
+    Signal-driven stops under launchd are timed by launchd's live
+    ``ExitTimeOut`` (``runner._launchd_exit_timeout_s``, set at boot);
+    everything else — in-band SIGUSR1 restart after the turn, ``--replace``
+    takeover, tests — keeps the configured drain. Duck-typed and
+    getattr-guarded on purpose: shutdown-path tests drive ``_stop_impl``
+    from bare doubles that are not ``GatewayRunner`` instances.
+    """
+    drain = getattr(runner, "_restart_drain_timeout", DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
+    if not getattr(runner, "_stop_requested_by_signal", False):
+        return drain
+    return resolve_launchd_capped_drain(drain, getattr(runner, "_launchd_exit_timeout_s", None))
+
+
+def effective_stop_watchdog_delay(runner: object, watchdog_delay: float) -> float:
+    """Thread-watchdog leash for the stop in progress on ``runner``.
+
+    ``watchdog_delay`` is the supervisor-agnostic leash (effective drain +
+    grace). Under launchd a signal-driven stop is SIGKILLed at the live
+    ``ExitTimeOut`` — with a 60s budget the default leash (50 + 60 = 110s)
+    can never fire, so the forensic stack dump and ``os._exit`` the watchdog
+    exists for are lost. Clamp the leash to ``ExitTimeOut -
+    LAUNCHD_WATCHDOG_DUMP_MARGIN_S`` so the dump lands before SIGKILL. Same
+    duck-typing / fail-open rules as :func:`effective_stop_drain_timeout`.
+    """
+    leash = _seconds(watchdog_delay)
+    if not getattr(runner, "_stop_requested_by_signal", False):
+        return leash
+    return resolve_launchd_capped_drain(
+        leash, getattr(runner, "_launchd_exit_timeout_s", None), cleanup_reserve_s=LAUNCHD_WATCHDOG_DUMP_MARGIN_S,
+    )
+
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
@@ -75,11 +222,33 @@ def is_global_startup_conflict(error_code: str | None) -> bool:
 
 
 def is_gateway_supervisor_process(environ: Mapping[str, str] | None = None) -> bool:
-    """Return whether this gateway process is owned by a supervisor."""
+    """Return whether this gateway process is owned by a supervisor that RESTARTS it.
+
+    Selects the exit-75 restart route, so only markers of a manager with a restart policy count:
+    systemd ``INVOCATION_ID``, launchd ``XPC_SERVICE_NAME``, the s6 sentinel, or the explicit
+    ``--external-supervisor`` opt-in. The generalized ``HERMES_SUPERVISED_CHILD`` launcher marker is
+    deliberately NOT read here: the Windows Scheduled-Task launcher sets it without a restart policy
+    (#113670), and routing its ``/restart`` through exit 75 would leave the gateway dead.
+    """
     env = os.environ if environ is None else environ
     xpc_service = env.get("XPC_SERVICE_NAME", "")
     return bool(env.get("INVOCATION_ID") or env.get("HERMES_S6_SUPERVISED_CHILD") or (xpc_service and xpc_service != "0")
                 or str(env.get(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "")).strip().lower() in _TRUTHY)
+
+
+def is_supervised_gateway_launch(environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether this gateway was launched by a generated service/launcher rather than a shell.
+
+    Superset of :func:`is_gateway_supervisor_process` that also honours ``HERMES_SUPERVISED_CHILD``,
+    the marker every generated launcher exports (systemd unit, launchd plist, s6 run script, Windows
+    Scheduled Task — see ``hermes_cli.main._apply_profile_override``). This is the identity the
+    self-targeting guards key on: a kill or lifecycle command issued from inside such a gateway takes
+    down the process hosting the caller with nobody at a terminal to bring it back (#113667).
+    """
+    env = os.environ if environ is None else environ
+    if env.get("HERMES_SUPERVISED_CHILD"):
+        return True
+    return is_gateway_supervisor_process(environ)
 
 
 def is_container_restart_context() -> bool:

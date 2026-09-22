@@ -232,4 +232,4 @@ If you've worked through this guide and the issue persists:
 
 ---
 
-*For the complete cron reference, see [Automate Anything with Cron](/guides/automate-with-cron) and [Scheduled Tasks (Cron)](/user-guide/features/cron).*
+*For the complete cron reference, see [Automate Anything with Cron](./automate-with-cron.md) and [Scheduled Tasks (Cron)](../user-guide/features/cron.md).*

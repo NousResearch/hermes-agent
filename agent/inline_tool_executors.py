@@ -156,11 +156,34 @@ def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
     from tools.connectors import manage_connections
     from tools.connectors.gateway import config as gateway_config
 
-    return manage_connections(
+    result = manage_connections(
         args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
         connection_callback=getattr(agent, "connection_callback", None),
         connectors_available=gateway_config.connectors_available,
     )
+    _scope_in_connected_mcp_servers(agent, result)
+    return result
+
+
+def _scope_in_connected_mcp_servers(agent, result: Any) -> None:
+    """Add the MCP servers this call connected to the agent's toolset selection.
+
+    ``tool_describe``/``tool_call`` resolve names inside that selection, and it was fixed when the
+    agent was built, so a server registered a moment ago is otherwise "not found" for the rest of
+    the turn the result calls it available in. Only the selection changes; ``agent.tools`` does
+    not, so the sent tool schema bytes stay the same."""
+    enabled = getattr(agent, "enabled_toolsets", None)
+    if enabled is None or "no_mcp" in enabled:  # None already means every toolset
+        return
+    try:
+        targets = json.loads(result).get("targets") or []
+    except (AttributeError, TypeError, ValueError):
+        return
+    connected = [str(t.get("name")) for t in targets if isinstance(t, dict)
+                 and t.get("kind") == "mcp" and t.get("state") == "connected" and t.get("tools")]
+    added = [name for name in connected if name not in enabled]
+    if added:
+        agent.enabled_toolsets = [*enabled, *added]
 
 
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:

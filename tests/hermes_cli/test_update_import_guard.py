@@ -339,6 +339,54 @@ def test_import_guard_ignores_missing_third_party_dependency(monkeypatch, tmp_pa
     assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
 
 
+def test_import_guard_rejects_module_satisfied_only_by_inherited_pythonpath(
+    monkeypatch, tmp_path
+):
+    """A stale checkout on PYTHONPATH must not stand in for a candidate module.
+
+    The probe child used to inherit the updater's environment wholesale, so
+    with PYTHONPATH pointing at an older tree the critical module imported
+    fine from there and a candidate lacking it entirely read as healthy
+    (#115032).
+    """
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    (stale / "hermes_stale_supply.py").write_text("VALUE = 'from the stale tree'\n")
+
+    monkeypatch.setattr(
+        update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_stale_supply",)
+    )
+    monkeypatch.setattr(
+        update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("hermes_stale_supply",)
+    )
+    monkeypatch.setenv("PYTHONPATH", str(stale))
+
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+
+    assert ok is False
+    assert module == "hermes_stale_supply"
+    assert error is not None and "hermes_stale_supply" in error
+
+
+def test_import_guard_accepts_candidate_with_foreign_pythonpath(monkeypatch, tmp_path):
+    """The env scrub must not overreach: a candidate that carries the module
+    still passes while a foreign PYTHONPATH is set (#115032)."""
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    (stale / "hermes_stale_supply.py").write_text("VALUE = 'stale'\n")
+    (tmp_path / "hermes_stale_supply.py").write_text("VALUE = 'candidate'\n")
+
+    monkeypatch.setattr(
+        update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_stale_supply",)
+    )
+    monkeypatch.setattr(
+        update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("hermes_stale_supply",)
+    )
+    monkeypatch.setenv("PYTHONPATH", str(stale))
+
+    assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
+
+
 def test_import_guard_flags_missing_first_party_module(monkeypatch, tmp_path):
     """A missing *first-party* module IS skew — the update dropped a file."""
     (tmp_path / "tools").mkdir()

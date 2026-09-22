@@ -96,8 +96,9 @@ def _run_async(coro):
         loop = None
     if loop and loop.is_running():
         import concurrent.futures
+        import contextvars
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
+            return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
     return asyncio.run(coro)
 
 

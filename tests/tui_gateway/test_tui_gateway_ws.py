@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import datetime
 import json
 import threading
 import time
@@ -232,6 +233,42 @@ def test_ws_transport_serializes_concurrent_sends():
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_transport_replies_with_error_for_unserializable_response(caplog):
+    """#92506: an unserializable payload (datetime from profile.yaml ui_meta) must surface as a
+    JSON-RPC error frame with the original id plus a log line — on both the worker-thread
+    ``write`` and the loop-side ``write_async`` twin — and leave the transport open, instead of
+    killing the pool worker silently so the client waits forever."""
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+    bad = {"jsonrpc": "2.0", "id": "profiles", "result": {"created": datetime.datetime(2026, 8, 22)}}
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = ws_mod.WSTransport(FakeWS(), loop, peer="serialization-test")
+        assert transport.write(bad) is True
+        assert transport.write({"jsonrpc": "2.0", "id": "next", "result": {}}) is True
+        assert asyncio.run_coroutine_threadsafe(transport.write_async(bad), loop).result(5) is True
+        assert transport.closed is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+    assert [m.get("id") for m in sent] == ["profiles", "next", "profiles"]
+    for frame in (sent[0], sent[2]):
+        assert frame["error"]["code"] == -32603
+        assert frame["error"]["message"].startswith("response serialization error")
+        assert "datetime" in frame["error"]["message"]
+    assert sent[1] == {"jsonrpc": "2.0", "id": "next", "result": {}}
+    assert caplog.text.count("frame serialization failed") == 2
 
 
 def test_ws_transport_preserves_cross_batch_order():

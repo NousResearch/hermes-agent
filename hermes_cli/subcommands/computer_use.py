@@ -54,6 +54,15 @@ def _cu_status(args) -> int:
         else:
             print("    Run: hermes computer-use install")
         return 1
+    rc = 0
+    if sys.platform == "linux":  # hand-written daemon units: dead `serve` is invisible to the binary contract (#114748)
+        from tools.computer_use.cua_backend import cua_daemon_listening
+        from tools.computer_use.doctor import cua_daemon_units
+        for _kind, unit, _target, serve, socket in cua_daemon_units():
+            if serve and cua_daemon_listening(path, socket) is False:
+                print(f"  ✗ Daemon unit {unit}: no `cua-driver serve` is listening on {socket or 'the default socket'}")
+                print(f"    Check: systemctl --user status {unit}  (reinstalling the driver does not start it)")
+                rc = 1
     try:
         st = cua_driver_update_check()
         if st and st.get("update_available"):
@@ -67,7 +76,7 @@ def _cu_status(args) -> int:
             print("  Refresh to latest: hermes computer-use install --upgrade")
     except Exception:
         print("  Refresh to latest: hermes computer-use install --upgrade")
-    return 0
+    return rc
 
 
 def _cu_doctor(args) -> None:
@@ -80,7 +89,7 @@ def _cu_doctor(args) -> None:
 
 def _cu_perms_status(args) -> None:
     import json as _json
-    from tools.computer_use.permissions import computer_use_status
+    from tools.computer_use.permissions import TCC_FIELDS, computer_use_status, stale_tcc_grant_hint
     st = computer_use_status()
     if bool(getattr(args, "json", False)):
         print(_json.dumps(st, indent=2, sort_keys=True))
@@ -98,6 +107,8 @@ def _cu_perms_status(args) -> None:
         print(f"  {glyph(st['screen_recording'])} Screen Recording")
         if not st["ready"]:
             print("  Grant: hermes computer-use permissions grant")
+            if hint := stale_tcc_grant_hint(*(f for f in TCC_FIELDS if st[f] is False)):
+                print(f"  {hint}")
     else:  # no TCC model — readiness is driver health
         print(f"  {glyph(st['ready'])} driver health (no permission toggles on {st['platform']})")
     for c in st["checks"]:

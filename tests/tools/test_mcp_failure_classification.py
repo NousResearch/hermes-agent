@@ -185,6 +185,9 @@ def test_initial_auth_failure_parks_and_revives_after_relogin(
 
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
 
+    from tools import mcp_tool_config as _config
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"figma": {"command": "x"}})
+
     _real_sleep = asyncio.sleep
 
     async def _fast_sleep(_delay, *a, **kw):

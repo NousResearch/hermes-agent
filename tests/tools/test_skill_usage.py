@@ -347,6 +347,29 @@ def test_restoring_from_archive_clears_timestamp(skills_home):
     assert get_record("x")["archived_at"] is None
 
 
+def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
+    """`mlops/training/accelerate` is the skill `huggingface-accelerate`: archive lands under the NAME,
+    and an older archive flattened under the directory name is still found by `restore_skill`."""
+    from tools.skill_usage import archive_skill, mark_agent_created, restore_skill
+    skills_dir = skills_home / "skills"
+    d = skills_dir / "training" / "accelerate"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: huggingface-accelerate\ndescription: x\n---\n", encoding="utf-8")
+    mark_agent_created("huggingface-accelerate")
+
+    ok, msg = archive_skill("huggingface-accelerate")
+    assert ok, msg
+    assert (skills_dir / ".archive" / "huggingface-accelerate" / "SKILL.md").exists()
+    ok, msg = restore_skill("huggingface-accelerate")
+    assert ok, msg
+
+    # Legacy layout: archived under the directory name by an older build.
+    (skills_dir / "huggingface-accelerate").rename(skills_dir / ".archive" / "accelerate")
+    ok, msg = restore_skill("huggingface-accelerate")
+    assert ok, msg
+    assert (skills_dir / "huggingface-accelerate" / "SKILL.md").exists()
+
+
 def test_forget_removes_record(skills_home):
     from tools.skill_usage import bump_view, forget, load_usage
     bump_view("x")
@@ -514,7 +537,7 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
     """Adoption writes a provenance claim, so it must refuse anything with an
     external owner rather than stamping a lie onto the record.
 
-    ``prune_builtins`` is forced ON here — the shipped default — because that
+    ``prune_builtins`` is forced ON here (opt-in; the shipped default is off) because that
     is the configuration in which a bundled skill is otherwise curation-
     eligible. With it off, ``mark_agent_created``'s own eligibility gate would
     block the write and this test would pass without exercising adopt's guard

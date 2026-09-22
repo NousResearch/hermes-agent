@@ -483,6 +483,64 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_successful_review_handoff_supersedes_stale_rate_limit_blocker(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later review handoff must clear an earlier rate-limit blocker.
+
+    The rate-limit requeue deliberately preserves its diagnostic in
+    ``last_failure_error``.  Once a later worker reaches ``request_review``,
+    that terminal handoff is the newer successful outcome and the reviewer
+    must be dispatchable; otherwise the stale text parks the card as
+    ``blocker_auth`` forever.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="retry then review", assignee="worker")
+        now = int(__import__("time").time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, "
+                "started_at, ended_at) VALUES (?, 'worker', 'rate_limited', "
+                "'rate_limited', ?, ?)",
+                (task_id, now - 20, now - 10),
+            )
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = '429 rate limited' WHERE id = ?",
+                (task_id,),
+            )
+
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        assert kb.request_review(
+            conn, task_id, summary="implementation succeeded",
+            expected_run_id=claimed.current_run_id,
+        )
+
+        # The ready lane retains its normal blocker behavior for an unfinished
+        # task, while the later successful review handoff is spawnable.
+        ready_id = kb.create_task(conn, title="still rate limited", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = '429 rate limited' WHERE id = ?",
+                (ready_id,),
+            )
+        assert kbd.check_respawn_guard(conn, ready_id) == "blocker_auth"
+        assert kbd.check_respawn_guard(conn, task_id, lane="review") is None
+
+        result = kbd.dispatch_once(conn, dry_run=True)
+        assert task_id in [spawned[0] for spawned in result.spawned]
+        assert dict(result.respawn_guarded).get(ready_id) == "blocker_auth"
+
+
 def _backdate_comments(conn, tid, seconds=60):
     """Second-granularity timestamps: make the PR comment older than the
     handoff that follows it in the same test."""

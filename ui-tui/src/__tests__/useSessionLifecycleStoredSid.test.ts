@@ -153,9 +153,11 @@ describe('useSessionLifecycle durable session id', () => {
 
       return 1 as unknown as ReturnType<typeof setInterval>
     })
+
     const history = new Promise<{ count: number; messages: unknown[] }>(resolve => {
       resolveHistory = resolve
     })
+
     const request = vi.fn(async () => ({
       info: { cwd: '/tmp/w', model: 'test', skills: {}, tools: {} },
       message_count: 1,
@@ -165,6 +167,7 @@ describe('useSessionLifecycle durable session id', () => {
       session_id: 'runtime-42',
       status: 'idle'
     }))
+
     const rpc = vi.fn(async (method: string) => {
       if (method === 'setup.status') {
         return { provider_configured: true }
@@ -172,6 +175,7 @@ describe('useSessionLifecycle durable session id', () => {
 
       return method === 'session.history' ? history : null
     })
+
     const mounted = mountLifecycle(request, rpc)
 
     await vi.waitFor(() => expect(mounted.api()).toBeTruthy())

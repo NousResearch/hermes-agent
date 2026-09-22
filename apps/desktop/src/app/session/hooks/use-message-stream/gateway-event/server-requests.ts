@@ -58,6 +58,69 @@ type Handler = (ctx: ServerRequestContext) => void
 
 type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
 
+const PANE_HOST_CHANNEL = 'hermes:pane-host'
+const PANE_HOST_RESPONSE_WAIT_MS = 75
+
+type PaneHostMessage =
+  | { requestId: string; sessionId: string; type: 'host' }
+  | { requestId: string; sessionId: string; type: 'probe' }
+
+let paneHostChannel: BroadcastChannel | null | undefined
+const pendingPaneHostChecks = new Map<string, () => void>()
+let windowHostsPaneSession = (_sessionId: string) => false
+
+const noHostedPaneResponse = {
+  error: 'This chat is not displayed in any desktop window. Bring it to the front and try again.',
+  success: false
+}
+
+function getPaneHostChannel(): BroadcastChannel | null {
+  if (paneHostChannel !== undefined) {
+    return paneHostChannel
+  }
+
+  if (typeof BroadcastChannel === 'undefined') {
+    paneHostChannel = null
+
+    return paneHostChannel
+  }
+
+  paneHostChannel = new BroadcastChannel(PANE_HOST_CHANNEL)
+  paneHostChannel.addEventListener('message', ({ data }: MessageEvent<PaneHostMessage>) => {
+    if (!data || typeof data !== 'object') {
+      return
+    }
+
+    if (data.type === 'host') {
+      pendingPaneHostChecks.get(data.requestId)?.()
+    } else if (data.type === 'probe' && windowHostsPaneSession(data.sessionId)) {
+      paneHostChannel?.postMessage({ requestId: data.requestId, sessionId: data.sessionId, type: 'host' })
+    }
+  })
+
+  return paneHostChannel
+}
+
+function announcePaneHost(requestId: string, sessionId: string): void {
+  getPaneHostChannel()?.postMessage({ requestId, sessionId, type: 'host' })
+}
+
+function failIfNoWindowHostsPane(request: ScopedServerRequest, sessionId: string): void {
+  const channel = getPaneHostChannel()
+
+  const timeout = setTimeout(() => {
+    pendingPaneHostChecks.delete(request.id)
+    answerValue(request, noHostedPaneResponse)
+  }, PANE_HOST_RESPONSE_WAIT_MS)
+
+  pendingPaneHostChecks.set(request.id, () => {
+    clearTimeout(timeout)
+    pendingPaneHostChecks.delete(request.id)
+  })
+
+  channel?.postMessage({ requestId: request.id, sessionId, type: 'probe' })
+}
+
 /**
  * Bridges answered from THIS window's panes (preview tab, xterm buffer, the
  * native window below, the tour overlay). Every attached window sees the
@@ -444,9 +507,15 @@ export function handleServerRequest(
   const sessionId = str(request.params.session_id)
 
   if (WINDOW_OWNED_REQUESTS.has(request.method)) {
+    windowHostsPaneSession = candidateSessionId => windowHostsSession(candidateSessionId, activeSessionId)
     const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
 
     if (route === 'ignore') {
+      // Let another window confirm it owns the request before failing it. A
+      // missing host otherwise leaves every gateway socket silent until the
+      // agent-side bridge deadline expires.
+      failIfNoWindowHostsPane(request, sessionId)
+
       return true
     }
 
@@ -464,6 +533,10 @@ export function handleServerRequest(
       }, 0)
 
       return true
+    }
+
+    if (sessionId) {
+      announcePaneHost(request.id, sessionId)
     }
   }
 

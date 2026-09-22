@@ -483,18 +483,22 @@ def _drop_run_transport(self, run_id: str) -> None:
 
 
 def _reopen_run_transport(self, run_id: str) -> None:
-    """Re-register an SSE queue for a run that is still executing in this process.
+    """Re-register an SSE queue for a run this process is still executing.
 
     The transport is dropped when a subscriber's connection ends (the handler's ``finally``)
     and expired by the idle sweep for a buffer nobody is reading — both are transport events,
-    not run events. ``GET /v1/runs/{id}`` keeps reporting such a run as live from durable
-    status, so a late subscriber (mobile PWA backgrounded by the OS, proxy idle timeout)
-    reconciles the gap from status/history by contract: re-attaching an empty queue beats
+    not run events. A late subscriber (mobile PWA backgrounded by the OS, proxy idle timeout)
+    reconciles the gap from status/history by contract, so re-attaching an empty queue beats
     404ing it for the rest of the run (#118138).
+
+    Execution authority is ``_active_run_tasks`` alone — that entry IS "this process still has
+    a producer for these events". ``_run_statuses`` deliberately does not grant a reattach: it
+    is the status endpoint's memory, and a stale non-terminal row with no executor would hand
+    out a queue nothing writes to, hanging the subscriber on keepalives instead of telling it
+    the stream is gone (pinned by ``test_stale_non_terminal_status_without_a_task_does_not_reattach``).
     """
     task = self._active_run_tasks.get(run_id)
-    status = str(self._run_statuses.get(run_id, {}).get("status") or "")
-    if not ((task is not None and not task.done()) or (status and status not in TERMINAL_STATUSES)):
+    if task is None or task.done():
         return
     if run_id not in self._run_streams:
         self._run_streams[run_id] = asyncio.Queue()

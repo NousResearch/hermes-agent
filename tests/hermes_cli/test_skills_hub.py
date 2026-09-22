@@ -285,6 +285,55 @@ def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
     assert matched.__class__ is CatalogSource
 
 
+def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch):
+    """A preview's sequential resolver calls must share its guarded connection pool."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    from tools.skills_hub_models import SkillBundle, SkillMeta
+
+    clients = []
+
+    class Response:
+        status_code = 200
+        text = "ok"
+        content = b"ok"
+        headers = {}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    class Source:
+        def inspect(self, _identifier):
+            hub._guarded_http_get("https://example.com/metadata")
+            return SkillMeta("example", "metadata", "test", "example/id", "community")
+
+        def fetch(self, _identifier):
+            hub._guarded_http_get("https://example.com/SKILL.md")
+            return SkillBundle("example", {"SKILL.md": "# Example"}, "test", "example/id", "community")
+
+    def create_client(**_kwargs):
+        client = Client()
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [Source()])
+    monkeypatch.setattr(hub, "create_ssrf_safe_client", create_client, raising=False)
+    monkeypatch.setattr(hub, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
+
+    result = cli_hub.inspect_skill("example/id")
+
+    assert result is not None
+    assert len(clients) == 1
+
+
 
 
 # ---------------------------------------------------------------------------

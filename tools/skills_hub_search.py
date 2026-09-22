@@ -51,8 +51,11 @@ def _load_hermes_index() -> Optional[dict]:
     data = None
     for accept_encoding in ("gzip, deflate", "identity"):
         try:
-            resp = httpx.get(HERMES_INDEX_URL, timeout=15, follow_redirects=True,
-                             headers={"Accept-Encoding": accept_encoding})
+            from tools.skills_hub_models import hub
+            resp = hub()._skills_hub_http_get(
+                HERMES_INDEX_URL, timeout=15, follow_redirects=True,
+                headers={"Accept-Encoding": accept_encoding},
+            )
             if resp.status_code != 200:
                 logger.debug("Hermes index fetch returned %d", resp.status_code)
                 return _load_stale_index_cache()

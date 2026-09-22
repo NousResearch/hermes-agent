@@ -245,10 +245,12 @@ def _full_identifier(identifier: str, sources, c) -> str:
 
 def _resolve_identifier(identifier: str, sources, c) -> tuple:
     """Short-name resolution + (meta, bundle, source). identifier == "" means unresolved."""
-    identifier = _full_identifier(identifier, sources, c)
-    if not identifier:
-        return "", None, None, None
-    return (identifier, *_resolve_source_meta_and_bundle(identifier, sources))
+    from tools.skills_hub import skills_hub_http_session
+    with skills_hub_http_session():
+        identifier = _full_identifier(identifier, sources, c)
+        if not identifier:
+            return "", None, None, None
+        return (identifier, *_resolve_source_meta_and_bundle(identifier, sources))
 
 
 def _is_valid_installed_skill_name(name: str) -> bool:

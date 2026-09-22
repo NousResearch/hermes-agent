@@ -36,6 +36,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Sequence
@@ -91,6 +92,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
+from plugins.platforms.feishu.feishu_agent_events import AGENT_EVENT_TYPES, forward_agent_event
 from utils import atomic_json_write, env_float, env_int
 
 from gateway.platforms._shared import (
@@ -1423,7 +1425,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
             return None
-        return (
+        builder = (
             EventDispatcherHandler.builder(self._encrypt_key, self._verification_token)
             .register_p2_im_message_message_read_v1(self._on_message_read_event)
             .register_p2_im_message_receive_v1(self._on_message_event)
@@ -1436,8 +1438,10 @@ class FeishuAdapter(BasePlatformAdapter):
             .register_p2_im_message_recalled_v1(self._on_message_recalled)
             .register_p2_customized_event("drive.notice.comment_add_v1", self._on_drive_comment_event)
             .register_p2_customized_event("vc.bot.meeting_invited_v1", self._on_meeting_invited_event)
-            .build()
         )
+        for event_type in AGENT_EVENT_TYPES:
+            builder.register_p2_customized_event(event_type, partial(forward_agent_event, event_type))
+        return builder.build()
 
     def _get_sdk_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Adapter-owned executor; recreated after an *external* shutdown, never after our own close.
@@ -2827,6 +2831,9 @@ class FeishuAdapter(BasePlatformAdapter):
         data = self._namespace_from_mapping(payload)
         if event_type in {"im.message.reaction.created_v1", "im.message.reaction.deleted_v1"}:
             self._on_reaction_event(event_type, data)
+        elif event_type in AGENT_EVENT_TYPES:
+            # File/socket I/O must not block the gateway loop; to_thread preserves profile scope.
+            await asyncio.to_thread(forward_agent_event, event_type, payload)
         else:
             handler = self._WEBHOOK_EVENT_HANDLERS.get(event_type)
             if handler is None:

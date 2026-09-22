@@ -35,6 +35,7 @@ _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
 # support files first, so a disk-only capture would restore a hollow skill.
 _PACKAGE_RESTORE_ACTIONS = frozenset({"delete", "archive", "purge"})
 _VALID_ACTORS = {"curator", "agent", "user"}
+_DEFAULT_LEDGER_MAX_BYTES = 5 * 1024 * 1024  # skills.ledger_max_bytes default (5 MB)
 _NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
 # Transient/regeneratable local artifacts that must never be swept into a
 # snapshot, no matter how deep they sit under the skill dir — a stray venv or
@@ -105,7 +106,7 @@ def ledger_enabled() -> bool:
 def _max_ledger_bytes() -> int:
     """Config ``skills.ledger_max_bytes`` (default 5 MB, 0 disables): above it the
     next append triggers the maintenance sweep instead of growing the file forever."""
-    return int(_skills_cfg("ledger_max_bytes", 5 * 1024 * 1024))
+    return int(_skills_cfg("ledger_max_bytes", _DEFAULT_LEDGER_MAX_BYTES))
 
 
 def _rel_posix(path: Path | str, root: Path) -> Optional[str]:
@@ -388,7 +389,7 @@ def _trim_oldest(max_bytes: int) -> int:
         size += addition
     kept.reverse()
     dropped = len(lines) - len(kept)
-    if dropped <= 0:
+    if not dropped:
         return 0
     _rewrite_ledger(path, kept, "trim")
     return dropped

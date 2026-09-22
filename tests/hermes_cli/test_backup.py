@@ -1328,6 +1328,34 @@ class TestSafeCopyDb:
         assert connect_calls[0][1]["timeout"] == 0.0
         assert not dst.exists()
 
+    def test_large_database_uses_single_snapshot_step(self, tmp_path, monkeypatch):
+        from hermes_cli import backup as backup_mod
+
+        src = tmp_path / "large.db"
+        dst = tmp_path / "copy.db"
+        with src.open("wb") as handle:
+            handle.truncate(backup_mod._LARGE_SQLITE_BACKUP_THRESHOLD_BYTES + 1)
+
+        backup_calls = []
+
+        class FakeSourceConnection:
+            def backup(self, destination, *, pages, progress, sleep):
+                backup_calls.append({"destination": destination, "pages": pages, "sleep": sleep})
+                progress(sqlite3.SQLITE_DONE, 0, 1)
+
+            def close(self):
+                pass
+
+        class FakeDestinationConnection:
+            def close(self):
+                pass
+
+        connections = iter((FakeSourceConnection(), FakeDestinationConnection()))
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", lambda *args, **kwargs: next(connections))
+
+        assert backup_mod._safe_copy_db(src, dst) is True
+        assert backup_calls[0]["pages"] == -1
+
 
     def test_locked_source_fails_fast_not_hang(self, tmp_path):
         import subprocess

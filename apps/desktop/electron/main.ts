@@ -6925,6 +6925,17 @@ function sendBackendExit(payload) {
     return
   }
 
+  // An update hand-off stops the backend trees on purpose before the app quits
+  // (applyUpdates → stopBackendTreesForUpdate), leaving the window alive about a
+  // second after the child dies. The update overlay is already up and the
+  // relaunch brings the backend back, so toasting "Hermes stopped working in the
+  // background" here reports a deliberate kill as a crash — and contradicts the
+  // overlay sitting right next to it. Genuine crashes (updateInFlight false)
+  // still toast.
+  if (updateInFlight) {
+    return
+  }
+
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }

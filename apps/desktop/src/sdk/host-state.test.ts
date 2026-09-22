@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $onBattery } from '@/store/power'
 import { $gatewayState } from '@/store/session'
 import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 
@@ -277,5 +278,19 @@ describe('host.state busy vs gateway', () => {
     dropSessionState('runtime-a')
     expect(host.state.busyBySession.get()['runtime-a']).toBeUndefined()
     expect(host.state.gateway.get()).toBe('open')
+  })
+})
+
+describe('host.state.onBattery', () => {
+  afterEach(() => $onBattery.set(false))
+
+  it('follows the renderer battery state', () => {
+    expect(host.state.onBattery.get()).toBe(false)
+
+    $onBattery.set(true)
+    expect(host.state.onBattery.get()).toBe(true)
+
+    $onBattery.set(false)
+    expect(host.state.onBattery.get()).toBe(false)
   })
 })

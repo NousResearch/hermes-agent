@@ -497,8 +497,17 @@ host.state.focusedUsage     // ReadableAtom<UsageStats | null>  (live streamed u
 host.state.cwd              // ReadableAtom<string>
 host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'connecting' | 'open' | …)
 host.state.model            // ReadableAtom<string>
+host.state.onBattery        // ReadableAtom<boolean>
 host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
+```
+
+`onBattery` is true only when Electron reports battery power; false means AC,
+pre-hydration, or unavailable. Plugins that also run on older Hermes versions
+should feature-detect the atom:
+
+```javascript
+const onBattery = host.state.onBattery?.get() ?? false
 ```
 
 `host.state.gateway` is the WebSocket connection, not whether a chat turn is

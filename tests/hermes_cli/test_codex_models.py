@@ -81,6 +81,36 @@ def test_retired_gpt_5_3_codex_is_not_offered_offline():
     assert "gpt-5.3-codex-spark" in DEFAULT_CODEX_MODELS
 
 
+def test_unreleased_gpt_6_terra_is_not_offered_offline(monkeypatch):
+    """OpenAI released two GPT-6 tiers on 2026-09-22 — Sol and Luna — on top of the existing
+    Astra; there is no GPT-6 Terra. The ChatGPT Codex backend answers the slug exactly like a
+    retired model (live probe 2026-09-22: HTTP 400 "The 'gpt-6-terra' model is not supported when
+    using Codex with a ChatGPT account"; the models catalog at the newest ``client_version``
+    lists gpt-6-astra / gpt-6-sol / gpt-6-luna and no terra). Listing or synthesizing it is the
+    dead-picker-choice regression from #52492, so neither the curated offline fallback nor a
+    forward-compat template may carry it. The released pair and the still-served GPT-5.6 Terra
+    must survive the removal.
+    """
+    from hermes_cli.codex_models import _FORWARD_COMPAT_TEMPLATE_MODELS, DEFAULT_CODEX_MODELS
+
+    assert "gpt-6-terra" not in DEFAULT_CODEX_MODELS
+    for newer, templates in _FORWARD_COMPAT_TEMPLATE_MODELS:
+        assert newer != "gpt-6-terra"
+        assert "gpt-6-terra" not in templates
+    assert {"gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra"}.issubset(DEFAULT_CODEX_MODELS)
+
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-5.5"],
+    )
+    model_ids = get_codex_model_ids(access_token="codex-access-token")
+
+    assert "gpt-6-terra" not in model_ids
+    # The two released GPT-6 slugs keep surfacing when a compatible template is live.
+    assert "gpt-6-sol" in model_ids
+    assert "gpt-6-luna" in model_ids
+
+
 def test_setup_wizard_codex_import_resolves():
     """Regression test for #712: setup.py must import the correct function name."""
     # This mirrors the exact import used in hermes_cli/setup.py line 873.

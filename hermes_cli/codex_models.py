@@ -17,8 +17,13 @@ logger = logging.getLogger(__name__)
 # choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
 # up automatically.
 DEFAULT_CODEX_MODELS: List[str] = [
+    # The two GPT-6 tiers OpenAI released on 2026-09-22 (Sol, Luna) — both routable through the
+    # Codex OAuth backend. There is no GPT-6 Terra: the slug is answered exactly like a retired
+    # model ("The 'gpt-6-terra' model is not supported when using Codex with a ChatGPT account")
+    # and the vendor catalog at the newest client_version lists only astra/sol/luna. It must stay
+    # out of the fallback for the same reason the retired gpt-5.3-codex / gpt-5.2-codex slugs do
+    # (#52492); if the backend ever serves it, live discovery picks it up automatically.
     "gpt-6-sol",
-    "gpt-6-terra",
     "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -42,7 +47,6 @@ DEFAULT_CODEX_MODELS: List[str] = [
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-6-sol", ("gpt-5.6-sol", "gpt-5.5")),
-    ("gpt-6-terra", ("gpt-5.6-terra", "gpt-5.5")),
     ("gpt-6-luna", ("gpt-5.6-luna", "gpt-5.5")),
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),

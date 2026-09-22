@@ -254,6 +254,7 @@ class TestMicroSummarizeTruncationGuard:
             )
         c._micro_compact_enabled = True
         messages = _msgs()
+        assert c._next_exchange(messages) is not None
         cursor_before = c._micro_compact_cursor
         refusal = "I’m sorry, but I can’t provide the requested summary."
         response_content = f"<think>Check the applicable policy.</think>\n{refusal}"

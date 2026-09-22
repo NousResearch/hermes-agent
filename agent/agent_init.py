@@ -2304,6 +2304,8 @@ _CALLBACK_PARAMS = (
     "event_callback", "reaction_callback", "tool_gen_callback",
 )
 
+_REASONING_CONFIG_UNSET = object()
+
 
 def init_agent(
     agent, base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
@@ -2328,7 +2330,7 @@ def init_agent(
     notice_callback: callable = None, notice_clear_callback: callable = None,
     event_callback: Optional[Callable[[str, dict], None]] = None,
     reaction_callback: Optional[Callable[[str], None]] = None, max_tokens: int = None,
-    reasoning_config: Dict[str, Any] = None, service_tier: str = None,
+    reasoning_config: Any = _REASONING_CONFIG_UNSET, service_tier: str = None,
     request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
     chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
@@ -2350,13 +2352,24 @@ def init_agent(
         None or empty leaves the runtime cwd resolver unpinned.
       openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
       clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
-      reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
+      reasoning_config: omitted → resolve configured effort; None → provider default.
       prefill_messages: priming history. Anthropic Sonnet/Opus 4.6+ 400 on a trailing
         assistant message — use structured outputs there instead.
       skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
         load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
     """
     _install_safe_stdio()
+
+    if reasoning_config is _REASONING_CONFIG_UNSET:
+        try:
+            from hermes_cli.config import load_config_readonly as _load_reasoning_config
+            from hermes_constants import resolve_reasoning_config
+
+            reasoning_config = resolve_reasoning_config(
+                _load_reasoning_config() or {}, model or ""
+            )
+        except Exception:
+            reasoning_config = None
 
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:

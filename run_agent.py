@@ -226,6 +226,9 @@ class _StreamErrorEvent(Exception):
         self.body: Dict[str, Any] = {"error": {"message": message, "code": code, "param": param, "type": "error"}}
 
 
+_REASONING_CONFIG_UNSET = object()
+
+
 class AIAgent(
     ClientLifecycleMixin, StreamDeliveryMixin, StatusOutputMixin, ApiRequestHooksMixin, ApiErrorSummaryMixin,
     InterruptControlMixin, TurnExplainersMixin, ActivityTrackingMixin, RateLimitCreditsMixin,
@@ -274,7 +277,7 @@ class AIAgent(
         notice_callback: callable = None, notice_clear_callback: callable = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
         reaction_callback: Optional[Callable[[str], None]] = None,
-        max_tokens: int = None, reasoning_config: Dict[str, Any] = None, service_tier: str = None,
+        max_tokens: int = None, reasoning_config: Any = _REASONING_CONFIG_UNSET, service_tier: str = None,
         request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
         chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
@@ -291,6 +294,8 @@ class AIAgent(
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
+        if reasoning_config is _REASONING_CONFIG_UNSET:
+            init_kwargs.pop("reasoning_config")
         if tool_delay is not None:
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)

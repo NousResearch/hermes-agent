@@ -43,8 +43,8 @@ def test_routed_review_applies_configured_effort_not_parents():
 
 def test_routed_review_falls_back_to_provider_default(caplog):
     # Unset: provider default, and the parent's ``high`` is NOT smuggled across the route.
-    assert "reasoning_config" not in _routed_fork_kwargs({"reasoning_effort": ""})
-    assert "reasoning_config" not in _routed_fork_kwargs({})
+    assert _routed_fork_kwargs({"reasoning_effort": ""})["reasoning_config"] is None
+    assert _routed_fork_kwargs({})["reasoning_config"] is None
     with caplog.at_level(logging.WARNING):
-        assert "reasoning_config" not in _routed_fork_kwargs({"reasoning_effort": "ludicrous"})
+        assert _routed_fork_kwargs({"reasoning_effort": "ludicrous"})["reasoning_config"] is None
     assert "ludicrous" in caplog.text

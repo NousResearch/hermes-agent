@@ -323,12 +323,12 @@ def test_routed_review_fork_does_not_inherit_reasoning_config():
         )
 
     init_kwargs = captured.get("init_kwargs", {})
-    assert "reasoning_config" not in init_kwargs, (
+    assert init_kwargs.get("reasoning_config") is None, (
         f"Routed review fork was passed the parent's reasoning_config "
         f"({init_kwargs.get('reasoning_config')!r}). On the routed path the "
         "cache is cold (no parity benefit) and the parent's effort value may "
-        "be invalid for the routed model/provider — it must be omitted so "
-        "the fork uses provider defaults."
+        "be invalid for the routed model/provider — it must be explicit None "
+        "so the fork uses provider defaults."
     )
     # The whole cache-parity kwarg family shares the same ``not _routed``
     # gate — a future refactor hoisting any of them out of the gate must

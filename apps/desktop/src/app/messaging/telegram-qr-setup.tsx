@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,7 @@ import {
   cancelTelegramOnboarding,
   getTelegramOnboardingStatus,
   type MessagingPlatformInfo,
+  type ProfileScope,
   startTelegramOnboarding,
   type TelegramOnboardingApplyResponse,
   type TelegramOnboardingStartResponse
@@ -55,8 +56,8 @@ export interface TelegramQrSetupProps {
   /** Called after the backend wrote the token + allowlist; receives the restart outcome. */
   onApplied: (result: TelegramOnboardingApplyResponse) => void
   platform: MessagingPlatformInfo
-  /** Request-shaped profile scope (undefined → active profile). */
-  scopeProfile: string | undefined
+  /** Immutable gateway/profile owner for this setup flow. */
+  scopeProfile: ProfileScope
 }
 
 /**
@@ -77,6 +78,8 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
   const [newAllowedId, setNewAllowedId] = useState('')
   const [error, setError] = useState('')
   const [tick, setTick] = useState(0)
+  const scopeRef = useRef(scopeProfile)
+  scopeRef.current = scopeProfile
 
   const reset = () => {
     setSetup(null)
@@ -89,10 +92,21 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
     setError('')
   }
 
+  useEffect(() => {
+    setSetup(null)
+    setQrDataUrl('')
+    setPhase('idle')
+    setBotUsername(null)
+    setAllowedIds([])
+    setDetectedOwnerId(null)
+    setNewAllowedId('')
+    setError('')
+  }, [scopeProfile])
+
   // Poll the pairing until Telegram confirms. A transient fetch error keeps
   // polling with a visible hint; a terminal 410 (or local expiry) resets.
   useEffect(() => {
-    if (!setup || phase !== 'waiting') {
+    if (!scopeProfile || !setup || phase !== 'waiting') {
       return
     }
 
@@ -174,6 +188,9 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
   )
 
   const start = async () => {
+    const owner = scopeProfile
+
+    if (!owner) {return}
     setPhase('starting')
     setError('')
     setBotUsername(null)
@@ -182,27 +199,39 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
     setNewAllowedId('')
 
     try {
-      const result = await startTelegramOnboarding(undefined, scopeProfile)
+      const result = await startTelegramOnboarding(undefined, owner)
       const dataUrl = await renderQr(result.qr_payload)
+
+      if (scopeRef.current !== owner) {return}
       setSetup(result)
       setQrDataUrl(dataUrl)
       setPhase('waiting')
     } catch (startError) {
-      setPhase('idle')
-      setError(String(startError))
+      if (scopeRef.current === owner) {
+        setPhase('idle')
+        setError(String(startError))
+      }
     }
   }
 
   const cancel = async () => {
+    const owner = scopeProfile
+
+    if (!owner) {
+      reset()
+
+      return
+    }
+
     if (setup) {
       try {
-        await cancelTelegramOnboarding(setup.pairing_id, scopeProfile)
+        await cancelTelegramOnboarding(setup.pairing_id, owner)
       } catch {
         // Local cleanup still wins; the backend prunes expired pairings itself.
       }
     }
 
-    reset()
+    if (scopeRef.current === owner) {reset()}
   }
 
   const addAllowedId = () => {
@@ -220,7 +249,9 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
   }
 
   const apply = async () => {
-    if (!setup) {
+    const owner = scopeProfile
+
+    if (!owner || !setup) {
       return
     }
 
@@ -234,12 +265,16 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
     setError('')
 
     try {
-      const result = await applyTelegramOnboarding(setup.pairing_id, allowedIds, scopeProfile)
+      const result = await applyTelegramOnboarding(setup.pairing_id, allowedIds, owner)
+
+      if (scopeRef.current !== owner) {return}
       reset()
       onApplied(result)
     } catch (applyError) {
-      setPhase('ready')
-      setError(String(applyError))
+      if (scopeRef.current === owner) {
+        setPhase('ready')
+        setError(String(applyError))
+      }
     }
   }
 

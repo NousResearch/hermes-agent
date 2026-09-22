@@ -3,7 +3,29 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as SettingsScopeModule from '@/store/settings-scope'
 import type { MessagingPlatformInfo } from '@/types/hermes'
+
+type TestScope = { connectionId: string; profile: string }
+
+const scope = (connectionId = 'gateway-a', profile = 'default'): TestScope => ({ connectionId, profile })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
+async function setSettingsOwner(value: TestScope) {
+  const { $settingsOwner } = await import('@/store/settings-scope')
+  const owner = $settingsOwner as unknown as { set: (scope: TestScope) => void }
+
+  owner.set(value)
+}
 
 const getMessagingPlatforms = vi.fn()
 const updateMessagingPlatform = vi.fn()
@@ -18,23 +40,30 @@ const getTelegramOnboardingStatus = vi.fn()
 const applyTelegramOnboarding = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
+  approvePairing: (platformId: string, requestId: string, profile?: unknown) =>
     approvePairing(platformId, requestId, profile),
-  getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
-  getPairing: (profile?: null | string) => getPairing(profile),
+  getMessagingPlatforms: (profile?: unknown) => getMessagingPlatforms(profile),
+  getPairing: (profile?: unknown) => getPairing(profile),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
-  revokePairing: (platformId: string, userId: string, profile?: null | string) =>
+  revokePairing: (platformId: string, userId: string, profile?: unknown) =>
     revokePairing(platformId, userId, profile),
   setApiRequestProfile: vi.fn(),
-  applyTelegramOnboarding: (pairingId: string, ids: string[], profile?: null | string) =>
+  applyTelegramOnboarding: (pairingId: string, ids: string[], profile?: unknown) =>
     applyTelegramOnboarding(pairingId, ids, profile),
   cancelTelegramOnboarding: vi.fn(async () => ({ ok: true })),
-  getTelegramOnboardingStatus: (pairingId: string, profile?: null | string) =>
+  getTelegramOnboardingStatus: (pairingId: string, profile?: unknown) =>
     getTelegramOnboardingStatus(pairingId, profile),
-  startTelegramOnboarding: (botName?: string, profile?: null | string) => startTelegramOnboarding(botName, profile),
-  updateMessagingPlatform: (id: string, body: unknown, profile?: null | string) =>
+  startTelegramOnboarding: (botName?: string, profile?: unknown) => startTelegramOnboarding(botName, profile),
+  updateMessagingPlatform: (id: string, body: unknown, profile?: unknown) =>
     updateMessagingPlatform(id, body, profile)
 }))
+
+vi.mock('@/store/settings-scope', async importOriginal => {
+  const actual = await importOriginal<typeof SettingsScopeModule>()
+  const { atom } = await import('nanostores')
+
+  return { ...actual, $settingsOwner: atom({ connectionId: 'gateway-a', profile: 'default' }) }
+})
 
 vi.mock('qrcode', () => ({ toDataURL: vi.fn(async () => 'data:image/png;base64,QR') }))
 
@@ -63,8 +92,8 @@ vi.mock('@/store/system-actions', async () => {
 
   return {
     $gatewayRestarting: atom(false),
-    runGatewayRestart: () => runGatewayRestart(),
-    watchGatewayRestartOutcome: () => watchGatewayRestartOutcome()
+    runGatewayRestart: (owner?: unknown) => runGatewayRestart(owner),
+    watchGatewayRestartOutcome: (owner?: unknown) => watchGatewayRestartOutcome(owner)
   }
 })
 
@@ -83,7 +112,8 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await setSettingsOwner(scope())
   updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'teams' })
   getPairing.mockResolvedValue({ approved: [], pending: [] })
   runGatewayRestart.mockResolvedValue(true)
@@ -127,8 +157,70 @@ describe('MessagingView profile scope', () => {
     // #118432: the backend resolves an omitted profile against the home it was
     // LAUNCHED under, so "follow the active profile" has to be said out loud
     // rather than left to the ambient fallback.
-    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith('default'))
-    expect(getPairing).toHaveBeenCalledWith('default')
+    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(scope()))
+    expect(getPairing).toHaveBeenCalledWith(scope())
+  })
+
+  it('refetches and writes through the replacement gateway owner when the profile name is unchanged', async () => {
+    getMessagingPlatforms.mockImplementation((owner: TestScope) =>
+      Promise.resolve({
+        platforms: [platform({ name: owner.connectionId === 'gateway-a' ? 'Gateway A Teams' : 'Gateway B Teams' })]
+      })
+    )
+
+    await renderMessaging()
+    expect((await screen.findAllByText('Gateway A Teams')).length).toBeGreaterThan(0)
+
+    await act(async () => {
+      await setSettingsOwner(scope('gateway-b'))
+    })
+
+    expect((await screen.findAllByText('Gateway B Teams')).length).toBeGreaterThan(0)
+    await act(async () => {
+      fireEvent.click(screen.getByRole('switch'))
+    })
+
+    await waitFor(() =>
+      expect(updateMessagingPlatform).toHaveBeenCalledWith('teams', { enabled: true }, scope('gateway-b'))
+    )
+  })
+
+  it('ignores a late read from the replaced gateway owner', async () => {
+    const gatewayA = deferred<{ platforms: MessagingPlatformInfo[] }>()
+    getMessagingPlatforms.mockImplementation((owner: TestScope) =>
+      owner.connectionId === 'gateway-a'
+        ? gatewayA.promise
+        : Promise.resolve({ platforms: [platform({ name: 'Gateway B Teams' })] })
+    )
+
+    await renderMessaging()
+    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(scope('gateway-a')))
+    await act(async () => setSettingsOwner(scope('gateway-b')))
+    expect((await screen.findAllByText('Gateway B Teams')).length).toBeGreaterThan(0)
+
+    await act(async () => gatewayA.resolve({ platforms: [platform({ name: 'Late Gateway A Teams' })] }))
+    expect(screen.queryByText('Late Gateway A Teams')).toBeNull()
+  })
+
+  it('does not apply a late mutation completion to the replacement owner', async () => {
+    const update = deferred<{ hot_served: boolean }>()
+    getMessagingPlatforms.mockImplementation((owner: TestScope) =>
+      Promise.resolve({
+        platforms: [platform({ name: owner.connectionId === 'gateway-a' ? 'Gateway A Teams' : 'Gateway B Teams' })]
+      })
+    )
+    updateMessagingPlatform.mockReturnValue(update.promise)
+
+    await renderMessaging()
+    await screen.findAllByText('Gateway A Teams')
+    fireEvent.click(screen.getByRole('switch'))
+    await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalledWith('teams', { enabled: true }, scope('gateway-a')))
+    await act(async () => setSettingsOwner(scope('gateway-b')))
+    expect((await screen.findAllByText('Gateway B Teams')).length).toBeGreaterThan(0)
+
+    await act(async () => update.resolve({ hot_served: false }))
+    expect(screen.queryByText('Gateway A Teams')).toBeNull()
+    expect(runGatewayRestart).not.toHaveBeenCalled()
   })
 })
 
@@ -185,7 +277,7 @@ describe('MessagingView pairing', () => {
       fireEvent.click(approve)
     })
 
-    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718', 'default'))
+    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718', scope()))
   })
 
   it('restores the pending row when approval fails', async () => {
@@ -304,16 +396,51 @@ describe('MessagingView restart banner', () => {
     })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
     expect(runGatewayRestart).toHaveBeenCalledTimes(2)
+    expect(runGatewayRestart).toHaveBeenNthCalledWith(1, scope())
+    expect(runGatewayRestart).toHaveBeenNthCalledWith(2, scope())
   })
 })
 
 describe('MessagingView Telegram quick setup', () => {
+  it('ignores a late setup result from the replaced gateway owner', async () => {
+    const start = deferred<{
+      deep_link: string
+      expires_at: string
+      pairing_id: string
+      qr_payload: string
+      suggested_username: string
+    }>()
+
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({ id: 'telegram', name: 'Telegram', state: 'not_configured' })]
+    })
+    startTelegramOnboarding.mockReturnValue(start.promise)
+
+    await renderMessaging()
+    fireEvent.click(await screen.findByRole('button', { name: /Create with QR/ }))
+    await waitFor(() => expect(startTelegramOnboarding).toHaveBeenCalledWith(undefined, scope('gateway-a')))
+    await act(async () => setSettingsOwner(scope('gateway-b')))
+    await act(async () =>
+      start.resolve({
+        deep_link: 'https://t.me/BotFather?start=stale',
+        expires_at: new Date(Date.now() + 600_000).toISOString(),
+        pairing_id: 'stale-pair',
+        qr_payload: 'tg://stale',
+        suggested_username: 'stale_bot'
+      })
+    )
+
+    expect(getTelegramOnboardingStatus).not.toHaveBeenCalledWith('stale-pair', scope('gateway-a'))
+    expect(screen.getByRole('button', { name: /Create with QR/ })).toBeTruthy()
+  })
+
   it('runs the QR pairing to apply on the page scope and watches the backend restart', async () => {
     // Every call of one pairing must hit the SAME backend (the pairing lives in
     // that process's memory), so start/status/apply all carry the page's scope
     // and apply names the profile the credentials land in.
     const { $settingsScopeOverride } = await import('@/store/settings-scope')
     $settingsScopeOverride.set('worker')
+    await setSettingsOwner(scope('gateway-a', 'worker'))
     getMessagingPlatforms.mockResolvedValue({
       platforms: [platform({ id: 'telegram', name: 'Telegram', state: 'not_configured' })]
     })
@@ -343,18 +470,20 @@ describe('MessagingView Telegram quick setup', () => {
       await act(async () => {
         fireEvent.click(await screen.findByRole('button', { name: /Create with QR/ }))
       })
-      await waitFor(() => expect(startTelegramOnboarding).toHaveBeenCalledWith(undefined, 'worker'))
+      await waitFor(() => expect(startTelegramOnboarding).toHaveBeenCalledWith(undefined, scope('gateway-a', 'worker')))
 
       const save = await screen.findByRole('button', { name: /Save and restart/ }, { timeout: 4000 })
-      expect(getTelegramOnboardingStatus).toHaveBeenCalledWith('pair-1', 'worker')
+      expect(getTelegramOnboardingStatus).toHaveBeenCalledWith('pair-1', scope('gateway-a', 'worker'))
       expect(screen.getByText('8792111505')).toBeTruthy()
 
       await act(async () => {
         fireEvent.click(save)
       })
 
-      await waitFor(() => expect(applyTelegramOnboarding).toHaveBeenCalledWith('pair-1', ['8792111505'], 'worker'))
-      await waitFor(() => expect(watchGatewayRestartOutcome).toHaveBeenCalled())
+      await waitFor(() =>
+        expect(applyTelegramOnboarding).toHaveBeenCalledWith('pair-1', ['8792111505'], scope('gateway-a', 'worker'))
+      )
+      await waitFor(() => expect(watchGatewayRestartOutcome).toHaveBeenCalledWith(scope('gateway-a', 'worker')))
     } finally {
       $settingsScopeOverride.set(null)
     }

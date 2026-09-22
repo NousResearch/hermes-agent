@@ -58,8 +58,8 @@ class TestDoInstallSkipConfirm:
         from hermes_cli.skills_hub import do_install
         with patch("hermes_cli.skills_hub._console"), \
              patch("tools.skills_hub.ensure_hub_dirs"), \
-             patch("tools.skills_hub.GitHubAuth"), \
-             patch("tools.skills_hub.create_source_router") as mock_router, \
+             patch("tools.skills_hub_github.GitHubAuth"), \
+             patch("tools.skills_hub_search.create_source_router") as mock_router, \
              patch("hermes_cli.skills_hub._resolve_short_name", return_value="test/skill"), \
              patch("hermes_cli.skills_hub._resolve_source_meta_and_bundle") as mock_resolve:
 
@@ -77,7 +77,7 @@ class TestDoUninstallSkipConfirm:
         """With skip_confirm=True, input() should not be called."""
         from hermes_cli.skills_hub import do_uninstall
         with patch("hermes_cli.skills_hub._console") as mock_console, \
-             patch("tools.skills_hub.uninstall_skill", return_value=(True, "Removed")) as mock_uninstall, \
+             patch("tools.skills_hub_install.uninstall_skill", return_value=(True, "Removed")) as mock_uninstall, \
              patch("builtins.input") as mock_input:
             do_uninstall("test-skill", skip_confirm=True)
             mock_input.assert_not_called()

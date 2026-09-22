@@ -25,8 +25,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-from tools.transcription_tools import (
-    BUILTIN_STT_PROVIDERS,
+from tools.transcription_common import BUILTIN_STT_PROVIDERS
+from tools.transcription_command import (
     COMMAND_STT_OUTPUT_FORMATS,
     DEFAULT_COMMAND_STT_LANGUAGE,
     DEFAULT_COMMAND_STT_OUTPUT_FORMAT,
@@ -34,11 +34,11 @@ from tools.transcription_tools import (
     _get_command_stt_output_format,
     _get_command_stt_timeout,
     _get_named_stt_provider_config,
-    _has_any_command_stt_provider,
-    _iter_command_stt_providers,
     _render_command_stt_template,
     _resolve_command_stt_provider_config,
     _transcribe_command_stt,
+)
+from tools.transcription_tools import (
     transcribe_audio,
 )
 
@@ -143,24 +143,6 @@ class TestSTTCommandHelpers:
     def test_output_format_defaults_to_txt(self):
         assert _get_command_stt_output_format({}) == DEFAULT_COMMAND_STT_OUTPUT_FORMAT
         assert DEFAULT_COMMAND_STT_OUTPUT_FORMAT == "txt"
-
-
-    def test_iter_command_providers_yields_only_command_type(self):
-        cfg = {
-            "providers": {
-                "cmd-one": {"type": "command", "command": "x"},
-                "no-cmd": {"type": "command"},  # no command field
-                "wrong-type": {"type": "http", "command": "x"},
-                "cmd-two": {"command": "y"},  # implicit type
-            },
-        }
-        names = {name for name, _ in _iter_command_stt_providers(cfg)}
-        assert names == {"cmd-one", "cmd-two"}
-
-
-    def test_has_any_command_provider_true_when_one_configured(self):
-        cfg = {"providers": {"custom": {"command": "x"}}}
-        assert _has_any_command_stt_provider(cfg) is True
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
 
 import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
+import { ErrorBoundary } from '@/components/error-boundary'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
 
@@ -469,10 +470,18 @@ function SyntaxDiff({ language, lines }: { language: string; lines: DiffLine[] }
   // The Shiki hook lives in a lazily-loaded module (syntax-diff.tsx) so the
   // multi-MB shiki chunk stays off the cold-start path. Until it (and the
   // highlight itself) resolves, show the plain colored diff — no flash.
+  //
+  // A rejected dynamic import (e.g. a packaged app whose renderer window is
+  // pointed at the asar copy of dist/ while the chunk only exists in
+  // app.asar.unpacked, #93479) throws past Suspense, which only covers the
+  // pending state. Without a local boundary that throw reaches the workspace
+  // ContribBoundary and blanks the whole pane instead of just this diff.
   return (
-    <React.Suspense fallback={<DiffBody lines={lines} />}>
-      <LazySyntaxDiff language={language} lines={lines} />
-    </React.Suspense>
+    <ErrorBoundary fallback={() => <DiffBody lines={lines} />} label="syntax-diff">
+      <React.Suspense fallback={<DiffBody lines={lines} />}>
+        <LazySyntaxDiff language={language} lines={lines} />
+      </React.Suspense>
+    </ErrorBoundary>
   )
 }
 
@@ -645,7 +654,13 @@ export function FileDiffPanel({
       >
         {showLineNumbers ? (
           <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)]">
-            <div className="sticky left-0 z-1 select-none bg-(--ui-editor-surface-background) py-3 text-muted-foreground/55">
+            <div
+              className="sticky left-0 z-1 select-none bg-(--ui-editor-surface-background) py-3 text-muted-foreground/55"
+              // Masks the code scrolling horizontally beneath it, so it has to
+              // stay opaque when window glass thins the field. See
+              // `[data-glass-opaque]` in styles.css.
+              data-glass-opaque=""
+            >
               {beforeRows > 0 && <div aria-hidden style={{ height: beforeRows * PREVIEW_LINE_PX }} />}
               {visibleLineChunks.map(chunk => (
                 <div className="block" key={chunk.start}>

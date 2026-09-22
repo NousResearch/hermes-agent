@@ -22,6 +22,9 @@ def github(tmp_path, monkeypatch):
             if self.path == "/graphql":
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                    "mergeable": state.get("mergeable", "MERGEABLE"),
+                    "mergeStateStatus": state.get("merge_state_status", "CLEAN"),
+                    "isDraft": state.get("is_draft", True),
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
@@ -107,6 +110,45 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize(
+    ("mergeable", "merge_state_status", "accepted", "classification"),
+    [
+        ("MERGEABLE", "CLEAN", True, "success"),
+        ("CONFLICTING", "DIRTY", False, "conflict"),
+        ("UNKNOWN", "UNKNOWN", False, "inconclusive"),
+        ("MERGEABLE", "BEHIND", False, "inconclusive"),
+    ],
+)
+def test_pr_completion_requires_clean_mergeability_against_main(
+    github, mergeable, merge_state_status, accepted, classification,
+):
+    """Only a clean GitHub verdict can release the declared PR for completion."""
+    github.update(
+        conclusion="success",
+        mergeable=mergeable,
+        merge_state_status=merge_state_status,
+    )
+    with connect() as conn:
+        tid = kb.create_task(conn, title="merge gate", completion_contract="acme/repo")
+        ok = kb.complete_task(
+            conn, tid, result="done",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+        assert ok is accepted
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance' "
+            "ORDER BY id DESC LIMIT 1", (tid,),
+        ).fetchone()[0])
+        assert receipt["classification"] == classification
+        assert receipt["mergeability"] == {
+            "base": "main",
+            "mergeable": mergeable,
+            "merge_state_status": merge_state_status,
+        }
+        assert (kb.get_task(conn, tid).status == "done") is accepted
 
 
 @pytest.mark.linux_only

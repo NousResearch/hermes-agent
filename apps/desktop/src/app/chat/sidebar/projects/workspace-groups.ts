@@ -52,6 +52,15 @@ export interface SidebarProjectTree {
   color?: null | string
   icon?: null | string
   archived?: boolean
+  // Every profile that claimed this folder, stamped by the backend. A row in a
+  // single-profile tree carries exactly one; a row the all-profiles fan-out
+  // folded from several profiles carries the list — and the menu then offers a
+  // write-target picker off it. Absent on a backend predating the stamp.
+  profiles?: string[]
+  // Each claimant profile's OWN id for the row (ids are minted per profile, so
+  // a merged row's `id` only names the project in the winning profile). A write
+  // aimed at another claimant sends `profileIds[owner]` instead.
+  profileIds?: Record<string, string>
   // A git repo root promoted automatically (not a user-created projects.db row).
   // Deletable = dismissable.
   isAuto?: boolean

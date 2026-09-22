@@ -30,7 +30,8 @@ import {
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
-import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
+import { SidebarDateDivider, SidebarGroupRow, SidebarSectionMeta } from './chrome'
+import { Codicon } from '@/components/ui/codicon'
 import { GatewayProfileGroups } from './gateway-groups'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
@@ -516,7 +517,11 @@ export function SidebarSessionsSection({
     // wired — Home stays outside the sortable list, it's a fixture.
     const home = projectOverview[0]?.isNoProject ? projectOverview[0] : undefined
     const sortableProjects = home ? projectOverview.slice(1) : projectOverview
-    const projectsDraggable = sortableProjects.length > 1 && !!onReorderProjects
+    // Archived rows do not join the drag-to-reorder list; they render in their
+    // own section below the active list (the Archived group the tree now asks for).
+    const activeProjects = sortableProjects.filter(project => !project.archived)
+    const archivedProjects = sortableProjects.filter(project => project.archived)
+    const projectsDraggable = activeProjects.length > 1 && !!onReorderProjects
     const Row = projectsDraggable ? SortableProjectOverviewRow : ProjectOverviewRow
 
     const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
@@ -538,14 +543,14 @@ export function SidebarSessionsSection({
       />
     )
 
-    const rows = sortableProjects.map(project => projectRow(project, Row))
+    const rows = activeProjects.map(project => projectRow(project, Row))
 
     inner = (
       <>
         {home && projectRow(home, ProjectOverviewRow)}
         {projectsDraggable && onReorderProjects ? (
           <ReorderableList
-            ids={sortableProjects.map(project => project.id)}
+            ids={activeProjects.map(project => project.id)}
             onReorder={onReorderProjects}
             sensors={dndSensors}
           >
@@ -553,6 +558,14 @@ export function SidebarSessionsSection({
           </ReorderableList>
         ) : (
           rows
+        )}
+        {archivedProjects.length > 0 && (
+          <SidebarGroupRow
+            label={`${t.sidebar.projects.workspaceArchived} · ${archivedProjects.length}`}
+            lead={<Codicon name="history" />}
+          >
+            {archivedProjects.map(project => projectRow(project, ProjectOverviewRow))}
+          </SidebarGroupRow>
         )}
       </>
     )

@@ -289,6 +289,88 @@ def test_delete_removes_project(tmp_path):
     assert "projects.delete" in server._methods
 
 
+def test_delete_of_active_project_clears_pointer(tmp_path):
+    """The active pointer must never dangle after the row it referenced is gone."""
+    pid = _call("projects.create", {"name": "Act", "folders": [str(tmp_path)]})["project"]["id"]
+    _call("projects.set_active", {"id": pid})
+    listing = _call("projects.list", {})
+    assert listing["active_id"] == pid
+
+    _call("projects.delete", {"id": pid})
+    listing = _call("projects.list", {})
+    assert listing["active_id"] is None
+
+
+def _db_folders(pid: str) -> tuple[list[dict], str | None]:
+    """Read the project straight back out of the per-profile projects.db.
+
+    Deliberately not the RPC: the desktop's "Remove folder" picker trusts this
+    method to make the folder row go and to repoint (or NULL) primary_path, so
+    the assertion has to hold in the DB, not just in the reply.
+    """
+    from hermes_cli import projects_db as pdb
+
+    with pdb.connect_closing() as conn:
+        # `added_at` has second resolution, so path is the stable order here.
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT path, is_primary FROM project_folders WHERE project_id = ? ORDER BY path",
+                (pid,),
+            ).fetchall()
+        ]
+        primary = conn.execute(
+            "SELECT primary_path FROM projects WHERE id = ?", (pid,)
+        ).fetchone()["primary_path"]
+    return rows, primary
+
+
+def test_remove_folder_is_visible_in_the_db(tmp_path):
+    """Removing a folder mutates the store, and touches nothing on disk.
+
+    Three behaviors the client depends on:
+      * a non-primary folder goes and the primary is left alone;
+      * removing the PRIMARY repoints it to the folder that is left;
+      * removing the last folder leaves zero folders and NULL primary_path.
+    """
+    wiki, notes, scratch = tmp_path / "wiki", tmp_path / "notes", tmp_path / "scratch"
+    for d in (wiki, notes, scratch):
+        d.mkdir()
+
+    pid = _call(
+        "projects.create", {"name": "Wiki", "folders": [str(wiki)], "primary_path": str(wiki)}
+    )["project"]["id"]
+    for extra in (notes, scratch):
+        _call("projects.add_folder", {"id": pid, "path": str(extra)})
+
+    # Non-primary: the row goes, the primary stays. (Raw column values: SQLite
+    # hands back 1/0 for the boolean column.)
+    reply = _call("projects.remove_folder", {"id": pid, "path": str(notes)})["project"]
+    rows, primary = _db_folders(pid)
+    assert rows == [{"path": str(scratch), "is_primary": 0}, {"path": str(wiki), "is_primary": 1}]
+    assert primary == str(wiki)
+    assert [f["path"] for f in reply["folders"]] == [str(wiki), str(scratch)]
+    assert reply["primary_path"] == str(wiki)
+
+    # Primary: repointed to the folder that is left (earliest added first) —
+    # both in the DB column and in the reply the desktop caches.
+    reply = _call("projects.remove_folder", {"id": pid, "path": str(wiki)})["project"]
+    rows, primary = _db_folders(pid)
+    assert rows == [{"path": str(scratch), "is_primary": 1}]
+    assert primary == str(scratch)
+    assert [(f["path"], f["is_primary"]) for f in reply["folders"]] == [(str(scratch), True)]
+    assert reply["primary_path"] == str(scratch)
+
+    # Last folder: a folder-less project is legal — primary_path goes NULL.
+    _call("projects.remove_folder", {"id": pid, "path": str(scratch)})
+    rows, primary = _db_folders(pid)
+    assert rows == []
+    assert primary is None
+
+    # Only the project's bookkeeping changed: every folder is still on disk.
+    assert wiki.is_dir() and notes.is_dir() and scratch.is_dir()
+
+
 def test_discover_repos_is_registered_long_handler():
     assert "projects.discover_repos" in server._methods
     assert "projects.discover_repos" in server._LONG_HANDLERS
@@ -800,6 +882,70 @@ def test_projects_tree_is_scoped_to_the_requested_profile(monkeypatch, tmp_path)
     assert coder_tree["scoped_session_ids"] == ["tree-coder-session"]
     assert [p["label"] for p in launch_tree["projects"]] == ["Launch"]
     assert launch_tree["scoped_session_ids"] == ["tree-launch-session"]
+
+
+def test_explicit_profile_mutation_hits_only_that_profiles_projects_db(monkeypatch, tmp_path):
+    """Acceptance for the desktop path: a mutation that names its profile lands
+    in THAT profile's projects.db -- measured before/after by reading the
+    store, not by trusting the reply -- and the launch profile's rows are
+    untouched."""
+    from hermes_cli import projects_db as pdb
+
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "del-launch"
+    coder_repo = tmp_path / "repos" / "del-coder"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    launch_project = _create_project(launch_home, "Launch", launch_repo, use=True)
+    coder_project = _create_project(coder_home, "Coder", coder_repo, use=True)
+
+    def active_ids(home):
+        with pdb.connect_closing(db_path=home / "projects.db") as conn:
+            return [project.id for project in pdb.list_projects(conn)]
+
+    assert active_ids(launch_home) == [launch_project["id"]]
+    assert active_ids(coder_home) == [coder_project["id"]]
+
+    with _serving_launch_profile(launch_home):
+        _call("projects.delete", {"id": coder_project["id"], "profile": "coder"})
+
+    assert active_ids(coder_home) == []
+    assert active_ids(launch_home) == [launch_project["id"]]
+
+
+def test_projects_tree_stamps_row_owners(monkeypatch, tmp_path):
+    """Every tree row carries its claiming profile(s) + the claimant's own id,
+    so the all-profiles picker and the single-profile menu read the same
+    shape. The single-profile RPC tree has exactly one owner: the requested
+    profile when one is named, else the launch profile."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "own-launch"
+    coder_repo = tmp_path / "repos" / "own-coder"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    launch_project = _create_project(launch_home, "Launch", launch_repo, use=True)
+    coder_project = _create_project(coder_home, "Coder", coder_repo, use=True)
+
+    with _serving_launch_profile(launch_home):
+        coder_tree = _call("projects.tree", {"profile": "coder"})
+        launch_tree = _call("projects.tree")
+
+    coder_row = next(p for p in coder_tree["projects"] if p["label"] == "Coder")
+    assert coder_row["profiles"] == ["coder"]
+    assert coder_row["profileIds"] == {"coder": coder_project["id"]}
+
+    # The launch tree stamps its own single owner (the harness names it
+    # "custom"): exactly one entry, and it maps to the launch project's id.
+    launch_row = next(p for p in launch_tree["projects"] if p["label"] == "Launch")
+    assert len(launch_row["profiles"]) == 1
+    owner = launch_row["profiles"][0]
+    assert launch_row["profileIds"] == {owner: launch_project["id"]}
 
 
 def test_project_sessions_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):

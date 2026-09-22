@@ -368,8 +368,18 @@ def restore_project(conn: sqlite3.Connection, project_id: str) -> bool:
 
 
 def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
-    """Hard-delete a project and its folders (cascade)."""
-    return _execute_rowcount(conn, "DELETE FROM projects WHERE id = ?", (project_id,)) > 0
+    """Hard-delete a project and its folders (cascade).
+
+    The active-project pointer is cleared atomically when it referenced the
+    deleted row — a dangling ``active_id`` would otherwise survive the delete
+    and point the UI at a project that no longer exists.
+    """
+    with write_txn(conn):
+        cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        deleted = cur.rowcount > 0
+        if deleted and get_active_id(conn) == project_id:
+            conn.execute("DELETE FROM project_meta WHERE key = ?", (_ACTIVE_META_KEY,))
+    return deleted
 
 
 # --- Active-project pointer + discovery policy (project_meta KV) --------------

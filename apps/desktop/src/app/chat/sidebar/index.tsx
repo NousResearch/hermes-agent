@@ -156,6 +156,7 @@ import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } 
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
+import { RemoteFolderPicker } from '@/app/right-sidebar/files/remote-picker'
 import { resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
@@ -806,6 +807,10 @@ export function ChatSidebar({
   // authoritatively on the backend (projects.tree). Parents reorder via
   // workspaceParentOrderIds; worktrees within a parent via workspaceOrderIds.
   const worktreeGroupingActive = agentsGrouped && !showArchived
+  // The header "+" is the project-create door in project mode AND in the
+  // all-profiles workspace view (where per-profile groups carry their own
+  // "new session" +). The flat session list keeps "New session".
+  const headerPlusCreatesProject = agentsGrouped || showAllProfiles
   const gatewayReady = gatewayState === 'open'
 
   // The backend project tree is a structural snapshot, NOT a per-message feed.
@@ -1889,9 +1894,9 @@ export function ChatSidebar({
                             project dialog, and the created project starts at
                             the dropped spot. */}
                         <SidebarSectionAddButton
-                          ariaLabel={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                          ariaLabel={headerPlusCreatesProject ? s.projects.newButton : s.nav['new-session']}
                           onNewProjectDrag={
-                            agentsGrouped
+                            headerPlusCreatesProject
                               ? {
                                   // Dragging the "New project" + arms WHERE the
                                   // project should start; the dialog flow consumes
@@ -1900,9 +1905,9 @@ export function ChatSidebar({
                                 }
                               : undefined
                           }
-                          onNewSessionSplit={agentsGrouped ? undefined : onNewSessionSplit}
+                          onNewSessionSplit={headerPlusCreatesProject ? undefined : onNewSessionSplit}
                           onPlainClick={() => {
-                            if (agentsGrouped) {
+                            if (headerPlusCreatesProject) {
                               openProjectCreate()
                             } else {
                               onNewSessionInWorkspace(null)
@@ -2030,6 +2035,10 @@ export function ChatSidebar({
         )}
       </SidebarContent>
       <ProjectDialog />
+      {/* Remote (web/SSH) folder picker: the create/add-folder dialog needs a
+          directory, and remote mode has no OS dialog — this one browses the
+          backend filesystem through readDesktopDir. */}
+      <RemoteFolderPicker />
       {/* One mount for the whole app. The header of WorktreeDialog tells why. */}
       <WorktreeDialog />
     </Sidebar>

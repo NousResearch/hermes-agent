@@ -32,13 +32,34 @@ NO_PROJECT_LABEL = "Home"
 _MAX_SIBLING_PROBES = 4
 
 
+def project_sessions(project: dict) -> list[dict]:
+    """Every session row a project carries: its lanes' rows plus the overview previews."""
+    lanes = (s for repo in project.get("repos") or []
+             for group in repo.get("groups") or []
+             for s in group.get("sessions") or [])
+    return [*lanes, *(project.get("previewSessions") or [])]
+
+
 def stamp_profile(projects: list[dict], profile: str) -> None:
-    """Stamp every session row with the request-scope profile (authoritative even for legacy
-    rows whose ``profile_name`` is NULL) for cross-profile routing."""
+    """Stamp every row with the request-scope profile: sessions for cross-profile routing
+    (authoritative even for legacy rows whose ``profile_name`` is NULL), and the project row's
+    owners -- the folder in two profiles stays ONE row, and the owners (plus each owner's own id
+    for that row) are what a write needs to name when ``All profiles`` shows it
+    (see ``web_routers.profiles._merge_profile_tree``)."""
     for project in projects:
-        lanes = [g for repo in project.get("repos") or [] for g in repo.get("groups") or []]
-        for session in (project.get("previewSessions") or []) + [
-                s for g in lanes for s in g.get("sessions") or []]:
+        owners = project.get("profiles")
+        if not isinstance(owners, list):
+            owners = project["profiles"] = []
+        if profile not in owners:
+            owners.append(profile)
+        # A project id is minted per profile (``p_<hex>``), so a folder claimed by two profiles
+        # has two ids. Record each profile's own id: a merged row's id is only valid in the
+        # profile that won the identity, and a write aimed at another claimant needs its id.
+        ids = project.get("profileIds")
+        if not isinstance(ids, dict):
+            ids = project["profileIds"] = {}
+        ids[profile] = project["id"]
+        for session in project_sessions(project):
             session["profile"] = profile
 
 
@@ -398,7 +419,8 @@ def build_tree(
     projects: list[dict], sessions: list[dict], discovered_repos: list[dict],
     resolve: Optional[Resolve] = None, *, preview_limit: int = 3, hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
-    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None) -> dict:
+    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None,
+    include_archived: bool = False) -> dict:
     """Build the authoritative project tree -> ``{"projects", "scoped_session_ids"}``.
 
     ``is_junk_root`` flags git roots that must never become an AUTO project; ``is_junk_cwd``
@@ -406,7 +428,7 @@ def build_tree(
     keeps a DELETED workspace from becoming a phantom AUTO project (omit on remote backends).
     ``hydrate`` False empties lane ``sessions`` but keeps counts + ``previewSessions``.
     """
-    active_projects = [p for p in projects if not p.get("archived")]
+    active_projects = projects if include_archived else [p for p in projects if not p.get("archived")]
     _junk = is_junk_root or (lambda _root: False)
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     _exists = exists or (lambda _path: True)
@@ -436,7 +458,9 @@ def build_tree(
         result.append(_project_node(
             project["id"], project.get("name") or project["id"], project.get("primary_path"), repos,
             len(psessions), _last_active(psessions), _previews(psessions), psessions,
-            color=project.get("color"), icon=project.get("icon")))
+            color=project.get("color"), icon=project.get("icon"),
+            # The renderer partitions the tree on this flag (Archived section).
+            archived=bool(project.get("archived"))))
 
     # Tier 2: auto projects from leftover sessions.
     by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists)

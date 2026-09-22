@@ -562,13 +562,15 @@ def _merge_profile_tree(
     """Fold one profile's projects into the shared tree, keyed by folder: the same checkout
     in two profiles is one group, as is ``__no_project__`` (else one "Home" per profile), and
     a declared project (``p_<hash>``) folds with another profile's auto entry for the same
-    folder. Sessions carry the owning profile; a group header never claims a single owner."""
+    folder. Sessions carry the owning profile; the ROW carries every profile that claimed it
+    (``profiles``) plus each claimant's own id (``profileIds``), so an all-profiles write can
+    name the owner it means instead of falling back on whichever profile happens to be live."""
+    from tui_gateway.project_tree import project_sessions, stamp_profile
+
+    stamp_profile(projects, profile)
+
     for project in projects:
-        lane_sessions = (s for r in project.get("repos") or []
-                         for lane in r.get("groups") or []
-                         for s in lane.get("sessions") or [])
-        for session in [*lane_sessions, *(project.get("previewSessions") or [])]:
-            session["profile"] = profile
+        for session in project_sessions(project):
             session["is_default_profile"] = profile == "default"
 
         key = project.get("path") or project["id"]
@@ -583,6 +585,18 @@ def _merge_profile_tree(
             existing, project = project, existing
             merged[key] = existing
 
+        # Whichever row won the identity, the folder is claimed by both profiles: the owner
+        # list is the union, so the picker can offer every profile a write could land in.
+        owners = existing.setdefault("profiles", [])
+        for owner in project.get("profiles") or []:
+            if owner not in owners:
+                owners.append(owner)
+        # Each claimant keeps its OWN id for the row -- the winner's id only names a project
+        # in the winner's profile, so a write aimed at another claimant has to send that one's.
+        ids = existing.setdefault("profileIds", {})
+        for owner, project_id in (project.get("profileIds") or {}).items():
+            ids.setdefault(owner, project_id)
+
         repos: Dict[str, Dict[str, Any]] = {r["id"]: r for r in existing.get("repos") or []}
         _merge_by_id(repos, project.get("repos") or [], "groups")
         existing["repos"] = list(repos.values())
@@ -596,7 +610,9 @@ def _merge_profile_tree(
 
 @sessions_router.get("/api/profiles/projects/tree")
 @_sidebar_singleflight_cache
-def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000):
+def get_profiles_projects_tree(
+    preview_limit: int = 3, session_limit: int = 2000, include_archived: bool = False
+):
     """Project tree for every profile at once, for the all-profiles sidebar.
 
     ``projects.tree`` over JSON-RPC answers for the backend's own profile only; this runs the
@@ -616,7 +632,8 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
             with _hermes_home_scope(home):
                 tree, _active_id = gateway_server._build_project_tree(
                     db, preview_limit=preview_limit, hydrate=False,
-                    session_limit=session_limit, include_discovered=False)
+                    session_limit=session_limit, include_discovered=False,
+                    include_archived=include_archived)
                 _merge_profile_tree(merged, tree["projects"], name, preview_limit)
                 scoped_session_ids.extend(tree["scoped_session_ids"])
         _read_profile_db(name, home, errors, _read)

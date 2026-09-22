@@ -197,11 +197,8 @@ def _build_child_agent(
 
     # Presentation-only identity (#118081): stable for the child's lifetime,
     # unique among concurrently-live children. subagent_id stays the routing key.
-    from tools.delegate_names import assign_display_name
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
-    with _active_subagents_lock:
-        _taken = {rec.get("display_name") for rec in _active_subagents.values()}
-    display_name = assign_display_name(_taken)
+    from tools.delegate_tool_registry import release_display_name, reserve_display_name
+    display_name = reserve_display_name()
 
     # General delegation behavior (reasoning, compression, capabilities) stays
     # global. Only fallback policy follows the owner of a per-call route such

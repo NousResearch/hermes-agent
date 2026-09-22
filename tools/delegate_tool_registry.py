@@ -24,6 +24,31 @@ _active_subagents: Dict[str, Dict[str, Any]] = {}
 # and need delegation attribution even though the live registry entry is gone.
 _RECENT_SUBAGENTS_CAP = 200
 _recent_subagents: Dict[str, Dict[str, Any]] = {}
+# Display names handed out at spawn but not yet registered (allocation → registration runs on
+# different threads; see _run_single_child). Keeps concurrent spawns from computing the same
+# name between the live-registry snapshot and _register_subagent (review of #118104).
+_reserved_display_names: set = set()
+
+def reserve_display_name() -> str:
+    """Atomically pick and reserve a display name absent from live records and reservations.
+
+    Returns a name that stays unique among concurrently-live children: the reservation holds
+    until the child registers (its record then carries the name) or is released on build
+    failure. A reservation can outlive a child that was built but never registered — the
+    name is merely unallocatable until process exit; the pool tolerates that."""
+    from tools.delegate_names import assign_display_name
+    with _active_subagents_lock:
+        taken = {r.get("display_name") for r in _active_subagents.values()} | _reserved_display_names
+        name = assign_display_name(taken)
+        _reserved_display_names.add(name)
+        return name
+
+def release_display_name(name: Optional[str]) -> None:
+    """Free a reservation that will never turn into a registered record (child build failed)."""
+    if not name:
+        return
+    with _active_subagents_lock:
+        _reserved_display_names.discard(name)
 
 def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """``{subagent_id, goal, delegation_id}`` for a process task_id that belongs to a live or recently-finished child
@@ -54,6 +79,8 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     record.setdefault("accepting_steer", True)
     with _active_subagents_lock:
         _active_subagents[sid] = record
+        # The registered record now carries the name; its spawn-time reservation converts here.
+        _reserved_display_names.discard(record.get("display_name"))
 
 def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
     """Drop the live record (exact agent identity when given) and keep a bounded attribution stub."""

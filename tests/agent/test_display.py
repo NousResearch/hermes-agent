@@ -129,6 +129,14 @@ class TestBuildToolPreview:
         assert build_tool_preview("delegate_task", {"action": "stop", "subagent_id": "sa-1-abc"}) == "stop Turing"
         assert build_tool_preview("delegate_task", {"action": "list"}) == "list"
 
+    def test_steer_preview_without_target_id_has_no_dangling_punctuation(self, monkeypatch):
+        """#118104 review: empty subagent_id must not render as `steer : "x"` / `steer `."""
+        monkeypatch.setattr(
+            "tools.delegate_tool_registry.get_subagent_display_name", lambda sid: None
+        )
+        assert build_tool_preview("delegate_task", {"action": "steer", "message": "x"}) == 'steer: "x"'
+        assert build_tool_preview("delegate_task", {"action": "steer"}) == "steer"
+
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None

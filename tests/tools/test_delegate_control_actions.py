@@ -225,6 +225,54 @@ def test_display_name_lookup_live_and_recent(monkeypatch):
     assert get_subagent_display_name("sid-dn-3") == "Noether"
 
 
+# ---------------------------------------------------------------------------
+# display-name reservation — allocation and registration run on different
+# threads; the reservation closes the TOCTOU window between them (review of #118104)
+# ---------------------------------------------------------------------------
+
+
+def test_reserve_is_unique_and_converts_on_register():
+    """Behavioral assertions only (immune to suite-order reserved/active state):
+    sequential reserves differ, both hold reservations, and registering a record
+    under a reserved name converts exactly that reservation (review of #118104)."""
+    from tools.delegate_tool_registry import (
+        _active_subagents_lock, _reserved_display_names, _register_subagent as reg,
+        release_display_name, reserve_display_name,
+    )
+    grabbed: list = []
+    try:
+        first, second = reserve_display_name(), reserve_display_name()
+        assert first != second
+        with _active_subagents_lock:
+            assert first in _reserved_display_names and second in _reserved_display_names
+        reg({"subagent_id": "sid-res-conv", "display_name": first, "agent": _StubChild(), "goal": "g"})
+        with _active_subagents_lock:
+            assert first not in _reserved_display_names   # converted by registration
+            assert second in _reserved_display_names      # untouched
+        grabbed = [second]
+    finally:
+        for n in grabbed:
+            release_display_name(n)
+        _unregister_subagent("sid-res-conv")
+
+
+def test_concurrent_reserves_never_collide():
+    """Two spawns building children between snapshot and registration must still
+    get distinct names — the exact interleave the review flagged."""
+    import concurrent.futures
+    from tools.delegate_names import _FRIENDLY_NAMES
+    from tools.delegate_tool_registry import release_display_name, reserve_display_name
+    n_threads = min(16, len(_FRIENDLY_NAMES))
+    names: list = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_threads) as pool:
+            names = list(pool.map(lambda _: reserve_display_name(), range(n_threads * 4)))
+        assert len(set(names)) == len(names), f"duplicate display names: {sorted(names)}"
+    finally:
+        for n in names:
+            release_display_name(n)
+
+
 def test_steer_requires_subagent_id():
     out = _handle_control_action("steer", "", "text", _StubParent())
     assert "requires subagent_id" in out

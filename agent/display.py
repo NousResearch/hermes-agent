@@ -382,7 +382,8 @@ def _delegate_action_preview(args: dict) -> str | None:
         target = _delegate_display_target(str(args.get('subagent_id') or '').strip())
         if action == "steer":
             note = _clip(_oneline(str(args.get("message") or "")), 24)
-            return f"steer {target}: \"{note}\"" if note else f"steer {target}"
+            label = f"steer {target}".strip()  # empty id must not leave "steer : ..." / trailing space
+            return f'{label}: "{note}"' if note else label
         return f"{action} {target}".strip()
     return None
 

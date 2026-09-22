@@ -334,3 +334,84 @@ def test_benign_transcript_content_is_untouched():
     assert "src/parser.py" in body
     assert "def parse(x)" in body
     assert "refactor the parser" in body
+
+
+# ---------------------------------------------------------------------------
+# Index alignment: writers (aligned) vs paths (compressed) when a writer init fails
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_logs_stay_index_aligned_when_a_writer_fails(monkeypatch, tmp_path):
+    """create_live_transcripts compresses the returned paths list (failed writers
+    dropped), but the manifest maps task index -> log: it must consume the
+    index-aligned writers instead. With task 0's writer dead, task 0 gets no log
+    and tasks 1/2 keep their OWN logs — not shifted-by-one labels."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    orig_init = LiveTranscriptWriter.__init__
+
+    def flaky_init(self, delegation_id, task_index, goal, context=None, root=None):
+        if task_index == 0:
+            root = blocker / "d"  # a file sits here: mkdir fails -> path=None
+        orig_init(self, delegation_id, task_index, goal, context=context, root=root)
+
+    monkeypatch.setattr(LiveTranscriptWriter, "__init__", flaky_init)
+    delegation_id, writers, paths = create_live_transcripts(
+        [{"goal": "a"}, {"goal": "b"}, {"goal": "c"}]
+    )
+
+    assert delegation_id is not None
+    assert writers[0] is None and all(w is not None for w in writers[1:])
+    assert len(paths) == 2  # compressed: fine for display-only consumers
+
+    manifest = json.loads(
+        (live_transcript_root() / delegation_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    logs = [t["log"] for t in manifest["tasks"]]
+    assert logs[0] is None
+    assert Path(logs[1]).name == "task-1.log"
+    assert Path(logs[2]).name == "task-2.log"
+
+
+def test_dispatch_labels_transcripts_from_aligned_writers(monkeypatch):
+    """Same contract on the dispatch side: per-entry ``live_transcript`` labels
+    and the combined ``live_transcripts`` list must come from the aligned
+    ``live_writers`` — indexing the compressed ``live_paths`` shifts every label
+    past the first failure and silently drops the last task's transcript."""
+    from types import SimpleNamespace
+
+    from tools import delegate_tool_dispatch as dispatch_mod
+
+    delegation_id = "deleg_align_dispatch"
+    writers = [None,
+               LiveTranscriptWriter(delegation_id, 1, "g1"),
+               LiveTranscriptWriter(delegation_id, 2, "g2")]
+    paths = [str(w.path) for w in writers if w is not None]  # compressed, as produced
+
+    parent = _make_parent()
+    tasks = [{"goal": "a"}, {"goal": "b"}, {"goal": "c"}]
+    children = [SimpleNamespace(_delegate_role="leaf") for _ in tasks]
+    batch = dispatch_mod._Batch(
+        task_list=tasks, children=list(zip(range(3), tasks, children)),
+        parent_agent=parent, creds=_CREDS, context=None, top_role="leaf",
+        max_children=3, live_deleg_id=None, live_writers=writers, live_paths=paths,
+        origin_wake_sid="", origin_ui_session_id="", origin_owner_transport=None,
+        origin_owner_session_record=None, origin_session_history_delivery=False,
+        overall_start=time.monotonic(),
+    )
+    batch.run_child = lambda i, t, child: {
+        "task_index": i, "status": "completed", "summary": "done",
+        "error": None, "api_calls": 0, "duration_seconds": 0,
+    }
+    monkeypatch.setattr(dispatch_mod, "_finalize_child_results", lambda *a, **k: None)
+
+    combined = dispatch_mod._execute_and_aggregate(batch)
+
+    by_index = {r["task_index"]: r for r in combined["results"]}
+    assert by_index[0].get("live_transcript") is None
+    assert Path(by_index[1]["live_transcript"]).name == "task-1.log"
+    assert Path(by_index[2]["live_transcript"]).name == "task-2.log"
+    assert [Path(p).name for p in combined["live_transcripts"]] == [
+        "task-1.log", "task-2.log"]

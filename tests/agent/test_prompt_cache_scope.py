@@ -11,6 +11,7 @@ derivation sites, while preserving #79161's isolation semantics for /new,
 from __future__ import annotations
 
 from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -292,10 +293,8 @@ class TestTransportWiring:
             is_codex_backend=True,
         )
         assert kwargs["extra_headers"]["session_id"] == "rotated-1"
-        # Routing header mirrors the body's scoped cache key.
-        assert kwargs["extra_headers"]["x-client-request-id"] == kwargs[
-            "prompt_cache_key"
-        ]
+        assert uuid.UUID(kwargs["extra_headers"]["x-client-request-id"])
+        assert kwargs["extra_headers"]["x-client-request-id"] != kwargs["prompt_cache_key"]
 
     def test_xai_conv_id_uses_logical_scope(self):
         from agent.transports.codex import ResponsesApiTransport

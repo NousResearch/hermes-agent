@@ -951,8 +951,7 @@ def _interpreter_scripts_dir() -> Path | None:
 
 
 def _install_python_dependencies_with_optional_fallback(
-    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None, group: str = "all",
-    reinstall: bool = False,
+    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None, group: str = "all"
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
@@ -981,8 +980,6 @@ def _install_python_dependencies_with_optional_fallback(
             scripts_dir = _interpreter_scripts_dir()
 
     def _install(args: list[str]) -> None:
-        if reinstall:
-            args = [args[0], "--reinstall", *args[1:]]
         if pin_python:
             args = _insert_python_pin(args)
         # strict_quarantine: this is the UPDATE dependency sync; ShimQuarantineError propagates

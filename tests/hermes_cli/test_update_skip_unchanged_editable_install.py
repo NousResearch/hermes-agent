@@ -116,30 +116,6 @@ def test_unreadable_finder_fails_closed(repo, monkeypatch):
     assert _editable_install_is_current(GIT, repo, before) is False
 
 
-def test_mapping_drift_requests_reinstall_flag():
-    from hermes_cli.main_install_repair import _install_python_dependencies_with_optional_fallback
-
-    recorded = []
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        "hermes_cli.main_install_repair._run_quarantined_install",
-        lambda cmd, **kwargs: recorded.append(cmd),
-    )
-    monkeypatch.setattr(
-        "hermes_cli.main_install_repair._verify_console_scripts_installed",
-        lambda *args, **kwargs: None,
-    )
-    monkeypatch.setattr("hermes_cli.main_install_repair._is_windows", lambda: False)
-    try:
-        _install_python_dependencies_with_optional_fallback(["uv", "pip"], reinstall=True)
-        assert recorded and "--reinstall" in recorded[0]
-        recorded.clear()
-        _install_python_dependencies_with_optional_fallback(["uv", "pip"], reinstall=False)
-        assert recorded and "--reinstall" not in recorded[0]
-    finally:
-        monkeypatch.undo()
-
-
 def test_source_only_pull_skips_the_reinstall(repo):
     """The common update: .py churn inside already-mapped packages."""
     before = _head(repo)

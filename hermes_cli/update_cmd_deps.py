@@ -1199,7 +1199,6 @@ def _sync_python_dependencies_after_pull(
     # by the next launch (``_recover_from_interrupted_install``). Lazy refresh uses its own marker.
     _write_update_incomplete_marker()
     deps_current = _editable_install_is_current(git_cmd, _m().PROJECT_ROOT, pre_pull_sha)
-    mapping_current = _editable_finder_mapping_current(_m().PROJECT_ROOT)
     print(
         "→ Python dependencies unchanged — skipping reinstall" if deps_current
         else "→ Updating Python dependencies...")
@@ -1232,8 +1231,7 @@ def _sync_python_dependencies_after_pull(
             print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
             _install_psutil_android_compat(install_prefix, env=lazy_env)
         _m()._install_python_dependencies_with_optional_fallback(
-            install_prefix, env=lazy_env, group=install_group,
-            reinstall=mapping_current is False)
+            install_prefix, env=lazy_env, group=install_group)
 
     # Clear the core breadcrumb before lazy refresh, which uses its own marker so a lazy
     # failure can't be "healed" by a narrow core import probe.

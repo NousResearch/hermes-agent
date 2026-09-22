@@ -474,6 +474,7 @@ class GatewayModelCommandsMixin:
                 base_url=result.base_url or ctx.current_base_url or "",
                 api_key=result.api_key or ctx.current_api_key or "", model_info=result.model_info,
                 selection_context=selection_context_for_agent(self._cached_agent_for(ctx.session_key)),
+                interactive=True,
             )
         except Exception:
             warning = None

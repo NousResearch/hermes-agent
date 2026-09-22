@@ -4496,7 +4496,10 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 from hermes_cli.model_selection_guards import combined_selection_warning
                 # Pricing lookup may hit models.dev on a cache miss — keep it off the event loop.
-                warning = await asyncio.to_thread(combined_selection_warning, model_id, provider=provider_slug)
+                # The pick came from this chat's picker: honour a profile that already recorded
+                # security.allow_data_training_tiers_interactive (cost guards still confirm).
+                warning = await asyncio.to_thread(
+                    combined_selection_warning, model_id, provider=provider_slug, interactive=True)
             except Exception:
                 warning = None
             if warning is not None:

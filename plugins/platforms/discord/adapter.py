@@ -6527,7 +6527,10 @@ def _define_discord_view_classes() -> None:
             try:
                 from hermes_cli.model_selection_guards import combined_selection_warning
                 # Pricing lookup can hit models.dev on a cache miss — keep it off the event loop.
-                return await asyncio.to_thread(combined_selection_warning, model_id, provider=self._selected_provider)
+                # A pick from this embed is user-driven: a profile that already recorded
+                # security.allow_data_training_tiers_interactive is not asked again.
+                return await asyncio.to_thread(
+                    combined_selection_warning, model_id, provider=self._selected_provider, interactive=True)
             except Exception:
                 return None
 

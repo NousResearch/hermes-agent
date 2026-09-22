@@ -1725,6 +1725,11 @@ DEFAULT_CONFIG = {
         # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
         # on prompts. The startup guard still warns every run; cost guards are unaffected.
         "allow_data_training_tiers_noninteractive": False,
+        # Persisted acknowledgement, per profile, for an INTERACTIVE selection of such a tier:
+        # when true, pickers stop re-asking the data-policy confirm for a model the user already
+        # accepted. Only that kind is dropped — cost/context guards always fire — and unattended
+        # runs still need ``allow_data_training_tiers_noninteractive``.
+        "allow_data_training_tiers_interactive": False,
         # Human-approval presentation transport. "builtin" = CLI/TUI/gateway/ACP surfaces; a plugin
         # transport is used only when named explicitly. Transport timeout/error/invalid response
         # DENIES unless transport_fallback is "builtin". Presentation only: plugins cannot detect,

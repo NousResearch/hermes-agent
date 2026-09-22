@@ -532,7 +532,8 @@ class CLIModelSwitchMixin:
                 result.new_model, provider=result.target_provider,
                 base_url=result.base_url or self.base_url or "",
                 api_key=result.api_key or self.api_key or "", model_info=result.model_info,
-                selection_context=selection_context_for_agent(getattr(self, "agent", None)))
+                selection_context=selection_context_for_agent(getattr(self, "agent", None)),
+                interactive=True)
         except Exception:
             warning = None
         if warning is None:

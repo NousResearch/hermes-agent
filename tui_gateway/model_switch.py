@@ -221,7 +221,10 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
         warning = combined_selection_warning(
             result.new_model, provider=result.target_provider, base_url=result.base_url or current_base_url,
             api_key=result.api_key or current_api_key, model_info=result.model_info,
-            selection_context=selection_context_for_agent(agent))
+            selection_context=selection_context_for_agent(agent),
+            # The client asked for this switch from its picker: a profile that already recorded
+            # security.allow_data_training_tiers_interactive confirms once, not every pick.
+            interactive=True)
     except Exception:
         warning = None
     if warning is None:
@@ -449,7 +452,9 @@ def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
         return None
     try:
         from hermes_cli.model_selection_guards import combined_selection_warning
-        warning = combined_selection_warning(model, provider=provider or None)
+        # User-queued pick: a profile that recorded security.allow_data_training_tiers_interactive
+        # is not asked again for the data-policy warning.
+        warning = combined_selection_warning(model, provider=provider or None, interactive=True)
     except Exception:
         return None
     return warning.message if warning is not None else None

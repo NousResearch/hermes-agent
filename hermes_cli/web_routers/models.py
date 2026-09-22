@@ -18,7 +18,9 @@ from hermes_cli.web_server_config import (
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
+from hermes_cli.web_routers._common import (
+    _CONFIG_MUTATION_LOCK, config_write_scope, http_failure, scoped_to_thread,
+)
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -293,12 +295,22 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 from hermes_cli.model_selection_guards import combined_selection_warning
 
                 # Pricing lookup can hit models.dev / a /models endpoint on a cache miss — off the loop.
-                warning = await asyncio.to_thread(combined_selection_warning, model, provider=provider, base_url=base_url)
+                # The guard also reads security.allow_data_training_tiers_interactive, which is a
+                # PER-PROFILE setting: resolve it inside the requested profile's scope (worker thread,
+                # never across an await) so a multi-profile dashboard does not ask a profile that
+                # already recorded the acknowledgement. See #102048.
+                warning = await scoped_to_thread(
+                    body.profile or profile,
+                    lambda: combined_selection_warning(
+                        model, provider=provider, base_url=base_url, interactive=True))
             except Exception:
                 warning = None
             if warning is not None:
+                # ``confirm_title`` names the guard that actually fired — the desktop dialog
+                # otherwise labels a data-policy confirm as an "Expensive Model Warning" (#102048).
                 return {"ok": False, "scope": scope, "provider": provider, "model": model,
-                        "confirm_required": True, "confirm_message": warning.message}
+                        "confirm_required": True, "confirm_message": warning.message,
+                        "confirm_title": warning.title}
 
         reasoning_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET
 

@@ -101,3 +101,67 @@ def test_cost_guard_still_fires_through_registry():
         "pricey/model", provider="anthropic", model_info=info
     )
     assert any(w.kind == "cost" for w in warnings)
+
+
+# ── persisted interactive data-policy acknowledgement (#102048) ───────────────────────────────────
+#
+# ``security.allow_data_training_tiers_interactive`` records, per profile, that the user already
+# accepted a tier whose vendor trains on prompts. Surfaces pass ``interactive=True`` for a
+# user-driven selection so the confirmation stops repeating; an unattended run must keep refusing
+# without the separate ``…_noninteractive`` key.
+
+CONTRIBUTOR_MODEL = "muse-spark-1.2-contributor"
+
+
+class _CostPayload:
+    """Minimal duck-typed cost-guard payload: the registry only reads ``.message``."""
+
+    message = "COST BLOCK"
+
+
+def _home_with_security(monkeypatch, tmp_path, **security) -> None:
+    """Point the process at a throwaway HERMES_HOME carrying this ``security`` section."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    lines = ["security:"]
+    lines += [f"  {key}: {str(value).lower() if isinstance(value, bool) else value}"
+              for key, value in security.items()]
+    (tmp_path / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    from hermes_cli.config import invalidate_env_cache
+
+    invalidate_env_cache()
+
+
+def _acknowledged_home(monkeypatch, tmp_path) -> None:
+    _home_with_security(monkeypatch, tmp_path, allow_data_training_tiers_interactive=True)
+
+
+def test_interactive_ack_drops_only_the_data_policy_warning(monkeypatch, tmp_path):
+    """Once acknowledged, an interactive pick stops asking for the data policy — cost still asks."""
+    _acknowledged_home(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.model_cost_guard.expensive_model_warning", lambda *a, **k: _CostPayload())
+    warnings = selection_warnings(CONTRIBUTOR_MODEL, provider="custom", interactive=True)
+    assert [w.kind for w in warnings] == ["cost"]
+    assert warnings[0].message == "COST BLOCK"
+
+
+def test_interactive_selection_still_confirms_without_the_acknowledgement(monkeypatch, tmp_path):
+    """Default (key absent): every interactive selection of a contributor tier confirms."""
+    _home_with_security(monkeypatch, tmp_path)
+    warnings = selection_warnings(CONTRIBUTOR_MODEL, provider="custom", interactive=True)
+    assert any(w.kind == "data_policy" for w in warnings)
+
+
+def test_unattended_selection_ignores_the_interactive_acknowledgement(monkeypatch, tmp_path):
+    """The interactive ack is not a silent opt-out for unattended runs: only the
+    ``…_noninteractive`` key unlocks those (see ``hermes_cli/main.py``)."""
+    _acknowledged_home(monkeypatch, tmp_path)
+    warnings = selection_warnings(CONTRIBUTOR_MODEL, provider="custom")
+    assert any(w.kind == "data_policy" for w in warnings)
+
+
+def test_combined_warning_is_silent_after_acknowledgement(monkeypatch, tmp_path):
+    """The combined (drop-in) entry point used by pickers goes quiet for an acknowledged tier."""
+    _acknowledged_home(monkeypatch, tmp_path)
+    assert combined_selection_warning(
+        CONTRIBUTOR_MODEL, provider="custom", interactive=True) is None

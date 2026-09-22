@@ -2576,6 +2576,9 @@ export interface StaleAuxAssignment {
 export interface ModelAssignmentResponse {
   confirm_message?: string;
   confirm_required?: boolean;
+  /** Title of the guard that fired (e.g. "Data-Training Tier Warning" for a contributor
+   *  tier vs "Expensive Model Warning" for pricing) — the dialog labels the real reason. */
+  confirm_title?: string;
   ok: boolean;
   scope?: string;
   provider?: string;

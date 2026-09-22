@@ -359,6 +359,29 @@ def test_distinct_failing_terminal_commands_warn_but_never_halt():
     assert last.should_halt and last.code == "same_tool_failure_halt"
 
 
+def test_distinct_failing_custom_tool_calls_do_not_halt_diagnosis():
+    c = _HARD()
+    for i in range(8):
+        d = c.after_call(
+            "mcp_ab4_act",
+            {"idempotency_key": f"attempt-{i}", "requested_by": {"attempt": i}},
+            '{"error": "conflicts_with_event_level"}',
+            failed=True,
+        )
+        assert not d.should_halt, f"same_tool halt on diagnostic attempt #{i + 1}"
+    assert c.halt_decision is None
+
+
+def test_custom_tool_exact_failure_replay_is_still_blocked():
+    c = _HARD()
+    args = {"idempotency_key": "unchanged"}
+    for _ in range(5):
+        assert c.before_call("mcp_ab4_act", args).allows_execution
+        c.after_call("mcp_ab4_act", args, '{"error": "conflicts_with_event_level"}', failed=True)
+    d = c.before_call("mcp_ab4_act", args)
+    assert d.action == "block" and d.code == "repeated_exact_failure_block"
+
+
 def test_browser_retry_after_action_is_not_a_replay():
     c = _HARD()
     nav = {"url": "https://example.test/app"}

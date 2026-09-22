@@ -40,8 +40,14 @@ def test_model_without_the_key_is_undeclared():
 def test_unknown_provider_or_model_is_undeclared():
     assert declared_route_efforts("relay", "absent", CONFIG) is None
     assert declared_route_efforts("absent", "qwen-next", CONFIG) is None
-    assert declared_route_efforts(None, "qwen-next", CONFIG) is None
     assert declared_route_efforts("relay", None, CONFIG) is None
+
+
+def test_without_a_provider_name_any_entry_declaring_the_model_answers():
+    # Transports know the model and the base_url, not the config key that named the route.
+    # A declaration is written per model, so the id alone is enough to find it.
+    assert declared_route_efforts(None, "qwen-next", CONFIG) == ("none", "low", "high", "max")
+    assert declared_route_efforts(None, "absent", CONFIG) is None
 
 
 def test_malformed_config_never_raises():

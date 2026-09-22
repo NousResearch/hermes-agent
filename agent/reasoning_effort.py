@@ -164,7 +164,7 @@ def _config_declared_efforts(provider: Optional[str], model: Optional[str], conf
     config once per command); otherwise the shared cached read-only config is used.
     """
     name, model_id = str(provider or "").strip(), str(model or "").strip()
-    if not name or not model_id:
+    if not model_id:
         return None
     try:
         if config is None:
@@ -172,10 +172,20 @@ def _config_declared_efforts(provider: Optional[str], model: Optional[str], conf
 
             config = load_config_readonly()
         providers = (config or {}).get("providers")
-        entry = providers.get(name) if isinstance(providers, dict) else None
-        models = entry.get("models") if isinstance(entry, dict) else None
-        row = models.get(model_id) if isinstance(models, dict) else None
-        declared = row.get("reasoning_efforts") if isinstance(row, dict) else None
+        if not isinstance(providers, dict):
+            return None
+        # Without a provider name (transports know the model and the base_url, not the
+        # config key) any entry declaring this exact model id answers: a declaration is
+        # written per model, and the same id under two entries declares the same wire.
+        entries = [providers.get(name)] if name else list(providers.values())
+        declared = None
+        for entry in entries:
+            models = entry.get("models") if isinstance(entry, dict) else None
+            row = models.get(model_id) if isinstance(models, dict) else None
+            candidate = row.get("reasoning_efforts") if isinstance(row, dict) else None
+            if isinstance(candidate, (list, tuple)):
+                declared = candidate
+                break
     except Exception:  # config is user input: never break a command over it
         return None
     return tuple(declared) if isinstance(declared, (list, tuple)) else None

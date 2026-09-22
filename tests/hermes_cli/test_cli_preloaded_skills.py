@@ -112,6 +112,11 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
 def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     import cli as cli_mod
 
+    # Hermetic: this file also pins the BOARD-WORKER path below, which is keyed on
+    # HERMES_KANBAN_TASK. A pytest run *inside* a Kanban worker must still see the
+    # interactive contract here.
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
     created = {}
 
     def fake_cli(**kwargs):
@@ -132,6 +137,42 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     # finalized (agent init), preserving the fail-loud contract.
     with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
         _real_finalize(created["cli"])
+
+
+def _finalize_dummy(cli_obj, *, result):
+    """Drive the real ``finalize_preloaded_skills`` on a dummy with a settled preload."""
+    cli_obj._preload_skills_result = result
+    cli_obj._preload_skills_thread = MagicMock()
+    cli_obj._preload_skills_finalized = False
+    return _real_finalize(cli_obj)
+
+
+def test_board_worker_continues_when_a_pinned_skill_no_longer_resolves(monkeypatch):
+    """t_f7f07208: an unresolvable board pin must not kill the worker before it has a session.
+
+    The review lane force-loads the bundled ``sdlc-review``. Where the operator has
+    archived/disabled it, the CLI raised ``Unknown skill(s)`` and exited rc=1 *before*
+    creating a session — the card was silently un-workable, and the dispatcher reported
+    it with the previous attempt's text. A dispatcher-owned worker now warns and works.
+    """
+    printed: list[str] = []
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_padded")
+    obj = _DummyCLI()
+    obj._console_print = printed.append
+
+    _finalize_dummy(obj, result=("", [], ["sdlc-review"]))
+
+    assert obj.preloaded_skills == []
+    assert any("sdlc-review" in line for line in printed), printed
+
+
+def test_interactive_cli_still_fails_loudly_on_an_all_unknown_skill_set(monkeypatch):
+    """The board-worker tolerance above must never leak into a human's ``hermes -s typo``."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    obj = _DummyCLI()
+
+    with pytest.raises(ValueError, match=r"Unknown skill\(s\): typo'd-name"):
+        _finalize_dummy(obj, result=("", [], ["typo'd-name"]))
 
 
 def test_show_banner_does_not_print_skills():

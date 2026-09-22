@@ -497,6 +497,55 @@ class TestBusySessionOnboardingHint:
         cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
+    @pytest.mark.asyncio
+    async def test_hint_flag_lands_in_the_routed_profile_config(self, tmp_path, monkeypatch):
+        """Multiplexed gateway: is_seen reads the routed profile's config.yaml, so mark_seen must
+        write that same file, not the launch home's (the hint used to re-fire on every busy ack)."""
+        import yaml
+
+        import gateway.run as _gr
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        launch_home, profile_home = tmp_path / "launch", tmp_path / "profiles" / "coder"
+        launch_home.mkdir()
+        profile_home.mkdir(parents=True)
+        monkeypatch.setattr(_gr, "_hermes_home", launch_home)
+        monkeypatch.setattr(
+            _gr, "_load_gateway_config",
+            lambda: yaml.safe_load((_gr._gateway_config_home() / "config.yaml").read_text()) or {}
+            if (_gr._gateway_config_home() / "config.yaml").exists() else {})
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="ping")
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 3, "max_iterations": 60,
+            "current_tool": None, "last_activity_ts": time.time(),
+            "last_activity_desc": "api", "seconds_since_activity": 0.1,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 5
+        runner.adapters[event.source.platform] = adapter
+
+        from agent.onboarding import BUSY_INPUT_FLAG, is_seen
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            await runner._handle_active_session_busy_message(event, sk)
+            # The read side the next busy ack consults must now see the flag.
+            seen_on_next_ack = is_seen(_gr._load_gateway_config(), BUSY_INPUT_FLAG)
+        finally:
+            reset_hermes_home_override(token)
+
+        assert "First-time tip" in adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert seen_on_next_ack is True
+        cfg = yaml.safe_load((profile_home / "config.yaml").read_text())
+        assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
+        assert not (launch_home / "config.yaml").exists()
+
 
 class TestLongRunningNotificationOwnership:
     """The long-running heartbeat must stop once its run no longer owns the

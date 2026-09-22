@@ -281,13 +281,17 @@ def _transcribe_xai(
 
     def _post() -> Any:
         from tools.xai_http import hermes_xai_user_agent
-        # Always send the model so xAI's current 1.0 server default cannot leak into Hermes.
+        # Always name the model: xAI moved the server default from 1.0 to 2.0 mid-September and
+        # will retire 1.0, so an omitted field silently changes what Hermes runs.
         resolved_model = normalize_xai_stt_model(model_name)
         data: Dict[str, str] = {"model": resolved_model}
         if language:
             data["language"] = language
-        data.update({flag: "true" for flag, default in (("format", True), ("diarize", False))
-                     if is_truthy_value(xai_config.get(flag, default))})
+        # ``format`` (inverse text normalization) requires ``language``; /v1/stt answers HTTP 400
+        # "Field 'language' is required when 'format' is true" otherwise, so with stt.language ""
+        # (auto-detect) the flag is dropped instead of failing every transcription.
+        flags = ((("format", True),) if language else ()) + (("diarize", False),)
+        data.update({flag: "true" for flag, default in flags if is_truthy_value(xai_config.get(flag, default))})
 
         def _post_transcription(bearer: str, endpoint_base_url: str):
             headers = {"Authorization": f"Bearer {bearer}", "User-Agent": hermes_xai_user_agent()}

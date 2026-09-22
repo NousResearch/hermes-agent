@@ -962,7 +962,7 @@ class EmailAdapter(BasePlatformAdapter):
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
-            self._attach_parts(msg, body)
+            msg.attach(self._create_body_part(body))
         return msg, msg_id, subject
 
     def _create_body_part(self, body: str):

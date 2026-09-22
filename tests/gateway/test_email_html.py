@@ -153,55 +153,48 @@ class TestAttachParts:
         assert "kaboom" in caplog.text
 
 
-class TestCreateBodyPart:
-    """Test _create_body_part return type based on html_format."""
+class TestReplySkeleton:
+    """The shipped reply skeleton must nest plain+HTML inside multipart/alternative.
+
+    Regression covered here: the body used to be attached straight to the
+    ``multipart/mixed`` root, so ``text/plain`` and ``text/html`` were siblings.
+    Clients then either ignore the HTML part or show it as an attachment — and the
+    plain-text part is what a cron/mailbox user sees. The helper that nests
+    correctly existed but had no production caller, so helper-level tests could
+    never fail on the shipped structure.
+    """
 
     def _make_adapter(self, html_format=True):
-        from unittest.mock import MagicMock
         from plugins.platforms.email.adapter import EmailAdapter
-        adapter = MagicMock()
+        adapter = EmailAdapter.__new__(EmailAdapter)
         adapter._html_format = html_format
-        adapter._create_body_part = EmailAdapter._create_body_part.__get__(adapter)
-        adapter._attach_parts = EmailAdapter._attach_parts.__get__(adapter)
+        adapter._address = "hermes@example.ch"
+        adapter._thread_context = {}
         return adapter
 
-    def test_html_enabled_returns_alternative(self):
+    def test_html_enabled_nests_body_as_alternative(self):
         adapter = self._make_adapter(html_format=True)
-        part = adapter._create_body_part("**bold**")
-        assert isinstance(part, MIMEMultipart)
-        assert part.get_content_subtype() == "alternative"
+        msg, _, _ = adapter._new_reply("felix@example.ch", "**bold**")
+        assert msg.get_content_subtype() == "mixed"
+        children = msg.get_payload()
+        assert isinstance(children, list)
+        assert len(children) == 1, "body belongs in one child of mixed, not as two siblings"
+        body = children[0]
+        assert isinstance(body, MIMEMultipart)
+        assert body.get_content_subtype() == "alternative"
+        inner = body.get_payload()
+        assert isinstance(inner, list)
+        assert [p.get_content_type() for p in inner] == ["text/plain", "text/html"]
 
-    def test_html_disabled_returns_plain_text(self):
+    def test_html_disabled_keeps_single_plain_child(self):
         adapter = self._make_adapter(html_format=False)
-        part = adapter._create_body_part("**bold**")
-        assert isinstance(part, MIMEText)
-        assert part.get_content_type() == "text/plain"
-
-    def test_attachment_nesting_mixed_alternative(self):
-        """Attachment mail: multipart/mixed whose body nests as alternative.
-
-        The pre-feature shape is preserved for the body slot — one child of
-        ``mixed`` — so adding HTML must not flatten the structure.
-        """
-        adapter = self._make_adapter(html_format=True)
-        outer = MIMEMultipart("mixed")
-        outer.attach(adapter._create_body_part("**bold**"))
-        children = outer.get_payload()
+        msg, _, _ = adapter._new_reply("felix@example.ch", "**bold**")
+        children = msg.get_payload()
+        assert isinstance(children, list)
         assert len(children) == 1
-        inner = children[0]
-        assert isinstance(inner, MIMEMultipart)
-        assert inner.get_content_subtype() == "alternative"
-        assert [p.get_content_type() for p in inner.get_payload()] == ["text/plain", "text/html"]
-
-    def test_attachment_nesting_plain_when_disabled(self):
-        """With html_format off an attachment mail keeps its old shape: mixed → text/plain."""
-        adapter = self._make_adapter(html_format=False)
-        outer = MIMEMultipart("mixed")
-        outer.attach(adapter._create_body_part("**bold**"))
-        children = outer.get_payload()
-        assert len(children) == 1
-        assert isinstance(children[0], MIMEText)
-        assert children[0].get_content_type() == "text/plain"
+        body = children[0]
+        assert isinstance(body, MIMEText)
+        assert body.get_content_type() == "text/plain"
 
 
 class TestHtmlSanitization:

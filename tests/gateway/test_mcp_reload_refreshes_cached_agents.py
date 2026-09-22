@@ -147,6 +147,23 @@ async def test_reload_mcp_handles_empty_agent_cache():
 
 
 @pytest.mark.asyncio
+async def test_reload_mcp_without_event_skips_chat_transcript_write():
+    """A control-socket reload must not require or fabricate a chat event."""
+    runner = _make_runner_with_cached_agents(num_agents=0)
+
+    with (
+        patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
+        patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]),
+        patch.dict("tools.mcp_tool._servers", {}, clear=True),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+    ):
+        result = await runner._execute_mcp_reload()
+
+    assert isinstance(result, str)
+    runner.session_store.get_or_create_session.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_reload_mcp_preserves_per_agent_toolset_overrides():
     """If a cached agent was built with enabled_toolsets=["safe"], the
     refresh must pass that same list to get_tool_definitions so the agent

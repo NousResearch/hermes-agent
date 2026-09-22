@@ -1525,6 +1525,19 @@ _OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
     {"ox-alpha-free", "deepseek-v4-flash-free", "x-preview-f-free"}
 )
 
+# Token Plan /models is not a chat catalog: it still lists image/audio SKUs and the
+# ``auto`` router alias, and a curated-first merge used to put rotated-out Personal
+# ids back on top. Drop those from the final rows so a stale floor cannot return.
+_TOKEN_PLAN_PICKER_SLUGS = frozenset({"alibaba-token-plan", "alibaba-token-plan-cn"})
+_TOKEN_PLAN_NON_CHAT_PREFIXES = ("wan2.", "wanx", "wan-", "happyhorse", "qwen-image", "qwen-audio")
+_TOKEN_PLAN_EXCLUDED_IDS = frozenset({
+    "auto",
+    "qwen3.8-max-0902", "qwen3.6-plus",
+    "deepseek-v4-flash", "deepseek-v3.2",
+    "kimi-k2.5", "kimi-k2.6", "kimi-k2.7-code",
+    "glm-5", "glm-5.1",
+})
+
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
@@ -1584,7 +1597,20 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -
         else:
             primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
             rows = _merge_unique(primary, secondary, key=_model_dedup_key)
-    return _drop_delisted_opencode_models(normalized, rows)
+    return _drop_token_plan_unusable(normalized, _drop_delisted_opencode_models(normalized, rows))
+
+
+def _drop_token_plan_unusable(normalized: str, rows: Optional[list[str]]) -> Optional[list[str]]:
+    """Drop non-chat SKUs, the ``auto`` alias, and Personal-tier ids that 403/404."""
+    if not rows or normalized not in _TOKEN_PLAN_PICKER_SLUGS:
+        return rows
+    kept = []
+    for mid in rows:
+        slug = str(mid).lower().rsplit("/", 1)[-1]
+        if slug in _TOKEN_PLAN_EXCLUDED_IDS or slug.startswith(_TOKEN_PLAN_NON_CHAT_PREFIXES):
+            continue
+        kept.append(mid)
+    return kept
 
 
 def _drop_delisted_opencode_models(normalized: str, rows: Optional[list[str]]) -> Optional[list[str]]:

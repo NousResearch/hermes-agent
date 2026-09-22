@@ -1,0 +1,19 @@
+name: titanos-mcp
+repo: https://github.com/guilherme-vasques-ltda/hermes-plugin-titanos
+sha: ba06280cd28fdfd6029d8f58c987076fb8677745
+description: >-
+  Connect Hermes to Titanos marketplace, Amazon, listings, Ads, and product
+  research tools through the pinned Titanos OAuth MCP client. This portable
+  Agent Plugin v1 package bundles seven operating skills, requires Node.js
+  20.18.1 or newer, and uses browser authorization with a Titanos account.
+maintainer: Titanos
+tier: community
+category: tools
+version: "0.3.0"
+docs_url: https://github.com/guilherme-vasques-ltda/hermes-plugin-titanos
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

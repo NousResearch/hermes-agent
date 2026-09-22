@@ -762,3 +762,48 @@ class TestReplaceDirectoryAtomic:
         # Destination was never touched (still the old content).
         assert (dest / "old.md").read_text() == "old content"
 
+    def test_publish_failure_after_backup_move_rolls_back(
+        self, tmp_path, monkeypatch
+    ):
+        """If publishing the staged tree fails after the old tree has already
+        moved to backup, the original live skills tree is restored and the
+        temporary/backup siblings are removed."""
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        (staged / "skills" / "demo").mkdir(parents=True)
+        (staged / "skills" / "demo" / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: test\n---\n# Demo skill\n"
+        )
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        (dest / "skills" / "demo").mkdir(parents=True)
+        (dest / "skills" / "demo" / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: original\n---\n# Original skill\n"
+        )
+
+        real_replace = os.replace
+
+        calls = []
+
+        def fail_publish(src, dst):
+            calls.append((str(src), str(dst)))
+            # Only the publish move (tmp_dir -> dest) fails; the rollback
+            # restore (backup_dir -> dest) must succeed.
+            if Path(dst).name == dest.name and Path(src).name.startswith(f".{dest.name}.hermes-new-"):
+                raise OSError(13, "Permission denied")
+            return real_replace(src, dst)
+
+        with patch("hermes_cli.profile_distribution.os.replace", fail_publish):
+            with pytest.raises(OSError):
+                _replace_directory_atomic(dest, staged, staged)
+
+        # The original live tree is restored at dest.
+        assert (dest / "skills" / "demo" / "SKILL.md").read_text().endswith(
+            "Original skill\n"
+        )
+        # No temporary/backup siblings remain.
+        siblings = sorted(p.name for p in tmp_path.iterdir())
+        assert ".dest.hermes-new-" not in "".join(siblings)
+        assert ".dest.hermes-old-" not in "".join(siblings)
+        assert "dest" in siblings and "staged" in siblings

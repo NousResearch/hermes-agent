@@ -25,7 +25,7 @@ from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
-    skill_matches_platform, skill_matches_platform_list,
+    skill_matches_platform, skill_matches_platform_list, _prompt_desc_limit,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_signature
@@ -1116,7 +1116,9 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 2
+_SKILLS_SNAPSHOT_VERSION = 3  # v3: descriptions are prompt-budgeted at build time. Snapshot
+# "version" is written as (3, prompt_desc_limit) so changing skills.prompt_desc_limit
+# rebuilds the snapshot without another hard bump.
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1171,7 +1173,12 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8"))
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
-    if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
+    # Pre-upgrade snapshots wrote "version" as the bare int (e.g. 2); tuple() on an
+    # int raises TypeError, so normalize: only v3+ list/tuple versions can match,
+    # anything else — legacy int, missing, malformed — is a rebuild trigger.
+    version = snapshot.get("version") if isinstance(snapshot, dict) else None
+    if (isinstance(version, (list, tuple))
+            and tuple(version) == (_SKILLS_SNAPSHOT_VERSION, _prompt_desc_limit())
             and snapshot.get("manifest") == _build_skills_manifest(skills_dir)):
         return snapshot
     return None
@@ -1456,7 +1463,8 @@ def _build_skills_system_prompt_inner(
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:
             atomic_json_write(_skills_prompt_snapshot_path(), {
-                "version": _SKILLS_SNAPSHOT_VERSION, "manifest": _build_skills_manifest(skills_dir),
+                "version": (_SKILLS_SNAPSHOT_VERSION, _prompt_desc_limit()),
+                "manifest": _build_skills_manifest(skills_dir),
                 "skills": [entry for entry, _ in candidates], "category_descriptions": category_descriptions,
             })
         except Exception as e:

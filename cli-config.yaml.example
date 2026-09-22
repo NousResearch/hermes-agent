@@ -1112,6 +1112,13 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Index-description budget for the system-prompt skills index (chars).
+  # Descriptions longer than this are truncated to (limit - 3) + "..." in the
+  # <available_skills> block. Default 60. Raising it to ~160 measurably rescues
+  # mid-length descriptions that truncate to uselessness (11/234 skills on one
+  # roster) at a cost of ~3.2K cached tokens; see evals/skill_suggestion/.
+  # prompt_desc_limit: 60
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

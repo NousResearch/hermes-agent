@@ -353,11 +353,16 @@ describe('PreviewBrowserBar', () => {
     expect(onOpenExternal).toHaveBeenCalledOnce()
   })
 
-  it('prefers pop-out over open-in-browser when both handlers are provided', () => {
-    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={vi.fn()} />)
+  it('keeps a system-browser handoff beside pop-out for embedded-login compatibility', () => {
+    const onOpenExternal = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={onOpenExternal} />)
 
     expect(rendered.getByRole('button', { name: 'Pop out' })).toBeTruthy()
-    expect(rendered.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+    expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Open in browser' }))
+
+    expect(onOpenExternal).toHaveBeenCalledOnce()
   })
 
   it('shows Pop in when the window is already popped out', () => {

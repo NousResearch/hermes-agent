@@ -255,7 +255,8 @@ export function PreviewBrowserBar({
           label={t.preview.popOut}
           onSelect={onPopOut}
         />
-      ) : onOpenExternal ? (
+      ) : null}
+      {onOpenExternal ? (
         <PaneStripGlyph
           icon={<Codicon name="link-external" size="0.8125rem" />}
           label={t.preview.openInBrowser}

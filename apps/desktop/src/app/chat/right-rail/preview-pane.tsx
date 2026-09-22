@@ -1330,11 +1330,12 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             onFlushComments={() => void flushComments()}
             onForward={goForward}
             onNavigate={navigateTo}
-            onOpenExternal={
-              !isBrowserWindow() && !canOpenBrowserWindow()
-                ? () => void window.hermesDesktop?.openExternal(currentUrl)
-                : undefined
-            }
+            // Third-party identity providers can reject an embedded webview
+            // even after their site data is cleared. Keep the in-app browser
+            // and pop-out paths, but always leave an explicit, user-initiated
+            // handoff to the system browser; never alter guest identity,
+            // cookie partitions, or navigation as a side effect.
+            onOpenExternal={() => void window.hermesDesktop?.openExternal(currentUrl)}
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
               target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()

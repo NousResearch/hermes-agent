@@ -38,8 +38,8 @@ _CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 def _computer_use_cfg() -> Dict[str, Any]:
     """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config
-        return (load_config() or {}).get("computer_use") or {}
+        from hermes_cli.config import load_config_readonly  # per-capture hot path: no deepcopy
+        return (load_config_readonly() or {}).get("computer_use") or {}
     return {}
 
 def _cua_no_overlay() -> bool:

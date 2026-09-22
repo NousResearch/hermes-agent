@@ -100,10 +100,10 @@ def _max_ledger_bytes() -> int:
     """Config ``skills.ledger_max_bytes`` (default 5 MB, 0 disables): above it the
     next append triggers the maintenance sweep instead of growing the file forever."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.config import cfg_get, load_config_readonly  # read-only hot path: no deepcopy
         return int(
             cfg_get(
-                load_config(), "skills", "ledger_max_bytes", default=5 * 1024 * 1024
+                load_config_readonly(), "skills", "ledger_max_bytes", default=5 * 1024 * 1024
             )
         )
     except Exception as e:  # pragma: no cover — best-effort config read

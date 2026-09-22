@@ -624,8 +624,9 @@ def test_auto_compact_triggers_at_threshold(ledger_env, monkeypatch):
 
     import hermes_cli.config as _cfg
 
-    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {
-        "skills": {"ledger_max_bytes": 8192}})
+    cap = {"skills": {"ledger_max_bytes": 8192}}
+    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)
+    monkeypatch.setattr(_cfg, "load_config_readonly", lambda *a, **k: cap)
 
     first_id = skill_ledger.append_entry("patch", "my-skill", before=[], after=[])
     template = json.loads(skill_ledger.ledger_path().read_text().splitlines()[0])
@@ -662,6 +663,7 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
 
     cap = {"skills": {"ledger_max_bytes": 0}}  # no sweeps while seeding
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)
+    monkeypatch.setattr(_cfg, "load_config_readonly", lambda *a, **k: cap)
 
     newest_id = None
     for i in range(5):

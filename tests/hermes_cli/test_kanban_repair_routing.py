@@ -20,6 +20,7 @@ def test_known_repair_scopes_bypass_router_profiles():
     assert repair_profile_for_task("Create pytest suite", "Add test coverage for the normalizer.") == "test-contract-steward"
     assert repair_profile_for_task("Useful content discovery", "Scout relevant community material.") == "nerdy-content-scout"
     assert repair_profile_for_task("Synthesize gaps", "Route bounded children or IDLE.") == "synthesizer"
+    assert repair_profile_for_task("GitHub PR feedback", "Untrusted receipt: usage limits") == "hermes-maintenance-steward"
 
 
 def test_unknown_scope_stays_unassigned_for_explicit_triage():

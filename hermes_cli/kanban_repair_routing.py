@@ -8,6 +8,7 @@ from typing import Optional
 # Ordered from narrowest scope to broadest so a PR audit is not swallowed by
 # the generic cron or maintenance rules.
 _REPAIR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("usage limits", "not a hermes command", "untrusted receipt"), "hermes-maintenance-steward"),
     (("federated runner", "federation", "federated"), "federation-steward"),
     (("pytest suite", "test suite", "test coverage"), "test-contract-steward"),
     (("content discovery", "useful content", "community discovery"), "nerdy-content-scout"),

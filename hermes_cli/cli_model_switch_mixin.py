@@ -343,9 +343,9 @@ class CLIModelSwitchMixin:
                 lambda m: copilot_model_api_mode(m, api_key=self.api_key),
                 lambda new: f"Normalized Copilot model '{current_model}' to '{new}'.")
 
-        from hermes_cli.models import opencode_provider_family
+        from hermes_cli.models_opencode import opencode_provider_family
         if opencode_provider_family(resolved_provider) is not None:
-            from hermes_cli.models import normalize_opencode_model_id, opencode_model_api_mode
+            from hermes_cli.models_opencode import normalize_opencode_model_id, opencode_model_api_mode
             return _adopt_with_mode(
                 lambda m: normalize_opencode_model_id(resolved_provider, m),
                 lambda m: opencode_model_api_mode(resolved_provider, m),

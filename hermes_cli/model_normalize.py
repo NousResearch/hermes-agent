@@ -212,7 +212,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # OpenCode Zen / Go are flat-namespace resellers: /v1/models returns bare IDs and inference 401s
     # vendor-prefixed names, so strip ANY leading ``vendor/`` (commonly copied from aggregator slugs).
-    from hermes_cli.models import opencode_provider_family
+    from hermes_cli.models_opencode import opencode_provider_family
 
     _oc_family = opencode_provider_family(provider)
     if _oc_family is not None:

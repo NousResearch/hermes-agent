@@ -30,6 +30,7 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
 )
 from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
+from hermes_cli import models_opencode as _models_opencode  # same shape; these names are not on the facade
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
 from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
@@ -255,8 +256,8 @@ def _configured_or_fallback_api_mode(provider: str, model_cfg: Dict[str, Any], b
         if configured_mode and configured_mode != "chat_completions":
             logger.info("Routing built-in Actual through chat_completions instead of persisted api_mode=%s", configured_mode)
         return "chat_completions"
-    if opencode_by_model and _models.opencode_provider_family(provider) is not None:
-        return _models.opencode_model_api_mode(provider, effective_model)
+    if opencode_by_model and _models_opencode.opencode_provider_family(provider) is not None:
+        return _models_opencode.opencode_model_api_mode(provider, effective_model)
     return _configured_api_mode(provider, model_cfg) or _fallback_api_mode(provider, base_url, effective_model)
 
 
@@ -404,8 +405,8 @@ def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
     """Shared tail for pool-entry and api-key paths: OpenCode /v1 rule (OpenCode URLs end with /v1
     for OpenAI-compatible models but the Anthropic SDK prepends its own /v1/messages — strip for
     anthropic_messages, re-append otherwise), then LM Studio normalization."""
-    if _models.opencode_provider_family(provider) is not None:
-        base_url = _models.normalize_opencode_base_url(provider, api_mode, base_url)
+    if _models_opencode.opencode_provider_family(provider) is not None:
+        base_url = _models_opencode.normalize_opencode_base_url(provider, api_mode, base_url)
     if provider == "lmstudio":
         base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
     if provider == "actual":

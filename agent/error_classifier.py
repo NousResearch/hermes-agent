@@ -358,7 +358,8 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
 
 # Auth patterns (non-status-code signals).
 _AUTH_PATTERNS = (
-    "invalid api key", "invalid_api_key", "gateway_auth_failed", "authentication", "unauthorized",
+    "invalid api key", "invalid_api_key", "api key not valid", "api_key not valid",
+    "gateway_auth_failed", "authentication", "unauthorized",
     "forbidden", "invalid token", "token expired", "token revoked", "access denied",
     # Codex backend rejecting an OAuth access token without a usable
     # ``chatgpt_account_id`` claim; arrives as a bare ``detail`` string.
@@ -599,9 +600,11 @@ _404_RULES = (
 )
 
 # 400 tail after the deterministic request-shape checks. Some providers return
-# model-not-found / rate-limit / billing as 400 instead of 404/429/402.
+# auth / model-not-found / rate-limit / billing as 400 instead of 401/404/429/402.
+# Google AI Studio / Gemini returns HTTP 400 (INVALID_ARGUMENT) for invalid API keys.
 _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
     (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
+    (_AUTH_PATTERNS, _V_AUTH_ROTATE),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_BILLING_PATTERNS, _billing_hints),
 )
 
@@ -832,9 +835,12 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # strips Anthropic thinking blocks and resends the same encrypted item forever.
     if status == 400 and (c.code == "thinking_signature_invalid" or "thinking_signature_invalid" in msg):
         return _V_INVALID_ENCRYPTED
-    # Anthropic thinking-block 400s (signature mismatch after transcript
-    # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
-    if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
+    # Anthropic thinking-block 400s (signature mismatch after transcript mutation)
+    # or Gemini thought signature 400s (invalid/corrupted thought signature).
+    # Not gated on provider — OpenRouter proxies Anthropic/Gemini errors.
+    if (status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS)) or (
+        status in (400, None) and ("thought signature" in msg or "thought_signature" in msg)
+    ):
         return _v(_R.thinking_signature)
     # Anthropic long-context tier gate (429 "extra usage" + "long context").
     if status == 429 and "extra usage" in msg and "long context" in msg:

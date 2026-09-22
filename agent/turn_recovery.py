@@ -482,18 +482,36 @@ def _recover_format_errors(
     the request was repaired and should be retried."""
     # Upstream mutation invalidates Anthropic's thinking-block signature (400). Strip
     # ``reasoning_details`` from ``api_messages`` only, never ``messages`` (state.db).
+    # Invalid/stale Gemini thought signature (400): strip ``extra_content`` from tool
+    # calls in ``api_messages`` and canonical ``messages`` so Gemini replays the
+    # ``skip_thought_signature_validator`` sentinel on retry and subsequent turns.
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:
         _retry.thinking_sig_retry_attempted = True
         _api_stripped = 0
-        for _m in api_messages:
-            if isinstance(_m, dict) and "reasoning_details" in _m:
-                _m.pop("reasoning_details", None)
-                _api_stripped += 1
-        _vlines(agent, "⚠️  Thinking block signature invalid, stripped reasoning_details from api_messages for retry...")
+        if isinstance(api_messages, list):
+            for _m in api_messages:
+                if not isinstance(_m, dict):
+                    continue
+                if "reasoning_details" in _m:
+                    _m.pop("reasoning_details", None)
+                    _api_stripped += 1
+                for tc in _m.get("tool_calls") or []:
+                    if isinstance(tc, dict):
+                        for k in ("extra_content", "thoughtSignature", "thought_signature"):
+                            if k in tc:
+                                tc.pop(k, None)
+                                _api_stripped += 1
+        if isinstance(messages, list):
+            for _m in messages:
+                if not isinstance(_m, dict):
+                    continue
+                for tc in _m.get("tool_calls") or []:
+                    if isinstance(tc, dict):
+                        for k in ("extra_content", "thoughtSignature", "thought_signature"):
+                            tc.pop(k, None)
+        _vlines(agent, "⚠️  Thinking / thought signature invalid, stripped signatures for retry...")
         logger.warning(
-            "%sThinking block signature recovery: stripped "
-            "reasoning_details from %d api_messages "
-            "(canonical messages unchanged)",
+            "%sThinking signature recovery: stripped signatures from %d items in api_messages",
             agent.log_prefix, _api_stripped,
         )
         return True

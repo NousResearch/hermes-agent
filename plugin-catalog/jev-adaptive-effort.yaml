@@ -1,6 +1,6 @@
 name: jev-adaptive-effort
 repo: https://github.com/kirkins/hermes-jev-adaptive-effort
-sha: 194d23132c934f5c1c9a5464825d9645b7622126
+sha: cd0bbe24d6a7fd963bf80da3a7441895097c5a1c
 description: >-
   Cache-safe per-turn reasoning-effort selection with TypeSafe Jev through
   OpenRouter. It never changes the selected model and only runs on transports
@@ -14,7 +14,7 @@ tier: community
 category: models
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/kirkins/hermes-jev-adaptive-effort#readme
-version: "0.1.2"
+version: "0.1.3"
 platforms: []
 capabilities:
   provides_tools: []

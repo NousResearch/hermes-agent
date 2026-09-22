@@ -379,6 +379,80 @@ class TestCreateThread:
         )
 
 
+class TestEnsureSubissueContext:
+    def test_creates_then_recovers_exactly_one_text_thread(self, mock_req, monkeypatch, tmp_path):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+
+        def request(method, path, token, **kwargs):
+            calls.append((method, path, kwargs.get("body")))
+            if path == "/channels/11":
+                return {"id": "11", "type": 0}
+            if path == "/guilds/99/threads/active":
+                return {"threads": []}
+            if path == "/channels/11/threads":
+                return {"id": "800", "type": 11, "parent_id": "11"}
+            if path == "/channels/800/messages":
+                return {"id": "900"}
+            if path == "/channels/800":
+                return {"id": "800", "type": 11, "parent_id": "11"}
+            raise AssertionError(path)
+
+        mock_req.side_effect = request
+        first = json.loads(discord_core(
+            action="ensure_subissue_context", guild_id="99", channel_id="11",
+            issue_repo="gabrielcerteiro/certeiroone", issue_number="485", name="DevOps pilot",
+            handoff="HANDOFF — #485",
+        ))
+        second = json.loads(discord_core(
+            action="ensure_subissue_context", guild_id="99", channel_id="11",
+            issue_repo="gabrielcerteiro/certeiroone", issue_number="485", name="DevOps pilot",
+            handoff="HANDOFF — #485",
+        ))
+
+        assert first == {
+            "success": True, "created": True, "recovered": False, "thread_id": "800",
+            "channel_id": "11", "target": "discord:11:800", "handoff_message_id": "900",
+        }
+        assert second == {
+            "success": True, "created": False, "recovered": True, "thread_id": "800",
+            "channel_id": "11", "target": "discord:11:800", "handoff_message_id": None,
+        }
+        assert sum(path == "/channels/11/threads" for _, path, _ in calls) == 1
+        assert sum(path == "/channels/800/messages" for _, path, _ in calls) == 1
+
+    def test_recovers_remote_active_thread_when_local_state_is_missing(self, mock_req, monkeypatch, tmp_path):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        title = "[gabrielcerteiro/certeiroone#485] DevOps pilot"
+        mock_req.side_effect = [
+            {"id": "11", "type": 0},
+            {"threads": [{"id": "800", "type": 11, "parent_id": "11", "name": title}]},
+        ]
+
+        result = json.loads(discord_core(
+            action="ensure_subissue_context", guild_id="99", channel_id="11",
+            issue_repo="gabrielcerteiro/certeiroone", issue_number="485", name="DevOps pilot",
+        ))
+
+        assert result["created"] is False
+        assert result["recovered"] is True
+        assert result["thread_id"] == "800"
+
+    def test_refuses_forum_parent_instead_of_nesting_a_thread(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "forum", "type": 15}
+
+        result = json.loads(discord_core(
+            action="ensure_subissue_context", guild_id="99", channel_id="forum",
+            issue_repo="gabrielcerteiro/certeiroone", issue_number="485", name="DevOps pilot",
+        ))
+
+        assert "nested threads" in result["error"]
+        assert mock_req.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------

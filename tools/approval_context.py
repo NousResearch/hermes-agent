@@ -8,6 +8,9 @@ gate in :mod:`tools.approval`.
 import contextvars
 import logging
 import os
+from collections.abc import Mapping
+from typing import Any
+
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
@@ -225,15 +228,53 @@ def _get_approval_config() -> dict:
         return {}
 
 
+def _platform_key(platform: Any) -> str:
+    """Normalize a platform identity for ``approvals.platform_overrides`` lookups.
+
+    ``HERMES_SESSION_PLATFORM`` carries the ``Platform`` enum value (``telegram``,
+    ``discord``, ``api_server``, …) in lowercase; YAML keys are user-typed, so both
+    sides are stripped and lowercased before comparison.
+    """
+    return str(platform or "").strip().lower()
+
+
+def _platform_override_key(overrides: Any, platform: str) -> "tuple[bool, Any]":
+    """``(matched, value)`` for ``approvals.platform_overrides`` at *platform*.
+
+    A missing/blank platform never matches: CLI/TUI sessions bind no platform, so they
+    keep the global ``approvals.mode``. A malformed block (not a mapping, e.g.
+    ``platform_overrides: manual``) or a non-string key is ignored rather than treated as
+    a match — an unreadable override must not silently change an approval policy.
+    """
+    if not platform or not isinstance(overrides, Mapping):
+        return False, None
+    for key, value in overrides.items():
+        if isinstance(key, str) and _platform_key(key) == platform:
+            return True, value
+    return False, None
+
+
 def _get_approval_mode() -> str:
-    """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
+    """Return 'manual', 'smart', or 'off' for the current session.
+
+    Precedence: a hosted-room policy, then ``approvals.platform_overrides.<platform>``
+    (keyed by the session platform: ``telegram``, ``discord``, ``api_server``, …), then
+    the global ``approvals.mode``. The override lets an operator require stricter
+    approvals on riskier surfaces (a fat-fingered tap on a phone) while leaving trusted
+    ones on the global mode; installs that never set it are unaffected.
+    """
     try:
         from gateway.hosted_room_execution_policy import current_room_execution_policy
         if (room_policy := current_room_execution_policy()) is not None:
             return room_policy.approval_mode
     except Exception:
         pass
-    return _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
+    config = _get_approval_config()
+    matched, override = _platform_override_key(
+        config.get("platform_overrides"), _platform_key(_get_session_platform()))
+    if matched:
+        return _normalize_approval_mode(override)
+    return _normalize_approval_mode(config.get("mode", "manual"))
 
 
 def _get_approval_timeout() -> int:

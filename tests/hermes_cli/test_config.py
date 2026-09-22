@@ -2008,8 +2008,10 @@ def test_empty_dict_default_sections_are_open_containers():
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     assert DEFAULT_CONFIG["compression"]["model_thresholds"] == {}
     assert DEFAULT_CONFIG["terminal"]["docker_env"] == {}
+    assert DEFAULT_CONFIG["approvals"]["platform_overrides"] == {}
     assert _validate_config_key("compression.model_thresholds.gpt-5") == (True, None)
     assert _validate_config_key("terminal.docker_env.FOO") == (True, None)
+    assert _validate_config_key("approvals.platform_overrides.telegram") == (True, None)
     assert _validate_config_key("lsp.servers.python.command") == (True, None)
     assert _validate_config_key("auxiliary.vision.extra_body.reasoning") == (True, None)
     known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")

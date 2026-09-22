@@ -128,6 +128,7 @@ def test_multiplex_keepalive_binds_process_profile_and_restores_scope(
     tmp_path, monkeypatch
 ):
     from agent.secret_scope import (
+        build_profile_secret_scope,
         current_secret_scope,
         get_secret,
         reset_secret_scope,
@@ -139,6 +140,11 @@ def test_multiplex_keepalive_binds_process_profile_and_restores_scope(
     process_home.mkdir()
     (process_home / ".env").write_text(
         "NOUS_INFERENCE_BASE_URL=https://process.example/v1\n", encoding="utf-8"
+    )
+    previous_home = tmp_path / "previous"
+    previous_home.mkdir()
+    (previous_home / ".env").write_text(
+        "NOUS_INFERENCE_BASE_URL=https://previous.example/v1\n", encoding="utf-8"
     )
     monkeypatch.setattr(
         "hermes_constants.get_process_hermes_home", lambda: process_home
@@ -161,7 +167,7 @@ def test_multiplex_keepalive_binds_process_profile_and_restores_scope(
         lambda **kwargs: seen.append(get_secret("NOUS_INFERENCE_BASE_URL")) or {},
     )
 
-    previous_scope = {"NOUS_INFERENCE_BASE_URL": "https://previous.example/v1"}
+    previous_scope = build_profile_secret_scope(previous_home)
     previous_token = set_secret_scope(previous_scope)
     set_multiplex_active(True)
     try:

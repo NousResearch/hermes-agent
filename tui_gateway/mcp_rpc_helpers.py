@@ -31,6 +31,7 @@ def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[Dic
 
 def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> Dict[str, Any]:
     from hermes_cli.mcp_config import _oauth_tokens_present
+    from utils import parse_boolish
 
     cfg = cfg if isinstance(cfg, dict) else {}
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
@@ -47,7 +48,7 @@ def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> Dict[st
         "env": sorted(str(k) for k in (cfg.get("env") or {})),
         "auth": auth,
         "oauth_tokens_present": _oauth_tokens_present(name) if auth == "oauth" else None,
-        "enabled": cfg.get("enabled", True) is not False,
+        "enabled": parse_boolish(cfg.get("enabled", True), default=True),
         "tools": cfg.get("tools"),
         "source": "plugin" if plugin is not None else "config",
         "plugin": plugin}

@@ -12,6 +12,7 @@ if TYPE_CHECKING:  # pragma: no cover - annotation only
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 from hermes_cli.config import redact_key
 from hermes_cli.web_models import MCPServerCreate
+from utils import parse_boolish
 
 
 def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, Any], Optional[str]]:
@@ -95,7 +96,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any], plugin: str | None = Non
         "args": list(cfg.get("args") or []),
         "env": _redact_mcp_env(cfg.get("env") or {}),
         "auth": auth,
-        "enabled": cfg.get("enabled", True) is not False,
+        "enabled": parse_boolish(cfg.get("enabled", True), default=True),
         # Tool selection: list of enabled tool names, or None = all.
         "tools": cfg.get("tools"),
         "source": "plugin" if plugin is not None else "config",

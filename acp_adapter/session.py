@@ -475,9 +475,11 @@ class SessionManager:
         elif isinstance(model_cfg, str):
             default_model = model_cfg.strip()
 
+        from utils import parse_boolish
+
         configured_mcp_servers = [
             name for name, cfg in (config.get("mcp_servers") or {}).items()
-            if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
+            if not isinstance(cfg, dict) or parse_boolish(cfg.get("enabled", True), default=True)
         ]
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),

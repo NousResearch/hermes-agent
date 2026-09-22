@@ -249,8 +249,8 @@ class MCPServerRunMixin:
             entry = (_config._load_mcp_config() or {}).get(self.name)
             if entry is None:
                 return False
-            from tools.mcp_tool_common import _parse_boolish
-            return _parse_boolish(entry.get("enabled", True), default=True)
+            from utils import parse_boolish
+            return parse_boolish(entry.get("enabled", True), default=True)
         except Exception:
             return True
 

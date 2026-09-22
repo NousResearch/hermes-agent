@@ -20,6 +20,7 @@ from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool_config import _ENV_VAR_PATTERN
 from tools.mcp_tool_common import _env_ref_name
+from utils import parse_boolish
 
 logger = logging.getLogger(__name__)
 
@@ -426,7 +427,6 @@ def _probe_single_server(
     from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
     from tools.mcp_tool_discovery import _connect_server
     from tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
-    from tools.mcp_tool_common import _parse_boolish
 
     config = _resolve_mcp_server_config(config)
     if connect_timeout is None:
@@ -491,7 +491,7 @@ def _probe_single_server(
 
                 def _wanted(cap: str) -> bool:
                     # No capability info captured (legacy fixtures / older servers) => always try.
-                    if not _parse_boolish(tools_filter.get(cap), default=True):
+                    if not parse_boolish(tools_filter.get(cap), default=True):
                         return False
                     return advertised_caps is None or getattr(advertised_caps, cap, None) is not None
 
@@ -755,9 +755,7 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        enabled = cfg.get("enabled", True)
-        if isinstance(enabled, str):
-            enabled = enabled.lower() in {"true", "1", "yes"}
+        enabled = parse_boolish(cfg.get("enabled", True), default=True)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()

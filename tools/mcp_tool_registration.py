@@ -9,7 +9,8 @@ import threading
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
-from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field
+from tools.mcp_tool_common import _core, _resolve_tool_timeout, mcp_field
+from utils import parse_boolish
 from tools import mcp_tool_handlers as _handlers
 from tools import mcp_tool_schema as _schema
 from tools.mcp_tool_handlers import (
@@ -152,7 +153,7 @@ def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: d
     family is served); without it fall back to the legacy session-method check, which never
     filters anything since ClientSession defines all four methods."""
     tools_filter = config.get("tools") or {}
-    enabled = {f: _parse_boolish(tools_filter.get(f), default=True) for f in ("resources", "prompts")}
+    enabled = {f: parse_boolish(tools_filter.get(f), default=True) for f in ("resources", "prompts")}
     advertised = getattr(getattr(server, "initialize_result", None), "capabilities", None)
 
     def _skip_reason(handler_key: str) -> Optional[str]:
@@ -408,7 +409,7 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
 
 
 def _server_enabled(config: dict) -> bool:
-    return _parse_boolish(config.get("enabled", True), default=True)
+    return parse_boolish(config.get("enabled", True), default=True)
 
 
 def _connection_identity(config: dict) -> tuple:

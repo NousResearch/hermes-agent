@@ -37,6 +37,7 @@ from hermes_cli.tools_config_providers import (  # noqa: F401
     _configure_vision_backend, _configure_vision_provider_model, _configure_simple_requirements)
 from hermes_cli.tools_config_mcp import (  # noqa: F401
     _configure_mcp_tools_interactive, _apply_toolset_change, _apply_mcp_change, tools_disable_enable_command)
+from utils import parse_boolish
 
 logger = logging.getLogger(__name__)
 
@@ -401,14 +402,13 @@ def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = Non
 
 
 def _parse_enabled_flag(value, default: bool = True) -> bool:
-    """Parse bool-like config values used by tool/platform settings."""
-    if isinstance(value, (bool, int)):
-        return bool(value)
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "1", "yes", "on", "false", "0", "no", "off"}:
-            return lowered in {"true", "1", "yes", "on"}
-    return default
+    """Parse bool-like config values used by tool/platform settings.
+
+    Delegates to :func:`utils.parse_boolish`, the single parser for these keys,
+    so the platform resolvers, the MCP client and the UI summaries cannot drift
+    apart again (``enabled: 0`` is off for all of them, not just for some).
+    """
+    return parse_boolish(value, default=default)
 
 
 def enabled_mcp_server_names(config: dict) -> Set[str]:

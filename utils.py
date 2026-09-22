@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+FALSEY_STRINGS = frozenset({"0", "false", "no", "off"})
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -29,6 +30,31 @@ def is_truthy_value(value: Any, default: bool = False) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in TRUTHY_STRINGS
     return bool(value)
+
+
+def parse_boolish(value: Any, default: bool = True) -> bool:
+    """Parse a bool-ish config value with the one rule every reader shares.
+
+    Unlike :func:`is_truthy_value` an unrecognized value falls back to
+    ``default`` (with a warning) instead of reading as false, because the keys
+    this parses (``enabled``, ``lazy``, ``resources``, ...) default to *on*.
+    Numeric scalars follow Python truthiness, so a hand-written ``enabled: 0``
+    is off for every reader rather than only for some of them.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in TRUTHY_STRINGS:
+            return True
+        if lowered in FALSEY_STRINGS:
+            return False
+    logger.warning("Expected a boolean-ish config value, got %r; using default=%s", value, default)
+    return default
 
 
 def env_var_enabled(name: str, default: str = "") -> bool:

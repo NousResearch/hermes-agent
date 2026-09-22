@@ -6,7 +6,7 @@ import math
 import os
 import random
 import re
-from typing import Any, Optional
+from typing import Optional
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -115,26 +115,6 @@ def _safe_numeric(value, default, coerce=int, minimum=1):
         return max(result, minimum)
     except (TypeError, ValueError, OverflowError):
         return default
-
-
-_TRUE_WORDS = frozenset({"true", "1", "yes", "on"})
-_FALSE_WORDS = frozenset({"false", "0", "no", "off"})
-
-
-def _parse_boolish(value: Any, default: bool = True) -> bool:
-    """Parse a bool-like config value with safe fallback."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in _TRUE_WORDS:
-            return True
-        if lowered in _FALSE_WORDS:
-            return False
-    logger.warning("MCP config expected a boolean-ish value, got %r; using default=%s", value, default)
-    return default
 
 
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:

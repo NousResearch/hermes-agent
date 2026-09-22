@@ -20,7 +20,7 @@ from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
 from hermes_cli.cli_output import prompt as _prompt_input
-from utils import rmtree_readonly
+from utils import parse_boolish, rmtree_readonly
 
 _MANIFEST_VERSION = 1
 
@@ -373,11 +373,13 @@ def is_installed(name: str) -> bool:
 
 
 def server_enabled(cfg: dict) -> bool:
-    """Interpret a server block's ``enabled`` flag (bools, and yes/true/1 strings)."""
-    enabled = cfg.get("enabled", True)
-    if isinstance(enabled, str):
-        return enabled.lower() in {"true", "1", "yes"}
-    return bool(enabled)
+    """Interpret a server block's ``enabled`` flag.
+
+    Same parser as the MCP client and the resolvers (``utils.parse_boolish``), so
+    the catalog/picker rows show the state the runtime actually uses — including
+    ``on``/``off`` and numeric values.
+    """
+    return parse_boolish(cfg.get("enabled", True), default=True)
 
 
 def is_enabled(name: str) -> bool:

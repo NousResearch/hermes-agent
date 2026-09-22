@@ -11,7 +11,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish
+from tools.mcp_tool_common import _core
+from utils import parse_boolish
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -67,7 +68,7 @@ def _connect_cooldown_active(server_name: str) -> bool:
 
 
 def _enabled(cfg: dict) -> bool:
-    return _parse_boolish(cfg.get("enabled", True), default=True)
+    return parse_boolish(cfg.get("enabled", True), default=True)
 
 
 def _owner_scope_home() -> Optional[Path]:
@@ -189,7 +190,7 @@ def _resolve_server_lazy(name: str, config: dict) -> bool:
     Gated per-server by ``mcp_servers.<name>.lazy`` in config (default OFF), following the same per-server
     key pattern as ``idle_timeout_seconds``. Design from #56832 (Vansh5632).
     """
-    return _parse_boolish(config.get("lazy", False), default=False)
+    return parse_boolish(config.get("lazy", False), default=False)
 
 
 def _note_connect_failure(name: str, exc: BaseException) -> str:
@@ -348,7 +349,7 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
         # same-named serial `x` (own connection or adopted) run two calls at once.
         for srv_name, srv_cfg in servers.items():
             own_key = _server_key(srv_name, current_scope, current=False)
-            if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
+            if parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
                 _core._parallel_safe_servers.add(own_key)
             else:
                 _core._parallel_safe_servers.discard(own_key)

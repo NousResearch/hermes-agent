@@ -52,13 +52,40 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         receipt["pr_url"] = url
         owner, name = repo.split("/")
         query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
-            baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
+            mergeable mergeStateStatus baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
                 json.dumps(owner), json.dumps(name), number)
         pr = _api("graphql", query=query)["data"]["repository"]["pullRequest"]
         sha, branch = pr["headRefOid"], pr["baseRefName"]
         receipt["head_sha"] = sha
+        mergeability = {
+            "base": branch,
+            "mergeable": pr.get("mergeable"),
+            "merge_state_status": pr.get("mergeStateStatus"),
+        }
+        receipt["mergeability"] = mergeability
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
             raise ValueError("PR is closed or current head is unavailable")
+        if branch != "main":
+            receipt.update(
+                classification="inconclusive",
+                detail=f"PR base is {branch!r}, not 'main'.",
+                recovery="Keep the PR draft; ask the responsible branch owner to target main, then retry."
+            )
+            return receipt
+        if mergeability["mergeable"] == "CONFLICTING":
+            receipt.update(
+                classification="conflict",
+                detail="GitHub reports the PR as CONFLICTING against main.",
+                recovery="Keep the PR draft; return the base update and conflict resolution to the responsible branch owner, then retry."
+            )
+            return receipt
+        if (mergeability["mergeable"], mergeability["merge_state_status"]) != ("MERGEABLE", "CLEAN"):
+            receipt.update(
+                classification="inconclusive",
+                detail="GitHub mergeability is not the clean MERGEABLE/CLEAN verdict.",
+                recovery="Keep the PR draft; wait for a stable GitHub verdict or ask the responsible branch owner to update the base, then retry."
+            )
+            return receipt
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
         rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)

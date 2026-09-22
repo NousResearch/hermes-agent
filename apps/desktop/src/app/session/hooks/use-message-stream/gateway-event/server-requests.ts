@@ -456,6 +456,7 @@ export function handleServerRequest(
 
     if (route === 'ignore') {
       rejectNoWindowOwner(request)
+
       return true
     }
 

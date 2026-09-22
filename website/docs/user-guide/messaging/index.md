@@ -45,6 +45,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
+| Rubika | — | ✅ | ✅ | — | — | — | — |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
@@ -960,6 +961,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Mattermost Setup](mattermost.md)
 - [Matrix Setup](matrix.md)
 - [DingTalk Setup](dingtalk.md)
+- [Rubika Setup](rubika.md)
 - [Feishu/Lark Setup](feishu.md)
 - [WeCom Setup](wecom.md)
 - [WeCom Callback Setup](wecom-callback.md)

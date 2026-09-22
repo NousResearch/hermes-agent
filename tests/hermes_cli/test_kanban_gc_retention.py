@@ -71,6 +71,24 @@ def test_cmd_gc_negative_days_errors_and_deletes_nothing(board, capsys):
     assert log.exists()
 
 
+def test_cmd_gc_negative_days_leaves_workspaces_untouched(board):
+    """Invalid retention must refuse before ANY sweep: the workspace collection
+    runs first in the command body, so this fixture proves ordering, not just
+    event/log preservation."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="archived with workspace")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='archived', workspace_kind='scratch' WHERE id=?",
+                (tid,),
+            )
+    ws = kb.workspaces_root() / tid
+    ws.mkdir(parents=True)
+    (ws / "scratch.txt").write_text("keep me")
+    assert kanban_ops._cmd_gc(_args(event_days=-1)) != 0
+    assert (ws / "scratch.txt").exists()
+
+
 def test_cmd_gc_zero_days_disables_sweeps(board):
     with kbc.connect_closing() as conn:
         tid = _done_task_with_old_event(conn)

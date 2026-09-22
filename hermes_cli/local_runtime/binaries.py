@@ -302,15 +302,19 @@ def prune_old_tags(keep: list[str]) -> None:
     if not root.exists():
         return
     for entry in root.iterdir():
-        if not entry.is_dir() or entry.name == "downloads" or entry.name in keep:
+        if entry.name == "downloads" or entry.name in keep:
             continue
         if entry.is_symlink():
             # is_dir() follows the link while rmtree() refuses a top-level symlink, and
             # ignore_errors=True makes that refusal silent: the entry would be logged as
-            # pruned while staying on disk forever.
+            # pruned while staying on disk forever. Symlink-ness is decided first so a
+            # link whose target is already gone is reclaimed rather than skipped as
+            # "not a directory".
             entry.unlink()
-        else:
+        elif entry.is_dir():
             shutil.rmtree(entry, ignore_errors=True)
+        else:
+            continue  # a plain file is not a runtime tag
         logger.info("pruned old runtime %s", entry.name)
 
 

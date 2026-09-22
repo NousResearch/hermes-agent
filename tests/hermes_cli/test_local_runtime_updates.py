@@ -166,3 +166,31 @@ def test_prune_unlinks_a_symlinked_runtime_entry(hermes_home, tmp_path):
     assert not link.is_symlink() and not link.exists(), "the link itself is gone"
     assert (target / "marker.txt").exists(), "the link target is never chased"
     assert runtimes_root().joinpath("b10100").is_dir(), "kept tags survive"
+
+def test_prune_unlinks_a_dangling_symlinked_runtime_entry(hermes_home, tmp_path):
+    """A link whose target is gone is pruned too: is_dir() can never classify it.
+
+    ``prune_old_tags`` has no age policy — it prunes every entry that is not in ``keep``
+    — but it decided *what* an entry is with ``is_dir()``, which follows the link. A
+    dangling entry therefore looked like neither a tag nor an error anyone reports: it
+    was skipped, and the silent leak this branch exists to close stayed open for exactly
+    the entries whose target disappeared first.
+    """
+    from hermes_cli.local_runtime.binaries import prune_old_tags, runtimes_root
+
+    _install_fake_tag(hermes_home, "b10100")
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    link = runtimes_root() / "b10999"
+    link.symlink_to(target, target_is_directory=True)
+    target.rmdir()  # the entry now dangles
+    assert link.is_symlink() and not link.exists()
+    assert not link.is_dir(), "the precondition: is_dir() cannot see a dangling link"
+    stray = runtimes_root() / "notes.txt"
+    stray.write_text("not a runtime tag", encoding="utf-8")
+
+    prune_old_tags(["b10100"])
+
+    assert not link.is_symlink(), "the dangling runtime link is pruned, not skipped"
+    assert runtimes_root().joinpath("b10100").is_dir(), "kept tags survive"
+    assert stray.exists(), "a plain file is still not a runtime tag"

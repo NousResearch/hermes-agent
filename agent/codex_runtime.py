@@ -927,6 +927,40 @@ class _CodexResponseAssembler:
             indexed.sort(key=lambda entry: entry[1])
         return [entry[2] for entry in indexed]
 
+    def _dedupe_output_items(self, output: List[Any]) -> List[Any]:
+        """Collapse same-id function_calls to a single item, preferring non-empty arguments.
+
+        Some providers emit a function_call through several same-id frames (a bare
+        ``output_item.added`` with empty arguments before a completed ``output_item.done``,
+        or repeated ``output_item.done`` for one id).  Without this, one logical call
+        becomes two ``tool_calls`` entries (one with args, one ``{}``); the empty twin
+        reaches the tool executor with no arguments.  message/reasoning items are untouched.
+        """
+        seen: Dict[str, Any] = {}
+        deduped: List[Any] = []
+        for item in output:
+            item_type = str(_event_field(item, "type", ""))
+            if "function_call" not in item_type:
+                deduped.append(item)
+                continue
+            item_id = str(_event_field(item, "id", "") or _event_field(item, "call_id", "") or "")
+            if not item_id:
+                deduped.append(item)
+                continue
+            arguments = str(_event_field(item, "arguments", "") or "").strip()
+            prior = seen.get(item_id)
+            if prior is None:
+                seen[item_id] = item
+                deduped.append(item)
+                continue
+            prior_args = str(_event_field(prior, "arguments", "") or "").strip()
+            # Keep the copy that actually carries arguments ("{}" counts as empty).
+            if arguments and (not prior_args or prior_args == "{}"):
+                deduped[deduped.index(prior)] = item
+                seen[item_id] = item
+            # else keep the existing (possibly empty) copy; do not add a duplicate.
+        return deduped
+
     def result(self) -> SimpleNamespace:
         # With only plain text deltas (no tool calls), synthesize one message item.
         output: List[Any] = list(self.output_items)
@@ -937,6 +971,10 @@ class _CodexResponseAssembler:
         # per-item done events on a successful completion.
         if self.pending_function_calls and self.saw_response_completed:
             output = self._settled_output()
+        # Guard against same-id function_calls emitted as multiple frames (bare added + done, or
+        # repeated done) collapsing into the same logical tool call.  Must run after settlement so
+        # both the done-only and settle paths are deduplicated.
+        output = self._dedupe_output_items(output)
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")

@@ -57,6 +57,63 @@ def test_openai_effort_update_pins_baseline_and_fails_closed():
     assert unsupported["context_management"] == common["context_management"]
 
 
+def test_official_gpt6_tiers_preserve_none_to_max_updates():
+    history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        make_effort_update_message("none", "max"),
+        {"role": "user", "content": "continue"},
+    ]
+    transport = ResponsesApiTransport()
+
+    for model in ("gpt-6-luna", "gpt-6-terra", "gpt-6-sol"):
+        route = {
+            "model": model,
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+        }
+        kwargs = transport.build_kwargs(
+            messages=_wire_copy(history),
+            reasoning_config={"enabled": True, "effort": "none"},
+            context_management=[{"type": "compaction", "compact_threshold": 4_000}],
+            **route,
+        )
+        prepared = transport.preflight_kwargs(kwargs)
+        assert prepared["reasoning"]["effort"] == "max"
+        assert prepared["input"][-2:] == [
+            {"type": "configuration_update", "reasoning": {"effort": "none"}},
+            {"role": "user", "content": "continue"},
+        ]
+        assert "context_management" not in prepared
+
+    proxy = transport.build_kwargs(
+        model="gpt-6-luna",
+        messages=_wire_copy(history),
+        reasoning_config={"enabled": True, "effort": "none"},
+        context_management=[{"type": "compaction", "compact_threshold": 4_000}],
+        provider="custom",
+        base_url="https://api.openai.com.proxy.invalid/v1",
+    )
+    assert all(item.get("type") != "configuration_update" for item in proxy["input"])
+    assert "context_management" in proxy
+
+
+def test_official_astra_keeps_low_floor_while_gpt6_family_expands():
+    transport = ResponsesApiTransport()
+    route = {
+        "model": "gpt-6-astra",
+        "provider": "openai",
+        "base_url": "https://api.openai.com/v1",
+    }
+    kwargs = transport.build_kwargs(
+        messages=[{"role": "user", "content": "hello"}],
+        reasoning_config={"enabled": True, "effort": "none"},
+        **route,
+    )
+    assert transport.preflight_kwargs(kwargs)["reasoning"]["effort"] == "low"
+
+
 def test_model_change_starts_a_new_effort_lineage(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_state import SessionDB

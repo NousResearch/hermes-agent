@@ -836,7 +836,7 @@ def _preflight_configuration_update(
 ) -> Dict[str, Any]:
     reasoning = item.get("reasoning")
     effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
-    if effort not in {"low", "medium", "high", "xhigh", "max"}:
+    if effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
         raise ValueError(
             f"Codex Responses input[{idx}] configuration_update must contain a supported reasoning.effort."
         )

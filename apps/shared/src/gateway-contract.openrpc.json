@@ -19390,6 +19390,13 @@
             "title": "Skill Count",
             "type": "integer"
           },
+          "previous_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Previous Names",
+            "type": "array"
+          },
           "last_session": {
             "anyOf": [
               {

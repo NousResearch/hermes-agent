@@ -1386,8 +1386,9 @@ TERMINAL_SCHEMA = {
             },
             "heartbeat": {
                 "type": "integer",
-                "minimum": 60,
-                "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
+                "minimum": 0,
+                "default": 0,
+                "description": "0 disables. With background=true: also notify every N seconds with the output since the last notice (positive values are clamped to min 60). For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto

@@ -2431,6 +2431,9 @@ def _make_agent(
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
+        # Built on a fallback because the configured primary could not resolve: turn start returns the
+        # session to the primary once it can (_return_to_configured_primary).
+        agent._built_on_pre_agent_fallback = True
     return agent
 
 

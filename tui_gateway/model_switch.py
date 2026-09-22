@@ -441,6 +441,49 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
 
 
+def _configured_primary_ready(model: str, provider: str) -> bool:
+    """True when the configured primary resolves and its credential pool, if it has one, has a
+    credential selectable for *model* right now. Quiet: this runs at every turn start."""
+    try:
+        from agent.credential_pool import load_pool
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider(requested=provider or None, target_model=model)
+        pool = load_pool(str(runtime.get("provider") or provider or ""))
+        return not pool.has_credentials() or pool.has_available(model=model)
+    except Exception:
+        return False
+
+
+def _return_to_configured_primary(sid: str, session: dict) -> None:
+    """A session whose agent was built on a pre-agent fallback returns to the configured primary
+    once it is usable again. The per-turn config sync cannot: its baseline is the configured model,
+    so it sees no change, and the agent's own primary restore returns to the runtime it was built
+    on, which is the fallback. Without this the session stayed on the fallback until the backend
+    restarted, long after the primary's quota reset (#119195). The messaging gateway re-resolves
+    per message and already recovers. A /model pin wins; a primary that is still unusable is
+    retried quietly on the next turn."""
+    agent = session.get("agent")
+    if agent is None or not getattr(agent, "_built_on_pre_agent_fallback", False) or session.get("model_override"):
+        return
+    model, provider = _config_model_target()
+    if not model:
+        return
+    if model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", "")):
+        agent._built_on_pre_agent_fallback = False
+        return
+    if not _configured_primary_ready(model, provider):
+        return
+    raw = f"{model} --provider {provider}" if provider else model
+    try:
+        _apply_model_switch(
+            sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
+            persist_override=False)
+    except Exception as e:
+        logger.info("Configured primary %s is not reachable yet for session %s: %s", model, sid, e)
+        return
+    agent._built_on_pre_agent_fallback = False
+
+
 def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
     """Selection-guard message for a model queued mid-turn, or ``None``. Runs BEFORE the pick is
     stashed (the client can still turn the response into a confirm prompt); only pre-resolution

@@ -125,3 +125,32 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
     result = ops.search(pattern="needle", path=str(tree), limit=2)
     assert not result.error and len(result.matches) == 2, result.to_dict()
+
+
+def test_native_search_keeps_output_when_process_exits_before_cleanup(tree, ops_factory, monkeypatch):
+    import shlex
+    import subprocess
+
+    ops = ops_factory(tree, [])
+    spawn = subprocess.Popen
+
+    def exit_before_group_lookup(*args, **kwargs):
+        proc = spawn(*args, **kwargs)
+        real_poll = proc.poll
+
+        def raced_poll():
+            proc.wait(timeout=5)
+            proc.poll = real_poll
+            return None
+
+        proc.poll = raced_poll
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", exit_before_group_lookup)
+    result = ops._run_rg_native(
+        [shlex.quote(sys.executable), "-c", shlex.quote("print('needle')")],
+        fetch_limit=10,
+        timeout=5,
+    )
+    assert result.exit_code == 0
+    assert result.stdout == "needle\n"

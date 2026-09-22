@@ -287,7 +287,13 @@ def update_manifest_statuses(delegation_id: Optional[str],
 
 
 def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS) -> int:
-    """Remove live/<delegation_id> dirs older than the retention window. Best-effort."""
+    """Remove live/<delegation_id> dirs older than the retention window. Best-effort.
+
+    A symlinked entry is still aged by its target's mtime (``stat()`` follows, as the
+    window always did) but is removed as the link it is: ``is_dir()`` follows the
+    symlink while ``rmtree()`` refuses a top-level one, so the entry would otherwise
+    be counted as pruned and stay on disk forever.
+    """
     removed = 0
     with _best_effort("pruning"):
         root = live_transcript_root()
@@ -296,9 +302,13 @@ def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS) -> int:
         cutoff = time.time() - max_age_days * 86400
         for child in root.iterdir():
             try:
-                if child.is_dir() and child.stat().st_mtime < cutoff:
+                if not child.is_dir() or child.stat().st_mtime >= cutoff:
+                    continue
+                if child.is_symlink():
+                    child.unlink()
+                else:
                     shutil.rmtree(child, ignore_errors=True)
-                    removed += 1
+                removed += 1
             except OSError:
                 continue
     return removed

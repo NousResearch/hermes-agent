@@ -334,3 +334,33 @@ def test_benign_transcript_content_is_untouched():
     assert "src/parser.py" in body
     assert "def parse(x)" in body
     assert "refactor the parser" in body
+
+
+def test_prune_unlinks_a_symlinked_live_dir_instead_of_leaking_it(tmp_path, monkeypatch):
+    """An expired symlinked entry is unlinked, not silently skipped by rmtree."""
+    root = tmp_path / "live"
+    root.mkdir()
+    stale = root / "deleg_stale"
+    stale.mkdir()
+    (stale / "task-0.log").write_text("x", encoding="utf-8")
+    fresh = root / "deleg_fresh"
+    fresh.mkdir()
+    target = tmp_path / "outside"
+    target.mkdir()
+    (target / "payload.txt").write_text("keep", encoding="utf-8")
+    link = root / "deleg_link"
+    link.symlink_to(target, target_is_directory=True)
+
+    old = time.time() - 30 * 86400
+    for path in (stale, stale / "task-0.log", target):
+        os.utime(path, (old, old))
+
+    monkeypatch.setattr(dll, "live_transcript_root", lambda: root)
+
+    removed = prune_stale_live_dirs()
+
+    assert removed == 2, "the stale dir and the symlinked entry are both expired"
+    assert not stale.exists()
+    assert not link.is_symlink() and not link.exists(), "the link itself is gone"
+    assert fresh.is_dir(), "an entry inside the window survives"
+    assert (target / "payload.txt").exists(), "the link target is never chased"

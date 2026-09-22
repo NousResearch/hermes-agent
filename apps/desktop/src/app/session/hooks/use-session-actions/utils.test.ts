@@ -1812,6 +1812,41 @@ describe('overlayConcurrentMessageChanges', () => {
     expect(overlaid[0].parts).toEqual([{ type: 'text', text: 'partial A + delta B' }])
   })
 
+  it('keeps a newly persisted optimistic prompt at its durable position', () => {
+    const baseline = [
+      msg('prior-user', 'user', 'earlier question'),
+      msg('prior-assistant', 'assistant', 'earlier answer')
+    ]
+
+    const authoritative = [
+      ...baseline,
+      msg('stored-user', 'user', 'did every location update?'),
+      msg('stored-assistant', 'assistant', 'yes, all locations')
+    ]
+
+    const current = [...baseline, msg('user-optimistic', 'user', 'did every location update?')]
+
+    const overlaid = overlayConcurrentMessageChanges(authoritative, baseline, current)
+
+    expect(overlaid.map(message => message.id)).toEqual([
+      'prior-user',
+      'prior-assistant',
+      'stored-user',
+      'stored-assistant'
+    ])
+  })
+
+  it('keeps a truly racing repeated prompt when no matching durable tail exists', () => {
+    const baseline = [msg('prior-user', 'user', 'same question'), msg('prior-assistant', 'assistant', 'earlier answer')]
+    const current = [...baseline, msg('user-optimistic', 'user', 'same question')]
+
+    expect(overlayConcurrentMessageChanges(baseline, baseline, current).map(message => message.id)).toEqual([
+      'prior-user',
+      'prior-assistant',
+      'user-optimistic'
+    ])
+  })
+
   it('merges an activation prefix with a baseline-new runtime delta chunk', () => {
     const authoritative = [msg('assistant-stream-activation', 'assistant', 'partial A', { pending: true })]
     const current = [msg('assistant-stream-runtime', 'assistant', ' + delta B', { pending: true })]

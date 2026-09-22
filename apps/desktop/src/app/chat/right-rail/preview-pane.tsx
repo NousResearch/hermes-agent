@@ -1038,6 +1038,12 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.setAttribute('partition', 'persist:hermes-preview')
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
+    // Without `allowpopups`, Chromium rejects every new-window request from the
+    // guest before any handler runs, so an `<a target="_blank">` click inside a
+    // preview did nothing at all (#81660). This does NOT let previews spawn OS
+    // windows: main.ts installs a window-open handler on every attached guest
+    // that always denies the popup and instead navigates this pane in place.
+    webview.setAttribute('allowpopups', '')
 
     // The guest preload (main.ts installs it on this partition) forwards a
     // clicked `_blank` anchor here. Admission is our side of the contract —

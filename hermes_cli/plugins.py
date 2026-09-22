@@ -61,7 +61,7 @@ from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
-    _plugin_relative_segments, _plugin_settings_entry,
+    _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
 
 
@@ -280,23 +280,7 @@ class PluginContext:
 
     def set_config(self, key: str, value: Any) -> None:
         """Atomically write one value in this plugin's ``settings`` subtree."""
-        segments = self._segments(key)
-        from hermes_cli import config as config_mod
-        if config_mod.is_managed():
-            raise PermissionError("Plugin settings cannot be changed in a managed install")
-        from hermes_cli import managed_scope
-        full_path = ("plugins", "entries", self.plugin_id, "settings", *segments)
-        dotted_path = ".".join(full_path)
-        if managed_scope.is_key_managed(dotted_path):
-            raise PermissionError(f"Plugin setting {dotted_path!r} is administrator-managed")
-        partial = _nested_plugin_mapping(full_path[:4], _nested_plugin_mapping(segments, value))
-        # The lock covers merge-read plus atomic save so sibling plugin writes (threads or
-        # processes) cannot race between the two steps.
-        with _locked_plugin_state(config_mod.get_config_path()), config_mod._CONFIG_LOCK:
-            # Fail closed on malformed YAML: save_config degrades parse failures to {} — safe
-            # for reads, destructive for read-modify-write.
-            config_mod.read_user_config_raw()
-            config_mod.save_config(partial, preserve_keys={full_path}, merge_existing=True)
+        save_plugin_setting(self.plugin_id, self._segments(key), value)
 
     @cached_property
     def state(self) -> PluginState:

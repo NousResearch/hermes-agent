@@ -1899,7 +1899,17 @@ export const en: Translations = {
       deepLinkCatalogUnknown: (name: string) =>
         `\u201C${name}\u201D is not in the Hermes plugin catalog. Nothing was installed.`,
       deepLinkCatalogUnavailable:
-        'Could not load the Hermes plugin catalog. Check your connection and open the link again.'
+        'Could not load the Hermes plugin catalog. Check your connection and open the link again.',
+      settingsToggle: (name: string) => `Settings: ${name}`,
+      settingsForm: {
+        save: 'Save settings',
+        saved: (name: string) => `${name} settings saved.`,
+        saveFailed: (name: string) => `Could not save ${name} settings`,
+        optional: '(optional)',
+        secretSet: '•••••••• (set)',
+        secretStoredAs: (env: string) =>
+          `Stored in the profile's .env as ${env}, never in config.yaml; leave blank to keep the current value.`
+      }
     },
     officialCatalog: 'Available to install',
     officialPill: 'Official',

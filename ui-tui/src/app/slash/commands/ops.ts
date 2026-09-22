@@ -64,6 +64,7 @@ interface SkillsReloadResponse {
 
 export const opsCommands: SlashCommand[] = [
   {
+    aliases: ['i'],
     help: 'stop background processes',
     name: 'stop',
     run: (_arg, ctx) => {

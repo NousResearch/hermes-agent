@@ -97,6 +97,10 @@ class TestResolveCommand:
         assert not ctx.cli_only and not ctx.gateway_only
         assert "context" in GATEWAY_KNOWN_COMMANDS
 
+    def test_steer_and_stop_short_aliases_resolve_to_their_commands(self):
+        assert resolve_command("s").name == "steer"
+        assert resolve_command("i").name == "stop"
+
 
 # ---------------------------------------------------------------------------
 # Derived dicts (backwards compat)

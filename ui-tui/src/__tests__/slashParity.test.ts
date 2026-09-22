@@ -122,6 +122,11 @@ describe('slash parity matrix', () => {
     expect(cmd, '/q must resolve to a command').toBeDefined()
     expect(cmd!.name).toBe('queue')
   })
+
+  it('/s and /i aliases resolve to steer and stop', () => {
+    expect(findSlashCommand('s')?.name).toBe('steer')
+    expect(findSlashCommand('i')?.name).toBe('stop')
+  })
 })
 
 describe('parseSlashCommand argument fidelity', () => {

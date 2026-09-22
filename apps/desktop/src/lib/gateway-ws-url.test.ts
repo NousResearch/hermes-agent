@@ -1,8 +1,53 @@
 import { GatewayReauthRequiredError, isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
+
+import { resolveDesktopGatewayWsUrl } from './gateway-ws-url'
+
 const oauthConn = { authMode: 'oauth' as const, wsUrl: 'ws://host/api/ws?ticket=stale' }
 const tokenConn = { authMode: 'token' as const, wsUrl: 'ws://host/api/ws?token=abc' }
+
+describe('desktop connection scope', () => {
+  it.each(['token', 'oauth'] as const)(
+    'preserves legacy aliases and never falls back to legacy minting for a registered %s route',
+    async authMode => {
+      const connection = {
+        authMode,
+        connectionId: 'remote-device',
+        profile: 'client-alias',
+        wsUrl: 'wss://remote.invalid/api/ws?token=cached'
+      } as HermesConnection
+
+      const desktop = {
+        getGatewayWsUrl: vi.fn(async () => 'wss://legacy.invalid/api/ws?token=fresh'),
+        getGatewayWsUrlFor: vi.fn(async () => 'wss://remote.invalid/api/ws?ticket=fresh')
+      } as unknown as Window['hermesDesktop']
+
+      await expect(resolveDesktopGatewayWsUrl(desktop, connection)).resolves.toContain('legacy.invalid')
+      expect(desktop.getGatewayWsUrl).toHaveBeenCalledWith('client-alias')
+      expect(desktop.getGatewayWsUrlFor).not.toHaveBeenCalled()
+      vi.mocked(desktop.getGatewayWsUrl!).mockClear()
+
+      const registered = { ...connection, profile: 'remote-profile', registryScoped: true }
+      await expect(resolveDesktopGatewayWsUrl(desktop, registered)).resolves.toContain('remote.invalid')
+      expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({
+        connectionId: 'remote-device',
+        profile: 'remote-profile'
+      })
+
+      delete desktop.getGatewayWsUrlFor
+
+      if (authMode === 'oauth') {
+        await expect(resolveDesktopGatewayWsUrl(desktop, registered)).rejects.toThrow('cannot refresh OAuth')
+      } else {
+        await expect(resolveDesktopGatewayWsUrl(desktop, registered)).resolves.toBe(registered.wsUrl)
+      }
+
+      expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+    }
+  )
+})
 
 describe('resolveGatewayWsUrl', () => {
   describe('oauth mode', () => {

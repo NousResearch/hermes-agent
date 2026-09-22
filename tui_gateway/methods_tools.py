@@ -1483,7 +1483,8 @@ def _plugins_toggle(rid, params):
     # The toggle resolves a bare leaf / manifest name to the canonical key it wrote; report that key.
     key = result.get("name") or ident
     row = next((r for r in _plugin_rows() if key in (r["key"], r["name"])), None)
-    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": key, "plugin": row})
+    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")),
+                     "restart_required": bool(result.get("restart_required")), "name": key, "plugin": row})
 
 
 def _plugins_install(rid, params):

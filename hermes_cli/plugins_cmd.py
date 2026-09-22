@@ -2079,7 +2079,9 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     changed = _activate_key(key, enable=enabled)
     if changed:
         _toggle_plugin_toolset(key, enable=enabled)
-    return {"ok": True, "name": key, "unchanged": not changed}
+    # Config-only change: a running gateway/TUI scanned plugins once at start and will not pick it
+    # up, so every UI can say so (the CLI prints "Takes effect on next session") — #71595/#54941.
+    return {"ok": True, "name": key, "unchanged": not changed, "restart_required": changed}
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:

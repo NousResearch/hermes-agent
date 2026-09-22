@@ -18323,7 +18323,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``name``/``plugin``;\n``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` \u2192\n``ok``/``unchanged``/``sha``; ``remove`` \u2192 ``ok``/``name``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``update`` \u2192 ``ok``/``unchanged``/``sha``; ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -18387,6 +18387,30 @@
             ],
             "default": null,
             "title": "Unchanged"
+          },
+          "restart_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Restart Required"
+          },
+          "cleared_memory_provider": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cleared Memory Provider"
           },
           "name": {
             "anyOf": [

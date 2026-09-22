@@ -1469,9 +1469,14 @@ class TestForceReloadSymmetry:
         hold.set()
         first.join(5.0)
 
-    def test_hung_worker_blocks_new_call_identity_after_suppression(self, monkeypatch):
-        """A worker abandoned on timeout still occupies its callback: a later call with a
-        fresh id must be skipped, not given a second thread (one leak, not one per call)."""
+    def test_hung_worker_caps_new_call_identities_after_suppression(self, monkeypatch, caplog):
+        """Workers abandoned on timeout still occupy their callback: once the suppression window
+        has passed, later calls with fresh ids may start a replacement, but only up to
+        ``_HOOK_MAX_ABANDONED_WORKERS`` live ones — a hung plugin leaks a bounded few threads,
+        never one per call (#98382), and past the cap it is skipped with a warning that names
+        the callback (#105223)."""
+        import hermes_cli.plugins_dispatch as dispatch
+
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
         )
@@ -1488,10 +1493,44 @@ class TestForceReloadSymmetry:
         mgr._hook_timeout_suppression_seconds = 0.0  # isolate the gate from suppression
         mgr._hooks["post_tool_call"] = [blocker]
 
-        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-a") == []
-        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-b") == []
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            for i in range(dispatch._HOOK_MAX_ABANDONED_WORKERS + 3):
+                assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id=f"call-{i}") == []
 
-        assert len(starts) == 1
+        assert len(starts) == dispatch._HOOK_MAX_ABANDONED_WORKERS
+        assert "blocker" in caplog.text and "abandoned worker(s) still running" in caplog.text
+        hold.set()
+
+    def test_hung_worker_does_not_fail_closed_forever(self, monkeypatch):
+        """One never-returning pre_tool_call guard must not block every later tool call until
+        restart: after the suppression window a fresh call id runs a new worker, so a callback
+        that has recovered decides again (#105223)."""
+        import time
+
+        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+        hold = threading.Event()
+        starts = []
+
+        def guard(**_kwargs):
+            starts.append(1)
+            if len(starts) == 1:
+                hold.wait(timeout=10.0)  # the first fire hangs for good
+            return None  # later fires decide: allow
+
+        mgr = PluginManager()
+        mgr._hook_timeout_suppression_seconds = 0.2
+        mgr._hooks["pre_tool_call"] = [guard]
+
+        blocked = [{"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}]
+        assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-a") == blocked
+        assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-b") == blocked  # in window
+        time.sleep(0.3)  # suppression window passes; the first worker is still hung
+        assert mgr.invoke_hook("pre_tool_call", tool_name="read_file", tool_call_id="call-c") == []
+        assert len(starts) == 2
         hold.set()
 
     def test_worker_finishing_at_timeout_does_not_leave_phantom_abandoned_entry(self, monkeypatch):

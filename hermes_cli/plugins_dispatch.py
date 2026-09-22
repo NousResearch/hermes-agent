@@ -50,6 +50,8 @@ _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
+# Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
+_HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
 
@@ -261,8 +263,9 @@ class PluginDispatchMixin:
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
-        suppressed, still running, timed out (worker abandoned, never joined), or the worker
-        could not be started. Exceptions propagate."""
+        suppressed, still running for this call id, over the abandoned-worker cap, timed out
+        (worker abandoned, never joined), or the worker could not be started. Exceptions
+        propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
         # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
         # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
@@ -271,14 +274,24 @@ class PluginDispatchMixin:
         token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
-            # A worker abandoned on timeout still holds a thread; a fresh call id must not
-            # start a second one for the same callback, or a hung plugin leaks a thread per call.
-            running = (gate_key in self._hook_running_callbacks
-                       or bool(self._hook_abandoned.get(suppression_key)))
-            if (suppressed_until is not None and suppressed_until > time.monotonic()) or running:
+            if (gate_key in self._hook_running_callbacks
+                    or (suppressed_until is not None and suppressed_until > time.monotonic())):
                 logger.warning(
                     "Hook '%s' callback %s skipped after previous "
                     "timeout or while still running", hook_name, callback_name)
+                return _HOOK_SKIPPED
+            # Workers abandoned on timeout still hold threads. Once the suppression window has
+            # passed, a fresh call id may start a new worker (a hung guard must not fail every
+            # later tool call closed until restart, #105223), but only up to a small cap per
+            # callback — expiring the bookkeeping while the hung worker lives must not leak a
+            # thread per call (#98382). At the cap the callback keeps being skipped (fail-closed
+            # for pre_tool_call) until one of its workers finishes and releases its slot.
+            abandoned = self._hook_abandoned.get(suppression_key)
+            if abandoned and len(abandoned) >= _HOOK_MAX_ABANDONED_WORKERS:
+                logger.warning(
+                    "Hook '%s' callback %s (%s) skipped: %d abandoned worker(s) still running — "
+                    "the plugin is hung; fix or disable it (retried when a worker finishes)",
+                    hook_name, callback_name, getattr(cb, "__module__", "unknown plugin"), len(abandoned))
                 return _HOOK_SKIPPED
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(suppression_key, None)

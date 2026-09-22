@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.auxiliary_client import (
@@ -932,7 +932,7 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
 # identifier-preserving session log is produced by the SAME single summary request as the narrative summary
 # (one auxiliary LLM call per compaction attempt, total — #96603: the earlier per-chunk digest loop made up
 # to 28 extra aux calls and pushed compactions to 7-11 minutes on slow aux routes). Coverage over oversized
-# regions comes from even input sampling (see ``_sample_summary_input``), and exact-needle defense comes
+# regions comes from even record sampling (see ``_sample_summary_records``), and exact-needle defense comes
 # from the LLM-free anchor index below.
 _LEAN_SESSION_LOG_HEADING = "## Detailed Session Log (oldest first)"
 # Extra output-token guidance for the session-log section (single response).
@@ -3571,29 +3571,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                     break
             result = _render(selected)
         return result
-
-    @classmethod
-    def _sample_summary_input(
-        cls,
-        content: Union[str, Sequence[str]],
-        records: Optional[Sequence[str]] = None,
-    ) -> str:
-        """Sample complete serialized records while retaining the character bound.
-
-        Accepts either a sequence of serialized records (preserving record boundaries structurally)
-        or a flat string for backward compatibility.
-        """
-        if records is not None:
-            return cls._sample_summary_records(records)
-        if not isinstance(content, str):
-            return cls._sample_summary_records(content)
-        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
-            return content
-        # Discard empty trailing fragments so an empty pseudo-record cannot become the tail anchor.
-        records_list = [r for r in content.split("\n\n") if r.strip()]
-        if not records_list:
-            return content[:cls._SUMMARY_INPUT_MAX_CHARS]
-        return cls._sample_summary_records(records_list)
 
     def _fallback_to_main_for_compression(
         self, e: Exception, reason: str, failed_model: Optional[str] = None

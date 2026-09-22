@@ -145,16 +145,15 @@ class TestLeanSingleAuxiliaryCall:
 
 class TestSampledSummaryInput:
     def test_small_input_passes_through(self):
-        content = "abc" * 100
-        assert ContextCompressor._sample_summary_input(content) == content
+        records = ["[USER]: abc" * 100] * 3
+        assert ContextCompressor._sample_summary_records(records) == "\n\n".join(records)
 
     def test_sampling_is_bounded_ordered_and_marked(self):
         # Distinct decade markers let us verify oldest-to-newest order and
         # uniform coverage across the whole region.
-        content = "".join(
-            f"<seg{i:02d}>" + ("x" * 50_000) for i in range(10)
-        )
-        out = ContextCompressor._sample_summary_input(content)
+        records = [f"<seg{i:02d}>" + ("x" * 50_000) for i in range(10)]
+        content = "\n\n".join(records)
+        out = ContextCompressor._sample_summary_records(records)
         assert len(out) <= ContextCompressor._SUMMARY_INPUT_MAX_CHARS
         assert "chars elided" in out
         seen = [i for i in range(10) if f"<seg{i:02d}>" in out]

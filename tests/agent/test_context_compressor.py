@@ -3319,7 +3319,7 @@ class TestSummaryPromptBounding:
     def test_lean_sampling_keeps_record_boundaries(self):
         cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
         records = [f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(1200)]
-        sampled = ContextCompressor._sample_summary_input("\n\n".join(records))
+        sampled = ContextCompressor._sample_summary_records(records)
         assert len(sampled) <= cap
         for record in sampled.split("\n\n"):
             if record.startswith("["):
@@ -3327,7 +3327,7 @@ class TestSummaryPromptBounding:
 
     def test_lean_sampling_covers_multiple_regions(self):
         records = [f"[USER]: record-{i:04d} " + ("x" * 40) for i in range(8000)]
-        sampled = ContextCompressor._sample_summary_input("\n\n".join(records))
+        sampled = ContextCompressor._sample_summary_records(records)
         assert "record-0000" in sampled
         assert "record-4000" in sampled
         assert "record-7999" in sampled
@@ -3336,7 +3336,7 @@ class TestSummaryPromptBounding:
         cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
         records = [f"[USER]: record-{i:04d}" for i in range(100)]
         records.append("[USER]: newest-record-anchor " + ("z" * (cap + 5000)))
-        sampled = ContextCompressor._sample_summary_input("\n\n".join(records))
+        sampled = ContextCompressor._sample_summary_records(records)
         assert len(sampled) <= cap
         assert "newest-record-anchor" in sampled
         assert "...[record truncated:" in sampled
@@ -3347,7 +3347,7 @@ class TestSummaryPromptBounding:
         records.append("[TOOL RESULT oversized-mid]: " + ("y" * (cap + 5000)))
         records.extend([f"[USER]: record-{i:04d}" for i in range(51, 100)])
         records.append("[USER]: newest-tail-record")
-        sampled = ContextCompressor._sample_summary_input("\n\n".join(records))
+        sampled = ContextCompressor._sample_summary_records(records)
         assert len(sampled) <= cap
         assert "newest-tail-record" in sampled
         assert "oversized-mid" in sampled

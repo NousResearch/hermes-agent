@@ -3577,6 +3577,11 @@ _AUTH_REFRESH_PROVIDER_BY_HOST = (
     # An aux call that inherits the main xai-oauth route arrives as "auto"; without this row the
     # 403 bad-credentials rung skipped the refresh and benched the only grant (#84845).
     ("api.x.ai", "xai-oauth"),
+    # Azure Foundry aux calls resolve through "auto" (host-inferred), so without this entry an
+    # Entra-token 401 skips credential refresh entirely and exhausts the fallback ladder in
+    # under a second. The Entra callable re-fetches per request, so a refresh here means
+    # rebuilding the client — which picks up a fresh token the next call.
+    ("services.ai.azure.com", "azure-foundry"),
 )
 
 
@@ -3720,6 +3725,36 @@ def _prepare_same_provider_retry(
     return retry_client, retry_kwargs
 
 
+def _refresh_azure_foundry_credentials() -> bool:
+    """Probe the Entra ID credential chain for azure-foundry (returns True when a token exists).
+
+    The main agent's Entra callable fetches a fresh token per request, so there is no cached
+    bearer to rotate here — the refresh is a probe: prove the credential chain (``az`` login,
+    cached MSAL token, environment) can produce one for ``https://ai.azure.com/.default`` right
+    now, and let :meth:`_try_azure_foundry`'s client rebuild pick it up. Without the probe, a
+    stale ``az`` login can't be distinguished from a healthy one and every retry would 401 again.
+    """
+    try:
+        from azure.identity import DefaultAzureCredential
+
+        DefaultAzureCredential().get_token("https://ai.azure.com/.default")
+        return True
+    except Exception as exc:
+        logger.debug("Auxiliary azure-foundry credential probe failed: %s", exc)
+        return False
+
+
+def _auth_backoff_delay(provider: Optional[str]) -> float:
+    """Pause length before retrying a provider whose credentials were just refreshed.
+
+    Auth failures carry no Retry-After; without a pause the retry fires in the same second
+    as the original request, which for token-endpoint propagation delays (e.g. Azure Foundry
+    Entra tokens) is guaranteed to see the same 401. Kept short so an aux retry never
+    stalls a turn.
+    """
+    return 10.0 if _normalize_aux_provider(provider) == "azure-foundry" else 1.0
+
+
 def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Optional[str], task: Optional[str], **prep) -> Any:
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=False, **prep,
@@ -3805,6 +3840,7 @@ _CREDENTIAL_REFRESHERS: Dict[str, Callable[..., bool]] = {
     "copilot": _refresh_copilot_credentials, "openai-codex": _refresh_codex_credentials,
     "nous": _refresh_nous_credentials, "anthropic": _refresh_anthropic_credentials,
     "xai-oauth": _refresh_xai_oauth_credentials, "vertex": _refresh_vertex_credentials,
+    "azure-foundry": _refresh_azure_foundry_credentials,
 }
 
 
@@ -8004,6 +8040,10 @@ def _call_llm_impl(
             if kind == "call":
                 return _validate_llm_response(_relay_sync_completion(*args, **kw), task)
             if kind == "retry":
+                _delay = _auth_backoff_delay(kw.get("resolved_provider"))
+                logger.info("Auxiliary %s: retrying same provider after %.0fs (credential refresh)",
+                            task or "call", _delay)
+                time.sleep(_delay)
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
         return _drive_ladder(
@@ -8151,6 +8191,12 @@ async def _async_call_llm_impl(
             if kind == "call":
                 return _validate_llm_response(await _relay_async_completion(*args, **kw), task)
             if kind == "retry":
+                import asyncio as _aio
+
+                _delay = _auth_backoff_delay(kw.get("resolved_provider"))
+                logger.info("Auxiliary %s (async): retrying same provider after %.0fs (credential refresh)",
+                            task or "call", _delay)
+                await _aio.sleep(_delay)
                 return await _retry_same_provider_async(**kw)
             fb_client, fb_model, fb_label = args
             fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))

@@ -23,13 +23,13 @@ import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { useI18n } from '@/i18n'
-import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
+import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -129,7 +129,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ConnectorTool {...props} />
   }
 
-  if (connectorCalls(props.toolName, props.args).length > 0) {
+  if (toolLabels(props.args).length > 0) {
     return <ConnectorExecution {...props} />
   }
 
@@ -308,6 +308,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   endIndex,
   startIndex
 }) => {
+  const showReasoning = useStore($showReasoning)
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
   // The guide's reasoning is it reading its own runbook ("Now step 4: offer
@@ -352,7 +353,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent || guidedChat) {
+  if (!hasContent || guidedChat || !showReasoning) {
     return null
   }
 
@@ -379,6 +380,15 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   const { status, text } = useMessagePartReasoning()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+
+  // The group above already hides grouped parts; this covers a Reasoning part
+  // rendered without a ReasoningGroup wrapper (assistant-ui drops the group
+  // when a ChainOfThought component is registered).
+  const showReasoning = useStore($showReasoning)
+
+  if (!showReasoning) {
+    return null
+  }
 
   return (
     <MarkdownTextContent

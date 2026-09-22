@@ -108,15 +108,18 @@ test('buildInstanceWindowUrl marks a packaged full peer', () => {
   assert.match(url, /^file:\/\/.*index\.html\?peer=1$/)
 })
 
-test('explicit full peers carry connection and profile in dev and packaged URLs without becoming session windows', () => {
+test('full peers carry their boot owner but only explicit profile windows pin future chats', () => {
   for (const source of [{ devServer: 'http://localhost:5173/' }, { rendererIndexPath: '/opt/app/index.html' }]) {
     for (const connectionId of [null, 'remote&work']) {
-      const url = new URL(buildInstanceWindowUrl({ ...source, connectionId, profile: 'work' }))
-      assert.equal(url.searchParams.get('peer'), '1')
-      assert.equal(url.searchParams.get('profile'), 'work')
-      assert.equal(url.searchParams.get('connectionId'), connectionId ?? '')
-      assert.equal(url.searchParams.has('win'), false)
-      assert.equal(url.hash, '')
+      for (const profileWindow of [false, true]) {
+        const url = new URL(buildInstanceWindowUrl({ ...source, connectionId, profile: 'work', profileWindow }))
+        assert.equal(url.searchParams.get('peer'), '1')
+        assert.equal(url.searchParams.get('profile'), 'work')
+        assert.equal(url.searchParams.get('connectionId'), connectionId ?? '')
+        assert.equal(url.searchParams.get('profileWindow'), profileWindow ? '1' : null)
+        assert.equal(url.searchParams.has('win'), false)
+        assert.equal(url.hash, '')
+      }
     }
   }
 })
@@ -125,6 +128,14 @@ test('instanceWindowBounds cascades a new window off its source bounds', () => {
   const bounds = instanceWindowBounds({ x: 100, y: 120, width: 1400, height: 900 }, { width: 1, height: 1 })
 
   assert.deepEqual(bounds, { width: 1400, height: 900, x: 132, y: 152 })
+})
+
+test('instanceWindowBounds keeps the cascaded window inside the work area it lands on', () => {
+  const displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }]
+  // Source docked at the bottom-right: a raw +32/+32 cascade would overshoot both edges.
+  const bounds = instanceWindowBounds({ x: 700, y: 240, width: 1220, height: 800 }, { width: 1, height: 1 }, displays)
+
+  assert.deepEqual(bounds, { width: 1220, height: 800, x: 700, y: 240 })
 })
 
 test('instanceWindowBounds falls back to the persisted geometry with no source window', () => {

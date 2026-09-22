@@ -384,6 +384,57 @@ class TestDockerHostBindApproval:
         assert A._should_skip_container_guards("daytona") is True
         assert A._should_skip_container_guards("local") is False
 
+    def test_raising_registry_lookup_keeps_container_guards_on(self, monkeypatch):
+        """A registry that raises during the provider lookup must fail soft to guards-on,
+        not propagate out of the approval predicate."""
+        from agent import terminal_env_registry as R
+        import tools.approval as A
+
+        def boom(*_a, **_k):
+            raise RuntimeError("registry down")
+
+        monkeypatch.setattr(R._registry, "get_provider", boom)
+        assert A._should_skip_container_guards("p_disposable") is False
+
+    def test_registered_disposable_plugin_skips_container_guards(self):
+        """Plugin classification uses its registered provider, not built-in names only."""
+        from agent import terminal_env_registry
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+        import tools.approval as A
+
+        class DisposablePlugin(TerminalEnvironmentProvider):
+            name = "approval_disposable_plugin"
+            display_name = "Approval disposable plugin"
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, **kwargs):
+                raise NotImplementedError
+
+        provider = DisposablePlugin()
+        previous = terminal_env_registry.get_provider(provider.name)
+        terminal_env_registry.register_provider(provider)
+        try:
+            assert A._should_skip_container_guards(provider.name) is True
+            assert A._should_skip_container_guards("unknown_plugin_backend") is False
+        finally:
+            terminal_env_registry.restore_registration(provider.name, provider, previous)
+
+        class BrokenDisposablePlugin(DisposablePlugin):
+            name = "broken_approval_disposable_plugin"
+
+            @property
+            def skip_container_guards(self):
+                raise RuntimeError("broken plugin classification")
+
+        broken_provider = BrokenDisposablePlugin()
+        terminal_env_registry.register_provider(broken_provider)
+        try:
+            assert A._should_skip_container_guards(broken_provider.name) is False
+        finally:
+            terminal_env_registry.restore_registration(broken_provider.name, broken_provider, None)
+
     def test_isolated_docker_keeps_fast_path(self, monkeypatch):
         """Isolated Docker still bypasses dangerous-command approval."""
         import tools.approval as A

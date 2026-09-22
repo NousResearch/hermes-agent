@@ -16,6 +16,7 @@ import {
   preventCloseButtonAutoFocus
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
@@ -30,7 +31,7 @@ import {
   openPluginInstallRequest,
   type PluginInstallRequest
 } from '@/store/plugin-install-request'
-import { $activeGatewayProfile, $profileScope } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -48,9 +49,11 @@ export function PluginInstallModal() {
   const onSettings = location.pathname.startsWith(SETTINGS_ROUTE)
   const connection = useStore($connection)
   const activeProfile = useStore($activeGatewayProfile)
+  const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
 
   const [repoInput, setRepoInput] = useState('')
+  const [targetProfile, setTargetProfile] = useState('default')
   const [phase, setPhase] = useState<ProbePhase>('idle')
   const [probe, setProbe] = useState<ProbeResult | null>(null)
   const [installAgent, setInstallAgent] = useState(true)
@@ -151,21 +154,23 @@ export function PluginInstallModal() {
       return
     }
 
+    setTargetProfile(normalizeProfileKey(request.profile || activeProfile || profileScope))
+
     if (request.repo) {
       void runProbe(request)
     }
-  }, [request, resetState, runProbe])
+  }, [activeProfile, profileScope, request, resetState, runProbe])
 
-  const profileLabel = request?.profile || activeProfile || profileScope || 'default'
+  const targetProfileInfo = profiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
+  const profileOptions = targetProfileInfo ? profiles : [...profiles, { name: targetProfile }]
+  const targetProfileLabel = profileLabel(targetProfileInfo ?? { name: targetProfile })
 
   const agentTargetHint =
     connection?.mode === 'remote'
-      ? m.agentTargetRemote(profileLabel)
+      ? m.agentTargetRemote(targetProfileLabel)
       : m.agentTargetLocal(
-          profileLabel,
-          request?.profile && request.profile !== 'default'
-            ? `~/.hermes/profiles/${request.profile}/plugins/`
-            : '~/.hermes/plugins/'
+          targetProfileLabel,
+          targetProfile === 'default' ? '~/.hermes/plugins/' : `~/.hermes/profiles/${targetProfile}/plugins/`
         )
 
   // A unified package installed into a local backend carries its own desktop
@@ -211,7 +216,7 @@ export function PluginInstallModal() {
           enable: enableAgent,
           catalogName: request.catalogName,
           ref: pinRefTrimmed || undefined,
-          profile: request.profile
+          profile: targetProfile
         })
 
         if (result.ok) {
@@ -272,7 +277,7 @@ export function PluginInstallModal() {
         }
       }
 
-      await loadAgentPlugins(requestGateway)
+      await loadAgentPlugins(requestGateway, targetProfile)
 
       if (errors.length === 0) {
         for (const message of successes) {
@@ -291,7 +296,7 @@ export function PluginInstallModal() {
 
         closePluginInstallRequest()
         // Catalog picks come from Capabilities → Plugins; land back there.
-        navigate(request.catalogName ? '/skills?tab=plugins' : '/settings?tab=plugins')
+        navigate(request.catalogName ? '/capabilities?tab=plugins' : '/settings?tab=plugins')
 
         return
       }
@@ -419,20 +424,39 @@ export function PluginInstallModal() {
                 </div>
 
                 {probe.agent && (
-                  <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-                    <Checkbox
-                      checked={installAgent}
-                      disabled={busy}
-                      onCheckedChange={value => setInstallAgent(value === true)}
-                    />
-                    <span className="min-w-0">
-                      <span className="block font-medium text-foreground">{m.agentLabel}</span>
-                      <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {agentTargetHint}
-                        {probe.agentName ? ` · ${probe.agentName}` : ''}
+                  <div className="space-y-2 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
+                    <label className="flex items-start gap-3">
+                      <Checkbox
+                        checked={installAgent}
+                        disabled={busy}
+                        onCheckedChange={value => setInstallAgent(value === true)}
+                      />
+                      <span className="min-w-0">
+                        <span className="block font-medium text-foreground">{m.agentLabel}</span>
+                        <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {agentTargetHint}
+                          {probe.agentName ? ` · ${probe.agentName}` : ''}
+                        </span>
                       </span>
-                    </span>
-                  </label>
+                    </label>
+                    <label className="block space-y-1 pl-7">
+                      <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                        {m.profileLabel}
+                      </span>
+                      <Select disabled={busy || !installAgent} onValueChange={setTargetProfile} value={targetProfile}>
+                        <SelectTrigger aria-label={m.profileLabel} className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {profileOptions.map(profile => (
+                            <SelectItem key={profile.name} value={normalizeProfileKey(profile.name)}>
+                              {profileLabel(profile)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </label>
+                  </div>
                 )}
 
                 {probe.desktop && (

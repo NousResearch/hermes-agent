@@ -109,7 +109,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'nav.commandCenter', category: 'navigation', defaults: ['mod+.'] },
   { id: 'nav.settings', category: 'navigation', defaults: ['mod+,'] },
   { id: 'nav.profiles', category: 'navigation', defaults: [] },
-  { id: 'nav.skills', category: 'navigation', defaults: [] },
+  { id: 'nav.capabilities', category: 'navigation', defaults: [] },
   { id: 'nav.messaging', category: 'navigation', defaults: [] },
   { id: 'nav.artifacts', category: 'navigation', defaults: [] },
   { id: 'nav.cron', category: 'navigation', defaults: [] },
@@ -117,6 +117,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
 
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
+  // Expose the sidebar's mouse-only grouping control to keyboard-first users.
+  // Ships unbound so it is opt-in and cannot claim another global chord.
+  { id: 'view.cycleSidebarGrouping', category: 'view', defaults: [] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
   // ⌘⇧S — "s" for status bar. VS Code ships
   // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
@@ -206,7 +209,9 @@ export interface KeybindContribution {
 // React consumers pass their `useContributions(KEYBINDS_AREA)` snapshot in:
 // with React Compiler enabled, an independently-called `contributedKeybinds()`
 // can stay memoized across a late registration the subscription DID deliver.
-export function contributedKeybinds(contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)): KeybindContribution[] {
+export function contributedKeybinds(
+  contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)
+): KeybindContribution[] {
   return contributions
     .map(c => c.data as KeybindContribution)
     .filter(k => Boolean(k?.id && k.label) && typeof k?.run === 'function' && !ACTION_BY_ID.has(k.id))

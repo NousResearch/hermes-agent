@@ -4538,6 +4538,62 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).not.toHaveProperty('cwd')
   })
 
+  it('omits the manual ambient composer selection from a Bot-workspace tile so the bot profile defaults apply', async () => {
+    setCurrentModel('ambient-model')
+    setCurrentProvider('ambient-provider')
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('high')
+    setCurrentFastMode(true)
+
+    let createParams: Record<string, unknown> | undefined
+
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
+      if (method === 'session.create') {
+        createParams = params as Record<string, unknown>
+
+        return {
+          info: { cwd: '', model: 'profile-default-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-bot-tile'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const route = { connectionId: 'local', mode: 'local' as const, profile: 'writer', targetProfile: 'writer' }
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', {
+          listed: false,
+          route,
+          workspaceScope: { ownerRoute: route, workspaceMode: 'bots', workspaceOwnerKey: 'bot:local::writer' }
+        })
+      })
+    } finally {
+      setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+      setCurrentFastMode(false)
+      // The hoisted agent-route mock keeps its call log across tests (restoreAllMocks only
+      // restores spies); the next test asserts it was never called.
+      vi.mocked(requestGatewayForAgent).mockReset()
+    }
+
+    expect(createParams).toMatchObject({ hidden: true, profile: 'writer' })
+    expect(createParams).not.toHaveProperty('model')
+    expect(createParams).not.toHaveProperty('provider')
+    expect(createParams).not.toHaveProperty('reasoning_effort')
+    expect(createParams).not.toHaveProperty('fast')
+  })
+
   it('keeps an unlisted named local legacy-profile tile owned by its bare profile', async () => {
     const storedSessionId = 'stored-unlisted-omar'
     setConnection({ mode: 'local' } as never)
@@ -4743,10 +4799,15 @@ describe('selectSidebarItem', () => {
     await waitFor(() => expect(handle).not.toBeNull())
 
     act(() => {
-      handle!.selectSidebarItem({ icon: (() => null) as never, id: 'skills', label: 'Capabilities', route: '/skills' })
+      handle!.selectSidebarItem({
+        icon: (() => null) as never,
+        id: 'skills',
+        label: 'Capabilities',
+        route: '/capabilities'
+      })
     })
 
-    expect(navigate).toHaveBeenCalledWith('/skills', undefined)
+    expect(navigate).toHaveBeenCalledWith('/capabilities', undefined)
     expect(noteActiveTreeGroup).toHaveBeenCalledWith(null)
     expect(revealTreePane).toHaveBeenCalledWith('workspace')
   })

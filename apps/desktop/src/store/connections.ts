@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -73,6 +74,16 @@ const $activeConnectionProfile = computed(
     registryScoped: connection?.registryScoped === true
   })
 )
+
+// The CONNECTION twin of profile.ts's $activeGatewayProfile subscription.
+// The switch commit point (beginGatewaySwitch → invalidateProfileScopedQueries)
+// runs inside beforeActivate — BEFORE applyActive publishes the new request
+// scope (setApiRequestConnection) — so that invalidation's refetches ride the
+// OUTGOING backend. Re-invalidate on the actual connection-id change, which
+// applyActive publishes only after the tag moved, so the refetch lands on the
+// backend the tags now name. `listen` (not `subscribe`) skips the mount-time
+// fire, and the computed dedupes equal ids, so this only runs on a real switch.
+$activeConnectionId.listen(() => invalidateProfileScopedQueries())
 
 // Remember one profile per source, so switching machines is a re-home rather
 // than a reset to `default`. The map is local UI preference only; Electron
@@ -195,6 +206,7 @@ function waitForInitialConnection(): Promise<void> {
  */
 export async function initializeConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
   const freshSessionRequest = $freshSessionRequest.get()
+
   const [registry, defaultLoaded] = await Promise.all([
     refreshConnectionsRegistry(),
     refreshDefaultProfile().then(

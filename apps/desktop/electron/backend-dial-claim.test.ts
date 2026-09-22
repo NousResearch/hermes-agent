@@ -178,7 +178,9 @@ describe('main.ts wiring for #90812', () => {
   it('routes the roster-enumeration probe through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf('async function enumerateRegistryAgentSources')
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 3_700)
+    // The ssh branch grew (it now carries the install id learned by the
+    // inventory probe) — keep the scan window comfortably past the dial.
+    const body = mainSource.slice(handlerStart, handlerStart + 4_500)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
     expect(body).toContain('ensureRegistryBackend(connection.id, null)')

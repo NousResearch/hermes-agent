@@ -421,8 +421,11 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     # MockTransport that mimics BetterStack's split-origin discovery:
     #   PRM at mcp.example.com/.well-known/oauth-protected-resource -> points to auth.example.com
     #   ASM at auth.example.com/.well-known/oauth-authorization-server -> token_endpoint at auth.example.com/oauth/token
+    seen_user_agents: list = []
+
     def mock_handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
+        seen_user_agents.append(request.headers.get("User-Agent"))
         if url.endswith("/.well-known/oauth-protected-resource"):
             return httpx.Response(
                 200,
@@ -489,6 +492,10 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     assert str(provider.context.oauth_metadata.token_endpoint) == (
         "https://auth.example.com/oauth/token"
     )
+    # Pre-flight discovery requests are SDK-built (no client default headers merged),
+    # so they must carry the stamped User-Agent or WAF-fronted providers 403 them (#113771).
+    from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
+    assert seen_user_agents and set(seen_user_agents) == {DEFAULT_AUTH_REQUEST_USER_AGENT}
 
 
 @pytest.mark.asyncio

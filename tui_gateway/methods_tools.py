@@ -111,10 +111,29 @@ def _mcp_rpc(name: str, required=_NAME):
     return _scoped_rpc(f"mcp.servers.{name}", required=required, catch_resolve=False)
 
 
+def _mcp_server_rows():
+    config_servers = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    return _tools_mod("tui_gateway.mcp_rpc_helpers").server_configs_with_sources(config_servers)
+
+
 def _mcp_named_server(rid, params):
     """(name, servers, None) for a configured server, else (name, servers, 4064 error)."""
-    name, servers = _str_arg(params, "name"), _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    name, servers = _str_arg(params, "name"), _mcp_server_rows()[0]
     return name, servers, None if name in servers else _err(rid, 4064, f"server '{name}' not found")
+
+
+def _mcp_plugin_write_error(rid, name: str, plugins: dict):
+    plugin = plugins.get(name)
+    if plugin is not None:
+        return _err(rid, 4090, f"server '{name}' is provided by plugin '{plugin}' and cannot be modified")
+    return None
+
+
+def _mcp_config_server_or_error(rid, params):
+    name, servers, err = _mcp_named_server(rid, params)
+    if err:
+        return name, servers, err
+    return name, servers, _mcp_plugin_write_error(rid, name, _mcp_server_rows()[1])
 
 
 def _busy_error(rid, session, cmd: str):
@@ -318,15 +337,20 @@ def _(rid, params: dict) -> dict:
         can change WHILE discover connects: re-hash and repeat until stable so the marked
         generation matches what loaded."""
         global _mcp_reload_gen, _mcp_reload_loaded_rev
-        loaded = _compute_mcp_rev()
-        for _ in range(_MCP_RELOAD_MAX_PASSES):
-            _mcp_lifecycle.shutdown_mcp_servers()
-            _mcp_agent.reprobe_tool_availability()
-            _mcp_discovery.discover_mcp_tools()
-            after = _compute_mcp_rev()
-            if after == loaded:
-                break
-            loaded = after
+        # The launch profile is a profile too: its servers' connect-time credential reads (stdio
+        # child env, ``${VAR}`` header refs) go through ``get_secret``, which fails closed once this
+        # process multiplexes — an unscoped rediscovery parked every launch-profile stdio server
+        # with UnscopedSecretError while the RPC still answered "reloaded" (#113746).
+        with _session_profile_runtime_scope({"profile_home": None}):
+            loaded = _compute_mcp_rev()
+            for _ in range(_MCP_RELOAD_MAX_PASSES):
+                _mcp_lifecycle.shutdown_mcp_servers()
+                _mcp_agent.reprobe_tool_availability()
+                _mcp_discovery.discover_mcp_tools()
+                after = _compute_mcp_rev()
+                if after == loaded:
+                    break
+                loaded = after
         # The unscoped shutdown tore down every profile's servers, but discover_mcp_tools() above
         # only rebuilt the launch profile's overlay; a secondary-profile session refreshed against
         # that registry would lose its MCP tools until its own reload.
@@ -420,19 +444,28 @@ def _catalog_plugin_commands(cat: _Catalog) -> None:
         cat.commands[key] = {"argument_mode": mode, "desktop": None}
 
 
-def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
-    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
+def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
+    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them).
+    Returns the one-line notice for skills whose name is a built-in command (no ``/<name>`` entry;
+    ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
-    for k, info in sorted(_tools_mod("agent.skill_commands").scan_skill_commands().items()):
+    sc = _tools_mod("agent.skill_commands")
+    for k, info in sorted(sc.scan_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
+    names = sorted(s["name"] for s in _tools_mod("tools.skills_tool")._find_all_skills())
+    return "; ".join(filter(None, map(sc.skill_command_collision_note, names)))
 
 
 @_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins')."""
+    (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Skill
+    discovery is bound to the calling session's profile and workspace (``_completion_cwd``: its record,
+    else the cwd a new session would be seeded with) so project-local skills register for the repo the
+    session is actually in (#114359)."""
     cat = _Catalog()
     _catalog_registry(cat)
     warning = ""
@@ -446,7 +479,9 @@ def _(rid, params: dict) -> dict:
         warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
     try:
-        _catalog_skills(cat, skills)
+        with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+            collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
+        warning = warning or collision_note
     except Exception as e:
         warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {
@@ -511,23 +546,43 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+def _run_plugin_command(handler, arg: str, session=None) -> str:
+    """Run a plugin slash-command handler under the session's ``HERMES_SESSION_*`` binding.
+
+    Plugin handlers read ``get_session_env()`` for the chat/session they serve; these RPCs run on
+    the socket/worker thread where nothing upstream binds it (only the turn path does), so a handler
+    saw ``""`` or the launch process's inherited values. Same class as the messaging gateway's
+    #108698; ``_set_session_context`` is the turn path's own seam."""
+    plugins = _tools_mod("hermes_cli.plugins")
+    tokens = _set_session_context(session.get("session_key", "") or "", cwd=str(session.get("cwd") or "")) if session else []
+    try:
+        return str(plugins.resolve_plugin_command_result(handler(arg)) or "")
+    finally:
+        _clear_session_context(tokens)
 
 
 @contextlib.contextmanager
-def _session_home_scope(session):
-    """Bind HERMES_HOME to the session's profile for the block (no-op for the launch profile).
+def _session_home_scope(session, cwd: str | None = None):
+    """Bind HERMES_HOME and the logical cwd to the session for the block.
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
     ``quick_commands`` all live in the profile's config/home); nothing upstream of these RPC handlers
-    binds it, so an unscoped call resolves against the launch profile (#110695)."""
+    binds it, so an unscoped call resolves against the launch profile (#110695). Project-local skills
+    are cwd-keyed (``find_project_root`` reads the session-bound cwd first): these RPCs run on the socket
+    thread with no session context, where the terminal scope resolves a placeholder ``terminal.cwd`` to
+    ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
+    record (a session-less catalog request binds the workspace a new session would be seeded with)."""
     hc = _tools_mod("hermes_constants")
+    rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
+    cwd = cwd or (str(session.get("cwd") or "") if session else "")
     token = hc.set_hermes_home_override(profile_home) if profile_home else None
+    cwd_token = rc.set_session_cwd(cwd) if cwd else None
     try:
         yield
     finally:
+        if cwd_token is not None:
+            rc.reset_session_cwd(cwd_token)
         if token is not None:
             hc.reset_hermes_home_override(token)
 
@@ -544,7 +599,7 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
+            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
     return None
 
 
@@ -880,7 +935,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
+            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
@@ -949,6 +1004,8 @@ def _(rid, params: dict, session) -> dict:
         return _err(rid, 4009, busy_message("rollback restore"))
 
     def go(mgr, cwd):
+        if reason := _container_checkpoint_refusal(session, mgr, cwd):
+            return {"success": False, "error": reason}
         result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)
         if result.get("success") and not file_path:
             removed = 0
@@ -968,12 +1025,34 @@ def _(rid, params: dict, session) -> dict:
 def _(rid, params: dict, session) -> dict:
     if not (target := params.get("hash", "")):
         return _err(rid, 4014, "hash required")
-    r = _with_checkpoints(session, lambda mgr, cwd: mgr.diff(cwd, _resolve_checkpoint_hash(mgr, cwd, target)))
-    raw = r.get("diff", "")[:4000]
-    payload = {"stat": r.get("stat", ""), "diff": raw}
-    if rendered := render_diff(raw, session.get("cols", 80)):
-        payload["rendered"] = rendered
-    return _ok(rid, payload)
+
+    def go(mgr, cwd):
+        # Host tree vs host checkpoint is not this session's diff either (same refusal as /rollback diff).
+        if reason := _container_checkpoint_refusal(session, mgr, cwd):
+            return _err(rid, 5022, reason)
+        r = mgr.diff(cwd, _resolve_checkpoint_hash(mgr, cwd, target))
+        raw = r.get("diff", "")[:4000]
+        payload = {"stat": r.get("stat", ""), "diff": raw}
+        if rendered := render_diff(raw, session.get("cols", 80)):
+            payload["rendered"] = rendered
+        return _ok(rid, payload)
+    return _with_checkpoints(session, go)
+
+
+def _container_checkpoint_refusal(session, mgr, cwd) -> str | None:
+    """Why host checkpoints are off limits for a container-backed session, else ``None``.
+
+    Classifies with the identity and scopes a turn binds (prompt_turn.py): the session key is the
+    tool-call task id, the session context drives the terminal registry lookup, and the profile
+    scope supplies the terminal policy; otherwise a cached launch-profile environment or the launch
+    config would answer for another profile's session."""
+    task_id = session.get("session_key") or "default"
+    tokens = _set_session_context(task_id, cwd=cwd)
+    try:
+        with _session_profile_runtime_scope(session):
+            return mgr.unsupported_backend_reason(task_id)
+    finally:
+        _clear_session_context(tokens)
 
 
 @method("browser.manage")
@@ -1059,6 +1138,11 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     toolset_targets = [name for name in targets if ":" not in name and name in valid_toolsets]
     if toolset_targets:
         tc._apply_toolset_change(cfg, "cli", toolset_targets, action)
+    plugins = _mcp_server_rows()[1]
+    for target in mcp_targets:
+        server_name = target.split(":", 1)[0]
+        if err := _mcp_plugin_write_error(rid, server_name, plugins):
+            return err
     missing_servers = tc._apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
     hc.save_config(cfg)
     info = _reset_session_agent(sid, session) if session else None
@@ -1172,7 +1256,10 @@ def _(rid, params: dict) -> dict:
 
 @_rpc("skills.reload", 5025)
 def _(rid, params: dict) -> dict:
-    result = _tools_mod("agent.skill_commands").reload_skills()
+    # Bound like ``commands.catalog``: an unbound rescan runs against the launch env, reports the session's
+    # project skills as "Removed" and republishes a registry without them (#114359).
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+        result = _tools_mod("agent.skill_commands").reload_skills()
     added, removed = result.get("added") or [], result.get("removed") or []
     lines = ["Reloading skills..."] + ([] if added or removed else ["No new skills detected."])
     for label, items in (("Added skills:", added), ("Removed skills:", removed)):
@@ -1199,6 +1286,7 @@ def _(rid, params: dict) -> dict:
         transport = getattr(entry, "transport", None)  # TransportSpec → its kind string
         out.append({
             "name": entry.name, "description": getattr(entry, "description", "") or "",
+            "connector_slug": getattr(entry, "connector_slug", None),
             "installed": bool(mcp_catalog.is_installed(entry.name)),
             "enabled": bool(mcp_catalog.is_enabled(entry.name)), "requires": requires,
             "transport": str(getattr(transport, "kind", "") or transport or "stdio")})
@@ -1209,8 +1297,10 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """``{servers: [{name, transport, url, command, args, env (key names), auth, oauth_tokens_present,
     enabled, tools}]}``"""
-    servers = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
-    return _ok(rid, {"servers": [_mcp_summarize_server(name, cfg) for name, cfg in sorted(servers.items())]})
+    servers, plugins = _mcp_server_rows()
+    return _ok(rid, {"servers": [
+        _mcp_summarize_server(name, cfg, plugins[name]) for name, cfg in sorted(servers.items())
+    ]})
 
 
 @_mcp_rpc("status", required=())
@@ -1220,13 +1310,15 @@ def _(rid, params: dict) -> dict:
     scoped profile's; otherwise it is shown only when ``profile`` is the launch profile."""
     import time
     hc = _tools_mod("hermes_constants")
-    configured = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    configured, plugins = _mcp_server_rows()
     include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
     safe = ("name", "transport", "tools", "connected", "disabled", "status")
     servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
-    return _ok(rid, {"servers": [{k: e[k] for k in safe if k in e} for e in servers],
-                     "checked_at": int(time.time() * 1000)})
+    return _ok(rid, {"servers": [
+        {**{k: e[k] for k in safe if k in e}, "source": "plugin" if plugins[e["name"]] is not None else "config",
+         "plugin": plugins[e["name"]]} for e in servers
+    ], "checked_at": int(time.time() * 1000)})
 
 
 @_mcp_rpc("add")
@@ -1235,7 +1327,10 @@ def _(rid, params: dict) -> dict:
     tools); ``bearer_token`` goes to the profile's .env (only the header template persists). Dup → 4090."""
     mc = _tools_mod("hermes_cli.mcp_config")
     name, preset = _str_arg(params, "name"), _str_arg(params, "preset")
-    if name in mc._get_mcp_servers():
+    servers, plugins = _mcp_server_rows()
+    if err := _mcp_plugin_write_error(rid, name, plugins):
+        return err
+    if name in servers:
         return _err(rid, 4090, f"server '{name}' already exists")
     raw_cfg = params.get("config")
     server_config: dict = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
@@ -1258,7 +1353,7 @@ def _(rid, params: dict) -> dict:
     """Secret → profile .env under ``env_var`` (default ``MCP_<NAME>_API_KEY``); config.yaml gets only
     a ``${ENV}`` reference (Bearer header for http, ``env`` entry for stdio)."""
     hc, mc = _tools_mod("hermes_cli.config"), _tools_mod("hermes_cli.mcp_config")
-    name, servers, err = _mcp_named_server(rid, params)
+    name, servers, err = _mcp_config_server_or_error(rid, params)
     if err:
         return err
     value = params.get("value")
@@ -1319,6 +1414,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Remove a server from the profile's config.yaml → ``{ok: true, removed: true}``."""
     name = _str_arg(params, "name")
+    if err := _mcp_plugin_write_error(rid, name, _mcp_server_rows()[1]):
+        return err
     if not _tools_mod("hermes_cli.mcp_config")._remove_mcp_server(name):
         return _err(rid, 4064, f"server '{name}' not found")
     return _ok(rid, {"ok": True, "removed": True})
@@ -1332,7 +1429,7 @@ def _(rid, params: dict) -> dict:
     on different machines). Runs on the RPC pool (_LONG_HANDLERS)."""
     client_redirect_uri = _str_arg(params, "client_redirect_uri") or None
     try:
-        name, servers, err = _mcp_named_server(rid, params)
+        name, servers, err = _mcp_config_server_or_error(rid, params)
         if err:
             return err
         cfg = dict(servers[name])
@@ -1375,29 +1472,67 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────
+def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) -> list[dict]:
+    if not portable or plugin_dir is None:
+        return []
+    package = _tools_mod("hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
+    namespace = package.manifest.get("extensions", {}).get("com.nousresearch.hermes", {})
+    declared = namespace.get("servers", {})
+    if not isinstance(declared, dict):
+        return []
+    server_namespace = _tools_mod("hermes_cli.plugins_manifest")._portable_skill_namespace(key)
+    liveness = _tools_mod("tools.mcp_liveness")
+    core = _tools_mod("tools.mcp_tool_common")._core
+    resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
+    rows = []
+    for name in sorted(declared):
+        internal_name = f"{server_namespace}__{name}"
+        connection_key = resolve_key(internal_name)
+        server = core._servers.get(connection_key)
+        connected = server is not None and (server.session is not None or server._is_recycled_stdio())
+        if connected:
+            rows.append({"name": name, "state": "connected", "sentence": ""})
+            continue
+        decl = _tools_mod("hermes_platform.declaration").lookup(internal_name)
+        status = liveness.status(internal_name)
+        if decl is None or status is None:
+            rows.append({"name": name, "state": "unknown", "sentence": ""})
+            continue
+        rows.append({
+            "name": name,
+            "state": status.state,
+            "sentence": liveness.describe(decl, status.availability, status.state),
+        })
+    return rows
+
+
 def _plugin_rows() -> list[dict]:
     pc = _tools_mod("hermes_cli.plugins_cmd")
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
     pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
+    versions = cat.catalog_versions()
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
+    active = pc._category_active_names()
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
-        status = pc._plugin_status(name, enabled, disabled, key=key)
-        # Bundled backends/platforms/providers run without an explicit enable: report the
-        # truthful default instead of "not enabled" (reads as OFF).
-        if status == "not enabled" and source == "bundled" and pc._bundled_default_on(_dir):
-            status = "enabled"
+        # Bundled backends/platforms/providers and the live memory provider run without an explicit
+        # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
+        status = pc._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active)
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
         # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
         # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
         _dir_path = Path(str(_dir)) if _dir else None
+        portable = pc._is_portable_plugin_dir(_dir)
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
+            "source": source, "status": status, "portable": portable,
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
-            **cat.catalog_row_fields(_dir, pins),
+            # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
+            "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
+            "servers": _plugin_server_rows(_dir_path, key, portable=portable),
+            **cat.catalog_row_fields(_dir, pins, versions),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 
@@ -1417,8 +1552,11 @@ def _plugins_toggle(rid, params):
     result = toggle(ident, enabled=bool(params.get("enable")))
     if not result.get("ok"):
         return _err(rid, 5026, result.get("error") or "toggle failed")
-    row = next((r for r in _plugin_rows() if ident in (r["key"], r["name"])), None)
-    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": ident, "plugin": row})
+    # The toggle resolves a bare leaf / manifest name to the canonical key it wrote; report that key.
+    key = result.get("name") or ident
+    row = next((r for r in _plugin_rows() if key in (r["key"], r["name"])), None)
+    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")),
+                     "restart_required": bool(result.get("restart_required")), "name": key, "plugin": row})
 
 
 def _plugins_install(rid, params):
@@ -1435,7 +1573,10 @@ def _plugins_install(rid, params):
 
 
 def _plugins_update(rid, params):
-    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI)."""
+    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI).
+    A pin that widens the plugin (new tools/hooks/deps/capabilities/Desktop half) answers
+    ``{ok: false, consent_required: true, delta, delta_lines}`` with nothing changed; the client shows the
+    delta and retries with ``accept_capabilities: true``."""
     name = (params.get("name") or "").strip()
     if not name:
         return _err(rid, 4019, "plugins.update requires a 'name'")
@@ -1445,14 +1586,50 @@ def _plugins_update(rid, params):
     if not sidecar:
         return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
     try:
-        sha, changed = cat.repin_catalog_plugin(target, sidecar)
+        result = cat.repin_catalog_plugin(
+            target, sidecar, consent_cb=(lambda _delta: True) if params.get("accept_capabilities") else None)
+    except cat.RepinConsentRequired as e:
+        return _ok(rid, {"ok": False, "consent_required": True, "name": e.name, "sha": e.sha, "delta": e.delta,
+                         "delta_lines": cat.surface_delta_lines(e.delta), "error": str(e)})
     except pc.PluginOperationError as e:
         return _err(rid, 4021, str(e))
-    return _ok(rid, {"ok": True, "unchanged": not changed, "sha": sha})
+    return _ok(rid, {"ok": True, "unchanged": not result.changed, "sha": result.sha, "name": result.installed_name,
+                     "warnings": list(result.warnings)})
+
+
+def _plugins_remove(rid, params):
+    """Uninstall a user install (``<HERMES_HOME>/plugins/<name>``) — the same core as ``hermes plugins
+    remove`` and the dashboard; bundled plugins and paths outside the plugins dir are refused there."""
+    name = (params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4019, "plugins.remove requires a 'name'")
+    result = _tools_mod("hermes_cli.plugins_cmd").dashboard_remove_user_plugin(name)
+    return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "remove failed")
+
+
+def _plugins_settings(rid, params):
+    """Write manifest-declared settings (``values`` = ``{key: value}``) through the same writer as
+    ``ctx.set_config``; secrets are refused here (the client stores them via the ``.env`` route)."""
+    key = (params.get("key") or params.get("name") or "").strip()
+    values = params.get("values")
+    if not key or not isinstance(values, dict):
+        return _err(rid, 4019, "plugins.settings requires a 'key' and a 'values' mapping")
+    pc = _tools_mod("hermes_cli.plugins_cmd")
+    found = next((p for p in pc._discover_all_plugins() if key in (p[5], p[0])), None)
+    if found is None:
+        return _err(rid, 4020, f"plugin '{key}' not found")
+    _name, _version, _desc, _source, plugin_dir, canonical = found
+    try:
+        written = _tools_mod("hermes_cli.plugins_settings").save_plugin_settings(
+            canonical, Path(str(plugin_dir)) if plugin_dir else None, values)
+    except (ValueError, PermissionError) as e:
+        return _err(rid, 4021, str(e))
+    row = next((r for r in _plugin_rows() if r["key"] == canonical), None)
+    return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
 
 
 _PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
-                    "update": _plugins_update}
+                    "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
@@ -1460,7 +1637,8 @@ def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install to the current catalog SHA."""
+    default True); ``update`` re-pins a catalog install to the current catalog SHA; ``remove`` deletes
+    a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 
@@ -1479,9 +1657,22 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands.")
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
+
+    def done(result):
+        redact = _tools_mod("agent.redact").redact_sensitive_text
+        # Unlike the interactive CLI, this output crosses the RPC boundary and can be persisted
+        # in the transcript. Redact before tailing so a credential crossing the slice boundary
+        # cannot survive as two unmatched fragments.
+        stdout = redact(result.stdout or "", force=True, redact_url_credentials=True)[-4000:]
+        stderr = redact(result.stderr or "", force=True, redact_url_credentials=True)[-2000:]
+        return _ok(rid, {"stdout": stdout, "stderr": stderr, "code": result.returncode})
+
+    # shell=True preserves the user-facing !cmd grammar (pipes, redirects and interpolation).
+    # The child must not inherit credentials held by the long-lived gateway process.
+    env = _tools_mod("tools.environments.local").build_subprocess_env()
     return _captured_exec(
-        rid, cmd, 30, shell=True, fail_code=5003, timeout_err=(5002, "command timed out (30s)"),
-        on_result=lambda r: _ok(rid, {"stdout": r.stdout[-4000:], "stderr": r.stderr[-2000:], "code": r.returncode}))
+        rid, cmd, 30, shell=True, env=env, fail_code=5003,
+        timeout_err=(5002, "command timed out (30s)"), on_result=done)
 
 
 def register(server) -> None:

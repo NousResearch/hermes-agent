@@ -48,7 +48,10 @@ method("complete.path", params=CompletePathParams, result=CompletionItemsResult,
 
 
 class CompleteSlashParams(Params):
+    """``session_id`` binds skill completions to that session's profile and workspace (project skills)."""
+
     text: str | None = None
+    session_id: str | None = None
 
 
 class CompleteSlashResult(Result):
@@ -152,6 +155,7 @@ class ProfileRow(Result):
     description: str = ""
     display_name: str = ""
     skill_count: int = 0
+    previous_names: list[str] = Field(default_factory=list)
     last_session: ProfileSessionPreview | None = None
     worker_session: ProfileWorkerSession | None = None
     canonical_session: ProfileCanonicalSession | None = None

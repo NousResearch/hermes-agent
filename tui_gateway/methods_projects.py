@@ -314,7 +314,7 @@ def _discover_repos_payload(
 
 
 # Not user conversations; subagent/compression children are dropped by include_children=False.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban"]
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot"]
 
 
 def _project_tree_row(r: dict) -> dict:

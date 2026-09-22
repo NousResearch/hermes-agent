@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
@@ -26,6 +27,7 @@ import {
 
 import {
   type ActiveTranscriptRefreshDeps,
+  hydrateStoredSessionTranscript,
   isTypingBurstActive,
   noteRendererKeyboardActivity,
   profileScopeForTranscriptSession,
@@ -54,7 +56,10 @@ const { refreshProjectTree } = await import('@/store/projects')
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
 
-function transcript(answer: string, sessionId = ACTIVE_STORED_ID): Awaited<ReturnType<typeof getLatestSessionMessages>> {
+function transcript(
+  answer: string,
+  sessionId = ACTIVE_STORED_ID
+): Awaited<ReturnType<typeof getLatestSessionMessages>> {
   return {
     messages: [
       { content: 'question', role: 'user', timestamp: 1 },
@@ -640,6 +645,57 @@ describe('active transcript refresh', () => {
 })
 
 describe('reconcileActiveTranscript', () => {
+  // A drop mid-send on a flaky link leaves the optimistic `user-*` row as the
+  // only copy of the message: the server never acked it, so server truth does
+  // not contain it. A background refresh landing in that window replaced the
+  // transcript outright and the message vanished, forcing the user to retype.
+  it('keeps an un-acked optimistic user row when the refresh lands mid-send', async () => {
+    const fixture = makeRefresh()
+    const optimisticId = 'user-1758100000000-ab12cd'
+
+    fixture.state.messages = [
+      { id: optimisticId, parts: [{ text: 'the message I just sent', type: 'text' }], role: 'user' }
+    ]
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('an older answer') as never)
+
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+
+    expect(messages.map(message => message.id)).toContain(optimisticId)
+  })
+
+  it('keeps one failed assistant bubble when refresh rebuilds the same tail turn under a new id', async () => {
+    const fixture = makeRefresh()
+    fixture.state.messages = [
+      {
+        id: 'optimistic-user',
+        parts: [{ text: 'question', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'connection lost after completion',
+        errorSurface: { code: 'transport_lost', layer: 'streaming', retryable: true },
+        id: 'assistant-live-before-refresh',
+        parts: [{ text: 'answer', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('answer') as never)
+
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+    const assistants = messages.filter(message => message.role === 'assistant')
+
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0]).toMatchObject({
+      error: 'connection lost after completion',
+      errorSurface: { code: 'transport_lost', layer: 'streaming', retryable: true },
+      pending: false
+    })
+  })
+
   it('resolves and hydrates a messaging session from the messaging sessions store', async () => {
     setSessionOwnerHint(ACTIVE_STORED_ID, {
       connectionId: 'stale-messaging-owner',
@@ -1081,5 +1137,109 @@ describe('isTypingBurstActive', () => {
 
     // Exactly one quiet threshold after the last key the keyboard is cold.
     expect(isTypingBurstActive(1_000_000 + 1_500)).toBe(false)
+  })
+})
+
+describe('an empty persisted page over a populated runtime', () => {
+  // A backend respawn (or a state.db read racing the change event) answers a
+  // refresh with zero rows. That page is not proof the transcript is empty;
+  // accepting it blanks the view, flips the routed thread into its loading
+  // branch and re-runs the composer lifecycle.
+  const populated = (): ChatMessage[] => [
+    { id: 'user-1', parts: [{ text: 'question', type: 'text' }], role: 'user' },
+    { id: 'assistant-1', parts: [{ text: 'answer', type: 'text' }], role: 'assistant' }
+  ]
+
+  const emptyPage = (sessionId = ACTIVE_STORED_ID) => ({ messages: [], session_id: sessionId })
+
+  it('active pane: keeps the transcript and records no signature for the ignored page', async () => {
+    const fixture = makeRefresh()
+
+    fixture.state.messages = populated()
+    publishSessionState(ACTIVE_RUNTIME_ID, fixture.state)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
+
+    await fixture.refresh()
+
+    expect(fixture.updateSessionState).not.toHaveBeenCalled()
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.map(message => message.id)).toEqual([
+      'user-1',
+      'assistant-1'
+    ])
+
+    // Once the runtime is genuinely empty the same empty page is authoritative
+    // again. It would be deduped away had the ignored read left a signature.
+    publishSessionState(ACTIVE_RUNTIME_ID, { ...fixture.state, messages: [] })
+
+    await fixture.refresh()
+
+    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+  })
+
+  it('active pane: a runtime bound to another stored session does not veto the requested page', async () => {
+    const fixture = makeRefresh()
+
+    publishSessionState(
+      ACTIVE_RUNTIME_ID,
+      createClientSessionState('stored-other', [
+        { id: 'other-user', parts: [{ text: 'elsewhere', type: 'text' }], role: 'user' }
+      ])
+    )
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
+
+    await fixture.refresh()
+
+    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+  })
+
+  it('tile: keeps the transcript and records no signature for the ignored page', async () => {
+    const runtimeId = 'runtime-tile'
+    const storedId = 'stored-tile'
+    const signatureRef = { current: new Map<string, string>() }
+
+    $activeSessionId.set(ACTIVE_RUNTIME_ID)
+    publishSessionState(runtimeId, createClientSessionState(storedId, populated()))
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage(storedId) as never)
+
+    const updateSessionState = vi.fn()
+
+    await reconcileTileTranscriptsForTest({
+      requestSequenceRef: { current: 0 },
+      signatureRef,
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      updateSessionState
+    })
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+    expect(signatureRef.current.size).toBe(0)
+  })
+
+  it('post-turn hydrate: an empty page is not the answer, the next attempt is', async () => {
+    vi.useFakeTimers()
+    const fixture = makeRefresh()
+
+    fixture.state.messages = populated()
+    publishSessionState(ACTIVE_RUNTIME_ID, fixture.state)
+    vi.mocked(getLatestSessionMessages)
+      .mockResolvedValueOnce(emptyPage() as never)
+      .mockResolvedValueOnce(transcript('a newer answer') as never)
+
+    const hydrated = hydrateStoredSessionTranscript({
+      attempts: 2,
+      storedSessionId: ACTIVE_STORED_ID,
+      runtimeSessionId: ACTIVE_RUNTIME_ID,
+      storedProfile: 'default',
+      updateSessionState: fixture.updateSessionState
+    })
+
+    await vi.advanceTimersByTimeAsync(250)
+    await hydrated
+
+    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+    expect(
+      fixture.states
+        .get(ACTIVE_RUNTIME_ID)
+        ?.messages.flatMap(message => message.parts.map(part => ('text' in part ? part.text : '')))
+    ).toContain('a newer answer')
   })
 })

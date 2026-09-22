@@ -57,8 +57,24 @@ def _patch_provider(monkeypatch, streamer, cap=4000):
     monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: cap)
 
 
+class _RateLearningStreamer(_FakeStreamer):
+    """Mimics the OpenAI-compatible streamer: the true PCM rate is only known once
+    the endpoint's response headers arrive inside stream()."""
+
+    def stream(self, text):
+        self.sample_rate = 44100
+        yield from super().stream(text)
 
 
+def test_start_frame_carries_rate_learned_during_first_stream(stream_client, monkeypatch):
+    streamer = _RateLearningStreamer([b"\x01\x02"])
+    _patch_provider(monkeypatch, streamer)
+
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
+        assert conn.receive_json() == {"type": "start", "sample_rate": 44100, "channels": 1}
+        assert conn.receive_bytes() == b"\x01\x02"
+        assert conn.receive_json() == {"type": "end"}
 
 
 def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
@@ -66,15 +82,35 @@ def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
     _patch_provider(monkeypatch, streamer)
 
     with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
         start = conn.receive_json()
         assert start == {"type": "start", "sample_rate": 24000, "channels": 1}
 
-        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
         assert conn.receive_bytes() == b"\x01\x02\x03\x04"
         assert conn.receive_bytes() == b"\x05\x06"
         assert conn.receive_json() == {"type": "end"}
 
     assert streamer.requests == ["Hello there."]
+
+
+def test_short_cjk_opener_is_synthesized_alone_with_configured_min_len(stream_client, monkeypatch):
+    """speak_stream_ws cuts with the requesting profile's tts.streaming.min_len (#96927): a 7-char
+    CJK opener gets its own provider request instead of riding behind the second sentence."""
+    streamer = _FakeStreamer([b"\x00\x00"])
+    _patch_provider(monkeypatch, streamer)
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {"streaming": {"min_len": 6}})
+
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "记得，叫团团. 然后我们再说第二句话，这一句要长一些才行. ", "done": True}))
+        # The start frame is deferred until the first PCM chunk (rate learned from the endpoint).
+        assert conn.receive_json()["type"] == "start"
+        while True:
+            message = conn.receive()
+            if message.get("bytes") is None:
+                assert json.loads(message["text"]) == {"type": "end"}
+                break
+
+    assert streamer.requests[0] == "记得，叫团团.", streamer.requests
 
 
 
@@ -88,12 +124,12 @@ def test_long_text_is_split_across_provider_requests(stream_client, monkeypatch)
     _patch_provider(monkeypatch, streamer, cap=24)
 
     with stream_client.websocket_connect(_url()) as conn:
-        assert conn.receive_json()["type"] == "start"
         conn.send_text(
             json.dumps(
                 {"text": "First sentence here. Second sentence here. Third one.", "done": True}
             )
         )
+        assert conn.receive_json()["type"] == "start"
         # One PCM frame per split piece, then end.
         frames = 0
         while True:

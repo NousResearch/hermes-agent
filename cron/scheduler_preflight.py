@@ -98,7 +98,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
         job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
-    from hermes_cli.auth import AuthError
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         kwargs = {"requested": requested, "target_model": model}
@@ -106,15 +106,32 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
             kwargs["explicit_base_url"] = job.get("base_url")
         resolve_runtime_provider(**kwargs)
     except AuthError as exc:
+        if is_rate_limited_auth_error(exc):
+            # Quota/rate-limit is not a missing credential: let the real path report it and hold
+            # the job through the provider's window (cron/quota_hold.py, #89376).
+            return None
         return (
-            f"provider credential missing: {exc}. "
-            "Set the provider API key in .env (or `hermes setup`), or pin a "
+            f"provider credential missing: {exc} {_credential_store_scope_label()}. "
+            "Set the provider API key in .env (or `hermes setup`) for that home, or pin a "
             "working provider via `hermes cron edit "
             f"{job.get('id')} --provider <p>`."
         )
     except Exception:
         return None  # non-auth errors are not a missing-credential verdict; real path reports them
     return None
+
+
+def _credential_store_scope_label() -> str:
+    """``[profile '<name>', HERMES_HOME <path>]`` for the home this preflight read credentials from.
+
+    The verdict must name the store it judged: a scheduler process whose home differs from the
+    shell where "the same credential works" (Docker HOME vs HERMES_HOME, a multiplexed satellite
+    profile, a gateway launched without the shell's env) otherwise reports a bare "No credentials
+    stored" that cannot be told apart from a real login gap (#116213).
+    """
+    from hermes_cli.profiles import get_active_profile_name
+    from hermes_constants import get_hermes_home
+    return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
 
 
 def _primary_profile_routes_for_current_home() -> list:
@@ -312,6 +329,10 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
     return None
 
 
+# (job id, server name) pairs already warned about as reconnecting; see _empty_requested_mcp_toolsets.
+_RECONNECTING_WARNED: set = set()
+
+
 def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
     """Reason when an MCP server the job's own ``enabled_toolsets`` names resolves to zero tools.
 
@@ -325,14 +346,41 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
         return None
     from hermes_cli.tools_config import enabled_mcp_server_names
     from toolsets import resolve_toolset
+    from tools.mcp_tool_discovery import mcp_server_reconnecting
     missing = [name for name in requested
                if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]
+    # A server that worked in this process and is parked/self-probing after a network blip
+    # (router reboot, DNS failure) is recovering, not misconfigured: the job runs with the tools
+    # that did resolve rather than losing a whole tick to a minute of downtime (#112871). Only a
+    # server that never connected for this profile is judged below.
+    reconnecting = sorted(name for name in missing if mcp_server_reconnecting(name))
+    job_id = str(job.get("id", "?"))
+    # One WARNING per job+server per outage (like the one-shot blocked_config alert), not one per
+    # tick; the entry drops once the server is back so the next outage warns again.
+    _RECONNECTING_WARNED.difference_update(
+        key for key in list(_RECONNECTING_WARNED) if key[0] == job_id and key[1] not in reconnecting)
+    unwarned = [name for name in reconnecting if (job_id, name) not in _RECONNECTING_WARNED]
+    if unwarned:
+        _RECONNECTING_WARNED.update((job_id, name) for name in unwarned)
+        logger.warning(
+            "Job '%s': MCP server(s) %s named in enabled_toolsets are reconnecting — running "
+            "without their tools until they recover (a server parked on a permanent error blocks "
+            "the job instead)", job_id, ", ".join(unwarned))
+    if reconnecting:
+        missing = [name for name in missing if name not in reconnecting]
     if not missing:
         return None
+    # The reason is what the operator reads in the gateway log and the alert. It must say the
+    # block is not sticky: a server whose first connection failed on a network blip is parked and
+    # self-probed by the MCP layer, and this check re-runs on every dispatch, so the job resumes
+    # on its own — two operators misread the old text as a config error to repair by hand (#112871).
     return (
         f"MCP server(s) {', '.join(sorted(missing))} named in this job's enabled_toolsets "
-        "resolved to zero tools for this profile (not connected, or connected for another "
-        "profile only). Fix the server or remove it from the job's toolsets.")
+        "resolved to zero tools for this profile (never connected for this profile, or connected "
+        "for another profile only). If the server is only temporarily unreachable this clears by itself — "
+        "the check re-runs on every dispatch and the job resumes once the server reconnects. "
+        "If the name is wrong or belongs to another profile, fix the server or remove it from "
+        "the job's toolsets.")
 
 
 def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:

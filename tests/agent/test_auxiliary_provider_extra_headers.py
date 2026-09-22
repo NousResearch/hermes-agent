@@ -62,7 +62,10 @@ def capture_requests(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("async_mode", [False, True])
 @pytest.mark.parametrize("global_override", [False, True])
-async def test_provider_headers_reach_auxiliary_wire(provider_config, monkeypatch, async_mode, global_override):
+@pytest.mark.parametrize("explicit_base_url", [None, "https://GATEWAY.example:443/v1/"])
+async def test_provider_headers_reach_auxiliary_wire(
+    provider_config, monkeypatch, async_mode, global_override, explicit_base_url,
+):
     from agent.auxiliary_client import resolve_provider_client
 
     if not global_override:
@@ -71,7 +74,10 @@ async def test_provider_headers_reach_auxiliary_wire(provider_config, monkeypatc
         del cfg["model"]["default_headers"]["X-Project"]
         cfg_path.write_text(yaml.safe_dump(cfg))
     captured = capture_requests(monkeypatch)
-    client, model = resolve_provider_client("custom:gateway", "test-model", async_mode=async_mode)
+    client, model = resolve_provider_client(
+        "custom:gateway", "test-model", async_mode=async_mode,
+        explicit_base_url=explicit_base_url,
+    )
     try:
         result = client.chat.completions.create(model=model, messages=[{"role": "user", "content": "hello"}])
         if async_mode:

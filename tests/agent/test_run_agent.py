@@ -1535,10 +1535,16 @@ class TestBuildAssistantMessage:
         agent.context_compressor.note_native_compaction_checkpoint = MagicMock()
         self._enable_native_compaction(agent)
 
+        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+
+        history = [{"role": "user", "content": "before compaction"}]
+        set_usage_anchor(agent, capture_usage_anchor(255_000, 100, history), turn_base=True)
         result = agent._build_assistant_message(msg, "stop")
 
         assert result["codex_reasoning_items"] == [checkpoint]
         agent.context_compressor.note_native_compaction_checkpoint.assert_called_once_with()
+        assert agent._usage_anchor is None
+        assert agent._turn_base_usage_anchor is None
 
     def test_native_checkpoint_remains_compatible_with_plugin_context_engine(self, agent):
         checkpoint = {
@@ -2547,10 +2553,16 @@ class TestAgentRuntimePostHookOwnershipSync:
             "tools.read_window_tool.read_window_below_tool",
             lambda **kwargs: '{"ok":true}',
         )
-        # manage_connections / setup_mcp shim: no GUI callback on this fake agent, so the MCP
-        # leg settles `unavailable` without a card; pin the catalog so the run is hermetic.
+        # manage_connections / setup_mcp shim: no card on this fake agent, so the MCP leg runs the
+        # backend at once; pin the catalog and the backend so the run is hermetic.
         monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])
         monkeypatch.setattr("tools.connectors.mcp._configured_names", lambda: [])
+
+        class _NoInstallBackend:
+            def required_env(self, name):
+                return [{"name": "LINEAR_API_KEY", "prompt": "API key", "required": True}]
+
+        monkeypatch.setattr("tools.connectors.mcp._default_backend", _NoInstallBackend)
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
         monkeypatch.setattr(
             agent,
@@ -2598,6 +2610,76 @@ class TestAgentRuntimePostHookOwnershipSync:
         assert AGENT_RUNTIME_POST_HOOK_TOOL_NAMES == {
             tool_name for tool_name, _ in self._CASES
         }
+
+
+class TestRuntimeToolTransformToolResult:
+    """A registered ``transform_tool_result`` replaces what the model sees for an
+    agent-runtime tool, on both the sequential and the concurrent executor path."""
+
+    @staticmethod
+    def _install_rewriting_transform(agent, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            lambda *args, **kwargs: (None, None),
+        )
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: (
+                [f'REWRITTEN[{kwargs["tool_name"]}]{kwargs["result"]}']
+                if hook_name == "transform_tool_result"
+                else []
+            ),
+        )
+        monkeypatch.setattr("tools.todo_tool.todo_tool", lambda **kwargs: '{"ok":true}')
+        agent._memory_manager = None
+
+    def test_concurrent_path_applies_transform(self, agent, monkeypatch):
+        self._install_rewriting_transform(agent, monkeypatch)
+        messages = []
+
+        agent._execute_tool_calls_concurrent(
+            _mock_assistant_msg(
+                content="",
+                tool_calls=[
+                    _mock_tool_call(
+                        name="todo_list", arguments=json.dumps({"todos": []}), call_id=call_id
+                    )
+                    for call_id in ("todo-c1", "todo-c2")
+                ],
+            ),
+            messages,
+            "task-concurrent",
+        )
+
+        tool_results = [m for m in messages if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_results] == ["todo-c1", "todo-c2"]
+        # Exactly once per call: a second invocation would nest the prefix.
+        assert [str(m["content"]) for m in tool_results] == ['REWRITTEN[todo_list]{"ok":true}'] * 2
+
+    def test_sequential_path_applies_transform(self, agent, monkeypatch):
+        self._install_rewriting_transform(agent, monkeypatch)
+        messages = []
+
+        agent._execute_tool_calls_sequential(
+            _mock_assistant_msg(
+                content="",
+                tool_calls=[
+                    _mock_tool_call(
+                        name="todo_list",
+                        arguments=json.dumps({"todos": []}),
+                        call_id="todo-sequential",
+                    )
+                ],
+            ),
+            messages,
+            "task-sequential",
+        )
+
+        tool_results = [m for m in messages if m.get("role") == "tool"]
+        assert tool_results, "sequential path appended no tool result"
+        # Exactly once: a second invocation would nest the prefix.
+        assert str(tool_results[-1]["content"]) == 'REWRITTEN[todo_list]{"ok":true}'
 
 
 class TestPathsOverlap:
@@ -4242,6 +4324,47 @@ class TestRunConversation:
             m.get("role") == "assistant" and m.get("content") == "ok"
             for m in replayed
         )
+
+    def test_invalid_stored_tool_call_names_are_coerced_on_the_wire(self, agent):
+        """A stored ``multi_tool_use.parallel`` / shell-command / empty function.name must reach the
+        provider as ``^[A-Za-z0-9_-]{1,64}$`` on every request, and the persisted history must keep
+        the original bytes (#51944)."""
+        self._setup_agent(agent)
+        long_name = 'gbrain query "x" 2>/dev/null | head -40; ' + "y" * 340
+        history = [
+            {"role": "user", "content": "do two things"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "multi_tool_use.parallel", "arguments": "{}"}},
+                {"id": "c2", "type": "function", "function": {"name": long_name, "arguments": "{}"}},
+                {"id": "c3", "type": "function", "function": {"name": "", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "name": "multi_tool_use.parallel", "content": "r1"},
+            {"role": "tool", "tool_call_id": "c2", "name": long_name, "content": "r2"},
+            {"role": "tool", "tool_call_id": "c3", "name": "", "content": "r3"},
+            {"role": "assistant", "content": "done"},
+        ]
+        requests = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            return _mock_response(content="ok", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("continue", conversation_history=history)
+
+        wire_names = [
+            tc["function"]["name"]
+            for m in requests[0]["messages"] if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        ]
+        assert wire_names == ["multi_tool_use_parallel", 'gbrain_query_x_2_dev_null_head_-40_yyyyyyyyyyyyyyyyyyyyyyyyyyyyy', "invalid_tool_call"]
+        assert all(len(n) <= 64 and n.replace("_", "").replace("-", "").isalnum() for n in wire_names)
+        assert [tc["function"]["name"] for tc in history[1]["tool_calls"]] == ["multi_tool_use.parallel", long_name, ""]
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
@@ -6685,6 +6808,37 @@ class TestStreamingApiCall:
         assert resp.choices[0].message.content is None
         assert resp.choices[0].message.tool_calls is None
 
+    @pytest.mark.parametrize("carrier", ["reasoning_content", "reasoning"])
+    def test_reasoning_only_in_delta_model_extra_counts_as_stream_output(self, agent, carrier):
+        """Reasoning that reaches the stream only via ``delta.model_extra`` is real output:
+        the empty-stream guard must not fire and the text must survive (#56516)."""
+        def _extra_delta(text):
+            return SimpleNamespace(content=None, tool_calls=None, model_extra={carrier: text})
+
+        chunks = [
+            SimpleNamespace(model="m", choices=[SimpleNamespace(delta=_extra_delta("thinking "), finish_reason=None)]),
+            SimpleNamespace(model="m", choices=[SimpleNamespace(delta=_extra_delta("only"), finish_reason="length")]),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content is None
+        assert resp.choices[0].message.reasoning_content == "thinking only"
+        assert resp.choices[0].finish_reason == "length"
+
+    def test_final_response_object_replays_reasoning_from_model_extra(self, agent):
+        """The 'completed response instead of an iterator' branch reads reasoning through the
+        same ``model_extra`` fallback as the delta path, so it is still shown (#56516)."""
+        message = SimpleNamespace(content="done", tool_calls=None, model_extra={"reasoning": "thought"})
+        final = SimpleNamespace(model="m", choices=[SimpleNamespace(message=message, finish_reason="stop")])
+        agent.client.chat.completions.create.return_value = final
+        agent.reasoning_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp is final
+        agent.reasoning_callback.assert_called_once_with("thought")
 
     def test_model_name_captured(self, agent):
         chunks = [

@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.plugin_validate_desktop import check_desktop_surface
+
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _CONFIG_TYPES = {
     "str", "string", "int", "integer", "float", "number",
@@ -508,9 +510,78 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     _check_requires_hermes(report, manifest)
     _check_config_spec(report, manifest)
     _check_requires_env(report, manifest)
+    _check_loadable(report, plugin_dir)
+    _check_python_dependencies(report, plugin_dir)
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
+    _check_security_scan(report, plugin_dir)
+    check_desktop_surface(report, plugin_dir)
     return report
+
+
+_LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json")
+
+
+def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
+    """A plugin.yaml with nothing beside it that Hermes can load (no ``register()`` module, no
+    desktop bundle, no portable manifest) installs "successfully" and does nothing — a pip-layout
+    repo whose code lives under ``src/`` behind an entry point is the usual shape."""
+    present = [rel for rel in _LOADABLE_ENTRYPOINTS if (plugin_dir / rel).is_file()]
+    report.add(
+        "loadable", bool(present),
+        f"entry: {', '.join(present)}" if present else
+        "nothing to load: no __init__.py, desktop/plugin.js or plugin.json beside plugin.yaml "
+        "(pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
+    )
+
+
+def _check_python_dependencies(report: ValidationReport, plugin_dir: Path) -> None:
+    """Declared deps (pyproject ``[project].dependencies`` or manifest ``python_dependencies``) must be
+    well-formed PEP 508 specs the installer will accept; a plugin opting out with
+    ``python_runtime: external`` declares none."""
+    from hermes_cli.plugin_python_deps import read_declaration
+
+    try:
+        decl = read_declaration(plugin_dir)
+    except Exception as exc:
+        report.add("python dependencies", False, f"declaration invalid: {exc}")
+        return
+    if decl.external:
+        report.add("python dependencies", True, "external runtime (plugin manages its own)")
+        return
+    from hermes_cli.plugin_python_deps import applicable_specs, unsupported_specs
+
+    urls = unsupported_specs(decl.specs)
+    if urls:
+        report.warn("python dependencies: direct URL requirement(s) are never auto-installed, users must "
+                    f"install them by hand: {', '.join(urls)}")
+    installable = applicable_specs(decl.specs)
+    rejected = [s for s in installable if not _spec_is_safe(s)]
+    detail = f"{len(installable)} installable from {decl.source}" if decl.source else "none declared"
+    report.add("python dependencies", not rejected,
+               f"unsafe spec(s): {', '.join(rejected)}" if rejected else detail)
+
+
+def _spec_is_safe(spec: str) -> bool:
+    from tools.lazy_deps import _spec_is_safe as safe
+    return safe(spec)
+
+
+def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:
+    """Run the install-time scanner at admission, so a pin a reviewer approves is one the
+    installer will accept: ``dangerous`` fails the entry; ``caution`` findings surface as
+    warnings for the reviewer (the installer trusts them once the pin is merged)."""
+    from tools.plugin_guard import scan_plugin
+
+    result = scan_plugin(plugin_dir)
+    flagged = [f for f in result.findings if f.severity in ("critical", "high")]
+    summary = ", ".join(sorted({f"{f.pattern_id} ({Path(f.file).name}:{f.line})" for f in flagged})) or "no findings"
+    if result.verdict == "dangerous":
+        report.add("security scan", False, f"dangerous: {summary}")
+        return
+    report.add("security scan", True, result.verdict)
+    if result.verdict == "caution":
+        report.warn(f"security scan caution: {summary}")
 
 
 def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> ValidationReport:
@@ -521,15 +592,17 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
     diagnostics (schema shape, name, supported subset).
     """
     try:
-        from hermes_cli.agent_plugins import read_agent_plugin_manifest
+        from hermes_cli.agent_plugins import load_agent_plugin
+        from hermes_platform.resolver.availability import availability
 
-        manifest, diagnostics = read_agent_plugin_manifest(plugin_dir)
+        with tempfile.TemporaryDirectory() as data_root:
+            package = load_agent_plugin(plugin_dir, Path(data_root))
+        manifest = package.manifest
+        diagnostics = package.diagnostics
     except Exception as exc:
         report.add("portable manifest", False, f"plugin.json failed validation: {exc}")
         return report
 
-    # The portable reader raises on hard failures; surviving diagnostics are
-    # advisory (unsupported-subset notes etc.) — surface them as warnings.
     for diag in diagnostics:
         scope = getattr(diag, "scope", "")
         message = getattr(diag, "message", str(diag))
@@ -542,4 +615,14 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    for server_name, server_decl in package.server_declarations.items():
+        result = availability(server_decl.declaration)
+        detail = result.state
+        if result.version:
+            detail += f", version {result.version}"
+        if result.path:
+            detail += f", path {result.path}"
+        report.add(f"server availability: {server_name}", True, detail)
+    _check_security_scan(report, plugin_dir)
+    check_desktop_surface(report, plugin_dir)
     return report

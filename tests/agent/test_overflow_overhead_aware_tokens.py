@@ -403,3 +403,36 @@ class TestLongContextTierOverheadAwareTokens:
             "during long-context-tier recovery. All calls: "
             + str([c["tools"] for c in estimate_calls])
         )
+
+
+@pytest.mark.parametrize("muted", [False, True])
+def test_long_context_retry_carrier_survives_failure_flush(agent, muted, monkeypatch):
+    from gateway.warning_notifications import DiagnosticText
+    agent._notification_config = {"display": {"suppress_warning_notifications": muted}}
+    err = TestLongContextTierOverheadAwareTokens._make_long_context_tier_error()
+    agent.client.chat.completions.create.side_effect = [err, _mock_response(content="Recovered")]
+    captured = []
+    original = agent._buffer_retry_message
+    def capture(kind, text):
+        captured.append((kind, text))
+        original(kind, text)
+    monkeypatch.setattr(agent, "_buffer_retry_message", capture)
+    with (patch("agent.model_metadata.estimate_request_tokens_rough", return_value=_SENTINEL_TOKENS),
+          patch.object(agent, "_compress_context", return_value=([{"role": "user", "content": "compressed"}], "compressed prompt")),
+          patch.object(agent, "_persist_session"), patch.object(agent, "_save_trajectory"),
+          patch.object(agent, "_cleanup_task_resources")):
+        result = agent.run_conversation("hello", conversation_history=_prefill())
+    assert result["final_response"] == "Recovered"
+    assert captured
+    assert any(kind == "status" for kind, _ in captured)
+    assert all(kind == "vprint" or isinstance(text, DiagnosticText) for kind, text in captured), captured
+    # Recovery clears buffered diagnostics; the same carriers must also work on
+    # the terminal-failure flush instead of leaking their retry sibling copy.
+    assert not agent._retry_status_buffer
+    agent._retry_status_buffer = list(captured)
+    printed, observed = [], []
+    agent._print_fn = lambda *a, **k: printed.append(a)
+    agent.status_callback = lambda *a: observed.append(a)
+    agent._flush_status_buffer()
+    assert bool(printed) is not muted
+    assert observed

@@ -127,6 +127,37 @@ def test_configured_max_in_progress_parsing(monkeypatch):
         assert kbd.configured_max_in_progress() == expected, config
 
 
+def test_profile_dispatcher_inherits_root_host_policy(monkeypatch, tmp_path):
+    """Named profiles must not drop the installation-wide dispatcher cap."""
+    import hermes_cli.config as cfgmod
+    import hermes_constants as constants
+
+    monkeypatch.setattr(
+        cfgmod,
+        "read_user_config_raw",
+        lambda _path: {
+            "kanban": {
+                "max_in_progress": 8,
+                "max_in_progress_by_profile": {"task-orchestrator": 4},
+                "priority_runtime_guard": {"max_in_progress": 2},
+            }
+        },
+    )
+    monkeypatch.setattr(constants, "get_default_hermes_root", lambda: tmp_path)
+
+    merged = kbd.shared_kanban_config(
+        {"dispatch_interval_seconds": 5, "max_in_progress_by_profile": {"reviewer": 1}}
+    )
+
+    assert merged["max_in_progress"] == 8
+    assert merged["max_in_progress_by_profile"] == {
+        "task-orchestrator": 4,
+        "reviewer": 1,
+    }
+    assert merged["priority_runtime_guard"]["max_in_progress"] == 2
+    assert merged["dispatch_interval_seconds"] == 5
+
+
 # ---------------------------------------------------------------------------
 # 2. max_in_progress counts running work on ALL boards (P1b)
 # ---------------------------------------------------------------------------

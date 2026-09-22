@@ -1086,7 +1086,7 @@ def _handle_complete(args: dict, **kw) -> str:
 
 @_kanban_handler("kanban_block")
 def _handle_block(args: dict, **kw) -> str:
-    """Transition the task to blocked with a reason a human will read."""
+    """Route unresolved worker work to Task Orchestrator, never to blocked."""
     tid = _worker_guard("kanban_block", args)
     reason = _redact(
         _require_text(args, "reason", "reason is required — explain what input you need"))
@@ -1125,6 +1125,25 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
+        routed, landed_status = kb.route_worker_block_to_orchestrator(
+            conn,
+            tid,
+            reason=reason,
+            expected_run_id=_worker_run_id(tid),
+        )
+        if routed:
+            return _ok_landed(
+                kb,
+                conn,
+                tid,
+                landed_status or "ready",
+                routed_to="task-orchestrator",
+                note=(
+                    "worker handoff routed to Task Orchestrator"
+                    if landed_status != "triage"
+                    else "Task Orchestrator handoff needs a scoped decision; card left in triage"
+                ),
+            )
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         landed = kb.get_task(conn, tid)

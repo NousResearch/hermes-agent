@@ -1959,6 +1959,35 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def shared_kanban_config(kanban_cfg: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    """Overlay profile dispatcher settings with the installation-root policy.
+
+    Dispatcher capacity is a host concern. A named profile may customize its
+    own routing, but it must not silently lose the root ``kanban.max_in_progress``
+    policy and become an uncapped second dispatcher.
+    """
+    profile_cfg = dict(kanban_cfg or {})
+    try:
+        from hermes_cli.config import read_user_config_raw
+        from hermes_constants import get_default_hermes_root
+
+        root_cfg = read_user_config_raw(get_default_hermes_root() / "config.yaml")
+        root_kanban = root_cfg.get("kanban", {}) if isinstance(root_cfg, Mapping) else {}
+    except Exception:
+        root_kanban = {}
+    if not isinstance(root_kanban, Mapping):
+        root_kanban = {}
+    merged = dict(root_kanban)
+    for key, value in profile_cfg.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            nested = dict(merged[key])
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = value
+    return merged
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 

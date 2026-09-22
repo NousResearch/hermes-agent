@@ -134,6 +134,20 @@ CASES = {
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),
     "dockerfile → docker meta": (["Dockerfile"], _lanes(docker_meta=True)),
+    # docker/ scripts are EXECUTED by the Python suite, not merely linted:
+    # tests/gateway/test_tini_shim.py runs the shim and asserts the argv it hands
+    # /init, and the stage2-hook tests source the hook. docker-lint only
+    # shellchecks them (severity=error) and the docker workflow runs
+    # tests/docker/ alone, so a script-only PR would otherwise go green with
+    # those tests never executed.
+    "docker tini shim → python + docker meta": (
+        ["docker/tini-shim.sh"],
+        _lanes(python=True, docker_meta=True),
+    ),
+    "docker stage2 hook → python + docker meta": (
+        ["docker/stage2-hook.sh"],
+        _lanes(python=True, docker_meta=True),
+    ),
     # Only the flake reads these, so they run nix alone. No Python test opens
     # them, unlike pyproject.toml and uv.lock below.
     "nix module → nix only": (["nix/homeManagerModules.nix"], _lanes(nix=True)),

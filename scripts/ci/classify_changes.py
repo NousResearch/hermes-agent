@@ -57,6 +57,14 @@ must never skip one a change could break:
 * ``website/docs/`` and ``website/scripts/`` are python-relevant for the same
   reason: the docs tree generates ``llms.txt``, and
   ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
+* ``docker/`` scripts are python-relevant: the Python suite does not just read
+  them, it runs them. ``tests/gateway/test_tini_shim.py`` executes
+  ``docker/tini-shim.sh`` and asserts the argv it hands ``/init``, and the
+  ``tests/tools/test_stage2_hook_*.py`` suite sources ``docker/stage2-hook.sh``
+  and drives its first-boot seeds under bash. Those files live under
+  ``tests/gateway/`` and ``tests/tools/``, so the docker workflow's integration
+  run (``tests/docker/`` only) never picks them up, and ``docker-lint.yml``
+  shellchecks at ``severity=error`` — behaviour changes are invisible to it.
 """
 
 from __future__ import annotations
@@ -91,6 +99,12 @@ _PY_RELEVANT_SITE = (
     "website/docs/",
     "website/scripts/",
 )
+# docker/ holds executable build inputs, not just Dockerfiles: the Python suite
+# runs docker/tini-shim.sh (tests/gateway/test_tini_shim.py) and sources
+# docker/stage2-hook.sh (tests/tools/test_stage2_hook_*.py). The docker lane
+# only builds the image and runs tests/docker/, so without this a script-only PR
+# changes container behaviour with those tests never executed.
+_PY_RELEVANT_DOCKER_PATHS = ("docker/",)
 # Cross-language contract files: data committed under a frontend tree that a
 # pytest pins against the Python side (emitter inventory, command registry).
 # Editing only the JSON in an apps/-only PR would otherwise skip the one test
@@ -158,7 +172,11 @@ def _is_nix(p: str) -> bool:
 
 
 def _py_irrelevant(p: str) -> bool:
-    if p.startswith(_PY_RELEVANT_SITE) or p in _PY_RELEVANT_CONTRACT_FILES:
+    if (
+        p.startswith(_PY_RELEVANT_SITE)
+        or p.startswith(_PY_RELEVANT_DOCKER_PATHS)
+        or p in _PY_RELEVANT_CONTRACT_FILES
+    ):
         return False
     return (
         _is_docs(p)

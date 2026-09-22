@@ -241,6 +241,15 @@ MUTATING_CONFIRMATION_SMOKE_COMMANDS = [
 
 
 
+def test_sessions_optimize_accepts_the_force_override_it_advertises(_isolate_hermes_home):
+    """The held-store refusal this command prints points at `sessions optimize --force`; if the
+    console rejected the flag, the command could only ever refuse whenever a gateway is running."""
+    result = HermesConsoleEngine().execute("sessions optimize --force", confirmed=True)
+
+    assert result.status == "ok", result.output
+    assert "Usage:" not in result.output
+
+
 def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home):
     from hermes_state import SessionDB
 
@@ -602,6 +611,6 @@ def test_config_set_on_unparseable_yaml_reports_error_not_crash(tmp_path, monkey
     )
 
     assert result.status == "error"
-    assert "not valid YAML" in (result.output or "") or "Failed to parse" in (result.output or "")
+    assert "formatting error" in (result.output or "")
     # The broken-but-recoverable file must survive untouched.
     assert config_path.read_text(encoding="utf-8") == original

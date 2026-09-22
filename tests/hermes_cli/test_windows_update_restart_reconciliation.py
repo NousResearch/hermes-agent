@@ -26,6 +26,7 @@ import pytest
 import hermes_cli.gateway as gateway
 import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.main as hm
+import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli.update_cmd import _resume_windows_gateways_after_update
 from hermes_cli.update_inventory import (
     RuntimeRecord,
@@ -61,6 +62,7 @@ def _stub_post_relaunch_liveness(monkeypatch):
 
 def test_resume_records_successfully_relaunched_profiles_on_the_token(monkeypatch):
     monkeypatch.setattr(hm, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: None)
     monkeypatch.setattr(
         gateway, "launch_detached_profile_gateway_restart", lambda *_a: True
@@ -81,6 +83,7 @@ def test_resume_omits_profiles_whose_relaunch_failed(monkeypatch):
     'relaunched' — it needs to keep surfacing as unaccounted so the user is
     told to restart it manually (Windows has no watcher to recover it)."""
     monkeypatch.setattr(hm, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: None)
 
     def _relaunch(profile, _old_pid):
@@ -110,6 +113,7 @@ def test_merged_windows_relaunch_resolves_as_restarted_not_unaccounted(monkeypat
     match_runtime_outcomes, must turn a Windows gateway's plan row from
     'unaccounted' (loud warning + exit 1) into 'restarted' (clean)."""
     monkeypatch.setattr(hm, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hm, "_refresh_windows_gateway_launchers", lambda: None)
     monkeypatch.setattr(
         gateway, "launch_detached_profile_gateway_restart", lambda *_a: True
@@ -165,3 +169,106 @@ def test_resume_with_no_relaunched_profiles_key_does_not_crash_the_merge():
     for profile in token.get("relaunched_profiles") or []:
         relaunched_profiles.append(profile)
     assert relaunched_profiles == []
+
+
+def test_merge_helper_reads_token_keys_into_restart_outcome(monkeypatch):
+    """Drive the real merge helper (not a mirror): the Windows resume token's
+    ``relaunched_profiles`` / ``restarted_services`` / ``service_profiles`` /
+    ``services`` keys must land in the shared restart bookkeeping."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(hm, "_resume_windows_gateways_after_update", lambda token: None)
+    outcome = update_cmd._GatewayRestartOutcome(
+        incomplete=False,
+        phase_errors=[],
+        pre_restart_gateway_pids=[],
+        restarted_services=["hermes-gateway"],
+        failed_or_stale_units=[],
+        relaunched_profiles=[],
+        externally_supervised_profiles=[],
+        killed_pids=set(),
+    )
+    token = {
+        "resume_needed": False,
+        "relaunched_profiles": ["p1"],
+        "restarted_services": ["svc"],
+        "service_profiles": {"svc": "p2", "pending": "p3"},
+        "services": ["pending"],
+    }
+    with patch("hermes_cli.update_receipt.record_gateway_restart", lambda **kw: None):
+        update_cmd._resume_windows_gateways_and_merge_outcome(outcome, token, False)
+
+    assert outcome.relaunched_profiles == ["p1", "p2"]
+    assert outcome.restarted_services == ["hermes-gateway", "svc"]
+    assert outcome.failed_or_stale_units == ["p3"]
+    assert outcome.incomplete is False
+
+
+# ---------------------------------------------------------------------------
+# #115563: symmetric resume-failure handling + atexit double-fire
+# ---------------------------------------------------------------------------
+
+def test_already_up_to_date_path_demotes_on_windows_resume_failure(monkeypatch):
+    """The pull path treats a Windows resume failure as a warning (outcome.incomplete = True,
+    update continues); the 'Already up to date' path called _resume_windows_gateways_after_update
+    bare, so the identical RuntimeError killed the run instead (#115563). It must now route
+    through the same _resume_windows_gateways_and_merge_outcome contract and demote
+    current_checkout_complete, landing on the same 'partial' + exit(1) path a failed repair
+    already uses — not an unhandled exception."""
+    from hermes_cli import update_cmd
+
+    class _Plan:
+        auto_stash_ref = None
+        parked_branch_switched = False
+        switch_block_reason = ""
+        upstream_checked = True
+
+    monkeypatch.setattr(update_cmd, "_invalidate_update_cache", lambda: None)
+    monkeypatch.setattr(update_cmd, "_repair_current_checkout", lambda **_kw: True)
+    monkeypatch.setattr(update_cmd, "_apply_pending_fleet_restart_catchup", lambda **_kw: None)
+
+    finalized = []
+    monkeypatch.setattr(update_cmd, "_finalize_receipt", lambda status, *_a: finalized.append(status))
+
+    def _fail_resume(_token):
+        raise RuntimeError("Windows gateway relaunch after update was not verified alive")
+
+    monkeypatch.setattr(hm, "_resume_windows_gateways_after_update", _fail_resume)
+
+    with patch("builtins.print"):
+        with pytest.raises(SystemExit) as exc_info:
+            update_cmd._finish_already_up_to_date(
+                git_cmd="git", branch="main", current_branch="main", _plan=_Plan(),
+                assume_yes=True, gateway_mode=False, gw_input_fn=None,
+                pre_update_snapshot_id=None, had_desktop_app_before_update=False,
+                active_lazy_features=None, active_tool_dependencies=None,
+                _windows_gateway_resume={"resume_needed": True},
+            )
+
+    # Demoted to the existing partial-repair contract, not an unhandled RuntimeError.
+    assert exc_info.value.code == 1
+    assert finalized == ["partial"]
+
+
+def test_resume_unregisters_its_own_atexit_fallback_before_running(monkeypatch):
+    """Every foreground call site registers this same function via atexit as a dead-process
+    safety net. Once execution actually reaches here it must disarm that fallback immediately
+    -- otherwise a failure below (or the foreground caller dying right after return) replays
+    the identical error a second time at interpreter teardown (#115563)."""
+    import atexit
+
+    from hermes_cli import update_cmd_windows
+
+    calls = []
+    monkeypatch.setattr(
+        atexit, "unregister",
+        lambda fn: calls.append(fn) or None,
+    )
+    monkeypatch.setattr(hm, "_is_windows", lambda: False)
+
+    token = {"resume_needed": True}
+    update_cmd_windows._resume_windows_gateways_after_update(token)
+
+    assert calls == [update_cmd_windows._resume_windows_gateways_after_update]
+    assert token["resume_needed"] is False
+

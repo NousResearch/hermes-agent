@@ -48,6 +48,7 @@ import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
+import { setGroupMembership } from './group-chat-view-members'
 import {
   botGroups,
   durableGroupChatMembers,
@@ -56,7 +57,7 @@ import {
   liveGroupChatNames
 } from './group-membership'
 import { useBots } from './i18n'
-import { displayName, slugify } from './labels'
+import { botProfileIdentity, displayName } from './labels'
 import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import type {
@@ -65,7 +66,7 @@ import type {
   ProfileConfigurePayload,
   ProfileDescribeResponse
 } from './profile-config'
-import { CheckList, SkillsView, skillsViewRoutesConnections } from './profile-config'
+import { CapabilitiesView, capabilitiesViewRoutesConnections, CheckList } from './profile-config'
 import { deleteBot } from './profile-ops'
 import { botRosterMeta } from './routing'
 import { HubSkillsSection } from './skills-hub'
@@ -194,7 +195,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       : host.request(method, params)
 
   // Set once ensureAgentCreated() materializes the profile for the live
-  // Capabilities tab (SkillsView needs a real backend to point at). State —
+  // Capabilities tab (CapabilitiesView needs a real backend to point at). State —
   // not just createdRef — because the render must flip when it lands.
   const [createdForCaps, setCreatedForCaps] = useState<null | string>(null)
   const [caps, setCaps] = useState<CapabilityCatalog | null>(null)
@@ -209,7 +210,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const [capFilter, setCapFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
-  const slug = slugify(name)
+  const { slug, title: botTitle } = botProfileIdentity(name, title)
   const valid = slug.length > 0 && NAME_RE.test(slug)
 
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
@@ -293,7 +294,10 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
 
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
   // what it WILL have — the clone source's catalog, else the main profile's.
-  const capSource = cloneFrom === '__none__' ? 'default' : cloneFrom
+  // Same rule as the `clone_from` payload below: a remote target can only
+  // clone ITS default, so a local roster name picked before the target
+  // switched must not key the preview (or the describe call) either.
+  const capSource = cloneFrom === '__none__' || remoteTarget ? 'default' : cloneFrom
 
   const ensureCaps = () => {
     if ((caps && caps.source === capSource) || capsFailed) {
@@ -302,7 +306,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
 
     Promise.all([
       requestForTarget<ProfileDescribeResponse>('profiles.describe', {
-        name: remoteTarget ? 'default' : capSource
+        name: capSource
       }),
       requestForTarget<McpCatalogResponse>('mcp.catalog', {}).catch(() => null)
     ])
@@ -378,7 +382,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         return null
       }
 
-      const descriptionText = [title, description].filter(Boolean).join(' — ')
+      const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
       await requestForTarget('profiles.create', {
         name: slug,
         description: descriptionText,
@@ -394,7 +398,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         share_auth: shareAuth,
         soul: composeSoul({
           name: slug,
-          title,
+          title: botTitle,
           description,
           roster,
           customSoul: soul
@@ -449,7 +453,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           color,
           image,
           imageKind: image ? 'photo' : 'shape',
-          title: title.trim(),
+          title: botTitle,
           created: Date.now()
         }
 
@@ -477,7 +481,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           color: color ?? undefined,
           image,
           imageKind: image ? 'photo' : 'shape',
-          title: title.trim(),
+          title: botTitle,
           created: Date.now()
         })
       }
@@ -515,11 +519,11 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         message: remoteTarget
           ? `Bot "${displayName({
               name: slug,
-              title
+              title: botTitle
             })}" created on ${targetLabel}`
           : `Bot "${displayName({
               name: slug,
-              title
+              title: botTitle
             })}" created`
       })
       const wasRemote = remoteTarget
@@ -720,7 +724,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   }
                 }}
                 options={
-                  SkillsView && (!remoteTarget || skillsViewRoutesConnections)
+                  CapabilitiesView && (!remoteTarget || capabilitiesViewRoutesConnections)
                     ? [
                         { id: 'general', label: 'General' },
                         { id: 'capabilities', label: 'Capabilities' }
@@ -739,20 +743,22 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   {labeled(
                     remoteTarget ? `Clone from profile (on ${targetLabel})` : 'Clone from profile',
                     <Select
-                      disabled={remoteTarget}
                       onValueChange={value => {
                         setCloneFrom(value)
                         setCaps(null)
                         setCapsFailed(false)
                       }}
-                      value={remoteTarget ? 'default' : cloneFrom}
+                      value={remoteTarget && cloneFrom !== '__none__' ? 'default' : cloneFrom}
                     >
                       <SelectTrigger className="h-8 rounded-md">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__none__">Fresh profile (bundled skills)</SelectItem>
-                        {roster.map(b => (
+                        {/* The roster lists THIS window's profiles; the only clone
+                            source guaranteed to exist on another machine is its
+                            own default, so a remote target offers that or fresh. */}
+                        {(remoteTarget ? [{ name: 'default' }] : roster).map(b => (
                           <SelectItem key={b.name} value={b.name}>
                             {b.name}
                           </SelectItem>
@@ -809,9 +815,9 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   <div className="flex justify-center py-4">
                     <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
                   </div>
-                ) : SkillsView ? (
+                ) : CapabilitiesView ? (
                   <ResizableFrame height={440} minHeight={280}>
-                    <SkillsView
+                    <CapabilitiesView
                       embedded
                       fixedProfile={createdForCaps}
                       {...(remoteTarget
@@ -869,7 +875,6 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     </div>
                     <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">{`Catalog from ${caps.source} — unchecked skills are disabled after creation.`}</div>
                     <HubSkillsSection
-                      forProfile={null}
                       onInstalled={name =>
                         setCaps(prev =>
                           !prev || prev.skills.some(s => s.name === name)
@@ -1031,7 +1036,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const groups = knownGroups(meta)
 
   const setMembership = (group: string, enabled: boolean) => {
-    void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
+    void setGroupMembership(bot, group, enabled)
     host.notify({
       kind: 'info',
       message: enabled
@@ -1097,10 +1102,12 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
           <Button
             className="justify-self-start"
             onClick={() =>
-              void saveBotMeta(bot, {
-                groups: [],
-                group: null
-              })
+              void (async () => {
+                // Sequential: each toggle patches groups[] from the current meta.
+                for (const group of current) {
+                  await setGroupMembership(bot, group, false)
+                }
+              })()
             }
             size="sm"
             variant="ghost"
@@ -1271,7 +1278,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                 return (
                   <label
                     className={cn(
-                      'flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-(--chrome-action-hover)',
+                      'flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-(--chrome-action-hover)',
                       disabled && 'cursor-not-allowed opacity-50'
                     )}
                     key={botRosterKey(bot)}
@@ -1343,7 +1350,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <Button
             disabled={!canCreate}
             onClick={create}
-            title={selected.length < 2 ? 'Pick at least 2 bots' : undefined}
           >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>
       </DialogContent>

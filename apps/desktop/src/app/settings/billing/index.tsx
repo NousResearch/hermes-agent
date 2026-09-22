@@ -7,6 +7,7 @@ import { Progress } from '@/components/ui/progress'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useI18n } from '@/i18n'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -44,8 +45,8 @@ import { useStepUpFlow } from './use-step-up'
 
 // `bview` mirrors the settings pview/kview sub-view pattern (deep-linkable, replace
 // navigation). `overview` is the default landing; `plans` is the in-app catalog.
-const BILLING_VIEWS = ['overview', 'plans'] as const
-type BillingSubView = (typeof BILLING_VIEWS)[number]
+export const BILLING_VIEWS = ['overview', 'plans'] as const
+export type BillingSubView = (typeof BILLING_VIEWS)[number]
 
 const FEATURE_BILLING_INVOICES = false
 
@@ -87,18 +88,25 @@ function NoticeCard({ notice }: { notice: BillingNoticeView }) {
       <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {notice.message}
       </div>
-      {notice.action && (
-        <Button
-          className="mt-3"
-          onClick={() => openExternal(notice.action?.url)}
-          size="sm"
-          type="button"
-          variant="outline"
-        >
-          {notice.action.label}
-          <ExternalLink className="size-3.5" />
-        </Button>
-      )}
+      {notice.action &&
+        (notice.action.onSelect ? (
+          // In-app action (free-tier sign-in): a plain button, no external-link
+          // glyph — nothing leaves the app.
+          <Button className="mt-3" onClick={notice.action.onSelect} size="sm" type="button" variant="outline">
+            {notice.action.label}
+          </Button>
+        ) : (
+          <Button
+            className="mt-3"
+            onClick={() => openExternal(notice.action?.url)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {notice.action.label}
+            <ExternalLink className="size-3.5" />
+          </Button>
+        ))}
     </div>
   )
 }
@@ -407,16 +415,19 @@ function BillingHeader({
   fixtureName?: BillingFixtureSelection
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
+  const { t } = useI18n()
+
   return (
-    <div className="mb-2.5 flex items-center justify-between gap-3 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
-      <div className="flex min-w-0 items-center gap-2">
-        <BarChart3 className="size-4 shrink-0 text-muted-foreground" />
-        <span>Billing</span>
-      </div>
-      {import.meta.env.DEV && fixtureName && onFixtureChange ? (
-        <BillingFixtureSelect onValueChange={onFixtureChange} value={fixtureName} />
-      ) : null}
-    </div>
+    <SectionHeading
+      aside={
+        import.meta.env.DEV && fixtureName && onFixtureChange ? (
+          <BillingFixtureSelect onValueChange={onFixtureChange} value={fixtureName} />
+        ) : undefined
+      }
+      icon={BarChart3}
+      page
+      title={t.settings.nav.billing}
+    />
   )
 }
 
@@ -517,6 +528,11 @@ function BillingSettingsContent({
       {view.plan && (
         <SettingsSection icon={Package} title="Plan">
           <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
+          {view.planFootnote && (
+            <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {view.planFootnote}
+            </div>
+          )}
         </SettingsSection>
       )}
 

@@ -163,6 +163,45 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([msg]) < 5_000
 
 
+class TestResponsesItemImageAccounting:
+    """Responses ``function_call_output`` items carry tool-result images under
+    ``output`` (the converter moves chat ``content`` there); the estimator must
+    price them with the flat per-image model, never as base64 text (#108320)."""
+
+    def test_function_call_output_image_matches_chat_estimate(self):
+        """The carrier key alone (``content`` vs ``output``) must not change the
+        accounting for the same image."""
+        import base64
+        import os
+
+        payload = (
+            "data:image/png;base64," + base64.b64encode(os.urandom(100_000)).decode()
+        )
+        chat = {
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": payload}}],
+        }
+        responses_item = {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [{"type": "input_image", "image_url": payload}],
+        }
+
+        chat_est = estimate_messages_tokens_rough([chat])
+        responses_est = estimate_messages_tokens_rough([responses_item])
+
+        assert abs(chat_est - responses_est) < 200
+
+    def test_function_call_output_text_output_still_counted(self):
+        """Plain-string ``output`` (the common tool-result shape) is unaffected."""
+        item = {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "plain tool result " * 100,
+        }
+        est = estimate_messages_tokens_rough([item])
+        assert est >= (len(item["output"]) // 4) * 0.9
+
 
 class TestEstimateRequestTokensRough:
     def test_caches_tools_estimate(self):
@@ -303,6 +342,63 @@ class TestDefaultContextLengths:
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
+    @pytest.mark.parametrize("model, provider, base_url", [
+        ("muse-spark-1.3-contributor", "opencode-go", "https://opencode.ai/zen/go/v1"),
+        ("muse-spark-1.3", "meta-ai", "https://api.meta.ai/v1"),
+        ("meta/muse-spark-1.3", "commandcode", "https://api.commandcode.ai/provider/v1"),
+    ])
+    def test_muse_spark_resolves_1m_without_network(self, model, provider, base_url):
+        """Muse Spark is 1,048,576 on every host even when models.dev and the
+        live /models probe are unavailable (fresh HERMES_HOME, offline)."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_context_length(model, provider=provider, base_url=base_url) == 1_048_576
+
+    @staticmethod
+    def _upstage_ctx(model):
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            return get_model_context_length(model, provider="upstage", base_url="https://api.upstage.ai/v1")
+
+    def test_upstage_solar_ids_match_legacy_keys_only_on_an_id_boundary(self):
+        """Upstage /v1/models has no context field, so the table decides. ``solar-mini`` must not
+        claim ``solar-mini4`` (its 32K is below MINIMUM_CONTEXT_LENGTH, so the agent refused to
+        start); Solar ids without a legacy key get the Solar family window, not the 256K fallback."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _longest_key_match
+
+        family = DEFAULT_CONTEXT_LENGTHS["solar-"]
+        assert family > DEFAULT_FALLBACK_CONTEXT
+        for model in ("solar-mini4", "solar-mini4-preview", "upstage/solar-mini4", "solar-pro4",
+                      "solar-pro4-260806", "solar-pro4-quant", "solar-mini12", "solar-foo"):
+            assert self._upstage_ctx(model) == family, model
+            # The gateway labels a table miss as "default"; it must agree with the resolver.
+            assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())[1] == family, model
+
+        # Legacy ids keep their own (smaller) windows: dated, org-prefixed, aggregator-hyphenated
+        # (``solar-pro-3``) and quant/variant-suffixed ids included.
+        for variant, bare in (("solar-mini-250422", "solar-mini"), ("upstage/solar-mini", "solar-mini"),
+                              ("solar-pro2-251215", "solar-pro2"), ("solar-pro3-260323", "solar-pro3"),
+                              ("upstage/solar-pro-3", "solar-pro3"), ("solar-pro3.1", "solar-pro3"),
+                              ("solar-open2@q4_k_m", "solar-open2")):
+            assert self._upstage_ctx(variant) == self._upstage_ctx(bare), variant
+        assert self._upstage_ctx("solar-mini") < MINIMUM_CONTEXT_LENGTH
+        assert self._upstage_ctx("solar-pro3") < family
+
+        # Ids merely containing "solar", and open-weight Solar ids, are not Solar API lineups.
+        for model in ("ft:solar-news-correction", "acme-solar-foo", "upstage/solar-10.7b-instruct"):
+            assert self._upstage_ctx(model) != family, model
+
+    def test_explicit_solar_key_beats_the_family_default(self):
+        with patch.dict(DEFAULT_CONTEXT_LENGTHS, {"solar-foo": 300_000}):
+            assert self._upstage_ctx("solar-foo") == 300_000
+            assert self._upstage_ctx("solar-foo-260101") == 300_000
+            assert self._upstage_ctx("solar-foo2") == DEFAULT_CONTEXT_LENGTHS["solar-"]
+
     def test_empty_model_uses_fallback_context(self):
         assert get_model_context_length("") == DEFAULT_FALLBACK_CONTEXT
         assert get_model_context_length(None) == DEFAULT_FALLBACK_CONTEXT  # type: ignore[arg-type]
@@ -343,6 +439,8 @@ class TestDefaultContextLengths:
             "deepseek-v4-flash": 1_000_000,
             "deepseek-chat": 1_000_000,
             "deepseek-reasoner": 1_000_000,
+            # Version-less canonical Flash id (2026-09 Flash refresh).
+            "deepseek-flash": 1_000_000,
         }
         for key, value in expected_keys.items():
             assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing"
@@ -364,6 +462,8 @@ class TestDefaultContextLengths:
                 ("deepseek/deepseek-v4-flash", 1_000_000),
                 ("deepseek-chat", 1_000_000),
                 ("deepseek-reasoner", 1_000_000),
+                ("deepseek-flash", 1_000_000),
+                ("deepseek/deepseek-flash", 1_000_000),
             ]
             for model_id, expected_ctx in cases:
                 actual = get_model_context_length(model_id)
@@ -602,6 +702,51 @@ class TestCodexOAuthContextLength:
                 )
             assert ctx == advertised, f"advertised {advertised} must be trusted"
 
+    @pytest.mark.parametrize("catalog_max,expected", [(872_000, 872_000), (None, 900_000), (1_050_000, 900_000)])
+    def test_opted_in_variant_capped_at_live_catalog_max(self, catalog_max, expected):
+        """An explicit ``-900k`` opt-in resolves to min(900K, catalog ``max_context_window``):
+        gpt-5.6 advertises 272K with an 872K max (#105443); a catalog without the field or one
+        above the live-verified cap keeps 900K."""
+        from agent.model_metadata import get_model_context_length
+
+        item = {"slug": "gpt-5.6-luna", "context_window": 272_000}
+        if catalog_max is not None:
+            item["max_context_window"] = catalog_max
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {"models": [item]}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.6-luna-900k",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == expected
+
+    def test_base_slug_keeps_advertised_ctx_even_with_catalog_max(self):
+        """The catalogue max never leaks into the base slug: extended context is
+        opt-in via the ``-900k`` alias only (#105443)."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": "gpt-5.6-sol", "context_window": 272_000, "max_context_window": 872_000}]
+        }
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == 272_000
+
     @pytest.mark.parametrize("slug", ["gpt-5.5", "gpt-5.4-mini"])
     def test_slugs_that_enforce_272k_keep_advertised_value(self, slug):
         """gpt-5.5 and gpt-5.4-mini both rejected large inputs in the live probe (360K and 500K respectively) —
@@ -798,6 +943,36 @@ class TestFetchEndpointModelMetadata:
         not_found.json.assert_not_called()
         not_found.close.assert_called_once()
         success.close.assert_called_once()
+
+    def test_remote_probe_is_memoized_on_disk_across_processes(self, tmp_path, monkeypatch):
+        """A fresh process (cleared in-memory cache) must answer from the disk
+        memo within the TTL instead of re-probing the endpoint — the cost every
+        one-shot Bot Mode DM hop paid on startup. Expired memos re-probe."""
+        import agent.model_metadata as mm
+
+        monkeypatch.setattr(
+            mm, "_get_endpoint_metadata_cache_path", lambda: tmp_path / "endpoint_model_metadata.json"
+        )
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {"data": [{"id": "test/model", "context_length": 32768}]}
+
+        with patch("agent.model_metadata.requests.get", return_value=success) as mock_get:
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+            # "New process": drop the in-memory cache only.
+            mm._endpoint_model_metadata_cache.clear()
+            mm._endpoint_model_metadata_cache_time.clear()
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+        mock_get.assert_called_once()
+
+        # Past the TTL the memo is stale and the endpoint is probed again.
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+        with patch("agent.model_metadata.time.time", return_value=time.time() + mm._ENDPOINT_MODEL_CACHE_TTL + 1), patch(
+            "agent.model_metadata.requests.get", return_value=success
+        ) as mock_get:
+            mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+        mock_get.assert_called_once()
 
 
 # =========================================================================
@@ -1043,13 +1218,14 @@ class TestGetModelContextLength:
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
-        # GLM-5-TEE matches the "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        # GLM-5-TEE resolves through DEFAULT_CONTEXT_LENGTHS (longest matching GLM key), not the generic default.
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
-        assert result == 202752  # "glm" entry in DEFAULT_CONTEXT_LENGTHS
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        assert result == _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "zai-org/glm-5-tee")[1]
 
 
 
@@ -1149,7 +1325,43 @@ class TestGetModelContextLength:
         # The local probe MUST be called exactly once
         mock_local_ctx.assert_called_once()
 
+    # ── Codex routes are keyed on the transport, not the host (#116191) ──────────────
 
+    @pytest.mark.parametrize(
+        "provider, custom_providers",
+        [
+            ("custom:codex-proxy", [{"name": "codex-proxy", "base_url": "http://127.0.0.1:8317/v1", "api_mode": "codex_responses"}]),
+            ("openai-codex", None),  # HERMES_CODEX_BASE_URL / model.base_url proxy per #115902
+        ],
+    )
+    def test_codex_route_behind_proxy_resolves_codex_oauth_window(self, provider, custom_providers):
+        """A Codex model served through a generic proxy URL must get the Codex OAuth window, not the
+        direct-API catalog window: the compressor otherwise fires ~2x past the Codex limit."""
+        from agent import model_metadata as mm
+        proxy_models = {"gpt-6-astra": {"id": "gpt-6-astra"}}  # like CLIProxyAPI's /models: no context field
+        with (
+            patch.object(mm, "get_cached_context_length", return_value=1_050_000),  # stale pre-fix entry must not win
+            patch.object(mm, "fetch_endpoint_model_metadata", return_value=proxy_models),
+            patch.object(mm, "_query_ollama_api_show", return_value=None),
+            patch.object(mm, "is_local_endpoint", return_value=False),
+            patch.object(mm, "_fetch_codex_oauth_context_lengths_with_source", return_value=({}, False)),
+        ):
+            ctx = get_model_context_length(
+                "gpt-6-astra", base_url="http://127.0.0.1:8317/v1", api_key="proxy-key",
+                provider=provider, custom_providers=custom_providers,
+            )
+        assert ctx == mm._CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-astra"]
+
+    def test_codex_proxy_route_explicit_context_length_override_still_wins(self):
+        """providers.<name>.models[].context_length beats the Codex table on a codex_responses route (#102644)."""
+        custom = [{
+            "name": "codex-proxy", "base_url": "http://127.0.0.1:8317/v1", "api_mode": "codex_responses",
+            "models": {"gpt-6-astra": {"context_length": 321_000}},
+        }]
+        ctx = get_model_context_length(
+            "gpt-6-astra", base_url="http://127.0.0.1:8317/v1", provider="custom:codex-proxy", custom_providers=custom,
+        )
+        assert ctx == 321_000
 
 
 # =========================================================================
@@ -1200,6 +1412,74 @@ class TestBedrockContextResolution:
 
 
 # =========================================================================
+# Bedrock context cache persistence — only a probe result may be persisted
+# =========================================================================
+
+class TestBedrockContextCachePersistence:
+    """``_resolve_bedrock_context_length`` persisted whatever
+    ``get_bedrock_context_length`` returned whenever a region was resolvable —
+    and ``resolve_bedrock_region()`` always resolves one (it ends in
+    ``or "us-east-1"``). A probe that returned None (expired SSO session,
+    offline, opaque server error) therefore froze the static table value — the
+    128K default for a model with no table row — under ``model@<base_url>`` or
+    ``model@bedrock://`` (written as ``model@bedrock:``), and the probe, which
+    the resolver treats as the only authoritative source, never ran for that
+    model again.
+
+    Invariants: only a probe-derived window may be persisted, and a failed
+    probe is memoised in memory for ``_BEDROCK_PROBE_FAILURE_TTL_SECONDS`` so
+    it is not re-sent on every resolution, yet runs again once the memo lapses.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_bedrock_probe_memo(self):
+        """The failure memo is module-level state; it must not leak between tests."""
+        from agent import model_metadata as mm
+        mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
+        yield
+        mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
+
+    @patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1")
+    @patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None)
+    def test_failed_probe_does_not_persist_static_fallback(self, mock_probe, mock_region, tmp_path):
+        """A failed probe answers from the table (the 128K default here) but writes nothing
+        to disk. On main this persists ``amazon.future-model-v1:0@bedrock:: 128000``."""
+        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH
+        model = "amazon.future-model-v1:0"  # no BEDROCK_CONTEXT_LENGTHS row
+        cache_file = tmp_path / "context_length_cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert get_cached_context_length(model, "bedrock://") is None
+        assert not cache_file.exists()
+        mock_probe.assert_called_once_with(model, "us-east-1")
+
+    @patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1")
+    @patch("agent.bedrock_adapter.probe_bedrock_context_length", side_effect=[None, 1_000_000])
+    def test_failed_probe_is_memoised_until_the_ttl_lapses(self, mock_probe, mock_region, tmp_path):
+        """Not persisting must not turn the probe into a per-resolution cost: inside the TTL a
+        second resolution answers from the table without re-probing and still writes nothing;
+        once the memo lapses the probe runs again and its window is what gets persisted. On
+        main the first call persists 128K and every later call serves it."""
+        from agent import model_metadata as mm
+        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH
+        model = "amazon.future-model-v1:0"
+        cache_file = tmp_path / "context_length_cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert mock_probe.call_count == 1
+            assert not cache_file.exists()  # memoised in memory only
+            # Age the entry past the failure TTL (as tests/agent/test_probe_cache_followups.py does).
+            for key in mm._BEDROCK_PROBE_FAILURE_CACHE:
+                mm._BEDROCK_PROBE_FAILURE_CACHE[key] = (
+                    time.monotonic() - mm._BEDROCK_PROBE_FAILURE_TTL_SECONDS - 1
+                )
+            assert get_model_context_length(model, provider="bedrock") == 1_000_000
+            assert get_cached_context_length(model, "bedrock://") == 1_000_000
+        assert mock_probe.call_count == 2
+
+
+# =========================================================================
 # _strip_provider_prefix — Ollama model:tag vs provider:model
 # =========================================================================
 
@@ -1217,7 +1497,7 @@ class TestStripProviderPrefix:
 
     def test_registered_profile_name_and_alias_are_stripped(self, monkeypatch):
         import providers
-        from providers import ProviderProfile
+        from providers.base import ProviderProfile
 
         monkeypatch.setattr(providers, "_REGISTRY", {})
         monkeypatch.setattr(providers, "_ALIASES", {})
@@ -1445,6 +1725,24 @@ class TestParseContextLimitFromError:
         )
         assert get_context_length_from_provider_error(msg, 131072) == 32768
 
+    def test_output_cap_message_is_not_a_context_limit(self):
+        """An output-cap error must never be cached as the context window (salvage #106769):
+        the generic "limit ... of N" pattern matched Switchyard's message and clamped a
+        >117K-context model to 16K on every later request."""
+        from agent.model_metadata import (
+            is_output_cap_error,
+            parse_available_output_tokens_from_error,
+        )
+
+        msg = "max_tokens cannot exceed the configured model output limit of 16384"
+        assert parse_context_limit_from_error(msg) is None
+        assert parse_available_output_tokens_from_error(msg) == 16384
+        assert is_output_cap_error(msg)
+        # Genuine context messages still parse.
+        assert parse_context_limit_from_error(
+            "This model's maximum context length is 32768 tokens"
+        ) == 32768
+
 
 
 
@@ -1601,6 +1899,18 @@ class TestGrok43StaleCacheGuard:
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
 
 
+class TestMuseSparkStaleCacheGuard:
+    """Muse Spark (1M window per OpenRouter live metadata) had no catalog
+    entry, so older builds persisted the 256K default fallback. The cache
+    guard must flag that stale value and keep correct/probed values."""
+
+    def test_stale_muse_spark_detected_by_generic_guard(self):
+        from agent.model_metadata import _stale_pre_catalog_cache_entry
+        for slug in ("muse-spark-1.3", "meta/muse-spark-1.3-contributor", "muse-spark-1.2-contributor"):
+            assert _stale_pre_catalog_cache_entry(slug, 256_000), slug
+            assert not _stale_pre_catalog_cache_entry(slug, 1_048_576), slug
+
+
 class TestGrok46StaleCacheGuard:
     """Pre-catalog builds resolved grok-4.6 via the generic 'grok-4' catch-all
     (256,000) and persisted it before the 500K catalog entry existed.
@@ -1658,6 +1968,13 @@ class TestGenericPreCatalogStaleGuard:
         assert not _stale_pre_catalog_cache_entry("grok-4.20", 2_000_000)
         # Sibling qwen slugs with legitimately small windows are untouched.
         assert not _stale_pre_catalog_cache_entry("qwen3-coder", 131_072)
+        # DeepSeek V4 / V4.1 Flash: 1M. Pre-entry builds persisted the 128K
+        # ``deepseek`` catch-all; a leftover must drop, a 1M value must not.
+        assert _stale_pre_catalog_cache_entry("deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek/deepseek-flash", 128_000)
+        assert _stale_pre_catalog_cache_entry("deepseek-v4-pro", 128_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek-flash", 1_000_000)
+        assert not _stale_pre_catalog_cache_entry("deepseek", 128_000)
 
     def test_unknown_models_never_dropped(self):
         from agent.model_metadata import _stale_pre_catalog_cache_entry
@@ -1872,3 +2189,69 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+# =========================================================================
+# get_model_context_length — OpenRouter routing-variant suffixes
+# =========================================================================
+
+class TestOpenRouterRoutingVariantContextLength:
+    """`:nitro`/`:floor`/`:exacto`/`:online` are request-time routing modifiers, not catalog
+    models: /models lists only the base id and the variant runs the same model, so a variant
+    must resolve to whatever its base resolves to instead of a generic family default (#97820).
+    `:free`/`:batch` are real SKUs with their own windows and must NOT be stripped."""
+
+    _CATALOG = {
+        "x-ai/grok-4.6": {"context_length": 2_000_000},
+        "thinkingmachines/inkling": {"context_length": 1_000_000},
+        "thinkingmachines/inkling:free": {"context_length": 64_000},
+    }
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_variant_matches_base_but_real_sku_keeps_own_window(
+        self, mock_fetch, mock_models_dev, mock_cache, suffix
+    ):
+        mock_fetch.return_value = self._CATALOG
+        base_ctx = get_model_context_length("x-ai/grok-4.6", provider="openrouter")
+        variant_ctx = get_model_context_length(f"x-ai/grok-4.6:{suffix}", provider="openrouter")
+        assert variant_ctx == base_ctx == 2_000_000
+        assert variant_ctx != DEFAULT_CONTEXT_LENGTHS.get("grok")
+        assert get_model_context_length("thinkingmachines/inkling:free", provider="openrouter") == 64_000
+
+
+def test_endpoint_pricing_already_per_million_is_not_inflated():
+    """#112018 / #34256 / #79174: a /models catalog quoting USD per 1M tokens (with or without an explicit
+    ``unit``) must reach usage_pricing as per-token rates, so the cost estimate is $0.60/M — not $600,000/M."""
+    from agent import model_metadata as mm
+    from agent import usage_pricing as up
+
+    catalog = {
+        "minimax-m3": {"id": "minimax-m3", "pricing": {"currency": "USD", "prompt": 0.6, "completion": 1.2, "cache_read": 0.12}},
+        "glm-x": {"id": "glm-x", "pricing": {"currency": "CNY", "unit": "per_1m_tokens", "prompt": 1, "completion": 2}},
+        "crof-a": {"id": "crof-a", "cost": {"input": 0.04, "output": 0.15}},
+    }
+    meta = {mid: mm._endpoint_model_entry(model, mid, None) for mid, model in catalog.items()}
+    dollars_per_million = {
+        mid: up._pricing_entry_from_metadata(meta, mid, source_url="x", pricing_version="openai-compatible-models-api")
+        for mid in catalog
+    }
+    assert float(dollars_per_million["minimax-m3"].input_cost_per_million) == pytest.approx(0.6)
+    assert float(dollars_per_million["minimax-m3"].cache_read_cost_per_million) == pytest.approx(0.12)
+    assert float(dollars_per_million["glm-x"].output_cost_per_million) == pytest.approx(2.0)
+    assert float(dollars_per_million["crof-a"].input_cost_per_million) == pytest.approx(0.04)
+
+
+def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
+    """Control: per-token quotes (the OpenRouter convention) and per-request fees are left alone."""
+    from agent import model_metadata as mm
+    from agent import usage_pricing as up
+
+    model = {"id": "m", "pricing": {"prompt": "0.0000006", "completion": "0.0000012", "request": "0.005"}}
+    meta = {"m": mm._endpoint_model_entry(model, "m", None)}
+    entry = up._pricing_entry_from_metadata(meta, "m", source_url="x", pricing_version="openai-compatible-models-api")
+    assert float(entry.input_cost_per_million) == pytest.approx(0.6)
+    assert float(entry.output_cost_per_million) == pytest.approx(1.2)
+    assert float(entry.request_cost) == pytest.approx(0.005)

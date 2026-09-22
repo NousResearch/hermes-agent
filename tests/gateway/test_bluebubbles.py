@@ -1,6 +1,7 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -259,13 +260,13 @@ class TestBlueBubblesAttachmentDownload:
 
         cached_path = None
 
-        def mock_cache_image(data, ext):
+        async def mock_cache_image(data, ext):
             nonlocal cached_path
             cached_path = f"/tmp/test_image{ext}"
             return cached_path
 
         monkeypatch.setattr(
-            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            "gateway.platforms.bluebubbles.cache_image_from_bytes_async",
             mock_cache_image,
         )
 
@@ -567,3 +568,41 @@ class TestBlueBubblesTimeoutErrorNormalization:
         assert "500 Internal Server Error" in (result.error or "")
 
 
+
+
+class TestBlueBubblesGateBeforeDownload:
+    """The require_mention gate must run BEFORE attachments are downloaded (review follow-up)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text, downloads, handled_count", [
+        ("look at this", 0, 0),          # unmentioned group attachment: never fetched
+        ("hermes look at this", 1, 1),   # mentioned: fetched and dispatched
+    ])
+    async def test_unmentioned_group_attachment_is_not_downloaded(
+            self, monkeypatch, text, downloads, handled_count):
+        adapter = _make_adapter(monkeypatch, require_mention=True, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        download = AsyncMock(return_value="/tmp/cached.jpg")
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-att-1",
+                "text": text,
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "iMessage;+;group-chat"}],
+                "attachments": [{"guid": "att-1", "mimeType": "image/jpeg"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert download.await_count == downloads
+        assert len(handled) == handled_count

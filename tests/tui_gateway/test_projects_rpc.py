@@ -700,18 +700,23 @@ def _create_session(home: Path, session_id: str, cwd: Path) -> None:
 
 @contextlib.contextmanager
 def _serving_launch_profile(launch_home: Path):
-    """Run the handlers as a backend launched under ``launch_home``."""
+    """Run the handlers as a backend launched under ``launch_home``.
+
+    Both the ambient override AND ``server._hermes_home`` point at it: once the process
+    multiplexes, a launch-profile RPC binds the server's own launch home (#118538), so an
+    override alone no longer stands in for "this backend was launched here"."""
     from hermes_state import SessionDB
 
     token = set_hermes_home_override(launch_home)
-    prev_db, prev_error = server._db, server._db_error
+    prev_db, prev_error, prev_home = server._db, server._db_error, server._hermes_home
+    server._hermes_home = launch_home
     server._db = SessionDB(db_path=launch_home / "state.db")
     server._db_error = None
     try:
         yield
     finally:
         server._db.close()
-        server._db, server._db_error = prev_db, prev_error
+        server._db, server._db_error, server._hermes_home = prev_db, prev_error, prev_home
         reset_hermes_home_override(token)
 
 
@@ -858,7 +863,7 @@ def test_record_repos_writes_to_the_requested_profiles_projects_db(monkeypatch, 
 
 
 def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_path):
-    """Omitted/blank/unknown profile is a no-op — the pre-scoping behavior."""
+    """Only omitted/blank profiles use launch data; unknown targets fail closed."""
     launch_home = _profile_dir(tmp_path, "launch")
     coder_home = _profile_dir(tmp_path, "coder")
     repo = tmp_path / "repos" / "launch-only"
@@ -873,11 +878,14 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
 
         omitted = _call("projects.list")
         blank = _call("projects.list", {"profile": ""})
-        unknown = _call("projects.list", {"profile": "not-a-profile"})
+        with pytest.raises(FileNotFoundError, match="not-a-profile"):
+            _call("projects.list", {"profile": "not-a-profile"})
+        with pytest.raises(FileNotFoundError, match="not-a-profile"):
+            _call("projects.create", {"profile": "not-a-profile", "name": "Wrong target"})
+        assert _call("projects.list") == omitted
 
     assert [p["name"] for p in omitted["projects"]] == ["Launch only"]
     assert blank == omitted
-    assert unknown == omitted
     assert omitted["active_id"] == created["id"]
 
     assert _cached_repo_labels(launch_home) == ["only"]

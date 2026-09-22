@@ -9,12 +9,17 @@ The contract has three parts:
   before handing them to v2+ providers.
 """
 
+import logging
+from types import SimpleNamespace
+
 import pytest
 
 from agent.conversation_compression import (
     CompressionCheckpointUnavailable,
     _checkpoint_blocked,
     _direct_messages_for_pre_compress_memory,
+    _pre_compress_memory_context,
+    _warn_checkpoint_required_without_capable_provider,
 )
 from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
 from agent.memory_manager import MemoryManager
@@ -327,6 +332,34 @@ def test_compressed_summary_marker_survives_restart_via_resume_history(tmp_path)
     assert all("_compressed_summary" not in m for m in plain)
 
 
+def test_live_replay_preserves_summary_boundary_without_changing_display(tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path)
+    db.create_session("summary-replay", source="telegram")
+    db.append_message("summary-replay", "user", "Derivative context", _compressed_summary=True)
+    db.append_message("summary-replay", "user", "Original request")
+    db.append_message("summary-replay", "assistant", "Original answer")
+    db.create_session("plain-replay", source="telegram")
+    db.append_message("plain-replay", "user", "First request")
+    db.append_message("plain-replay", "user", "Second request")
+
+    reopened = SessionDB(db_path)
+    display_before = reopened.get_messages_as_conversation("summary-replay")
+    replay = reopened.get_messages_as_conversation("summary-replay", repair_alternation=True)
+    assert [m["content"] for m in replay] == [
+        "Derivative context", "Original request", "Original answer"
+    ]
+    assert replay[0].get("_compressed_summary") is True
+    assert all("_compressed_summary" not in m for m in replay[1:])
+    assert reopened.get_messages_as_conversation("summary-replay") == display_before
+    assert all("_compressed_summary" not in m for m in display_before)
+    plain = reopened.get_messages_as_conversation("plain-replay", repair_alternation=True)
+    assert [m["content"] for m in plain] == ["First request\n\nSecond request"]
+    assert all("_compressed_summary" not in m for m in plain)
+
+
 def test_compressed_summary_column_is_added_to_legacy_databases(tmp_path):
     """Pre-upgrade databases gain the marker column via declarative reconcile.
 
@@ -520,12 +553,68 @@ def test_agent_init_suppresses_micro_compaction_under_checkpoint_gate():
 
     source = inspect.getsource(agent_init)
     # The suppression must happen before the compressor attribute assignment.
-    suppress_idx = source.find(
-        "if compression_checkpoint_required and compression_micro_compact:"
-    )
-    assign_idx = source.find("_cc._micro_compact_enabled = compression_micro_compact")
+    suppress_idx = source.find("if cs.checkpoint_required and cs.micro_compact:")
+    # The compressor attribute assignment is table-driven; pin the table entry.
+    assign_idx = source.find('("_micro_compact_enabled", cs.micro_compact)')
     assert suppress_idx != -1, (
         "init_agent must suppress micro-compaction when checkpoint_required"
     )
     assert assign_idx != -1
     assert suppress_idx < assign_idx
+
+
+def _warn_text(caplog) -> str:
+    return "\n".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+
+
+def _armed_agent(manager):
+    return SimpleNamespace(compression_checkpoint_required=True, _memory_manager=manager)
+
+
+def _legacy_manager():
+    manager = MemoryManager()
+    manager.add_provider(_BaseStubProvider("holographic"))
+    return manager
+
+
+@pytest.mark.parametrize(
+    "manager, expected_label",
+    [(_legacy_manager(), "holographic"), (None, "no active provider")],
+    ids=["v1-provider", "no-manager"],
+)
+def test_startup_warns_when_checkpoint_required_cannot_pass(caplog, manager, expected_label):
+    """Regression for #106870: the fail-closed gate is right, but with the flag armed and
+    no checkpoint-capable provider every compression will block, and that is knowable at
+    init. The warning must name the config key, the active provider and the way out."""
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+        _warn_checkpoint_required_without_capable_provider(_armed_agent(manager))
+
+    text = _warn_text(caplog)
+    assert "compression.checkpoint_required" in text
+    assert expected_label in text
+    assert "false" in text.lower()
+
+
+def test_startup_is_silent_when_gate_off_or_provider_capable(caplog):
+    capable = MemoryManager()
+    capable.add_provider(_CheckpointProvider("archiver"))
+    off = SimpleNamespace(compression_checkpoint_required=False, _memory_manager=_legacy_manager())
+
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+        _warn_checkpoint_required_without_capable_provider(_armed_agent(capable))
+        _warn_checkpoint_required_without_capable_provider(off)
+
+    assert "compression.checkpoint_required" not in _warn_text(caplog)
+
+
+def test_capability_refusal_names_the_config_key_to_change():
+    """The compress-time block must point at the flag that armed it, not only the missing API."""
+    with pytest.raises(CompressionCheckpointUnavailable) as excinfo:
+        _pre_compress_memory_context(
+            SimpleNamespace(_memory_manager=_legacy_manager()), [{"role": "user", "content": "evidence"}], True
+        )
+
+    msg = str(excinfo.value)
+    assert msg.startswith("BLOCKED_MISSING_PREREQUISITE")
+    assert "compression.checkpoint_required" in msg
+    assert "false" in msg.lower()

@@ -41,13 +41,14 @@ DEFAULT = {
     "uv_lock": True,
     "npm_lock": True,
     "installer": True,
+    "desktop_updater": True,
     "rust": True,
     "mcp_catalog": False,
     "ci_review": True,
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, desktop_updater=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -69,6 +70,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "uv_lock": uv_lock,
         "npm_lock": npm_lock,
         "installer": installer,
+        "desktop_updater": desktop_updater,
         "rust": rust,
         "mcp_catalog": mcp_catalog,
         "ci_review": ci_review,
@@ -78,7 +80,9 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
 CASES = {
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
-    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, uv_lock=True)),
+    # pyproject.toml declares the pytest markers the OS lanes select on, so it
+    # also re-arms the desktop_updater integration tests (fail-open).
+    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, uv_lock=True, desktop_updater=True)),
     "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True)),
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
@@ -95,6 +99,20 @@ CASES = {
         _lanes(python=True, site=True),
     ),
     "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
+    # Cross-language contract JSON under apps/: the pytest that pins it against
+    # the Python side must run even when nothing else in the PR is Python.
+    "generated gateway contract → python + frontend": (
+        ["apps/shared/src/gateway-contract.generated.ts"],
+        _lanes(python=True, frontend=True),
+    ),
+    "gateway OpenRPC document → python + frontend": (
+        ["apps/shared/src/gateway-contract.openrpc.json"],
+        _lanes(python=True, frontend=True),
+    ),
+    "desktop slash-registry JSON → python + frontend": (
+        ["apps/desktop/src/lib/desktop-slash-registry.json"],
+        _lanes(python=True, frontend=True),
+    ),
     # The published CIMD document is asserted about by the Python suite, so a
     # lone edit there must not skip the lane that would catch a bad edit.
     "cimd document → python + site": (
@@ -141,6 +159,29 @@ CASES = {
         _lanes(python=True, installer=True),
     ),
     "python source alone → no installer lane": (["run_agent.py"], _lanes(python=True, scan=True)),
+    # The Windows desktop-update hand-off is a PowerShell integration surface:
+    # its tests spawn the real script and poll its loopback server. They run
+    # when the script, the Electron side that launches it, or their own test
+    # files change — not on every hermes_state.py PR.
+    "windows.ps1 → desktop_updater": (
+        ["scripts/desktop-update/windows.ps1"],
+        _lanes(python=True, desktop_updater=True),
+    ),
+    # The shipped updater page is exercised by the desktop Electron suite;
+    # a page-only change must run that suite as well as the server tests.
+    "updater ui.html → frontend + desktop_updater": (
+        ["scripts/desktop-update/ui.html"],
+        _lanes(python=True, frontend=True, desktop_updater=True),
+    ),
+    "desktop-update test → desktop_updater": (
+        ["tests/scripts/desktop_update/test_desktop_update_windows_progress.py"],
+        _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),
+    ),
+    "updater-process.ts → desktop_updater": (
+        ["apps/desktop/electron/updater-process.ts"],
+        _lanes(frontend=True, desktop_updater=True),
+    ),
+    "python source alone → no desktop_updater lane": (["hermes_state.py"], _lanes(python=True, scan=True)),
     # `.rs` lives under apps/, so it matches `frontend` too. That lane builds
     # TypeScript and cannot notice a Rust error — before `rust` existed it was
     # the ONLY lane a Rust change ran, and the crate's tests never executed.
@@ -168,8 +209,14 @@ CASES = {
     # tests-only diffs: pytest lanes stay ON, product jobs (Desktop E2E,
     # Docker) gate on python_prod and skip.
     "tests-only → python without python_prod": (
-        ["tests/agent/test_foo.py", "tests/conftest.py"],
+        ["tests/agent/test_foo.py"],
         _lanes(python=True, python_prod=False, scan=True),
+    ),
+    # conftest.py owns the _OS_MARKS skip logic, so it re-arms the
+    # desktop_updater integration tests too (fail-open).
+    "conftest → python + desktop_updater": (
+        ["tests/conftest.py"],
+        _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),
     ),
     "tests + prod source → both lanes": (
         ["tests/agent/test_foo.py", "agent/x.py"],
@@ -337,14 +384,14 @@ def test_pull_request_changed_files_parses_gh_output(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(
             args[0],
             0,
-            stdout="scripts/install.sh\ntests/test_install_sh_node_deps_workspaces.py\n",
+            stdout="scripts/install.sh\ntests/scripts/install/test_install_sh_node_deps_workspaces.py\n",
             stderr="",
         )
 
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
     assert pull_request_changed_files() == [
         "scripts/install.sh",
-        "tests/test_install_sh_node_deps_workspaces.py",
+        "tests/scripts/install/test_install_sh_node_deps_workspaces.py",
     ]
 
 
@@ -365,7 +412,7 @@ def test_main_recovers_pr_files_instead_of_fail_open_ci_review(monkeypatch, caps
     monkeypatch.setattr(
         _mod,
         "pull_request_changed_files",
-        lambda: ["scripts/install.sh", "tests/test_install_sh_node_deps_workspaces.py"],
+        lambda: ["scripts/install.sh", "tests/scripts/install/test_install_sh_node_deps_workspaces.py"],
     )
     monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)

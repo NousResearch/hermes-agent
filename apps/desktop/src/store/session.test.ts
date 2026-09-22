@@ -45,10 +45,12 @@ import {
   keepFailedProfileMeta,
   knownSessionOwner,
   knownSessionProfile,
+  lineageAliases,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
   sessionBelongsToProfile,
+  sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
   sessionPinId,
   setComposerSelectionOwner,
@@ -366,6 +368,18 @@ describe('sessionPinId', () => {
   })
 })
 
+describe('lineageAliases across a deep compression chain', () => {
+  it('aliases every segment, intermediates included', () => {
+    // The projected row carries the full chain: a tile or route can hold a
+    // MIDDLE segment's id from when IT was the tip.
+    const rows = [session({ _lineage_ids: ['root', 'mid', 'tip'], _lineage_root_id: 'root', id: 'tip' })]
+
+    expect(lineageAliases('mid', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(lineageAliases('tip', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(sessionMatchesStoredId(rows[0], 'mid')).toBe(true)
+  })
+})
+
 describe('resolveComposerSessionKey', () => {
   it('keeps the lineage root across compression tip rotation', () => {
     const tipBefore = '20260720_062637_ad96b3'
@@ -519,6 +533,19 @@ describe('mergeSessionPage', () => {
     const incoming = [session({ id: 'b' })]
 
     expect(mergeSessionPage(previous, incoming, ['b']).map(s => s.id)).toEqual(['b'])
+  })
+
+  it('never resurrects a HIDDEN session even when the keep set names it (#113273)', () => {
+    // Bot Mode canonical chats are born hidden and are live almost constantly
+    // (routines, bot-to-bot turns), so $workingSessionIds nearly always holds
+    // them — and an open Bot Chat tab pins the id via the tile keep too. The
+    // server page never lists hidden rows; the merge must not let the
+    // keep-list re-insert what the backend excludes by design, or "Bot Chat"
+    // rows become permanent residents of the Sessions sidebar.
+    const previous = [session({ hidden: true, id: 'bot-chat', title: 'Bot Chat' }), session({ id: 'mine' })]
+    const incoming = [session({ id: 'mine', message_count: 3 })]
+
+    expect(mergeSessionPage(previous, incoming, ['bot-chat']).map(s => s.id)).toEqual(['mine'])
   })
 
   it('keeps a pinned session that has aged off the recent page', () => {
@@ -694,9 +721,7 @@ describe('carryForwardFailedProfileSessions', () => {
       session({ id: 'week', last_active: 100, profile: 'default', title: 'This week' })
     ]
 
-    const carried = carryForwardFailedProfileSessions(previous, [], [
-      { profile: 'default', error: 'disk I/O error' }
-    ])
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'default', error: 'disk I/O error' }])
 
     expect(carried.map(s => s.id)).toEqual(['running', 'yesterday', 'week'])
     expect(carried[1]).toBe(previous[1])
@@ -724,9 +749,11 @@ describe('carryForwardFailedProfileSessions', () => {
 
     const incoming = [session({ id: 'home', last_active: 100, profile: 'default' })]
 
-    expect(
-      carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }]).map(s => s.id)
-    ).toEqual(['idle-newer', 'home', 'idle-older'])
+    expect(carryForwardFailedProfileSessions(previous, incoming, [{ profile: 'work' }]).map(s => s.id)).toEqual([
+      'idle-newer',
+      'home',
+      'idle-older'
+    ])
   })
 
   it('treats a missing profile tag on the error as default', () => {
@@ -735,6 +762,20 @@ describe('carryForwardFailedProfileSessions', () => {
     expect(carryForwardFailedProfileSessions(previous, [], [{ error: 'disk I/O error' }]).map(s => s.id)).toEqual([
       'idle'
     ])
+  })
+
+  it('does not carry a hidden row forward through a failed profile scan (#113273)', () => {
+    // The failed-slice carry is the back door: a canonical Bot Chat parked in
+    // the list by an owner-resolution upsert would ride the "keep what the
+    // failed scan couldn't confirm" rule right back into the sidebar.
+    const previous = [
+      session({ hidden: true, id: 'bot-chat', profile: 'work', title: 'Bot Chat' }),
+      session({ id: 'idle', profile: 'work' })
+    ]
+
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'work', error: 'disk I/O error' }])
+
+    expect(carried.map(s => s.id)).toEqual(['idle'])
   })
 })
 
@@ -919,6 +960,35 @@ describe('workspaceCwdForNewSession', () => {
     // never reads the remote keys (nor inherits the sticky local workspace).
     $connection.set(null)
     expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('reseeding a remote gateway with no remembered workspace clears a folder left by another backend (#114306)', async () => {
+    // The door the switch wipe does not cover: `$currentCwd` is initialised from
+    // whatever key is current at module load (the LOCAL memory when the app
+    // boots straight into a remote gateway), and boot reseeds through
+    // ensureDefaultWorkspaceCwd alone — no beginGatewaySwitch runs. An empty
+    // remembered value for the incoming gateway must therefore publish as a
+    // clear, not skip via the truthy-only seed, so seedDefaultCwd can apply
+    // that gateway's own default.
+    const sanitizeWorkspaceCwd = vi.fn(async (cwd: string) => ({ cwd }))
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd,
+      settings: { getDefaultProjectDir: vi.fn(async () => ({ defaultLabel: '', dir: '', resolvedCwd: '' })) }
+    }
+
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/opt/data/profiles/project-a')
+    expect(getRememberedWorkspaceCwd()).toBe('/opt/data/profiles/project-a')
+
+    // Simulate the gateway switch: connection flips to B before the reseed
+    // runs, exactly as beginGatewaySwitch/softSwitch do today.
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+
+    await ensureDefaultWorkspaceCwd(() => true)
+
+    expect($currentCwd.get()).toBe('')
   })
 
   it('remembers only the workspace the user picked, not the one they looked at', () => {
@@ -1292,7 +1362,7 @@ describe('remembered route (per profile)', () => {
   })
 
   it('discards legacy unsuffixed keys on first read (zero-migration, refuse-to-guess)', () => {
-    localStorage.setItem('hermes.desktop.lastRoute', '/skills')
+    localStorage.setItem('hermes.desktop.lastRoute', '/capabilities')
 
     // Reading from any profile discards the legacy key.
     expect(getRememberedRoute('default')).toBeNull()

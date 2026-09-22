@@ -19,7 +19,6 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE
 } from '@/store/layout'
 import { messagingTotalsKey, normalizeProfileKey, sidebarProfileForScope } from '@/store/profile'
-import { $removedSessionIds } from '@/store/projects'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
@@ -38,17 +37,19 @@ import {
   setSessions,
   setSessionsLoading
 } from '@/store/session'
+import { $removedSessionIds } from '@/store/session-removal'
 import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
 
 // The recents list is local-only: cron rows have their own section, kanban
-// dispatcher workers are read on the board, and each messaging platform
+// dispatcher workers are read on the board, finite one-shot runs (`hermes -z`,
+// `chat -q`) are not conversations, and each messaging platform
 // (telegram, discord, …) is fetched separately into its own self-managed
 // sidebar section (refreshMessagingSessions). Excluding them here keeps
 // "Load more" paging through interactive local chats instead of
 // interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'oneshot', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -303,11 +304,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // whole list re-renders once per turn/broadcast for nothing.
           setSessions(prev => {
             const incoming = dropTombstoned(
-              carryForwardFailedProfileSessions(
-                prev,
-                recents.sessions ?? [],
-                recents.errors ?? result.errors
-              )
+              carryForwardFailedProfileSessions(prev, recents.sessions ?? [], recents.errors ?? result.errors)
             )
 
             const next = mergeSessionPage(prev, incoming, sessionsToKeep())

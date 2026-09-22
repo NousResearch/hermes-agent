@@ -54,6 +54,8 @@ def _make_adapter():
     adapter._bridge_process = None
     adapter._reply_prefix = None
     adapter._send_read_receipts = False
+    adapter._dm_policy = adapter._group_policy = "pairing"
+    adapter._allow_from = adapter._group_allow_from = set()
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -512,11 +514,11 @@ class TestNoCredsPreflight:
         adapter.config = MagicMock()
         adapter._bridge_port = 19877
         bridge = tmp_path / "bridge.js"
-        bridge.write_text("// stub")
+        bridge.write_text("// stub", encoding="utf-8")
         adapter._bridge_script = str(bridge)
         session_dir = tmp_path / "session"
         session_dir.mkdir()
-        (session_dir / "creds.json").write_text("{}")
+        (session_dir / "creds.json").write_text("{}", encoding="utf-8")
         adapter._session_path = session_dir
         adapter._bridge_log_fh = None
         adapter._fatal_error_code = None

@@ -19,6 +19,8 @@ import { afterAll, describe, expect, it } from 'vitest'
 import {
   destroyKeepaliveAgents,
   downloadAgentFor,
+  htmlResponseError,
+  httpStatusError,
   isIdempotentMethod,
   isTransientTransportError,
   jsonAgentFor,
@@ -380,4 +382,65 @@ describe('live: POST reset after server-side processing', () => {
       server.close()
     }
   }, 20_000)
+})
+
+describe('httpStatusError', () => {
+  it('carries the integer statusCode downstream classifiers read, plus the legacy "<status>: <body>" message', () => {
+    const err = httpStatusError(401, '{"error":"session_expired"}', 'Unauthorized')
+
+    expect(err).toBeInstanceOf(Error)
+    expect(err.statusCode).toBe(401)
+    expect(err.message).toBe('401: {"error":"session_expired"}')
+  })
+
+  it('falls back to the status message, then to an empty detail, when the body is empty', () => {
+    expect(httpStatusError(503, '', 'Service Unavailable').message).toBe('503: Service Unavailable')
+    expect(httpStatusError(403, '', undefined).message).toBe('403: ')
+    expect(httpStatusError(403, '', undefined).statusCode).toBe(403)
+  })
+
+  it('normalizes a missing/invalid status to 500 exactly like the `res.statusCode || 500` guard', () => {
+    expect(httpStatusError(undefined, 'boom').statusCode).toBe(500)
+    expect(httpStatusError(undefined, 'boom').message).toBe('500: boom')
+    expect(httpStatusError(0, 'boom').statusCode).toBe(500)
+  })
+})
+
+describe('htmlResponseError', () => {
+  it('names an auth redirect with its Location for 3xx and keeps the endpoint-missing capability wording for 2xx HTML', () => {
+    const redirected = htmlResponseError(
+      'https://gateway.example.com/api/profiles',
+      302,
+      'https://sso.example.com/login?next=%2Fapi%2Fprofiles'
+    ).message
+
+    expect(redirected).toContain('status 302')
+    expect(redirected).toContain('to https://sso.example.com/login?next=%2Fapi%2Fprofiles')
+    expect(redirected).toMatch(/authentication proxy/)
+    expect(redirected).not.toContain('endpoint is likely missing')
+    expect(htmlResponseError('https://gateway.example.com/api/profiles', 307).message).toMatch(
+      /redirected \(status 307\)\. This is usually/
+    )
+    expect(htmlResponseError('https://gateway.example.com/api/missing', 200).message).toContain(
+      'endpoint is likely missing'
+    )
+  })
+
+  it('does not blame credentials when the redirect only fixes the scheme or a trailing slash', () => {
+    for (const [url, location] of [
+      ['http://gateway.example.com/api/profiles', 'https://gateway.example.com/api/profiles'],
+      ['https://gateway.example.com/api/profiles', '/api/profiles/'],
+      ['https://gateway.example.com/hermes/api/health', 'https://gateway.example.com/hermes/api/health/']
+    ]) {
+      const message = htmlResponseError(url, 301, location).message
+
+      expect(message).toContain(`to ${location}`)
+      expect(message).toMatch(/scheme or trailing slash/)
+      expect(message).not.toMatch(/authentication proxy/)
+    }
+
+    expect(
+      htmlResponseError('https://gateway.example.com/api/profiles', 302, 'https://gateway.example.com/login').message
+    ).toMatch(/authentication proxy/)
+  })
 })

@@ -105,7 +105,7 @@ class TestScanCronPrompt:
 # Skill-assembled cron prompt scanning (looser pattern set)
 # =========================================================================
 
-from tools.cronjob_tools import _scan_cron_skill_assembled  # noqa: E402
+from tools.cronjob_prompt_scan import _scan_cron_skill_assembled  # noqa: E402
 
 
 class TestScanCronSkillAssembled:
@@ -206,6 +206,15 @@ class TestCronjobRequirements:
 
         assert check_cronjob_requirements() is True
 
+
+    def test_accepts_external_cron_worker_with_presence_vars_stripped(self, monkeypatch):
+        """``_launch_external_cron_worker`` strips the presence trio from the worker env; the
+        cron session marker alone must keep ``cron.allow_agent_scheduling: true`` effective."""
+        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+            monkeypatch.delenv(v, raising=False)
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+        assert check_cronjob_requirements() is True
 
     @pytest.mark.parametrize(
         "var_name",

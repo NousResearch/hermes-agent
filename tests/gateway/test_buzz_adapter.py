@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.platforms.base import CachedMedia, MessageType
+from gateway.platforms.base import CachedMedia
+from gateway.platforms.event import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters
@@ -24,6 +25,7 @@ hex_to_npub = _buzz_mod.hex_to_npub
 npub_to_hex = _buzz_mod.npub_to_hex
 _normalize_user_ref = _buzz_mod._normalize_user_ref
 _cli_error_message = _buzz_mod._cli_error_message
+_MAX_CLI_MESSAGE_CHARS = _buzz_mod._MAX_CLI_MESSAGE_CHARS
 _resolve_private_key = _buzz_mod._resolve_private_key
 _resolve_auth_tag = _buzz_mod._resolve_auth_tag
 _event_reply_parent_id = _buzz_mod._event_reply_parent_id
@@ -1134,8 +1136,8 @@ class TestInboundAttachments:
         )
         monkeypatch.setattr(
             _buzz_mod,
-            "cache_media_bytes",
-            MagicMock(side_effect=OSError(36, "File name too long")),
+            "cache_media_bytes_async",
+            AsyncMock(side_effect=OSError(36, "File name too long")),
         )
         adapter = _make_adapter()
 
@@ -3061,14 +3063,19 @@ class TestInboundMediaAuthorizationGate:
 
     @pytest.mark.asyncio
     async def test_live_media_redacts_long_path_before_bounding(self, tmp_path):
+        # Invariant: the host path is redacted BEFORE the 900-char bound is applied,
+        # so a path long enough to straddle the cut never leaks in fragments. The
+        # path must therefore exceed the bound, but stay under PATH_MAX (1024 on
+        # macOS; 4096 on Linux) so the directory can actually be created.
         parent = tmp_path
         private_parts = []
-        for index in range(6):
-            part = f"private-{index}-" + ("x" * 150)
+        while len(str(parent)) < _MAX_CLI_MESSAGE_CHARS:
+            part = f"private-{len(private_parts)}-" + ("x" * 80)
             private_parts.append(part)
             parent = parent / part
             parent.mkdir()
         media = parent / "handoff.txt"
+        assert _MAX_CLI_MESSAGE_CHARS < len(str(media)) < 1024
         media.write_text("safe handoff", encoding="utf-8")
         adapter = _make_adapter()
         adapter._run_cli = AsyncMock(
@@ -3154,18 +3161,22 @@ class TestBuzzAdapterLifecycle:
             lambda platform, key: released.append((platform, key)),
         )
         adapter = _make_adapter()
-        adapter._lock_key = "wss://relay.example:" + SELF_PUBKEY
+        adapter._platform_lock_scope = "buzz"
+        adapter._platform_lock_identity = "wss://relay.example:" + SELF_PUBKEY
         await adapter.disconnect()
         assert released == [("buzz", "wss://relay.example:" + SELF_PUBKEY)]
-        assert adapter._lock_key is None
+        assert adapter._platform_lock_identity is None
 
     @pytest.mark.asyncio
     async def test_connect_fails_when_identity_lock_held(self, monkeypatch):
-        """A second profile using the same relay+pubkey must fail fast."""
+        """A second profile using the same relay+pubkey must fail fast. ``acquire_scoped_lock``
+        returns ``(acquired, existing_record)`` — a bare truthiness check on that tuple never
+        fires, so the mock returns the real contract."""
         import gateway.status as gateway_status
 
         monkeypatch.setattr(
-            gateway_status, "acquire_scoped_lock", lambda platform, key: False
+            gateway_status, "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, {"pid": 4242, "profile": "other"}),
         )
         adapter = _make_adapter()
         adapter.cli_path = "/fake/buzz"
@@ -3177,7 +3188,11 @@ class TestBuzzAdapterLifecycle:
         )
         adapter._run_cli = cli
         assert await adapter.connect() is False
-        assert adapter._lock_key is None
+        assert adapter._fatal_error_code == "buzz_lock"
+        assert "other" in (adapter._fatal_error_message or "")
+        assert adapter._platform_lock_identity == "https://test.relay:" + SELF_PUBKEY
+        # channels list must never run: the conflict branch short-circuits connect()
+        assert not any(call[0][:2] == ["channels", "list"] for call in cli.calls)
 
 
 # ── Credentials / requirements ────────────────────────────────────────────
@@ -3498,22 +3513,24 @@ class TestStandaloneSend:
 class TestBuzzAdapterEdit:
 
     @pytest.mark.asyncio
-    async def test_edit_targets_the_original_event_and_uses_stdin(self):
+    @pytest.mark.parametrize("content", ["partial answer\nGrüezi 🌍\n", "--status\n- checking progress"])
+    async def test_edit_preserves_literal_content_and_original_target(self, content):
         adapter = _make_adapter()
         adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
         cli = _ScriptedCli()
         cli.script("messages", "edit", {"accepted": True, "event_id": "edit1", "message": ""})
         adapter._run_cli = cli
 
-        result = await adapter.edit_message(CHANNEL, "orig1", "partial answer")
+        result = await adapter.edit_message(CHANNEL, "orig1", content)
         assert result.success is True
+        assert result.message_id == "orig1"
 
         args, stdin_text = cli.calls[0]
         assert args[:2] == ["messages", "edit"]
-        assert args[args.index("--event") + 1] == "orig1"
-        # Content travels via stdin (--content -), never argv, same as send
-        assert args[args.index("--content") + 1] == "-"
-        assert stdin_text == "partial answer"
+        # Unlike ``messages send``, ``messages edit`` takes ``--content`` literally (no stdin); the ``=``
+        # form keeps hyphen-leading replacement text from being parsed as a flag.
+        assert args[2:] == ["--event", "orig1", f"--content={content}"]
+        assert stdin_text is None
 
     @pytest.mark.asyncio
     async def test_edit_returns_the_original_id_not_the_cli_event_id(self):

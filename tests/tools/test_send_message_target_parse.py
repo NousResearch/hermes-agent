@@ -10,7 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _parse_target_ref, _send_to_platform, send_message_tool
+from tools.send_message_tool import _send_to_platform, send_message_tool
+from tools.send_message_targets import _parse_target_ref
 
 
 def _run_async_immediately(coro):

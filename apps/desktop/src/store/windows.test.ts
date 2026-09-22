@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeGatewayProfile } from './profile'
+import { $sessions } from './session'
 import {
   canOpenBrowserWindow,
   canOpenNewWindow,
   canOpenSessionWindow,
   isPeerInstanceWindow,
+  isProfilePinnedWindow,
   openBrowserInNewWindow,
   openNewWindow,
   openSessionInNewWindow
@@ -69,6 +72,15 @@ describe('isPeerInstanceWindow', () => {
   })
 })
 
+describe('isProfilePinnedWindow', () => {
+  it('is set only by an explicit profile-window launch, not by an inherited peer route', () => {
+    expect(isProfilePinnedWindow('?peer=1&profile=work&connectionId=&profileWindow=1')).toBe(true)
+    expect(isProfilePinnedWindow('?peer=1&profile=work&connectionId=remote')).toBe(false)
+    expect(isProfilePinnedWindow('?profileWindow=0')).toBe(false)
+    expect(isProfilePinnedWindow('')).toBe(false)
+  })
+})
+
 describe('openSessionInNewWindow', () => {
   it('no-ops without a session id', async () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
@@ -88,23 +100,17 @@ describe('openSessionInNewWindow', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
-  it('invokes the bridge with the session id', async () => {
+  it('carries the owning profile: stamped row wins, an unstamped child inherits the viewed profile (#82768)', async () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
     installBridge(open)
+    $activeGatewayProfile.set('work')
+    $sessions.set([{ id: 's1', profile: 'research' } as never])
 
     await openSessionInNewWindow('s1')
+    await openSessionInNewWindow('child-not-listed-yet', { watch: true })
 
-    expect(open).toHaveBeenCalledWith('s1', undefined)
-    expect(notifyError).not.toHaveBeenCalled()
-  })
-
-  it('forwards the watch flag for spectator (subagent) windows', async () => {
-    const open = vi.fn().mockResolvedValue({ ok: true })
-    installBridge(open)
-
-    await openSessionInNewWindow('s1', { watch: true })
-
-    expect(open).toHaveBeenCalledWith('s1', { watch: true })
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'research' })
+    expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'work', watch: true })
     expect(notifyError).not.toHaveBeenCalled()
   })
 

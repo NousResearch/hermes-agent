@@ -21,10 +21,10 @@ from gateway.turn_context import TurnContext
 
 
 def _make_runner(ctx):
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     class _StubGatewayRunner:
-        def _adapter_for_source(self, source):
+        def _delivery_adapter_for(self, source):
             return None
 
     return TurnRunner(_StubGatewayRunner(), ctx)
@@ -51,7 +51,7 @@ class TestTurnContext:
 
 class TestTurnRunner:
     def test_methods_exist_and_bind(self):
-        from gateway.run import TurnRunner
+        from gateway.run_turn_runner import TurnRunner
 
         ctx = TurnContext()
         runner = _make_runner(ctx)
@@ -137,7 +137,7 @@ class TestTurnRunner:
             _hooks_ref=SimpleNamespace(loaded_hooks=False),
         )
 
-        from gateway.run import TurnRunner
+        from gateway.run_turn_runner import TurnRunner
 
         result = TurnRunner(gateway_runner, ctx).run_sync()
 

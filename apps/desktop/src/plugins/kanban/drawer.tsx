@@ -21,6 +21,7 @@ import {
   isSubmitEnter,
   Loader,
   LogView,
+  SegmentedControl,
   Textarea,
   Tip,
   useMutation,
@@ -54,7 +55,8 @@ import {
   type KanbanEvent,
   type KanbanTaskDetail,
   SEVERITY_TONE,
-  type TaskEstimate
+  type TaskEstimate,
+  type WorkerLog
 } from './types'
 import {
   ago,
@@ -540,6 +542,166 @@ function EstimateSection({ id }: { id: string }) {
   )
 }
 
+// Sidebar dependency chips: one wrap of title-labeled buttons per side
+// (Blocked by = parents, Blocks = children). Titles come from the backend's
+// `link_tasks`; ids remain in the tooltip + as the fallback label.
+function LinkChips({
+  ids,
+  linkTitles,
+  onOpen
+}: {
+  ids: string[]
+  linkTitles: Map<string, string>
+  onOpen: (id: string) => void
+}) {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {ids.map(linked => (
+        <button
+          className="max-w-full truncate rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+          key={linked}
+          onClick={() => onOpen(linked)}
+          title={`${linkTitles.get(linked) ?? ''} (${shortId(linked)})`}
+          type="button"
+        >
+          {linkTitles.get(linked) || shortId(linked)}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** The main column's feed: Comments (default) / Activity / Runs / Worker log,
+ *  selected Jira-style with a segmented control ("Activity ▸ Show: …"). The
+ *  control hides itself when only comments exist — nothing to switch to. */
+function FeedTabs({
+  commentPending,
+  detail,
+  log,
+  onComment,
+  onRequeue,
+  running
+}: {
+  commentPending: boolean
+  detail: KanbanTaskDetail
+  log: null | WorkerLog
+  onComment: (body: string) => void
+  onRequeue: (body: string) => void
+  running: boolean
+}) {
+  const k = useKanban()
+  const [tab, setTab] = useState<'activity' | 'comments' | 'log' | 'runs'>('comments')
+
+  const hasLog = !!log?.exists && !!log.content
+  const switchable = detail.events.length > 0 || detail.runs.length > 0 || hasLog
+
+  const tabs = [
+    { id: 'comments' as const, label: k.comments(detail.comments.length) },
+    { id: 'activity' as const, label: k.activity(detail.events.length) },
+    { id: 'runs' as const, label: k.runs(detail.runs.length) },
+    { id: 'log' as const, label: k.workerLog }
+  ].filter(
+    t =>
+      t.id === 'comments' ||
+      (t.id === 'activity' ? detail.events.length > 0 : t.id === 'runs' ? detail.runs.length > 0 : hasLog)
+  )
+
+  return (
+    <Section
+      action={
+        <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
+          <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
+            <Codicon name="question" size="0.8rem" />
+          </span>
+        </Tip>
+      }
+      label={tabs.find(option => option.id === tab)?.label ?? k.comments(detail.comments.length)}
+    >
+      <div className="flex flex-col gap-3">
+        {switchable && <SegmentedControl onChange={setTab} options={tabs} value={tab} />}
+        {tab === 'comments' && (
+          <>
+            {detail.comments.length > 0 && (
+              <ul className="flex flex-col gap-2">
+                {detail.comments.map(comment => (
+                  <li className="text-[0.75rem]" key={comment.id}>
+                    <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
+                    <span className="ml-2 text-[0.625rem] text-(--ui-text-quaternary)">{ago(comment.created_at)}</span>
+                    <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <CommentComposer onRequeue={onRequeue} onSubmit={onComment} pending={commentPending} running={running} />
+          </>
+        )}
+        {tab === 'activity' && (
+          <ScrollFade deps={detail.events.length} max="7rem">
+            <ul className="flex flex-col gap-1">
+              {detail.events.map(event => {
+                const { detail: extra, label } = eventText(event, k)
+
+                return (
+                  <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
+                    <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
+                    {extra && (
+                      <span className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)" title={extra}>
+                        {extra}
+                      </span>
+                    )}
+                    <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
+                  </li>
+                )
+              })}
+            </ul>
+          </ScrollFade>
+        )}
+        {tab === 'runs' && (
+          <ScrollFade max="11rem">
+            <ul className="flex flex-col gap-1.5">
+              {detail.runs.map(run => {
+                const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
+
+                return (
+                  <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
+                    <div className="flex items-center gap-2">
+                      <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
+                        {run.outcome ?? run.status}
+                      </Badge>
+                      {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
+                      {duration(run.started_at, run.ended_at) && (
+                        <span className="text-(--ui-text-quaternary)">{duration(run.started_at, run.ended_at)}</span>
+                      )}
+                      <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
+                        {ago(run.ended_at ?? run.started_at)}
+                      </span>
+                    </div>
+                    {(run.error || run.summary) && (
+                      <p
+                        className={cn(
+                          'line-clamp-2 whitespace-pre-wrap',
+                          run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
+                        )}
+                      >
+                        {run.error ?? run.summary}
+                      </p>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          </ScrollFade>
+        )}
+        {tab === 'log' && (
+          <ScrollFade deps={log?.content.length} max="12rem">
+            <LogView className="border-0 px-0">{log!.content}</LogView>
+          </ScrollFade>
+        )}
+      </div>
+    </Section>
+  )
+}
+
 export function TaskDrawer({
   columns,
   id,
@@ -811,141 +973,14 @@ export function TaskDrawer({
                     </Section>
                   )}
 
-                  {(detail.links.parents.length > 0 || detail.links.children.length > 0) && (
-                    <Section label={k.dependencies}>
-                      {(['parents', 'children'] as const).map(side =>
-                        detail.links[side].length > 0 ? (
-                          <div className="flex flex-wrap items-center gap-1.5" key={side}>
-                            <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
-                              {side === 'parents' ? k.blockedBy : k.blocks}
-                            </span>
-                            {detail.links[side].map(linked => (
-                              <button
-                                className="max-w-full truncate rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                                key={linked}
-                                onClick={() => onOpen(linked)}
-                                title={`${linkTitles.get(linked) ?? ''} (${shortId(linked)})`}
-                                type="button"
-                              >
-                                {linkTitles.get(linked) || shortId(linked)}
-                              </button>
-                            ))}
-                          </div>
-                        ) : null
-                      )}
-                    </Section>
-                  )}
-
-                  <Section
-                    action={
-                      <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
-                        <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
-                          <Codicon name="question" size="0.8rem" />
-                        </span>
-                      </Tip>
-                    }
-                    label={k.comments(detail.comments.length)}
-                  >
-                    {detail.comments.length > 0 && (
-                      <ul className="flex flex-col gap-2">
-                        {detail.comments.map(comment => (
-                          <li className="text-[0.75rem]" key={comment.id}>
-                            <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
-                            <span className="ml-2 text-[0.625rem] text-(--ui-text-quaternary)">
-                              {ago(comment.created_at)}
-                            </span>
-                            <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <CommentComposer
-                      onRequeue={body => requeueMut.mutate(body)}
-                      onSubmit={body => commentMut.mutate(body)}
-                      pending={commentMut.isPending || requeueMut.isPending}
-                      running={running}
-                    />
-                  </Section>
-
-                  {detail.events.length > 0 && (
-                    <Section label={k.activity(detail.events.length)}>
-                      <ScrollFade deps={detail.events.length} max="7rem">
-                        <ul className="flex flex-col gap-1">
-                          {detail.events.map(event => {
-                            const { detail: extra, label } = eventText(event, k)
-
-                            return (
-                              <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
-                                <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
-                                {extra && (
-                                  <span
-                                    className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)"
-                                    title={extra}
-                                  >
-                                    {extra}
-                                  </span>
-                                )}
-                                <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
-                                  {ago(event.created_at)}
-                                </span>
-                              </li>
-                            )
-                          })}
-                        </ul>
-                      </ScrollFade>
-                    </Section>
-                  )}
-
-                  {detail.runs.length > 0 && (
-                    <Section label={k.runs(detail.runs.length)}>
-                      <ScrollFade max="11rem">
-                        <ul className="flex flex-col gap-1.5">
-                          {detail.runs.map(run => {
-                            const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(
-                              run.outcome ?? run.status
-                            )
-
-                            return (
-                              <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
-                                <div className="flex items-center gap-2">
-                                  <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
-                                    {run.outcome ?? run.status}
-                                  </Badge>
-                                  {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
-                                  {duration(run.started_at, run.ended_at) && (
-                                    <span className="text-(--ui-text-quaternary)">
-                                      {duration(run.started_at, run.ended_at)}
-                                    </span>
-                                  )}
-                                  <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
-                                    {ago(run.ended_at ?? run.started_at)}
-                                  </span>
-                                </div>
-                                {(run.error || run.summary) && (
-                                  <p
-                                    className={cn(
-                                      'line-clamp-2 whitespace-pre-wrap',
-                                      run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
-                                    )}
-                                  >
-                                    {run.error ?? run.summary}
-                                  </p>
-                                )}
-                              </li>
-                            )
-                          })}
-                        </ul>
-                      </ScrollFade>
-                    </Section>
-                  )}
-
-                  {log?.exists && log.content && (
-                    <Section label={log.truncated ? k.workerLogTail : k.workerLog}>
-                      <ScrollFade deps={log.content.length} max="12rem">
-                        <LogView className="border-0 px-0">{log.content}</LogView>
-                      </ScrollFade>
-                    </Section>
-                  )}
+                  <FeedTabs
+                    commentPending={commentMut.isPending || requeueMut.isPending}
+                    detail={detail}
+                    log={log ?? null}
+                    onComment={body => commentMut.mutate(body)}
+                    onRequeue={body => requeueMut.mutate(body)}
+                    running={running}
+                  />
                 </div>
               </div>
               <aside className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto border-l border-(--ui-stroke-tertiary) px-4 py-4">
@@ -973,6 +1008,14 @@ export function TaskDrawer({
                     }}
                   />
                 </MetaRow>
+                {(detail.links.parents.length > 0 || detail.links.children.length > 0) &&
+                  (['parents', 'children'] as const).map(side =>
+                    detail.links[side].length > 0 ? (
+                      <MetaRow key={side} label={side === 'parents' ? k.blockedBy : k.blocks}>
+                        <LinkChips ids={detail.links[side]} linkTitles={linkTitles} onOpen={onOpen} />
+                      </MetaRow>
+                    ) : null
+                  )}
                 {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
                 {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
                 {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}

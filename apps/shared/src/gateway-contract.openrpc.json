@@ -19385,6 +19385,13 @@
             "title": "Display Name",
             "type": "string"
           },
+          "previous_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Previous Names",
+            "type": "array"
+          },
           "skill_count": {
             "default": 0,
             "title": "Skill Count",

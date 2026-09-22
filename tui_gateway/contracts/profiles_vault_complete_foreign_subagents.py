@@ -154,6 +154,9 @@ class ProfileRow(Result):
     provider: str | None = None
     description: str = ""
     display_name: str = ""
+    # Rename history from ``profile.yaml``: Bot Mode re-seats a renamed member's persisted
+    # handle/group membership on it, so it is consumed and must be part of the wire contract.
+    previous_names: list[str] = Field(default_factory=list)
     skill_count: int = 0
     last_session: ProfileSessionPreview | None = None
     worker_session: ProfileWorkerSession | None = None

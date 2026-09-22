@@ -1472,6 +1472,7 @@ export interface ProfileRow {
   provider?: string | null
   description?: string
   display_name?: string
+  previous_names?: string[]
   skill_count?: number
   last_session?: ProfileSessionPreview | null
   worker_session?: ProfileWorkerSession | null

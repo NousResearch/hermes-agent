@@ -186,11 +186,11 @@ def _models_dev_id(provider: str) -> Optional[str]:
 _UNKNOWN_CATALOG_PROVIDER_WARNED: set = set()  # (provider, alias) warned once per process
 
 
-def _cfg_get(*keys: str, default: Any) -> Any:
+def _cfg_get(*keys: str, default: Any, config: Optional[Dict[str, Any]] = None) -> Any:
     """``cfg_get`` over the read-only config; *default* on any failure."""
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
-        return cfg_get(load_config_readonly(), *keys, default=default)
+        return cfg_get(config if config is not None else load_config_readonly(), *keys, default=default)
     except Exception:
         return default
 
@@ -638,16 +638,16 @@ _BUILTIN_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
 }
 
 
-def _load_model_overrides() -> Dict[str, Any]:
+def _load_model_overrides(*, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The ``model_overrides`` config section ({} on any failure). Deliberately not memoized:
     ``load_config_readonly()`` is already (mtime, size)-cached upstream, and an ``id(cfg)``-keyed
     layer can serve stale overrides after a reload when CPython reuses the dict address."""
-    return _dict_or_empty(_cfg_get("model_overrides", default={}))
+    return _dict_or_empty(_cfg_get("model_overrides", default={}, config=config))
 
 
-def _provider_override_section(provider: str) -> Optional[Dict[str, Any]]:
+def _provider_override_section(provider: str, *, config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Override section for *provider* (keyed by Hermes OR models.dev id), or None."""
-    overrides = _load_model_overrides()
+    overrides = _load_model_overrides(config=config)
     provider_key = (provider or "").strip()
     if not overrides or not provider_key:
         return None
@@ -656,10 +656,10 @@ def _provider_override_section(provider: str) -> Optional[Dict[str, Any]]:
     return next((section for section in (overrides.get(key) if key else None for key in candidates) if isinstance(section, dict)), None)
 
 
-def _explicit_model_override(provider: str, model: str) -> Optional[Dict[str, Any]]:
+def _explicit_model_override(provider: str, model: str, *, config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Explicit per-provider+model override dict (exact, then case-insensitive skipping the ``_default`` sentinel), or None."""
     model_key = (model or "").strip()
-    section = _provider_override_section(provider) if model_key else None
+    section = _provider_override_section(provider, config=config) if model_key else None
     if section is None:
         return None
     entry = section.get(model_key)
@@ -669,19 +669,21 @@ def _explicit_model_override(provider: str, model: str) -> Optional[Dict[str, An
     return next((mdata for mid, mdata in section.items() if mid != "_default" and mid.lower() == model_lower and isinstance(mdata, dict)), None)
 
 
-def _default_model_override(provider: str) -> Optional[Dict[str, Any]]:
+def _default_model_override(provider: str, *, config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Fill-gap ``_default`` override: per-provider first, then global; or None."""
-    section = _provider_override_section(provider)
+    section = _provider_override_section(provider, config=config)
     if section is not None and isinstance(section.get("_default"), dict):
         return section["_default"]
-    global_default = _load_model_overrides().get("_default")
+    global_default = _load_model_overrides(config=config).get("_default")
     return global_default if isinstance(global_default, dict) else None
 
 
-def _override_for(provider: str, model: str, *, catalog_hit: bool) -> Optional[Dict[str, Any]]:
+def _override_for(
+    provider: str, model: str, *, catalog_hit: bool, config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Explicit override if any; else the ``_default`` only on a catalog miss."""
-    explicit = _explicit_model_override(provider, model)
-    return explicit if explicit is not None or catalog_hit else _default_model_override(provider)
+    explicit = _explicit_model_override(provider, model, config=config)
+    return explicit if explicit is not None or catalog_hit else _default_model_override(provider, config=config)
 
 
 def _override_int(override: Dict[str, Any], key: str) -> Optional[int]:
@@ -787,7 +789,9 @@ def _provider_model_capabilities(provider: str, model: str) -> Dict[str, Any]:
     return profile.model_capabilities.get(model, {}) if profile is not None else {}
 
 
-def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _apply_overrides(
+    provider: str, model: str, entry: Optional[Dict[str, Any]], *, config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Catalog/builtin metadata, patched by the plugin's declaration, then by the explicit user override.
     ``_UNKNOWN_MODEL_BASE`` is the base on a catalog miss; a fill-gap ``_default`` applies only when no
     source knows the model. None when nothing knows it."""
@@ -796,7 +800,7 @@ def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]])
     declared = _provider_model_capabilities(provider, model)
     if declared:
         base = _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, declared)
-    override = _override_for(provider, model, catalog_hit=base is not None)
+    override = _override_for(provider, model, catalog_hit=base is not None, config=config)
     if base is None:
         base = _relay_vision_marker_metadata(provider, model)
     return base if override is None else _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, override)
@@ -809,7 +813,9 @@ def _entry_supports_vision(entry: Dict[str, Any]) -> bool:
     return "image" in input_mods if isinstance(input_mods, list) else bool(entry.get("attachment", False))
 
 
-def get_model_capabilities(provider: str, model: str, *, allow_network: bool = False) -> Optional[ModelCapabilities]:
+def get_model_capabilities(
+    provider: str, model: str, *, allow_network: bool = False, config: Optional[Dict[str, Any]] = None,
+) -> Optional[ModelCapabilities]:
     """Capability metadata from the models.dev cache, or None if unresolvable. EXPLICIT ``model_overrides``
     patch catalog fields; ``_default`` fills the gap only for models the catalog does not know. Unspecified
     fields fall through to the catalog, or to safe defaults. ``allow_network`` defaults to False (hot path).
@@ -822,7 +828,7 @@ def get_model_capabilities(provider: str, model: str, *, allow_network: bool = F
     models = _get_provider_models(provider, allow_network=allow_network)
     entry = _find_model_entry(models, model, provider) if models is not None else None
     unknown_base = entry is None and _builtin_model_metadata(provider, model) is None
-    raw = _apply_overrides(provider, model, entry)
+    raw = _apply_overrides(provider, model, entry, config=config)
     if raw is None:
         return None
     return ModelCapabilities(
@@ -916,7 +922,9 @@ def get_provider_info(provider_id: str, *, allow_network: bool = True) -> Option
     return _parse_provider_info(mdev_id, raw) if raw is not None else None
 
 
-def get_model_info(provider_id: str, model_id: str, *, allow_network: bool = False) -> Optional[ModelInfo]:
+def get_model_info(
+    provider_id: str, model_id: str, *, allow_network: bool = False, config: Optional[Dict[str, Any]] = None,
+) -> Optional[ModelInfo]:
     """Full model metadata by Hermes or models.dev provider ID (exact match, then case-insensitive), or
     None if not found. EXPLICIT ``model_overrides`` patch known catalog models; ``_default`` fills the gap
     only for unknown ones. ``allow_network`` defaults to False — cost guard and inventory are hot paths.
@@ -930,5 +938,5 @@ def get_model_info(provider_id: str, model_id: str, *, allow_network: bool = Fal
     models = _registry_models(mdev_id, allow_network=allow_network)
     mid, entry = next(_iter_model_entries(models, model_id, suffix_fallback=False, provider=provider_id), (model_id, None)) if models is not None else (model_id, None)
     # Not in catalog — an override (explicit or _default) may still provide it.
-    raw = _apply_overrides(provider_id, model_id, entry)
+    raw = _apply_overrides(provider_id, model_id, entry, config=config)
     return _parse_model_info(mid, raw, mdev_id) if raw is not None else None

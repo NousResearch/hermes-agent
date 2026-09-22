@@ -590,3 +590,59 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
+
+
+def test_picker_payload_reads_metadata_config_once_for_all_models():
+    """Badges and featured ordering share one config snapshot per picker payload (#119044)."""
+    from agent.models_dev import ModelCapabilities
+    from hermes_cli import config as config_module
+
+    rows = [{
+        "slug": "openrouter",
+        "name": "OpenRouter",
+        "models": ["openai/model-a", "anthropic/model-b", "openai/model-c"],
+        "total_models": 3,
+        "is_current": False,
+        "is_user_defined": False,
+        "source": "built-in",
+    }]
+    snapshot = {"model_overrides": {}}
+
+    def _capabilities(_provider, _model, *, config=None):
+        if config is None:
+            config = config_module.load_config_readonly()
+        assert config is snapshot
+        return ModelCapabilities(supports_reasoning=False)
+
+    def _info(_provider, model, *, config=None):
+        if config is None:
+            config = config_module.load_config_readonly()
+        assert config is snapshot
+        return _FakeInfo({"openai/model-a": "2026-01-01", "anthropic/model-b": "2026-02-01",
+                          "openai/model-c": "2026-03-01"}[model])
+
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.inventory._local_runtime_row", return_value=None),
+        patch("hermes_cli.inventory._moa_provider_row", return_value=None),
+        patch("hermes_cli.config.load_config_readonly", return_value=snapshot) as load_config,
+        patch("hermes_cli.models.model_supports_fast_mode", return_value=False),
+        patch("hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
+        patch("agent.models_dev.get_model_capabilities", side_effect=_capabilities),
+        patch("agent.models_dev.get_model_info", side_effect=_info),
+    ):
+        payload = build_models_payload(_empty_ctx(), capabilities=True, featured=True)
+
+    row = payload["providers"][0]
+    # One read is the metadata snapshot; the other is the existing provider
+    # normalization read outside the models.dev metadata path.
+    assert load_config.call_count == 2
+    assert row["capabilities"] == {
+        model: {"fast": False, "reasoning": False} for model in row["models"]
+    }
+    assert row["featured_models"] == row["models"]
+
+
+class _FakeInfo:
+    def __init__(self, release_date: str) -> None:
+        self.release_date = release_date

@@ -59,6 +59,7 @@ class SubagentLaunchRequest:
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     timeout_seconds: Optional[float] = None
     routing_role: Optional[str] = None
+    routing_mode: Optional[str] = None
     routing_policy_id: Optional[str] = None
     routing_requirements: Optional[Mapping[str, Any]] = None
 
@@ -75,6 +76,8 @@ class SubagentHandle:
     role: str
     depth: int
     capability: str
+    routing_receipt_id: Optional[str] = None
+    routing_shadow_receipt_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -277,6 +280,8 @@ class SubagentLifecycleService:
             PUBLIC_CONTRACT_VERSION, subagent_id, parent_session_id, request.correlation_id, created,
             getattr(child, "provider", None), getattr(child, "model", None), getattr(child, "_delegate_role", request.role),
             int(getattr(child, "_delegate_depth", 1) or 1), self._capability(subagent_id, parent_session_id, created),
+            getattr(child, "_managed_routing_receipt_id", None),
+            getattr(child, "_shadow_routing_receipt_id", None),
         )
         record = _Record(handle, SubagentState.PENDING, created, agent=child)
         with _REGISTRY.lock:

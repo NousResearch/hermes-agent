@@ -124,6 +124,14 @@ _ROUTING_SPECS = [
     ], help="Explicitly clear a prior emergency revocation for a route (or whole policy) -- "
             "the ONLY way to lift a revoke_route block; never implied by publish/activate "
             "and never automatic/time-based"),
+    _cmd("reconcile", [
+        _arg("receipt_id"),
+        _arg("--reason", required=True,
+             help="What evidence established that replay is safe (required)"),
+        _arg("--approval-ref", required=True,
+             help="Human-readable operator approval provenance for this one replay"),
+        _json_flag(),
+    ], help="Authorize one explicit retry after reconciling an uncertain managed attempt"),
     _cmd("show", [
         _arg("policy_id", nargs="?", default="kanban-default"),
         _json_flag(),
@@ -255,6 +263,10 @@ _SPECS = [
                   "policy at claim/start time, not now; a receipted decision "
                   "pins the worker's actual provider/model/reasoning. See "
                   "`hermes kanban routing`."),
+        _arg("--routing-mode", dest="routing_mode", choices=("enforced", "shadow"),
+             help="Routing behavior when --routing-role is set. 'enforced' (default) "
+                  "authorizes and pins the selected route; 'shadow' records a "
+                  "recommendation but preserves the legacy worker route and outcomes."),
         _arg("--routing-requirements", dest="routing_requirements", metavar="JSON",
              help="Genuine per-task routing requirements as a JSON object "
                   "(design §3.B): task_class (established-pattern|investigative|"

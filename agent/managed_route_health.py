@@ -46,7 +46,14 @@ def observe_request(home, receipt_id):
                   "model_not_found": "denied_model", "billing": "quota", "rate_limit": "quota",
                   "upstream_rate_limit": "quota", "overloaded": "outage",
                   "server_error": "outage", "timeout": "outage"}.get(reason, "unknown")
-        payload.update(status=status, observed_at=int(time.time()), retry_after=0)
+        replay_safe = reason in {
+            "auth", "auth_permanent", "model_not_found", "billing", "rate_limit",
+            "upstream_rate_limit", "overloaded", "server_error",
+        }
+        payload.update(
+            status=status, observed_at=int(time.time()), retry_after=0,
+            replay_safe=replay_safe,
+        )
         headers = getattr(getattr(exc, "response", None), "headers", {}) or {}
         retry = headers.get("retry-after")
         if isinstance(retry, str) and retry.isdecimal():
@@ -54,5 +61,23 @@ def observe_request(home, receipt_id):
         append_outcome(home, receipt_id, "routing_health", payload)
         raise
     else:
-        payload.update(status="healthy", observed_at=int(time.time()), retry_after=0)
+        # A successful model response can already have driven tool/external
+        # effects before a worker later crashes, so replaying the whole worker
+        # attempt is not automatically safe.
+        payload.update(
+            status="healthy", observed_at=int(time.time()), retry_after=0,
+            replay_safe=False,
+        )
         append_outcome(home, receipt_id, "routing_health", payload)
+
+
+def observe_stream(home, receipt_id, stream):
+    """Yield a lazy provider stream while attributing its terminal outcome.
+
+    Returning a stream object only proves that request construction succeeded;
+    transport errors commonly surface later from ``next()``.  Keep the health
+    observation open until the consumer exhausts the stream so a partial stream
+    is never recorded as healthy before its actual outcome is known.
+    """
+    with observe_request(home, receipt_id):
+        yield from stream

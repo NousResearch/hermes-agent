@@ -173,3 +173,192 @@ def test_enforcement_success_path_calls_containment_before_returning_true(routin
     assert cli_module._enforce_kanban_routing_receipt(fake_cli) is True
     assert fake_cli.agent._fallback_chain == []
     assert fake_cli.agent._fallback_model is None
+
+
+def _recovery_policy():
+    policy = _policy()
+    policy["routes"].append({
+        **policy["routes"][0],
+        "route_id": "anthropic-alternate", "provider": "anthropic",
+        "model": "claude-alternate", "endpoint": "https://api.anthropic.com",
+        "maker": "anthropic", "model_family": "claude",
+    })
+    policy["rankings"]["builder"]["deep"] = ["openai-gpt5", "anthropic-alternate"]
+    policy["rankings"]["builder"]["shallow"] = ["openai-gpt5", "anthropic-alternate"]
+    return policy
+
+
+def _fail_current_run(conn, task):
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    kbd._record_task_failure(
+        conn, task.id, "fixture provider failure", outcome="crashed",
+        failure_limit=10, release_claim=True, end_run=True,
+        expected_run_id=task.current_run_id,
+    )
+
+
+def _health_payload(home, receipt_id, *, status, replay_safe):
+    import time
+    from agent.model_selection_store import get_receipt
+
+    route = get_receipt(home, receipt_id)["selected"]
+    now = int(time.time())
+    return {
+        "status": status, "replay_safe": replay_safe, "target_profile": "alice",
+        "route_revision": route["route_revision"], "endpoint": route["endpoint"],
+        "observed_at": now, "retry_after": now + 600 if status != "healthy" else 0,
+    }
+
+
+def test_managed_recovery_allows_one_safe_alternate_then_holds(
+    routing_home, all_assignees_spawnable,
+):
+    """A known pre-output provider refusal may select one alternate route, but
+    a third automatic worker attempt in the same failure episode is blocked."""
+    from agent.model_selection_store import activate_policy, append_outcome, publish_policy
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    kb.init_db()
+    policy = _recovery_policy()
+    record = publish_policy(routing_home, policy, approval_ref="operator:test")
+    activate_policy(routing_home, "kanban-default", record["revision"])
+    spawned = []
+
+    def _spawn(task, workspace):
+        spawned.append(task.model_override)
+        return None
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="bounded replacement", assignee="alice", routing_role="builder",
+            routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192},
+            max_retries=10,
+        )
+        kbd.dispatch_once(conn, spawn_fn=_spawn)
+        first = kb.get_task(conn, tid)
+        append_outcome(routing_home, first.routing_receipt_id, "routing_started", {})
+        append_outcome(
+            routing_home, first.routing_receipt_id, "routing_health",
+            _health_payload(
+                routing_home, first.routing_receipt_id,
+                status="denied_model", replay_safe=True,
+            ),
+        )
+        _fail_current_run(conn, first)
+
+        kbd.dispatch_once(conn, spawn_fn=_spawn)
+        second = kb.get_task(conn, tid)
+        append_outcome(routing_home, second.routing_receipt_id, "routing_started", {})
+        append_outcome(
+            routing_home, second.routing_receipt_id, "routing_health",
+            _health_payload(
+                routing_home, second.routing_receipt_id,
+                status="denied_model", replay_safe=True,
+            ),
+        )
+        _fail_current_run(conn, second)
+
+        final = kbd.dispatch_once(conn, spawn_fn=_spawn)
+        task = kb.get_task(conn, tid)
+
+    assert spawned == ["gpt-5", "claude-alternate"]
+    assert final.spawned == []
+    assert task.status == "blocked"
+    assert "alternate" in (task.last_failure_error or "").lower()
+
+
+def test_managed_recovery_holds_when_prior_contact_is_uncertain(
+    routing_home, all_assignees_spawnable,
+):
+    """A request that may have produced output or tool effects is never
+    automatically replayed by a replacement worker."""
+    from agent.model_selection_store import activate_policy, append_outcome, publish_policy
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    kb.init_db()
+    policy = _recovery_policy()
+    record = publish_policy(routing_home, policy, approval_ref="operator:test")
+    activate_policy(routing_home, "kanban-default", record["revision"])
+    spawned = []
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="uncertain replay", assignee="alice", routing_role="builder",
+            routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192},
+            max_retries=10,
+        )
+        kbd.dispatch_once(conn, spawn_fn=lambda task, workspace: spawned.append(task.model_override))
+        first = kb.get_task(conn, tid)
+        append_outcome(routing_home, first.routing_receipt_id, "routing_started", {})
+        append_outcome(
+            routing_home, first.routing_receipt_id, "routing_health",
+            _health_payload(
+                routing_home, first.routing_receipt_id,
+                status="healthy", replay_safe=False,
+            ),
+        )
+        _fail_current_run(conn, first)
+
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, workspace: spawned.append(task.model_override))
+        task = kb.get_task(conn, tid)
+
+    assert spawned == ["gpt-5"]
+    assert result.spawned == []
+    assert task.status == "blocked"
+    assert "uncertain" in (task.last_failure_error or "").lower()
+
+
+def test_operator_reconciliation_allows_one_explicit_replay(
+    routing_home, all_assignees_spawnable,
+):
+    """A replay hold is recoverable only through an auditable operator
+    disposition; unblocking alone is not treated as reconciliation."""
+    from agent.model_selection_store import (
+        activate_policy, append_outcome, authorize_replay, publish_policy,
+    )
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    kb.init_db()
+    policy = _recovery_policy()
+    record = publish_policy(routing_home, policy, approval_ref="operator:test")
+    activate_policy(routing_home, "kanban-default", record["revision"])
+    spawned = []
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="reconciled replay", assignee="alice", routing_role="builder",
+            routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192},
+            max_retries=10,
+        )
+        kbd.dispatch_once(conn, spawn_fn=lambda task, workspace: spawned.append(task.model_override))
+        first = kb.get_task(conn, tid)
+        append_outcome(routing_home, first.routing_receipt_id, "routing_started", {})
+        append_outcome(
+            routing_home, first.routing_receipt_id, "routing_health",
+            _health_payload(
+                routing_home, first.routing_receipt_id,
+                status="healthy", replay_safe=False,
+            ),
+        )
+        _fail_current_run(conn, first)
+        kbd.dispatch_once(conn, spawn_fn=lambda task, workspace: spawned.append(task.model_override))
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        authorize_replay(
+            routing_home, first.routing_receipt_id,
+            reason="verified no external effect", approval_ref="operator:test-reconcile",
+        )
+        assert kb.unblock_task(conn, tid)
+        result = kbd.dispatch_once(
+            conn, spawn_fn=lambda task, workspace: spawned.append(task.model_override),
+        )
+
+    assert result.spawned
+    assert spawned == ["gpt-5", "gpt-5"]

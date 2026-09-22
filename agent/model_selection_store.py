@@ -366,6 +366,21 @@ def append_outcome(hermes_home, receipt_id: str, kind: str, payload: dict) -> No
         )
 
 
+def authorize_replay(
+    hermes_home, receipt_id: str, *, reason: str, approval_ref: str,
+) -> dict:
+    """Record an explicit operator reconciliation for one uncertain attempt."""
+    if get_receipt(hermes_home, receipt_id) is None:
+        raise RoutingBlocked("stale_or_revoked_decision", f"no such receipt: {receipt_id}")
+    if not reason or not str(reason).strip():
+        raise RoutingBlocked("schema_invalid", "reason is required to authorize replay")
+    if not approval_ref or not str(approval_ref).strip():
+        raise RoutingBlocked("schema_invalid", "approval_ref is required to authorize replay")
+    payload = {"reason": str(reason).strip(), "approval_ref": str(approval_ref).strip()}
+    append_outcome(hermes_home, receipt_id, "routing_replay_authorized", payload)
+    return {"receipt_id": receipt_id, **payload}
+
+
 def list_outcomes(hermes_home, receipt_id: str) -> list[dict]:
     with transaction(_connect(hermes_home)) as conn:
         rows = conn.execute(
@@ -374,3 +389,56 @@ def list_outcomes(hermes_home, receipt_id: str) -> list[dict]:
         ).fetchall()
     return [{"seq": r["seq"], "kind": r["kind"], "payload": json.loads(r["payload_json"]),
              "created_at": r["created_at"]} for r in rows]
+
+
+def managed_recovery_hold(
+    hermes_home, execution_kind: str, execution_id: str, *, after_attempt_id: int = 0,
+) -> Optional[str]:
+    """Reason an automatic replacement must stop, or ``None`` when safe.
+
+    Only attempts that crossed ``routing_started`` count.  Shadow receipts are
+    observational and excluded.  One initial attempt plus one replacement is
+    the v1 ceiling; a prior contact whose outcome is not explicitly marked
+    replay-safe requires human reconciliation before any replacement.
+    """
+    with transaction(_connect(hermes_home)) as conn:
+        rows = conn.execute(
+            "SELECT r.id, r.attempt_id FROM routing_receipts r "
+            "WHERE r.execution_kind=? AND r.execution_id=? "
+            "AND EXISTS (SELECT 1 FROM routing_outcomes s "
+            "            WHERE s.receipt_id=r.id AND s.kind='routing_started') "
+            "AND NOT EXISTS (SELECT 1 FROM routing_outcomes sh "
+            "                WHERE sh.receipt_id=r.id AND sh.kind='routing_shadow') "
+            "ORDER BY r.rowid",
+            (execution_kind, execution_id),
+        ).fetchall()
+        started = []
+        for row in rows:
+            try:
+                in_episode = int(row["attempt_id"]) > int(after_attempt_id)
+            except (TypeError, ValueError):
+                in_episode = after_attempt_id <= 0
+            if in_episode:
+                started.append(row["id"])
+        if not started:
+            return None
+        latest_health = conn.execute(
+            "SELECT payload_json FROM routing_outcomes "
+            "WHERE receipt_id=? AND kind='routing_health' ORDER BY seq DESC LIMIT 1",
+            (started[-1],),
+        ).fetchone()
+        replay_authorized = conn.execute(
+            "SELECT 1 FROM routing_outcomes WHERE receipt_id=? "
+            "AND kind='routing_replay_authorized' LIMIT 1",
+            (started[-1],),
+        ).fetchone()
+    if replay_authorized is not None:
+        return None
+    if latest_health is None:
+        return "routing replay uncertain: prior provider contact has no terminal health outcome"
+    payload = json.loads(latest_health["payload_json"])
+    if payload.get("replay_safe") is not True:
+        return "routing replay uncertain: prior attempt may have produced output or external effects"
+    if len(started) >= 2:
+        return "routing alternate attempt exhausted: v1 permits at most one replacement per failure episode"
+    return None

@@ -159,6 +159,11 @@ def _clean_routing_role(slot: Any) -> dict[str, Any]:
     if role is None:
         return {}
     out: dict[str, Any] = {"routing_role": role}
+    mode = slot.get("routing_mode")
+    if mode is not None:
+        from hermes_cli.kanban_model_routing import normalize_routing_mode
+
+        out["routing_mode"] = normalize_routing_mode(mode, has_role=True)
     raw_requirements = slot.get("routing_requirements")
     if raw_requirements is not None:
         from hermes_cli.kanban_model_routing import validate_routing_requirements

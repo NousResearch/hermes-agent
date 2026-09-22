@@ -32,7 +32,10 @@ from typing import Any, Optional
 from agent.managed_route_runtime import resolve_route
 from agent.model_selection_types import RoutingBlocked
 
-__all__ = ["resolve_delegation_route", "stamp_managed_route", "DelegationRoutingBlocked"]
+__all__ = [
+    "resolve_delegation_route", "stamp_managed_route", "stamp_shadow_route",
+    "DelegationRoutingBlocked",
+]
 
 DEFAULT_DELEGATION_POLICY_ID = "kanban-default"
 
@@ -83,8 +86,8 @@ def _parent_managed_context(parent_agent) -> tuple[Optional[str], Optional[dict]
     return hermes_home, decision
 
 
-def _task_intake(task: dict) -> tuple[Optional[str], Optional[dict], Optional[str]]:
-    """``(routing_role, routing_requirements, routing_policy_id)`` as supplied on the task dict --
+def _task_intake(task: dict) -> tuple[Optional[str], Optional[dict], Optional[str], Optional[str]]:
+    """``(routing_role, routing_requirements, routing_policy_id, routing_mode)`` as supplied on the task dict --
     genuine caller intake, never a model-invented default. Validated with the SAME validator
     Kanban's `--routing-requirements` CLI flag uses so the two adapters share one schema."""
     role = task.get("routing_role")
@@ -97,7 +100,10 @@ def _task_intake(task: dict) -> tuple[Optional[str], Optional[dict], Optional[st
         requirements = validate_routing_requirements(raw_requirements)  # raises ValueError on malformed intake
     policy_id = task.get("routing_policy_id")
     policy_id = policy_id.strip() if isinstance(policy_id, str) and policy_id.strip() else None
-    return role, requirements, policy_id
+    from hermes_cli.kanban_model_routing import normalize_routing_mode
+
+    mode = normalize_routing_mode(task.get("routing_mode"), has_role=bool(role))
+    return role, requirements, policy_id, mode
 
 
 def resolve_delegation_route(
@@ -111,7 +117,7 @@ def resolve_delegation_route(
     existing ``ValueError`` preflight-failure contract in ``_build_child_agent`` -- and must NEVER
     fall back to constructing an unmanaged/default-route child instead (§5 no silent escape).
     """
-    task_role, task_requirements, task_policy_id = _task_intake(task)
+    task_role, task_requirements, task_policy_id, task_mode = _task_intake(task)
     parent_home, parent_decision = _parent_managed_context(parent_agent)
     parent_policy_id = parent_decision["policy_id"] if parent_decision else None
     parent_role = parent_decision["requirements"]["role"] if parent_decision else None
@@ -123,6 +129,7 @@ def resolve_delegation_route(
         hermes_home = _current_hermes_home()
         policy_id = task_policy_id or DEFAULT_DELEGATION_POLICY_ID
         role = task_role
+        mode = task_mode
     else:
         # Parent IS a managed child: authority ceiling applies regardless of what this sub-task
         # asks for. Cannot clear managed status (an omitted routing_role does not de-manage this
@@ -146,6 +153,9 @@ def resolve_delegation_route(
                 "own authorized role",
             )
         role = parent_role
+        # Inherited authority always wins: a managed parent cannot demote its
+        # child by requesting observational shadow mode or omitting the mode.
+        mode = "enforced"
 
         parent_requirements = parent_decision["requirements"]
         task_requirements = dict(task_requirements or {})
@@ -166,12 +176,33 @@ def resolve_delegation_route(
     )
     if parent_decision is not None:
         requirements["allowed_route_ids"] = [parent_decision["selected"]["route_id"], *parent_decision["alternates"]]
-    decision_kwargs = resolve_route(
-        hermes_home, policy_id, requirements, now=int(time.time()),
-        policy_revision=parent_decision["policy_revision"] if parent_decision else None,
-    )
+    try:
+        decision_kwargs = resolve_route(
+            hermes_home, policy_id, requirements, now=int(time.time()),
+            policy_revision=parent_decision["policy_revision"] if parent_decision else None,
+        )
+    except RoutingBlocked as exc:
+        if mode != "shadow":
+            raise
+        return {
+            "routing_mode": "shadow", "routing_home": hermes_home,
+            "shadow_error": exc.reason,
+        }
+    if mode == "shadow":
+        from agent.model_selection_store import append_outcome, get_receipt
+
+        shadow_decision = get_receipt(hermes_home, decision_kwargs["receipt_id"])
+        append_outcome(hermes_home, decision_kwargs["receipt_id"], "routing_shadow", {
+            "execution_kind": "delegation", "execution_id": requirements["execution_id"],
+            "recommended_route_id": shadow_decision["selected"]["route_id"] if shadow_decision else None,
+        })
+        return {
+            "routing_mode": "shadow", "routing_home": hermes_home,
+            "receipt_id": decision_kwargs["receipt_id"],
+        }
     if task.get("model") and task["model"] != decision_kwargs["model"]:
         raise DelegationRoutingBlocked("unsupported_executor", "model preference is outside the selected managed route")
+    decision_kwargs["routing_mode"] = "enforced"
     decision_kwargs["routing_home"] = hermes_home
     return decision_kwargs
 
@@ -232,7 +263,8 @@ def build_lifecycle_child(request, parent):
     cfg = dt._load_config()
     creds = dt._resolve_delegation_credentials(cfg, parent)
     task = {"goal": request.goal, "context": request.context, "model": request.model,
-            "routing_role": request.routing_role, "routing_policy_id": request.routing_policy_id,
+            "routing_role": request.routing_role, "routing_mode": request.routing_mode,
+            "routing_policy_id": request.routing_policy_id,
             "routing_requirements": request.routing_requirements,
             "_delegation_id": uuid.uuid4().hex}
     children, error = dt._build_children(
@@ -254,3 +286,9 @@ def stamp_managed_route(child, resolution: dict) -> None:
     SAME shared guard, not a delegation-specific reimplementation."""
     child._managed_routing_receipt_id = resolution["receipt_id"]
     child._managed_routing_home = resolution["routing_home"]
+
+
+def stamp_shadow_route(child, resolution: dict) -> None:
+    """Expose observation provenance without granting per-request authority."""
+    child._shadow_routing_receipt_id = resolution.get("receipt_id")
+    child._shadow_routing_error = resolution.get("shadow_error")

@@ -1682,7 +1682,30 @@ def _dispatch_lane_task(
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
-    if getattr(claimed, "routing_role", None):
+    if getattr(claimed, "routing_role", None) and getattr(claimed, "routing_mode", None) == "shadow":
+        # Observation only: preserve every legacy launch field and swallow all
+        # selector/store failures after recording a bounded task event.  A
+        # shadow receipt has its own column and is never exported to the worker.
+        try:
+            from hermes_cli.kanban_model_routing import observe_task_route as _observe_task_route
+            from hermes_constants import get_hermes_home as _get_hermes_home
+
+            _observe_task_route(
+                str(_get_hermes_home()), conn, claimed, now=int(time.time()),
+                frozen_sha=os.environ.get("HERMES_KANBAN_ROUTING_FROZEN_SHA", "unknown"),
+                verified_by=os.environ.get("HERMES_KANBAN_ROUTING_VERIFIED_BY", "kanban-dispatcher"),
+            )
+        except Exception as exc:
+            with _kb.write_txn(conn):
+                _kb._append_event(
+                    conn, claimed.id, "routing_shadow_failed",
+                    {
+                        "error_type": type(exc).__name__,
+                        "reason": getattr(exc, "reason", type(exc).__name__),
+                    },
+                    run_id=claimed.current_run_id,
+                )
+    elif getattr(claimed, "routing_role", None):
         # Guided model routing (plans/2026-09-15_141016-guided-model-routing.md
         # §4 step 4): resolve NOW, against the live policy/approval, never at
         # card-creation time. A resolution failure is a real spawn failure —
@@ -1702,6 +1725,25 @@ def _dispatch_lane_task(
         # threaded through explicitly below rather than re-derived by the
         # worker from its own (possibly different) HERMES_HOME.
         origin_hermes_home = str(_get_hermes_home())
+        from agent.model_selection_store import managed_recovery_hold as _managed_recovery_hold
+
+        completed_row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS run_id FROM task_runs "
+            "WHERE task_id=? AND outcome='completed'",
+            (claimed.id,),
+        ).fetchone()
+        recovery_hold = _managed_recovery_hold(
+            origin_hermes_home, "kanban", claimed.id,
+            after_attempt_id=int(completed_row["run_id"] or 0),
+        )
+        if recovery_hold is not None:
+            if _record_task_failure(
+                conn, claimed.id, recovery_hold,
+                outcome="spawn_failed", force_trip=True, release_claim=True, end_run=True,
+                expected_run_id=claimed.current_run_id,
+            ):
+                result.auto_blocked.append(claimed.id)
+            return False
         try:
             kwargs = _resolve_task_route(
                 origin_hermes_home, conn, claimed,

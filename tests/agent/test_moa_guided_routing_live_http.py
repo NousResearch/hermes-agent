@@ -268,6 +268,37 @@ def test_unmanaged_slot_is_untouched_by_routing(routed_home, monkeypatch):
     assert "Plain unmanaged advisory call" in sent
 
 
+def test_shadow_reference_records_recommendation_but_uses_legacy_slot(routed_home, monkeypatch):
+    """Shadow mode must not replace the fixed preset's provider/model even
+    though it resolves and persists a recommendation under the active policy."""
+    from agent.moa_loop import _run_reference
+    from agent.model_selection_store import _connect
+
+    hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(hermes_home, url)
+    _patch_custom_provider(monkeypatch, url)
+    slot = {
+        "provider": "custom", "model": "legacy-reference-model",
+        "routing_role": "moareference", "routing_mode": "shadow",
+        "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192},
+    }
+
+    _run_reference(
+        slot, [{"role": "user", "content": "Observe this advisory request."}],
+        execution_id="shadow-reference", slot_id="reference-0",
+    )
+
+    assert handler.requests[-1]["model"] == "legacy-reference-model"
+    conn = _connect(hermes_home)
+    try:
+        shadow_events = conn.execute(
+            "SELECT COUNT(*) AS n FROM routing_outcomes WHERE kind='routing_shadow'"
+        ).fetchone()["n"]
+    finally:
+        conn.close()
+    assert shadow_events == 1
+
+
 def test_required_reference_slot_denial_hard_fails_not_degraded_note(routed_home, monkeypatch):
     """Explicit ``routing_requirements: {"required": true}`` is equivalent to the default (any
     managed slot is required unless it opts OUT): a denied route must raise

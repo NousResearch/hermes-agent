@@ -364,3 +364,66 @@ def test_ordinary_builder_role_never_blocked_for_lacking_review_provenance(
 
     assert "model" in captured
     assert task.routing_receipt_id
+
+
+def test_shadow_routing_records_recommendation_without_changing_worker_route(
+    kanban_home, all_assignees_spawnable,
+):
+    """Shadow is additive observation for an otherwise legacy launch.  The
+    recommended route is inspectable, but the worker keeps its explicit legacy
+    model/provider and receives no enforcement receipt."""
+    _activate(kanban_home)
+    captured = {}
+
+    def _fake_spawn(task, workspace):
+        captured.update(
+            provider=task.provider_override,
+            model=task.model_override,
+            receipt=task.routing_receipt_id,
+        )
+        return 1
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="observe legacy worker", assignee="alice",
+            model_override="legacy-model", provider_override="legacy-provider",
+            routing_role="builder", routing_mode="shadow",
+            routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192},
+        )
+        result = kbd.dispatch_once(conn, dry_run=False, spawn_fn=_fake_spawn)
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert result.spawned and captured == {
+        "provider": "legacy-provider", "model": "legacy-model", "receipt": None,
+    }
+    assert task.routing_receipt_id is None
+    assert task.routing_shadow_receipt_id
+    assert any(event.kind == "routing_shadow_selected" for event in events)
+
+
+def test_shadow_routing_failure_never_blocks_legacy_worker(
+    kanban_home, all_assignees_spawnable,
+):
+    """A missing policy is an observation failure in shadow mode, not
+    permission to delay, reroute, retry, or block the legacy launch."""
+    captured = {}
+
+    def _fake_spawn(task, workspace):
+        captured["model"] = task.model_override
+        return 1
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="shadow without policy", assignee="alice",
+            model_override="legacy-model", provider_override="legacy-provider",
+            routing_role="builder", routing_mode="shadow",
+        )
+        result = kbd.dispatch_once(conn, dry_run=False, spawn_fn=_fake_spawn)
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert result.spawned and captured["model"] == "legacy-model"
+    assert task.routing_receipt_id is None
+    assert task.routing_shadow_receipt_id is None
+    assert any(event.kind == "routing_shadow_failed" for event in events)

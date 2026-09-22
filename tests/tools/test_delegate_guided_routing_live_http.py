@@ -139,10 +139,10 @@ def _publish_active(hermes_home, url):
     activate_policy(hermes_home, "kanban-default", record["revision"])
 
 
-def _make_parent(hermes_home):
+def _make_parent(hermes_home, endpoint="http://127.0.0.1:1/v1"):
     from run_agent import AIAgent
     parent = AIAgent(
-        api_key="parent-key", base_url="http://127.0.0.1:1/v1", provider="custom", model="parent-model",
+        api_key="parent-key", base_url=endpoint, provider="custom", model="parent-model",
         max_iterations=5, enabled_toolsets=[], quiet_mode=True, skip_context_files=True,
         skip_memory=True, save_trajectories=False, platform="cli",
     )
@@ -210,6 +210,31 @@ def test_managed_delegation_denied_route_reaches_zero_endpoints(routed_home, mon
     assert len(handler.requests) == 0, "a denied managed route must never reach the endpoint"
 
 
+def test_shadow_delegation_records_decision_but_keeps_legacy_child_route(routed_home, monkeypatch):
+    """A shadow task is observational only: selection may recommend the
+    policy route, but construction and inference stay on the legacy parent
+    route and no managed receipt is stamped on the child."""
+    from tools.delegate_tool import delegate_task
+
+    hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(hermes_home, url)
+    parent = _make_parent(hermes_home, endpoint=url)
+
+    result = json.loads(delegate_task(
+        tasks=[{
+            "goal": "Run through the legacy route while recording the recommendation.",
+            "routing_role": "builder", "routing_mode": "shadow",
+            "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192},
+        }],
+        parent_agent=parent,
+    ))
+
+    assert result["results"][0]["status"] == "completed", result
+    assert handler.requests[0]["model"] == "parent-model"
+    assert result["results"][0].get("routing_receipt_id") is None
+    assert result["results"][0]["routing_shadow_receipt_id"].startswith("rr_")
+
+
 def test_nested_managed_delegation_cannot_widen_role(routed_home, monkeypatch):
     """A parent that is ITSELF a managed child (carries its own receipt) cannot ask a nested
     delegation for a wider/different role than its own authorized ceiling."""
@@ -245,3 +270,98 @@ def test_nested_managed_delegation_cannot_widen_role(routed_home, monkeypatch):
     )
     assert len(handler.requests) == 0, "a widened nested mandate must never reach a real child/endpoint"
     assert "widen" in result_json.lower() or "error" in result_json.lower()
+
+
+def test_nested_managed_delegation_cannot_omit_role_to_demote(routed_home, monkeypatch):
+    """The actual child constructor inherits a managed parent's receipted
+    ceiling even when the nested task omits every routing field."""
+    from agent.model_selection import select
+    from agent.model_selection_store import activate_policy, persist_receipt, publish_policy
+    from tools.delegate_tool import delegate_task
+
+    hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    policy = _policy(url)
+    record = publish_policy(hermes_home, policy, approval_ref="operator:test")
+    activate_policy(hermes_home, "kanban-default", record["revision"])
+    _patch_custom_provider(monkeypatch, url)
+    requirements = {
+        "schema_version": 1, "role": "builder", "execution_kind": "kanban",
+        "execution_id": "managed-parent", "attempt_id": "1", "slot_id": "",
+        "task_class": "established-pattern", "required_capabilities": [],
+        "input_tokens": 1000, "reserve_tokens": 8192, "reasoning": "medium",
+        "provenance": {"frozen_sha": "x", "verified_by": "host", "complete": True, "contributors": []},
+    }
+    parent = _make_parent(hermes_home, endpoint=url)
+    parent.model = "test-model"
+    receipt_id = persist_receipt(
+        hermes_home, select(requirements, policy, {}, now=1000),
+    )
+    monkeypatch.setenv("HERMES_KANBAN_ROUTING_RECEIPT", receipt_id)
+    monkeypatch.setenv("HERMES_KANBAN_ROUTING_ORIGIN_HOME", hermes_home)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    import cli as cli_module
+
+    cli = type("ManagedWorkerCLI", (), {"agent": parent, "reasoning_config": "medium"})()
+    monkeypatch.setattr(
+        cli_module, "requested_effort_for_kanban_guard", lambda _cli: "medium",
+    )
+    assert cli_module._enforce_kanban_routing_receipt(cli) is True
+
+    result = json.loads(delegate_task(
+        tasks=[{"goal": "Nested task deliberately omits routing_role."}],
+        parent_agent=parent,
+    ))
+
+    assert "error" in result
+    assert "input" in result["error"].lower() or "routing" in result["error"].lower()
+    assert handler.requests == [], "omission must fail closed, never launch an unmanaged child"
+
+
+def test_real_managed_moa_aggregator_authority_blocks_unmanaged_nested_child(
+    routed_home, monkeypatch,
+):
+    """The real native aggregator call stamps turn-scoped authority on its
+    acting AIAgent; a following delegation with no routing fields cannot escape
+    through the legacy child constructor."""
+    from agent.moa_loop import MoAChatCompletions
+    from agent.model_selection_store import activate_policy, publish_policy
+    from tools.delegate_tool import delegate_task
+
+    hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    policy = _policy(url)
+    policy["routes"][0]["allowed_roles"] = ["moaaggregator"]
+    policy["rankings"] = {
+        "moaaggregator": {"deep": ["fake-route"], "shallow": ["fake-route"]},
+    }
+    record = publish_policy(hermes_home, policy, approval_ref="operator:test")
+    activate_policy(hermes_home, "kanban-default", record["revision"])
+    _patch_custom_provider(monkeypatch, url)
+    parent = _make_parent(hermes_home)
+    parent._current_turn_id = "managed-moa-turn"
+
+    facade = MoAChatCompletions.__new__(MoAChatCompletions)
+    facade._agent = parent
+    facade.preset_name = "managed"
+    facade._pending_trace = None
+    facade._plan_aggregator_cache = lambda messages, tools, guidance, runtime: (messages, tools)
+    facade._call_prepared_aggregator(
+        {
+            "aggregator": {
+                "provider": "custom", "model": "legacy-ignored",
+                "routing_role": "moaaggregator",
+                "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192},
+            },
+            "messages": [{"role": "user", "content": "Act as managed aggregator."}],
+            "guidance": "", "aggregator_temperature": None,
+        },
+        {"stream": False},
+    )
+    assert len(handler.requests) == 1
+
+    result = json.loads(delegate_task(
+        tasks=[{"goal": "Try to become an unmanaged child."}], parent_agent=parent,
+    ))
+
+    assert "error" in result
+    assert len(handler.requests) == 1, "the nested omission must not reach a second unmanaged request"

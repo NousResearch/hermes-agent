@@ -529,6 +529,15 @@ def _build_result_entry(
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
+    managed_receipt = getattr(child, "_managed_routing_receipt_id", None)
+    shadow_receipt = getattr(child, "_shadow_routing_receipt_id", None)
+    shadow_error = getattr(child, "_shadow_routing_error", None)
+    if isinstance(managed_receipt, str) and managed_receipt:
+        entry["routing_receipt_id"] = managed_receipt
+    if isinstance(shadow_receipt, str) and shadow_receipt:
+        entry["routing_shadow_receipt_id"] = shadow_receipt
+    if isinstance(shadow_error, str) and shadow_error:
+        entry["routing_shadow_error"] = shadow_error
     if status == "failed":
         entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")

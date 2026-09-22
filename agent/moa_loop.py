@@ -387,7 +387,12 @@ def _slot_runtime_managed(slot: dict[str, Any], *, execution_id: str, slot_id: s
     plain-slot cache (§5).
     """
     resolution = _resolve_moa_slot_managed_route(slot, execution_id=execution_id, slot_id=slot_id)
-    if resolution is None:
+    if resolution is None or resolution.get("routing_mode", "enforced") == "shadow":
+        if resolution and resolution.get("shadow_error"):
+            logger.warning(
+                "MoA routing shadow observation failed for %s: %s",
+                slot_id, resolution["shadow_error"],
+            )
         return _slot_runtime(slot), None
     from agent.moa_model_routing import moa_runtime_overrides
 
@@ -1279,15 +1284,39 @@ class MoAChatCompletions:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
         # Pop the runtime's extra_body so the explicit kwarg never collides with **agg_runtime.
         agg_extra_body = _merge_slot_extra_body(agg_runtime.pop("extra_body", None), api_kwargs.get("extra_body"))
-        agg_response = call_llm(
-            task="moa_aggregator", messages=agg_messages, temperature=prepared["aggregator_temperature"],
-            max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
-            reasoning_config=(
-                _slot_reasoning_config({"reasoning_effort": agg_managed_reasoning_effort})
-                if agg_managed_reasoning_effort else _aggregator_reasoning_config(aggregator)
-            ),  # same policy as direct create()
-            **stream_kwargs, **agg_runtime,
-        )
+        def _call_aggregator():
+            return call_llm(
+                task="moa_aggregator", messages=agg_messages, temperature=prepared["aggregator_temperature"],
+                max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
+                reasoning_config=(
+                    _slot_reasoning_config({"reasoning_effort": agg_managed_reasoning_effort})
+                    if agg_managed_reasoning_effort else _aggregator_reasoning_config(aggregator)
+                ),  # same policy as direct create()
+                **stream_kwargs, **agg_runtime,
+            )
+
+        if agg_managed_resolution is None:
+            agg_response = _call_aggregator()
+        elif stream:
+            # A lazy stream's health is unknown until it is consumed.  Record a
+            # construction-time exception immediately, otherwise keep the
+            # observation open around iteration below.
+            try:
+                agg_response = _call_aggregator()
+            except Exception:
+                from agent.managed_route_health import observe_request
+
+                with observe_request(
+                    agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"],
+                ):
+                    raise
+        else:
+            from agent.managed_route_health import observe_request
+
+            with observe_request(
+                agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"],
+            ):
+                agg_response = _call_aggregator()
         if trace is not None:
             # Streaming output lands as the turn's assistant message; the trace marks it.
             trace["aggregator_streamed"] = stream
@@ -1299,7 +1328,13 @@ class MoAChatCompletions:
         if stream and hasattr(agg_response, "choices"):
             # Some adapters (openai-codex Responses) return a completed response even
             # when streaming was requested; hand the loop a one-chunk iterator.
-            return iter((_completed_response_as_stream_chunk(agg_response),))
+            agg_response = iter((_completed_response_as_stream_chunk(agg_response),))
+        if stream and agg_managed_resolution is not None:
+            from agent.managed_route_health import observe_stream
+
+            return observe_stream(
+                agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"], agg_response,
+            )
         return agg_response
 
     def _fanout_cache_key(

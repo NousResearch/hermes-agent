@@ -119,6 +119,8 @@ def is_moa_slot_required(slot: dict) -> bool:
     role = slot.get("routing_role")
     if not (isinstance(role, str) and role.strip()):
         return False
+    if str(slot.get("routing_mode") or "enforced").strip().lower() == "shadow":
+        return False
     requirements = slot.get("routing_requirements")
     if isinstance(requirements, dict) and requirements.get("required") is False:
         return False
@@ -350,8 +352,8 @@ def _forget_cohort(execution_id: str, *, hermes_home: Optional[str] = None) -> N
                 per_slot.pop(slot_key, None)
 
 
-def _slot_intake(slot: dict) -> tuple[Optional[str], Optional[dict], Optional[str]]:
-    """``(routing_role, routing_requirements, routing_policy_id)`` as supplied on the slot dict --
+def _slot_intake(slot: dict) -> tuple[Optional[str], Optional[dict], Optional[str], Optional[str]]:
+    """``(routing_role, routing_requirements, routing_policy_id, routing_mode)`` as supplied on the slot dict --
     genuine per-slot intake, never a model-invented default. Validated with the SAME validator
     Kanban's ``--routing-requirements``/delegation's ``routing_requirements`` share."""
     role = slot.get("routing_role")
@@ -364,7 +366,10 @@ def _slot_intake(slot: dict) -> tuple[Optional[str], Optional[dict], Optional[st
         requirements = validate_routing_requirements(raw_requirements)  # raises ValueError on malformed intake
     policy_id = slot.get("routing_policy_id")
     policy_id = policy_id.strip() if isinstance(policy_id, str) and policy_id.strip() else None
-    return role, requirements, policy_id
+    from hermes_cli.kanban_model_routing import normalize_routing_mode
+
+    mode = normalize_routing_mode(slot.get("routing_mode"), has_role=bool(role))
+    return role, requirements, policy_id, mode
 
 
 def _build_requirements(
@@ -426,7 +431,7 @@ def resolve_moa_slot_route(
     ``*_pinned`` wrappers below so a cache lookup keyed on one profile's home actually resolves
     against THAT profile's store, not whatever profile this process happens to be launched as.
     """
-    role, requirements_intake, policy_id_override = _slot_intake(slot)
+    role, requirements_intake, policy_id_override, mode = _slot_intake(slot)
     if role is None:
         return None
     if hermes_home is None:
@@ -440,7 +445,28 @@ def resolve_moa_slot_route(
     # Diversity narrows eligibility; it is not implementation provenance and
     # must not manufacture a verified manifest for a missing review intake.
     requirements["cohort_excluded_makers"] = list(cohort_excluded_makers)
-    decision_kwargs = resolve_route(hermes_home, policy_id, requirements, now=int(time.time()))
+    try:
+        decision_kwargs = resolve_route(hermes_home, policy_id, requirements, now=int(time.time()))
+    except RoutingBlocked as exc:
+        if mode != "shadow":
+            raise
+        return {
+            "routing_mode": "shadow", "routing_home": hermes_home,
+            "shadow_error": exc.reason,
+        }
+    if mode == "shadow":
+        from agent.model_selection_store import append_outcome, get_receipt
+
+        shadow_decision = get_receipt(hermes_home, decision_kwargs["receipt_id"])
+        append_outcome(hermes_home, decision_kwargs["receipt_id"], "routing_shadow", {
+            "execution_kind": "moa", "execution_id": execution_id, "slot_id": slot_id,
+            "recommended_route_id": shadow_decision["selected"]["route_id"] if shadow_decision else None,
+        })
+        return {
+            "routing_mode": "shadow", "routing_home": hermes_home,
+            "receipt_id": decision_kwargs["receipt_id"],
+        }
+    decision_kwargs["routing_mode"] = "enforced"
     decision_kwargs["routing_home"] = hermes_home
     return decision_kwargs
 

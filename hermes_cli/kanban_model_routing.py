@@ -50,10 +50,23 @@ _REVIEW_ROLE_PREFIX = "review"
 # is a meaningful, storable value (an omitted estimate), so validation must
 # accept 0 while still rejecting negative/non-integer input.
 _MAX_REASONABLE_TOKENS = 50_000_000  # sanity ceiling against unit confusion, not a product limit
+ROUTING_MODES = ("enforced", "shadow")
 
 
 def _fail(msg: str) -> None:
     raise ValueError(msg)
+
+
+def normalize_routing_mode(value: Optional[str], *, has_role: bool) -> Optional[str]:
+    """Canonical per-launch mode; a role defaults to fail-closed enforcement."""
+    if value is None or not str(value).strip():
+        return "enforced" if has_role else None
+    mode = str(value).strip().lower()
+    if mode not in ROUTING_MODES:
+        _fail(f"routing_mode must be one of {ROUTING_MODES}")
+    if not has_role:
+        _fail("routing_mode requires routing_role")
+    return mode
 
 
 def _validate_capabilities(value) -> list:
@@ -323,6 +336,45 @@ def resolve_task_route(
     # through the dispatcher's env, never re-derived.
     kwargs["receipt_id"] = receipt_id
     return kwargs
+
+
+def observe_task_route(
+    hermes_home, conn, task, *, now: int, frozen_sha: str, verified_by: str,
+) -> Optional[str]:
+    """Record a shadow recommendation without changing launch authority.
+
+    Every error is intentionally left to the caller to render as a best-effort
+    observation event; this function never writes ``routing_receipt_id`` and its
+    return value must never be forwarded to a worker.
+    """
+    role = getattr(task, "routing_role", None)
+    if not role:
+        return None
+    policy = get_active_policy(hermes_home, _POLICY_ID)
+    if policy is None:
+        raise RoutingBlocked("schema_invalid", f"no active policy published for {_POLICY_ID!r}")
+    requirements = _build_requirements(task, frozen_sha=frozen_sha, verified_by=verified_by)
+    requirements["target_profile"] = task.assignee
+    from agent.managed_route_health import load_availability
+
+    decision = select(
+        requirements, policy, load_availability(hermes_home, _POLICY_ID, task.assignee), now,
+    )
+    receipt_id = persist_receipt(hermes_home, decision)
+    from hermes_cli.kanban_db import set_routing_shadow_receipt
+
+    if not set_routing_shadow_receipt(
+        conn, task.id, receipt_id, expected_run_id=task.current_run_id,
+    ):
+        raise RoutingBlocked(
+            "stale_or_revoked_decision",
+            f"task {task.id}: claim/run changed before shadow receipt link",
+        )
+    append_outcome(hermes_home, receipt_id, "routing_shadow", {
+        "task_id": task.id, "run_id": task.current_run_id,
+        "recommended_route_id": decision["selected"]["route_id"],
+    })
+    return receipt_id
 
 
 # The worker-side half of the guard now lives in `agent.managed_route_runtime` (design §6: "shared

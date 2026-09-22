@@ -396,13 +396,19 @@ def _build_children(
         # failure -- propagated exactly like the existing pinned-command preflight failure, never
         # silently downgraded to an unmanaged/default route (design §5).
         from agent.model_selection_types import RoutingBlocked as _RoutingBlocked
-        from tools.delegate_tool_routing import resolve_delegation_route, stamp_managed_route
+        from tools.delegate_tool_routing import (
+            resolve_delegation_route, stamp_managed_route, stamp_shadow_route,
+        )
         try:
             _routing_resolution = resolve_delegation_route(t, parent_agent, task_index=i)
         except (_RoutingBlocked, ValueError) as exc:
             return [], f"Task {i} routing: {exc}"
         _task_overrides = dict(overrides)
-        if _routing_resolution is not None:
+        _routing_enforced = bool(
+            _routing_resolution is not None
+            and _routing_resolution.get("routing_mode", "enforced") == "enforced"
+        )
+        if _routing_enforced:
             # Managed override: authoritative, never merged with parent/config inheritance (§5) --
             # this REPLACES the config-derived overrides for this one task's construction only.
             _task_overrides.update({
@@ -441,7 +447,7 @@ def _build_children(
             )
         except ValueError as exc:
             return [], str(exc)
-        if _routing_resolution is not None:
+        if _routing_enforced:
             if _routing_resolution.get("reasoning_effort"):
                 from hermes_constants import parse_reasoning_effort as _parse_reasoning_effort
                 _parsed_reasoning = _parse_reasoning_effort(_routing_resolution["reasoning_effort"])
@@ -453,6 +459,8 @@ def _build_children(
             # EVERY request in its own turn, not merely at construction -- catching a fallback/
             # rotation that silently swapped the client mid-turn.
             stamp_managed_route(child, _routing_resolution)
+        elif _routing_resolution is not None:
+            stamp_shadow_route(child, _routing_resolution)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
@@ -713,6 +721,27 @@ DELEGATE_TASK_SCHEMA = {
                             "pixels on their first turn; non-vision children get path hints for vision_analyze. Text "
                             "files do NOT belong here — put paths in 'context' instead.",
                             items={"type": "string"},
+                        ),
+                        "routing_role": _p(
+                            "string",
+                            "Optional approved-policy role for guided routing (for example builder or "
+                            "reviewquality). The host selects the exact route; this is never a raw provider pin.",
+                        ),
+                        "routing_mode": _p(
+                            "string",
+                            "With routing_role: enforced (default) pins the approved route; shadow records "
+                            "a recommendation while preserving the legacy child route.",
+                            enum=["enforced", "shadow"],
+                        ),
+                        "routing_requirements": _p(
+                            "object",
+                            "Structured task fit: task_class, required_capabilities, positive input_tokens "
+                            "and reserve_tokens, plus verified contributor provenance for review roles.",
+                        ),
+                        "routing_policy_id": _p(
+                            "string",
+                            "Optional approved policy id. Omit for the host default; a managed parent "
+                            "pins this value and rejects attempts to switch policy.",
                         ),
                         "group": _p(
                             "string",

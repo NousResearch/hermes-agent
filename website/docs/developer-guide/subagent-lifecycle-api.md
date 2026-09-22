@@ -63,15 +63,20 @@ child; Hermes's existing unsafe-tool block remains enforced.
 ## Guided model routing
 
 `delegate_task`'s task dict (the model-tool schema) accepts `routing_role` /
-`routing_requirements` / `routing_policy_id` to resolve a route through the shared
+`routing_mode` / `routing_requirements` / `routing_policy_id` to resolve a route through the shared
 guided-routing selector and policy store also used by Kanban and MoA (see
 [Delegation → Guided model routing](../user-guide/features/delegation.md#guided-model-routing-opt-in-per-task)).
 
-`SubagentLaunchRequest` exposes the same `routing_role`, `routing_policy_id`, and
+`SubagentLaunchRequest` exposes the same `routing_role`, `routing_mode`, `routing_policy_id`, and
 `routing_requirements` fields. The host-owned service uses the delegated-child
 constructor and shared selector, rather than interpreting `model` as an unrestricted
 provider override. Under managed authority, a `model` preference must agree with the
 selected route.
+
+`routing_mode="shadow"` is observational: it records a recommendation but leaves the
+legacy child constructor and route unchanged. `SubagentHandle.routing_receipt_id` exposes
+the enforced decision id; `routing_shadow_receipt_id` exposes an observational decision.
+Neither field contains prompts or credentials.
 
 A managed parent, including a managed Kanban worker or a managed MoA aggregator's
 tool-executing agent, passes its authority ceiling to nested lifecycle launches.

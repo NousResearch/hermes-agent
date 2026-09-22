@@ -73,6 +73,10 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", task_props)
         self.assertIn("context", task_props)
         self.assertIn("output_schema", task_props)
+        self.assertIn("routing_role", task_props)
+        self.assertIn("routing_mode", task_props)
+        self.assertIn("routing_requirements", task_props)
+        self.assertIn("routing_policy_id", task_props)
         # toolsets is intentionally NOT exposed to the model — subagents always
         # inherit the parent's toolsets. Letting the model name toolsets was a
         # capability-selection surface the model should not control.

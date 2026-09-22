@@ -158,6 +158,11 @@ hermes kanban create --title "..." --assignee <profile> \
   --routing-role reviewarchitecture \
   --routing-requirements '<reviewed requirements JSON>'
 
+# Observe what the policy would recommend without changing the legacy launch:
+hermes kanban create --title "..." --assignee <profile> \
+  --routing-role builder --routing-mode shadow \
+  --routing-requirements '<requirements JSON>'
+
 # Manage the policy a board resolves routing roles against:
 hermes kanban routing validate <policy.json>       # read-only schema check
 hermes kanban routing explain <policy.json> <requirements.json>  # no dispatch or publication
@@ -169,6 +174,7 @@ hermes kanban routing receipt <receipt_id>         # a persisted routing decisio
 hermes kanban routing receipt-for-task <task_id>   # the decision receipted for a task's current attempt
 hermes kanban routing revoke <policy_id> [--route-id ID] --reason "..." --approval-ref "..."
 hermes kanban routing readmit <policy_id> [--route-id ID] --reason "..." --approval-ref "..."
+hermes kanban routing reconcile <receipt_id> --reason "..." --approval-ref "..."
 ```
 
 Key properties, so operators know what this does and doesn't do:
@@ -198,6 +204,19 @@ Key properties, so operators know what this does and doesn't do:
 - **Per-attempt pinning.** Once a task claims and resolves a route, that receipted route
   is what the worker is validated against before it sends any task content; a routine
   policy edit affects new attempts, never an attempt already in flight.
+- **Shadow is explicitly non-enforcing.** `--routing-mode shadow` stores its
+  recommendation in `routing_shadow_receipt_id` and task events, but does not export an
+  enforcement receipt or alter provider/model/reasoning, retries, fallback, claim
+  disposition, or worker outcome. Observation failure is recorded and the legacy worker
+  still launches. An existing enforced receipt or inherited managed authority is never
+  demoted to shadow.
+- **Replacement is bounded and replay-safe.** A known pre-output provider refusal may
+  create one replacement attempt under a fresh receipt. A second replacement is held for
+  operator review. A prior request with missing terminal evidence, partial streaming, a
+  successful model response, or otherwise uncertain external effects is held immediately;
+  it is never automatically replayed by another worker. After independently reconciling
+  effects, an operator may authorize exactly one explicit retry with `routing reconcile`;
+  unblocking the card by itself never waives the replay hold.
 - **`revoke`/`readmit` are distinct from `publish`/`activate`.** `revoke` is the explicit
   emergency path for already-receipted, in-flight attempts (a whole policy or a single
   route); `readmit` is the only way to clear a revocation, and it is never implied by a
@@ -212,7 +231,7 @@ Key properties, so operators know what this does and doesn't do:
   default route.
 
 Live activation is a separate operator action. The delegation adapter
-(`delegate_task`'s `routing_role`/`routing_requirements`/`routing_policy_id`, see
+(`delegate_task`'s `routing_role`/`routing_mode`/`routing_requirements`/`routing_policy_id`, see
 [Delegation → Guided model routing](./delegation.md#guided-model-routing-opt-in-per-task))
 and the MoA reference/aggregator adapter (see
 [Mixture of Agents](./mixture-of-agents.md#guided-model-routing-for-moa-slots-opt-in-per-preset))

@@ -500,6 +500,23 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "the profile's provider and will fail if it belongs "
                 "to a different one. Requires 'model'."
         )),
+        "routing_role": _prop("string", (
+                "Optional guided-routing role for this task. The dispatcher "
+                "resolves it against the active approved policy at claim time."
+        )),
+        "routing_mode": {
+            "type": "string",
+            "enum": ["enforced", "shadow"],
+            "description": (
+                "With routing_role: 'enforced' (default) pins the selected route; "
+                "'shadow' records a recommendation without changing the legacy launch."
+            ),
+        },
+        "routing_requirements": _prop("object", (
+                "Structured task requirements for guided routing: task_class, "
+                "required_capabilities, input_tokens, reserve_tokens, and verified "
+                "contributor provenance for independent-review roles."
+        )),
     },
     ["title", "assignee"],
 )

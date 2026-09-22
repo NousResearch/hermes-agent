@@ -665,8 +665,8 @@ The agent handles delegation automatically based on the task complexity. You don
 
 ## Guided model routing (opt-in, per task)
 
-A delegated task's dict can carry `routing_role` (plus optional `routing_requirements`
-and `routing_policy_id`) to have the child's actual provider/model/reasoning resolved
+A delegated task's dict can carry `routing_role` (plus optional `routing_mode`,
+`routing_requirements`, and `routing_policy_id`) to have the child's actual provider/model/reasoning resolved
 by the same guided-routing selector and policy store the Kanban adapter uses, instead
 of a fixed `model`/`provider` override. A task without `routing_role` retains legacy
 behavior only when its parent is unmanaged; managed parents impose their authority
@@ -675,13 +675,18 @@ on every nested launch.
 - **Batch members are independent decisions.** Each task in a batch resolves its own
   route against its own requirements; there is no single static model chosen for the
   whole batch.
+- **Shadow mode is observation-only.** `routing_mode: "shadow"` persists the
+  recommendation (or surfaces a typed observation error) while constructing the child
+  through the unchanged legacy route. It never changes permissions, retries, fallback,
+  or outcomes. A managed parent's inherited authority always takes precedence, so a
+  nested child cannot use shadow mode to demote itself.
 - **Nested delegation inherits managed authority, it cannot escape it.** If the parent
   agent is itself running under a receipted managed route, any further child it
   delegates inherits that same authority ceiling — it cannot clear managed status by
   omitting `routing_role` on the sub-task, and it cannot request a different
   `routing_policy_id`/broader role than the one it was itself authorized under. This
   closes the "silent escape through parent inheritance" path the design calls out.
-- **`routing_role`/`routing_requirements`/`routing_policy_id` are structured,
+- **`routing_role`/`routing_mode`/`routing_requirements`/`routing_policy_id` are structured,
   operator/caller-supplied inputs**, mirroring the Kanban `--routing-role`/
   `--routing-requirements` CLI contract — free-text task content cannot invent
   admission into the roster; the selector call is the only place a route is chosen.

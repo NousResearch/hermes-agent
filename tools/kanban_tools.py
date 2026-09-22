@@ -890,6 +890,8 @@ def _handle_create(args: dict, **kw) -> str:
             idempotency_key=args.get("idempotency_key"),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
             model_override=model_override, provider_override=provider_override,
+            routing_role=args.get("routing_role"), routing_mode=args.get("routing_mode"),
+            routing_requirements=args.get("routing_requirements"),
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),

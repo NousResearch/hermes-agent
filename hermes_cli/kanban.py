@@ -382,6 +382,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
             routing_role=getattr(args, "routing_role", None) or None,
+            routing_mode=getattr(args, "routing_mode", None),
             routing_requirements=routing_requirements,
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
@@ -1265,7 +1266,7 @@ def _cmd_routing(args: argparse.Namespace) -> int:
     the origin profile's Hermes home and renders results.
     """
     from agent.model_selection_store import (
-        activate_policy, get_active_policy, get_receipt, list_policy_revisions, publish_policy,
+        activate_policy, authorize_replay, get_active_policy, get_receipt, list_policy_revisions, publish_policy,
         readmit_route, revoke_route,
     )
     from agent.model_selection_types import RoutingBlocked
@@ -1315,6 +1316,17 @@ def _cmd_routing(args: argparse.Namespace) -> int:
                 scope = record["route_id"] or "ALL ROUTES"
                 print(f"readmitted {scope} of {record['policy_id']} "
                       f"(generation {record['id']}, reason={record['reason']!r})")
+            return 0
+        if action == "reconcile":
+            record = authorize_replay(
+                hermes_home, args.receipt_id,
+                reason=args.reason, approval_ref=args.approval_ref,
+            )
+            if as_json:
+                _print_json(record)
+            else:
+                print(f"authorized one replay for {record['receipt_id']} "
+                      f"(reason={record['reason']!r})")
             return 0
         if action == "show":
             policy = get_active_policy(hermes_home, args.policy_id)

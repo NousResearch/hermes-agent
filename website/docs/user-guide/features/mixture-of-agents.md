@@ -253,6 +253,11 @@ and policy store the Kanban and delegation adapters use, instead of a fixed
 `provider`/`model` pin. A slot without `routing_role` is entirely unaffected — this
 does not change any existing fixed preset.
 
+Set `routing_mode: shadow` beside `routing_role` to record the route the policy would
+recommend while continuing to call the preset's fixed provider/model. Shadow slots are
+never required cohort gates, and a missing policy or rejected recommendation is logged
+without blocking the legacy MoA call.
+
 - **The cohort is resolved once per MoA run and pinned.** All managed slots in a
   run resolve together and the resulting routes are bound to that run's client; a
   config edit to the named preset mid-run cannot change an already-pinned cohort,
@@ -274,6 +279,10 @@ does not change any existing fixed preset.
 - **Failure is a denied slot, not silent unmanaged.** A managed slot whose route is
   denied or mismatched at the call boundary raises before that call is made, rather
   than falling back to whatever the preset's static config would otherwise pick.
+- **Streaming health follows consumption.** For a managed acting aggregator, route health
+  remains unknown until the returned stream is exhausted. A disconnect or timeout raised
+  while consuming the stream is recorded as that route's failure, never as an early
+  success merely because stream construction returned.
 
 See [Kanban worker lanes → Guided model routing](./kanban-worker-lanes.md#guided-model-routing-opt-in-per-task)
 for the `hermes kanban routing` commands that manage the shared policy this resolves

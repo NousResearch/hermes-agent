@@ -1526,6 +1526,21 @@ _OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
 )
 
 
+# Token Plan ``/compatible-mode/v1/models`` listings mix modalities: image (wan2.7-image*,
+# qwen-image-*), audio (qwen-audio-*) and video (happyhorse-*) SKUs sit next to the chat
+# models. The picker this feeds is a CHAT picker and those SKUs 400 on ``/chat/completions``
+# (chat-probed 2026-09-19), so offering one is a guaranteed failure. Their Hermes
+# integration is the dashscope image/video plugins, which reuse the same ``sk-sp-`` token —
+# keep them out of the chat catalog for both token-plan slugs.
+# Prefixes are scoped to the actual model families returned today; avoids over-matching
+# a future chat model that merely starts with "wan".
+_TOKEN_PLAN_NON_CHAT_PREFIXES = ("wan2.", "wanx", "wan-", "happyhorse", "qwen-image", "qwen-audio")
+_NON_CHAT_LIVE_EXCLUDED_PROVIDERS: dict[str, tuple[str, ...]] = {
+    "alibaba-token-plan": _TOKEN_PLAN_NON_CHAT_PREFIXES,
+    "alibaba-token-plan-cn": _TOKEN_PLAN_NON_CHAT_PREFIXES,
+}
+
+
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
 
@@ -1534,6 +1549,8 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     ``_LIVE_FIRST_PICKER_PROVIDERS`` (OpenCode Zen/Go, authoritative live API) live-first so stale
     curated entries stop polluting the top. Plugin providers without a static entry use the
     profile's ``fallback_models`` as the curated list (Fireworks lists an image model first).
+    Providers in ``_NON_CHAT_LIVE_EXCLUDED_PROVIDERS`` drop known non-chat live entries before
+    the merge (token-plan lists image/audio SKUs that 400 on chat).
     """
     from providers import get_provider_profile
 
@@ -1575,6 +1592,11 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -
     """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
     picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
+    non_chat_prefixes = _NON_CHAT_LIVE_EXCLUDED_PROVIDERS.get(normalized)
+    if live and non_chat_prefixes:
+        # Token-plan listings mix image/audio SKUs next to the chat models; they 400 on
+        # /chat/completions, so the chat picker must never offer them.
+        live = [m for m in live if not str(m).lower().startswith(non_chat_prefixes)]
     if not live:
         rows = list(profile.fallback_models) if profile.fallback_models else None
     else:

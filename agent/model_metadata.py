@@ -362,8 +362,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     # muse-image/muse-voice). Thinking Machines inkling (covers inkling-small and :free/:batch variants)
     "llama": 131072, "muse-spark-1.3": 1_048_576, "muse-spark": 1_048_576, "inkling": 1_048_576,
     # Qwen — https://help.aliyun.com/zh/model-studio/developer-reference/ (3.8-max/flash
-    # 1M verified on OpenRouter & Nous portal 2026-08; qwen3-max = 256K Coding Plan snapshot)
+    # 1M verified on OpenRouter & Nous portal 2026-08; qwen3-max = 256K Coding Plan snapshot;
+    # 3.7-max & 3.6-flash 1M per Model Studio docs, 2026-09-14 — else the "qwen" catch-all
+    # pins them at 131,072 (#69881 class))
     "qwen3.8-max": 1_000_000, "qwen3.8-flash": 1_000_000, "qwen3.6-plus": 1048576, "qwen3.7-plus": 1048576,
+    "qwen3.7-max": 1_000_000, "qwen3.6-flash": 1_000_000,
     "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
@@ -1565,6 +1568,7 @@ _PRE_CATALOG_STALE_KEYS = frozenset({
     "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
+    "qwen3.7-max", "qwen3.6-flash",  # 1M (2026-09-14 entries); same "qwen" catch-all pin
     # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.
     "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
     "deepseek-chat", "deepseek-reasoner",

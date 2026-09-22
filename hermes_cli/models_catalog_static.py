@@ -151,10 +151,21 @@ _ALIBABA_CODING_PLAN_MODELS = [
     "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "qwen3-max-2026-01-23", "qwen3-coder-plus",
     "qwen3-coder-next", "kimi-k2.5", "glm-5", "glm-4.7", "MiniMax-M2.5",
 ]
-# Verified against a live Token Plan subscription (key tier ``sk-sp-...``).
+# Token Plan (Personal Edition, ``sk-sp-...`` keys): the chat-capable ids from the official
+# supported-models list (help.aliyun.com/en/model-studio/token-plan-personal-overview), each
+# re-verified by chat probe 2026-09-19 against token-plan.ap-southeast-1.maas.aliyuncs.com.
+# The live ``/compatible-mode/v1/models`` listing is NOT sufficient as a source: it omits
+# deepseek-v4-pro-0813, so this floor is the only layer that carries it; and it mixes in
+# image/audio SKUs (wan2.7-image*, qwen-audio-*), which the picker merge filters out for
+# these slugs (``_NON_CHAT_LIVE_EXCLUDED_PROVIDERS`` in models.py).
+# qwen3.8-max-preview is a routed legacy alias for qwen3.8-max — not listed. Rotated-out ids
+# (qwen3.8-max-0902, qwen3.6-plus, deepseek-v4-flash, deepseek-v3.2, kimi-k2.5/-k2.6/-k2.7-code,
+# glm-5/glm-5.1) are 403/404 on Personal-tier chat probes and stay out; Team-edition extras
+# belong to the plugin-registered ``-team`` slugs.
 _ALIBABA_TOKEN_PLAN_MODELS = [
-    "qwen3.8-max-0902", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "deepseek-v4-pro",
-    "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.2", "glm-5.1", "glm-5",
+    "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+    "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-pro-0813", "deepseek-v4-flash-0731",
+    "glm-5.3", "glm-5.2",
 ]
 _XAI_MODELS = _xai_curated_models()
 

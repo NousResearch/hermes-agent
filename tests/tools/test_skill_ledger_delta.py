@@ -95,7 +95,7 @@ def test_gc_blobs_removes_only_unreferenced(ledger_home):
 
 
 @pytest.mark.parametrize("failure", ["unreadable", "missing", "invalid-encoding"])
-def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, monkeypatch, failure):
+def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, monkeypatch, caplog, failure):
     from tools import skill_ledger
 
     skill = ledger_home / "skills" / "demo" / "SKILL.md"
@@ -122,6 +122,7 @@ def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, mon
         else:
             ledger.write_bytes(b"\xff")
         assert skill_ledger.gc_blobs() == (0, 0)
+        assert "blob GC skipped" in caplog.text
         assert {p.name: p.read_bytes() for p in skill_ledger.blobs_dir().iterdir()} == blobs_before
     ledger.write_bytes(saved)
     ok, message = skill_ledger.rollback_entry(entry_id)

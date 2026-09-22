@@ -454,8 +454,10 @@ import {
   compareApiUrl,
   describeUpdateCheckFailure,
   githubRepoSlug,
+  latestReleaseApiUrl,
   listLocalCommits,
   parseCompare,
+  parseReleaseTagName,
   rateLimitFromHeaders,
   resolveBehindLocally
 } from './update-api-check'
@@ -3147,10 +3149,15 @@ function readDesktopUpdateConfig() {
   try {
     const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
     const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
+    // 'release' anchors update checks to the latest tagged release instead of
+    // the branch tip — for fork installs on a fast-moving main, a tip-anchored
+    // badge is effectively never off; a release anchor lights only when a new
+    // release exists that HEAD lacks.
+    const updateRefAnchor = parsed?.updateRefAnchor === 'release' ? 'release' : 'branch'
 
-    return { branch: branch || DEFAULT_UPDATE_BRANCH }
+    return { branch: branch || DEFAULT_UPDATE_BRANCH, updateRefAnchor: updateRefAnchor as 'branch' | 'release' }
   } catch {
-    return { branch: DEFAULT_UPDATE_BRANCH }
+    return { branch: DEFAULT_UPDATE_BRANCH, updateRefAnchor: 'branch' as const }
   }
 }
 
@@ -3336,7 +3343,8 @@ async function resolveHealedBranch(updateRoot, branch) {
 // cache; the renderer's background poller never passes it.
 async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const updateRoot = resolveUpdateRoot()
-  let { branch } = readDesktopUpdateConfig()
+  const { branch: configuredBranch, updateRefAnchor } = readDesktopUpdateConfig()
+  let branch = configuredBranch
   const gitDir = path.join(updateRoot, '.git')
 
   if (!directoryExists(gitDir)) {
@@ -3363,20 +3371,45 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const cached = readUpdateCheckCache()
   const now = Date.now()
 
-  if (!force && cacheIsFresh(cached, { branch, currentSha, now })) {
+  if (!force && cacheIsFresh(cached, { branch, currentSha, now, releaseAnchor: updateRefAnchor })) {
     return { ...cached.status, dirty: dirtyStr.length > 0, currentBranch }
   }
 
   branch = await resolveHealedBranch(updateRoot, branch)
   const slug = githubRepoSlug(originUrl)
 
+  // Release-anchored mode: compare against the latest tagged release's commit
+  // instead of the branch tip. Anchor lookup failures (offline, rate-limited)
+  // fall back to the branch tip for this round; the anchor TTL in cacheIsFresh
+  // makes the next check re-resolve the release.
+  let ref = branch
+  let releaseTag: string | null = null
+  let releaseTagFetchedAt: number | undefined
+  if (updateRefAnchor === 'release' && slug) {
+    // Stamp the anchor lookup even when it fails: a fork without GitHub
+    // releases would otherwise 404 on every poller tick and hammer the API
+    // (cacheIsFresh in release mode treats a missing stamp as epoch-ancient).
+    // The stamp acts as a 2h negative-TTL for the failed lookup.
+    releaseTagFetchedAt = Date.now()
+    try {
+      releaseTag = parseReleaseTagName(await fetchGitHubApi(latestReleaseApiUrl(slug)))
+      if (releaseTag) {
+        ref = releaseTag
+      }
+    } catch {
+      rememberLog(`[updates] latest-release lookup failed; comparing against origin/${branch} tip this round`)
+    }
+  }
+
   const status = slug
-    ? await checkUpdatesViaApi({ slug, branch, currentSha, updateRoot })
+    ? await checkUpdatesViaApi({ slug, branch: ref, currentSha, updateRoot })
     : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
 
   const result = {
     supported: true,
     branch,
+    updateRefAnchor,
+    ...(releaseTag ? { releaseTag } : {}),
     currentBranch,
     currentSha,
     dirty: dirtyStr.length > 0,
@@ -3385,7 +3418,13 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
     ...status
   }
 
-  writeUpdateCheckCache({ fetchedAt: now, currentSha, branch, status: result })
+  writeUpdateCheckCache({
+    fetchedAt: now,
+    currentSha,
+    branch,
+    ...(releaseTagFetchedAt !== undefined ? { releaseTagFetchedAt } : {}),
+    status: result
+  })
 
   return result
 }
@@ -18075,7 +18114,10 @@ ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig(
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
-  writeDesktopUpdateConfig({ branch })
+  // Spread the existing config: this is a full-file replace, and dropping
+  // updateRefAnchor here would silently revert a release-anchored install to
+  // branch mode.
+  writeDesktopUpdateConfig({ ...readDesktopUpdateConfig(), branch })
 
   return { branch }
 })

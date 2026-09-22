@@ -2299,6 +2299,11 @@ DEFAULT_CONFIG = {
     "updates": {
         # Passive version/banner checks only; explicit `hermes update --check` remains enabled.
         "check": True,
+        # What passive checks compare HEAD against: "branch" = the update branch's tip
+        # (default), "release" = the latest tagged release's commit. Fork installs on a
+        # fast-moving main are behind the tip almost permanently, so "release" makes the
+        # badge mean "a new release exists that you lack" instead.
+        "anchor": "branch",
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,
         # config.yaml, .env, auth.json, profile DBs) into <HERMES_HOME>/state-snapshots/, skipping
         # files >1 GiB; restore via ``/snapshot``. full = quick PLUS a ``hermes backup`` zip in

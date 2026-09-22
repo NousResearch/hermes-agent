@@ -2866,6 +2866,8 @@ export const en: Translations = {
     review: 'Review',
     logs: 'Logs',
     cronJobs: 'Cron jobs',
+    inboxAndJobs: 'Messaging & jobs',
+    toggleInboxAndJobs: 'Toggle messaging and cron sections',
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',
     showProjects: 'Show projects',

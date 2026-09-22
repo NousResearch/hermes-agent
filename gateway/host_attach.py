@@ -129,6 +129,19 @@ def _served_from_identity(identity: dict) -> tuple[str, ...]:
     return (str(identity.get("profile") or "default"),)
 
 
+def _standalone_from_identity(identity: dict) -> bool:
+    """True when the owner published no ``served_profiles`` list.
+
+    A multiplexer stamps its served set into runtime status, which ``identify`` forwards; a
+    standalone (one-process-per-profile) gateway has no such list and serves only its own profile.
+    Its absence is therefore the standalone signal — and, read the other way, a conservatively safe
+    one: an owner whose served set is not yet known is treated as standalone, which can only mean
+    "start beside it", never "signal it".
+    """
+    served = identity.get("served_profiles")
+    return not (isinstance(served, list) and served)
+
+
 def _identity_matches(identity, record, home: Path) -> bool:
     """Is this ``identify`` answer really the record's owner?
 
@@ -176,7 +189,9 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
     while True:
         identity = _identify(home)
         if _identity_matches(identity, record, home):
-            return HostGateway(record.pid, home, _served_from_identity(identity))
+            return HostGateway(
+                record.pid, home, _served_from_identity(identity),
+                standalone=_standalone_from_identity(identity))
         if time.monotonic() >= deadline:
             break
         time.sleep(_CHANNEL_POLL_S)
@@ -286,8 +301,16 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
     if gateway is None or gateway.pid == os.getpid():
         return HostAttachDecision(START, "")
     if replace:
-        # --replace is explicit authority over the host role; the target is the host process,
-        # whichever home launched it.
+        # --replace names the host process, whichever home launched it — UNLESS the owner is a
+        # STANDALONE gateway for a DIFFERENT profile. Standalone is the documented
+        # one-process-per-profile topology: each profile runs its own gateway with its own
+        # credentials, so "replace" there means "replace my own instance", never signal an
+        # unrelated owner. Before host rendezvous, launchd/systemd defaulted every unit to
+        # `gateway run --replace`, so a second profile's supervised unit must start beside the
+        # owner exactly as it did then — not kill it (which the cross-profile ownership guard
+        # refused, and the supervisor's retry loop turned into a respawn storm).
+        if gateway.standalone and not gateway.serves(profile):
+            return HostAttachDecision(START, "")
         return HostAttachDecision(REPLACE_HOST, "", gateway)
     if gateway.serves(profile):
         return HostAttachDecision(ATTACH, attach_message(gateway, profile), gateway, transient=True)

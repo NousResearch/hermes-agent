@@ -341,8 +341,41 @@ def _write_handoff_ack(ack_path: Path | None, receipt: dict[str, Any], receipt_p
         logger.warning("Could not write post-swap handoff acknowledgement: %s", exc)
 
 
+def _terminal_receipt_matches(
+    receipt: object, *, correlation_id: str | None,
+    expected_intent: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(receipt, dict):
+        return False
+    if receipt.get("outcome") not in {"success", "partial", "failed", "refused"}:
+        return False
+    if correlation_id is not None and receipt.get("correlation_id") != correlation_id:
+        return False
+    if expected_intent is not None:
+        try:
+            from hermes_cli.update_target import validate_update_intent
+            expected = validate_update_intent(expected_intent)
+            recorded = validate_update_intent(receipt.get("update_intent"))
+        except ValueError:
+            return False
+        if recorded != expected or receipt.get("requested_sha") != expected["target"]:
+            return False
+        if receipt.get("install_id") != expected["install_id"]:
+            return False
+        if receipt.get("pre_sha") != expected["prior_sha"]:
+            return False
+        if receipt.get("outcome") in {"success", "partial"} and (
+            receipt.get("pinned_post_verified") is not True
+            or receipt.get("post_sha") != expected["target"]
+            or receipt.get("post_install_id") != expected["install_id"]
+        ):
+            return False
+    return True
+
+
 def read_handoff_ack(
-    path: str | Path | None, *, correlation_id: str | None = None
+    path: str | Path | None, *, correlation_id: str | None = None,
+    expected_intent: dict[str, Any] | None = None,
 ) -> Optional[dict[str, Any]]:
     """Read a child finalization acknowledgement only when it matches the receipt."""
     if not path:
@@ -351,30 +384,59 @@ def read_handoff_ack(
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             return None
+        if payload.get("schema") != 1:
+            return None
         if correlation_id is not None and payload.get("correlation_id") != correlation_id:
             return None
         if payload.get("outcome") not in {"success", "partial", "failed", "refused"}:
+            return None
+        receipt_path = Path(payload["receipt_path"]).resolve(strict=True)
+        if (
+            receipt_path.parent != _receipt_dir().resolve()
+            or not receipt_path.name.startswith("update_")
+            or receipt_path.suffix != ".json"
+        ):
+            return None
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if (
+            not _terminal_receipt_matches(
+                receipt, correlation_id=payload.get("correlation_id"),
+                expected_intent=expected_intent,
+            )
+            or receipt.get("outcome") != payload.get("outcome")
+            or receipt.get("finished_at") != payload.get("finished_at")
+        ):
             return None
         return payload
     return None
 
 
-def read_finalized_receipt(correlation_id: str | None) -> Optional[dict[str, Any]]:
+def read_finalized_receipt(
+    correlation_id: str | None, *, expected_intent: dict[str, Any] | None = None,
+) -> Optional[dict[str, Any]]:
     """Find a durable terminal receipt for one pinned correlation id."""
     if not correlation_id:
         return None
     with suppress(Exception):
+        def readable_mtime(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return -1.0
+
         paths = sorted(
-            (p for p in _receipt_dir().glob("update_*.json") if p.is_file()),
-            key=lambda p: p.stat().st_mtime,
+            _receipt_dir().glob("update_*.json"),
+            key=readable_mtime,
             reverse=True,
         )
         for path in paths:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if (
-                isinstance(payload, dict)
-                and payload.get("correlation_id") == correlation_id
-                and payload.get("outcome") in {"success", "partial", "failed", "refused"}
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError):
+                continue
+            if _terminal_receipt_matches(
+                payload, correlation_id=correlation_id,
+                expected_intent=expected_intent,
             ):
                 return payload
     return None

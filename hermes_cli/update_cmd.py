@@ -1362,22 +1362,20 @@ def _post_swap_argv_tail(args) -> list[str]:
         tail += ["--branch", str(branch)]
     request = getattr(args, "target_request", None)
     if request is not None:
+        from hermes_cli.update_target import encode_reviewed_source
         tail += [
             "--revision", request.revision,
             "--expected-install-id", request.install_id,
             "--expected-current-sha", request.current_sha,
+            "--reviewed-source", encode_reviewed_source(request.source),
         ]
     return tail
 
 
-def _pinned_intent(request, *, branch: str, correlation_id: str) -> dict[str, str]:
-    return {
-        "target": request.revision,
-        "install_id": request.install_id,
-        "correlation_id": correlation_id,
-        "prior_sha": request.current_sha,
-        "branch": branch,
-    }
+def _pinned_intent(request, *, branch: str, correlation_id: str) -> dict[str, object]:
+    from hermes_cli.update_target import build_update_intent
+
+    return build_update_intent(request, correlation_id, branch)
 
 
 def _post_swap_payload(
@@ -1431,14 +1429,13 @@ def _cmd_pinned_update_impl(args, gateway_mode: bool):
     request = args.target_request
     correlation_id = uuid.uuid4().hex
     requested_branch = getattr(args, "branch", None)
-    receipt_branch = requested_branch or current_branch(_m().PROJECT_ROOT) or "main"
-    begin_update_receipt(intent={
-        "target": request.revision,
-        "install_id": request.install_id,
-        "correlation_id": correlation_id,
-        "prior_sha": request.current_sha,
-        "branch": receipt_branch,
-    })
+    # Refusals before Git admission still need the exact reviewed source in
+    # their receipt. The reviewed ref names the admitted branch even if the
+    # live checkout has drifted to another branch since review.
+    receipt_branch = request.source.resolved_ref.removeprefix("refs/remotes/origin/")
+    begin_update_receipt(intent=_pinned_intent(
+        request, branch=receipt_branch, correlation_id=correlation_id,
+    ))
     try:
         result = apply_pinned_target(
             _m().PROJECT_ROOT, request, branch=requested_branch
@@ -1505,8 +1502,14 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
         token["resume_needed"] = False
     correlation_id = payload.get("correlation_id") or (payload.get("pinned_intent") or {}).get("correlation_id")
     from hermes_cli.update_receipt import read_finalized_receipt, read_handoff_ack
-    ack = read_handoff_ack(payload.get("_handoff_ack_path"), correlation_id=correlation_id)
-    finalized = None if ack else read_finalized_receipt(correlation_id) if pinned else None
+    expected_intent = payload.get("pinned_intent") if pinned else None
+    ack = read_handoff_ack(
+        payload.get("_handoff_ack_path"), correlation_id=correlation_id,
+        expected_intent=expected_intent,
+    )
+    finalized = None if ack else read_finalized_receipt(
+        correlation_id, expected_intent=expected_intent,
+    ) if pinned else None
     child_outcome = (ack or finalized or {}).get("outcome")
     child_did_not_consume = not bool(ack or finalized)
     if code is None or (pinned and code != 0 and child_did_not_consume):
@@ -1548,6 +1551,14 @@ def _run_post_swap_phase(args, gateway_mode: bool) -> None:
     payload = _update_handoff.read_handoff(args.post_swap)
     forwarded = getattr(args, "target_request", None)
     pinned_intent = payload.get("pinned_intent")
+    if forwarded is not None and pinned_intent is None:
+        raise ValueError("missing pinned intent for post-swap request")
+    if pinned_intent is not None and forwarded is None:
+        raise ValueError("missing pinned argv for post-swap handoff")
+    if pinned_intent is not None and (
+        forwarded.source is None or pinned_intent.get("source") != forwarded.source.to_wire()
+    ):
+        raise ValueError("post-swap reviewed source mismatch")
     if pinned_intent is not None and forwarded is not None:
         if {
             "target": forwarded.revision,
@@ -1598,7 +1609,8 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
         from hermes_cli.update_receipt import record_failure, record_pinned_post_swap
         try:
             pinned_request = TargetRequest(
-                pinned_intent["target"], pinned_intent["install_id"], pinned_intent["prior_sha"]
+                pinned_intent["target"], pinned_intent["install_id"], pinned_intent["prior_sha"],
+                pinned_intent.get("source"),
             )
             proof = verify_pinned_post_swap(_m().PROJECT_ROOT, pinned_request)
         except (KeyError, TargetAdmissionError) as exc:

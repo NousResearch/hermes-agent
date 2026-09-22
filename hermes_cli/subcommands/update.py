@@ -6,7 +6,7 @@ import argparse
 from types import MethodType
 from typing import Callable
 
-from hermes_cli.update_target import validate_target_request
+from hermes_cli.update_target import parse_reviewed_source, validate_target_request
 
 
 def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
@@ -27,6 +27,10 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "--expected-current-sha", default=None, metavar="HEX",
         help="Pinned current checkout SHA (40 lowercase hexadecimal characters). "
             "Must be supplied with --revision and --expected-install-id.")
+    update_parser.add_argument(
+        "--reviewed-source", default=None, metavar="BASE64URL",
+        help="Reviewed repository, origin, ref, target and applicable assurance binding "
+             "as a base64url JSON record. Required for a pinned update.")
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
@@ -110,6 +114,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "--revision",
         "--expected-install-id",
         "--expected-current-sha",
+        "--reviewed-source",
     }
 
     # Reject only abbreviations of the new flags, at argparse's option
@@ -122,7 +127,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         if any(option in _pinned_options for _, option, *_ in matches):
             parser.error(
                 f"unrecognized arguments: {option_string}; use exact pinned options: "
-                "--revision, --expected-install-id, --expected-current-sha"
+                "--revision, --expected-install-id, --expected-current-sha, --reviewed-source"
             )
         return matches
 
@@ -133,11 +138,22 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     def _parse_update_known_args(parser, args=None, namespace=None):
         parsed, remainder = _parse_known_args(args, namespace)
         try:
+            source = (
+                parse_reviewed_source(parsed.reviewed_source)
+                if parsed.reviewed_source is not None else None
+            )
             parsed.target_request = validate_target_request(
                 parsed.revision,
                 parsed.expected_install_id,
                 parsed.expected_current_sha,
+                source,
             )
+            if parsed.target_request is not None and source is None:
+                raise ValueError("source-binding-required")
+            if parsed.target_request is None and source is not None:
+                raise ValueError("reviewed-source-without-target")
+            if parsed.target_request is not None and source.target_sha != parsed.target_request.revision:
+                raise ValueError("reviewed-target-mismatch")
         except ValueError as exc:
             parser.error(
                 f"{exc}; supply --revision, --expected-install-id and "

@@ -65,10 +65,20 @@ def _validated_pinned_payload(payload: dict[str, Any], *, intent: dict[str, Any]
     body = deepcopy(payload)
     candidate = intent if intent is not None else body.get("pinned_intent")
     if candidate is None:
+        receipt = body.get("receipt")
+        if (
+            body.get("target_intent") is not None
+            or body.get("requested_sha") is not None
+            or body.get("_handoff_ack_path") is not None
+            or (isinstance(receipt, dict) and receipt.get("update_intent") is not None)
+        ):
+            raise ValueError("missing pinned intent")
         return body
     from hermes_cli.update_target import validate_update_intent
 
     frozen = validate_update_intent(candidate)
+    if "source" not in frozen:
+        raise ValueError("source-binding-required")
     receipt = body.get("receipt")
     if not isinstance(receipt, dict):
         raise ValueError("pinned handoff receipt is required")

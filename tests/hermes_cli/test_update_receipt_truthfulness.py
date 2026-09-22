@@ -77,7 +77,73 @@ def _pinned_intent(target="a" * 40, prior="b" * 40, branch="main"):
         "correlation_id": "c" * 32,
         "prior_sha": prior,
         "branch": branch,
+        "source": {
+            "repositoryRoot": "C:/reviewed/hermes-agent",
+            "originUrl": "https://example.test/hermes.git",
+            "resolvedRef": f"refs/remotes/origin/{branch}",
+            "targetSha": target,
+            "assuranceProfile": "fixture",
+            "assuranceEvidenceSha256": "d" * 64,
+            "assuranceGeneration": 1,
+        },
     }
+
+
+def test_ack_requires_matching_durable_terminal_receipt(receipt_home):
+    ack = receipt_home / "logs" / "update_receipts" / "post_swap_42.ack"
+    ack.parent.mkdir(parents=True)
+    ack.write_text(json.dumps({
+        "schema": 1,
+        "correlation_id": "c" * 32,
+        "outcome": "success",
+        "receipt_path": str(ack.parent / "missing.json"),
+    }), encoding="utf-8")
+
+    assert ur.read_handoff_ack(ack, correlation_id="c" * 32) is None
+
+
+def test_corrupt_unrelated_receipt_does_not_hide_correlated_terminal_receipt(receipt_home):
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+    ur.record_pinned_post_swap(
+        post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
+    )
+    path = ur.finalize_update_receipt("success")
+    assert path is not None
+    malformed = path.parent / "update_zzzz.json"
+    malformed.write_text("{broken", encoding="utf-8")
+
+    found = ur.read_finalized_receipt(intent["correlation_id"])
+    assert found is not None
+    assert found["requested_sha"] == intent["target"]
+
+
+def test_terminal_receipt_without_local_ack_still_settles_exact_intent(receipt_home):
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+    ur.record_pinned_post_swap(
+        post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
+    )
+    path = ur.finalize_update_receipt("success")
+    assert path is not None
+    assert ur.read_finalized_receipt(
+        intent["correlation_id"], expected_intent=intent,
+    ) == json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_same_correlation_receipt_with_other_reviewed_source_cannot_settle(receipt_home):
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+    ur.record_pinned_post_swap(
+        post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
+    )
+    path = ur.finalize_update_receipt("success")
+    assert path is not None
+    other = json.loads(json.dumps(intent))
+    other["source"]["originUrl"] = "https://other.example.test/hermes.git"
+    assert ur.read_finalized_receipt(
+        intent["correlation_id"], expected_intent=other,
+    ) is None
 
 
 @pytest.mark.parametrize("outcome", ["success", "partial"])

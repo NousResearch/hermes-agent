@@ -68,6 +68,42 @@ def test_existing_raw_identity_is_observed_without_mutation(tmp_path, monkeypatc
     assert before == after
 
 
+def test_probe_never_emits_credentials_embedded_in_origin(tmp_path, monkeypatch):
+    _patch_common(monkeypatch, tmp_path, identity_text=INSTALL_ID)
+    monkeypatch.setattr(probe, "_read_git_metadata", lambda _root: {
+        "origin": "https://operator:probe-secret@example.test/hermes.git",
+        "trackingBranch": "origin/main", "checkoutSha": SHA,
+        "checkoutState": "clean",
+    })
+
+    rendered = json.dumps(probe.collect_observation())
+    assert "probe-secret" not in rendered
+    assert "operator" not in rendered
+    assert "https://example.test/hermes.git" in rendered
+
+
+@pytest.mark.parametrize("missing", ["identity", "recovery", "generation"])
+def test_readiness_refuses_missing_identity_recovery_or_generation(
+    tmp_path, monkeypatch, missing,
+):
+    _patch_common(
+        monkeypatch, tmp_path,
+        identity_text=None if missing == "identity" else INSTALL_ID,
+    )
+    monkeypatch.setattr(probe, "_read_image_marker", lambda: {"state": "absent"})
+    monkeypatch.setattr(probe, "_read_recovery", lambda: {
+        "state": "live" if missing == "recovery" else "clear", "markers": {},
+    })
+    if missing == "generation":
+        monkeypatch.setattr(probe, "_read_runtime_evidence", lambda: {
+            "generation": None, "requiredScopes": None, "processes": [],
+            "processGeneration": {"state": "unknown", "observed": None},
+        })
+
+    observation = probe.collect_observation(mode="health")["observation"]
+    assert observation["readiness"]["state"] == "blocked"
+
+
 @pytest.mark.parametrize("identity_text", [None, "not-an-install-id\n", "B" * 32 + "\n"])
 def test_missing_or_invalid_raw_identity_stays_unknown(tmp_path, monkeypatch, identity_text):
     _patch_common(monkeypatch, tmp_path, identity_text=identity_text)

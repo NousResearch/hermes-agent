@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_scratch_dir
 
 
 _DB_LOCK = threading.Lock()
@@ -49,6 +49,7 @@ _PYTEST_SPELLINGS = (
     ["python", "-m", "pytest"], ["python3", "-m", "pytest"],
     ["uv", "run", "pytest"], ["poetry", "run", "pytest"], ["pipenv", "run", "pytest"],
 )
+_UNITTEST_RESULT_RE = re.compile(r"^Ran ([0-9]+) tests? in [^\r\n]+\r?$", re.MULTILINE)
 _SCHEMA_DDL = (
     """
         CREATE TABLE IF NOT EXISTS meta (
@@ -273,6 +274,18 @@ def _find_canonical_match(command: str, canonical_commands: list[str], exit_code
             for candidate in _equivalent_needles(needle):
                 if candidate_tokens[:len(candidate)] == candidate and _exit_status_is_attributable(segments, index, exit_code):
                     return canonical, candidate_tokens[len(candidate):]
+            if (
+                needle == ["python", "-m", "unittest"]
+                and len(candidate_tokens) >= 3
+                and re.fullmatch(
+                    r"(?:python(?:\d+(?:\.\d+)*)?|py)(?:\.exe)?",
+                    candidate_tokens[0].replace("\\", "/").rsplit("/", 1)[-1],
+                    re.IGNORECASE,
+                )
+                and candidate_tokens[1:3] == ["-m", "unittest"]
+                and _exit_status_is_attributable(segments, index, exit_code)
+            ):
+                return canonical, candidate_tokens[3:]
     return None
 
 
@@ -303,12 +316,19 @@ def _is_under(token: str, base: str | Path | None) -> bool:
 
 
 def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
-    """An ad-hoc verify script: prefixed name, under the temp dir, outside the repo."""
+    """An ad-hoc verify script under scratch, the workspace, or legacy temp."""
     try:
         name = Path(token).expanduser().name
     except Exception:
         return False
-    return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, tempfile.gettempdir()) and not _is_under(token, root)
+    if not name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES):
+        return False
+    scratch = get_scratch_dir(get_hermes_home(), prune=False)
+    return (
+        _is_under(token, scratch)
+        or _is_under(token, root)
+        or _is_under(token, tempfile.gettempdir())
+    )
 
 
 def _is_interpreter_token(token: str) -> bool:
@@ -436,9 +456,17 @@ def classify_verification_command(
         return None
 
     verify_commands = list(facts.get("verifyCommands") or [])
-    match = _find_canonical_match(command, verify_commands, int(exit_code))
+    match = _find_canonical_match(command, verify_commands or ["python -m unittest"], int(exit_code))
     if match is not None:
         canonical, trailing_args = match
+        if canonical == "python -m unittest":
+            summaries = _UNITTEST_RESULT_RE.findall(output or "")
+            if (
+                len(_split_shell_segments(command)) != 1
+                or len(summaries) != 1
+                or int(summaries[0]) == 0
+            ):
+                return None
         kind = _kind_for_command(canonical)
         scope = "targeted" if any(map(_looks_like_target, trailing_args)) else "full"
     else:

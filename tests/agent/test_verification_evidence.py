@@ -1,10 +1,12 @@
 import json
 import sqlite3
-import tempfile
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+from hermes_constants import get_scratch_dir
 
 from agent.verification_evidence import (
     classify_verification_command,
@@ -32,6 +34,19 @@ def _node_project(root: Path) -> None:
 
 def _python_project(root: Path) -> None:
     (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+
+
+def _manifestless_unittest_project(root: Path) -> None:
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    tests = root / "tests"
+    tests.mkdir()
+    (tests / "test_widget.py").write_text(
+        "import unittest\n\nclass WidgetTests(unittest.TestCase):\n    def test_widget(self):\n        pass\n"
+    )
+
+
+def _hermes_scratch(root: Path) -> Path:
+    return get_scratch_dir(root / ".hermes", prune=False)
 
 
 
@@ -185,7 +200,7 @@ def test_shell_redirection_does_not_hide_simple_verifier(tmp_path, monkeypatch, 
 def test_masked_ad_hoc_script_is_not_verification_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-{tmp_path.name}.py"
+    script = _hermes_scratch(tmp_path) / f"hermes-ad-hoc-{tmp_path.name}.py"
     script.write_text("raise SystemExit(1)\n", encoding="utf-8")
     try:
         evidence = classify_verification_command(
@@ -233,7 +248,7 @@ def test_masked_verifier_does_not_clear_edited_ledger_state(tmp_path, monkeypatc
 def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-{tmp_path.name}.py"
+    script = _hermes_scratch(tmp_path) / f"hermes-ad-hoc-{tmp_path.name}.py"
     script.write_text("print('ok')\n", encoding="utf-8")
     try:
         evidence = classify_verification_command(
@@ -254,6 +269,161 @@ def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, m
 
 
 @pytest.mark.parametrize(
+    ("exit_code", "output", "expected_status"),
+    [
+        (0, "Ran 1 test in 0.001s\n\nOK", "passed"),
+        (1, "Ran 1 test in 0.001s\n\nFAILED (failures=1)", "failed"),
+        (0, "Ran 0 tests in 0.000s\n\nOK", None),
+    ],
+)
+def test_manifestless_unittest_requires_observed_nonempty_test_run(
+    tmp_path, monkeypatch, exit_code, output, expected_status
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _manifestless_unittest_project(tmp_path)
+
+    evidence = classify_verification_command(
+        "python -m unittest",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=exit_code,
+        output=output,
+    )
+
+    if expected_status is None:
+        assert evidence is None
+    else:
+        assert evidence is not None
+        assert evidence.canonical_command == "python -m unittest"
+        assert evidence.status == expected_status
+
+
+@pytest.mark.parametrize("command", [
+    "python -c \"print('Ran 1 test')\" && python -m unittest",
+    "python -m unittest && python -c \"print('Ran 1 test')\"",
+])
+def test_unittest_compound_output_is_not_attributed_to_test_run(tmp_path, command):
+    _manifestless_unittest_project(tmp_path)
+    assert classify_verification_command(
+        command, cwd=tmp_path, exit_code=0,
+        output="Ran 1 test\nRan 0 tests in 0.000s\nOK\n",
+    ) is None
+
+
+@pytest.mark.parametrize("output", [
+    "Ran 1 test\nRan 0 tests in 0.000s\n\nOK\n",
+    "Ran 1 test in 0.001s\nRan 0 tests in 0.000s\n\nOK\n",
+    "Ran 0 tests in 0.000s\n\nOK\nRan 1 test in 0.001s\n",
+])
+def test_unittest_rejects_misleading_or_multiple_summaries(tmp_path, output):
+    _manifestless_unittest_project(tmp_path)
+    assert classify_verification_command(
+        "python -m unittest", cwd=tmp_path, exit_code=0, output=output,
+    ) is None
+
+
+def test_unittest_filename_does_not_claim_canonical_suite(tmp_path):
+    from agent.coding_context import project_facts_for
+
+    _manifestless_unittest_project(tmp_path)
+    (tmp_path / "testutils.py").write_text("HELPER = True\n")
+    facts = project_facts_for(tmp_path)
+    assert "python -m unittest" not in facts["verifyCommands"]
+    script = tmp_path / "hermes-verify-fallback.py"
+    script.write_text("assert 1 + 1 == 2\n")
+    assert classify_verification_command(
+        f'python "{script.as_posix()}"', cwd=tmp_path, exit_code=0, output=""
+    ) is not None
+
+
+@pytest.mark.parametrize("interpreter", ["node", "bash", "ruby", "$PY"])
+def test_non_python_unittest_invocation_is_not_evidence(tmp_path, interpreter):
+    _manifestless_unittest_project(tmp_path)
+    assert classify_verification_command(
+        f"{interpreter} -m unittest", cwd=tmp_path,
+        exit_code=0, output="Ran 1 test in 0.001s\nOK"
+    ) is None
+
+
+def test_unittest_does_not_bypass_declared_pytest_suite(tmp_path):
+    _manifestless_unittest_project(tmp_path)
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    assert classify_verification_command(
+        "python -m unittest", cwd=tmp_path,
+        exit_code=0, output="Ran 1 test in 0.001s\nOK"
+    ) is None
+
+
+def test_real_unittest_discovery_records_merged_stderr(tmp_path, monkeypatch):
+    import sys
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _manifestless_unittest_project(tmp_path)
+    args = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
+    run = subprocess.run(args, cwd=tmp_path, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, timeout=20)
+    assert run.returncode == 0
+    assert "Ran 1 test" in run.stdout
+    event = record_terminal_result(
+        command=f'"{Path(sys.executable).as_posix()}" -m unittest discover -s tests',
+        cwd=tmp_path, session_id="actual-unittest", exit_code=run.returncode,
+        output=run.stdout,
+    )
+    assert event is not None and event["status"] == "passed"
+    assert verification_status(session_id="actual-unittest", cwd=tmp_path)["status"] == "passed"
+
+
+def test_legacy_system_temp_script_remains_evidence(tmp_path, monkeypatch):
+    import tempfile
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "package.json").write_text("{}", encoding="utf-8")
+    legacy_temp = tmp_path / "legacy-temp"
+    legacy_temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(legacy_temp))
+    script = legacy_temp / "hermes-verify-legacy.py"
+    script.write_text("assert True\n", encoding="utf-8")
+
+    evidence = classify_verification_command(
+        f'python "{script.as_posix()}"', cwd=project, exit_code=0
+    )
+
+    assert evidence is not None
+    assert evidence.kind == "ad_hoc"
+
+
+def test_hermes_scratch_ad_hoc_script_is_allowed(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    script = get_scratch_dir(home, prune=False) / "hermes-verify-scratch.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+
+    evidence = classify_verification_command(
+        f"python {script}", cwd=tmp_path, session_id="s1", exit_code=0, output="ok"
+    )
+
+    assert evidence is not None
+    assert evidence.kind == "ad_hoc"
+
+
+def test_workspace_prefixed_ad_hoc_script_is_allowed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    script = tmp_path / "hermes-verify-workspace.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+
+    evidence = classify_verification_command(
+        f"python {script}", cwd=tmp_path, session_id="s1", exit_code=0, output="ok"
+    )
+
+    assert evidence is not None
+    assert evidence.kind == "ad_hoc"
+
+
+@pytest.mark.parametrize(
     "invocation",
     [
         "python3.12 {script}",
@@ -271,7 +441,7 @@ def test_versioned_or_absolute_interpreter_records_ad_hoc_evidence(tmp_path, mon
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+    script = _hermes_scratch(tmp_path) / f"hermes-verify-{tmp_path.name}.py"
     script.write_text("print('ok')\n", encoding="utf-8")
     try:
         evidence = classify_verification_command(
@@ -295,7 +465,7 @@ def test_non_interpreter_command_touching_the_temp_script_is_not_evidence(tmp_pa
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+    script = _hermes_scratch(tmp_path) / f"hermes-verify-{tmp_path.name}.py"
 
     for command in (f"rm -f {script}", f"/usr/bin/chmod +x {script}", f"/usr/bin/cat {script}"):
         evidence = classify_verification_command(command, cwd=tmp_path, session_id="s1", exit_code=0)
@@ -389,6 +559,19 @@ def test_windows_exe_interpreter_records_ad_hoc_evidence(tmp_path, monkeypatch, 
     )
     win_script = r"C:\Users\me\AppData\Local\Temp\hermes-verify-x.py"
     assert _find_ad_hoc_match(f"{interpreter} {win_script}", tmp_path) == []
+
+
+def test_quoted_windows_interpreter_and_script_are_matched(tmp_path, monkeypatch):
+    from agent.verification_evidence import _find_ad_hoc_match
+
+    monkeypatch.setattr(
+        "agent.verification_evidence._is_temp_script_path",
+        lambda token, root: "hermes-verify-" in token and token.replace('"', "").endswith(".py"),
+    )
+    interpreter = r'"C:\Program Files\Python\python.exe"'
+    script = r'"C:\Users\me\AppData\Local\hermes\cache\scratch\hermes-verify-x.py"'
+
+    assert _find_ad_hoc_match(f"{interpreter} {script}", tmp_path) == []
 
 
 def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):

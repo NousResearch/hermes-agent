@@ -1,9 +1,9 @@
 import json
-import sys
-import tempfile
 from pathlib import Path
 
 import pytest
+
+from hermes_constants import get_scratch_dir
 
 from agent.verification_evidence import (
     mark_workspace_edited,
@@ -162,20 +162,12 @@ def test_nudge_checks_all_edited_workspaces(tmp_path, monkeypatch):
 
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Symlinks require elevated privileges on Windows",
-)
-def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+def test_no_suite_nudge_uses_active_hermes_scratch(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
     project = tmp_path / "project"
     project.mkdir()
     (project / "package.json").write_text("{}", encoding="utf-8")
-    real_temp = tmp_path / "real-temp"
-    real_temp.mkdir()
-    linked_temp = tmp_path / "linked-temp"
-    linked_temp.symlink_to(real_temp, target_is_directory=True)
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(linked_temp))
 
     nudge = build_verify_on_stop_nudge(
         session_id="s1",
@@ -183,17 +175,57 @@ def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
     )
 
     assert nudge is not None
-    assert str(real_temp) in nudge
-    assert str(linked_temp) not in nudge
+    assert str(get_scratch_dir(home, prune=False).resolve()) in nudge
 
 
+def test_no_suite_nudge_preserves_scope_and_names_active_hermes_scratch(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "package.json").write_text("{}", encoding="utf-8")
+
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1", changed_paths=[str(project / "src" / "app.ts")]
+    )
+
+    assert nudge is not None
+    assert str(project.resolve()) in nudge
+    assert str(get_scratch_dir(home, prune=False).resolve()) in nudge
+    assert "does not authorize writes outside the task scope" in nudge
+    assert nudge.index(str(get_scratch_dir(home, prune=False).resolve())) < nudge.index(str(project.resolve()), nudge.index("No canonical"))
+    assert "never stage or commit" in nudge
+    assert "delete the script before finishing" in nudge
+
+
+
+
+def test_no_suite_nudge_follows_profile_scope_a_b_a(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "package.json").write_text("{}", encoding="utf-8")
+    homes = [tmp_path / "profile-a", tmp_path / "profile-b"]
+    for home in [homes[0], homes[1], homes[0]]:
+        token = set_hermes_home_override(home)
+        try:
+            nudge = build_verify_on_stop_nudge(
+                session_id="scoped", changed_paths=[str(project / "app.py")]
+            )
+            assert nudge is not None
+            assert str(get_scratch_dir(home, prune=False).resolve()) in nudge
+            other = homes[1] if home == homes[0] else homes[0]
+            assert str(other.resolve()) not in nudge
+        finally:
+            reset_hermes_home_override(token)
 
 
 def test_ad_hoc_pass_satisfies_no_suite_stop_loop(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
     changed = str(tmp_path / "src" / "app.ts")
-    script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-stop-{tmp_path.name}.py"
+    script = get_scratch_dir(tmp_path / ".hermes", prune=False) / f"hermes-ad-hoc-stop-{tmp_path.name}.py"
     script.write_text("print('ok')\n", encoding="utf-8")
     try:
         record_terminal_result(

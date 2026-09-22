@@ -2,6 +2,8 @@
 // author pages (plugins/plugin-catalog-pages generates their routes). One definition of the entry
 // shape, the tier/category taxonomy and the link builders keeps the three surfaces from drifting.
 
+import { pluginCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
+
 export interface PluginCapabilities {
   providesTools?: string[];
   providesHooks?: string[];
@@ -59,7 +61,7 @@ export const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting
 /** Deep link into the Desktop app's Install Plugin dialog, catalog mode: the app
  *  resolves the reviewed pin itself, so the page never hands it a repo URL. */
 export function desktopInstallLink(name: string): string {
-  return `hermes://plugin/install?catalog=${encodeURIComponent(name)}`;
+  return pluginCatalogInstallUrl({ name });
 }
 
 /** Site route of an entry's page (Docusaurus prefixes baseUrl/locale via <Link>). */

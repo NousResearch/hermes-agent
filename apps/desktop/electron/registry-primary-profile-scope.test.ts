@@ -16,6 +16,16 @@ describe('primary-remote descriptor reuse keeps profile scope', () => {
     )
   })
 
+  it('scopes a local shared-primary request with ?profile=<profile>', () => {
+    // The local registry delegate returns the same one-host-many-profiles
+    // descriptor as the v1 primary route. It must carry the selected profile
+    // to the REST backend rather than falling back to that process's launch
+    // profile (#119415).
+    expect(pathForRegistryBackendRequest('/api/skills', 'beta', { sharedPrimary: true })).toBe(
+      '/api/skills?profile=beta'
+    )
+  })
+
   it('does not add a profile query when the backend is not shared-remote', () => {
     // An isolated backend owns one profile; the router must not invent a scope.
     expect(pathForRegistryBackendRequest('/api/skills', 'acme', { sharedRemote: false, remoteProfile: null })).toBe(

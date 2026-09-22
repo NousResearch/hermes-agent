@@ -968,17 +968,19 @@ function pathWithProfileScope(path, profile) {
 
 export interface RegistryBackendRequestScope {
   remoteProfile?: null | string
+  /** Local shared-host descriptor: profile state is selected per request. */
+  sharedPrimary?: boolean
   sharedRemote?: boolean
 }
 
 /**
- * Scope a REST path for a resolved registry backend. Shared remotes serve
- * multiple profiles from one process and need an explicit profile query;
- * isolated SSH backends already own one profile but may translate a Desktop
- * alias in an existing self-profile filter.
+ * Scope a REST path for a resolved registry backend. Shared hosts (local or
+ * remote) serve multiple profiles from one process and need an explicit
+ * profile query; isolated SSH backends already own one profile but may
+ * translate a Desktop alias in an existing self-profile filter.
  */
 function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope) {
-  return backend.sharedRemote
+  return backend.sharedRemote || backend.sharedPrimary
     ? pathWithProfileScope(path, profile)
     : translateSelfProfileQuery(path, profile, backend.remoteProfile)
 }

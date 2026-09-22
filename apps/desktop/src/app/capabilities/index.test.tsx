@@ -53,9 +53,23 @@ vi.mock('@/store/hub-actions', async importOriginal => ({
   installHubSkill: vi.fn().mockResolvedValue(undefined)
 }))
 
-// The vision detail navigates to Settings → Models via useNavigate; spy on it
-// so the deep-link target is assertable.
+// The vision detail and bot setup actions navigate through useNavigate; spy on
+// it so the deep-link targets are assertable.
 const navigateSpy = vi.fn()
+
+vi.mock('./bots/bots-tab', () => ({
+  BotMarketplaceTab: ({ onSetupAction }: { onSetupAction: (action: string, id: string, bot: unknown) => void }) => (
+    <button
+      onClick={() => onSetupAction('connect', 'gmail', {
+        profile: { name: 'inbox-bot' },
+        scope: { connectionId: 'homelab', profile: 'inbox-bot' }
+      })}
+      type="button"
+    >
+      Set up Gmail for inbox-bot
+    </button>
+  )
+}))
 
 vi.mock('react-router', async importOriginal => ({
   ...(await importOriginal<typeof ReactRouterDom>()),
@@ -443,6 +457,24 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop
     }
+  })
+
+  it('routes connector setup to the target bot profile and owning connection', async () => {
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=bots']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up Gmail for inbox-bot' }))
+
+    expect(navigateSpy).toHaveBeenCalledWith(
+      '/capabilities?tab=connectors&profile=inbox-bot&connection=homelab&connector=gmail'
+    )
   })
 
   it('lists the built-in optional-skills catalog with Install buttons that route through the hub pipeline', async () => {

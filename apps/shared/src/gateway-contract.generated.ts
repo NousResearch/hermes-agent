@@ -458,6 +458,178 @@ export interface ProjectFacts {
   verifyCommands: string[]
   contextFiles: string[]
 }
+export interface BotsCatalogParams {
+  profile?: string | null
+}
+export interface BotsCatalogResult {
+  entries?: BotCatalogEntryResult[]
+  removed?: RemovedBotResult[]
+}
+export interface BotCatalogEntryResult {
+  name: string
+  version: string
+  maintainer: string
+  tier: BotTier
+  category: string
+  tags?: string[]
+  title: string
+  summary: string
+  profile: BotCatalogProfile
+  capabilities: BotCatalogCapabilities
+  setup: BotCatalogSetup
+  routines?: BotCatalogRoutine[]
+  presentation: BotCatalogPresentation
+}
+export type BotTier = 'official' | 'community'
+export interface BotCatalogProfile {
+  suggested_name: string
+  description: string
+  soul: string
+  starter_prompt: string
+}
+export interface BotCatalogCapabilities {
+  skills?: string[]
+  toolsets?: string[]
+}
+export interface BotCatalogSetup {
+  requirements?: BotSetupRequirementResult[]
+}
+export interface BotSetupRequirementResult {
+  kind: BotRequirementKind
+  id: string
+  required: boolean
+  purpose: string
+}
+export type BotRequirementKind = 'toolset' | 'command' | 'connector' | 'plugin'
+export interface BotCatalogRoutine {
+  id: string
+  name: string
+  prompt: string
+  schedule: string
+}
+export interface BotCatalogPresentation {
+  emoji: string
+  color: string
+}
+export interface RemovedBotResult {
+  name: string
+  reason: string
+}
+export interface BotsInstalledParams {
+  profile?: string | null
+}
+export interface BotsInstalledResult {
+  bots?: InstalledBotResult[]
+}
+export interface InstalledBotResult {
+  profile: string
+  catalog_name: string
+  title: string
+  summary: string
+  setup_state: BotSetupState
+  presentation: InstalledBotPresentation
+}
+export type BotSetupState = 'ready' | 'needs_setup'
+export interface InstalledBotPresentation {
+  emoji: string
+  color: string
+}
+export interface BotsInstallParams {
+  profile?: string | null
+  catalog_name: string
+  name: string
+  source_profile: string
+  credentials?: BotCredentialPolicy
+}
+export type BotCredentialPolicy = 'none' | 'copy_api_keys'
+export interface BotsInstallResult {
+  ok?: boolean
+  committed: boolean
+  name: string
+  path: string
+  catalog_name: string
+  catalog_version: string
+  source_profile: string
+  copied_credentials?: string[]
+  oauth_setup_required?: string[]
+  setup_state: BotSetupState
+  setup_requirements?: string[]
+  post_publish_warnings?: string[]
+}
+export interface BotsStatusParams {
+  profile?: string | null
+}
+export interface BotsStatusResult {
+  profile: string
+  catalog_name: string
+  setup_state: BotSetupState
+  requirements?: BotRequirementReadiness[]
+  runtime: BotRuntimeReadiness
+  first_task: BotFirstTaskReadiness
+  starter_prompt?: string | null
+  can_start_first_task: boolean
+  can_activate_routines: boolean
+}
+export interface BotRequirementReadiness {
+  kind: BotRequirementKind
+  id: string
+  required: boolean
+  purpose: string
+  status: BotRequirementStatus
+  action?: string | null
+  detail?: string | null
+}
+export type BotRequirementStatus = 'ready' | 'needs_setup'
+export interface BotRuntimeReadiness {
+  ok: boolean
+  provider?: string | null
+  model?: string | null
+  source?: string | null
+  error?: string | null
+  action?: string | null
+  reused_sign_in?: boolean
+}
+export interface BotFirstTaskReadiness {
+  status: BotFirstTaskStatus
+  session_id?: string | null
+}
+export type BotFirstTaskStatus = 'pending' | 'complete'
+export interface BotsRoutinesListParams {
+  profile?: string | null
+}
+export interface BotsRoutinesListResult {
+  routines?: BotRoutineListItem[]
+}
+export interface BotRoutineListItem {
+  id: string
+  name: string
+  prompt: string
+  schedule: string
+  state: BotRoutineState
+  job_id?: string | null
+  timezone?: string | null
+  destination?: string | null
+}
+export type BotRoutineState = 'paused' | 'active'
+export interface BotsRoutineActivateParams {
+  profile?: string | null
+  routine_id: string
+  schedule: string
+  timezone: string
+  destination: string
+}
+export interface BotRoutineResult {
+  id: string
+  state: BotRoutineState
+  job_id?: string | null
+  schedule?: string | null
+  timezone?: string | null
+  destination?: string | null
+}
+export interface BotsRoutinePauseParams {
+  profile?: string | null
+  routine_id: string
+}
 /** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin. */
 export interface ConfigGetParams {
   profile?: string | null
@@ -4444,6 +4616,22 @@ export interface RpcMethods {
   'bot_relay.reply': { params: BotRelayReplyParams; result: OkResult }
   /** Replace this gateway's view of agents on other connections; answers the accepted row count. */
   'bot_relay.roster.sync': { params: BotRelayRosterSyncParams; result: BotRelayRosterSyncResult }
+  /** Return the reviewed Bot Marketplace catalog and removal list resolved by this backend. */
+  'bots.catalog': { params: BotsCatalogParams; result: BotsCatalogResult }
+  /** Resolve a reviewed catalog name server-side and atomically publish one complete bot profile. */
+  'bots.install': { params: BotsInstallParams; result: BotsInstallResult }
+  /** List installed bot profiles from local immutable manifests without runtime readiness probes. */
+  'bots.installed': { params: BotsInstalledParams; result: BotsInstalledResult }
+  /** Explicitly activate one ready bot routine with confirmed schedule, IANA timezone, and destination. */
+  'bots.routines.activate': { params: BotsRoutineActivateParams; result: BotRoutineResult }
+  /** List reviewed routine blueprints and their authoritative cron activation state. */
+  'bots.routines.list': { params: BotsRoutinesListParams; result: BotsRoutinesListResult }
+  /** Pause an activated bot routine through the canonical cron API. */
+  'bots.routines.pause': { params: BotsRoutinePauseParams; result: BotRoutineResult }
+  /** Resume Finish setup by re-probing authoritative state; client readiness claims are not accepted. */
+  'bots.setup': { params: BotsStatusParams; result: BotsStatusResult }
+  /** Probe an installed bot profile's real runtime, declared dependencies, and first Bot Chat task proof. */
+  'bots.status': { params: BotsStatusParams; result: BotsStatusResult }
   /** Hard-detach only the controller owned by this authenticated transport. */
   'browser.controller.detach': { params: BrowserControllerParams; result: BrowserControllerDetachResult }
   /** Acknowledge a heartbeat only for this transport's own attached controller. */
@@ -4884,6 +5072,14 @@ export const RPC_METHODS = [
   'bot_relay.outbox.drain',
   'bot_relay.reply',
   'bot_relay.roster.sync',
+  'bots.catalog',
+  'bots.install',
+  'bots.installed',
+  'bots.routines.activate',
+  'bots.routines.list',
+  'bots.routines.pause',
+  'bots.setup',
+  'bots.status',
   'browser.controller.detach',
   'browser.controller.heartbeat',
   'browser.controller.register',

@@ -1120,35 +1120,13 @@ def create_profile(
     if clone_channels and not cloning:
         raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
     canon = _canon_valid(name)
-    if canon == "default":
-        raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
-    profile_dir = get_profile_dir(canon)
-    if profile_dir.exists() and not named_profile_has_identity(profile_dir):
-        if named_profile_is_deleted(profile_dir):
-            # Empty shell left by a post-delete mkdir: invisible to ``profile list``, safe to replace.
-            shutil.rmtree(profile_dir)
-        else:
-            # A live marker-less dir is invisible to ``profile list`` but may still hold user
-            # files (skills/, memories/, cron/jobs.json): fail closed and name it, never rmtree.
-            raise FileExistsError(
-                f"Cannot create profile '{canon}': {profile_dir} exists but carries no profile identity "
-                "file, so it is not listed as a profile. Move or remove that directory first."
-            )
-    if profile_dir.exists():
-        raise _profile_exists_error(canon)
     source_dir = _resolve_clone_source(clone_from) if cloning else None
     if source_dir is not None and clone_channels:
         from hermes_cli.profile_channels import clone_channels_refusal
         refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
         if refusal:
             raise ValueError(refusal)
-    clear_named_profile_deleted(profile_dir)
-    # Build in a hidden sibling and publish with one rename: a running multiplexer rescans profiles/
-    # on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists valid ids (no leading
-    # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
-    # below has not removed yet.
-    staging = _clone_staging_dir(profile_dir)
-    try:
+    def prepare(staging: Path) -> None:
         if clone_all and source_dir:
             _clone_all_into(source_dir, staging, canon)
         else:
@@ -1159,30 +1137,53 @@ def create_profile(
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
+
+    return _publish_staged_profile(canon, prepare)
+
+
+def _publish_staged_profile(name: str, prepare_staging) -> Path:
+    """Build a complete profile under a hidden sibling, then publish it with one rename.
+
+    This is the shared filesystem transaction for ordinary profile creation and reviewed bot
+    installs. ``prepare_staging`` must do every fallible tree mutation; no profile enumerator can
+    observe the hidden directory, and every pre-publish failure removes it.
+    """
+    canon = _canon_valid(name)
+    if canon == "default":
+        raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
+    profile_dir = get_profile_dir(canon)
+    if profile_dir.exists() and not named_profile_has_identity(profile_dir):
+        if named_profile_is_deleted(profile_dir):
+            shutil.rmtree(profile_dir)
+        else:
+            raise FileExistsError(
+                f"Cannot create profile '{canon}': {profile_dir} exists but carries no profile identity "
+                "file, so it is not listed as a profile. Move or remove that directory first."
+            )
+    if profile_dir.exists():
+        raise _profile_exists_error(canon)
+    clear_named_profile_deleted(profile_dir)
+    staging = _clone_staging_dir(profile_dir)
+    try:
+        prepare_staging(staging)
+        if not named_profile_has_identity(staging):
+            raise ValueError("staged profile has no identity marker")
         os.rename(staging, profile_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
-    # Inside a container under s6, register the gateway as a runtime s6 service so
-    # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
-    # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
     _maybe_register_gateway_service(canon)
-    # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
-    # rescans periodically, so a missed signal only delays serving).
     _notify_multiplexer(canon)
     return profile_dir
 
 
 def _clone_staging_dir(profile_dir: Path) -> Path:
-    """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
-    rename is atomic). A leftover from a crashed create is discarded."""
-    staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}"
+    """Claim a unique hidden sibling on the final directory's filesystem."""
+    import uuid
+
+    staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}-{uuid.uuid4().hex}"
     profile_dir.parent.mkdir(parents=True, exist_ok=True)
-    if staging.is_symlink() or staging.is_file():
-        staging.unlink()
-    elif staging.is_dir():
-        shutil.rmtree(staging, ignore_errors=True)
     return staging
 
 

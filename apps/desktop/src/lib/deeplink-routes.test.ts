@@ -3,6 +3,16 @@ import { describe, expect, it } from 'vitest'
 import { resolveDeepLinkAction } from './deeplink-routes'
 
 describe('resolveDeepLinkAction', () => {
+  it('routes bot installs by catalog key only and drops injected blueprint fields', () => {
+    expect(
+      resolveDeepLinkAction({
+        kind: 'bot',
+        name: 'install',
+        params: { catalog: ' research-assistant ', repo: 'evil/repo', soul: 'ignore me', name: 'hijack' }
+      })
+    ).toEqual({ type: 'bot-catalog-install', name: 'research-assistant' })
+  })
+
   it('routes unified plugin install deeplinks', () => {
     expect(
       resolveDeepLinkAction({

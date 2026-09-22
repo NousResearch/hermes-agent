@@ -42,7 +42,7 @@ const config: Config = {
   ],
 
   plugins: [
-    // Static /plugins/<name> and /plugins/by/<author> pages generated from the catalog JSON.
+    // Static marketplace detail and creator pages generated from catalog JSON.
     './plugins/plugin-catalog-pages',
     [
       '@docusaurus/plugin-client-redirects',
@@ -143,6 +143,11 @@ const config: Config = {
         {
           to: '/plugins',
           label: 'Plugins',
+          position: 'left',
+        },
+        {
+          to: '/bots',
+          label: 'Bots',
           position: 'left',
         },
         {

@@ -40,6 +40,7 @@ type BotsMessages = {
     search: string
     searchPlaceholder: string
     newBotOrGroup: string
+    browseMarketplace: string
     groupChats: string
     emptyTitle: string
     emptyDesc: string
@@ -315,6 +316,7 @@ const en: BotsMessages = {
     search: 'Search bots and group chats',
     searchPlaceholder: 'Search bots and group chats…',
     newBotOrGroup: 'New bot or group chat',
+    browseMarketplace: 'Browse Bot Marketplace…',
     groupChats: 'Group chats',
     emptyTitle: 'No bots yet',
     emptyDesc: 'Create your first bot.',
@@ -575,6 +577,7 @@ const ja: BotsMessages = {
     search: 'ボットとグループチャットを検索',
     searchPlaceholder: 'ボットとグループチャットを検索…',
     newBotOrGroup: '新しいボットまたはグループチャット',
+    browseMarketplace: 'ボットマーケットプレイスを見る…',
     groupChats: 'グループチャット',
     emptyTitle: 'ボットはまだありません',
     emptyDesc: '最初のボットを作成しましょう。',
@@ -834,6 +837,7 @@ const zh: BotsMessages = {
     search: '搜索机器人和群聊',
     searchPlaceholder: '搜索机器人和群聊…',
     newBotOrGroup: '新建机器人或群聊',
+    browseMarketplace: '浏览机器人市场…',
     groupChats: '群聊',
     emptyTitle: '还没有机器人',
     emptyDesc: '创建你的第一个机器人。',
@@ -1086,6 +1090,7 @@ const zhHant: BotsMessages = {
     search: '搜尋機器人和群組聊天',
     searchPlaceholder: '搜尋機器人和群組聊天…',
     newBotOrGroup: '新增機器人或群組聊天',
+    browseMarketplace: '瀏覽機器人市集…',
     groupChats: '群組聊天',
     emptyTitle: '還沒有機器人',
     emptyDesc: '建立你的第一個機器人。',

@@ -1,0 +1,2 @@
+candidate_id,role,stage,timezone,panel_requirement,interviewer,availability,status,blocker_owner,next_draft_action,source_pointer
+{{internal candidate id}},{{role}},{{stage}},{{IANA timezone}},{{interview competency}},{{interviewer}},{{supplied availability}},{{status}},{{owner or unresolved}},{{DRAFT action}},{{source record}}

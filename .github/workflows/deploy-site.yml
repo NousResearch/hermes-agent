@@ -9,9 +9,10 @@ on:
       - 'website/**'
       - 'skills/**'
       - 'optional-skills/**'
-      # Catalog entry/removal merges must republish /docs/api/plugin-catalog.json —
-      # installed clients fetch it for live catalog refresh.
+      # Catalog entry/removal merges must republish the live plugin and bot feeds
+      # consumed by installed clients.
       - 'plugin-catalog/**'
+      - 'bot-catalog/**'
       - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
     inputs:
@@ -82,10 +83,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install PyYAML for skill extraction
+      - name: Install catalog extraction dependencies
         uses: ./.github/actions/retry
         with:
-          command: pip install pyyaml==6.0.2 httpx==0.28.1
+          command: pip install pyyaml==6.0.2 httpx==0.28.1 pydantic==2.13.4
 
       - name: Prepare skills index (unified multi-source catalog)
         env:

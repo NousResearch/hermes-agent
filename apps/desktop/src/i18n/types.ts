@@ -1693,6 +1693,79 @@ export interface Translations {
     tabSkills: string
     tabToolsets: string
     configuringProfile: string
+    marketplace: {
+      tab: string
+      title: string
+      description: string
+      iframeTitle: string
+      reviewTitle: string
+      reviewDescription: string
+      loading: string
+      catalogFailed: string
+      retry: string
+      catalogUnavailable: string
+      pollTimedOut: string
+      remoteModelUnsupported: string
+      notFound: (catalog: string) => string
+      creator: (creator: string) => string
+      freshCopy: string
+      destination: (profile: string) => string
+      nameLabel: string
+      nameInvalid: string
+      credentialsLabel: string
+      credentialsNone: string
+      credentialsCopy: string
+      capabilities: string
+      contract: string
+      starterPrompt: string
+      none: string
+      add: string
+      adding: string
+      notCommitted: string
+      installFailed: string
+      setupRequired: string
+      added: (name: string) => string
+      chatStarted: string
+      chatWarning: (reason: string) => string
+      browse: string
+      nativeCatalog: string
+      siteCatalog: string
+      search: string
+      installed: string
+      noInstalled: string
+      addAnother: string
+      finishSetup: string
+      open: string
+      setupFailed: string
+      routineFailed: string
+      readiness: {
+        ready: string
+        needsSetup: string
+        runtime: string
+        firstTask: string
+        firstTaskComplete: string
+        firstTaskPending: string
+        finishSetup: string
+        checkAgain: string
+        rechecking: string
+        startFirstTask: string
+        open: string
+        reusedSignIn: string
+        setupAction: (kind: string, id: string) => string
+        samples: string
+        samplesHint: string
+      }
+      routines: {
+        title: string
+        locked: string
+        schedule: string
+        timezone: string
+        destination: string
+        activate: string
+        pause: string
+        saving: string
+      }
+    }
     all: string
     searchSkills: string
     searchToolsets: string

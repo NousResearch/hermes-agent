@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
+import CatalogTabs from "../../components/Marketplace/CatalogTabs";
+import usePickerMode from "../../components/Marketplace/usePickerMode";
 import styles from "./styles.module.css";
 
 interface Skill {
@@ -512,9 +514,7 @@ export default function SkillsDashboard() {
   // own gateway (skills.manage) — the page never installs anything, so
   // there is no origin to trust in this direction; parents must validate
   // event.origin themselves before acting on the message.
-  const pickerMode =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("embed") === "picker";
+  const pickerMode = usePickerMode();
 
   const pickSkill = useCallback(
     (skill: Skill) => {
@@ -769,14 +769,7 @@ export default function SkillsDashboard() {
           <div className={styles.heroContent}>
             <p className={styles.heroEyebrow}>Hermes Agent</p>
             <h1 className={styles.heroTitle}>Skills Hub</h1>
-            <nav className={styles.crossNav} aria-label="Catalog pages">
-              <span className={`${styles.crossNavLink} ${styles.crossNavActive}`}>
-                Skills
-              </span>
-              <Link className={styles.crossNavLink} to="/plugins">
-                Plugins
-              </Link>
-            </nav>
+            <CatalogTabs active="skills" />
             <p className={styles.heroSub}>
               Discover, search, and install from{" "}
               <strong className={styles.heroAccent}>

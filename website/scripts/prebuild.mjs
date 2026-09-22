@@ -33,6 +33,7 @@ const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
 const pluginsScript = join(scriptDir, "extract-plugins.py");
+const botsScript = join(scriptDir, "extract-bots.py");
 const pluginStarsScript = join(scriptDir, "fetch-plugin-stars.py");
 const outputFile = join(websiteDir, "static", "api", "skills.json");
 const pluginsOutputFile = join(websiteDir, "static", "api", "plugins.json");
@@ -41,6 +42,11 @@ const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
   "https://hermes-agent.nousresearch.com/docs/api/skills-index.json";
 const UNIFIED_INDEX_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+const projectPython = [
+  process.env.VIRTUAL_ENV && join(process.env.VIRTUAL_ENV, process.platform === "win32" ? "Scripts/python.exe" : "bin/python"),
+  join(resolve(websiteDir, ".."), ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python"),
+  join(resolve(websiteDir, ".."), "venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python"),
+].find((candidate) => candidate && existsSync(candidate));
 
 function writeEmptyFallback(reason) {
   mkdirSync(dirname(outputFile), { recursive: true });
@@ -56,7 +62,7 @@ function runPython(script, label) {
     console.warn(`[prebuild] ${label} skipped (script missing)`);
     return false;
   }
-  const r = spawnSync("python3", [script], { stdio: "inherit", cwd: websiteDir });
+  const r = spawnSync(projectPython || "python3", [script], { stdio: "inherit", cwd: websiteDir });
   if (r.error && r.error.code === "ENOENT") {
     console.warn(`[prebuild] ${label} skipped (python3 not found)`);
     return false;
@@ -170,4 +176,14 @@ if (!runPython(pluginsScript, "extract-plugins.py")) {
     }) + "\n",
   );
   console.warn("[prebuild] wrote empty plugins.json fallback");
+}
+
+// 5) bots.json + bots-meta.json + bot-catalog.json — public Bot Marketplace,
+// detail-page input, and the normalized live install feed. Catalog extraction is a
+// publication security boundary: never replace a previously valid kill list with
+// empty output when Python, dependencies, source data, or validation fail.
+if (!runPython(botsScript, "extract-bots.py")) {
+  throw new Error(
+    "Bot catalog extraction failed; refusing to build with stale or empty publication feeds.",
+  );
 }

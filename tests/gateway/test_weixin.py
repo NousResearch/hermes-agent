@@ -663,6 +663,80 @@ class TestWeixinContentDedup:
         event = adapter.handle_message.await_args[0][0]
         assert event.text == "hello world"
 
+    def test_same_text_accepted_after_previous_dispatch(self):
+        """Regression test for Issue #36750.
+
+        Once a text batch has been dispatched, its content-fingerprint key is
+        released, so the same text sent again (a fresh message_id) is accepted
+        instead of being silently dropped for the whole dedup TTL.
+        """
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+
+        msg = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": {"text": "怎么样了"}}],
+        }
+
+        async def _drive():
+            # First send is accepted and flushed.
+            await adapter._process_message({**msg, "message_id": "msg-1"})
+            await asyncio.sleep(0.2)
+            assert adapter.handle_message.await_count == 1
+            # Same text again under a new message_id after the previous batch
+            # was dispatched — must be accepted, not suppressed by the TTL cache.
+            await adapter._process_message({**msg, "message_id": "msg-2"})
+            await asyncio.sleep(0.2)
+
+        asyncio.run(_drive())
+
+        assert adapter.handle_message.await_count == 2
+
+    def test_merged_batch_releases_every_content_key(self):
+        """A flushed batch must release every merged chunk's content key (#36750 review).
+
+        Two distinct texts accepted within one debounce window merge into a
+        single dispatched event; both fingerprints must be released on dispatch
+        so re-sending either text afterwards is accepted.
+        """
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+
+        def _msg(text: str, message_id: str) -> dict:
+            return {
+                "from_user_id": "wxid_user1",
+                "item_list": [{"type": 1, "text_item": {"text": text}}],
+                "message_id": message_id,
+            }
+
+        async def _drive():
+            # A and B are distinct texts landing in the same pending batch.
+            await adapter._process_message(_msg("第一句", "msg-1"))
+            await adapter._process_message(_msg("第二句", "msg-2"))
+            await asyncio.sleep(0.2)
+            assert adapter.handle_message.await_count == 1
+            assert adapter.handle_message.await_args[0][0].text == "第一句\n第二句"
+            # Re-send both texts under fresh message_ids after the dispatch.
+            await adapter._process_message(_msg("第一句", "msg-3"))
+            await adapter._process_message(_msg("第二句", "msg-4"))
+            await asyncio.sleep(0.2)
+
+        asyncio.run(_drive())
+
+        # The re-sends were accepted and merged into a second dispatched batch.
+        # If only the first chunk's key had been released, this second batch
+        # would carry just one of the two texts; if neither, no second dispatch.
+        assert adapter.handle_message.await_count == 2
+        second_batch = adapter.handle_message.await_args_list[1].args[0].text
+        assert "第一句" in second_batch
+        assert "第二句" in second_batch
+
 
 class TestWeixinTextDebounce:
     """Text-debounce batching for rapid multi-message bursts (issue #35301).

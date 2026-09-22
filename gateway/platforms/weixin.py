@@ -871,9 +871,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
-        if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
-            logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
-            return
+        content_keys: set = set()
+        if text:
+            content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
+            if self._dedup.is_duplicate(content_key):
+                logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+                return
+            content_keys.add(content_key)
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
             if not self._is_group_allowed(effective_chat_id):
@@ -898,9 +902,38 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             message_id=message_id or None, media_urls=media_paths, media_types=media_types, timestamp=datetime.now())
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:
+            # Content fingerprints ride on the event so the dispatched batch can release
+            # them afterwards (_dispatch_text_batch) — the same text sent again once the
+            # batch has been dispatched is a new intent, not an in-flight duplicate (#36750).
+            event._dedup_content_keys = content_keys  # type: ignore[attr-defined]
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        # Batching merges later chunks into the first pending event, so their content-dedup
+        # keys must ride on the surviving event or a merged text stays claimed for the
+        # whole TTL after the flush (#36750).
+        pending = self._pending_text_batches.get(self._text_batch_key(event))
+        incoming = getattr(event, "_dedup_content_keys", None)
+        if pending is not None and incoming:
+            existing = getattr(pending, "_dedup_content_keys", None)
+            if existing is not None:
+                existing |= incoming
+            else:
+                pending._dedup_content_keys = set(incoming)  # type: ignore[attr-defined]
+        super()._enqueue_text_event(event)
+
+    async def _dispatch_text_batch(self, event: MessageEvent) -> None:
+        # The batch is dispatched: release every content fingerprint it carried. An upstream
+        # retry that races this boundary still hits the message_id dedup; only the replay of
+        # the same text as a fresh send (new message_id) is re-accepted (#36750).
+        keys = getattr(event, "_dedup_content_keys", None)
+        try:
+            await super()._dispatch_text_batch(event)
+        finally:
+            for key in keys or ():
+                self._dedup.discard(key)
 
     async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
         spec = _INBOUND_MEDIA.get(item.get("type"))

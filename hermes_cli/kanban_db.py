@@ -3281,6 +3281,8 @@ def complete_task(
     force: bool = False,
     fire_lifecycle_hook: bool = True,
     board: Optional[str] = None,
+    repository_github_client=None,
+    repository_git_runner=None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -3295,12 +3297,25 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
-    from hermes_cli.kanban_completion_policy import enforce_completion_policies
+    from hermes_cli.kanban_completion_policy import (
+        enforce_completion_policies,
+        enforce_repository_handoff,
+    )
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
 
     task = get_task(conn, task_id)
     if task is None:
         return False
+
+    # This is the shared mutation boundary used by tools, the CLI, and internal
+    # callers. Keep repository receipt enforcement here so no supported surface
+    # can mark a managed worktree done by bypassing the tool handler.
+    enforce_repository_handoff(
+        task=task,
+        metadata=metadata,
+        github_client=repository_github_client,
+        git_runner=repository_git_runner,
+    )
     
     # Live-claim guard: if task is running with a live worker, require expected_run_id or force
     if task.status == "running" and task.worker_pid is not None:

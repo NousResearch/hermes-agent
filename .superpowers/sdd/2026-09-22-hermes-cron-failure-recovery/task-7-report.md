@@ -109,3 +109,24 @@ Result: **69 passed, 2 failed**. All 52 Kanban tool tests, both worktree-isolati
 After moving the assigned base into dispatcher-owned task columns, an expanded schema run produced **146 passed, 4 failed, 2 skipped** across the full Kanban tool, worktree isolation, worktree teardown, and Kanban database files. The full tool and worktree files stayed green; 78 Kanban database tests passed. The four failures are in the separate provider-crash terminal-blocking behavior (`test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane[ready]` and three provider egress/thinking variants), where current branch behavior leaves those tasks ready. They do not exercise worktree allocation, base persistence, or repository completion receipts.
 
 No GitHub write was made or attempted in this review round.
+
+## Final review — CLI completion boundary
+
+The repository receipt policy now runs inside `kanban_db.complete_task`, the shared state mutation boundary used by the model tool, `hermes kanban complete`, and internal callers. The tool passes its injected GitHub/Git test clients into this boundary and preserves its retry guidance. The CLI catches `CompletionPolicyError`, prints the exact receipt rejection, returns nonzero, and leaves the task in flight.
+
+Added a real CLI regression using a temporary Git repository and Kanban database. Before the fix, `hermes kanban complete --metadata '{"repository_changes":false}'` returned success and moved a clean ahead branch to done. After the fix, it returns 1, reports the assigned-base mismatch, and keeps the task ready.
+
+Receipt-aware worktree lifecycle tests now provide explicit no-change metadata for clean base worktrees. Dirty worktree completion asserts the shared boundary rejects the transition and preserves both the running task and dirty checkout.
+
+Focused verification:
+
+```text
+scripts/run_tests.sh \
+  tests/hermes_cli/test_kanban_completion_receipt_cli.py \
+  tests/tools/test_kanban_tools.py \
+  tests/hermes_cli/test_kanban_worktree_teardown.py \
+  tests/hermes_cli/test_kanban_complete_live_claim_guard.py \
+  tests/hermes_cli/test_kanban_empty_completion.py
+```
+
+Result: **76 passed, 0 failed**. No GitHub write was made or attempted.

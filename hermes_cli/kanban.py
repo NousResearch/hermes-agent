@@ -1078,6 +1078,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
                                  f"--force to close its run and complete anyway.")
                 return False
+            except CompletionPolicyError as receipt_err:
+                fail_msg[tid] = (
+                    f"cannot complete {tid}: {receipt_err}. The task remains in-flight; "
+                    "provide the exact repository receipt in --metadata."
+                )
+                return False
             except kb.EmptyCompletionError as empty_err:
                 fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
                                  f"describing what was done (an empty completion is not evidence).")

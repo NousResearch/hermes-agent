@@ -1019,24 +1019,6 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
-        from hermes_cli.kanban_completion_policy import (
-            CompletionPolicyError,
-            enforce_repository_handoff,
-        )
-        try:
-            enforce_repository_handoff(
-                task=task,
-                metadata=metadata,
-                github_client=kw.get("github_client"),
-                git_runner=kw.get("git_runner"),
-            )
-        except CompletionPolicyError as receipt_err:
-            return tool_error(
-                f"kanban_complete blocked: {receipt_err}. Your task is still in-flight "
-                "(no state change). Commit and push repository changes, open the PR, then retry "
-                "with the exact receipt; for read-only/no-change work set "
-                "metadata.repository_changes=false."
-            )
         verifier_rejection = _verifier_handoff_rejection(
             task, (summary or result or "").strip(), metadata,
         )
@@ -1048,10 +1030,22 @@ def _handle_complete(args: dict, **kw) -> str:
                 "of kanban_complete."
             )
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        from hermes_cli.kanban_completion_policy import CompletionPolicyError
+
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid),
+                repository_github_client=kw.get("github_client"),
+                repository_git_runner=kw.get("git_runner"),
+            )
+        except CompletionPolicyError as receipt_err:
+            return tool_error(
+                f"kanban_complete blocked: {receipt_err}. Your task is still in-flight "
+                "(no state change). Commit and push repository changes, open the PR, then retry "
+                "with the exact receipt; for read-only/no-change work set "
+                "metadata.repository_changes=false."
+            )
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the

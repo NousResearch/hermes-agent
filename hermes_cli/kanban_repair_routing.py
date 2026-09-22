@@ -8,6 +8,10 @@ from typing import Optional
 # Ordered from narrowest scope to broadest so a PR audit is not swallowed by
 # the generic cron or maintenance rules.
 _REPAIR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("federated runner", "federation", "federated"), "federation-steward"),
+    (("pytest suite", "test suite", "test coverage"), "test-contract-steward"),
+    (("content discovery", "useful content", "community discovery"), "nerdy-content-scout"),
+    (("synthesize gaps", "route bounded children", "synthesis"), "synthesizer"),
     (("market data", "authority freshness", "stale market"), "market-data-authority-auditor"),
     (("upstream pr", "upstream issue", "nousresearch", "upstream/main"), "hermes-upstream-auditor"),
     (("local pr ci", "audit pr", "audit this pull request"), "pr-local-ci-auditor"),

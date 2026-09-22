@@ -2,10 +2,33 @@
 
 from typing import Any
 
-from agent.portal_tags import get_affinity_scope, get_conversation_context, nous_portal_tags, nous_request_metadata
+from agent.portal_tags import get_affinity_scope, get_conversation_context, nous_portal_tags
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+# Fixed descriptions identify the operation without copying prompts, tool output,
+# or arbitrary task names supplied by plugins into request metadata.
+_AUXILIARY_PURPOSES = {
+    "compression": "Summarize conversation context so the assistant can continue.",
+    "title_generation": "Generate a title for the conversation.",
+    "vision": "Interpret an image for the current assistant task.",
+    "skills_hub": "Select relevant skills for the assistant task.",
+    "approval": "Evaluate whether a requested tool action needs approval.",
+    "mcp": "Complete a model sampling request from a connected tool.",
+    "memory_query_rewrite": "Rewrite a query to retrieve relevant memories.",
+    "tts_audio_tags": "Prepare speech delivery annotations.",
+    "triage_specifier": "Expand a task description into a specification.",
+    "kanban_decomposer": "Break a task into actionable subtasks.",
+    "profile_describer": "Generate a short profile description.",
+    "goal_judge": "Define or assess the completion criteria for a goal.",
+    "curator": "Review skills and identify useful improvements.",
+    "monitor": "Assess the relevance of a monitored item.",
+    "background_review": "Review the conversation for memory and skill improvements.",
+    "moa_reference": "Produce a candidate response for the current assistant task.",
+    "moa_aggregator": "Synthesize candidate responses for the current assistant task.",
+}
 
 
 class NousProfile(ProviderProfile):
@@ -20,11 +43,25 @@ class NousProfile(ProviderProfile):
         except Exception:
             return ""
 
-    def build_extra_body(self, *, session_id: str | None = None, **context) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "tags": nous_portal_tags(session_id=session_id),
-            "metadata": nous_request_metadata(session_id, task=context.get("task"), messages=context.get("messages")),
-        }
+    def build_extra_body(
+        self, *, session_id: str | None = None, task: str | None = None,
+        messages: list | None = None, **context,
+    ) -> dict[str, Any]:
+        if task is None:
+            activity = "assistant_chat"
+            purpose = (
+                "Continue the assistant response using the requested tool results."
+                if messages and messages[-1].get("role") == "tool"
+                else "Respond to the user's latest message."
+            )
+        else:
+            activity = task if task in _AUXILIARY_PURPOSES else "auxiliary"
+            purpose = _AUXILIARY_PURPOSES.get(task, "Complete a supporting operation for the assistant.")
+        metadata = {"hermes_activity": activity, "hermes_purpose": purpose}
+        conversation_id = get_conversation_context() or session_id
+        if conversation_id and len(conversation_id) <= 512 and conversation_id.strip():
+            metadata["hermes_activity_id"] = conversation_id
+        body: dict[str, Any] = {"tags": nous_portal_tags(session_id=session_id), "metadata": metadata}
         # Top-level session_id = sticky routing key, so Anthropic-style cache
         # breakpoints stay warm on one upstream instance. Resolved like the
         # ``conversation=`` tag: declared scope, then the ambient lineage ROOT

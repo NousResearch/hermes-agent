@@ -68,7 +68,10 @@ def test_auxiliary_requests_keep_task_and_conversation_across_wires(task):
     try:
         kwargs = _build_call_kwargs(
             "nous", "hermes-3-70b", [{"role": "user", "content": "private input"}], task=task,
-            extra_body={"metadata": {"caller_label": "retained"}},
+            extra_body={"metadata": {
+                "caller_label": "retained", "hermes_activity": "private override",
+                "hermes_purpose": "private override", "hermes_activity_id": "private override",
+            }},
         )
         with OpenAI(api_key="test", http_client=httpx.Client(transport=httpx.MockTransport(_capture_request))) as client:
             chat_body = client.chat.completions.create(**kwargs).model_dump()

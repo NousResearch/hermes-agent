@@ -6524,7 +6524,7 @@ def _merge_aux_extra_body(
     caller_metadata = merged_extra.get("metadata")
     merged_extra.update(projection.body)
     if isinstance(caller_metadata, dict) and isinstance(projection.body.get("metadata"), dict):
-        merged_extra["metadata"] = {**projection.body["metadata"], **caller_metadata}
+        merged_extra["metadata"] = {**caller_metadata, **projection.body["metadata"]}
     merged_extra.update(projection.reasoning_extra)
     # Profiles supply route defaults, but an explicit vendor wire control in the task/call config
     # is already provider-specific and must not be replaced by that default.

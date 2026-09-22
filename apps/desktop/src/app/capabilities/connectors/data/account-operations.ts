@@ -142,8 +142,7 @@ export async function syncAccountOperation(opId: string): Promise<void> {
     const status = await accountOperationStatus(operation.scope, opId)
     applySnapshot(opId, status, 'reply')
     // eslint-disable-next-line no-empty
-  } catch {
-  }
+  } catch {}
 }
 
 export function clearAccountOperation(opId: string): void {

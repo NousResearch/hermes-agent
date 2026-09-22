@@ -216,12 +216,7 @@ function StatusColumn({
   } satisfies Record<ToolsStatusAction, (() => void) | undefined>
 
   return (
-    <ToolsStatus
-      connectorName={connectorName}
-      difference={difference}
-      onAction={id => act[id]?.()}
-      phase={phase}
-    />
+    <ToolsStatus connectorName={connectorName} difference={difference} onAction={id => act[id]?.()} phase={phase} />
   )
 }
 
@@ -284,12 +279,7 @@ function FrozenLines({
   return (
     <>
       {frozen && !preview ? (
-        <RulesLine
-          appOffName={appOffName}
-          onRetryRules={onRetryRules}
-          onSignIn={onSignIn}
-          signedOut={rulesSignedOut}
-        />
+        <RulesLine appOffName={appOffName} onRetryRules={onRetryRules} onSignIn={onSignIn} signedOut={rulesSignedOut} />
       ) : null}
 
       {signedOut && onSignIn ? <SignInLine onSignIn={onSignIn} /> : null}

@@ -1,4 +1,3 @@
-
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type CodeEditorApi } from '@/components/chat/code-editor'
@@ -71,8 +70,7 @@ export function useMcpDraft({ config, names, profilePending, servers, writable }
       setDraftText(wrapDoc(mutate(parseServersDoc(draft))))
       setDocVersion(version => version + 1)
       // eslint-disable-next-line no-empty
-    } catch {
-    }
+    } catch {}
   }
 
   const draftSeeded = useRef(false)
@@ -99,8 +97,7 @@ export function useMcpDraft({ config, names, profilePending, servers, writable }
         resetDraft(servers)
       }
       // eslint-disable-next-line no-empty
-    } catch {
-    }
+    } catch {}
   }, [config, dirty, draft, names, profilePending, servers])
 
   const focusKeyIn = (nextDraft: string, key: string) => {

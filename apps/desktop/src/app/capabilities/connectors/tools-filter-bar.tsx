@@ -82,7 +82,9 @@ export function ToolsFilterBar({
             />
           ))}
 
-          {facets.length > 0 && hints.length > 0 ? <Separator className="mx-1 data-[orientation=vertical]:h-4" orientation="vertical" /> : null}
+          {facets.length > 0 && hints.length > 0 ? (
+            <Separator className="mx-1 data-[orientation=vertical]:h-4" orientation="vertical" />
+          ) : null}
 
           {hints.map(entry => (
             <FilterChip

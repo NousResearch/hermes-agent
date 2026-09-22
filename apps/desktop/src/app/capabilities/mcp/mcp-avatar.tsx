@@ -1,4 +1,3 @@
-
 import { AvatarChip } from '@/components/ui/avatar-chip'
 import { brandFor } from '@/lib/mcp-brands'
 import { cn } from '@/lib/utils'

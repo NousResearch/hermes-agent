@@ -13,7 +13,6 @@ import { derivePage, showsAttentionFirst } from './derive-page'
 import { ToolsWash } from './tools-status'
 import type { ConnectorCardModel, ConnectorGroupModel, ConnectorSegmentId, ConnectorsFilter } from './types'
 
-
 export interface ConnectorsDirectoryProps {
   addYourOwn?: ReactNode
   busyKey?: null | string
@@ -57,7 +56,6 @@ export function ConnectorsDirectory({
 
   const showSegments = segments.length > 2
   const segmentFellBack = segments.length > 0 && segment !== filter.segment
-
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3" data-slot="connectors-directory">

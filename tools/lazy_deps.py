@@ -150,6 +150,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "platform.wecom_callback": ("defusedxml==0.7.1",),
     # Teams pulls a heavy tree (msal, dependency-injector); also the `teams` extra.
     "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),
+    # Threema's E2E containers are NaCl boxes. PyNaCl's wheels statically link libsodium,
+    # so this needs no system package; the official threema.gateway SDK instead pulls
+    # libnacl (ctypes over a system libsodium) plus logbook and click.
+    "platform.threema": ("pynacl==1.6.2", "aiohttp==3.14.3"),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),

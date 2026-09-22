@@ -1,0 +1,53 @@
+name: threema-platform
+label: Threema
+kind: platform
+version: 1.0.0
+description: >
+  Threema Gateway adapter for Hermes Agent (end-to-end encrypted mode). Sends
+  through ``/send_e2e`` and receives through a callback endpoint whose payloads
+  are MAC-verified and opened with NaCl. Text, files, images, audio, video and
+  location messages are supported; the crypto uses PyNaCl, whose wheels bundle
+  libsodium, rather than the official SDK's system libsodium dependency.
+author: Nous Research
+requires_env:
+  - name: THREEMA_GATEWAY_ID
+    description: "Threema Gateway ID (8 characters, starts with *) in end-to-end mode"
+    prompt: "Threema Gateway ID"
+    password: false
+  - name: THREEMA_API_SECRET
+    description: "API secret from the Threema Gateway panel"
+    prompt: "Threema API secret"
+    password: true
+  - name: THREEMA_PRIVATE_KEY_PATH
+    description: "Path to the file holding the Gateway private key (private:<hex>)"
+    prompt: "Private key file path"
+    password: false
+optional_env:
+  - name: THREEMA_PRIVATE_KEY
+    description: "Private key inline as private:<hex> — prefer THREEMA_PRIVATE_KEY_PATH"
+    prompt: "Private key (inline)"
+    password: true
+  - name: THREEMA_PUBLIC_URL
+    description: "Public HTTPS base URL Threema posts callbacks to (must be a trusted certificate)"
+    prompt: "Public HTTPS URL"
+    password: false
+  - name: THREEMA_CALLBACK_PATH
+    description: "Callback path served by the gateway (default: /threema/callback)"
+    prompt: "Callback path"
+    password: false
+  - name: THREEMA_CALLBACK_PORT
+    description: "Local port the callback listener binds (default: 8647)"
+    prompt: "Callback port"
+    password: false
+  - name: THREEMA_HOME_CHANNEL
+    description: "Threema ID for cron / notification delivery"
+    prompt: "Home channel (Threema ID)"
+    password: false
+  - name: THREEMA_ALLOWED_USERS
+    description: "Comma-separated Threema IDs allowed to talk to the bot"
+    prompt: "Allowed Threema IDs (comma-separated)"
+    password: false
+  - name: THREEMA_ALLOW_ALL_USERS
+    description: "Allow any Threema ID to talk to the bot (every inbound message costs credits)"
+    prompt: "Allow all users? (true/false)"
+    password: false

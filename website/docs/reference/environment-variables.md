@@ -687,6 +687,23 @@ Connect Hermes to a [SimpleX Chat](https://simplex.chat/) network via a local `s
 | `SIMPLEX_HOME_CHANNEL` | Default contact/group ID for cron / notification delivery. |
 | `SIMPLEX_HOME_CHANNEL_NAME` | Human label for the home channel (defaults to the ID). |
 
+### Threema
+
+Connect Hermes to a [Threema Gateway](https://gateway.threema.ch/) ID in end-to-end mode. Threema POSTs inbound messages to a callback URL that must present a publicly trusted TLS certificate. See [the Threema messaging guide](/user-guide/messaging/threema).
+
+| Variable | Description |
+|----------|-------------|
+| `THREEMA_GATEWAY_ID` | Gateway ID in end-to-end mode (8 characters, starts with `*`). Basic-mode IDs cannot receive messages. |
+| `THREEMA_API_SECRET` | API secret from the Gateway panel; also the key the inbound callback MAC is verified with. |
+| `THREEMA_PRIVATE_KEY_PATH` | Path to the file holding the Gateway private key (`private:<64 hex>`). Preferred over the inline form. |
+| `THREEMA_PRIVATE_KEY` | The private key inline, when a file is not practical. |
+| `THREEMA_PUBLIC_URL` | Public HTTPS base URL Threema posts callbacks to; a non-HTTPS value is warned about at startup. |
+| `THREEMA_CALLBACK_PORT` | Local port the callback listener binds (default: `8647`). |
+| `THREEMA_CALLBACK_PATH` | Callback path served by the gateway (default: `/threema/callback`). |
+| `THREEMA_HOME_CHANNEL` | Threema ID for cron / notification delivery. |
+| `THREEMA_ALLOWED_USERS` | Comma-separated Threema IDs allowed to talk to the bot. |
+| `THREEMA_ALLOW_ALL_USERS` | Allow any Threema ID to talk to the bot (every inbound message costs credits). |
+
 ### Photon
 
 Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other Spectrum platforms) via the Node sidecar. See [the Photon messaging guide](/user-guide/messaging/photon).

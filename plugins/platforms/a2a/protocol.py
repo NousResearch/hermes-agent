@@ -407,10 +407,12 @@ class TaskStore:
         next_offset = offset + page_size if offset + page_size < total else 0
         return (page, next_offset, total) if with_total else (page, next_offset)
 
-    def fail_orphans(self, timeout_seconds: int = 300) -> list[str]:
+    def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None) -> list[str]:
+        excluded = exclude or set()
         with self._lock:
             stale = [tid for tid, rec in self._tasks.items()
-                     if rec["state"] not in TERMINAL_STATES and time.time() - rec["created_at"] > timeout_seconds]
+                     if tid not in excluded and rec["state"] not in TERMINAL_STATES
+                     and time.time() - rec["created_at"] > timeout_seconds]
         return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
 
     def _trim_locked(self) -> None:
@@ -454,9 +456,11 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     for line in lines:
         if line.strip():
             try:
-                out.append(json.loads(line))
+                entry = json.loads(line)
             except json.JSONDecodeError:
-                pass
+                continue
+            if isinstance(entry, dict):
+                out.append(entry)
     return out[-limit:]
 
 

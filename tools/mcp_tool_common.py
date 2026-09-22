@@ -70,7 +70,7 @@ def _jittered(seconds: float) -> float:
 # Credential patterns to strip from error messages: GitHub PAT, OpenAI-style key, Bearer token,
 # and ``token= / key= / API_KEY= / password= / secret=`` assignments.
 _CREDENTIAL_PATTERN = re.compile(
-    r"(?:ghp_[A-Za-z0-9_]{1,255}|sk-[A-Za-z0-9_]{1,255}|Bearer\s+\S+"
+    r"(?:ghp_[A-Za-z0-9_]{1,255}|sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){0,254}|Bearer\s+\S+"
     r"|(?:token|key|API_KEY|password|secret)=[^\s&,;\"']{1,255})", re.IGNORECASE)
 
 

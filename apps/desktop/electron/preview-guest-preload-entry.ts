@@ -15,13 +15,18 @@
 // them would mean reaching into the guest's JS world, and this preload exposes
 // nothing there.
 
-import { installGuestExternalHandoff } from './preview-guest-preload'
+import { installGuestExternalHandoff, installGuestWidgetIntentHandoff } from './preview-guest-preload'
 
 const electron = require('electron') as {
   ipcRenderer: { sendToHost(channel: string, ...args: unknown[]): void }
 }
 
 installGuestExternalHandoff({
+  addEventListener: (type, listener, capture) => document.addEventListener(type, listener, capture),
+  sendToHost: (channel, ...args) => electron.ipcRenderer.sendToHost(channel, ...args)
+})
+
+installGuestWidgetIntentHandoff({
   addEventListener: (type, listener, capture) => document.addEventListener(type, listener, capture),
   sendToHost: (channel, ...args) => electron.ipcRenderer.sendToHost(channel, ...args)
 })

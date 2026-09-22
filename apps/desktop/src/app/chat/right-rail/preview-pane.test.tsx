@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import * as composerFocus from '@/app/chat/composer/focus'
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
@@ -731,5 +732,42 @@ describe('PreviewPane guest external handoff', () => {
     guestMessage(webview, 'https://example.com', 'something-else')
 
     expect(openExternal).not.toHaveBeenCalled()
+  })
+})
+
+describe('PreviewPane widget intent bridge', () => {
+  it('delivers a token-scoped long widget payload from the side preview to the active composer', async () => {
+    const submit = vi.spyOn(composerFocus, 'requestComposerSubmit').mockReturnValue(true)
+    const rendered = render(
+      <PreviewPane
+        target={{ kind: 'url', label: 'Widget', source: 'http://localhost:8501', url: 'http://localhost:8501' }}
+      />
+    )
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & {
+      executeJavaScript?: (code: string) => Promise<unknown>
+    }
+    const executeJavaScript = vi.fn<(code: string) => Promise<unknown>>(async () => undefined)
+    Object.assign(webview, { executeJavaScript })
+
+    act(() => webview.dispatchEvent(new Event('dom-ready')))
+
+    const script = String(executeJavaScript.mock.calls[0]?.[0])
+    const token = /token=([^;]+)/.exec(script)?.[1]
+    const payload = `FC-FLUSH ${JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ index, rating: 5 })))}`
+
+    act(() => webview.dispatchEvent(Object.assign(new Event('ipc-message'), { args: [JSON.parse(token!), payload], channel: 'preview-widget-intent' })))
+    act(() =>
+      webview.dispatchEvent(
+        Object.assign(new Event('ipc-message'), {
+          args: [JSON.parse(token!), 'FC-FLUSH second batch'],
+          channel: 'preview-widget-intent'
+        })
+      )
+    )
+
+    expect(submit).toHaveBeenCalledWith(payload, { displayKind: 'hidden', target: 'active' })
+    expect(submit).toHaveBeenCalledWith('FC-FLUSH second batch', { displayKind: 'hidden', target: 'active' })
+    expect(submit).toHaveBeenCalledTimes(2)
   })
 })

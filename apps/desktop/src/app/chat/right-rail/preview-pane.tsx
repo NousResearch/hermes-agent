@@ -6,7 +6,12 @@ import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
+import {
+  requestComposerAttachImages,
+  requestComposerFocus,
+  requestComposerInsert,
+  requestComposerSubmit
+} from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
@@ -148,6 +153,20 @@ interface PreviewLoadErrorState {
 }
 
 const FILE_RELOAD_DEBOUNCE_MS = 200
+const PREVIEW_WIDGET_INTENT_CHANNEL = 'preview-widget-intent'
+
+/** Install the only guest-to-chat capability in the page's own world. The
+ * token changes with each pane mount, so a stale guest cannot submit into its
+ * replacement. The preload sees only a DOM event and exposes no Electron API. */
+export function previewWidgetIntentScript(token: string): string {
+  return (
+    '(function(){var token=' +
+    JSON.stringify(token) +
+    ';window.hermes={canSend:true,send:function(prompt){if(typeof prompt!=="string"||!prompt.trim())return false;' +
+    'document.dispatchEvent(new CustomEvent("hermes-widget-intent",{detail:{token:token,prompt:prompt}}));return true}}})()'
+  )
+}
+
 const SERVER_RESTART_TIMEOUT_MS = 45_000
 
 function loadErrorTitle(error: PreviewLoadErrorState, copy: Translations['preview']['web']): string {
@@ -277,6 +296,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const annotateRef = useRef(annotate)
   const annotateLoopRef = useRef(0)
   const annotateConversationRef = useRef(selectedStoredSessionId)
+  const widgetIntentToken = useMemo(() => Math.random().toString(36).slice(2), [])
   annotateRef.current = annotate
 
   // Artifacts have no URL to load — they render from the registry, never in a
@@ -1058,6 +1078,26 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       }
     }
 
+    const onGuestWidgetIntent = (event: Event) => {
+      const detail = event as Event & { args?: unknown[]; channel?: string }
+
+      if (detail.channel !== PREVIEW_WIDGET_INTENT_CHANNEL) {
+        return
+      }
+
+      const [token, prompt] = detail.args ?? []
+
+      if (token !== widgetIntentToken || typeof prompt !== 'string' || !prompt.trim()) {
+        return
+      }
+
+      requestComposerSubmit(prompt, { target: 'active', displayKind: 'hidden' })
+    }
+
+    const installWidgetIntentBridge = () => {
+      void webview.executeJavaScript?.(previewWidgetIntentScript(widgetIntentToken)).catch(() => undefined)
+    }
+
     const onConsole = (event: Event) => {
       const detail = event as Event & {
         level?: number
@@ -1239,6 +1279,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     webview.addEventListener('console-message', onConsole)
     webview.addEventListener('ipc-message', onGuestExternal)
+    webview.addEventListener('ipc-message', onGuestWidgetIntent)
+    webview.addEventListener('dom-ready', installWidgetIntentBridge)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
@@ -1257,6 +1299,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       annotateLoopRef.current += 1
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('ipc-message', onGuestExternal)
+      webview.removeEventListener('ipc-message', onGuestWidgetIntent)
+      webview.removeEventListener('dom-ready', installWidgetIntentBridge)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
@@ -1269,7 +1313,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url, widgetIntentToken])
 
   return (
     <aside

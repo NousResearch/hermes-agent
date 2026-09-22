@@ -4,6 +4,7 @@ import {
   directiveFrameHeight,
   frameSizeFromMessage,
   intentFromMessage,
+  intentScript,
   themePrelude,
   withInlineChrome
 } from './inline-preview-directive'
@@ -113,8 +114,10 @@ describe('intentFromMessage', () => {
     expect(intentFromMessage(msg({ prompt: '  hi  ' }), 'tok')).toBe('hi')
   })
 
-  it('caps runaway prompts to a sentence-sized budget', () => {
-    expect(intentFromMessage(msg({ prompt: 'x'.repeat(9000) }), 'tok')).toHaveLength(500)
+  it('preserves structured widget payloads without silent truncation', () => {
+    const payload = `FC-FLUSH ${JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ index, rating: 5, note: 'review' })))}`
+
+    expect(intentFromMessage(msg({ prompt: payload }), 'tok')).toBe(payload)
   })
 
   it('rejects wrong token, wrong type, empty, and hostile shapes', () => {
@@ -130,8 +133,13 @@ describe('withInlineChrome intent wiring', () => {
   it('injects hermes.send and the data-hermes-send click bridge', () => {
     const framed = withInlineChrome('<html><body><h1>w</h1></body></html>', 'tok', '')
 
-    expect(framed).toContain('window.hermes={send:send}')
+    expect(framed).toContain('window.hermes={canSend:true,send:send}')
     expect(framed).toContain('data-hermes-send')
     expect(framed).toContain('hermes-inline-preview-intent')
+    expect(framed).toContain('canSend:true')
+  })
+
+  it('does not install a local throttle that can drop rapid widget submissions', () => {
+    expect(intentScript('tok')).not.toContain('slice(0,')
   })
 })

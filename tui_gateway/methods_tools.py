@@ -861,6 +861,57 @@ def _cmd_compress(rid, params, session, name, arg):
         return _err(rid, 5009, f"compress failed: {exc}")
 
 
+# ─── The fallback stage must not lie about why it has no route (#118812) ──────
+# ``command.dispatch`` is the stage desktop/TUI clients call AFTER ``slash.exec`` failed, so its
+# "not a quick/plugin/bundle/skill command" refusal lands exactly when the real cause (worker crash,
+# timeout, transient import error) needs to be shown - and reads as "no such command" for names
+# COMMAND_REGISTRY advertises: 47 of the 58 advertised commands are worker-only, so this refusal is
+# what they always get from here. Record the worker's own failure on the session; the refusal below
+# carries it (and says where such a command is served) instead of implying the command is absent.
+_SLASH_FAILURE_TTL_S = 300.0  # the fallback runs within the same client interaction
+_SLASH_FAILURE_KEEP = 8  # per session, newest wins
+
+
+def _record_slash_failure(session, name: str, command: str, message: str) -> None:
+    """Remember why ``slash.exec`` could not run ``/<name>`` in this session. Never raises."""
+    if not isinstance(session, dict) or not name:
+        return
+    with contextlib.suppress(Exception):
+        failures = session.setdefault("_slash_failures", {})
+        failures[name] = {"command": command, "message": str(message)[:600], "at": time.time()}
+        for stale in sorted(failures, key=lambda k: failures[k].get("at") or 0)[:-_SLASH_FAILURE_KEEP]:
+            failures.pop(stale, None)
+
+
+def _slash_failure_for(session, name: str) -> "str | None":
+    """The worker's own failure message for ``/<name>``, when this session still has a recent one."""
+    row = ((session or {}).get("_slash_failures") or {}).get(name)
+    if not isinstance(row, dict) or (time.time() - float(row.get("at") or 0)) > _SLASH_FAILURE_TTL_S:
+        return None
+    return str(row.get("message") or "") or None
+
+
+def _dispatch_no_route_error(rid, name: str, session) -> dict:
+    """4018 for a name this stage does not own: say WHERE such a command lives and WHY it is here.
+
+    The ``not a quick/plugin/bundle/skill command`` marker stays FIRST because the shipped desktop
+    (``use-prompt-actions/slash.ts``) and TUI (``userMessages.ts``) error masks match on it to tell
+    "the fallback had nothing to add" from a real error; everything after it is the truth that
+    marker was hiding: the slash worker's own failure when this session just had one, else the fact
+    that a command of this kind is served by ``slash.exec`` (the worker) rather than by this stage.
+    ``data`` carries the same facts structurally, so a client can stop matching on text.
+    """
+    failure = _slash_failure_for(session, name)
+    if failure:
+        clause = f"slash.exec could not run /{name} ({failure}), and command.dispatch has no route for it"
+    else:
+        clause = (f"/{name} is not owned by command.dispatch (quick/plugin/bundle/skill/built-in only): a "
+                  f"command of this kind is served by the slash worker via slash.exec, it may be a skill or "
+                  f"plugin of another session/profile, or it may not exist")
+    return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name} - {clause}",
+                data={"reason": "no_dispatch_route", "name": name, "slash_exec_failure": failure})
+
+
 _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
@@ -884,7 +935,7 @@ def _(rid, params: dict) -> dict:
                 if name in _SESSION_CONTROL_SLASHES and "error" not in res:
                     _publish_session_control_snapshot(params.get("session_id", ""), session)
                 return res
-    return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
+    return _dispatch_no_route_error(rid, name, session)
 
 
 @method("slash.exec")
@@ -934,6 +985,7 @@ def _(rid, params: dict) -> dict:
                         profile_home=session.get("profile_home"))
                     _attach_worker(sid, session, worker)
                 except Exception as e:
+                    _record_slash_failure(session, base, cmd, f"slash worker start failed: {e}")
                     return _err(rid, 5030, f"slash worker start failed: {e}")
     try:
         payload = {"output": worker.run(cmd) or "(no output)"}
@@ -946,6 +998,7 @@ def _(rid, params: dict) -> dict:
         with contextlib.suppress(Exception):
             worker.close()
         session["slash_worker"] = None
+        _record_slash_failure(session, base, cmd, str(e))
         return _err(rid, 5030, str(e))
 
 

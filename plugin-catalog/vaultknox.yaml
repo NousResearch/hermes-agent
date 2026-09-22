@@ -1,19 +1,19 @@
 name: vaultknox
 repo: https://github.com/Ufonik88/Hermes-VaultKnox
-sha: 899fd8a5052928a19eaa86742329574f581d03a7
+sha: 29af5cf7297172ec5bae13298ac445b2bd948058
 subdir: src/vaultknox/_hermes_plugin
-description: "Secret-leak protection for Hermes chats. Scans inbound messages and outbound replies for API keys, tokens, and passwords with a 28-pattern detector registry, redacts them before they reach session storage or the user, and injects safe secret-handling rules so the agent never asks for secrets in chat. Zero dependencies, fully offline detection; pairs with the optional hermes-vault CLI for encrypted storage. Disclosure — rewrites inbound user messages (regex secret redaction, may false-positive on password-like strings), injects a secret-handling prompt each conversation and rewrites assistant replies that ask for secrets; the vaultknox tool is inert unless the separate vaultknox pip package is installed, and its write gate is a tool argument the model sets."
+description: "Secret-leak protection for Hermes chats. Scans inbound messages and outbound replies for API keys, tokens, and passwords with a 28-pattern detector registry, redacts them before they reach session storage or the user, and injects safe secret-handling rules so the agent never asks for secrets in chat. Zero dependencies, fully offline detection; pairs with the optional hermes-vault CLI for encrypted storage. Disclosure — rewrites inbound user messages (regex secret redaction, may false-positive on password-like strings), injects a secret-handling prompt each conversation and rewrites assistant replies that ask for secrets; outbound replies are value-redacted with the same registry (regex-based, so a shape no detector covers passes through), with findings logged as detector name plus SHA-256 fingerprint and never the raw value. The vaultknox tool is inert unless the separate vaultknox pip package is installed, its write gate is a tool argument the model sets, and a vault policy that authorises raw consume_token returns the plaintext to the model."
 maintainer: Ufonik88
 tier: community
 category: tools
 requires_hermes: ">=0.19"
-docs_url: https://github.com/Ufonik88/Hermes-VaultKnox/blob/899fd8a5052928a19eaa86742329574f581d03a7/docs/PLUGIN.md
-version: "0.8.0"
-image: https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/899fd8a5052928a19eaa86742329574f581d03a7/docs/images/banner.png
+docs_url: https://github.com/Ufonik88/Hermes-VaultKnox/blob/29af5cf7297172ec5bae13298ac445b2bd948058/docs/PLUGIN.md
+version: "0.8.1"
+image: https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/29af5cf7297172ec5bae13298ac445b2bd948058/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/899fd8a5052928a19eaa86742329574f581d03a7/docs/images/quickstart-terminal.png
-  - https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/899fd8a5052928a19eaa86742329574f581d03a7/docs/images/protection-flow.png
-  - https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/899fd8a5052928a19eaa86742329574f581d03a7/docs/images/plugin-verify.png
+  - https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/29af5cf7297172ec5bae13298ac445b2bd948058/docs/images/quickstart-terminal.png
+  - https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/29af5cf7297172ec5bae13298ac445b2bd948058/docs/images/protection-flow.png
+  - https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/29af5cf7297172ec5bae13298ac445b2bd948058/docs/images/plugin-verify.png
 readme: true
 platforms: []
 capabilities:

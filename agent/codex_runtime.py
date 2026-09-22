@@ -828,7 +828,11 @@ class _CodexResponseAssembler:
 
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
-        pending = self.pending_function_calls.get(str(_event_field(event, "item_id", "")))
+        identity = {"type": "function_call", "id": _event_field(event, "item_id"),
+                    "call_id": _event_field(event, "call_id")}
+        pending = next((pending for pending in self.pending_function_calls.values()
+                        if self._same_function_call(identity, pending["item"],
+                                                    _event_field(event, "output_index"), pending["output_index"])), None)
         if pending is None:
             return  # the item itself lands on output_item.done
         if "delta" in event_type:
@@ -850,14 +854,37 @@ class _CodexResponseAssembler:
             self.active_summary_index = summary_index
         self._safe(self.on_reasoning_delta, "on_reasoning_delta", reasoning_text)
 
+    @staticmethod
+    def _same_function_call(left: Any, right: Any, left_index=None, right_index=None) -> bool:
+        if _event_field(left, "type") != "function_call" or _event_field(right, "type") != "function_call":
+            return False
+        left_call_id, right_call_id = _event_field(left, "call_id"), _event_field(right, "call_id")
+        # Conflicting semantic ids are distinct calls, even if a proxy reused an item id.
+        if left_call_id and right_call_id:
+            return left_call_id == right_call_id
+        left_id = _event_field(left, "id")
+        return bool(left_id and left_id == _event_field(right, "id")) or (
+            left_index is not None and left_index == right_index
+        )
+
     def _on_item_done(self, event: Any, event_type: str) -> None:
         done_item = _event_field(event, "item")
         if done_item is None:
             return
+        done_index = _event_field(event, "output_index")
+        if any(self._same_function_call(done_item, item, done_index, index)
+               for item, index in zip(self.output_items, self.output_indexes)):
+            return  # repeated .done must not schedule another execution
         self.output_items.append(done_item)
         # Reuse the announced position when known (fresh tail sequence for unannounced items); the .done
         # event's own output_index wins over the announced one.
         done_id = str(_event_field(done_item, "id", ""))
+        if _event_field(done_item, "type") == "function_call":
+            # Item ids can change between .added and .done; call_id is the
+            # semantic identity used by tool dispatch and tool-result replay.
+            done_id = next((key for key, pending in self.pending_function_calls.items()
+                            if self._same_function_call(done_item, pending["item"],
+                                                        done_index, pending["output_index"])), "")
         announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
@@ -907,10 +934,10 @@ class _CodexResponseAssembler:
         handler = self._EXACT_HANDLERS.get(event_type) or next((h for m, h in self._FUZZY_HANDLERS if m(event_type)), None)
         return bool(handler(self, event, event_type)) if handler is not None else False
 
-    def _settled_output(self) -> List[Any]:
+    def _settled_output(self, *, settle_pending: bool = True) -> List[Any]:
         """Merge .done items with settled pending calls, keeping stream order."""
         indexed = list(zip(self.output_indexes, self.output_sequences, self.output_items))
-        for pending in self.pending_function_calls.values():
+        for pending in self.pending_function_calls.values() if settle_pending else ():
             item = pending["item"]
             indexed.append((pending.get("output_index"), pending["sequence"], SimpleNamespace(
                 type="function_call", id=_event_field(item, "id", None), call_id=_event_field(item, "call_id", None),
@@ -922,14 +949,14 @@ class _CodexResponseAssembler:
         # output_index is optional: protocol order only when every entry has one, else wire order.
         if all(entry[0] is not None for entry in indexed):
             with suppress(TypeError):  # non-comparable index values: keep wire order
-                indexed.sort(key=lambda entry: entry[0])
+                indexed.sort(key=lambda entry: (entry[0], entry[1]))
         else:
             indexed.sort(key=lambda entry: entry[1])
         return [entry[2] for entry in indexed]
 
     def result(self) -> SimpleNamespace:
         # With only plain text deltas (no tool calls), synthesize one message item.
-        output: List[Any] = list(self.output_items)
+        output: List[Any] = self._settled_output(settle_pending=False)
         if not output and self.text_deltas and not self.has_tool_calls:
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
             output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]

@@ -43,9 +43,9 @@ def test_entry_stores_only_changed_paths_and_rollback_still_restores(ledger_home
         p.write_bytes(skill_ledger.read_blob(i["sha256"]))
     ok, msg = skill_ledger.rollback_entry(entry_id)
     assert ok, msg
-    assert (skills / "big" / "SKILL.md").read_text(encoding="utf-8") == "v1"
-    assert (skills / "big" / "references" / "a.md").read_text(encoding="utf-8") == "same"
-    assert (skills / "big" / "references" / "gone.md").read_text(encoding="utf-8") == "old"
+    assert (skills / "big" / "SKILL.md").read_text() == "v1"
+    assert (skills / "big" / "references" / "a.md").read_text() == "same"
+    assert (skills / "big" / "references" / "gone.md").read_text() == "old"
     assert not (skills / "big" / "references" / "new.md").exists()
 
 

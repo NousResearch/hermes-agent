@@ -1152,6 +1152,15 @@ agent:
   # the turn (see gateway_timeout). 0 = disable. Default 300.
   # session_stall_timeout: 300
 
+  # Stream stall watchdog (seconds). When a streaming reply stops emitting text
+  # mid-answer because the upstream API died, no finalize ever arrives; the gateway
+  # then delivers the accumulated partial with an "Incomplete response" notice
+  # instead of leaving the message hanging open. Armed on the first text delta; any
+  # control sentinel (tool run, flush barrier, approval wait) disarms it, so a slow
+  # tool call is never mistaken for a dead stream. Telegram transports only (the
+  # progressive edit + native-draft paths). 0 = disable. Default 12.
+  # stream_stall_timeout: 12
+
   # Transcript-sanitiser repeated-heal escalation (#96870). The pre-send
   # sanitiser silently repairs empty non-final turns on the wire copy; after
   # this many heal passes within a 10-minute session window Hermes logs one

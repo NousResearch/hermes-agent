@@ -56,6 +56,16 @@ _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 # Boundary finalize text when nothing has accumulated yet (overridable per boundary).
 _DEFAULT_BOUNDARY_PLACEHOLDER = "⏸ 等待审批中..."
 
+# Stream stall watchdog.  A text delta arms the clock; any control sentinel (tool
+# boundary, flush barrier, approval wait, commentary) disarms it, because silence after
+# one of those is EXPECTED.  When the upstream API dies mid-stream no ``_DONE`` ever
+# arrives, so an armed clock that runs out is the only reliable death signal: deliver
+# the accumulated partial instead of leaving the reply hanging open forever.
+STREAM_STALL_DEFAULT_TIMEOUT_S = 12.0
+STREAM_STALL_NOTICE = (
+    "⚠️ Incomplete response: upstream API interrupted. Showing partial content above."
+)
+
 
 @dataclass
 class StreamConsumerConfig:
@@ -154,6 +164,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._already_sent = False
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
+        self._stream_stalled_since = 0.0  # 0.0 = watchdog disarmed
         self._last_edit_overflowed = False  # last _send_or_edit split into continuations
         self._flood_strikes = 0
         self._current_edit_interval = self.cfg.edit_interval  # adaptive backoff
@@ -553,6 +564,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     return
                 tick = self._drain_queue()
 
+                # Silence after a non-interim tick (finalize, segment break, flush
+                # barrier, commentary) or after an approval / reopen boundary is
+                # expected - disarm before judging the stream dead.
+                if (not tick.is_interim or tick.approval_boundary is not None
+                        or tick.got_reopen_seed):
+                    self._watchdog_disarm()
+                if self._stream_stalled():
+                    await self._deliver_partial_on_stall()
+                    return
+
                 # Boundary produces its own finalize and resets state, so it must
                 # run before got_done/segment_break processing.
                 if tick.approval_boundary is not None:
@@ -676,7 +697,60 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 tick.flush_event = item[1]
                 return tick
             else:
+                self._watchdog_arm()  # a text delta means the stream is alive
                 self._filter_and_accumulate(item)
+
+    # ── Stream stall watchdog ────────────────────────────────────────────
+
+    def _stream_stall_timeout(self) -> float:
+        """Return the configured stall window in seconds; 0 disables the watchdog.
+
+        Read lazily through the env bridge the gateway populates from
+        ``agent.stream_stall_timeout``, so config changes apply without rebuilding the
+        consumer (same pattern as ``agent.session_stall_timeout``).
+        """
+        from gateway.run import _float_env
+        return _float_env("HERMES_STREAM_STALL_TIMEOUT", STREAM_STALL_DEFAULT_TIMEOUT_S)
+
+    def _watchdog_arm(self) -> None:
+        """Arm the watchdog — a text delta means the stream is alive."""
+        self._stream_stalled_since = time.monotonic()
+
+    def _watchdog_disarm(self) -> None:
+        """Disarm the watchdog — silence from here on is expected, not a death signal."""
+        self._stream_stalled_since = 0.0
+
+    def _stream_stalled(self) -> bool:
+        """Whether the stream went silent past the configured window.
+
+        Only the progressive transports (``editMessageText`` and native drafts) are
+        policed.  Cumulative transports — WeCom native and stream-is-the-message
+        drafts — keep their own liveness semantics, see ``_cumulative_transport()``.
+        """
+        if self._stream_stalled_since <= 0.0:
+            return False
+        if self._cumulative_transport():
+            return False
+        timeout = self._stream_stall_timeout()
+        if timeout <= 0:
+            return False
+        return (time.monotonic() - self._stream_stalled_since) >= timeout
+
+    async def _deliver_partial_on_stall(self) -> None:
+        """Deliver the accumulated partial with an incomplete-response notice.
+
+        Reuses the existing finalize path so the delivery flags, the cursor removal and
+        the recorded payload stay consistent with a normal turn end.  Best-effort: a
+        failed send is logged inside ``_finalize_edit`` and the run loop still exits.
+        """
+        logger.warning(
+            "Stream stalled for %.1fs with no delta (chat=%s, turn=%s) - "
+            "delivering partial content",
+            self._stream_stall_timeout(), self.chat_id, self._turn_id)
+        self._watchdog_disarm()
+        if not self._accumulated:
+            return
+        await self._finalize_edit(self._accumulated + "\n\n" + STREAM_STALL_NOTICE)
 
     def _adopt_final_text(self, final_raw: str) -> None:
         """Adopt the authoritative final (see finish()) as the finalize content — only if this

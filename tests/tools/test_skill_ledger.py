@@ -697,3 +697,11 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
     assert compactions == [], "an append under the cap must not re-run the sweep"
     assert skill_ledger.ledger_path().stat().st_size <= 8192
     assert "{not json at all" in skill_ledger.ledger_path().read_text(encoding="utf-8")
+    # U+2028 inside a row (ensure_ascii=False leaves it unescaped) is not a row boundary for the
+    # trim: a cap that fits only the newest row keeps that row byte-for-byte, not its second half.
+    u_row = (json.dumps({"id": "u2028", "skill": "my-skill", "action": "edit",
+                         "evidence": {"note": "line one\u2028line two"}}, ensure_ascii=False) + "\n").encode("utf-8")
+    with open(skill_ledger.ledger_path(), "ab") as fh:
+        fh.write(u_row)
+    assert skill_ledger._trim_oldest(len(u_row) + 8) >= 1
+    assert skill_ledger.ledger_path().read_bytes() == u_row, "a retained row containing U+2028 survives intact"

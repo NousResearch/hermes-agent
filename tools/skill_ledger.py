@@ -366,17 +366,21 @@ def _trim_oldest(max_bytes: int) -> int:
     raw = _read_ledger("trim skipped")
     if raw is None:
         return 0
-    lines = raw.decode("utf-8").splitlines()
-    kept: List[str] = []
+    # Split on the physical row terminator only: ``str.splitlines`` would also split on
+    # U+2028/U+2029/U+0085, which ``ensure_ascii=False`` rows may legitimately contain.
+    lines = raw.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    kept: List[bytes] = []
     size = 0
     for line in reversed(lines):  # the first iteration always keeps lines[-1]: the newest entry
-        addition = len(line.encode("utf-8")) + 1
+        addition = len(line) + 1
         if kept and size + addition > max_bytes:
             break
         kept.append(line)
         size += addition
     kept.reverse()
-    data = ("\n".join(kept) + "\n").encode("utf-8") if kept else b""
+    data = b"\n".join(kept) + b"\n" if kept else b""
     dropped = len(lines) - len(kept)
     if dropped <= 0:
         return 0

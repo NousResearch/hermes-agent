@@ -136,6 +136,21 @@ def test_normalize_parses_string_envelope_single_dict():
     assert entries == [{"name": "session_search", "arguments": {"query": "x"}}]
 
 
+def test_normalize_repairs_truncated_string_envelope_with_escaped_quote():
+    """#119640: repair a near-complete string envelope before validating it."""
+    entries, err = normalize_tool_call_entries({
+        "calls": '[{"name":"session_search","arguments":{"query":"a \\"quoted\\" query"}}'
+    })
+    assert err is None
+    assert entries == [{"name": "session_search", "arguments": {"query": 'a "quoted" query'}}]
+
+
+def test_normalize_keeps_invalid_json_error_for_unrepairable_string_envelope():
+    entries, err = normalize_tool_call_entries({"calls": "not a JSON envelope"})
+    assert entries == []
+    assert "tool_call 'calls' is not valid JSON" in (err or "")
+
+
 @pytest.mark.parametrize(
     "bad,expected_fragment",
     [

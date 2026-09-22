@@ -16,6 +16,7 @@ import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlig
 import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
@@ -25,15 +26,14 @@ import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
-  isInlineMediaSrc,
   isMarkdownDocumentPath,
   isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
-  resolveMediaDisplaySrc,
-  resolveMediaPlaybackSrc
+  resolveMediaPlaybackSrc,
+  validImageDimensions
 } from '@/lib/media'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
@@ -151,6 +151,14 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
 }
 
 function MediaAttachment({ path }: { path: string }) {
+  return mediaKind(path) === 'image' ? (
+    <MarkdownImage alt={mediaName(path)} src={path} />
+  ) : (
+    <MediaPlaybackAttachment path={path} />
+  )
+}
+
+function MediaPlaybackAttachment({ path }: { path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)
@@ -198,14 +206,6 @@ function MediaAttachment({ path }: { path: string }) {
       }
     }
   }, [kind, path])
-
-  if (kind === 'image' && src) {
-    return (
-      <span className="block">
-        <MarkdownImage alt={name} src={src} />
-      </span>
-    )
-  }
 
   if (kind === 'audio' && src) {
     return (
@@ -374,78 +374,60 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
   return <MarkdownImageContent {...props} />
 }
 
-function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<'img'>) {
+function MarkdownImageContent({
+  className,
+  src,
+  alt,
+  width,
+  height,
+  onLoad,
+  onError,
+  style,
+  ...props
+}: ComponentProps<'img'>) {
   const rawSrc = typeof src === 'string' ? src : ''
-  const [resolvedSrc, setResolvedSrc] = useState(() => (rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : ''))
-  const [failed, setFailed] = useState(false)
+  const image = useMediaImage(rawSrc, 16 / 9, validImageDimensions(width, height))
   const { open, openFailed } = useOpenMediaFile(rawSrc)
   const name = mediaName(rawSrc || String(alt || 'image'))
-
-  useEffect(() => {
-    let cancelled = false
-
-    setFailed(false)
-    setResolvedSrc(rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : '')
-
-    if (!rawSrc || isInlineMediaSrc(rawSrc)) {
-      return () => {
-        cancelled = true
-      }
-    }
-
-    void resolveMediaDisplaySrc(rawSrc)
-      .then(value => {
-        if (!cancelled) {
-          setResolvedSrc(value)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setFailed(true)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [rawSrc])
 
   if (!rawSrc) {
     return null
   }
 
-  if (failed) {
-    return (
-      <span className="my-2 block text-sm text-muted-foreground">
-        Couldn&apos;t load {name}.{' '}
-        <button className="ref font-medium text-foreground" onClick={open} type="button">
-          Open image
-        </button>
-        {openFailed && <OpenMediaFailedNote name={name} />}
-      </span>
-    )
-  }
-
-  if (!resolvedSrc) {
-    return <span className="my-2 block text-sm text-muted-foreground">Loading {name}...</span>
-  }
-
-  // The width cap belongs on the container, not the <img>: a percentage
-  // max-width resolves to none while the container measures its fit-content
-  // width, so the box overshoots the rendered image and strands the download
-  // button — which anchors to the container — out in the margin.
   return (
-    <ZoomableImage
-      alt={alt}
-      className={cn(
-        'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-full rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
-        className
+    <span className="relative my-2 block max-w-full" data-slot="aui_markdown-image" style={image.frameStyle}>
+      {image.failed ? (
+        <span className="absolute inset-0 block overflow-auto text-sm text-muted-foreground">
+          Couldn&apos;t load {name}.{' '}
+          <button className="ref font-medium text-foreground" onClick={open} type="button">
+            Open image
+          </button>
+          {openFailed && <OpenMediaFailedNote name={name} />}
+        </span>
+      ) : image.src ? (
+        <ZoomableImage
+          {...props}
+          alt={alt}
+          className={cn(
+            'm-0 block size-full rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+            className
+          )}
+          containerClassName="absolute inset-0 block size-full"
+          onError={event => {
+            image.onError()
+            onError?.(event)
+          }}
+          onLoad={event => {
+            image.onLoad(event.currentTarget)
+            onLoad?.(event)
+          }}
+          src={image.src}
+          style={style}
+        />
+      ) : (
+        <span className="absolute inset-0 block overflow-hidden text-sm text-muted-foreground">Loading {name}...</span>
       )}
-      containerClassName="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
-      slot="aui_markdown-image"
-      src={resolvedSrc}
-      {...props}
-    />
+    </span>
   )
 }
 

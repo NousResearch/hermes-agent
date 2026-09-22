@@ -1,4 +1,7 @@
-import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { hermesApi, type OwnerScope } from '@/api/client'
+import type { HermesConnection } from '@/global'
+import { desktopFsCacheKey, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
@@ -84,9 +87,21 @@ export function isFileMediaPath(path: string): boolean {
   return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
 }
 
-export async function resolveMediaDisplaySrc(path: string): Promise<string> {
+export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): Promise<string> {
   if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
     return path
+  }
+
+  // A tile can belong to a different gateway than the foreground. Pin both
+  // halves at read admission rather than resolving them when the read settles.
+  if (window.hermesDesktop && (owner?.connectionId || owner?.profile)) {
+    const result = await hermesApi<string | { dataUrl?: string }>({
+      path: `/api/fs/read-data-url?path=${encodeURIComponent(filePathFromMediaPath(path))}`,
+      ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
+      ...(owner.profile ? { profile: owner.profile } : {})
+    })
+
+    return typeof result === 'string' ? result : result.dataUrl || ''
   }
 
   if (window.hermesDesktop && isRemoteGateway()) {
@@ -98,6 +113,55 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
   }
 
   return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+}
+
+export interface MediaImageDimensions {
+  width: number
+  height: number
+}
+
+// Decoded geometry only: never retain image bytes/data URLs for every visited
+// transcript. A miss costs a letterboxed first display, not a collapsed row.
+const imageDimensions = new LruCache<string, MediaImageDimensions>(512)
+
+export function mediaImageKey(path: string, connection: HermesConnection | null, owner?: OwnerScope): string {
+  // File reads ignore URL query/fragment, but callers can use them to identify
+  // a new revision. Keep them in the geometry key while joining proven aliases.
+  const revision = /^file:/i.test(path) ? (path.match(/[?#].*$/)?.[0] ?? '') : ''
+
+  return JSON.stringify([
+    owner?.connectionId ||
+      connection?.connectionId ||
+      desktopFsCacheKey(connection && { ...connection, profile: owner?.profile ?? connection.profile }),
+    owner?.profile ?? connection?.profile ?? '',
+    filePathFromMediaPath(path),
+    revision
+  ])
+}
+
+export function validImageDimensions(width: unknown, height: unknown): MediaImageDimensions | undefined {
+  const w = Number(width)
+  const h = Number(height)
+
+  return Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0 ? { width: w, height: h } : undefined
+}
+
+export function getMediaImageDimensions(key: string): MediaImageDimensions | undefined {
+  return imageDimensions.get(key)
+}
+
+export function rememberMediaImageDimensions(key: string, width: number, height: number): void {
+  const dimensions = validImageDimensions(width, height)
+
+  // Embedded images can have multi-megabyte source keys. Their bytes stay with
+  // the message; do not turn this small metadata cache into a second copy.
+  if (dimensions && key.length <= 4096) {
+    imageDimensions.set(key, dimensions)
+  }
+}
+
+export function forgetMediaImageDimensions(key: string): void {
+  imageDimensions.delete(key)
 }
 
 // Audio/video need a seekable source instead of a whole-file data URL. Keep

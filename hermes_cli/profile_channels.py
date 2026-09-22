@@ -57,6 +57,7 @@ _POLICY_MARKERS = ("_ALLOWED_USERS", "_ALLOW_ALL_USERS", "_ALLOWED_CHATS", "_HOM
 _GATEWAY_OWNER_KEYS = ("multiplex_profiles", "profile_routes")
 
 _ENV_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+_ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @contextlib.contextmanager
@@ -439,8 +440,12 @@ def clone_channels_refusal(source_dir: Path, source_label: str) -> Optional[str]
     )
 
 
-def _config_platform_tokens(config_path: Path) -> Dict[str, str]:
-    """``{platform: token}`` from ``platforms.<p>.token|api_key`` (both nesting spellings)."""
+def _config_platform_tokens(config_path: Path, env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """``{platform: token}`` from ``platforms.<p>.token|api_key`` (both nesting spellings).
+
+    ``config.yaml`` may reference a profile-local ``.env`` value. Resolve those placeholders with
+    the supplied profile environment before returning a token for collision comparison.
+    """
     tokens: Dict[str, str] = {}
     if not config_path.is_file():
         return tokens
@@ -454,7 +459,9 @@ def _config_platform_tokens(config_path: Path) -> Dict[str, str]:
             if isinstance(block, dict):
                 token = block.get("token") or block.get("api_key")
                 if isinstance(token, str) and token.strip():
-                    tokens[str(pid)] = token.strip()
+                    tokens[str(pid)] = _ENV_PLACEHOLDER_RE.sub(
+                        lambda match: (env or {}).get(match.group(1), match.group(0)), token.strip()
+                    )
     return tokens
 
 
@@ -466,8 +473,8 @@ def shared_channel_credentials(profile_dir: Path, source_dir: Path) -> List[str]
     mine = _env_values(profile_dir / ".env", wanted)
     theirs = _env_values(source_dir / ".env", wanted)
     shared = {wanted[key] for key in mine if theirs.get(key) == mine[key]}
-    mine_cfg = _config_platform_tokens(profile_dir / "config.yaml")
-    theirs_cfg = _config_platform_tokens(source_dir / "config.yaml")
+    mine_cfg = _config_platform_tokens(profile_dir / "config.yaml", _env_values(profile_dir / ".env"))
+    theirs_cfg = _config_platform_tokens(source_dir / "config.yaml", _env_values(source_dir / ".env"))
     shared.update(pid for pid, token in mine_cfg.items() if theirs_cfg.get(pid) == token)
     return sorted(shared)
 

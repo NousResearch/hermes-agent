@@ -13,6 +13,7 @@ import pytest
 
 import hermes_constants
 from hermes_cli import doctor_state, gateway, gateway_migrate as gm
+from hermes_cli.profile_channels import shared_channel_credentials
 
 SECRET = "123456:shared-secret-value"
 
@@ -65,3 +66,31 @@ def test_distinct_tokens_and_shared_non_singleton_keys_are_not_findings(homes):
     assert gm.duplicate_credential_findings() == []
     assert not gm.build_migration_plan().blocked
     assert "both hold" not in _surfaces()
+
+
+def test_shared_channel_credentials_resolves_config_placeholders_per_profile(homes):
+    default, worker = homes
+    (default / ".env").write_text("TELEGRAM_BOT_TOKEN=default-token\n", encoding="utf-8")
+    (worker / ".env").write_text("TELEGRAM_BOT_TOKEN=worker-token\n", encoding="utf-8")
+    config = "platforms:\n  telegram:\n    token: ${TELEGRAM_BOT_TOKEN}\n"
+    (default / "config.yaml").write_text(config, encoding="utf-8")
+    (worker / "config.yaml").write_text(config, encoding="utf-8")
+
+    assert shared_channel_credentials(worker, default) == []
+
+
+def test_shared_channel_credentials_warns_for_equal_resolved_and_literal_tokens(homes):
+    default, worker = homes
+    config = "platforms:\n  telegram:\n    token: ${TELEGRAM_BOT_TOKEN}\n"
+    (default / ".env").write_text("TELEGRAM_BOT_TOKEN=shared-token\n", encoding="utf-8")
+    (worker / ".env").write_text("TELEGRAM_BOT_TOKEN=shared-token\n", encoding="utf-8")
+    (default / "config.yaml").write_text(config, encoding="utf-8")
+    (worker / "config.yaml").write_text(config, encoding="utf-8")
+
+    assert shared_channel_credentials(worker, default) == ["telegram"]
+
+    literal = "platforms:\n  telegram:\n    token: literal-token\n"
+    (default / "config.yaml").write_text(literal, encoding="utf-8")
+    (worker / "config.yaml").write_text(literal, encoding="utf-8")
+
+    assert shared_channel_credentials(worker, default) == ["telegram"]

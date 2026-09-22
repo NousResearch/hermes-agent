@@ -2253,6 +2253,49 @@ def test_force_cancel_restores_exact_expired_or_expiring_cooldown_row(
     assert db.get_compression_lock_holder(session_id) is None
 
 
+def test_exact_cooldown_restore_tolerates_a_concurrently_deleted_session(
+    tmp_path: Path,
+) -> None:
+    """A deleted session has no cooldown state left to compensate (#106271)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "COOLDOWN_ROLLBACK_DELETED_SESSION"
+    db.create_session(session_id, source="cli")
+    snapshot = db.get_compression_failure_cooldown_row(session_id)
+    assert snapshot["session_exists"] is True
+
+    assert db.delete_session(session_id) is True
+    db.restore_compression_failure_cooldown_row(session_id, snapshot)
+
+    assert db.get_compression_failure_cooldown_row(session_id) == {
+        "session_exists": False,
+        "cooldown_until": None,
+        "error": None,
+    }
+
+
+def test_exact_cooldown_restore_tolerates_deletion_before_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deletion after the compensating write is still an intentional no-op (#106271)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "COOLDOWN_ROLLBACK_DELETE_DURING_VERIFY"
+    db.create_session(session_id, source="cli")
+    snapshot = db.get_compression_failure_cooldown_row(session_id)
+    real_execute_write = db._execute_write
+
+    def _restore_then_delete(callback):
+        monkeypatch.setattr(db, "_execute_write", real_execute_write)
+        result = real_execute_write(callback)
+        assert db.delete_session(session_id) is True
+        return result
+
+    monkeypatch.setattr(db, "_execute_write", _restore_then_delete)
+    db.restore_compression_failure_cooldown_row(session_id, snapshot)
+
+    assert db.get_compression_failure_cooldown_row(session_id)["session_exists"] is False
+
+
 def test_cooldown_rollback_failure_surfaces_and_releases_lease(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

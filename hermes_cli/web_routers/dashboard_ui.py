@@ -7,13 +7,14 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 import asyncio
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.config import cfg_get
+from hermes_cli.web_routers._common import config_scoped_to_thread
 from hermes_cli.web_server_dashboard import (
     _BUILTIN_DASHBOARD_THEMES, _discover_user_themes, _invalidate_plugins_hub_cache, _merged_plugins_hub,
 )
@@ -30,12 +31,16 @@ _get_dashboard_plugins = late("_get_dashboard_plugins")
 _require_token = late("_require_token")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
+# Home + secret scope for one request. NOT ``_profile_scope``: the bodies below clone/pull over the
+# network and hold the scope for their whole duration, and ``_profile_scope`` also holds the
+# process-global skills lock.
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 
-def _set_dashboard_key(key: str, value) -> None:
-    """Write ``dashboard.<key>`` to config.yaml under the config mutation lock."""
-    with _CONFIG_MUTATION_LOCK:
+def _set_dashboard_key(key: str, value, profile: Optional[str] = None) -> None:
+    """Write ``dashboard.<key>`` to the profile's config.yaml under the config mutation lock."""
+    with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
         config = load_config()
         if "dashboard" not in config:
             config["dashboard"] = {}
@@ -44,7 +49,7 @@ def _set_dashboard_key(key: str, value) -> None:
 
 
 @router.get("/api/dashboard/themes")
-async def get_dashboard_themes():
+async def get_dashboard_themes(profile: Optional[str] = None):
     """Available themes + the active one. Built-ins ship name/label/description only
     (the frontend owns their definitions in `web/src/themes/presets.ts`); user themes
     from `~/.hermes/dashboard-themes/*.yaml` ship their normalised `definition`."""
@@ -60,13 +65,13 @@ async def get_dashboard_themes():
             seen.add(t["name"])
         return {"themes": themes, "active": active}
 
-    return await asyncio.to_thread(_run)
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.put("/api/dashboard/theme")
-async def set_dashboard_theme(body: ThemeSetBody):
+async def set_dashboard_theme(body: ThemeSetBody, profile: Optional[str] = None):
     """Set the active dashboard theme (persists to config.yaml)."""
-    await asyncio.to_thread(_set_dashboard_key, "theme", body.name)
+    await asyncio.to_thread(_set_dashboard_key, "theme", body.name, profile)
     return {"ok": True, "theme": body.name}
 
 
@@ -83,21 +88,21 @@ _FONT_CHOICES = frozenset({
 
 
 @router.get("/api/dashboard/font")
-async def get_dashboard_font():
+async def get_dashboard_font(profile: Optional[str] = None):
     """Return the active font override (``"theme"`` = use the theme's font)."""
     def _run():
         font = cfg_get(load_config(), "dashboard", "font", default=_FONT_DEFAULT_ID)
         return {"font": font if font in _FONT_CHOICES else _FONT_DEFAULT_ID}
 
-    return await asyncio.to_thread(_run)
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.put("/api/dashboard/font")
-async def set_dashboard_font(body: FontSetBody):
+async def set_dashboard_font(body: FontSetBody, profile: Optional[str] = None):
     """Set the font override (config.yaml). Unknown ids coerce to ``"theme"`` rather than
     400 so a stale client can't wedge the picker."""
     font = body.font if body.font in _FONT_CHOICES else _FONT_DEFAULT_ID
-    await asyncio.to_thread(_set_dashboard_key, "font", font)
+    await asyncio.to_thread(_set_dashboard_key, "font", font, profile)
     return {"ok": True, "font": font}
 
 
@@ -124,14 +129,14 @@ def _plugin_activated(plugin: dict, enabled_set: set, disabled_set: set) -> bool
 
 
 @router.get("/api/dashboard/plugins")
-async def get_dashboard_plugins():
+async def get_dashboard_plugins(profile: Optional[str] = None):
     """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones)."""
     def _run():
         plugins = _get_dashboard_plugins()
         hidden: list = cfg_get(load_config(), "dashboard", "hidden_plugins", default=[]) or []
         return plugins, hidden, *_plugin_enable_sets()
 
-    plugins, hidden, enabled_set, disabled_set = await asyncio.to_thread(_run)
+    plugins, hidden, enabled_set, disabled_set = await config_scoped_to_thread(profile, _run)
 
     # Strip internal fields before sending to frontend.
     return [
@@ -153,7 +158,7 @@ async def get_plugins_hub(request: Request):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
     try:
-        return _merged_plugins_hub()
+        return await asyncio.to_thread(_merged_plugins_hub)
     except Exception as exc:
         _log.warning("plugins/hub failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
@@ -170,13 +175,61 @@ def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
     return result
 
 
+@router.get("/api/dashboard/plugins/catalog")
+async def get_plugins_catalog(request: Request):
+    """Curated plugin catalog merged with installed state (session protected)."""
+    _require_token(request)
+
+    def _run():
+        from hermes_cli.plugins_cmd import _discover_all_plugins, _get_disabled_set, _get_enabled_set
+        from hermes_cli.plugins_cmd_catalog import installed_catalog_state
+        from hermes_cli.web_server_dashboard import _plugin_runtime_status
+        enabled, disabled = _get_enabled_set(), _get_disabled_set()
+        installed = {}
+        for name, _v, _d, _s, dir_str, key in _discover_all_plugins():
+            aliases = {name, key} - {""}
+            info = {"dir": dir_str, "runtime_status": _plugin_runtime_status(aliases, enabled, disabled)}
+            installed.update({alias: info for alias in aliases})
+        return installed_catalog_state(installed)
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception as exc:
+        _log.warning("plugins/catalog failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to build plugins catalog.") from exc
+
+
+async def _plugin_mutation(fn: Callable[[], dict]) -> dict:
+    """Run a dashboard plugin mutation inside the dashboard profile's home + secret scope, off the
+    event loop.
+
+    Scope: the git-credential path reaches ``get_secret("GITHUB_TOKEN")``, which fails closed once
+    the process serves more than its launch profile — an unhandled ``UnscopedSecretError`` was the
+    bare 500 on install/update (#115256). Off-loop: the bodies clone/pull and rescan the plugins
+    directory. ``_config_profile_scope`` not ``_profile_scope``: the latter holds the process-wide
+    skills lock for the whole (network-bound) body.
+    """
+    def _run():
+        with _config_profile_scope(None):
+            return fn()
+
+    return await asyncio.to_thread(_run)
+
+
 @router.post("/api/dashboard/agent-plugins/install")
 async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
     _require_token(request)
     from hermes_cli.plugins_cmd import dashboard_install_plugin
 
-    result = dashboard_install_plugin(body.identifier.strip(), force=body.force, enable=body.enable)
-    result = _plugin_action(result, "Install failed.", rescan=True)
+    catalog_name = (body.catalog_name or "").strip()
+    identifier = body.identifier.strip()
+    if not identifier and not catalog_name:
+        raise HTTPException(status_code=400, detail="Provide an identifier or a catalog_name.")
+    result = await _plugin_mutation(lambda: _plugin_action(
+        dashboard_install_plugin(
+            identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None,
+            ref=body.ref),
+        "Install failed.", rescan=True))
     # Strip internal paths from the response
     result.pop("after_install_path", None)
     return result
@@ -190,47 +243,56 @@ def _validate_plugin_name(name: str) -> str:
     return name
 
 
-def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *, rescan: bool) -> dict:
+async def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *, rescan: bool) -> dict:
     _require_token(request)
-    return _plugin_action(action(_validate_plugin_name(name)), fallback_error, rescan=rescan)
+    return await _plugin_mutation(lambda: _plugin_action(
+        action(_validate_plugin_name(name)), fallback_error, rescan=rescan))
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
-    return _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
-                                "Enable failed.", rescan=False)
+    return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
+                                      "Enable failed.", rescan=False)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/disable")
 async def post_agent_plugin_disable(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
-    return _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=False),
-                                "Disable failed.", rescan=False)
+    return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=False),
+                                      "Disable failed.", rescan=False)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
-    return _named_plugin_action(request, name, dashboard_update_user_plugin, "Update failed.", rescan=True)
+    return await _named_plugin_action(request, name, dashboard_update_user_plugin, "Update failed.", rescan=True)
 
 
 @router.delete("/api/dashboard/agent-plugins/{name:path}")
 async def delete_agent_plugin(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
-    return _named_plugin_action(request, name, dashboard_remove_user_plugin, "Remove failed.", rescan=True)
+    return await _named_plugin_action(request, name, dashboard_remove_user_plugin, "Remove failed.", rescan=True)
 
 
 @router.put("/api/dashboard/plugin-providers")
-async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
+async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody,
+                               profile: Optional[str] = None):
     """Persist memory provider / context engine selection (writes config.yaml)."""
     _require_token(request)
     from hermes_cli.plugins_cmd import _save_context_engine, _save_memory_provider
 
     def _run():
-        with _CONFIG_MUTATION_LOCK:
+        # ``_save_memory_provider``/``_save_context_engine`` are functools.partial over
+        # ``_write_config_value`` -> save_config: the write is one hop away and lands in
+        # whatever home the scope names. Unlike plugin INSTALLATION (host venv, pinned to the
+        # serving profile), these two keys are per-profile settings — `memory.provider` is the
+        # same key PUT /api/memory/provider scopes — so they follow ``?profile=``.
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             if body.memory_provider is not None:
                 memory_provider = _normalize_memory_provider_name(body.memory_provider)
+                # Readiness resolves through load_config(); inside the scope so the answer is
+                # about the profile being written, not the launch profile.
                 _require_memory_provider_ready(memory_provider)
                 _save_memory_provider(memory_provider)
             if body.context_engine is not None:
@@ -242,13 +304,14 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
 
 
 @router.post("/api/dashboard/plugins/{name:path}/visibility")
-async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody):
+async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody,
+                                 profile: Optional[str] = None):
     """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
     _require_token(request)
     name = _validate_plugin_name(name)
 
     def _run():
-        with _CONFIG_MUTATION_LOCK:
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             config = load_config()
             if "dashboard" not in config or not isinstance(config.get("dashboard"), dict):
                 config["dashboard"] = {}

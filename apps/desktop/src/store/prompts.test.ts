@@ -13,6 +13,7 @@ import {
   clearSudoRequest,
   receiveApprovalRequest,
   replayPendingApproval,
+  sessionApprovalRequests,
   setApprovalRequest,
   setSecretRequest,
   setSudoRequest
@@ -104,7 +105,7 @@ describe('approval prompt store', () => {
     expect(calls).toEqual([['approval.received', { request_id: 'r1', session_id: 's1' }]])
   })
 
-  it('replays and acknowledges the oldest unresolved approval after reconnect', async () => {
+  it('replays and acknowledges every unresolved approval after reconnect', async () => {
     const calls: Array<[string, Record<string, unknown>]> = []
 
     const gateway = {
@@ -129,8 +130,112 @@ describe('approval prompt store', () => {
     expect($approvalRequest.get()?.requestId).toBe('r1')
     expect(calls).toEqual([
       ['approval.pending', { session_id: 's1' }],
-      ['approval.received', { request_id: 'r1', session_id: 's1' }]
+      ['approval.received', { request_id: 'r1', session_id: 's1' }],
+      ['approval.received', { request_id: 'r2', session_id: 's1' }]
     ])
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['r1', 'r2'])
+    clearApprovalRequest('s1', 'r1')
+    expect($approvalRequest.get()?.requestId).toBe('r2')
+  })
+
+  it('preserves live server request routing for every queued replay entry', async () => {
+    for (const id of ['r1', 'r2']) {
+      await receiveApprovalRequest(null, {
+        command: id,
+        description: id,
+        requestId: id,
+        serverRequestId: `srv-${id}`,
+        sessionId: 's1'
+      })
+    }
+
+    await replayPendingApproval(
+      {
+        request: async () => ({
+          approvals: [
+            { command: 'r1', request_id: 'r1' },
+            { command: 'r2', request_id: 'r2' }
+          ]
+        })
+      },
+      's1'
+    )
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.serverRequestId)
+    ).toEqual(['srv-r1', 'srv-r2'])
+  })
+
+  it('deduplicates queued ids and rejects a replay that races an exact response', async () => {
+    const first = { command: 'first', description: 'd', requestId: 'r1', sessionId: 's1' }
+    const second = { ...first, command: 'second', requestId: 'r2' }
+    setApprovalRequest(first)
+    setApprovalRequest(second)
+    setApprovalRequest(first)
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['r1', 'r2'])
+    let finish!: (result: unknown) => void
+
+    const replay = replayPendingApproval(
+      {
+        request: () =>
+          new Promise(resolve => {
+            finish = resolve
+          })
+      },
+      's1'
+    )
+
+    clearApprovalRequest('s1', 'r1')
+    finish({
+      approvals: [
+        { command: 'first', request_id: 'r1' },
+        { command: 'second', request_id: 'r2' }
+      ]
+    })
+    await replay
+    expect(sessionApprovalRequests('s1').get()).toEqual([second])
+    clearAllPrompts('s1')
+    expect(sessionApprovalRequests('s1').get()).toEqual([])
+  })
+
+  it('clears an absent approval without overwriting a newer live request', async () => {
+    const old = { command: 'x', description: 'd', requestId: 'old', sessionId: 's1' }
+    setApprovalRequest(old)
+    await replayPendingApproval({ request: async () => ({ approvals: [] }) }, 's1')
+    expect($approvalRequest.get()).toBeNull()
+
+    setApprovalRequest(old)
+    let resolve!: (value: unknown) => void
+
+    const pending = replayPendingApproval(
+      {
+        request: () =>
+          new Promise(done => {
+            resolve = done
+          })
+      },
+      's1'
+    )
+
+    setApprovalRequest({ ...old, requestId: 'new' })
+    resolve({ approvals: [] })
+    await pending
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['old', 'new'])
+    clearApprovalRequest('s1', 'old')
+    expect($approvalRequest.get()?.requestId).toBe('new')
   })
 
   it('does not replay a pending approval after the runtime is rejected as gone', async () => {

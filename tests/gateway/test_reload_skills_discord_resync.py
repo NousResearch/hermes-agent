@@ -22,6 +22,7 @@ data the live callbacks already read from.
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 
@@ -73,7 +74,7 @@ class TestRefreshSkillGroup:
             fake_collector,
         )
 
-        new_count, hidden = adapter.refresh_skill_group()
+        new_count, hidden = asyncio.run(adapter.refresh_skill_group())
 
         assert new_count == 1
         assert hidden == 0

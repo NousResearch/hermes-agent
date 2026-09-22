@@ -12,9 +12,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from agent.message_sanitization import (
-    _sanitize_structure_non_ascii, _sanitize_structure_surrogates
-)
+from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
 from utils import env_var_enabled
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -116,21 +114,15 @@ def build_api_request(
             tools_for_api=tools_for_api,
         )
     )
+    # A model that rejected image content gets text only; history keeps the images.
+    strip_images_for_rejecting_model(agent, api_messages)
     if tools_for_api == agent.tools:
         api_kwargs = agent._build_api_kwargs(api_messages)
     else:
         api_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=tools_for_api)
-    # Surrogate chokepoint: tool descriptions, extra_body and kwargs strings can carry
-    # invalid code points (HTTP 400). One walk makes the payload json.dumps()-safe.
-    # Outbound-request surrogate chokepoint (#50959): the messages were scrubbed above, but the rest of the
-    # request body — tool/function descriptions (session_search's ±-heavy text is the recorded repro),
-    # extra_body, system strings routed via kwargs — can still carry invalid code points that providers
-    # reject with a non-retryable HTTP 400 ("invalid unicode code point"). One in-place walk here guarantees
-    # the entire payload json.dumps()-safe regardless of which leaf produced the string. Fast no-op when the
-    # payload is clean.
-    _sanitize_structure_surrogates(api_kwargs)
-    if agent._force_ascii_payload:
-        _sanitize_structure_non_ascii(api_kwargs)
+    # Messages were scrubbed above; this walk covers the rest of the payload (tool descriptions,
+    # extra_body, kwargs strings) — see sanitize_outbound_kwargs for the #50959 rationale.
+    sanitize_outbound_kwargs(agent, api_kwargs)
     if agent.api_mode == "codex_responses":
         api_kwargs = agent._get_transport().preflight_kwargs(
             api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),

@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import os
 import socket
 import threading
@@ -176,17 +177,28 @@ class TestInjectionFilter:
 
 
 class TestOutboundRedaction:
-    def test_openai_key_redacted(self):
-        out = security.redact_outbound("my key is sk-abcdefghij1234567890XYZ")
-        assert "sk-abcdefghij" not in out
-        assert "[redacted]" in out
+    def test_every_canonical_credential_class_is_scrubbed(self):
+        """Invariant: redact_outbound masks everything redact_sensitive_text masks. A2A ships text to a
+        REMOTE peer, so a private subset here silently drops every prefix later added to agent/redact.py.
+        Corpus: one synthetic token per registered prefix pattern, built from the pattern's literal prefix."""
+        from agent import redact as R
 
-    def test_github_token_redacted(self):
-        out = security.redact_outbound("token ghp_0123456789abcdefghij0123")
-        assert "ghp_0123456789" not in out
+        bodies = ("Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "QQ7ZP2MX9VLK4NRT", "b-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  ".Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "1-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  "Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0.Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0")
+        tokens = []
+        for pattern in R._PREFIX_PATTERNS + R._plugin_patterns():
+            prefix = R._extract_literal_prefix(pattern)
+            token = next((prefix + body for body in bodies if re.fullmatch(pattern, prefix + body)), None)
+            assert token, f"could not synthesize a token for {pattern!r}"
+            tokens.append(token)
+        assert len(tokens) == len(R._PREFIX_PATTERNS) + len(R._plugin_patterns())
+        for token in tokens:
+            assert token not in security.redact_outbound(f"peer, here: {token}"), token
 
-    def test_email_redacted(self):
-        out = security.redact_outbound("contact me at alice@example.com")
+    def test_bearer_and_email_redacted(self):
+        out = security.redact_outbound("Authorization: Bearer opaque0123456789abcdef; contact me at alice@example.com")
+        assert "opaque0123456789abcdef" not in out
         assert "alice@example.com" not in out
         assert "[redacted-email]" in out
 
@@ -650,6 +662,26 @@ class TestReplyCapture:
             assert fut.result(timeout=0) == (protocol.STATE_COMPLETED, "real reply")
         finally:
             adapter._pop_pending("task-ok")
+
+    def test_on_processing_complete_recovers_streamed_reply(self):
+        """#116944: when the gateway's normal final send is suppressed because streaming
+        already delivered the body, send() is never called with notify=True and the future
+        is resolved here instead. It must carry the reply text the gateway stashed on the
+        event, not resolve TASK_STATE_COMPLETED with an empty string."""
+        from gateway.platforms.event import ProcessingOutcome
+
+        adapter = _bare_adapter()
+        fut = adapter._add_pending("task-streamed", "ctx-streamed")
+        event = SimpleNamespace(message_id="task-streamed", _streamed_final_response="SSE_OK")
+
+        async def run():
+            await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        try:
+            asyncio.run(run())
+            assert fut.result(timeout=0) == (protocol.STATE_COMPLETED, "SSE_OK")
+        finally:
+            adapter._pop_pending("task-streamed")
 
 
 # --------------------------------------------------------------------------
@@ -1648,6 +1680,7 @@ _A2A_ENV_VARS = (
     "A2A_AGENT_NAME",
     "A2A_ADVERTISED_TOOLSETS",
     "A2A_AGENT_DESCRIPTION",
+    "A2A_PUBLIC_URL",
 )
 
 
@@ -1687,6 +1720,7 @@ def default_profile_env(monkeypatch):
     monkeypatch.setenv("A2A_AGENT_NAME", "default-profile-agent")
     monkeypatch.setenv("A2A_ADVERTISED_TOOLSETS", "default-only-toolset")
     monkeypatch.setenv("A2A_AGENT_DESCRIPTION", "Default profile's own agent.")
+    monkeypatch.setenv("A2A_PUBLIC_URL", "https://default-profile.example.com/")
 
 
 class TestMultiplexConstructionScope:
@@ -1709,6 +1743,10 @@ class TestMultiplexConstructionScope:
         assert adapter._agents[""]["description"] == (
             "Hermes Agent — a general-purpose agent reachable over A2A."
         )
+        # _public_url was captured at construction time via a bare os.getenv, missed by the
+        # scoped retrofit the sibling fields above already got.
+        assert adapter._public_url != "https://default-profile.example.com/"
+        assert adapter._public_url == ""
 
     def test_default_profile_unscoped_keeps_env_precedence(
         self, monkeypatch, default_profile_env
@@ -1727,3 +1765,16 @@ class TestMultiplexConstructionScope:
         assert adapter.port == 9111
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
+        assert adapter._public_url == "https://default-profile.example.com/"
+
+
+def test_load_conversation_skips_non_dict_lines(monkeypatch, tmp_path):
+    """A scalar line in a conversation file must not break replay or pollute
+    the list[dict] contract."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    protocol.persist_message("ctx-mixed", "user", "hello", "t1")
+    path = protocol._conv_path("ctx-mixed")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("42\n")
+    convo = protocol.load_conversation("ctx-mixed")
+    assert len(convo) == 1 and convo[0]["text"] == "hello"

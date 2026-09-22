@@ -1,9 +1,7 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { ProfileScope } from '@/hermes'
-import { useI18n } from '@/i18n'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 
 import type { McpServersController } from '../mcp/use-mcp-servers'
@@ -18,11 +16,14 @@ import {
 } from './data/account-operations'
 import { openConnectorsAdmin } from './data/portal'
 import { type HostedConnectorsView, useConnectorTools } from './data/queries'
-import { bothWaysOn, localServerName } from './derive'
+import { localServerName } from './derive'
 import { ConnectorDialogMenu } from './dialog-menu'
+import { localCost } from './local-dialog'
 import type { InstallField } from './local-server-control'
+import { LocalAdvanced } from './local-slots'
 import { HostedToolsPanel, LocalToolsPanel, orgDisabledCount } from './tools-panel'
 import type { ConnectorCardModel } from './types'
+import { type WayChoice, wayInUse } from './ways-section'
 
 export interface HostedConnectorDialogProps {
   card: ConnectorCardModel
@@ -61,12 +62,20 @@ export function HostedConnectorDialog({
   profile,
   togglePending
 }: HostedConnectorDialogProps) {
-  const { t } = useI18n()
   const tools = useConnectorTools(profile, card.slug, hosted.listSlugs.has(card.slug))
   const operation = accountOperationFor(useStore($accountOperations), card.slug)
-  const [form, setForm] = useState<'hosted' | 'local'>('hosted')
+  const inUse = wayInUse(card.ways)
+  const [way, setWay] = useState<WayChoice>(inUse ?? 'hosted')
 
-  const both = bothWaysOn(card.ways)
+  useEffect(() => {
+    if (inUse) {
+      setWay(inUse)
+    }
+  }, [inUse])
+
+  const local = card.ways.local
+  const serverName = localServerName(card)
+  const installed = local?.installed === true && card.plugin === undefined
 
   const hostedPanel = (
     <HostedToolsPanel
@@ -89,8 +98,10 @@ export function HostedConnectorDialog({
 
   return (
     <ConnectorDialog
+      advanced={installed ? <LocalAdvanced controller={controller} name={serverName} onRemove={onRemoveServer} /> : undefined}
       card={card}
       connectElement={element}
+      cost={installed ? localCost(controller, serverName) : undefined}
       installFields={installFields}
       installing={installing}
       menu={
@@ -115,37 +126,22 @@ export function HostedConnectorDialog({
         }
       }}
       onReconnect={onReconnect}
-      onServerToggle={next => void controller.setServerEnabled(localServerName(card), next)}
+      onServerToggle={next => void controller.setServerEnabled(serverName, next)}
       onToggleForMe={onToggleForMe}
       onVerb={onVerb}
+      onWayChange={local ? setWay : undefined}
       open
       orgDisabledCount={orgDisabledCount(hosted.policy, card.slug, tools.tools)}
       rulesReadOnly={hosted.rulesFailed}
       togglePending={togglePending}
       tools={
-        both ? (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex shrink-0 items-center border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5">
-              <SegmentedControl
-                onChange={setForm}
-                options={[
-                  { id: 'hosted', label: t.connectorsPage.dialog.wayHosted },
-                  { id: 'local', label: t.connectorsPage.residencyLocal }
-                ]}
-                value={form}
-              />
-            </div>
-
-            {form === 'hosted' ? (
-              hostedPanel
-            ) : (
-              <LocalToolsPanel card={card} controller={controller} onRemove={onRemoveServer} />
-            )}
-          </div>
+        way === 'local' && local?.installed === true ? (
+          <LocalToolsPanel card={card} controller={controller} onRemove={onRemoveServer} />
         ) : (
           hostedPanel
         )
       }
+      way={way}
     />
   )
 }

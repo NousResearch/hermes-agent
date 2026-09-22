@@ -15,7 +15,7 @@ import { CatalogMark } from './catalog-mark'
 import { connectorKindWord, showsCatalogMark } from './connector-kind'
 import { type InstallField, LocalInstall } from './local-server-control'
 import type { ConnectorCardModel, ConnectorState, ConnectorVerb, ConnectorWayHosted, ConnectorWayLocal } from './types'
-import { WaysSection } from './ways-section'
+import { type WayChoice, WaysSection } from './ways-section'
 
 type BadgeVariant = 'default' | 'destructive' | 'muted' | 'success' | 'warn'
 
@@ -59,11 +59,13 @@ export interface ConnectorDialogProps {
   onServerToggle?: (next: boolean) => void
   onToggleForMe?: (next: boolean) => void
   onVerb?: () => void
+  onWayChange?: (way: WayChoice) => void
   open: boolean
   orgDisabledCount?: number
   rulesReadOnly?: boolean
   togglePending?: boolean
   tools: ReactNode
+  way?: WayChoice
 }
 
 const localTarget = (card: ConnectorCardModel): string | undefined => card.ways.local?.target
@@ -87,7 +89,7 @@ export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: Co
         <Header card={card} titleRef={titleRef} {...rest} />
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {local ? <LocalLead card={card} {...rest} /> : <HostedLead card={card} {...rest} />}
+          {card.ways.hosted ? <HostedLead card={card} {...rest} /> : <LocalLead card={card} {...rest} />}
 
           {tools}
 
@@ -160,9 +162,11 @@ function HeaderActions({
   const localWay = card.ways.local
   const appSwitch = ruleable(hosted) && onToggleForMe !== undefined
 
-  const action = local
-    ? localAction({ installFields, installing, onAuthenticate, onInstall, way: localWay })
-    : leadVerb({ appSwitch, card, hasElement: connectElement !== undefined, onVerb })
+  const action = hosted
+    ? localWay
+      ? undefined
+      : leadVerb({ appSwitch, card, hasElement: connectElement !== undefined, onVerb })
+    : localAction({ installFields, installing, onAuthenticate, onInstall, way: localWay })
 
   return (
     <div className="flex shrink-0 items-center gap-2">
@@ -266,18 +270,22 @@ function HostedLead({
   installFields,
   installing,
   onAuthenticate,
-  onDisconnect,
+  onConnect,
   onInstall,
   onOpenAdmin,
+  onReconnect,
   onServerToggle,
+  onToggleForMe,
   onVerb,
-  orgDisabledCount = 0
+  onWayChange,
+  orgDisabledCount = 0,
+  way = 'hosted'
 }: PartProps) {
   const { t } = useI18n()
   const waiting = card.verb === 'stopWaiting' && connectElement === undefined ? onVerb : undefined
   const reason = card.reason ? (card.reason.text ?? t.connectorsPage.card.reason[card.reason.key]) : undefined
-  const showsReason = reason !== undefined && connectElement === undefined
   const paired = card.ways.local !== null
+  const showsReason = reason !== undefined && connectElement === undefined && (!paired || waiting !== undefined)
 
   if (!paired && connectElement === undefined && !showsReason && orgDisabledCount <= 0) {
     return null
@@ -300,16 +308,21 @@ function HostedLead({
 
       <OrgNote count={orgDisabledCount} onOpenAdmin={onOpenAdmin} />
 
-      <WaysSection
-        card={card}
-        hostedVerb={false}
-        installFields={installFields}
-        installing={installing}
-        onAuthenticate={onAuthenticate}
-        onDisconnect={onDisconnect}
-        onInstall={onInstall}
-        onServerToggle={onServerToggle}
-      />
+      {onWayChange ? (
+        <WaysSection
+          card={card}
+          installFields={installFields}
+          installing={installing}
+          onAuthenticate={onAuthenticate}
+          onChange={onWayChange}
+          onConnect={onConnect}
+          onInstall={onInstall}
+          onReconnect={onReconnect}
+          onServerToggle={card.plugin === undefined ? onServerToggle : undefined}
+          onToggleForMe={onToggleForMe}
+          value={way}
+        />
+      ) : null}
     </div>
   )
 }
@@ -320,44 +333,17 @@ function HostedFoot({ card }: PartProps) {
   return card.ways.hosted ? <FootLine>{t.connectorsPage.dialog.nousLine}</FootLine> : null
 }
 
-function LocalLead({
-  card,
-  installFields = [],
-  installing,
-  onAuthenticate,
-  onConnect,
-  onInstall,
-  onReconnect,
-  onServerToggle
-}: PartProps) {
+function LocalLead({ card, installFields = [], installing, onInstall }: PartProps) {
   const local = card.ways.local
+  const install = local?.installed === false && installFields.length > 0 ? onInstall : undefined
 
-  if (!local) {
-    return null
-  }
-
-  const install = local.installed === false && installFields.length > 0 ? onInstall : undefined
-
-  if (!card.ways.hosted && !install) {
+  if (!install) {
     return null
   }
 
   return (
     <div className="shrink-0 border-b border-(--ui-stroke-tertiary) px-3.5 py-2.5">
-      {card.ways.hosted || !install ? (
-        <WaysSection
-          card={card}
-          installFields={installFields}
-          installing={installing}
-          onAuthenticate={onAuthenticate}
-          onConnect={onConnect}
-          onInstall={onInstall}
-          onReconnect={onReconnect}
-          onServerToggle={card.plugin === undefined ? onServerToggle : undefined}
-        />
-      ) : (
-        <LocalInstall installFields={installFields} installing={installing} onInstall={install} />
-      )}
+      <LocalInstall installFields={installFields} installing={installing} onInstall={install} />
     </div>
   )
 }

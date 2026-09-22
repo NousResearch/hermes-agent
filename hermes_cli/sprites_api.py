@@ -31,7 +31,7 @@ def request(method: str, path: str, payload: dict | None = None):
         # Mutations stream newline-delimited events. Require terminal completion.
         if "ndjson" in (response.getheader("Content-Type") or ""):
             events = [json.loads(line) for line in body.splitlines() if line.strip()]
-            if not events or events[-1].get("type") != "complete" or any(e.get("type") == "error" for e in events):
+            if not events or events[-1].get("type") != "complete" or any(e.get("type") in ("error", "exit") for e in events):
                 raise RuntimeError("Sprites guest operation was not acknowledged")
             return events[-1]
         return json.loads(body)

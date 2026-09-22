@@ -74,9 +74,9 @@ _BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
 _INITIALIZED_PATHS: set[str] = set()
 # TEXT columns added to `projects` after v1; re-applied idempotently on every open so a legacy DB
 # upgrades in place.
-_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
+_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color", "lead", "plan_path")
 # Nullable TEXT columns that may be absent from a legacy row.
-_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path")
+_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path", "lead", "plan_path")
 _ACTIVE_META_KEY = "active_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
 
@@ -167,6 +167,10 @@ class Project:
     color: Optional[str] = None
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
+    # Owning chief/lead (profile name) and the plan artifact it drives. The
+    # desktop Projects view reads these; feedback routes to ``lead``.
+    lead: Optional[str] = None
+    plan_path: Optional[str] = None
     archived: bool = False
     folders: List[ProjectFolder] = field(default_factory=list)
 
@@ -220,7 +224,8 @@ def find_by_primary_path(conn: sqlite3.Connection, path: str, *, include_archive
 def create_project(
     conn: sqlite3.Connection, *, name: str, slug: Optional[str] = None, folders: Optional[Iterable[str]] = None,
     primary_path: Optional[str] = None, description: Optional[str] = None, icon: Optional[str] = None,
-    color: Optional[str] = None, board_slug: Optional[str] = None, allow_duplicate_path: bool = False,
+    color: Optional[str] = None, board_slug: Optional[str] = None, lead: Optional[str] = None,
+    plan_path: Optional[str] = None, allow_duplicate_path: bool = False,
 ) -> str:
     """Create a project and return its id. ``folders`` are normalized to absolute paths; ``primary_path``
     is added to the folder set (if absent) and marked primary, else the first folder becomes primary."""
@@ -244,10 +249,12 @@ def create_project(
         )
     with write_txn(conn):
         conn.execute(
-            "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, lead, plan_path, created_at, archived) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             (pid, _unique_slug(conn, slug_candidate), name, description, icon, color,
-             normalize_slug(board_slug) if board_slug else None, primary, now),
+             normalize_slug(board_slug) if board_slug else None, primary,
+             (str(lead).strip() or None) if lead else None,
+             (str(plan_path).strip() or None) if plan_path else None, now),
         )
         conn.executemany(
             "INSERT INTO project_folders (project_id, path, label, is_primary, added_at) VALUES (?, ?, ?, ?, ?)",
@@ -273,20 +280,24 @@ def get_project(conn: sqlite3.Connection, id_or_slug: str) -> Optional[Project]:
 def update_project(
     conn: sqlite3.Connection, project_id: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, board_slug: Optional[str] = None,
+    lead: Optional[str] = None, plan_path: Optional[str] = None,
 ) -> bool:
-    """Patch top-level project fields; only provided (non-None) fields change. ``icon``, ``color`` and
-    ``board_slug`` take ``""`` to clear (store NULL) — ``None`` leaves the field untouched."""
+    """Patch top-level project fields; only provided (non-None) fields change. ``icon``, ``color``,
+    ``board_slug``, ``lead`` and ``plan_path`` take ``""`` to clear (store NULL) — ``None`` leaves the
+    field untouched."""
     if name is not None:
         name = str(name).strip()
         if not name:
             raise ValueError("project name must not be empty")
     if board_slug is not None:
         board_slug = normalize_slug(board_slug) if board_slug.strip() else ""
-    # (column, provided value, stored value) — "" clears icon/color/board_slug to NULL.
+    # (column, provided value, stored value) — "" clears icon/color/board_slug/lead/plan_path to NULL.
     fields = [
         (col, given, stored) for col, given, stored in (
             ("name", name, name), ("description", description, description), ("icon", icon, icon or None),
             ("color", color, color or None), ("board_slug", board_slug, board_slug or None),
+            ("lead", lead, (str(lead).strip() or None) if lead is not None else None),
+            ("plan_path", plan_path, (str(plan_path).strip() or None) if plan_path is not None else None),
         ) if given is not None
     ]
     if not fields:

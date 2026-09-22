@@ -214,6 +214,59 @@ type KanbanMessages = {
     openKanban: string
     artifacts: (n: number) => string
   }
+  // Projects page — the project list + per-project overview/feedback surface.
+  proj: {
+    nav: string
+    open: string
+    title: string
+    subtitle: string
+    empty: string
+    emptyHint: string
+    back: string
+    location: string
+    lead: string
+    noLead: string
+    board: string
+    noBoard: string
+    openBoard: string
+    status: string
+    st: Record<'active' | 'blocked' | 'complete' | 'idle' | 'no_work' | 'unlinked', string>
+    pipeline: string
+    complete: (pct: number) => string
+    noProgress: string
+    eta: string
+    noEta: string
+    tasks: (n: number) => string
+    plan: string
+    milestones: (done: number, total: number) => string
+    noPlan: (path: string) => string
+    feedback: string
+    feedbackPlaceholder: string
+    feedbackHint: string
+    feedbackHintNoLead: string
+    feedbackSent: string
+    send: string
+    settings: string
+    settingsHint: string
+    leadPlaceholder: string
+    planPathPlaceholder: string
+    save: string
+    saved: string
+    due: (date: string) => string
+    refresh: string
+    attention: string
+    noAttention: string
+    attentionHint: string
+    team: string
+    noTeam: string
+    activity: string
+    noActivity: string
+    done7d: (n: string) => string
+    perDay: (n: number) => string
+    projected: (date: string) => string
+    awaitingPublication: string
+    summaryLine: (projects: number, cards: number, blocked: number) => string
+  }
 }
 
 export const en: KanbanMessages = {
@@ -427,6 +480,65 @@ export const en: KanbanMessages = {
     timedOutTitle: 'Task took too long — Hermes will retry it automatically',
     openKanban: 'Open Kanban',
     artifacts: (n: number) => `${n} artifacts`
+  },
+  proj: {
+    nav: 'Projects',
+    open: 'Kanban: Open projects',
+    title: 'Projects',
+    subtitle: 'Every project, its lead, and how far along it is.',
+    empty: 'No projects yet',
+    emptyHint: 'Create a project with `hermes project create`, then bind it to a board.',
+    back: 'All projects',
+    location: 'Location',
+    lead: 'Lead',
+    noLead: 'No lead assigned',
+    board: 'Board',
+    noBoard: 'No board linked',
+    openBoard: 'Open board',
+    status: 'Status',
+    st: {
+      active: 'Active',
+      blocked: 'Blocked',
+      complete: 'Complete',
+      idle: 'Idle',
+      no_work: 'No work',
+      unlinked: 'Not linked'
+    },
+    pipeline: 'Pipeline',
+    complete: pct => `${pct}% complete`,
+    noProgress: 'No tasks yet',
+    eta: 'Estimated launch',
+    noEta: 'No ETA yet',
+    tasks: n => `${n} task${n === 1 ? '' : 's'}`,
+    plan: 'Plan',
+    milestones: (done, total) => `${done}/${total} milestones`,
+    noPlan: path => `No plan yet — add a PLAN.md at ${path}`,
+    feedback: 'Request from the lead',
+    feedbackPlaceholder: 'Ask for a status update, a change, or a decision…',
+    feedbackHint: 'Creates a card on the project board, assigned to the lead, and starts them on it.',
+    feedbackHintNoLead: 'This project has no lead yet — set one in settings so requests have an owner.',
+    feedbackSent: 'Sent to the lead',
+    send: 'Send',
+    settings: 'Project settings',
+    settingsHint: 'Assign a lead and point at a plan file. An empty value clears the field.',
+    leadPlaceholder: 'profile name',
+    planPathPlaceholder: 'PLAN.md (default: <repo>/PLAN.md)',
+    save: 'Save',
+    saved: 'Project updated',
+    due: date => `due ${date}`,
+    refresh: 'Refresh',
+    attention: 'Needs attention',
+    noAttention: 'Nothing is waiting on you.',
+    attentionHint: 'Blocked cards — a worker asked for human input.',
+    team: 'Team',
+    noTeam: 'No profiles assigned yet.',
+    activity: 'Recent activity',
+    noActivity: 'No recent activity.',
+    done7d: n => `${n} done in 7d`,
+    perDay: n => `${n}/day`,
+    projected: date => `projected ${date}`,
+    awaitingPublication: 'Awaiting publication',
+    summaryLine: (projects, cards, blocked) => `${projects} projects · ${cards} cards · ${blocked} blocked`
   }
 }
 
@@ -640,6 +752,58 @@ const ja: KanbanMessages = {
     timedOutTitle: 'タスクに時間がかかりすぎました — Hermes が自動で再試行します',
     openKanban: 'かんばんを開く',
     artifacts: (n: number) => `成果物 ${n} 件`
+  },
+  proj: {
+    nav: 'プロジェクト',
+    open: 'カンバン: プロジェクトを開く',
+    title: 'プロジェクト',
+    subtitle: 'すべてのプロジェクト、担当リード、進捗。',
+    empty: 'プロジェクトがありません',
+    emptyHint: '`hermes project create` でプロジェクトを作成し、ボードに紐付けます。',
+    back: 'すべてのプロジェクト',
+    location: '場所',
+    lead: 'リード',
+    noLead: 'リード未設定',
+    board: 'ボード',
+    noBoard: 'ボード未連携',
+    openBoard: 'ボードを開く',
+    status: 'ステータス',
+    st: { active: '進行中', blocked: 'ブロック', complete: '完了', idle: '待機', no_work: '作業なし', unlinked: '未連携' },
+    pipeline: 'パイプライン',
+    complete: pct => `完了 ${pct}%`,
+    noProgress: 'タスクはまだありません',
+    eta: 'ローンチ予定',
+    noEta: 'ETA 未設定',
+    tasks: n => `${n} 件のタスク`,
+    plan: '計画',
+    milestones: (done, total) => `${done}/${total} マイルストーン`,
+    noPlan: path => `計画がありません — ${path} に PLAN.md を追加してください`,
+    feedback: 'リードへのリクエスト',
+    feedbackPlaceholder: '進捗、変更、判断を依頼…',
+    feedbackHint: 'プロジェクトボードにカードを作成し、リードに割り当てて着手させます。',
+    feedbackHintNoLead: 'このプロジェクトにはリードが未設定です — 設定でリードを指定してください。',
+    feedbackSent: 'リードに送信しました',
+    send: '送信',
+    settings: 'プロジェクト設定',
+    settingsHint: 'リードと計画ファイルを設定します。空欄にするとクリアされます。',
+    leadPlaceholder: 'プロファイル名',
+    planPathPlaceholder: 'PLAN.md（既定: <repo>/PLAN.md）',
+    save: '保存',
+    saved: 'プロジェクトを更新しました',
+    due: date => `期限 ${date}`,
+    refresh: '更新',
+    attention: '要対応',
+    noAttention: 'あなたの対応待ちはありません。',
+    attentionHint: 'ブロック中のカード — ワーカーが人間の入力を求めています。',
+    team: 'チーム',
+    noTeam: 'まだプロフィールが割り当てられていません。',
+    activity: '最近のアクティビティ',
+    noActivity: '最近のアクティビティはありません。',
+    done7d: n => `7日間で ${n} 完了`,
+    perDay: n => `1日 ${n}`,
+    projected: date => `完了予測 ${date}`,
+    awaitingPublication: '公開待ち',
+    summaryLine: (projects, cards, blocked) => `${projects} プロジェクト · ${cards} カード · ${blocked} ブロック`
   }
 }
 
@@ -850,6 +1014,58 @@ const zh: KanbanMessages = {
     timedOutTitle: '任务耗时过长 — Hermes 将自动重试',
     openKanban: '打开看板',
     artifacts: (n: number) => `${n} 个产物`
+  },
+  proj: {
+    nav: '项目',
+    open: '看板：打开项目',
+    title: '项目',
+    subtitle: '所有项目、其负责人以及进度。',
+    empty: '暂无项目',
+    emptyHint: '使用 `hermes project create` 创建项目，然后将其绑定到面板。',
+    back: '所有项目',
+    location: '位置',
+    lead: '负责人',
+    noLead: '未分配负责人',
+    board: '面板',
+    noBoard: '未关联面板',
+    openBoard: '打开面板',
+    status: '状态',
+    st: { active: '进行中', blocked: '受阻', complete: '已完成', idle: '空闲', no_work: '暂无工作', unlinked: '未关联' },
+    pipeline: '流水线',
+    complete: pct => `已完成 ${pct}%`,
+    noProgress: '暂无任务',
+    eta: '预计发布',
+    noEta: '暂无 ETA',
+    tasks: n => `${n} 个任务`,
+    plan: '计划',
+    milestones: (done, total) => `${done}/${total} 个里程碑`,
+    noPlan: path => `暂无计划 — 请在 ${path} 添加 PLAN.md`,
+    feedback: '向负责人提出请求',
+    feedbackPlaceholder: '请求状态更新、修改或决策…',
+    feedbackHint: '在项目面板上创建一张卡片，分配给负责人并让其开始处理。',
+    feedbackHintNoLead: '此项目尚未设置负责人 — 请在设置中指定，以便请求有人负责。',
+    feedbackSent: '已发送给负责人',
+    send: '发送',
+    settings: '项目设置',
+    settingsHint: '指定负责人和计划文件。留空则清除该字段。',
+    leadPlaceholder: '配置档名称',
+    planPathPlaceholder: 'PLAN.md（默认：<repo>/PLAN.md）',
+    save: '保存',
+    saved: '项目已更新',
+    due: date => `截止 ${date}`,
+    refresh: '刷新',
+    attention: '需要关注',
+    noAttention: '没有等待你处理的事项。',
+    attentionHint: '受阻的卡片 — 工作单元需要人工输入。',
+    team: '团队',
+    noTeam: '尚未分配任何配置档。',
+    activity: '近期活动',
+    noActivity: '暂无近期活动。',
+    done7d: n => `7 天内完成 ${n}`,
+    perDay: n => `每天 ${n}`,
+    projected: date => `预计完成 ${date}`,
+    awaitingPublication: '等待发布',
+    summaryLine: (projects, cards, blocked) => `${projects} 个项目 · ${cards} 张卡片 · ${blocked} 个受阻`
   }
 }
 
@@ -1060,6 +1276,58 @@ const zhHant: KanbanMessages = {
     timedOutTitle: '任務耗時過長 — Hermes 將自動重試',
     openKanban: '開啟看板',
     artifacts: (n: number) => `${n} 個產物`
+  },
+  proj: {
+    nav: '專案',
+    open: '看板：開啟專案',
+    title: '專案',
+    subtitle: '所有專案、其負責人以及進度。',
+    empty: '尚無專案',
+    emptyHint: '使用 `hermes project create` 建立專案，然後將其綁定到面板。',
+    back: '所有專案',
+    location: '位置',
+    lead: '負責人',
+    noLead: '未指派負責人',
+    board: '面板',
+    noBoard: '未連結面板',
+    openBoard: '開啟面板',
+    status: '狀態',
+    st: { active: '進行中', blocked: '受阻', complete: '已完成', idle: '閒置', no_work: '尚無工作', unlinked: '未連結' },
+    pipeline: '流水線',
+    complete: pct => `已完成 ${pct}%`,
+    noProgress: '尚無任務',
+    eta: '預計發布',
+    noEta: '尚無 ETA',
+    tasks: n => `${n} 個任務`,
+    plan: '計畫',
+    milestones: (done, total) => `${done}/${total} 個里程碑`,
+    noPlan: path => `尚無計畫 — 請在 ${path} 新增 PLAN.md`,
+    feedback: '向負責人提出請求',
+    feedbackPlaceholder: '請求狀態更新、變更或決策…',
+    feedbackHint: '在專案面板上建立一張卡片，指派給負責人並讓其開始處理。',
+    feedbackHintNoLead: '此專案尚未設定負責人 — 請在設定中指定，讓請求有人負責。',
+    feedbackSent: '已傳送給負責人',
+    send: '傳送',
+    settings: '專案設定',
+    settingsHint: '指定負責人與計畫檔案。留空則清除該欄位。',
+    leadPlaceholder: '設定檔名稱',
+    planPathPlaceholder: 'PLAN.md（預設：<repo>/PLAN.md）',
+    save: '儲存',
+    saved: '專案已更新',
+    due: date => `截止 ${date}`,
+    refresh: '重新整理',
+    attention: '需要關注',
+    noAttention: '沒有等待你處理的事項。',
+    attentionHint: '受阻的卡片 — 工作單元需要人工輸入。',
+    team: '團隊',
+    noTeam: '尚未指派任何設定檔。',
+    activity: '近期活動',
+    noActivity: '尚無近期活動。',
+    done7d: n => `7 天內完成 ${n}`,
+    perDay: n => `每天 ${n}`,
+    projected: date => `預計完成 ${date}`,
+    awaitingPublication: '等待發布',
+    summaryLine: (projects, cards, blocked) => `${projects} 個專案 · ${cards} 張卡片 · ${blocked} 個受阻`
   }
 }
 

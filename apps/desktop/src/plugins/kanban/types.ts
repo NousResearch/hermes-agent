@@ -166,9 +166,139 @@ export interface KanbanProject {
   id: string
   slug: string
   name: string
+  description?: null | string
   primary_path?: null | string
   icon?: null | string
   color?: null | string
+  /** Board slug this project is bound to (its execution surface). */
+  board_slug?: null | string
+  /** Owning chief/lead profile — feedback routes here. */
+  lead?: null | string
+  /** Explicit plan artifact; defaults to <primary_path>/PLAN.md. */
+  plan_path?: null | string
+}
+
+/** Coarse project health, derived server-side from the board's stage counts. */
+export type ProjectStatus = 'active' | 'blocked' | 'complete' | 'idle' | 'no_work' | 'unlinked'
+
+/** One board column + its live (non-archived) card count. */
+export interface ProjectStage {
+  name: string
+  count: number
+}
+
+export interface ProjectMilestone {
+  title: string
+  done: boolean
+  date?: null | string
+}
+
+/** The project's PLAN.md parsed into milestones + an ETA. */
+export interface ProjectPlan {
+  path: string
+  exists: boolean
+  milestones: ProjectMilestone[]
+  done_count: number
+  total_count: number
+  percent?: null | number
+  eta?: null | string
+}
+
+/** GET /projects/{ref}/overview — the Projects detail payload. */
+export interface ProjectTotals {
+  total: number
+  done: number
+  running: number
+  ready: number
+  blocked: number
+  review?: number
+  /** Cards awaiting publication (review passed, not yet shipped). */
+  awaiting?: number
+}
+
+/** A card that waits on a human (blocked → needs input). */
+export interface ProjectAttentionItem {
+  id: string
+  title: string
+  assignee: string
+  status: string
+  priority: number
+  created_at: number
+}
+
+/** A profile with live work on the board (by stage). */
+export interface ProjectTeamMember {
+  name: string
+  running: number
+  ready: number
+  blocked: number
+  other: number
+  total: number
+}
+
+/** One recent board event. */
+export interface ProjectActivityItem {
+  task_id: string
+  kind: string
+  created_at: number
+  title: string
+  status: string
+}
+
+/** Recent throughput → a rough projected finish. */
+export interface ProjectVelocity {
+  done_7d: number
+  done_30d: number
+  per_day: null | number
+  projected_finish: null | string
+}
+
+export interface ProjectOverview {
+  project: KanbanProject
+  location: string
+  folders: Array<{ path: string; label?: null | string; is_primary?: boolean; added_at?: number }>
+  lead: string
+  board: null | { slug: string; name?: null | string }
+  status: ProjectStatus
+  stages: ProjectStage[]
+  counts: Record<string, number>
+  totals: ProjectTotals
+  percent_complete?: null | number
+  plan: ProjectPlan
+  eta?: null | string
+  attention: ProjectAttentionItem[]
+  team: ProjectTeamMember[]
+  activity: ProjectActivityItem[]
+  velocity: ProjectVelocity
+}
+
+/** GET /projects/overview — the compact list row. */
+export interface ProjectSummary {
+  id: string
+  slug: string
+  name: string
+  description: string
+  icon: string
+  color: string
+  primary_path: string
+  board_slug: string
+  lead: string
+  status: ProjectStatus
+  totals: ProjectTotals
+  percent_complete?: null | number
+  eta?: null | string
+  plan_percent?: null | number
+  plan_done?: null | number
+  plan_total?: null | number
+}
+
+/** POST /projects/{ref}/feedback — the card created for the lead. */
+export interface ProjectFeedbackResult {
+  ok: boolean
+  task_id: string
+  board: string
+  lead?: null | string
+  status: string
 }
 
 /** POST /tasks/:id/estimate — rough auxiliary-model estimate (never dollars). */

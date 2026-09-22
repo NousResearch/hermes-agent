@@ -1365,8 +1365,348 @@ def list_kanban_projects():
             projects = pdb.list_projects(pconn, include_archived=False)
     return {"projects": [
         {"id": p.id, "slug": p.slug, "name": p.name,
-         "primary_path": p.primary_path or "", "icon": p.icon or "", "color": p.color or ""}
+         "description": p.description or "", "primary_path": p.primary_path or "",
+         "icon": p.icon or "", "color": p.color or "", "board_slug": p.board_slug or "",
+         "lead": p.lead or "", "plan_path": p.plan_path or ""}
         for p in projects]}
+
+
+# --- Project overview / plan / feedback ---------------------------------------
+
+class ProjectPatchBody(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    board_slug: Optional[str] = None
+    # Owning chief/lead (profile) + plan artifact. "" clears; None leaves unchanged.
+    lead: Optional[str] = None
+    plan_path: Optional[str] = None
+
+
+class ProjectFeedbackBody(BaseModel):
+    body: str
+    author: Optional[str] = None
+    # ready = the lead's dispatcher picks it up; triage = the specifier routes it.
+    status: str = "ready"
+
+
+# A plan is markdown: `eta: YYYY-MM-DD` (or target/launch/deadline) plus GitHub-
+# style milestone checkboxes (`- [ ] Title — 2026-10-01`). Dates on a milestone
+# line feed the ETA fallback; the explicit line wins.
+_PLAN_MILESTONE_RE = re.compile(r"^\s*[-*]\s*\[(?P<mark>[ xX])\]\s*(?P<title>.+?)\s*$")
+_PLAN_ETA_RE = re.compile(
+    r"^\s*(?:eta|target|launch|deadline)\s*[:=]\s*(?P<date>\d{4}-\d{2}-\d{2})\s*$", re.IGNORECASE)
+_PLAN_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+
+
+def _plan_file(project) -> Optional[Path]:
+    """Resolve a project's plan artifact: explicit ``plan_path`` (absolute, or
+    relative to the primary repo), else ``PLAN.md`` under the primary repo."""
+    primary = (project.primary_path or "").strip()
+    raw = (project.plan_path or "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        if p.is_absolute():
+            return p
+        return (Path(primary) / p) if primary else None
+    return (Path(primary) / "PLAN.md") if primary else None
+
+
+def _plan_overview(project) -> dict[str, Any]:
+    """Parse the project's plan into milestones + ETA. Never raises — a missing or
+    unreadable plan yields ``{exists: False}``."""
+    path = _plan_file(project)
+    out: dict[str, Any] = {
+        "path": str(path) if path else "",
+        "exists": False,
+        "milestones": [],
+        "done_count": 0,
+        "total_count": 0,
+        "percent": None,
+        "eta": None,
+    }
+    if path is None:
+        return out
+    try:
+        if not path.is_file():
+            return out
+        text = path.read_text(encoding="utf-8", errors="replace")[:1_000_000]
+    except OSError:
+        return out
+    out["exists"] = True
+    milestones: list[dict[str, Any]] = []
+    eta: Optional[str] = None
+    for line in text.splitlines():
+        eta_line = _PLAN_ETA_RE.match(line)
+        if eta_line:
+            eta = eta_line.group("date")
+            continue
+        m = _PLAN_MILESTONE_RE.match(line)
+        if not m:
+            continue
+        title = m.group("title").strip()
+        date_match = _PLAN_DATE_RE.search(title)
+        date = date_match.group(1) if date_match else None
+        if date:
+            # Drop a trailing "— 2026-10-01" / "(2026-10-01)" from the display title.
+            title = _PLAN_DATE_RE.sub("", title).strip(" \t-—–·()[]").strip()
+        milestones.append({"title": title or "(untitled)", "done": m.group("mark").lower() == "x", "date": date})
+    done = sum(1 for m in milestones if m["done"])
+    out["milestones"] = milestones
+    out["done_count"] = done
+    out["total_count"] = len(milestones)
+    out["percent"] = round(100 * done / len(milestones)) if milestones else None
+    dates = [m["date"] for m in milestones if m["date"]]
+    out["eta"] = eta or (max(dates) if dates else None)
+    return out
+
+
+def _derive_status(board_slug: Optional[str], live: dict[str, int], percent: Optional[int]) -> str:
+    """Coarse project health from the board's live stage counts."""
+    if not board_slug:
+        return "unlinked"
+    if sum(live.values()) == 0:
+        return "no_work"
+    if percent == 100:
+        return "complete"
+    if live.get("blocked"):
+        return "blocked"
+    if live.get("running") or live.get("ready"):
+        return "active"
+    return "idle"
+
+
+# A card is "attention-worthy" when it waits on a human. `blocked` is the
+# primary signal (the worker asked for input); the snapshot surfaces the
+# highest-priority, oldest ones first.
+_ATTENTION_STATUSES = ("blocked",)
+_ACTIVITY_LIMIT = 12
+_TEAM_LIMIT = 12
+
+
+def _board_snapshot(board_slug: Optional[str]) -> dict[str, Any]:
+    """One board connection → counts + attention + team + activity + velocity.
+
+    Never raises: a missing/unreadable board yields the empty snapshot so the
+    Projects view degrades to "no work" instead of a 500."""
+    out: dict[str, Any] = {
+        "counts": {}, "attention": [], "team": [], "activity": [],
+        "velocity": {"done_7d": 0, "done_30d": 0, "per_day": None, "projected_finish": None},
+    }
+    if not board_slug or not (board_slug == kanban_db.DEFAULT_BOARD or kanban_db.board_exists(board_slug)):
+        return out
+    try:
+        if not kanban_db.kanban_db_path(board=board_slug).exists():
+            return out
+        with closing(kbc.connect(board=board_slug)) as conn:
+            for r in conn.execute("SELECT status, COUNT(*) n FROM tasks GROUP BY status"):
+                out["counts"][r["status"]] = int(r["n"])
+
+            now = int(time.time())
+            placeholders = ",".join("?" for _ in _ATTENTION_STATUSES)
+            for r in conn.execute(
+                f"SELECT id, title, assignee, status, priority, created_at FROM tasks "
+                f"WHERE status IN ({placeholders}) "
+                f"ORDER BY priority DESC, created_at ASC LIMIT ?",
+                (*_ATTENTION_STATUSES, _ACTIVITY_LIMIT),
+            ):
+                out["attention"].append({
+                    "id": r["id"], "title": r["title"], "assignee": r["assignee"] or "",
+                    "status": r["status"], "priority": int(r["priority"] or 0),
+                    "created_at": r["created_at"],
+                })
+
+            team: dict[str, dict[str, int]] = {}
+            for r in conn.execute(
+                "SELECT assignee, status, COUNT(*) n FROM tasks "
+                "WHERE status NOT IN ('done','archived') AND assignee IS NOT NULL AND assignee != '' "
+                "GROUP BY assignee, status"
+            ):
+                row = team.setdefault(r["assignee"], {"running": 0, "ready": 0, "blocked": 0, "other": 0, "total": 0})
+                bucket = r["status"] if r["status"] in ("running", "ready", "blocked") else "other"
+                row[bucket] += int(r["n"])
+                row["total"] += int(r["n"])
+            out["team"] = sorted(
+                ({"name": name, **vals} for name, vals in team.items()),
+                key=lambda x: x["total"], reverse=True,
+            )[:_TEAM_LIMIT]
+
+            for r in conn.execute(
+                "SELECT e.task_id, e.kind, e.created_at, t.title, t.status "
+                "FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id "
+                "ORDER BY e.created_at DESC, e.id DESC LIMIT ?",
+                (_ACTIVITY_LIMIT,),
+            ):
+                out["activity"].append({
+                    "task_id": r["task_id"], "kind": r["kind"], "created_at": r["created_at"],
+                    "title": r["title"] or "", "status": r["status"] or "",
+                })
+
+            week, month = now - 7 * 86400, now - 30 * 86400
+            done_7d = conn.execute(
+                "SELECT COUNT(*) n FROM tasks WHERE status='done' AND completed_at >= ?", (week,)
+            ).fetchone()["n"]
+            done_30d = conn.execute(
+                "SELECT COUNT(*) n FROM tasks WHERE status='done' AND completed_at >= ?", (month,)
+            ).fetchone()["n"]
+            per_day = round(done_30d / 30.0, 2) if done_30d else None
+            live = {k: v for k, v in out["counts"].items() if k != "archived"}
+            remaining = max(0, sum(live.values()) - int(live.get("done", 0)))
+            projected = None
+            if per_day and remaining:
+                projected = time.strftime("%Y-%m-%d", time.gmtime(now + (remaining / per_day) * 86400))
+            out["velocity"] = {
+                "done_7d": int(done_7d), "done_30d": int(done_30d),
+                "per_day": per_day, "projected_finish": projected,
+            }
+    except Exception:
+        log.warning("board snapshot failed for %s", board_slug, exc_info=True)
+    return out
+
+
+def _project_overview(project) -> dict[str, Any]:
+    """Aggregate a project: location, board stage funnel, % complete, plan-derived
+    ETA, and the attention / team / activity / velocity panels."""
+    board_slug = (project.board_slug or "").strip() or None
+    board_meta: Optional[dict[str, Any]] = None
+    if board_slug:
+        try:
+            board_meta = kanban_db.read_board_metadata(board_slug)
+        except Exception:
+            board_meta = None
+    snap = _board_snapshot(board_slug)
+    live = {k: v for k, v in snap["counts"].items() if k != "archived"}
+    total = sum(live.values())
+    done = int(live.get("done", 0))
+    percent = round(100 * done / total) if total else None
+    plan = _plan_overview(project)
+    folders = [f.to_dict() for f in project.folders]
+    return {
+        "project": project.to_dict(),
+        "location": project.primary_path or (folders[0]["path"] if folders else ""),
+        "folders": folders,
+        "lead": project.lead or "",
+        "board": {"slug": board_slug, "name": (board_meta or {}).get("name")} if board_slug else None,
+        "status": _derive_status(board_slug, live, percent),
+        "stages": [{"name": name, "count": int(live.get(name, 0))} for name in BOARD_COLUMNS],
+        "counts": live,
+        "totals": {
+            "total": total, "done": done,
+            "running": int(live.get("running", 0)), "ready": int(live.get("ready", 0)),
+            "blocked": int(live.get("blocked", 0)), "review": int(live.get("review", 0)),
+            "awaiting": int(live.get("awaiting_publication", 0)),
+        },
+        "percent_complete": percent,
+        "plan": plan,
+        "eta": plan.get("eta"),
+        "attention": snap["attention"],
+        "team": snap["team"],
+        "activity": snap["activity"],
+        "velocity": snap["velocity"],
+    }
+
+
+def _project_summary(project) -> dict[str, Any]:
+    """Compact per-project row for the Projects list (counts + plan rollup only)."""
+    board_slug = (project.board_slug or "").strip() or None
+    counts = _board_counts(board_slug) if board_slug else {}
+    live = {k: v for k, v in counts.items() if k != "archived"}
+    total = sum(live.values())
+    done = int(live.get("done", 0))
+    percent = round(100 * done / total) if total else None
+    plan = _plan_overview(project)
+    return {
+        "id": project.id, "slug": project.slug, "name": project.name,
+        "description": project.description or "", "icon": project.icon or "", "color": project.color or "",
+        "primary_path": project.primary_path or "", "board_slug": board_slug or "",
+        "lead": project.lead or "", "status": _derive_status(board_slug, live, percent),
+        "totals": {
+            "total": total, "done": done,
+            "running": int(live.get("running", 0)), "ready": int(live.get("ready", 0)),
+            "blocked": int(live.get("blocked", 0)),
+        },
+        "percent_complete": percent, "eta": plan.get("eta"),
+        "plan_percent": plan.get("percent"), "plan_done": plan.get("done_count"),
+        "plan_total": plan.get("total_count"),
+    }
+
+
+def _get_project_or_404(conn, ref: str):
+    from hermes_cli import projects_db as pdb
+    proj = pdb.get_project(conn, str(ref).strip())
+    if proj is None:
+        raise HTTPException(status_code=404, detail=f"project {ref!r} not found")
+    return proj
+
+
+@router.get("/projects/overview")
+def projects_overview():
+    """Every live project with a compact status / % complete / ETA summary."""
+    with _errors_to_500("failed to read projects overview"):
+        from hermes_cli import projects_db as pdb
+        with pdb.connect_closing() as pconn:
+            projects = pdb.list_projects(pconn, include_archived=False)
+            return {"projects": [_project_summary(p) for p in projects]}
+
+
+@router.get("/projects/{ref}/overview")
+def project_overview(ref: str):
+    """Project status: location, board stage funnel, % complete, and the plan's
+    milestones + derived ETA (``PLAN.md`` under the primary repo, or ``plan_path``)."""
+    with _errors_to_500("failed to read project overview"):
+        from hermes_cli import projects_db as pdb
+        with pdb.connect_closing() as pconn:
+            proj = _get_project_or_404(pconn, ref)
+            return _project_overview(proj)
+
+
+@router.patch("/projects/{ref}")
+def update_project_endpoint(ref: str, payload: ProjectPatchBody):
+    """Patch a project's display metadata, board scope, lead, and plan path."""
+    with _errors_to_500("failed to update project"):
+        from hermes_cli import projects_db as pdb
+        with pdb.connect_closing() as pconn:
+            proj = _get_project_or_404(pconn, ref)
+            with _value_error_400():
+                pdb.update_project(
+                    pconn, proj.id, name=payload.name, description=payload.description,
+                    icon=payload.icon, color=payload.color, board_slug=payload.board_slug,
+                    lead=payload.lead, plan_path=payload.plan_path)
+            updated = pdb.get_project(pconn, proj.id)
+    return {"project": updated.to_dict() if updated else None}
+
+
+@router.post("/projects/{ref}/feedback")
+def project_feedback(ref: str, payload: ProjectFeedbackBody):
+    """Send a request/feedback to a project's lead: create a card on the project's
+    board, assigned to the lead, so the chief actually receives it."""
+    text = (payload.body or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="feedback body is required")
+    status = (payload.status or "ready").strip() or "ready"
+    if status not in ("ready", "triage"):
+        raise HTTPException(status_code=400, detail="status must be 'ready' or 'triage'")
+    with _errors_to_500("failed to send project feedback"):
+        from hermes_cli import projects_db as pdb
+        with pdb.connect_closing() as pconn:
+            proj = _get_project_or_404(pconn, ref)
+            lead = (proj.lead or "").strip() or None
+            board_slug = (proj.board_slug or "").strip() or None
+            board = _resolve_board(board_slug) if board_slug else None
+            first_line = text.splitlines()[0][:120]
+            with closing(_conn(board=board)) as conn:
+                with _value_error_400():
+                    task_id = kanban_db.create_task(
+                        conn, title=f"[{proj.name}] {first_line}", body=text, assignee=lead,
+                        created_by=(payload.author or "desktop"), triage=(status == "triage"),
+                        board=board, project_id=proj.id)
+                try:
+                    kbd.dispatch_once(conn, max_spawn=4, board=board)
+                except Exception:
+                    log.warning("feedback dispatch nudge failed", exc_info=True)
+    return {"ok": True, "task_id": task_id, "board": board or kanban_db.DEFAULT_BOARD,
+            "lead": lead, "status": status}
 
 
 @router.get("/boards")

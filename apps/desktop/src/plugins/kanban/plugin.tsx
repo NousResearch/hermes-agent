@@ -33,6 +33,7 @@ import {
 import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
 import { KANBAN_LOCALES } from './i18n'
+import { KanbanProjectsPage } from './projects'
 import { $newTaskLane, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
@@ -112,10 +113,22 @@ const plugin: HermesPlugin = {
         render: () => <KanbanBoardPage />
       },
       {
+        id: 'projects-page',
+        area: ROUTES_AREA,
+        data: { path: '/projects' } satisfies RouteContribution,
+        render: () => <KanbanProjectsPage />
+      },
+      {
         id: 'nav',
         area: SIDEBAR_NAV_AREA,
         order: 50,
         data: { codicon: 'project', label: 'Kanban', path: '/kanban' } satisfies SidebarNavContribution
+      },
+      {
+        id: 'projects-nav',
+        area: SIDEBAR_NAV_AREA,
+        order: 49,
+        data: { codicon: 'briefcase', label: 'Projects', path: '/projects' } satisfies SidebarNavContribution
       },
       {
         id: 'count',
@@ -131,6 +144,16 @@ const plugin: HermesPlugin = {
           label: 'Kanban: Open board',
           keywords: ['kanban', 'board', 'tasks', 'agents'],
           run: () => host.navigate('/kanban')
+        } satisfies PaletteContribution
+      },
+      {
+        id: 'open-projects',
+        area: PALETTE_AREA,
+        data: {
+          id: 'kanban.openProjects',
+          label: 'Kanban: Open projects',
+          keywords: ['kanban', 'projects', 'leads', 'plans', 'eta'],
+          run: () => host.navigate('/projects')
         } satisfies PaletteContribution
       },
       {

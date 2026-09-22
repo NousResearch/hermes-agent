@@ -3583,10 +3583,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                     parts.append(marker_template.format(first=cursor + 1, last=s, elided=elided))
                 parts.append(separator.join(display_records[s:e]))
                 cursor = e
-            if cursor < len(records):
-                sep_count = len(records) - cursor
-                elided = sum(len(records[i]) for i in range(cursor, len(records))) + len(separator) * sep_count
-                parts.append(marker_template.format(first=cursor + 1, last=len(records), elided=elided))
             return "".join(parts)
 
         def _finish(text: str) -> Tuple[str, Dict[str, int]]:

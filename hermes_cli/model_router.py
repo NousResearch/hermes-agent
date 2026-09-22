@@ -189,3 +189,71 @@ def resolve_turn_route(
         return _target_route(choice, routes, reason="controller", runtime_resolver=runtime_resolver, router_config=config or {})
     except Exception:
         return _target_route(fallback, routes, reason="controller_error", runtime_resolver=runtime_resolver, router_config=config or {})
+
+
+def resolve_midturn_route(
+    *,
+    config: Mapping[str, Any] | None,
+    user_message: Any,
+    tool_outcome: Any,
+    base_model: str,
+    base_runtime: Mapping[str, Any],
+    runtime_resolver: Callable[[str, str], Mapping[str, Any]],
+    controller: Callable[[str, float, dict[str, Any], dict[str, str]], Mapping[str, Any]] = post_route_decision,
+) -> TurnRoute:
+    """Resolve a request-local post-tool route without selecting an implicit fallback.
+
+    Mid-turn callers retain the active route on every uncertain condition.  Unlike the
+    turn-start router, this function never turns an unavailable controller into a model
+    change because the agent already has a live, validated runtime for the next request.
+    """
+    router = _router_config(config)
+    mid_turn = router.get("mid_turn")
+    if router.get("enabled") is not True or not isinstance(mid_turn, Mapping) or mid_turn.get("enabled") is not True:
+        return TurnRoute(base_model, dict(base_runtime), None, "disabled", "disabled")
+
+    routes = _routes(router)
+    strong_route = str(mid_turn.get("strong_route") or "")
+    if strong_route not in routes:
+        return TurnRoute(base_model, dict(base_runtime), None, "unchanged", "invalid_strong_route")
+    minimum_confidence = router.get("minimum_confidence")
+    if not isinstance(minimum_confidence, (int, float)) or isinstance(minimum_confidence, bool) or not math.isfinite(float(minimum_confidence)) or not 0 <= float(minimum_confidence) <= 1:
+        return TurnRoute(base_model, dict(base_runtime), None, "unchanged", "invalid_minimum_confidence")
+    try:
+        goal_max_chars = int(router.get("message_max_chars") or 4096)
+        outcome_max_chars = int(mid_turn.get("tool_outcome_max_chars") or 2048)
+    except (TypeError, ValueError):
+        return TurnRoute(base_model, dict(base_runtime), None, "unchanged", "invalid_max_chars")
+    if outcome_max_chars < 1:
+        return TurnRoute(base_model, dict(base_runtime), None, "unchanged", "invalid_max_chars")
+    safe_outcome = _safe_goal(tool_outcome, outcome_max_chars)
+    if not safe_outcome:
+        return TurnRoute(base_model, dict(base_runtime), None, "unchanged", "no_tool_outcome")
+
+    candidates = {name: str(target["description"]) for name, target in routes.items()}
+    try:
+        response = controller(
+            str(router.get("controller_url") or "http://127.0.0.1:18777/v1/route"),
+            float(router.get("timeout_seconds") or 5),
+            {
+                "goal": _safe_goal(user_message, goal_max_chars),
+                "completed_tool_outcome": safe_outcome,
+            },
+            candidates,
+        )
+        choice = response.get("choice") if isinstance(response, Mapping) else None
+        confidence = response.get("confidence") if isinstance(response, Mapping) else None
+        if choice not in routes:
+            return TurnRoute(base_model, dict(base_runtime), None, "unchanged", "invalid_choice")
+        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+            return TurnRoute(base_model, dict(base_runtime), None, "unchanged", "invalid_confidence")
+        if confidence < float(minimum_confidence):
+            return TurnRoute(base_model, dict(base_runtime), None, "unchanged", "low_confidence")
+        if choice in {"planning", "exception"}:
+            choice = strong_route
+            reason = "strong_route"
+        else:
+            reason = "controller"
+        return _target_route(choice, routes, reason=reason, runtime_resolver=runtime_resolver, router_config=config or {})
+    except Exception:
+        return TurnRoute(base_model, dict(base_runtime), None, "unchanged", "controller_error")

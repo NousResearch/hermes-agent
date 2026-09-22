@@ -96,6 +96,72 @@ def test_confident_routine_selects_only_the_allowlisted_routine_target():
     assert observed["state"] == {"goal": "Return a concise greeting."}
 
 
+def test_midturn_router_uses_only_bounded_redacted_completed_tool_outcome():
+    from hermes_cli.model_router import resolve_midturn_route
+
+    observed = {}
+
+    def controller(_url, _timeout, state, _candidates):
+        observed.update(state)
+        return {"choice": "routine", "confidence": 1.0}
+
+    route = resolve_midturn_route(
+        config=_config(mid_turn={"enabled": True, "tool_outcome_max_chars": 32, "strong_route": "exception"}),
+        user_message="Investigate the failure.",
+        tool_outcome="token=secret-value-abcdefghijklmnopqrstuvwxyz; useful result " * 3,
+        base_model="base-model",
+        base_runtime={"provider": "base"},
+        runtime_resolver=_runtime,
+        controller=controller,
+    )
+
+    assert route.decision == "routine"
+    assert route.model == "laptop-qwen35-defiant-fable"
+    assert observed["goal"] == "Investigate the failure."
+    assert len(observed["completed_tool_outcome"]) <= 32
+    assert "secret-value-abcdefghijklmnopqrstuvwxyz" not in observed["completed_tool_outcome"]
+
+
+def test_midturn_planning_or_exception_choice_is_pinned_to_configured_strong_route():
+    from hermes_cli.model_router import resolve_midturn_route
+
+    config = _config(mid_turn={"enabled": True, "tool_outcome_max_chars": 64, "strong_route": "routine"})
+    for choice in ("planning", "exception"):
+        route = resolve_midturn_route(
+            config=config,
+            user_message="Investigate the failure.",
+            tool_outcome="the tool reported an unexpected condition",
+            base_model="base-model",
+            base_runtime={"provider": "base"},
+            runtime_resolver=_runtime,
+            controller=lambda *_args, choice=choice: {"choice": choice, "confidence": 1.0},
+        )
+
+        assert route.decision == "routine"
+        assert route.model == "laptop-qwen35-defiant-fable"
+        assert route.reason == "strong_route"
+
+
+def test_default_configuration_leaves_midturn_routing_off():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.model_router import resolve_midturn_route
+
+    calls = []
+    route = resolve_midturn_route(
+        config=DEFAULT_CONFIG,
+        user_message="Inspect the data.",
+        tool_outcome="completed inspection",
+        base_model="base-model",
+        base_runtime={"provider": "base"},
+        runtime_resolver=lambda *_args: (_ for _ in ()).throw(AssertionError("must not resolve")),
+        controller=lambda *_args: calls.append(True),
+    )
+
+    assert route.decision == "disabled"
+    assert route.model == "base-model"
+    assert calls == []
+
+
 def test_route_keeps_only_the_selected_target_request_overrides():
     from hermes_cli.model_router import resolve_turn_route
 

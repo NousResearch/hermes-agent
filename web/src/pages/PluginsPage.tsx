@@ -28,6 +28,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -1178,7 +1179,19 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.updateAgentPlugin(row.name);
+                    const res = await api.updateAgentPlugin(row.name);
+                    if (res.consent_required) {
+                      // The new pin widens the plugin; the backend changed nothing until confirmed.
+                      const body = [
+                        (t.pluginsPage.updateConsentBody ?? en.pluginsPage.updateConsentBody!)(
+                          row.name,
+                          (res.sha ?? "").slice(0, 8),
+                        ),
+                        ...(res.delta_lines ?? []),
+                      ].join("\n");
+                      if (!window.confirm(body)) return;
+                      await api.updateAgentPlugin(row.name, true);
+                    }
                     showToast(t.pluginsPage.updateGit, "success");
                   });
                 }}

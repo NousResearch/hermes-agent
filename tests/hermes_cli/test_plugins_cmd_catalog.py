@@ -191,3 +191,54 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
     # Explicit bypass at install time is remembered.
     pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
     assert gate_manifest(manifest, set(), {"killed"}).action == "load"
+
+
+def test_annotated_tag_pin_keeps_reviewed_trust_and_reads_as_at_pin(world, monkeypatch):
+    """A pin recorded as `git rev-parse <tag>` names the TAG object; HEAD can only ever be the commit it
+    points at. Trust (scan skips the caution prompt) and the at-pin check must both use the peeled commit,
+    or every tag-pinned entry prompts at install and shows 'update available' forever."""
+    repo = world["repo"]
+    sp.run(["git", "tag", "-a", "v1", world["sha1"], "-m", "v1"], cwd=repo, check=True, env=_GIT_ENV)
+    tag_obj = sp.run(["git", "rev-parse", "v1"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    assert tag_obj != world["sha1"]
+    world["state"]["pin"] = tag_obj
+    seen = {}
+    real_scan = pc._scan_plugin_tree
+    monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: seen.update(k) or real_scan(*a, **k))
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    target, _m, _n = cat.install_catalog_entry(entry, force=False)
+    assert _head(target) == world["sha1"] and seen["reviewed_pin"] is True
+    sidecar = cat.read_catalog_sidecar(target)
+    assert (sidecar["sha"], sidecar["pin"]) == (world["sha1"], tag_obj)
+    assert cat.catalog_row_fields(target, cat.catalog_pins())["update_available"] is False
+    assert cat.installed_catalog_state({"cat-plugin": {"dir": str(target), "runtime_status": None}})["entries"][0]["update_available"] is False
+    assert pc.dashboard_update_user_plugin("cat-plugin")["unchanged"] is True
+    # A bump to a commit sha is still an update.
+    world["state"]["pin"] = world["sha2"]
+    assert cat.catalog_row_fields(target, cat.catalog_pins())["update_available"] is True
+
+
+def test_repin_that_widens_the_plugin_requires_consent_on_every_surface(world, monkeypatch):
+    """A new pin adding tools / a Desktop half is a new grant: the dashboard/TUI answer consent_required
+    with the delta and touch nothing; a retry with consent applies it; the CLI asks y/N and a decline
+    leaves the tree at the old pin. A pin that widens nothing (sha2) needs no consent."""
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    target, _m, _n = cat.install_catalog_entry(entry, force=False)
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: cat-plugin\nversion: 3.0.0\ndescription: d\nprovides_tools: [shell_out]\n")
+    (repo / "desktop").mkdir()
+    (repo / "desktop" / "plugin.js").write_text("export default {}\n")
+    world["state"]["pin"] = wide = _commit(repo, "widen")
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] is False and result["consent_required"] is True
+    assert result["delta"] == {"tools": ["shell_out"], "desktop": ["desktop/plugin.js"]}
+    assert _head(target) == world["sha1"]  # nothing moved
+    # CLI: non-interactive (or 'n') → refused, tree untouched.
+    monkeypatch.setattr(pc, "_is_tty", lambda: True)
+    monkeypatch.setattr(pc, "_ask_yes", lambda *a, **k: False)
+    with pytest.raises(SystemExit):
+        pc.cmd_update("cat-plugin")
+    assert _head(target) == world["sha1"]
+    # Consent given → applied.
+    assert pc.dashboard_update_user_plugin("cat-plugin", accept_capabilities=True)["unchanged"] is False
+    assert _head(target) == wide

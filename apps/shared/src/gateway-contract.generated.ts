@@ -3674,7 +3674,7 @@ export interface LegacyPluginRow {
   version: string
   enabled: boolean
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name``; ``remove``: ``name`` (user installs only). */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -3686,9 +3686,10 @@ export interface PluginsManageParams {
   catalog_name?: string | null
   force?: boolean | null
   ref?: string | null
+  accept_capabilities?: boolean | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` → ``ok``/``unchanged``/``sha``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
@@ -3705,6 +3706,10 @@ export interface PluginsManageResult {
   after_install_path?: string | null
   enabled?: boolean | null
   sha?: string | null
+  consent_required?: boolean | null
+  delta?: Record<string, string[]> | null
+  delta_lines?: string[] | null
+  error?: string | null
 }
 /** ``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance. */
 export interface AgentPluginRow {

@@ -1501,7 +1501,10 @@ def _plugins_install(rid, params):
 
 
 def _plugins_update(rid, params):
-    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI)."""
+    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI).
+    A pin that widens the plugin (new tools/hooks/deps/capabilities/Desktop half) answers
+    ``{ok: false, consent_required: true, delta, delta_lines}`` with nothing changed; the client shows the
+    delta and retries with ``accept_capabilities: true``."""
     name = (params.get("name") or "").strip()
     if not name:
         return _err(rid, 4019, "plugins.update requires a 'name'")
@@ -1511,7 +1514,11 @@ def _plugins_update(rid, params):
     if not sidecar:
         return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
     try:
-        result = cat.repin_catalog_plugin(target, sidecar)
+        result = cat.repin_catalog_plugin(
+            target, sidecar, consent_cb=(lambda _delta: True) if params.get("accept_capabilities") else None)
+    except cat.RepinConsentRequired as e:
+        return _ok(rid, {"ok": False, "consent_required": True, "name": e.name, "sha": e.sha, "delta": e.delta,
+                         "delta_lines": cat.surface_delta_lines(e.delta), "error": str(e)})
     except pc.PluginOperationError as e:
         return _err(rid, 4021, str(e))
     return _ok(rid, {"ok": True, "unchanged": not result.changed, "sha": result.sha, "name": result.installed_name,

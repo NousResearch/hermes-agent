@@ -1075,10 +1075,14 @@ export const api = {
       method: "POST",
     }),
 
-  updateAgentPlugin: (name: string) =>
+  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+      },
     ),
 
   removeAgentPlugin: (name: string) =>
@@ -2793,6 +2797,11 @@ export interface AgentPluginUpdateResponse {
   output?: string;
   unchanged?: boolean;
   error?: string;
+  /** The new catalog pin widens the plugin; nothing changed until the client
+   *  retries with `accept_capabilities`. */
+  consent_required?: boolean;
+  sha?: string;
+  delta_lines?: string[];
 }
 
 export interface PluginProvidersPutRequest {

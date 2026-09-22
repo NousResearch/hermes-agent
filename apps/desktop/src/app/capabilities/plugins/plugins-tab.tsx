@@ -28,6 +28,7 @@ import {
   $agentPluginsError,
   $agentPluginsStatus,
   type AgentPluginRow,
+  type AgentPluginUpdateOutcome,
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
@@ -636,10 +637,30 @@ export const PluginsTab = memo(function PluginsTab({
                   void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
                 }}
                 onAgentUpdate={row => {
-                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(applied => {
-                    if (applied) {
+                  const finish = (outcome: AgentPluginUpdateOutcome) => {
+                    if (outcome.kind === 'applied') {
                       notify({ kind: 'success', message: p.updated(row.name) })
                       void rescanAll(requestGateway, scope)
+                    }
+                  }
+
+                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
+                    if (outcome.kind !== 'consent') {
+                      finish(outcome)
+
+                      return
+                    }
+
+                    // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
+                    // half); the backend changed nothing until the user confirms the delta.
+                    const ok = await confirm({
+                      confirmLabel: p.updateConsentConfirm,
+                      description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                      title: p.updateConsentTitle(row.name)
+                    })
+
+                    if (ok) {
+                      finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
                     }
                   })
                 }}

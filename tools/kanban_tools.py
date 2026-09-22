@@ -1024,7 +1024,12 @@ def _handle_complete(args: dict, **kw) -> str:
             enforce_repository_handoff,
         )
         try:
-            enforce_repository_handoff(task=task, metadata=metadata)
+            enforce_repository_handoff(
+                task=task,
+                metadata=metadata,
+                github_client=kw.get("github_client"),
+                git_runner=kw.get("git_runner"),
+            )
         except CompletionPolicyError as receipt_err:
             return tool_error(
                 f"kanban_complete blocked: {receipt_err}. Your task is still in-flight "

@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 from contextlib import closing
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 
@@ -17,6 +18,7 @@ class CompletionPolicyError(ValueError):
 
 _FULL_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 _REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+GitRunner = Callable[..., str]
 
 
 def _git(workspace: Path, *args: str) -> str:
@@ -52,14 +54,65 @@ def _remote_repository(url: str) -> str | None:
     return path if _REPOSITORY_RE.fullmatch(path) else None
 
 
-def _require_clean_workspace(workspace: Path) -> None:
-    if _git(workspace, "status", "--porcelain=v1", "--untracked-files=all"):
+def _require_clean_workspace(workspace: Path, git_runner: GitRunner) -> None:
+    if git_runner(workspace, "status", "--porcelain=v1", "--untracked-files=all"):
         raise CompletionPolicyError(
             "repository completion receipt rejected: worktree has uncommitted changes"
         )
 
 
-def enforce_repository_handoff(*, task, metadata) -> None:
+def _assigned_base(task) -> tuple[str, str]:
+    """Return immutable base evidence persisted by the control-plane dispatcher."""
+    base_ref = (task.workspace_base_ref or "").strip()
+    base_sha = (task.workspace_base_sha or "").strip().lower()
+    if not base_ref or not _FULL_SHA_RE.fullmatch(base_sha):
+        raise CompletionPolicyError(
+            "repository completion receipt rejected: assigned base evidence is unavailable"
+        )
+    return base_ref, base_sha
+
+
+def _load_bundled_github_package() -> None:
+    """Load the bundled PR feedback package from the trusted source tree."""
+    import sys
+
+    module = sys.modules.get("github_pr_feedback")
+    if module is not None:
+        return
+    import importlib.util
+
+    from hermes_cli._startup_fast import project_root_str
+
+    plugin_dir = Path(project_root_str()) / "plugins" / "github-pr-feedback" / "github_pr_feedback"
+    spec = importlib.util.spec_from_file_location(
+        "github_pr_feedback", plugin_dir / "__init__.py",
+        submodule_search_locations=[str(plugin_dir)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load bundled github_pr_feedback from {plugin_dir}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["github_pr_feedback"] = module
+    spec.loader.exec_module(module)
+
+
+def _authorized_github_client():
+    """Create the canonical client after verifying the dedicated Hermes identity."""
+    import importlib
+
+    from hermes_cli.github_identity import GitHubAutomationIdentity
+
+    _load_bundled_github_package()
+    client_type = importlib.import_module("github_pr_feedback.github_client").GitHubClient
+    identity = GitHubAutomationIdentity.from_environment()
+    return client_type.for_automation_identity(
+        expected_login=identity.expected_login,
+        token_env=identity.token_env,
+    )
+
+
+def enforce_repository_handoff(
+    *, task, metadata, github_client=None, git_runner: GitRunner | None = None,
+) -> None:
     """Validate the terminal receipt for a dispatcher-managed Git worktree.
 
     Scratch work and ordinary directories retain their existing completion
@@ -84,9 +137,22 @@ def enforce_repository_handoff(*, task, metadata) -> None:
         raise CompletionPolicyError(
             "repository completion receipt rejected: assigned worktree no longer exists"
         )
-    _git(workspace, "rev-parse", "--show-toplevel")
-    _require_clean_workspace(workspace)
+    run_git = git_runner or _git
+    run_git(workspace, "rev-parse", "--show-toplevel")
+    _require_clean_workspace(workspace, run_git)
+    head = run_git(workspace, "rev-parse", "HEAD").lower()
+    branch = run_git(workspace, "branch", "--show-current")
+    if task.branch_name and task.branch_name != branch:
+        raise CompletionPolicyError(
+            f"repository completion receipt rejected: worktree branch does not match assigned branch {task.branch_name}"
+        )
     if changed is False:
+        base_ref, base_sha = _assigned_base(task)
+        if head != base_sha:
+            raise CompletionPolicyError(
+                "repository completion receipt rejected: worktree HEAD differs from assigned "
+                f"base {base_ref} at {base_sha}; declare repository_changes=true and provide a PR receipt"
+            )
         return
 
     required = ("commit_sha", "pushed_branch", "repository", "base_branch", "pr_url")
@@ -109,19 +175,17 @@ def enforce_repository_handoff(*, task, metadata) -> None:
         raise CompletionPolicyError(
             "repository completion receipt pr_url must be an exact GitHub PR URL for repository"
         )
-    head = _git(workspace, "rev-parse", "HEAD").lower()
     if head != commit_sha:
         raise CompletionPolicyError(
             f"repository completion receipt commit_sha does not match worktree HEAD {head}"
         )
-    branch = _git(workspace, "branch", "--show-current")
     if branch != pushed_branch or (task.branch_name and task.branch_name != pushed_branch):
         raise CompletionPolicyError(
             f"repository completion receipt pushed_branch does not match assigned branch {task.branch_name or branch}"
         )
     if base_branch == pushed_branch:
         raise CompletionPolicyError("repository completion receipt base_branch must differ from pushed_branch")
-    tracking_refs = _git(
+    tracking_refs = run_git(
         workspace,
         "for-each-ref",
         "--format=%(refname:short)",
@@ -140,7 +204,7 @@ def enforce_repository_handoff(*, task, metadata) -> None:
         )
     matched_remote = None
     for remote_name in remote_names:
-        if (_remote_repository(_git(workspace, "remote", "get-url", remote_name)) or "").lower() == repository.lower():
+        if (_remote_repository(run_git(workspace, "remote", "get-url", remote_name)) or "").lower() == repository.lower():
             matched_remote = remote_name
             break
     if matched_remote is None:
@@ -148,13 +212,49 @@ def enforce_repository_handoff(*, task, metadata) -> None:
             "repository completion receipt repository does not match the pushed branch remote"
         )
     base_ref = f"refs/remotes/{matched_remote}/{base_branch}"
-    _git(workspace, "rev-parse", "--verify", "--end-of-options", base_ref + "^{commit}")
+    run_git(workspace, "rev-parse", "--verify", "--end-of-options", base_ref + "^{commit}")
     try:
-        _git(workspace, "merge-base", "--is-ancestor", base_ref, "HEAD")
+        run_git(workspace, "merge-base", "--is-ancestor", base_ref, "HEAD")
     except CompletionPolicyError as exc:
         raise CompletionPolicyError(
             "repository completion receipt base_branch is not an ancestor of commit_sha"
         ) from exc
+    pr_number = int(pr_url.removeprefix(expected_pr_prefix))
+    if pr_number < 1:
+        raise CompletionPolicyError(
+            "repository completion receipt pr_url must identify a positive pull request number"
+        )
+    try:
+        pull_request = (github_client or _authorized_github_client()).get_pull_request(
+            repository, pr_number,
+        )
+    except (ImportError, RuntimeError) as exc:
+        raise CompletionPolicyError(
+            "repository completion receipt could not verify pr_url through the authorized GitHub identity"
+        ) from exc
+    if (
+        pull_request.number != pr_number
+        or pull_request.base_repository.casefold() != repository.casefold()
+    ):
+        raise CompletionPolicyError(
+            "repository completion receipt pr_url does not resolve to the declared repository and PR"
+        )
+    if pull_request.state != "OPEN":
+        raise CompletionPolicyError(
+            "repository completion receipt pr_url must resolve to an open pull request"
+        )
+    if pull_request.head_ref_name != pushed_branch:
+        raise CompletionPolicyError(
+            "repository completion receipt pushed branch does not match the pull request head branch"
+        )
+    if pull_request.head_sha.casefold() != commit_sha:
+        raise CompletionPolicyError(
+            "repository completion receipt commit_sha does not match the pull request head SHA"
+        )
+    if pull_request.base_branch != base_branch:
+        raise CompletionPolicyError(
+            "repository completion receipt base branch does not match the pull request base branch"
+        )
 
 
 def _load_bundled_github_pr_feedback_guard():
@@ -168,24 +268,7 @@ def _load_bundled_github_pr_feedback_guard():
     this same trusted Hermes source tree, unlike a profile-local override
     manifest) via its real package name so its relative imports resolve.
     """
-    import sys
-
-    module = sys.modules.get("github_pr_feedback")
-    if module is None:
-        import importlib.util
-
-        from hermes_cli._startup_fast import project_root_str
-
-        plugin_dir = Path(project_root_str()) / "plugins" / "github-pr-feedback" / "github_pr_feedback"
-        spec = importlib.util.spec_from_file_location(
-            "github_pr_feedback", plugin_dir / "__init__.py",
-            submodule_search_locations=[str(plugin_dir)],
-        )
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load bundled github_pr_feedback from {plugin_dir}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules["github_pr_feedback"] = module
-        spec.loader.exec_module(module)
+    _load_bundled_github_package()
     import importlib
 
     return importlib.import_module("github_pr_feedback.repair_completion_policy").guard_repair_completion

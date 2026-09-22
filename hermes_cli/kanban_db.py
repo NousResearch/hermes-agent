@@ -878,6 +878,8 @@ class Task:
     claim_expires: Optional[int]
     tenant: Optional[str]
     branch_name: Optional[str] = None
+    workspace_base_ref: Optional[str] = None
+    workspace_base_sha: Optional[str] = None
     project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
@@ -914,6 +916,7 @@ class Task:
         text_columns = {
             "id", "title", "body", "assignee", "status", "created_by", "workspace_kind",
             "workspace_path", "claim_lock", "branch_name", "project_id", "tenant", "result",
+            "workspace_base_ref", "workspace_base_sha",
             "idempotency_key", "workflow_template_id", "current_step_key", "session_id",
             "completion_contract", "model_override", "provider_override", "reasoning_effort", "block_kind",
         }
@@ -939,7 +942,8 @@ _TASK_REQUIRED_COLUMNS = (
 )
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
-    "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
+    "branch_name", "workspace_base_ref", "workspace_base_sha", "project_id", "tenant",
+    "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "completion_contract",
 )
@@ -1060,6 +1064,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
     branch_name          TEXT,
+    -- Immutable worktree starting point recorded by the dispatcher. Completion
+    -- reads these control-plane fields rather than worker-writable Git config.
+    workspace_base_ref   TEXT,
+    workspace_base_sha   TEXT,
     -- Optional link to a first-class Project (hermes_cli/projects_db). When set,
     -- the task's worktree is anchored under the project's primary repo with a
     -- deterministic branch name instead of a random wt/<task-id> fallback.

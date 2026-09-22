@@ -71,3 +71,41 @@ Additional checks:
 ## Preserved unrelated state
 
 The pre-existing modification to `task-5-report.md` was not edited or staged as part of Task 7.
+
+## Review round 1 — exact PR identity and no-change ancestry
+
+Two fail-closed gaps were repaired after review:
+
+- changed-work completion now resolves the declared PR number through the bundled `GitHubClient` created by `GitHubClient.for_automation_identity`; this verifies the dedicated Hermes GitHub viewer before reading the canonical PR;
+- the canonical PR must be open in the declared base repository, with the exact receipt head branch, head SHA, and base branch;
+- missing or malformed GitHub data, including a nonexistent PR, leaves the task in flight;
+- the worktree allocator records the assigned base ref and immutable base SHA, and the dispatcher copies them into control-plane task fields before spawning the worker;
+- a `repository_changes=false` receipt now requires the clean worktree HEAD to equal that assigned base SHA, so a clean committed branch cannot bypass the PR receipt.
+
+The completion helper accepts injected Git and GitHub clients for invariant tests. Production calls use the subprocess Git inspector and the existing bot identity client. No-change validation reads the dispatcher-owned task fields rather than worker-writable Git configuration.
+
+Added regressions:
+
+1. PR head SHA mismatch is rejected;
+2. PR head branch mismatch is rejected;
+3. PR base branch mismatch is rejected;
+4. a syntactically valid but nonexistent PR URL is rejected;
+5. `repository_changes=false` is rejected when the clean branch is ahead of its assigned base;
+6. the exact canonical PR identity remains accepted.
+
+Red evidence: the five rejection scenarios completed successfully before the policy change, and the happy path never called the injected GitHub client. Focused green result after the change: **7 passed, 0 failed**.
+
+Affected-file verification:
+
+```text
+scripts/run_tests.sh tests/tools/test_kanban_tools.py \
+  tests/hermes_cli/test_kanban_worktree_isolation.py \
+  tests/hermes_cli/test_kanban_worktree_teardown.py \
+  tests/hermes_cli/test_kanban_worktree_unicode_path.py
+```
+
+Result: **69 passed, 2 failed**. All 52 Kanban tool tests, both worktree-isolation tests, and all 14 worktree-teardown tests passed. The two macOS Unicode-path tests failed during their own repository setup because the isolated runner had no Git author identity (`fatal: empty ident name`), before reaching changed production code. The remaining Unicode-path test passed.
+
+After moving the assigned base into dispatcher-owned task columns, an expanded schema run produced **146 passed, 4 failed, 2 skipped** across the full Kanban tool, worktree isolation, worktree teardown, and Kanban database files. The full tool and worktree files stayed green; 78 Kanban database tests passed. The four failures are in the separate provider-crash terminal-blocking behavior (`test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane[ready]` and three provider egress/thinking variants), where current branch behavior leaves those tasks ready. They do not exercise worktree allocation, base persistence, or repository completion receipts.
+
+No GitHub write was made or attempted in this review round.

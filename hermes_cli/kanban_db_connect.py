@@ -850,6 +850,8 @@ _EARLY_TASK_COLUMNS = (
     ("tenant", "tenant TEXT"),
     ("result", "result TEXT"),
     ("branch_name", "branch_name TEXT"),
+    ("workspace_base_ref", "workspace_base_ref TEXT"),
+    ("workspace_base_sha", "workspace_base_sha TEXT"),
     ("project_id", "project_id TEXT"),
     ("idempotency_key", "idempotency_key TEXT"),
 )

@@ -150,6 +150,10 @@ User plugins at `~/.hermes/plugins/model-providers/<name>/` override bundled mod
 
 **General plugins and user-installed backends are disabled by default** — discovery finds them (so they show up in `hermes plugins` and `/plugins`), but nothing with hooks or tools loads until you add the plugin's name to `plugins.enabled` in `~/.hermes/config.yaml`. This stops third-party code from running without your explicit consent.
 
+:::note `plugins.enabled` governs plugins only
+[Gateway event hooks](./hooks.md#gateway-event-hooks) under `~/.hermes/hooks/<name>/` are not plugins and are **not** gated by `plugins.enabled` or `plugins.disabled`. That directory is trusted by placement: any subdirectory holding a valid `HOOK.yaml` + `handler.py` is imported by the gateway at startup, and placing the files there is the opt-in. See the [gateway hook trust model](./hooks.md#gateway-hook-trust).
+:::
+
 ```yaml
 plugins:
   enabled:

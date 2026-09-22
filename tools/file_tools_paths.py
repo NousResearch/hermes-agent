@@ -182,6 +182,61 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
 
 
+def _workspace_confinement_enabled() -> bool:
+    """Whether this profile confines every file-tool path to its workspace.
+
+    This is deliberately profile-scoped configuration rather than an environment
+    variable: multiplexed gateways must evaluate the active profile on every
+    call, and ordinary interactive profiles retain the existing broad file-tool
+    behavior unless they explicitly opt in.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        security = (load_config_readonly() or {}).get("security") or {}
+        return security.get("file_tools_workspace_only") is True
+    except Exception:
+        return False
+
+
+def workspace_confinement_error(
+    filepath: str, task_id: str = "default", *, operation: str = "access"
+) -> str | None:
+    """Return a fail-closed refusal when an opted-in file-tool path escapes.
+
+    Host paths are resolved physically, including existing symlink hops. Remote
+    container paths are compared lexically because host dereferencing would
+    inspect a different filesystem; the container mount remains the physical
+    boundary there.
+    """
+    if not _workspace_confinement_enabled():
+        return None
+    root_text = _authoritative_workspace_root(task_id)
+    if not root_text:
+        return (
+            "WORKSPACE_CONFINEMENT_REFUSAL: file tools are workspace-only, but "
+            "this task has no authoritative workspace root. No filesystem "
+            f"{operation} was attempted."
+        )
+    try:
+        container_paths = _uses_container_paths(task_id)
+        root = _anchor(_host_text(root_text, container_paths), os.getcwd, container_paths)
+        target = _resolve_path_for_task(filepath, task_id)
+        if target.is_relative_to(root):
+            return None
+    except Exception as exc:
+        return (
+            "WORKSPACE_CONFINEMENT_REFUSAL: could not validate the requested "
+            f"path for {operation}: {type(exc).__name__}. No filesystem "
+            f"{operation} was attempted."
+        )
+    return (
+        "WORKSPACE_CONFINEMENT_REFUSAL: file tools are confined to the active "
+        f"workspace {str(root)!r}; requested {operation} path {str(target)!r} "
+        f"is outside it. No filesystem {operation} was attempted."
+    )
+
+
 
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
     """Warn when a RELATIVE path resolved OUTSIDE the task's workspace root (the

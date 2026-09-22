@@ -349,6 +349,39 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_prompt_requires_clear_material_match_and_one_initial_skill(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "helper"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: helper\ndescription: Help with a task.\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "clearly and materially matches" in result
+        assert "load at most one skill initially" in result
+        assert "even partially relevant" not in result
+        assert "Err on the side of loading" not in result
+
+    def test_explicit_activation_is_labeled_and_survives_snapshot(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "review" / "model-review"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: model-review\ndescription: Review with another model.\n"
+            "metadata:\n  hermes:\n    activation: explicit\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+        second = build_skills_system_prompt()
+
+        for result in (first, second):
+            assert "model-review: [explicit only] Review with another model." in result
+            assert "must never be selected automatically" in result
+
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path

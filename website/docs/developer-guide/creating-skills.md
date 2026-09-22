@@ -57,6 +57,7 @@ metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
+    activation: explicit                  # Optional — never auto-select; explicit user request only
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
@@ -133,6 +134,18 @@ metadata:
 **Use case for `fallback_for_*`:** Create a skill that serves as a workaround when a primary tool isn't available. For example, a `duckduckgo-search` skill with `fallback_for_tools: [web_search]` only shows when the web search tool (which requires an API key) is not configured.
 
 **Use case for `requires_*`:** Create a skill that only makes sense when certain tools are present. For example, a web scraping workflow skill with `requires_toolsets: [web]` won't clutter the prompt when web tools are disabled.
+
+### Explicit-Only Skills
+
+Set `metadata.hermes.activation: explicit` for skills that must remain available but should never be selected automatically:
+
+```yaml
+metadata:
+  hermes:
+    activation: explicit
+```
+
+The skill remains visible in the system index with an `[explicit only]` label and can still be loaded by slash command or `skill_view`. The model may select it only when the user explicitly asks for that skill, named model, reviewer, subagent, or capability. Missing, malformed, or unknown values preserve the default `auto` behavior.
 
 ### Environment Variable Requirements
 

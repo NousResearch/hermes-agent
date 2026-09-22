@@ -170,6 +170,7 @@ metadata:
   hermes:
     tags: [python, automation]
     category: devops
+    activation: explicit               # Optional — user must explicitly request this skill/capability
     fallback_for_toolsets: [web]    # Optional — conditional activation (see below)
     requires_toolsets: [terminal]   # Optional — conditional activation (see below)
     config:                          # Optional — config.yaml settings
@@ -211,6 +212,12 @@ platforms: [macos, linux]     # macOS and Linux
 ```
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted, the skill loads on all platforms.
+
+### Explicit-only activation
+
+Use `metadata.hermes.activation: explicit` for high-cost or opt-in workflows such as external-model review and subagent orchestration. The skill stays installed and visible with an `[explicit only]` label, but the agent must not select it automatically. It remains available through a direct slash command, `skill_view`, or an explicit request for the skill, named model, reviewer, subagent, or capability.
+
+Skills without this field use `activation: auto`, which means the agent may load them when they clearly and materially match the task. For ordinary tasks, the agent starts with at most one skill and proceeds without a skill when existing instructions and basic tools are sufficient.
 
 ## Skill output and media delivery
 

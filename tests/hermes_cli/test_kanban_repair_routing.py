@@ -16,6 +16,10 @@ def test_known_repair_scopes_bypass_router_profiles():
         "Local PR CI audit",
         "Run the exact local CI audit for this pull request.",
     ) == "pr-local-ci-auditor"
+    assert repair_profile_for_task("Federated runner smoke test", "Validate federation handoff.") == "federation-steward"
+    assert repair_profile_for_task("Create pytest suite", "Add test coverage for the normalizer.") == "test-contract-steward"
+    assert repair_profile_for_task("Useful content discovery", "Scout relevant community material.") == "nerdy-content-scout"
+    assert repair_profile_for_task("Synthesize gaps", "Route bounded children or IDLE.") == "synthesizer"
 
 
 def test_unknown_scope_stays_unassigned_for_explicit_triage():

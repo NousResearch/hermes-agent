@@ -36,8 +36,6 @@ interface PressState {
 
 interface ComposerPopoutGesturesOptions {
   composerRef: RefObject<HTMLFormElement | null>
-  /** Layout zone this composer belongs to — the scope its float is stored under. */
-  groupId: string
   onDock: () => void
   onPopOut: () => void
   poppedOut: boolean
@@ -49,7 +47,16 @@ function gestureTargetOk(target: EventTarget | null) {
     return false
   }
 
-  return !target.closest('button, a, input, textarea, select, [role="menuitem"], [data-radix-popper-content-wrapper]')
+  return !target.closest(
+    'button, a, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [data-slot="composer-rich-input"], [role="menuitem"], [data-radix-popper-content-wrapper]'
+  )
+}
+
+/** Docked composer only peels from its exposed grab ring. Pointer events from
+ *  the editor and composer surface bubble through the root too, but they belong
+ *  to text selection and controls, never to the pop-out gesture. */
+function isDockDragPlatform(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest('[data-slot="composer-drag-region"]'))
 }
 
 /** Floating composer's 5px outer frame — grab here to drag without long-press. */
@@ -119,7 +126,6 @@ function popoutPositionUnderPointer(
  */
 export function useComposerPopoutGestures({
   composerRef,
-  groupId,
   onDock,
   onPopOut,
   poppedOut,
@@ -154,10 +160,7 @@ export function useComposerPopoutGestures({
     (state: PressState, clientX: number, clientY: number, next: PopoutPosition, size?: PopoutSize) => {
       clearTimer()
 
-      const clamped = setComposerPopoutPosition(groupId, next, {
-        area: readPopoutBounds(composerRef.current),
-        size
-      })
+      const clamped = setComposerPopoutPosition(next, { size })
 
       liveRef.current = clamped
 
@@ -170,7 +173,7 @@ export function useComposerPopoutGestures({
 
       setDragging(true)
     },
-    [clearTimer, composerRef, groupId]
+    [clearTimer]
   )
 
   const peelOffFromDock = useCallback(
@@ -214,6 +217,10 @@ export function useComposerPopoutGestures({
         }
         setDragging(true)
 
+        return
+      }
+
+      if (!poppedOut && !isDockDragPlatform(event.target)) {
         return
       }
 
@@ -274,12 +281,11 @@ export function useComposerPopoutGestures({
       const area = readPopoutBounds(composer)
 
       liveRef.current = setComposerPopoutPosition(
-        groupId,
         {
           bottom: state.startBottom - (pending.y - state.startY),
           right: state.startRight - (pending.x - state.startX)
         },
-        { area, size }
+        { size }
       )
 
       if (composer) {
@@ -342,7 +348,7 @@ export function useComposerPopoutGestures({
         } else {
           // Persist the resting position once, on release — never per move.
           const size = composer ? { height: composer.offsetHeight, width: composer.offsetWidth } : undefined
-          setComposerPopoutPosition(groupId, liveRef.current, { area, persist: true, size })
+          setComposerPopoutPosition(liveRef.current, { persist: true, size })
         }
       }
 
@@ -359,7 +365,7 @@ export function useComposerPopoutGestures({
       window.removeEventListener('pointerup', handleUp)
       window.removeEventListener('pointercancel', handleUp)
     }
-  }, [composerRef, groupId, onDock, peelOffFromDock, resetGesture])
+  }, [composerRef, onDock, peelOffFromDock, resetGesture])
 
   useEffect(() => clearTimer, [clearTimer])
 

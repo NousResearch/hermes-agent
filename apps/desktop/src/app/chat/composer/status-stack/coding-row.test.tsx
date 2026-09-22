@@ -81,7 +81,7 @@ describe('CodingStatusRow', () => {
     // Painted tildified, copied raw.
     expect(screen.getByText('~/www/repo')).toBeTruthy()
 
-    const copy = screen.getByRole('button', { name: 'Copy Path' })
+    const copy = screen.getByRole('button', { name: 'Copy path' })
 
     fireEvent.click(copy)
 

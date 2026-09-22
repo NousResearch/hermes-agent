@@ -462,7 +462,7 @@ hermes config set memory.provider byterover
 
 ### Supermemory
 
-语义长期记忆，具备 profile 召回、语义搜索、显式记忆工具，以及通过 Supermemory graph API 进行会话结束时的对话导入。
+语义长期记忆，具备 profile 召回、语义搜索、显式记忆工具，以及逐轮对话捕获（每个会话每 4 小时一个文档）。
 
 | | |
 |---|---|
@@ -510,17 +510,17 @@ npx supermemory local
 | `profile_frequency` | `50` | 在第一轮及每 N 轮包含 profile 事实 |
 | `capture_mode` | `all` | 默认跳过过短或无意义的轮次 |
 | `search_mode` | `hybrid` | 搜索模式：`hybrid`、`memories` 或 `documents` |
-| `api_timeout` | `5.0` | SDK 和导入请求的超时时间 |
+| `api_timeout` | `5.0` | SDK 请求的超时时间 |
 
 **环境变量：** `SUPERMEMORY_API_KEY`（必填）、`SUPERMEMORY_BASE_URL`（未配置 `base_url` 时的兼容回退）、`SUPERMEMORY_CONTAINER_TAG`（覆盖配置）。
 
-Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https://api.supermemory.ai`。SDK 操作、安装/状态探测和会话导入都会使用解析后的同一端点。
+Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https://api.supermemory.ai`。SDK 操作和安装/状态探测都会使用解析后的同一端点。
 
 **主要特性：**
 - 自动上下文隔离——从捕获的轮次中剥离已召回的记忆，防止递归记忆污染
-- 在会话边界时将整个会话**一次性导入**
-- 会话结束时同时导入到对话端点（`/v4/conversations`），用于 Supermemory 的 profile 和图谱构建
-- 端到端自托管路由——SDK、探测和会话导入请求使用同一配置端点
+- 逐轮捕获——每轮完成后立即写入，每个会话每 4 小时一个文档
+- 失败的轮次写入会重试（至少一次语义）：下一轮、会话结束、`/reset` 或关闭时
+- 端到端自托管路由——SDK 和探测请求使用同一配置端点
 - 在第一轮及可配置间隔注入 profile 事实
 - **Profile 范围容器**——在 `container_tag` 中使用 `{identity}`（例如 `hermes-{identity}` → `hermes-coder`），按 Hermes profile 隔离记忆
 - **多容器模式**——启用 `enable_custom_container_tags` 并配置 `custom_containers` 列表，让 Agent 跨命名容器读写。自动操作（同步、预取）保持在主容器上。
@@ -558,7 +558,7 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 
 ## Profile 隔离
 
-每个提供者的数据按 [profile](/user-guide/profiles) 隔离：
+每个提供者的数据按 [profile](../profiles.md) 隔离：
 
 - **本地存储提供者**（Holographic、ByteRover）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
 - **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立凭证
@@ -567,4 +567,4 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 
 ## 构建记忆提供者
 
-参见[开发者指南：Memory Provider 插件](/developer-guide/memory-provider-plugin)了解如何创建自己的提供者。
+参见[开发者指南：Memory Provider 插件](../../developer-guide/memory-provider-plugin.md)了解如何创建自己的提供者。

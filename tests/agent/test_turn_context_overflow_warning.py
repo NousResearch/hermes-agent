@@ -45,7 +45,7 @@ class TestShouldCompressInfo:
 
     def test_cooldown_reports_reason(self):
         comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
+        comp.last_prompt_tokens = comp.last_real_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 60
         should, reason = comp.should_compress_info(73_000)
         assert should is False
@@ -58,7 +58,7 @@ class TestShouldCompressInfo:
         """should_compress() must still return a bare bool for existing
         callers in conversation_loop.py (and/or chains)."""
         comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
+        comp.last_prompt_tokens = comp.last_real_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 60
         result = comp.should_compress(73_000)
         assert result is False
@@ -93,10 +93,15 @@ def _build_warn_agent(compressor: ContextCompressor) -> _WarnAgent:
 
 
 def _run_build(agent):
-    """Run build_turn_context with the prologue-side effects stubbed."""
+    """Run build_turn_context with the prologue-side effects stubbed.
+
+    The estimate is over the 72k threshold but under the 96k model window: the compression
+    branch must run without tripping the over-window fail-closed (a no-progress pass on a request
+    above the window ends the turn; that path is covered by
+    ``tests/agent/test_over_window_compression_fail_closed.py``)."""
     with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
          patch("agent.turn_context._should_run_preflight_estimate", return_value=True), \
-         patch("agent.turn_context.estimate_request_tokens_rough", return_value=999_999):
+         patch("agent.turn_context.estimate_request_tokens_rough", return_value=80_000):
         return build_turn_context(
             agent=agent,
             user_message="hello",
@@ -118,7 +123,7 @@ def _run_build(agent):
 class TestTurnContextOverflowWarning:
     def test_warns_on_cooldown_block(self):
         comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
+        comp.last_prompt_tokens = comp.last_real_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 30
         agent = _build_warn_agent(comp)
         _run_build(agent)
@@ -139,7 +144,7 @@ class TestTurnContextOverflowWarning:
         cooldown timer moves.
         """
         comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
+        comp.last_prompt_tokens = comp.last_real_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 30
         agent = _build_warn_agent(comp)
         # Turn 1: over threshold + cooldown -> warn.
@@ -197,7 +202,7 @@ class TestPluginEngineDefault:
         for free from the ContextEngine base class — the call sites in
         turn_context.py / conversation_loop.py must not raise
         AttributeError on plugin engines (sweeper review, #62625)."""
-        from tests.run_agent.test_plugin_context_engine_init import _StubEngine
+        from tests.agent.test_plugin_context_engine_init import _StubEngine
 
         engine = _StubEngine()
         result = engine.should_compress_info(123_456)

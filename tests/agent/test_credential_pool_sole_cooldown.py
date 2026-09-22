@@ -10,10 +10,14 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
+
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
 
 def _entry(
     error_code: int,
@@ -22,6 +26,8 @@ def _entry(
     cred_id: str = "cred-1",
     priority: int = 0,
     failure_reason: str | None = None,
+    error_reason: str | None = None,
+    reset_at: float | None = None,
 ) -> dict:
     entry = {
         "id": cred_id,
@@ -37,7 +43,12 @@ def _entry(
     }
     if failure_reason is not None:
         entry["failure_reason"] = failure_reason
+    if error_reason is not None:
+        entry["last_error_reason"] = error_reason
+    if reset_at is not None:
+        entry["last_error_reset_at"] = reset_at
     return entry
+
 
 def _load(tmp_path, monkeypatch, entries: list[dict]):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -49,6 +60,7 @@ def _load(tmp_path, monkeypatch, entries: list[dict]):
     from agent.credential_pool import load_pool
 
     return load_pool("openrouter")
+
 
 def test_sole_credential_429_recovers_after_short_cooldown(tmp_path, monkeypatch):
     """A single 429-throttled key recovers within ~1 min, not 1 hour.
@@ -63,12 +75,99 @@ def test_sole_credential_429_recovers_after_short_cooldown(tmp_path, monkeypatch
     assert entry.id == "cred-1"
     assert entry.last_status == "ok"
 
+
+def test_sole_credential_subscription_429_reset_recovers_after_short_cooldown(tmp_path, monkeypatch):
+    """A subscription-period reset must not outrank the sole-credential cap.
+
+    A monthly/weekly 429 (``GoUsageLimitError``) persists an absolute
+    ``last_error_reset_at`` days out.  ``_exhausted_until`` returned it verbatim
+    before consulting ``_exhausted_ttl``, so the documented short cooldown was
+    unreachable and the profile's only key stayed benched for the whole period
+    (``failure_reason`` is ``rate_limit``, not billing, so the short cap is
+    exactly the branch that should apply).
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(
+                429,
+                age_seconds=90,
+                error_reason="GoUsageLimitError",
+                failure_reason="rate_limit",
+                reset_at=time.time() + 15 * 24 * 60 * 60,
+            )
+        ],
+    )
+    entry = pool.select()
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
+def test_sole_credential_reset_inside_the_bench_is_still_honoured(tmp_path, monkeypatch):
+    """Control: an absolute reset is honoured while it stays inside the bench.
+
+    The clamp only overrides a reset that outlives the TTL bench; a provider
+    that says it recovers in 20s still waits those 20s.
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(429, age_seconds=10, reset_at=time.time() + 20)],
+    )
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+
+def test_sole_credential_billing_429_keeps_provider_reset(tmp_path, monkeypatch):
+    """Control: a confirmed billing limit keeps its provider reset.
+
+    Retrying a spent account every 60s just re-fails, so the clamp must not
+    apply — the same rule ``_exhausted_ttl`` already follows for the bench.
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(
+                429,
+                age_seconds=90,
+                failure_reason="billing",
+                reset_at=time.time() + 15 * 24 * 60 * 60,
+            )
+        ],
+    )
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+
+def test_multi_key_429_keeps_provider_reset(tmp_path, monkeypatch):
+    """Control: with something to rotate to, the provider reset still wins.
+
+    Only the lone-credential case is clamped; a multi-key pool keeps waiting
+    out the window the provider published.
+    """
+    reset_at = time.time() + 15 * 24 * 60 * 60
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(429, age_seconds=90, cred_id="cred-1", priority=0, reset_at=reset_at),
+            _entry(429, age_seconds=90, cred_id="cred-2", priority=1, reset_at=reset_at),
+        ],
+    )
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+
 def test_sole_credential_403_recovers_after_short_cooldown(tmp_path, monkeypatch):
     """403 (edge-throttle variant, hits the catch-all default TTL) also recovers."""
     pool = _load(tmp_path, monkeypatch, [_entry(403, age_seconds=90)])
     entry = pool.select()
     assert entry is not None
     assert entry.last_status == "ok"
+
 
 def test_sole_credential_billing_403_keeps_full_bench(tmp_path, monkeypatch):
     """A 403 classified as BILLING must keep the full bench, not the 60s cooldown.
@@ -87,12 +186,34 @@ def test_sole_credential_billing_403_keeps_full_bench(tmp_path, monkeypatch):
     assert pool.has_available() is False
     assert pool.select() is None
 
+
+def test_sole_credential_billing_403_survives_reload(tmp_path, monkeypatch):
+    """The classified reason persists, so a restart can't downgrade the bench.
+
+    `failure_reason` is written to auth.json with the entry; without that, a
+    process restart would re-read a bare 403 and hand the spent key back after
+    60 seconds.
+    """
+    from agent.credential_pool import _exhausted_ttl
+
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(403, age_seconds=90, failure_reason="billing")],
+    )
+    entry = pool.entries()[0]
+    assert entry.failure_reason == "billing"
+    assert _exhausted_ttl(403, sole_credential=True, failure_reason="billing") == 60 * 60
+    assert _exhausted_ttl(403, sole_credential=True) == 60
+
+
 def test_sole_credential_402_keeps_full_bench(tmp_path, monkeypatch):
     """402 (billing/quota) is genuine exhaustion — a quick retry can't help, so
     the sole-credential short cooldown must NOT apply."""
     pool = _load(tmp_path, monkeypatch, [_entry(402, age_seconds=90)])
     assert pool.has_available() is False
     assert pool.select() is None
+
 
 def test_sole_credential_next_available_at_uses_short_cooldown(tmp_path, monkeypatch):
     """next_available_at must also honour the sole-credential short cooldown.
@@ -117,6 +238,7 @@ def test_sole_credential_next_available_at_uses_short_cooldown(tmp_path, monkeyp
         f"next_available_at returned {remaining:.0f}s — should be seconds, not hours"
     )
 
+
 def test_multi_key_429_keeps_full_bench(tmp_path, monkeypatch):
     """With more than one non-DEAD entry there IS something to rotate to, so the
     short cooldown must not kick in — both recently-throttled keys stay benched."""
@@ -131,12 +253,14 @@ def test_multi_key_429_keeps_full_bench(tmp_path, monkeypatch):
     assert pool.has_available() is False
     assert pool.select() is None
 
+
 # ── #82154: UNVERIFIED billing must not keep the one-hour bench ──────────────
 # Anthropic's "out of extra usage" 400 is ambiguous: the same body is returned
 # when the server-side content filter rejects part of the request, leaving the
 # credential perfectly healthy. An hour-long bench on that verdict blocks a
 # healthy key and (sole-credential case) replays the stored error for the full
 # hour — making a real fix look like it did not work.
+
 
 def test_sole_credential_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch):
     """An unverified billing 400 gets the short transient cooldown, not the
@@ -149,6 +273,7 @@ def test_sole_credential_unverified_billing_400_recovers_quickly(tmp_path, monke
     entry = pool.select()
     assert entry is not None
     assert entry.last_status == "ok"
+
 
 def test_multi_key_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch):
     """The short cooldown applies regardless of pool size: a content-filter
@@ -167,6 +292,7 @@ def test_multi_key_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch
     entry = pool.select()
     assert entry is not None
     assert entry.last_status == "ok"
+
 
 def test_unverified_billing_ttl_values(tmp_path, monkeypatch):
     """Direct TTL contract: unverified billing is transient-sized; confirmed
@@ -193,3 +319,15 @@ def test_unverified_billing_ttl_values(tmp_path, monkeypatch):
         _exhausted_ttl(402, sole_credential=True, failure_reason="billing_unverified")
         == EXHAUSTED_TTL_DEFAULT_SECONDS
     )
+
+
+def test_unverified_billing_survives_reload(tmp_path, monkeypatch):
+    """The unverified marker persists with the entry, so a restart keeps the
+    short cooldown instead of upgrading it to a billing bench."""
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(400, age_seconds=10, failure_reason="billing_unverified")],
+    )
+    entry = pool.entries()[0]
+    assert entry.failure_reason == "billing_unverified"

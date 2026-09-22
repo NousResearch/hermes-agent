@@ -42,7 +42,10 @@ class TestAxWalkBound:
         _write_config(tmp_path, "computer_use:\n  ax_max_elements: 350\n")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert cua_backend._cua_configured_ax_max_elements() == 350
-        assert _StubCapture()._gws_args()["max_elements"] == 350
+        stub = _StubCapture()
+        assert stub._gws_args()["max_elements"] == 350
+        # the backend records the bound it sent, so CaptureResult.ax_max_elements can report it
+        assert stub._ax_max_elements_sent == 350
 
     def test_zero_disables_the_bound(self, tmp_path, monkeypatch):
         """0 restores the driver default and must not leak a ``max_elements`` key into the payload."""
@@ -59,9 +62,8 @@ class TestCappedWalkHint:
     def _summary(monkeypatch, n_elements: int, bound: int) -> str:
         from tools.computer_use import tool
         from tools.computer_use.backend import CaptureResult, UIElement
-        monkeypatch.setattr(cua_backend, "_cua_configured_ax_max_elements", lambda: bound)
         monkeypatch.setattr(tool, "_spill_elements_to_file", lambda cap: "/tmp/elements.json")
-        cap = CaptureResult(mode="ax", width=800, height=600,
+        cap = CaptureResult(mode="ax", width=800, height=600, ax_max_elements=bound,
                             elements=[UIElement(index=i + 1, role="AXButton", label=f"b{i}") for i in range(n_elements)])
         return "\n".join(tool._capture_summary_lines(tool._capture_view(cap, max_elements=5)))
 

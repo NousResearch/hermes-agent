@@ -243,6 +243,7 @@ class _CaptureMixin:
         with contextlib.suppress(Exception):  # lazy import: cua_backend imports this module at import time
             from tools.computer_use import cua_backend as _cb
             capped = _cb._cua_configured_ax_max_elements()
+        self._ax_max_elements_sent = capped
         if capped:
             args["max_elements"] = capped
         return args
@@ -317,7 +318,8 @@ class _CaptureMixin:
             self._capture_vision() if mode == "vision" else self._capture_window_state())
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
         return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
-                             window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type)
+                             window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type,
+                             ax_max_elements=0 if mode == "vision" else getattr(self, "_ax_max_elements_sent", 0))
 
     def _capture_full_screen(self, mode: str) -> CaptureResult:
         """Composited PrtScn-style grab via `get_desktop_state` (the shell window would only show wallpaper + icons).

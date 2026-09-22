@@ -477,6 +477,53 @@ function cleanInstallerLogLine(raw: string): string {
   return frames.length ? frames[frames.length - 1] : ''
 }
 
+const INSTALLER_KILL_GRACE_MS = 3_000
+
+// A stage's long step (git clone, uv pip install, npm) is a child of the
+// installer and inherits its stdout pipe. Signalling only bash/powershell.exe
+// orphans that step: it keeps writing into the checkout and venv, and 'close'
+// -- which waits for every holder of the pipe -- does not fire until it ends
+// on its own, so Cancel (and quit) wait for it.
+function killInstallerTree(child) {
+  const pid = child.pid
+
+  if (!Number.isInteger(pid)) {
+    return
+  }
+
+  if (IS_WINDOWS) {
+    try {
+      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
+    } catch {
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        void 0
+      }
+    }
+
+    return
+  }
+
+  const signalGroup = signal => {
+    try {
+      process.kill(-pid, signal)
+    } catch {
+      try {
+        child.kill(signal)
+      } catch {
+        void 0
+      }
+    }
+  }
+
+  signalGroup('SIGTERM')
+  // A step that ignores SIGTERM would otherwise hold the pipe, and the
+  // Cancel, for as long as it runs.
+  const escalate = setTimeout(() => signalGroup('SIGKILL'), INSTALLER_KILL_GRACE_MS)
+  child.once('close', () => clearTimeout(escalate))
+}
+
 function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
@@ -502,12 +549,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
 
     const onAbort = () => {
       killed = true
-
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        void 0
-      }
+      killInstallerTree(child)
     }
 
     if (abortSignal) {
@@ -587,6 +629,8 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
 function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const child = spawn('bash', [scriptPath, ...args], {
+      // Its own process group, so killInstallerTree reaches the stage's tools.
+      detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -600,12 +644,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 
     const onAbort = () => {
       killed = true
-
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        void 0
-      }
+      killInstallerTree(child)
     }
 
     if (abortSignal) {
@@ -1019,6 +1058,14 @@ async function runBootstrap(opts) {
       })
 
       if (ev.state === 'failed') {
+        // The abort killed this stage; report it as the cancel it was, or the
+        // caller latches it as an install failure at this stage.
+        if (abortSignal?.aborted) {
+          emit({ type: 'failed', error: 'bootstrap cancelled by user' })
+
+          return { ok: false, cancelled: true }
+        }
+
         emit({ type: 'failed', stage: stage.name, error: (ev as any).error || 'stage failed' })
 
         return { ok: false, failedStage: stage.name, error: (ev as any).error }

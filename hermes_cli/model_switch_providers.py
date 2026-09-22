@@ -918,12 +918,20 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
 
 def _lap_canonical_rows(b: _PickerBuild) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, _registry_lookup
     from hermes_cli.models import CANONICAL_PROVIDERS
-    for cp in CANONICAL_PROVIDERS:
+    from hermes_cli.models_catalog_static import ProviderEntry
+    from providers import list_providers
+    # The static catalog may have been imported under the launch profile.
+    # Project the active home's plugins at lookup time without mutating it.
+    candidates = {cp.slug: cp for cp in CANONICAL_PROVIDERS}
+    for profile in list_providers():
+        candidates.setdefault(profile.name, ProviderEntry(
+            profile.name, profile.display_name or profile.name, profile.description or ""))
+    for cp in candidates.values():
         if _skip(b.seen_slugs, b.excluded, cp.slug):
             continue
-        cp_config = PROVIDER_REGISTRY.get(cp.slug)
+        cp_config = _registry_lookup(cp.slug)
         has_creds = False
         if cp_config and cp_config.api_key_env_vars:
             lit = {ev for ev in cp_config.api_key_env_vars if os.environ.get(ev)}

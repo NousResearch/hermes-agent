@@ -937,6 +937,14 @@ def _merge_disk_cooldown_state(
         disk_access = disk_entry.get("access_token") or ""
         if mem_access and disk_access and mem_access != disk_access:
             return entry
+        # Env-backed (and borrowed) rows are persisted without their secret, so both sides are ""
+        # above; their only rotation signal is ``secret_fingerprint`` (agent/credential_persistence.py
+        # writes it for exactly this comparison). Same rule: a changed secret is a new credential.
+        if not mem_access and not disk_access:
+            mem_fp = entry.get("secret_fingerprint") or (entry.get("extra") or {}).get("secret_fingerprint")
+            disk_fp = disk_entry.get("secret_fingerprint") or (disk_entry.get("extra") or {}).get("secret_fingerprint")
+            if mem_fp and disk_fp and mem_fp != disk_fp:
+                return entry
         disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
         if disk_ts <= mem_ts:
             return merged

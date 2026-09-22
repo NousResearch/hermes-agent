@@ -98,7 +98,7 @@ def test_hook_transforms_selected_blocks_and_persists_host_task_provenance(tmp_p
     db.archive_and_compact("session-1", output)
     reloaded = next(
         message for message in db.get_messages_as_conversation("session-1")
-        if message.get(COMPRESSED_SUMMARY_METADATA_KEY)
+        if COMPACTION_HOOK_PROVENANCE_KEY in message.get("display_metadata", {})
     )
     assert reloaded["display_metadata"][COMPACTION_HOOK_PROVENANCE_KEY] == provenance
 

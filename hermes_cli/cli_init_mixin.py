@@ -362,6 +362,7 @@ class CLIInitMixin:
         from cli import CLI_CONFIG, _status_bar_visible_from_display_config
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._injected_input = queue.Queue()  # plugin injection queue (queue-safe host seam)
         self._agent_running = self._should_exit = False
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning

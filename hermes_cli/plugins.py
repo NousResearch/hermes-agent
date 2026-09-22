@@ -605,19 +605,68 @@ class PluginContext:
     # returns False. The profile-scoped config is passed through so a multi-profile process consults THIS
     # manager's home, never the active profile's (#65593 constraint).
     def inject_message(
-        self, content: str, role: str = "user", *, session_key: str | None = None,
+        self, content: str, role: str = "user", *, mode: str = "queue",
+        target_session: object = None, session_key: str | None = None,
     ) -> bool:
-        """Inject a message into a CLI or gateway conversation (new turn if idle, interrupt if running).
-        Gateway injection needs an existing ``session_key`` plus
-        ``plugins.entries.<plugin_id>.allow_gateway_injection``; ``True`` means the gateway accepted the
-        request for async dispatch, not that delivery completed."""
+        """Inject a message into a CLI or gateway conversation (public plugin seam).
+
+        The message is delivered through host-owned queues only: the plugin
+        never reaches into private CLI/gateway/TUI fields.
+
+        - ``mode="queue"`` (default): an idle target starts a new turn; a busy
+          target queues at the safe boundary and its active tool is never
+          interrupted.
+        - ``mode="steer"``: explicit mid-turn steering where the host supports
+          it (degrades to a queued next-turn message when idle).
+        - ``mode="interrupt"``: legacy hard-interrupt behaviour, retained for
+          compatibility.
+
+        ``target_session`` is an opaque exact-session token captured from the
+        host lifecycle; ``None`` means the caller's own session. Unknown,
+        closed, rotated or unauthorised targets fail closed (``False``).
+        ``session_key`` is an alias for ``target_session`` kept for callers of
+        the gateway-only signature.
+
+        Gateway injection needs an existing session plus
+        ``plugins.entries.<plugin_id>.allow_gateway_injection``; ``True`` means
+        the gateway accepted the request for async dispatch, not that delivery
+        completed.
+
+        Injected text is conversational input only: it cannot invoke slash
+        commands, approve tools or answer protected confirmation prompts.
+
+        Returns ``True`` when the host accepted the message.
+        """
+        if mode not in ("queue", "steer", "interrupt"):
+            return False
+
+        effective_target = target_session if target_session is not None else session_key
+        target_surface = None
+        if isinstance(effective_target, str):
+            # A host may persist an opaque ``surface:token`` form; route a
+            # surface-qualified target to that exact surface only.
+            prefix, separator, raw_target = effective_target.partition(":")
+            if separator and prefix in {"cli", "tui", "gateway"} and raw_target:
+                target_surface = prefix
+                effective_target = raw_target
+
         cli = self._manager._cli_ref
-        msg = content if role == "user" else f"[{role}] {content}"
         if cli is not None:
+            if target_surface not in (None, "cli"):
+                return False
+            host_seam = getattr(cli, "inject_message", None)
+            if callable(host_seam):
+                try:
+                    return bool(
+                        host_seam(content, role=role, mode=mode, target_session=effective_target))
+                except Exception:
+                    return False
+            # Legacy host without the queue-safe seam: preserve the old
+            # queue-or-interrupt behaviour (busy goes to the interrupt queue).
             queue_ = cli._interrupt_queue if getattr(cli, "_agent_running", False) else cli._pending_input
-            queue_.put(msg)
+            queue_.put(content if role == "user" else f"[{role}] {content}")
             return True
-        if not session_key:
+        if not effective_target:
             logger.warning("inject_message: gateway mode requires an existing session_key")
             return False
         if not self._gateway_injection_allowed():
@@ -630,7 +679,8 @@ class PluginContext:
             return False
         try:
             return bool(self._manager.inject_gateway_message(
-                session_key=session_key, content=msg, plugin_id=self.plugin_id,
+                session_key=effective_target, content=content if role == "user" else f"[{role}] {content}",
+                plugin_id=self.plugin_id,
             ))
         except Exception:
             logger.warning("inject_message: gateway scheduling failed for plugin %s", self.plugin_id,

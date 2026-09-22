@@ -4,16 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesConnection } from '@/global'
 
 // A connection switch must leave every profile-scoped query refetched against
-// the NEW gateway. The switch commit point (beginGatewaySwitch →
-// wipeSessionListsForGatewaySwitch → invalidateProfileScopedQueries) runs
-// inside beforeActivate — BEFORE the activation publishes the new request
-// scope (applyActive → setApiRequestConnection) — so that invalidation's
-// refetches ride the OUTGOING backend. When the connection id later moves and
-// the profile atom is unchanged, nothing re-invalidates: a kanban pane (or
-// any connection-scoped query) keeps painting the previous gateway's data.
-// store/connections closes the hole with the CONNECTION twin of profile.ts's
-// $activeGatewayProfile subscription: invalidate on the actual connection-id
-// change, so the refetch lands on the backend the tags now name.
+// the NEW gateway — see the $activeConnectionId.listen comment in
+// store/connections.ts for why the switch's own wipe is not enough.
 //
 // Real store chain (store/gateway + store/profile + store/connections), only
 // the HermesGateway socket class stubbed — same harness as
@@ -69,7 +61,6 @@ const registry = {
 
 describe('connection-switch query invalidation', () => {
   let tagsAtFetch: Array<null | string>
-   
   let observer: QueryObserver<any, any, any, any, any> | undefined
 
   beforeEach(() => {
@@ -141,9 +132,6 @@ describe('connection-switch query invalidation', () => {
     // least one fetch rides the new backend and the FINAL fetch is
     // spark-tagged.
     await vi.waitFor(() => expect(tagsAtFetch.at(-1)).toBe('spark'), { timeout: 2_000 })
-
-    expect(getApiRequestConnection()).toBe('spark')
-    expect(tagsAtFetch).toContain('spark')
 
     unsubscribe()
   })

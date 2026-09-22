@@ -85,10 +85,9 @@ const $activeConnectionProfile = computed(
 // fire, and the computed dedupes equal ids, so this only runs on a real switch.
 $activeConnectionId.listen(() => invalidateProfileScopedQueries())
 
-/** Remember one profile per source, so switching machines is a re-home rather
- * than a reset to `default`. The map is local UI preference only; Electron
- * remains the authority for the connection registry and all secrets.
- */
+// Remember one profile per source, so switching machines is a re-home rather
+// than a reset to `default`. The map is local UI preference only; Electron
+// remains the authority for the connection registry and all secrets.
 $activeConnectionProfile.subscribe(({ connectionId, descriptorProfile, profile, registryScoped }) => {
   // A migrated v1 per-profile remote may expose a client-side alias such as
   // "work" while the registered source's actual profile is "default". Only

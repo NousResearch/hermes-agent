@@ -1,0 +1,34 @@
+name: desensitize
+repo: https://github.com/yubingz/hermes-desensitize
+sha: 8ef2d22bafff5754edb1bbafd969b67ab4a1c06d
+subdir: src/hermes_desensitize
+description: "Chinese-context desensitization for Hermes chats. Replaces PII and business-sensitive
+  entities — person names, company names, addresses, file paths, and magnitude figures — with
+  reversible placeholders before a message reaches the model, then restores them in the reply.
+  Two layers: an optional local/OpenAI-compatible LLM for semantic entity judgment, plus a
+  sub-millisecond regex fallback (phone, ID card, email, IP, path) that keeps the conversation
+  working when the model is unavailable. Disclosure — rewrites inbound user messages and outbound
+  assistant replies, so transcript content differs from what you typed; placeholders are
+  code-generated and may over-match (18-digit ID-card-shaped strings, names that collide with
+  the public-entity allowlist); company names are matched greedily and a modifier such as
+  原北京某某有限公司 is absorbed into the placeholder; magnitude masking drops the numeric
+  value and only fires on the configured trigger words, so a domain term absent from that list
+  is left unmasked without warning; the placeholder mapping is held in memory only and never
+  written to disk."
+maintainer: yubingz
+tier: community
+category: tools
+requires_hermes: ">=0.19"
+docs_url: https://github.com/yubingz/hermes-desensitize#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_api_request
+    - transform_llm_output
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

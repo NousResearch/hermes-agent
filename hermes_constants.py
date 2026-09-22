@@ -57,6 +57,49 @@ def _get_platform_default_hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+# ── Process-home pin (fix for #119242) ───────────────────────────────
+
+_PINNED_PROCESS_HERMES_HOME: ContextVar[str | object] = ContextVar(
+    "_PINNED_PROCESS_HERMES_HOME", default=_UNSET
+)
+
+
+def pin_process_hermes_home(path: str | Path) -> Token:
+    """Pin the process's genuine launch HERMES_HOME so identity checks stay correct.
+
+    An embedding host that serves several profiles from one process and mirrors the
+    active turn's profile into ``os.environ["HERMES_HOME"]`` (Hermes WebUI does this on
+    every chat turn) defeats the launch-home / routed-home decisions that key MCP registry
+    scopes, check_fn cache keys, secret-scope grants, and ``strip_launch_profile_env``.
+
+    Call this **once** after the process starts, before any per-turn ``HERMES_HOME``
+    mirroring, with the *process's own launch home* (not the served profile).  The pin is
+    context-local so it survives ``set_hermes_home_override`` / ``reset_hermes_home_override``
+    pairs and threads that never installed a pin keep the old behaviour (no pin).
+
+    ``get_process_hermes_home()`` checks the pin first and only falls back to the live
+    ``HERMES_HOME`` env var when no pin is installed — so unpinned, single-profile hosts
+    are unaffected.
+
+    Returns a reset token; pass it to :func:`unpin_process_hermes_home` (or call
+    ``token.reset()``) to restore the previous pin (typically ``_UNSET``).
+    """
+    return _PINNED_PROCESS_HERMES_HOME.set(str(path))
+
+
+def unpin_process_hermes_home(token: Token) -> None:
+    """Restore the previous process-home pin (usually ``_UNSET``, i.e. no pin)."""
+    _PINNED_PROCESS_HERMES_HOME.reset(token)
+
+
+def _pinned_process_hermes_home() -> Path | None:
+    """The pinned process launch home, or None when no pin is installed."""
+    pinned = _PINNED_PROCESS_HERMES_HOME.get()
+    if pinned is _UNSET or not pinned:
+        return None
+    return _expand_hermes_home(pinned)
+
+
 def sudo_invoker_default_home() -> Path | None:
     """The invoking user's native ``~/.hermes`` when this process is root under ``sudo``, else None.
 
@@ -158,7 +201,16 @@ def get_process_hermes_home() -> Path:
 
     For process-level assets (theme YAML, dashboard plugin manifests) that must stay visible while a
     request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
+
+    When the embedding host has pinned the genuine launch home with
+    :func:`pin_process_hermes_home` (recommended for any host that mirrors
+    ``HERMES_HOME`` per turn — see #119242), returns the pinned path.  Otherwise falls back
+    to the live ``HERMES_HOME`` env var / platform default — the historic behaviour, so
+    single-profile hosts that never mutate ``HERMES_HOME`` are unaffected.
     """
+    pinned = _pinned_process_hermes_home()
+    if pinned is not None:
+        return pinned
     val = os.environ.get("HERMES_HOME", "").strip()
     return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
 

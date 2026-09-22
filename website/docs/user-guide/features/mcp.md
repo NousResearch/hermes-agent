@@ -122,6 +122,27 @@ Catalog entries can require:
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at
   `hermes auth <provider>` if you haven't authenticated already.
 
+### FastMetal's hosted MCP server
+
+The `fastmetal` catalog entry connects to FastMetal's official remote MCP
+server (`https://mcp.fastmetal.ai/mcp`, Streamable HTTP) with a plain API key;
+nothing runs locally.
+
+1. Create a key on the [FastMetal dashboard](https://fastmetal.ai/dashboard) —
+   a dedicated key with a budget cap is the right shape for agent use, since
+   every `ask`, `compare` and generation call is billed against its prepaid
+   balance in JPY.
+2. Run `hermes mcp install fastmetal` and paste the key when prompted. It is
+   stored as `MCP_FASTMETAL_API_KEY` in `~/.hermes/.env`; the same key also
+   works for the `fastmetal` model provider (`FASTMETAL_API_KEY`).
+3. Start a new session or use `/reload-mcp`. The server exposes twelve tools:
+   `ask`, `compare` and `decide` across FastMetal's hosted models,
+   `generate_image` / `analyze_image` / `generate_video` / `get_video`,
+   `list_models` / `get_model` / `model_compatibility`, and `quota` /
+   `health_check`.
+
+See [FastMetal's MCP guide](https://fastmetal.ai/docs/guides/mcp).
+
 ### n8n's official MCP server
 
 The `n8n-official` catalog entry connects directly to your n8n Cloud or

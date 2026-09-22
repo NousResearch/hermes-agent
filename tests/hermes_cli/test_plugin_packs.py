@@ -97,7 +97,9 @@ def test_parse_pack_accepts_nested_pack_meta_and_source_alias():
     assert pack.version == "2.0.0"
     assert pack.plugins[0].repo == "owner/repo"
     assert pack.plugins[0].subdir == "sub/dir"
-    assert pack.plugins[0].install_identifier == "owner/repo/sub/dir"
+    from hermes_cli.plugins_cmd import _resolve_git_url
+    assert _resolve_git_url(pack.plugins[0].install_identifier) == (
+        "https://github.com/owner/repo.git", "sub/dir")
 
 
 @pytest.mark.parametrize("bad_ref", ["main", "v1.2.0", "a" * 39, "a" * 41, "", None])

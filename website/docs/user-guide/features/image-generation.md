@@ -45,7 +45,7 @@ If the managed gateway returns `HTTP 4xx` for a specific model, that model isn't
 ### Google AI Studio (direct)
 
 If you have a Google AI Studio key, Hermes can call Gemini's native image
-endpoint directly — no FAL, OpenRouter, or Nous Portal account is required.
+endpoint directly.
 Set either `GOOGLE_API_KEY` or `GEMINI_API_KEY`, then choose **Google AI
 Studio (direct)** under **🎨 Image Generation** in `hermes tools`.
 
@@ -53,10 +53,9 @@ The direct backend offers these models:
 
 | Model | Strengths |
 |---|---|
-| `gemini-3.1-flash-lite-image` | Nano Banana 2 Lite; lowest latency and cost; 1K output |
-| `gemini-3.1-flash-image` | Nano Banana 2; balanced quality, speed, 4K output, and multi-reference editing |
-| `gemini-3-pro-image` | Nano Banana Pro; highest fidelity, reasoning, 4K output, and search grounding |
-| `gemini-2.5-flash-image` | Legacy Nano Banana; fast generation and editing |
+| `gemini-3.1-flash-image` | **Default** — Nano Banana 2; 14 aspect ratios, 512/1K/2K/4K output, Google Search grounding, and multi-reference editing |
+| `gemini-3.1-flash-lite-image` | Nano Banana 2 Lite; lowest latency and cost; 10 aspect ratios, 1K output |
+| `gemini-3-pro-image` | Nano Banana Pro; highest fidelity & reasoning; 10 aspect ratios, 1K/2K/4K output, and Google Search grounding |
 
 The selection is stored as:
 
@@ -65,9 +64,12 @@ image_gen:
   provider: gemini
   gemini:
     model: gemini-3.1-flash-image
+    image_size: 2K                # optional: 512 / 1K / 2K / 4K (or pass upscale: true for 2K)
+    aspect_ratio: 16:9            # optional: exact ratio (14 ratios on 3.1 Flash Image; 10 ratios on Lite/Pro)
+    google_search: true           # optional: ground image generation in Google Search (3.1 Flash & 3 Pro)
 ```
 
-You can override the model for scripts with `GEMINI_IMAGE_MODEL`.
+You can also override these via environment variables (`GEMINI_IMAGE_MODEL`, `GEMINI_IMAGE_SIZE`, `GEMINI_IMAGE_ASPECT_RATIO`, `GEMINI_IMAGE_GOOGLE_SEARCH=1`).
 
 ### Configure and Pick a Model
 

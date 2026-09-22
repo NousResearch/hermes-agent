@@ -127,6 +127,27 @@ class TestGenericProviderLiveCuratedMerge:
         assert "x-preview-f-free" not in result
         assert {"kimi-k3", "gpt-5.6-sol", "claude-opus-5"} <= set(result)
 
+    def test_alibaba_token_plan_merge_does_not_resurrect_delisted_model(self):
+        """#119481: the live Token Plan catalog is authoritative for retired ids.
+
+        ``qwen3.8-max-0902`` was once curated, but the endpoint no longer
+        serves it.  A live refresh must retain every currently listed model
+        without merging that retired id back into the picker.
+        """
+        live = ["qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus"]
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("alibaba-token-plan")
+
+        assert "qwen3.8-max-0902" not in result
+        assert set(live) <= set(result)
+
 
     def test_opencode_zen_offline_catalog_drops_retired_model(self):
         """#115496 without a key: no live fetch, so provider_model_ids serves the curated floor merged

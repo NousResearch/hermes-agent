@@ -153,7 +153,7 @@ _ALIBABA_CODING_PLAN_MODELS = [
 ]
 # Verified against a live Token Plan subscription (key tier ``sk-sp-...``).
 _ALIBABA_TOKEN_PLAN_MODELS = [
-    "qwen3.8-max-0902", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "deepseek-v4-pro",
+    "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "deepseek-v4-pro",
     "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.2", "glm-5.1", "glm-5",
 ]
 _XAI_MODELS = _xai_curated_models()

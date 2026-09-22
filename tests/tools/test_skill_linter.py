@@ -7,6 +7,8 @@ import pytest
 from tools.skill_linter import (
     ERROR,
     WARNING,
+    LintFinding,
+    format_findings,
     lint_content,
     lint_skill,
 )
@@ -184,6 +186,18 @@ def test_author_caps_warned():
 def test_findings_carry_rule_and_severity():
     findings = lint_content(CLEAN.replace("name: my-skill", "name: BAD"))
     assert any(f.rule == "name-format" and f.severity == ERROR for f in findings)
+
+
+def test_format_findings_renders_error_and_warning_rows():
+    findings = [
+        LintFinding(ERROR, "name-format", "name must be lowercase."),
+        LintFinding(WARNING, "missing-section", "add a When to Use section."),
+    ]
+
+    assert format_findings(findings) == (
+        "✗ [name-format] name must be lowercase.\n"
+        "⚠ [missing-section] add a When to Use section."
+    )
 
 
 def test_incident_log_shape_flagged_and_rule_shape_not():

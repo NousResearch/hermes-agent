@@ -291,6 +291,21 @@ def _is_supervised_gateway_process() -> bool:
         return False
 
 
+def _worker_scopes_opted_in() -> bool:
+    """Whether an embedding host explicitly requested per-worker scope isolation.
+
+    ``_is_supervised_gateway_process`` is gateway-only by design: PID-file ownership
+    keeps terminal children and CLIs unscoped. But the agent also runs inside other
+    supervised hosts (hermes-webui, custom systemd services embedding Hermes), where
+    an OOM-happy background child takes down the whole host cgroup just the same.
+    ``HERMES_WORKER_SCOPES=1`` is the host operator's explicit request to give
+    background terminal workers the same sibling-cgroup treatment the gateway gets.
+    Unlike the gateway probe this flag MAY be inherited by descendants: it changes
+    only where workers are placed, never which self-kill guards apply.
+    """
+    return os.environ.get("HERMES_WORKER_SCOPES", "").lower() in {"1", "true", "yes", "on"}
+
+
 def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation with its own
     memory accounting, so an OOM in the worker cannot kill the gateway cgroup.
@@ -1120,16 +1135,21 @@ class ProcessRegistry(ProcessCheckpointMixin):
         gateway and its messaging control plane)."""
         argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
         # This applies to both pipe mode and the PTY path above. See #70716.
-        in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
-        if in_supervised_gateway and _systemd_run_user_scope_available():
+        isolate_worker = _IS_LINUX and (
+            _is_supervised_gateway_process() or _worker_scopes_opted_in()
+        )
+        if isolate_worker and _systemd_run_user_scope_available():
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
             return _build_systemd_scope_argv(argv, unit_suffix=unit_suffix)
-        if in_supervised_gateway:
-            # Under a supervisor but no private cgroup: a worker OOM can still take
-            # the whole gateway down.
+        if isolate_worker:
+            # Isolation was requested (gateway or opted-in host) but no private
+            # cgroup could be created: a worker OOM can still take the whole
+            # hosting service down.
             logger.debug(
                 "%s background executor not isolated in a systemd scope "
-                "(systemd-run --user unavailable); worker shares the gateway cgroup.", label)
+                "(systemd-run --user unavailable); worker shares the host cgroup.",
+                label,
+            )
         return argv
 
     @staticmethod

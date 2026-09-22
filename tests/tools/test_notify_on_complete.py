@@ -217,6 +217,17 @@ class TestTerminalSchema:
         assert "notify_on_complete" not in props
         assert "watch_patterns" not in props
 
+    def test_schema_says_timeout_does_not_bound_background(self):
+        """The timeout description must not imply a background process ends at
+        the timeout: nothing forwards timeout to the spawn path, so the model
+        must be told to kill servers it starts (#116936)."""
+        from tools.terminal_tool import TERMINAL_SCHEMA
+
+        timeout_desc = TERMINAL_SCHEMA["parameters"]["properties"]["timeout"]["description"]
+        assert "background=true" in timeout_desc
+        assert "does not bound" in timeout_desc
+        assert "process(action='kill')" in timeout_desc
+
     def test_handler_passes_notify(self):
         """_handle_terminal passes notify_on_complete to terminal_tool."""
         from tools.terminal_tool import _handle_terminal

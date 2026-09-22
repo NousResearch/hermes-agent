@@ -2357,6 +2357,70 @@ class TestSystemdCgroupIsolation:
         assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
+    @pytest.mark.linux_only
+    def test_embedded_host_opt_in_scopes_workers(self, registry, monkeypatch):
+        """An embedding host (hermes-webui, custom service) is not the gateway:
+        no PID file, no supervisor marker. HERMES_WORKER_SCOPES=1 is its explicit
+        request for the same per-worker cgroup isolation (#116936)."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setenv("HERMES_WORKER_SCOPES", "1")
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda environ=None: False,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv[0] == "/usr/bin/systemd-run", argv
+        assert "--scope" in argv
+        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
+        # The opt-in only moves workers into their own cgroup; it must never
+        # widen the gateway self-kill guards to a non-gateway host.
+        from tools.process_registry import _is_supervised_gateway_process
+        assert _is_supervised_gateway_process() is False
+
+    @pytest.mark.linux_only
+    def test_worker_scopes_flag_off_by_default(self, registry, monkeypatch):
+        """Without the opt-in, a plain embedding host keeps today's behaviour:
+        unscoped spawns (isolation stays a gateway concern)."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.delenv("HERMES_WORKER_SCOPES", raising=False)
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda environ=None: False,
+        )
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["argv"] == ["/bin/bash", "-lic", "set +m; echo hello"]
+        assert session.systemd_unit == ""
+
     @pytest.mark.parametrize("use_pty", [False, True])
     def test_inherited_systemd_marker_does_not_scope_interactive_cli(
         self, registry, monkeypatch, use_pty

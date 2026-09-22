@@ -3870,21 +3870,36 @@ _inject_profile_env_vars()
 
 
 def _platform_plugin_manifests():
-    """Yield ``(dir_name, manifest_dict)`` for every bundled ``plugins/platforms/*/plugin.y(a)ml``."""
-    platforms_dir = get_project_root() / "plugins" / "platforms"
-    if not platforms_dir.is_dir():
-        return
-    for child in platforms_dir.iterdir():
-        manifest_path = next(
-            (p for p in (child / "plugin.yaml", child / "plugin.yml") if child.is_dir() and p.exists()), None)
-        if manifest_path is None:
+    """Yield ``(dir_name, manifest_dict)`` for every platform plugin manifest.
+
+    Bundled ``plugins/platforms/*/`` first, then user-installed
+    ``~/.hermes/plugins/<name>/`` — matching plugin discovery order
+    (``hermes_cli.plugins_discovery``). The user root hosts non-platform
+    plugins too, so it is filtered to ``kind: platform``; the bundled root
+    is platform-only by construction.
+    """
+    roots = [
+        get_project_root() / "plugins" / "platforms",
+        get_hermes_home() / "plugins",
+    ]
+    for platforms_dir, require_platform_kind in ((r, i > 0) for i, r in enumerate(roots)):
+        if not platforms_dir.is_dir():
             continue
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = fast_safe_load(f) or {}
-        except Exception:
-            continue
-        yield child.name, manifest
+        for child in sorted(platforms_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            manifest_path = next(
+                (p for p in (child / "plugin.yaml", child / "plugin.yml") if p.exists()), None)
+            if manifest_path is None:
+                continue
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = fast_safe_load(f) or {}
+            except Exception:
+                continue
+            if require_platform_kind and manifest.get("kind") != "platform":
+                continue
+            yield child.name, manifest
 
 
 def _inject_platform_plugin_env_vars() -> None:

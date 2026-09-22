@@ -1302,10 +1302,22 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4090, f"server '{name}' already exists")
     raw_cfg = params.get("config")
     server_config: dict = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
-    if preset:  # fills url/command/args when omitted; mutates server_config in place
-        mc._apply_mcp_preset(
-            name, preset_name=preset, url=server_config.get("url"), command=server_config.get("command"),
-            cmd_args=list(server_config.get("args") or []), server_config=server_config)
+    if preset and not (server_config.get("url") or server_config.get("command")):
+        # Desktop sends a bare catalog id here.  Catalog manifests and CLI presets are separate
+        # registries, so resolve the former first and retain the latter for CLI compatibility.
+        catalog = _tools_mod("hermes_cli.mcp_catalog")
+        entry = catalog.get_entry(preset)
+        if entry:
+            manifest_config = catalog._build_server_config(entry, install_dir=None)
+            for key, value in manifest_config.items():
+                server_config.setdefault(key, value)
+        else:
+            try:
+                mc._apply_mcp_preset(
+                    name, preset_name=preset, url=server_config.get("url"), command=server_config.get("command"),
+                    cmd_args=list(server_config.get("args") or []), server_config=server_config)
+            except ValueError:
+                return _err(rid, 4063, f"Unknown MCP catalog entry or preset: {preset}")
     if not server_config.get("url") and not server_config.get("command"):
         return _err(rid, 4063, "config must specify a 'url' (http) or 'command' (stdio), or a valid 'preset'")
     if bearer_token := params.get("bearer_token"):

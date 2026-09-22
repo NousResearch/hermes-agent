@@ -345,6 +345,55 @@ def test_add_requires_transport(hermes_root):
     assert resp["error"]["code"] == 4063
 
 
+@pytest.mark.parametrize(
+    ("catalog_id", "expected"),
+    [
+        ("deepwiki", {"url": "https://mcp.deepwiki.com/mcp"}),
+        ("attio", {"url": "https://mcp.attio.com/mcp", "auth": "oauth"}),
+    ],
+)
+def test_add_catalog_preset_builds_manifest_config_in_requested_profile(hermes_root, catalog_id, expected):
+    """The desktop's bare catalog id must resolve through the catalog, not CLI presets."""
+    root = hermes_root
+    result = _result(
+        _call(
+            "mcp.servers.add",
+            {"profile": "work", "name": catalog_id, "preset": catalog_id},
+        )
+    )
+
+    assert result["server"]["transport"] == "http"
+    work_server = _read_yaml(root / "profiles" / "work" / "config.yaml")["mcp_servers"][catalog_id]
+    assert {key: work_server[key] for key in expected} == expected
+    assert catalog_id not in _read_yaml(root / "config.yaml").get("mcp_servers", {})
+
+
+def test_add_explicit_config_bypasses_unknown_catalog_id(hermes_root):
+    result = _result(
+        _call(
+            "mcp.servers.add",
+            {
+                "profile": "work",
+                "name": "explicit",
+                "preset": "not-a-catalog-entry",
+                "config": {"command": "explicit-bin"},
+            },
+        )
+    )
+
+    assert result["server"]["command"] == "explicit-bin"
+
+
+def test_add_unknown_catalog_id_returns_argument_error(hermes_root):
+    resp = _call(
+        "mcp.servers.add",
+        {"profile": "work", "name": "unknown", "preset": "not-a-catalog-entry"},
+    )
+
+    assert resp["error"]["code"] == 4063
+    assert "Unknown MCP catalog entry or preset" in resp["error"]["message"]
+
+
 def test_default_profile_add_when_profile_omitted(hermes_root):
     root = hermes_root
     _result(

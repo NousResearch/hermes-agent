@@ -230,6 +230,41 @@ Key properties, so operators know what this does and doesn't do:
   the normal Kanban breaker/re-queue path — it does not fall back to an unmanaged
   default route.
 
+### Activation, downgrade, and recovery
+
+Treat managed-board rollout as a binary-version boundary, not as an ordinary additive
+database migration. Before activation, pause dispatch for the pilot board, drain or hold
+every managed task, verify that every dispatcher and worker uses the upgraded runtime,
+take a quick snapshot, then resume only the scoped pilot. Quick snapshots include both
+the board state and the origin profile's `model_routing.db` policy/receipt store. Use
+`routing validate` and `routing explain` before publishing; shadow mode is useful for
+observation but is not an enforcement gate.
+
+Older Hermes binaries do not understand the routing columns and can dispatch a managed
+card as ordinary legacy work. Therefore a rolling mixed-version managed board is
+unsupported. Before downgrade, pause dispatch, drain or hold managed work, remove the
+managed board from old-runtime auto-start, and keep it paused until every dispatcher and
+worker is on one compatible version. Restoring a snapshot does not make an old binary
+routing-aware. Never run old and new dispatchers concurrently against managed work.
+
+Additive board migration is restartable: reopening a partially migrated board completes
+missing columns without deleting existing managed markers. A policy receipt and its
+board reference live in separate SQLite stores, so there is intentionally no claimed
+cross-database atomic restore. After any restore, verify that each managed run's receipt
+exists in the restored origin-profile store before resuming dispatch; a missing match
+stays blocked and is reconciled rather than recreated.
+
+| Incident | Safe response |
+|---|---|
+| No independent maker remains | Hold the review and obtain another approved maker or an explicit human-review disposition; never waive provenance. |
+| Policy is missing or malformed | Keep the managed attempt blocked; validate/publish/activate an approved revision or explicitly convert the task through the operator-governed process. |
+| Actual route and receipt differ | Stop before inference, inspect the receipt and runtime endpoint, and create a new receipted attempt only after ownership is clear. |
+| Worker/runtime is stale | Pause the managed board, drain the stale owner, upgrade every dispatcher/worker, then create a fresh attempt. |
+| Input is too large or unestimated | Supply a positive assembled-input estimate and reserve, or perform parent-approved context preparation; never truncate merely to qualify a route. |
+| Provider is unavailable | Honor scoped cooldown/retry-after evidence; one unknown-health attempt may run only after its receipt is persisted. Do not lower quality. |
+| Emergency revocation | Use `routing revoke`; it blocks new attempts and best-effort checks before later requests without substituting another route. Re-admit only with an explicit audited `readmit`. |
+| Downgrade is required | Pause and drain managed work first, preserve both databases, and do not resume the managed board under an old binary. |
+
 Live activation is a separate operator action. The delegation adapter
 (`delegate_task`'s `routing_role`/`routing_mode`/`routing_requirements`/`routing_policy_id`, see
 [Delegation → Guided model routing](./delegation.md#guided-model-routing-opt-in-per-task))

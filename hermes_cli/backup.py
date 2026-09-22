@@ -1103,6 +1103,7 @@ _QUICK_STATE_FILES = (
     "response_store.db",                # gateway conversation history / tool payloads
     "memory_store.db",                  # holographic memory facts/entities
     "verification_evidence.db",         # agent verification audit trail
+    "model_routing.db",                 # guided-routing policies, receipts, health and outcomes
     "kanban.db",                        # default board (back-compat <root>/kanban.db)
     "kanban/boards",                    # non-default boards (workspaces/ + attachments/ skipped as regenerable)
     # Pairing stores (generic + per-platform JSONs outside state.db)

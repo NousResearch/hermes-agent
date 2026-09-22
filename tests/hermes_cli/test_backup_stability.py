@@ -15,6 +15,7 @@ from hermes_cli.backup import (
     _write_full_zip_backup,
     create_quick_snapshot,
     list_quick_snapshots,
+    restore_quick_snapshot,
 )
 
 
@@ -83,6 +84,32 @@ def test_quick_snapshot_is_published_with_manifest(tmp_path, monkeypatch) -> Non
     )
     assert manifest["id"] == snapshot_id
     assert manifest["files"] == {"config.yaml": 10}
+
+
+def test_quick_snapshot_restores_guided_routing_policy_store(tmp_path) -> None:
+    """Pre-update recovery must preserve policy revisions and run receipts.
+
+    A restored Kanban task can still point at ``model_routing.db``. Dropping
+    that origin-profile store turns a valid managed attempt into a missing
+    receipt/policy failure after update or rollback.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    routing_db = home / "model_routing.db"
+    with sqlite3.connect(routing_db) as conn:
+        conn.execute("CREATE TABLE policy_marker (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO policy_marker VALUES ('approved-revision')")
+
+    snapshot_id = create_quick_snapshot(hermes_home=home)
+    assert snapshot_id is not None
+    with sqlite3.connect(routing_db) as conn:
+        conn.execute("UPDATE policy_marker SET value='lost-after-update'")
+
+    assert restore_quick_snapshot(snapshot_id, hermes_home=home)
+    with sqlite3.connect(routing_db) as conn:
+        value = conn.execute("SELECT value FROM policy_marker").fetchone()[0]
+    assert value == "approved-revision"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")

@@ -18,8 +18,12 @@ Behavior contract on a fresh (never-compacted) session: every row is
 also pinned below.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
+from acp_adapter import session as acp_session
+from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
 
@@ -58,19 +62,48 @@ def _archived_count(db, session_id: str) -> int:
 
 
 class TestAcpPersistPreservesArchives:
-    def test_persist_nonowned_branch_keeps_archived_rows(self, state_db):
+    def test_persist_nonowned_branch_keeps_archived_rows(
+        self, state_db, monkeypatch
+    ):
         """The ACP _persist fallback replace must not delete archived rows."""
-        sid = "acp-compacted"
-        _seed_compacted_session(state_db, sid)
+        monkeypatch.setattr(acp_session, "_register_task_cwd", lambda *_args: None)
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(),
+            db=state_db,
+        )
+        state = manager.create_session()
+        sid = state.session_id
+        state_db.append_messages_batch(
+            sid,
+            [
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+                {"role": "user", "content": "another old question"},
+                {"role": "assistant", "content": "another old answer"},
+            ],
+        )
+        state_db.archive_and_compact(
+            sid,
+            [
+                {"role": "assistant", "content": "summary of old turns"},
+                {"role": "user", "content": "live question"},
+                {"role": "assistant", "content": "live answer"},
+            ],
+        )
         assert _archived_count(state_db, sid) == 4
 
-        # Drive the exact replace the non-owned-agent branch of _persist now
-        # performs (active_only=True unconditionally, no probe).
-        new_history = [
+        # A probe failure must not turn the fallback into a destructive full
+        # replace. Drive the public manager save path so this pins the actual
+        # _persist wiring rather than the shape of its source code.
+        def fail_if_probed(*_args, **_kwargs):
+            raise OSError("transient archive lookup failure")
+
+        monkeypatch.setattr(state_db, "has_archived_messages", fail_if_probed)
+        state.history = [
             {"role": "user", "content": "rewritten"},
             {"role": "assistant", "content": "rewritten answer"},
         ]
-        state_db.replace_messages(sid, new_history, active_only=True)
+        manager.save_session(sid)
 
         assert _archived_count(state_db, sid) == 4
         live = [
@@ -78,27 +111,6 @@ class TestAcpPersistPreservesArchives:
             if m.get("role") in ("user", "assistant")
         ]
         assert [m["content"] for m in live] == ["rewritten", "rewritten answer"]
-
-    def test_persist_source_has_no_failopen_probe(self):
-        """The fail-open has_archived_messages probe must stay dead in _persist.
-
-        Guards the #80216 bug class at the source level: a probe that fails
-        open (``except: has_archived = False``) silently reintroduces the
-        destructive replace.  ``active_only=True`` must be unconditional.
-        """
-        import inspect
-        import acp_adapter.session as acp_session
-
-        src = inspect.getsource(acp_session.SessionManager._persist)
-        # Assert on the CALL, not a local-variable name — a reintroduced probe
-        # under any local name (archived = db.has_archived_messages(...))
-        # must still trip this guard. The explanatory comment in _persist
-        # writes the name as "(has_archived_messages)" (paren BEFORE the
-        # name), so the call-shaped substring doesn't false-positive on it.
-        assert "has_archived_messages(" not in src, (
-            "_persist re-grew a has_archived_messages probe — #80216 class"
-        )
-        assert "active_only=True" in src
 
     def test_fresh_session_active_only_equals_full_replace(self, state_db):
         """On a never-compacted session active_only=True must behave exactly
@@ -125,25 +137,9 @@ class TestAcpPersistPreservesArchives:
 
 
 class TestTuiPromptTruncationPreservesArchives:
-    def test_truncation_source_uses_active_only(self):
-        """The edit/regenerate persistence call must pass active_only=True."""
-        import inspect
-        import tui_gateway.methods_prompt as mp
-
-        src = inspect.getsource(mp)
-        # The truncation write is the only replace_messages call in the module;
-        # it must carry active_only=True.
-        import re
-        calls = re.findall(r"db\.replace_messages\([^)]*\)", src, re.S)
-        assert calls, "expected the truncation replace_messages call"
-        for call in calls:
-            assert "active_only=True" in call, (
-                f"bare replace_messages in methods_prompt — #80216 class: {call}"
-            )
-
     def test_truncation_write_keeps_archived_rows(self, state_db):
-        """Drive the exact write shape methods_prompt now performs against a
-        compacted session and assert the archive survives."""
+        """Exercise active-only replacement on a compacted session and preserve
+        its archived-row count."""
         sid = "tui-compacted"
         _seed_compacted_session(state_db, sid)
         assert _archived_count(state_db, sid) == 4

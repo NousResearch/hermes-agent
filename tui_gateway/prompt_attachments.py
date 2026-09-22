@@ -92,13 +92,27 @@ def _session_images_dir(session: dict) -> Path:
     return _session_home_dir(session, "images")
 
 
+def _unique_upload_token() -> str:
+    """Per-file randomness, because the rest of the name is not unique (#75761).
+
+    The images dir is profile-wide by design (see ``_session_home_dir``), but the
+    filename was only a one-second timestamp plus a PER-SESSION ``image_counter``.
+    Two sessions under one ``profile_home`` queueing their first image in the same
+    second chose the same path, and ``write_bytes`` destroyed the first image with
+    no exception and no log line.
+    """
+    import uuid  # bodies are rebound onto server globals: import inside functions only
+
+    return uuid.uuid4().hex[:8]
+
+
 def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
     """Write image bytes into the session images dir and queue them for the next submit."""
     session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
     img_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}_{_unique_upload_token()}{ext}"
     try:
         img_path.write_bytes(img_bytes)
     except Exception:

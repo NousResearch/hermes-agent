@@ -717,8 +717,12 @@ def _(rid, params: dict) -> dict:
     session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
     img_dir.mkdir(parents=True, exist_ok=True)
+    # Same cross-session collision as the upload path, and the same fix: this
+    # handler builds its own name rather than calling _queue_attached_image.
     img_path = (
-        img_dir / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png")
+        img_dir
+        / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}"
+          f"_{_unique_upload_token()}.png")
     # Save-first (CLI keybinding parity): more robust than a has_image() precheck.
     if not save_clipboard_image(img_path):
         session["image_counter"] = max(0, session["image_counter"] - 1)

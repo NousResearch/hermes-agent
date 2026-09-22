@@ -94,10 +94,10 @@ def implicit_multiplex_blocker() -> Optional[str]:
     """Why THIS process must not multiplex right now, or None when it may.
 
     Mirrors what makes ``hermes gateway migrate --multiplex`` refuse or leave a per-profile gateway
-    in place: hosts whose per-profile gateways the preflight cannot see (s6 slots) stay standalone;
-    a secondary that still runs its own gateway (live process or installed service) or a preflight
-    blocker (duplicate bot credential, port binder without a ``/p/<profile>/`` ingress) keeps this
-    gateway standalone.
+    in place, except that an s6 container is already reconciled by its boot hook: named slots are
+    registered down and the root gateway must multiplex them. A secondary that still runs its own
+    gateway (live process or installed service) or a preflight blocker (duplicate bot credential,
+    port binder without a ``/p/<profile>/`` ingress) keeps this gateway standalone.
 
     Every blocker here is a TRANSIENT, fixable condition, which is why this function is now also
     the whole answer for an explicit ``gateway.multiplex_profiles: false`` (see
@@ -114,9 +114,13 @@ def implicit_multiplex_blocker() -> Optional[str]:
     # service-manager probes below.) Create a second profile and restart to start serving it.
     if len(profiles_to_serve(multiplex=True)) < 2:
         return SINGLE_PROFILE_REASON
+    from hermes_cli import gateway as gw
     from hermes_cli.gateway_migrate import MIGRATE_COMMAND, _host_supports_migration, build_migration_plan
     host_reason = _host_supports_migration()
-    if host_reason:
+    # The migration CLI cannot modify s6 slots, but container_boot has already reconciled them
+    # into a single root gateway. Treating that command limitation as a boot blocker leaves every
+    # named profile offline when the configuration uses the implicit multiplex default.
+    if host_reason and not gw._running_under_s6():
         return host_reason
     plan = build_migration_plan()
     if plan.standalone_secondaries:

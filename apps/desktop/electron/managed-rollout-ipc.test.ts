@@ -12,7 +12,7 @@ function adapter(): { value: ManagedRolloutIpcAdapter; calls: string[] } {
   return {
     calls,
     value: {
-      capabilities: async () => ({ protocol: 1, available: true, maxConcurrency: 1, maxInstallations: 0 }),
+      capabilities: async () => ({ protocol: 1, available: true, reason: null, maxConcurrency: 1, maxInstallations: 0 }),
       activeRevision: async () => 4,
       get: async id => ({ id }),
       command: async command => {
@@ -38,14 +38,47 @@ test('command accepts only exact typed commands and never forwards extra rendere
   const fixture = adapter()
   const handler = createManagedRolloutIpcHandler(fixture.value, () => true)
 
-  const accepted = await handler({ sender: {} }, 'command', { id: ID, revision: 4, requestId: REQUEST, kind: 'pause' })
-  const forged = await handler({ sender: {} }, 'command', { id: ID, revision: 4, requestId: REQUEST, kind: 'pause', targetSha: 'a'.repeat(40) })
-  const missingInstall = await handler({ sender: {} }, 'command', { id: ID, revision: 4, requestId: REQUEST, kind: 'exclude' })
-
+  const accepted = await handler(
+    { sender: {} },
+    'command',
+    { id: ID, expectedRevision: 4, requestId: REQUEST, action: 'pause', installId: null, reason: null, promotionPolicy: null }
+  )
+  const forged = await handler(
+    { sender: {} },
+    'command',
+    { id: ID, expectedRevision: 4, requestId: REQUEST, action: 'pause', installId: null, reason: null, promotionPolicy: null, targetSha: 'a'.repeat(40) }
+  )
+  const acceptedExclude = await handler(
+    { sender: {} },
+    'command',
+    {
+      id: ID,
+      expectedRevision: 4,
+      requestId: REQUEST,
+      action: 'exclude',
+      installId: 'a'.repeat(32),
+      reason: 'operator-request',
+      promotionPolicy: null
+    }
+  )
+  const acceptedPolicy = await handler(
+    { sender: {} },
+    'command',
+    {
+      id: ID,
+      expectedRevision: 4,
+      requestId: REQUEST,
+      action: 'set-policy',
+      installId: null,
+      reason: null,
+      promotionPolicy: 'manual'
+    }
+  )
   assert.equal(accepted.ok, true)
+  assert.equal(acceptedExclude.ok, true)
+  assert.equal(acceptedPolicy.ok, true)
   assert.equal(forged.ok, false)
-  assert.equal(missingInstall.ok, false)
-  assert.deepEqual(fixture.calls, ['pause'])
+  assert.deepEqual(fixture.calls, ['pause', 'exclude', 'set-policy'])
 })
 
 test('pages and snapshots are bounded while revision reads carry no arbitrary payload', async () => {
@@ -83,7 +116,16 @@ test('new provider routes are explicit and fail closed when the provider method 
 test('oversized requests fail before an adapter can mutate state', async () => {
   const fixture = adapter()
   const handler = createManagedRolloutIpcHandler(fixture.value, () => true)
-  const payload = { id: ID, revision: 4, requestId: REQUEST, kind: 'pause', padding: 'x'.repeat(256 * 1024) }
+  const payload = {
+    id: ID,
+    expectedRevision: 4,
+    requestId: REQUEST,
+    action: 'pause',
+    installId: null,
+    reason: null,
+    promotionPolicy: null,
+    padding: 'x'.repeat(256 * 1024)
+  }
 
   const result = await handler({ sender: {} }, 'command', payload)
 

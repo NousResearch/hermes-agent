@@ -20,7 +20,12 @@ const snapshot = (revision: number) => ({ revision, rolloutId: 'r1', phase: 'run
 describe('managed rollout renderer store', () => {
   it('initializes only through the modern managed-rollouts endpoint', async () => {
     const read = vi.fn().mockResolvedValue({ revision: 1, snapshot: snapshot(1) })
-    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      activeRevision: vi.fn().mockResolvedValue(1),
+      read,
+      command: vi.fn()
+    })
 
     await pollManagedRollouts()
 
@@ -32,7 +37,13 @@ describe('managed rollout renderer store', () => {
     const read = vi.fn()
       .mockResolvedValueOnce({ revision: 3, snapshot: snapshot(3) })
       .mockResolvedValueOnce({ revision: 2, snapshot: snapshot(2) })
-    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+    const activeRevision = vi.fn().mockResolvedValueOnce(3).mockResolvedValueOnce(2)
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      activeRevision,
+      read,
+      command: vi.fn()
+    })
 
     await pollManagedRollouts()
     await pollManagedRollouts()
@@ -41,11 +52,15 @@ describe('managed rollout renderer store', () => {
     expect($managedRollouts.get().revision).toBe(3)
   })
 
-  it('reconciles a terminal null response without clearing the last snapshot', async () => {
-    const read = vi.fn()
-      .mockResolvedValueOnce({ revision: 4, snapshot: snapshot(4) })
-      .mockResolvedValueOnce({ revision: 4, snapshot: null })
-    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+  it('uses activeRevision to avoid clearing the last snapshot on unchanged polls', async () => {
+    const read = vi.fn().mockResolvedValue({ revision: 4, snapshot: snapshot(4) })
+    const activeRevision = vi.fn().mockResolvedValue(4)
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      activeRevision,
+      read,
+      command: vi.fn()
+    })
 
     await pollManagedRollouts()
     await pollManagedRollouts()
@@ -58,7 +73,12 @@ describe('managed rollout renderer store', () => {
     const pending = new Promise(resolvePromise => { resolve = resolvePromise })
     const command = vi.fn().mockReturnValue(pending)
     const read = vi.fn().mockResolvedValue({ revision: 1, snapshot: snapshot(1) })
-    _setManagedRolloutsBridgeForTests({ read, command })
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      activeRevision: vi.fn().mockResolvedValue(1),
+      read,
+      command
+    })
 
     const first = sendManagedRolloutCommand({ requestId: 'r1', action: 'pause' })
     const second = sendManagedRolloutCommand({ requestId: 'r1', action: 'pause' })
@@ -80,7 +100,12 @@ describe('managed rollout renderer store', () => {
       available: false,
       reason: 'trusted-assurance-provider-unavailable'
     })
-    _setManagedRolloutsBridgeForTests({ capabilities, command })
+    _setManagedRolloutsBridgeForTests({
+      capabilities,
+      activeRevision: vi.fn().mockResolvedValue(null),
+      read: vi.fn(),
+      command
+    })
 
     await pollManagedRollouts()
 
@@ -95,9 +120,14 @@ describe('managed rollout renderer store', () => {
   it('rechecks an unavailable capability on a later poll for reconnect recovery', async () => {
     const capabilities = vi.fn()
       .mockResolvedValueOnce({ available: false, reason: 'temporarily-unavailable' })
-      .mockResolvedValueOnce({ available: true })
+      .mockResolvedValueOnce({ available: true, reason: null })
     const read = vi.fn().mockResolvedValue({ revision: 1, snapshot: snapshot(1) })
-    _setManagedRolloutsBridgeForTests({ capabilities, read, command: vi.fn() })
+    _setManagedRolloutsBridgeForTests({
+      capabilities,
+      activeRevision: vi.fn().mockResolvedValue(1),
+      read,
+      command: vi.fn()
+    })
 
     await pollManagedRollouts()
     await pollManagedRollouts()
@@ -110,7 +140,12 @@ describe('managed rollout renderer store', () => {
   it('ignores a late response after polling is stopped', async () => {
     let resolve!: (value: unknown) => void
     const read = vi.fn().mockReturnValue(new Promise(value => { resolve = value }))
-    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      activeRevision: vi.fn().mockResolvedValue(1),
+      read,
+      command: vi.fn()
+    })
 
     const pending = pollManagedRollouts()
     stopManagedRolloutPolling()
@@ -122,7 +157,12 @@ describe('managed rollout renderer store', () => {
 
   it('requires a stable request id before crossing the command bridge', async () => {
     const command = vi.fn()
-    _setManagedRolloutsBridgeForTests({ command })
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      activeRevision: vi.fn().mockResolvedValue(null),
+      read: vi.fn(),
+      command
+    })
 
     await expect(sendManagedRolloutCommand({ action: 'pause' })).rejects.toThrow('request-id-required')
     expect(command).not.toHaveBeenCalled()
@@ -130,7 +170,12 @@ describe('managed rollout renderer store', () => {
 
   it('rejects a different in-flight action instead of coalescing it', async () => {
     const command = vi.fn().mockReturnValue(new Promise(() => undefined))
-    _setManagedRolloutsBridgeForTests({ read: vi.fn(), command })
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      activeRevision: vi.fn().mockResolvedValue(null),
+      read: vi.fn(),
+      command
+    })
 
     void sendManagedRolloutCommand({ requestId: 'r1', action: 'pause' })
     await expect(sendManagedRolloutCommand({ requestId: 'r2', action: 'stop' })).rejects.toThrow('command-conflict')

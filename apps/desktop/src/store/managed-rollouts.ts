@@ -20,9 +20,10 @@ export interface RolloutResponse {
 }
 
 export interface ManagedRolloutsBridge {
-  capabilities?: () => Promise<{ available: boolean; reason?: string }>
-  read?: (sinceRevision: number | null) => Promise<RolloutResponse>
-  command?: (payload: Record<string, unknown>) => Promise<unknown>
+  capabilities: () => Promise<{ available: boolean; reason: string | null }>
+  activeRevision: () => Promise<number | null>
+  read: (sinceRevision: number | null) => Promise<RolloutResponse>
+  command: (payload: Record<string, unknown>) => Promise<unknown>
 }
 
 const initial: ManagedRolloutsState = {
@@ -92,29 +93,22 @@ function validResponse(value: unknown): value is RolloutResponse {
 }
 
 async function capabilityAvailable(requestBridge: ManagedRolloutsBridge): Promise<boolean> {
-  if (capabilityState === 'available') return Boolean(requestBridge.read)
-  if (requestBridge.capabilities) {
-    try {
-      const result = await requestBridge.capabilities()
-      if (!result.available) {
-        capabilityState = 'unsupported'
-        setUnsupported(result.reason ?? 'managed-rollouts-unavailable')
-        return false
-      }
-      capabilityState = 'available'
-    } catch (error: unknown) {
+  if (capabilityState === 'available') return true
+
+  try {
+    const result = await requestBridge.capabilities()
+    if (!result || result.available !== true) {
       capabilityState = 'unsupported'
-      setUnsupported(error instanceof Error ? error.message : String(error))
+      setUnsupported(result?.reason ?? 'managed-rollouts-unavailable')
       return false
     }
-  } else {
     capabilityState = 'available'
-  }
-  if (!requestBridge.read) {
-    setUnsupported('managed-rollouts-read-unavailable')
+    return true
+  } catch (error: unknown) {
+    capabilityState = 'unsupported'
+    setUnsupported(error instanceof Error ? error.message : String(error))
     return false
   }
-  return true
 }
 
 export async function pollManagedRollouts(): Promise<void> {
@@ -134,26 +128,43 @@ export async function pollManagedRollouts(): Promise<void> {
       error: null
     })
     try {
-      const response = await requestBridge.read!(previous.revision)
-      if (generation !== pollGeneration) return
-      if (!validResponse(response)) throw new Error('managed-rollouts-invalid-response')
-
-      const current = $managedRollouts.get()
-      if (current.revision !== null && response.revision < current.revision) {
-        $managedRollouts.set({ ...current, status: 'ready', error: null })
-        schedulePoll(pollingInterval, generation)
-        return
+      const activeRevision = await requestBridge.activeRevision()
+      if (activeRevision !== null && (!Number.isSafeInteger(activeRevision) || activeRevision < 0)) {
+        throw new Error('managed-rollouts-invalid-active-revision')
       }
-      if (response.revision === current.revision && response.snapshot === null) {
-        // A terminal null is an acknowledgement for this revision, not proof
-        // that the last settled snapshot never existed.
+      const current = $managedRollouts.get()
+      if (activeRevision === current.revision && current.revision !== null) {
         $managedRollouts.set({ ...current, status: 'ready', error: null })
         retryDelay = 1_000
         schedulePoll(pollingInterval, generation)
         return
       }
-      if (response.revision === current.revision && response.snapshot !== null && current.snapshot !== null) {
+      if (activeRevision === null && current.revision === null && current.snapshot === null) {
         $managedRollouts.set({ ...current, status: 'ready', error: null })
+        retryDelay = 1_000
+        schedulePoll(pollingInterval, generation)
+        return
+      }
+      const response = await requestBridge.read(current.revision)
+      if (generation !== pollGeneration) return
+      if (!validResponse(response)) throw new Error('managed-rollouts-invalid-response')
+
+      const currentAfterRead = $managedRollouts.get()
+      if (currentAfterRead.revision !== null && response.revision < currentAfterRead.revision) {
+        $managedRollouts.set({ ...currentAfterRead, status: 'ready', error: null })
+        schedulePoll(pollingInterval, generation)
+        return
+      }
+      if (response.revision === currentAfterRead.revision && response.snapshot === null) {
+        // A terminal null is an acknowledgement for this revision, not proof
+        // that the last settled snapshot never existed.
+        $managedRollouts.set({ ...currentAfterRead, status: 'ready', error: null })
+        retryDelay = 1_000
+        schedulePoll(pollingInterval, generation)
+        return
+      }
+      if (response.revision === currentAfterRead.revision && response.snapshot !== null && currentAfterRead.snapshot !== null) {
+        $managedRollouts.set({ ...currentAfterRead, status: 'ready', error: null })
         retryDelay = 1_000
         schedulePoll(pollingInterval, generation)
         return

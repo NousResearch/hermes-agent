@@ -30,7 +30,7 @@ function adapterFor(snapshot: unknown, events: unknown[] = []): {
 } {
   const calls = { history: [] as number[], events: [] as number[], commands: [] as string[] }
   const adapter: ManagedRolloutIpcAdapter = {
-    capabilities: async () => ({ protocol: 1, available: true, maxConcurrency: 8, maxInstallations: 500 }),
+    capabilities: async () => ({ protocol: 1, available: true, reason: null, maxConcurrency: 4, maxInstallations: 500 }),
     activeRevision: async () => 7,
     get: async () => snapshot,
     command: async command => {
@@ -82,7 +82,15 @@ test('unchanged revision polling and terminal command do not require a full snap
   const command = await handler(
     { sender: {} },
     'command',
-    { id: ID, revision: 9, requestId: REQUEST, kind: 'stop' }
+    {
+      id: ID,
+      expectedRevision: 9,
+      requestId: REQUEST,
+      action: 'stop',
+      installId: null,
+      reason: null,
+      promotionPolicy: null
+    }
   )
 
   assert.equal(revisionCalls, 2)
@@ -118,7 +126,15 @@ test('an oversized terminal snapshot fails closed without losing the command pat
   const command = await handler(
     { sender: {} },
     'command',
-    { id: ID, revision: 11, requestId: REQUEST, kind: 'stop' }
+    {
+      id: ID,
+      expectedRevision: 11,
+      requestId: REQUEST,
+      action: 'stop',
+      installId: null,
+      reason: null,
+      promotionPolicy: null
+    }
   )
 
   assert.deepEqual(snapshot, {

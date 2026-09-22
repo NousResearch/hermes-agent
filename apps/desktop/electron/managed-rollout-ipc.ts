@@ -5,6 +5,12 @@
  * BrowserWindow or a general-purpose bridge.
  */
 
+import {
+  validateRolloutCommand,
+  type PromotionPolicy,
+  type RolloutAction
+} from '../src/lib/managed-rollout-contract'
+
 const MAX_REQUEST_BYTES = 256 * 1024
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
 const MAX_PAGE_SIZE = 50
@@ -25,7 +31,7 @@ export type ManagedRolloutIpcMethod =
 export interface ManagedRolloutIpcCapabilities {
   protocol: 1
   available: boolean
-  reason?: string
+  reason: string | null
   maxConcurrency: number
   maxInstallations: number
 }
@@ -34,8 +40,12 @@ export interface ManagedRolloutIpcCommand {
   id: string
   revision: number
   requestId: string
-  kind: 'pause' | 'resume' | 'stop' | 'promote' | 'exclude'
+  kind: RolloutAction
   installId?: string
+  action?: RolloutAction
+  expectedRevision?: number
+  reason?: string | null
+  promotionPolicy?: PromotionPolicy | null
 }
 
 export interface ManagedRolloutIpcAdapter {
@@ -46,7 +56,7 @@ export interface ManagedRolloutIpcAdapter {
   start?: (request: { token: string; requestId: string }) => Promise<unknown>
   activeRevision: () => Promise<number | null>
   get: (id: string) => Promise<unknown | null>
-  command: (command: ManagedRolloutIpcCommand) => Promise<{ ok: boolean; id: string; revision: number; code?: string }>
+  command: (command: ManagedRolloutIpcCommand) => Promise<unknown>
   history: (page: { cursor?: string; limit: number }) => Promise<unknown>
   events: (page: { id: string; cursor?: string; limit: number }) => Promise<unknown>
 }
@@ -79,9 +89,15 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
   return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index])
 }
 
+const INSTALL_ID_RE = /^[0-9a-f]{32}$/
+
 function identifier(value: unknown): string | null {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : ''
   return UUID_RE.test(normalized) ? normalized : null
+}
+
+function installationIdentifier(value: unknown): string | null {
+  return typeof value === 'string' && INSTALL_ID_RE.test(value) ? value : null
 }
 
 function page(value: unknown, withId: boolean): { id?: string; cursor?: string; limit: number } | null {
@@ -101,17 +117,26 @@ function page(value: unknown, withId: boolean): { id?: string; cursor?: string; 
 
 function command(value: unknown): ManagedRolloutIpcCommand | null {
   if (!isObject(value)) return null
-  const base = ['id', 'revision', 'requestId', 'kind']
-  const kind = value.kind
-  const requiresInstall = kind === 'exclude'
-  if (!exactKeys(value, requiresInstall ? [...base, 'installId'] : base)) return null
-  const id = identifier(value.id)
-  const requestId = identifier(value.requestId)
-  if (!id || !requestId || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) return null
-  if (!['pause', 'resume', 'stop', 'promote', 'exclude'].includes(String(kind))) return null
-  const installId = requiresInstall ? identifier(value.installId) : undefined
-  if (requiresInstall && !installId) return null
-  return { id, revision: value.revision as number, requestId, kind: kind as ManagedRolloutIpcCommand['kind'], ...(installId ? { installId } : {}) }
+
+  try {
+    const parsed = validateRolloutCommand(value)
+    if (!identifier(parsed.id) || !identifier(parsed.requestId)) return null
+    const installId = parsed.installId === null ? undefined : installationIdentifier(parsed.installId)
+    if (parsed.installId !== null && !installId) return null
+    return {
+      id: parsed.id,
+      revision: parsed.expectedRevision,
+      requestId: parsed.requestId,
+      kind: parsed.action,
+      ...(installId ? { installId } : {}),
+      action: parsed.action,
+      expectedRevision: parsed.expectedRevision,
+      reason: parsed.reason,
+      promotionPolicy: parsed.promotionPolicy
+    }
+  } catch {
+    return null
+  }
 }
 
 function exactString(value: unknown, maxLength: number): value is string {

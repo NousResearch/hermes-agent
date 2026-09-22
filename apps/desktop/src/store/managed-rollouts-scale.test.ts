@@ -30,7 +30,13 @@ describe('managed rollout store scale fixture', () => {
     const first = response(7)
     const encodedBytes = new TextEncoder().encode(JSON.stringify(first)).byteLength
     const read = vi.fn().mockResolvedValue(first)
-    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+    const activeRevision = vi.fn().mockResolvedValue(7)
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      activeRevision,
+      read,
+      command: vi.fn()
+    })
 
     await pollManagedRollouts()
 
@@ -41,21 +47,22 @@ describe('managed rollout store scale fixture', () => {
   })
 
   it('bounds unchanged-revision traffic and never drops the terminal snapshot', async () => {
-    const read = vi
-      .fn()
-      .mockResolvedValueOnce(response(7))
-      .mockResolvedValueOnce(response(7, 'completed', false))
-      .mockResolvedValueOnce(response(7, 'completed', false))
-    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+    const read = vi.fn().mockResolvedValueOnce(response(7))
+    const activeRevision = vi.fn().mockResolvedValue(7)
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      activeRevision,
+      read,
+      command: vi.fn()
+    })
 
     await pollManagedRollouts()
     await pollManagedRollouts()
     await pollManagedRollouts()
 
-    expect(read).toHaveBeenCalledTimes(3)
+    expect(read).toHaveBeenCalledTimes(1)
     expect(read).toHaveBeenNthCalledWith(1, null)
-    expect(read).toHaveBeenNthCalledWith(2, 7)
-    expect(read).toHaveBeenNthCalledWith(3, 7)
+    expect(activeRevision).toHaveBeenCalledTimes(3)
     expect($managedRollouts.get()).toMatchObject({ status: 'ready', revision: 7 })
     expect($managedRollouts.get().snapshot?.phase).toBe('ready')
   })

@@ -1036,14 +1036,20 @@ export interface DesktopManagedRolloutsBridge {
   capabilities: () => Promise<{
     protocol: 1
     available: boolean
-    reason?: string
+    reason: string | null
     maxConcurrency: number
     maxInstallations: number
   }>
-  // These members are optional while the main-process provider is unavailable.
-  // The renderer must not fall back to the older one-install update surface.
-  read?: (sinceRevision: number | null) => Promise<DesktopManagedRolloutReadResponse>
-  command?: (payload: Record<string, unknown>) => Promise<unknown>
+  inventory: () => Promise<unknown>
+  resolveTarget: (payload: { connectionIds: string[]; inventoryRevision: string; retryOf: string | null }) => Promise<unknown>
+  preflight: (draft: unknown) => Promise<unknown>
+  start: (payload: { token: string; requestId: string }) => Promise<unknown>
+  activeRevision: () => Promise<number | null>
+  read: (sinceRevision: number | null) => Promise<DesktopManagedRolloutReadResponse>
+  get: (id: string) => Promise<unknown | null>
+  command: (payload: Record<string, unknown>) => Promise<unknown>
+  history: (page: { cursor?: string; limit: number }) => Promise<unknown>
+  events: (page: { id: string; cursor?: string; limit: number }) => Promise<unknown>
 }
 
 export interface DesktopConnectionsRegistry {

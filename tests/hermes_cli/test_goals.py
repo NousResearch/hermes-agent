@@ -235,6 +235,33 @@ class TestJudgeParseFailureAutoPause:
             assert "goal_judge" in d3["message"]
             assert "config.yaml" in d3["message"]
 
+    def test_pause_hint_names_the_configured_judge_route(self, hermes_home):
+        """The pause hint must echo the judge route ACTUALLY configured.
+
+        Printing a hardcoded example ("provider: deepseek") sends the user to fix a setting
+        they never had; the pause means the judge was unreachable, not misrouted.
+        """
+        import yaml
+
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES
+
+        cfg = hermes_home / "config.yaml"
+        cfg.write_text(yaml.safe_dump({"auxiliary": {"goal_judge": {"provider": "acme", "model": "acme-judge-1"}}}))
+
+        mgr = GoalManager(session_id="hint-route-sid", default_max_turns=20)
+        mgr.set("do a thing")
+
+        decision: dict = {}
+        with patch.object(goals, "judge_goal", return_value=("continue", "api down", False, None, True)):
+            for _ in range(DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES):
+                decision = mgr.evaluate_after_turn("step")
+
+        assert decision["status"] == "paused"
+        assert "provider: acme" in decision["message"]
+        assert "model: acme-judge-1" in decision["message"]
+        assert "deepseek" not in decision["message"]
+
 
 
 

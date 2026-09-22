@@ -740,6 +740,26 @@ def _goal_judge_setting(key: str, default, cast):
     return default
 
 
+def _configured_judge_route() -> Tuple[str, str]:
+    """The judge's ACTUAL configured provider/model, for the pause hint.
+
+    A hint printing invented example values ("provider: deepseek") sends the user to fix a
+    setting they never had — the pause is about the judge being unreachable, not about the
+    route being wrong. Falls back to placeholders only when the keys are genuinely unset.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        judge = (load_config().get("auxiliary") or {}).get("goal_judge") or {}
+        provider = str(judge.get("provider") or "").strip()
+        model = str(judge.get("model") or "").strip()
+        if provider and model:
+            return provider, model
+    except Exception:
+        pass
+    return "<your-provider>", "<your-model>"
+
+
 def _goal_judge_max_tokens() -> int:
     return _goal_judge_setting("max_tokens", DEFAULT_JUDGE_MAX_TOKENS, int)
 
@@ -1508,19 +1528,20 @@ class GoalManager:
         # Persistent judge failures (API unreachable / unparseable output) auto-pause and point at the
         # goal_judge config so a broken judge can't burn the whole turn budget.
         n_tx, n_parse = state.consecutive_transport_failures, state.consecutive_parse_failures
+        judge_provider, judge_model = _configured_judge_route()
         if n_tx >= DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES:
             return self._pause_decision(
                 f"judge API unreachable {n_tx} turns in a row (check auxiliary.goal_judge provider/key in config.yaml)",
                 "continue", reason,
                 f"⏸ Goal paused — judge API returned errors ({n_tx} turns). Check the goal_judge provider/key in "
-                + _JUDGE_CONFIG_HINT.format(provider="deepseek", model="deepseek-flash"),
+                + _JUDGE_CONFIG_HINT.format(provider=judge_provider, model=judge_model),
             )
         if n_parse >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
             return self._pause_decision(
                 f"judge model returned unparseable output {n_parse} turns in a row", "continue", reason,
-                f"⏸ Goal paused — the judge model ({n_parse} turns) isn't returning the required JSON verdict. "
-                "Route the judge to a stricter model in "
-                + _JUDGE_CONFIG_HINT.format(provider="openrouter", model="google/gemini-3-flash-preview"),
+                f"⏸ Goal paused — the judge model ({judge_model}) isn't returning the required JSON verdict "
+                f"({n_parse} turns). Route the judge to a stricter model in "
+                + _JUDGE_CONFIG_HINT.format(provider=judge_provider, model=judge_model),
             )
 
         if state.turns_used >= state.max_turns:

@@ -856,6 +856,7 @@ _TASK_RUN_COLUMNS = (
     # terminal-worker reaper; NULL = legacy row, never signalled).
     ("worker_started_at", "worker_started_at INTEGER"),
     ("spawn_state", "spawn_state TEXT"),
+    ("execution_scope", "execution_scope TEXT"),
 )
 
 
@@ -1033,7 +1034,7 @@ _REBUILD_SPECS = {
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, worker_started_at INTEGER, spawn_state TEXT, max_runtime_seconds INTEGER,"
+        " worker_pid INTEGER, worker_started_at INTEGER, spawn_state TEXT, execution_scope TEXT, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",

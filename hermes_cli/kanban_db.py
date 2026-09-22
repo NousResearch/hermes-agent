@@ -1010,6 +1010,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     -- Authoritative launch ownership, independent of prunable audit events.
     -- NULL = legacy/unattempted; attempted | uncertain | receipted | returned | settled.
     spawn_state         TEXT,
+    execution_scope     TEXT,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,

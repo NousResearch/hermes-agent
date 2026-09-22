@@ -486,6 +486,10 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
     pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
     if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
         return
+    from hermes_cli import kanban_execution_scope as scopes
+    if scopes.read(conn, row['id']) is not None and not scopes.settled(conn, row['id']):
+        scopes.request_stop(conn, row['id'])
+        return
     if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
         return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
     alive = _worker_alive(pid, fingerprint)
@@ -497,7 +501,8 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
             return  # still alive: try again next tick
     with _kb.write_txn(conn):
         from hermes_cli.kanban_spawn_ownership import cleanup_verified
-        cleanup_verified(conn, row['task_id'], row['id'], pid, fingerprint)
+        if not cleanup_verified(conn, row['task_id'], row['id'], pid, fingerprint):
+            return
         conn.execute(
             "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
             "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
@@ -1915,7 +1920,12 @@ def _dispatch_lane_task(
     from hermes_cli import kanban_spawn_ownership as spawn_ownership
     spawn_ownership.begin(conn, claimed)
     try:
-        pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
+        if spawn_fn is None and sys.platform == 'linux':
+            from hermes_cli import kanban_execution_scope as scopes
+            scope = scopes.prepare(conn, claimed)
+            pid = _default_spawn(claimed, str(workspace), board=board, execution_scope=scope)
+        else:
+            pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid), expected_run_id=claimed.current_run_id,
                             expected_claim_lock=claimed.claim_lock)
@@ -2542,7 +2552,7 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     ).argv
 
 
-def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
+def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None, execution_scope=None) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
     Returns the child's PID so the dispatcher can detect crashes before the
@@ -2655,6 +2665,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    if execution_scope is not None:
+        cmd = [sys.executable, str(Path(__file__).with_name('kanban_execution_supervisor.py')),
+               env['HERMES_KANBAN_DB'], task.id, str(task.current_run_id), task.claim_lock, execution_scope['id'], *cmd]
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

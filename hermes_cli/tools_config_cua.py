@@ -256,6 +256,15 @@ def _report_repair_or_upgrade(ok: bool, *, repair_existing: bool, binary, before
     return ok
 
 
+def _invalidate_tool_availability_caches() -> None:
+    """Make a newly installed cua-driver visible to later sessions in this process."""
+    from model_tools import _clear_tool_defs_cache
+    from tools.registry import invalidate_check_fn_cache
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+
 def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = False,
                        show_installer_progress: bool = True) -> bool:
     """Install or refresh the cua-driver binary used by Computer Use.
@@ -288,7 +297,10 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
         if not shutil.which(fetch_tool):
             return _fail(f"    {fetch_tool} not found — install manually:",
                          f"      {_CUA_MANUAL_README}")
-        return _run_cua_driver_installer(label="Installing")
+        ok = _run_cua_driver_installer(label="Installing")
+        if ok:
+            _invalidate_tool_availability_caches()
+        return ok
 
     # A driver failing Hermes' runtime contract (version floor, missing manifest verbs) is repaired
     # regardless of mode. Hermes' minimum requirement IS the confirmation an upgrade is needed, so
@@ -352,8 +364,11 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
         label="Repairing" if repair_existing else "Refreshing", verbose=False,
         pin_version=confirmed_version, show_progress=show_installer_progress,
         installer_timeout=_CUA_BACKGROUND_UPDATE_TIMEOUT if require_confirmed_update else None)
-    return _report_repair_or_upgrade(ok, repair_existing=repair_existing, binary=binary,
-                                     before=before, driver_cmd=driver_cmd)
+    ok = _report_repair_or_upgrade(ok, repair_existing=repair_existing, binary=binary,
+                                   before=before, driver_cmd=driver_cmd)
+    if ok:
+        _invalidate_tool_availability_caches()
+    return ok
 
 
 def _cua_install_home() -> "Path":

@@ -110,6 +110,47 @@ class TestCuaDriverRuntimeContract:
         assert "serve --approve-capability-manifest" in state["reason"]
 
 
+def test_successful_install_reprobes_gated_tools_for_new_sessions(monkeypatch):
+    """A driver installed in this process must appear in the next tool snapshot."""
+    from hermes_cli import tools_config_cua as tools_config
+    import model_tools
+    from tools.registry import invalidate_check_fn_cache, registry
+
+    available = {"value": False}
+    tool_name = "test_cua_install_gated_tool"
+
+    registry.register(
+        name=tool_name,
+        toolset="test_cua_install",
+        schema={"description": "test tool", "parameters": {"type": "object", "properties": {}}},
+        handler=lambda _args: "{}",
+        check_fn=lambda: available["value"],
+    )
+    monkeypatch.setattr(model_tools, "_select_tool_names", lambda *_args: {tool_name})
+    monkeypatch.setattr(tools_config, "_resolved_cua_driver_cmd", lambda: None)
+    monkeypatch.setattr(tools_config, "_cua_install_target_writable", lambda: True)
+    monkeypatch.setattr(tools_config.shutil, "which", lambda name: "/usr/bin/curl" if name == "curl" else None)
+    monkeypatch.setattr(
+        tools_config,
+        "_run_cua_driver_installer",
+        lambda **_kwargs: available.__setitem__("value", True) or True,
+    )
+    invalidate_check_fn_cache()
+    model_tools._clear_tool_defs_cache()
+    try:
+        before = model_tools.get_tool_definitions(quiet_mode=True)
+        assert tool_name not in {tool["function"]["name"] for tool in before}
+
+        assert tools_config.install_cua_driver() is True
+
+        after = model_tools.get_tool_definitions(quiet_mode=True)
+        assert tool_name in {tool["function"]["name"] for tool in after}
+    finally:
+        registry.deregister(tool_name)
+        invalidate_check_fn_cache()
+        model_tools._clear_tool_defs_cache()
+
+
 class TestInstallCuaDriverUpgrade:
     # ``install_cua_driver`` supports macOS, Windows AND Linux. For everything
     # below except the two unsupported-platform cases, the Linux host takes a

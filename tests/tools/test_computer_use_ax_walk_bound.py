@@ -75,3 +75,31 @@ class TestAxWalkBound:
         args = _StubCapture()._gws_args()
         assert args["pid"] == 607 and args["window_id"] == 382
         assert args["max_elements"] == 250
+
+
+class TestCappedWalkHint:
+    """When the driver's walk stopped at the bound, the spill file is not the full tree — say so."""
+
+    @staticmethod
+    def _summary(monkeypatch, n_elements: int, bound: int) -> str:
+        from tools.computer_use import tool
+        from tools.computer_use.backend import CaptureResult, UIElement
+        monkeypatch.setattr(cua_backend, "_cua_configured_ax_max_elements", lambda: bound)
+        monkeypatch.setattr(tool, "_spill_elements_to_file", lambda cap: "/tmp/elements.json")
+        cap = CaptureResult(mode="ax", width=800, height=600,
+                            elements=[UIElement(index=i + 1, role="AXButton", label=f"b{i}") for i in range(n_elements)])
+        return "\n".join(tool._capture_summary_lines(tool._capture_view(cap, max_elements=5)))
+
+    def test_capped_walk_is_named_and_full_is_dropped(self, monkeypatch):
+        text = self._summary(monkeypatch, n_elements=8, bound=8)
+        assert "accessibility walk capped at 8 elements; pass app= to narrow" in text
+        assert "full element tree" not in text
+        assert "element tree with untruncated labels saved to" in text
+
+    def test_uncapped_walk_still_promises_the_full_tree(self, monkeypatch):
+        text = self._summary(monkeypatch, n_elements=8, bound=50)
+        assert "accessibility walk capped" not in text
+        assert "full element tree with untruncated labels saved to" in text
+
+    def test_zero_bound_never_claims_a_cap(self, monkeypatch):
+        assert "accessibility walk capped" not in self._summary(monkeypatch, n_elements=8, bound=0)

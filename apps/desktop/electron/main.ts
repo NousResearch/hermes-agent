@@ -31,6 +31,7 @@ import {
   systemPreferences
 } from 'electron'
 
+import { buildAboutPanelVersionOptions } from './about-version'
 import { classifyActiveRuntime } from './active-runtime-state'
 import {
   destroyKeepaliveAgents,
@@ -274,6 +275,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
+import { resolveRunningClientSha } from './install-stamp-identity'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
@@ -1441,15 +1443,9 @@ if (IS_WINDOWS) {
   app.setAppUserModelId('com.nousresearch.hermes')
 }
 
-// Seed the native About panel with the live Hermes version. This is refreshed
-// on every open via the explicit "About" menu handler (refreshAboutPanel), so
-// an in-place `hermes update` mid-session is reflected without an app restart;
-// the seed here just covers the first open and any non-menu invocation path.
-app.setAboutPanelOptions({
-  applicationName: APP_NAME,
-  applicationVersion: resolveHermesVersion(),
-  copyright: 'Copyright © 2026 Nous Research'
-})
+// Seed native About with the running bundle identity. The menu refreshes the
+// live Hermes runtime version and renderer-skew warning before every open.
+app.setAboutPanelOptions(currentAboutPanelOptions())
 
 // Custom scheme for streaming audio/video into the renderer. Local paths read
 // from this machine; remote paths are proxied through the configured gateway
@@ -3330,8 +3326,8 @@ async function resolveHealedBranch(updateRoot, branch) {
 // fetch` twice per half hour; across the install base that was tens of
 // millions of pack negotiations a day against one repo (GitHub flagged it).
 // The REST API answers the same question in one 40-byte response, so the
-// check is API-first with a 24h on-disk cache keyed on local HEAD (applying an
-// update changes HEAD, which busts the cache immediately). `git fetch` runs only
+// check is API-first with a 24h on-disk cache keyed on the running client
+// commit (a freshly installed bundle changes it on restart). `git fetch` runs only
 // inside applyUpdates. `force` (menu item, Settings "Check now") skips the
 // cache; the renderer's background poller never passes it.
 async function checkUpdates({ force = false }: { force?: boolean } = {}) {
@@ -3353,12 +3349,14 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-  const [currentSha, dirtyStr, currentBranch, originUrl] = await Promise.all([
+  const [checkoutSha, dirtyStr, currentBranch, originUrl] = await Promise.all([
     git(['rev-parse', 'HEAD']),
     git(['status', '--porcelain']),
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
     getOriginUrl(updateRoot)
   ])
+
+  const currentSha = resolveRunningClientSha({ checkoutSha, installStamp: INSTALL_STAMP, isPackaged: IS_PACKAGED })
 
   const cached = readUpdateCheckCache()
   const now = Date.now()
@@ -3494,7 +3492,7 @@ async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
   const known = (await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd: updateRoot })).code === 0
 
   const isAncestor =
-    known && (await runGit(['merge-base', '--is-ancestor', targetSha, 'HEAD'], { cwd: updateRoot })).code === 0
+    known && (await runGit(['merge-base', '--is-ancestor', targetSha, currentSha], { cwd: updateRoot })).code === 0
 
   if (isAncestor) {
     return { behind: 0, updateAvailable: false, targetSha, commits: [] }
@@ -18173,19 +18171,24 @@ async function detectRendererSkew() {
   return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
 }
 
-// Re-resolve the live Hermes version and push it into the native About panel
-// just before showing it, so an in-place `hermes update` is reflected without
-// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
-// other platforms don't use this menu item.
+function currentAboutPanelOptions(bundleOutOfSync = false) {
+  return {
+    applicationName: APP_NAME,
+    ...buildAboutPanelVersionOptions({
+      applicationVersion: resolveHermesVersion(),
+      installCommit: IS_PACKAGED ? INSTALL_STAMP?.commit : null,
+      installDirty: IS_PACKAGED && INSTALL_STAMP?.dirty,
+      bundleOutOfSync
+    }),
+    copyright: 'Copyright © 2026 Nous Research'
+  }
+}
+
+// Refresh live runtime version and bundle-skew warning before opening About.
+// macOS only — showAboutPanel() is a no-op elsewhere.
 function showAboutPanelFresh() {
   void detectRendererSkew().then(skew => {
-    app.setAboutPanelOptions({
-      applicationName: APP_NAME,
-      applicationVersion: skew.outOfSync
-        ? `${resolveHermesVersion()} — app build out of date, update the desktop app`
-        : resolveHermesVersion(),
-      copyright: 'Copyright © 2026 Nous Research'
-    })
+    app.setAboutPanelOptions(currentAboutPanelOptions(skew.outOfSync))
     app.showAboutPanel()
   })
 }

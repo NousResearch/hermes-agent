@@ -76,7 +76,7 @@ def normalize_url(url: str) -> str:
 
     Strips the fragment and a trailing slash so ``/page``, ``/page/`` and
     ``/page#section`` are one source.  Query strings are significant and are
-    kept — they usually select different content.
+    kept: they usually select different content.
     """
     u = (url or "").strip()
     if "#" in u:
@@ -109,7 +109,7 @@ class _LedgerLock:
 
     Parallel subagents can share one ledger via --ledger; without a lock two
     concurrent ``add`` calls can assign the same id.  Falls through after the
-    timeout rather than blocking a task forever — a stale lock must never
+    timeout rather than blocking a task forever: a stale lock must never
     wedge the ledger.
     """
 
@@ -265,15 +265,15 @@ def quote_in_evidence(quote: str, evidence: str) -> bool:
 
 def attach_quote(path: Path, source_id: int, quote: str, evidence: str) -> dict[str, Any]:
     """Attach a verbatim quote to a ledger entry after checking it against
-    the evidence text.  Raises SystemExit on unknown id or non-verbatim text —
+    the evidence text.  Raises SystemExit on unknown id or non-verbatim text:
     a quote the page does not contain is exactly the fabrication this guards
     against."""
     quote = (quote or "").strip()
     if len(_normalize_ws(quote).split()) < 3:
-        raise SystemExit("error: quote too short — use at least 3 words of verbatim text")
+        raise SystemExit("error: quote too short: use at least 3 words of verbatim text")
     if not quote_in_evidence(quote, evidence):
         raise SystemExit(
-            "error: quote not found verbatim in the evidence text — "
+            "error: quote not found verbatim in the evidence text: "
             "copy the exact wording from the fetched page, do not paraphrase"
         )
     with _LedgerLock(path):
@@ -310,7 +310,7 @@ def render_sources(
     if style == "footnotes":
         for s in picked:
             title = s.get("title")
-            suffix = f" — {title}" if title else ""
+            suffix = f": {title}" if title else ""
             lines.append(f"[^{s['id']}]: {s['url']}{suffix}")
         return "\n".join(lines)
     header = "Sources:" if style == "plain" else "## Sources"
@@ -319,7 +319,7 @@ def render_sources(
         lines.append("")
     for s in picked:
         title = s.get("title")
-        suffix = f" — {title}" if title else ""
+        suffix = f": {title}" if title else ""
         lines.append(f"[{s['id']}] {s['url']}{suffix}")
         if style == "evidence":
             for q in s.get("quotes", []):
@@ -424,7 +424,7 @@ def verify_draft(
         )
 
     if cited_set and not listed:
-        errors.append("draft cites sources but has no `Sources:` block — run `render --cited-in`")
+        errors.append("draft cites sources but has no `Sources:` block: run `render --cited-in`")
 
     missing_from_block = sorted(cited_set - set(listed)) if listed else []
     if missing_from_block:
@@ -441,7 +441,7 @@ def verify_draft(
         if normalize_url(url) != entry["url"]:
             errors.append(
                 f"Sources block URL for [{sid}] does not match the ledger "
-                f"(block: {url} / ledger: {entry['url']}) — re-run `render`"
+                f"(block: {url} / ledger: {entry['url']}): re-run `render`"
             )
 
     extra_in_block = sorted(set(listed) - cited_set)
@@ -487,7 +487,7 @@ def verify_draft(
     quoted = sum(1 for s in sources if s.get("quotes"))
     stats = (
         f"{len(sentences)} prose sentence(s), {len(covered)} with declared provenance "
-        f"({coverage:.0%}) — {len(cited_sentences)} cited, "
+        f"({coverage:.0%}): {len(cited_sentences)} cited, "
         f"{len(unverified_sentences)} marked [unverified] (a sentence may be both); "
         f"{len(cited_set)} distinct source(s) cited, "
         f"{len(by_id)} in ledger ({quoted} with evidence quotes)"

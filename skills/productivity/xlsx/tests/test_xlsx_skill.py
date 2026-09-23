@@ -506,7 +506,7 @@ def test_sheet_protection(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Headless recalculation (xlsx_recalc.py) — branches on soffice presence
+# Headless recalculation (xlsx_recalc.py): branches on soffice presence
 # ---------------------------------------------------------------------------
 
 def test_recalc_reports_json_both_ways(tmp_path):

@@ -61,7 +61,7 @@ model:
     fav: openrouter/anthropic/claude-sonnet-4.6
 ```
 
-`/model fav` — session-scoped; add `--global` to persist as default.
+`/model fav`: session-scoped; add `--global` to persist as default.
 
 An alias with its own `base_url` authenticates with its own credential
 (`api_key`, which also accepts a `"${VAR}"` reference, or `key_env`). With

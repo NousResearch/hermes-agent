@@ -32,4 +32,4 @@ Fixes #
 
 <!-- Could this fix break anything else? What's the blast radius? -->
 
-Low / Medium / High — <!-- explanation -->
+Low / Medium / High: <!-- explanation -->

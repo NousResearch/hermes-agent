@@ -23,7 +23,7 @@ High-DPI displays render at 2x by default. This doubles memory usage and halves 
 // Force 1x for consistent export and performance
 pixelDensity(1);
 
-// Match display (default) — sharp on retina but expensive
+// Match display (default): sharp on retina but expensive
 pixelDensity(displayDensity());
 
 // ALWAYS call before createCanvas()
@@ -63,7 +63,7 @@ function windowResized() {
 
 ```javascript
 function preload() {
-  // Load assets before setup — fonts, images, JSON, CSV
+  // Load assets before setup: fonts, images, JSON, CSV
   // Blocks execution until all loads complete
   font = loadFont('font.otf');
   img = loadImage('texture.png');
@@ -139,10 +139,10 @@ pop();
 ## Offscreen Buffers (createGraphics)
 
 Offscreen buffers are separate canvases you can draw to and composite. Essential for:
-- **Layered composition** — background, midground, foreground
-- **Persistent trails** — draw to buffer, fade with semi-transparent rect, never clear
-- **Masking** — draw mask to buffer, apply with `image()` or pixel operations
-- **Post-processing** — render scene to buffer, apply effects, draw to main canvas
+- **Layered composition**: background, midground, foreground
+- **Persistent trails**: draw to buffer, fade with semi-transparent rect, never clear
+- **Masking**: draw mask to buffer, apply with `image()` or pixel operations
+- **Post-processing**: render scene to buffer, apply effects, draw to main canvas
 
 ```javascript
 let layer;
@@ -177,7 +177,7 @@ function setup() {
 function draw() {
   // Fade previous frame (lower alpha = longer trails)
   trailBuffer.noStroke();
-  trailBuffer.fill(0, 0, 0, 15);  // RGBA — 15/255 alpha
+  trailBuffer.fill(0, 0, 0, 15);  // RGBA: 15/255 alpha
   trailBuffer.rect(0, 0, width, height);
 
   // Draw new content
@@ -202,14 +202,14 @@ function setup() {
 }
 
 function draw() {
-  // Background — drawn once or slowly evolving
+  // Background: drawn once or slowly evolving
   renderBackground(bgLayer);
 
-  // Content — main visual elements
+  // Content: main visual elements
   contentLayer.clear();
   renderContent(contentLayer);
 
-  // FX — overlays, vignettes, grain
+  // FX: overlays, vignettes, grain
   fxLayer.clear();
   renderEffects(fxLayer);
 
@@ -305,7 +305,7 @@ noiseSeed(42);
 noiseDetail(4, 0.5);  // 4 octaves, 0.5 falloff
 
 let v = noise(x * 0.01, y * 0.01);  // returns 0.0 to 1.0
-// Scale factor (0.01) controls feature size — smaller = smoother
+// Scale factor (0.01) controls feature size: smaller = smoother
 ```
 
 ## Math Utilities
@@ -347,7 +347,7 @@ async function setup() {
 ### New Color Modes
 
 ```javascript
-colorMode(OKLCH);  // perceptually uniform — better gradients
+colorMode(OKLCH);  // perceptually uniform: better gradients
 // L: 0-1 (lightness), C: 0-0.4 (chroma), H: 0-360 (hue)
 fill(0.7, 0.15, 200);  // medium-bright saturated blue
 
@@ -360,14 +360,14 @@ colorMode(HWB);    // Hue-Whiteness-Blackness
 No more doubling first/last control points:
 
 ```javascript
-// p5.js 1.x — must repeat first and last
+// p5.js 1.x: must repeat first and last
 beginShape();
 curveVertex(pts[0].x, pts[0].y);  // doubled
 for (let p of pts) curveVertex(p.x, p.y);
 curveVertex(pts[pts.length-1].x, pts[pts.length-1].y);  // doubled
 endShape();
 
-// p5.js 2.x — clean
+// p5.js 2.x: clean
 beginShape();
 for (let p of pts) splineVertex(p.x, p.y);
 endShape();

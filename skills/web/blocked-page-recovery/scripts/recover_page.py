@@ -102,7 +102,7 @@ def validate(body: bytes, route: str, target_url: str) -> str | None:
         if marker in title:
             return f"interstitial_title:{marker!r}"
     # Redirect stub: small-ish page whose only job is bouncing back to the
-    # original (blocked) host — the classic AMP-cache failure mode.
+    # original (blocked) host: the classic AMP-cache failure mode.
     if len(body) < 8192 and REDIRECT_STUB_RE.search(body.decode("utf-8", "replace")):
         target_host = urllib.parse.urlsplit(target_url).hostname or ""
         if target_host and target_host.encode() in body:

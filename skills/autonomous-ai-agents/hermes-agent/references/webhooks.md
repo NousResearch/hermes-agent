@@ -73,7 +73,7 @@ Returns the webhook URL and HMAC secret. The user configures their service to PO
 
 Two mechanisms narrow broad event streams (e.g. Todoist/GitHub fire on every update) so only relevant payloads wake the agent:
 
-- **Declarative `filters`** (config.yaml routes only): list of conditions on payload fields, event type, or headers — operators `equals`, `not_equals`, `contains`, `exists`, `missing`, `in`, `in_file`, `regex`, with `all`/`any`/`not` grouping. Non-matching events are ignored with HTTP 200.
+- **Declarative `filters`** (config.yaml routes only): list of conditions on payload fields, event type, or headers, operators `equals`, `not_equals`, `contains`, `exists`, `missing`, `in`, `in_file`, `regex`, with `all`/`any`/`not` grouping. Non-matching events are ignored with HTTP 200.
 - **Route scripts** (`--script` on subscribe, or `script:` on a config route): a script under `~/.hermes/scripts/` receives the payload as JSON on stdin. JSON stdout replaces the payload before prompt templating; empty stdout, `[SILENT]`, or a nonzero exit ignores the webhook. `.sh`/`.bash` run with bash, everything else with Python. Scripts cannot live outside `~/.hermes/scripts/` (path traversal is blocked).
 
 ```bash
@@ -105,10 +105,10 @@ hermes webhook test <name> --payload '{"key": "value"}'
 
 Prompts support `{dot.notation}` for accessing nested payload fields:
 
-- `{issue.title}` — GitHub issue title
-- `{pull_request.user.login}` — PR author
-- `{data.object.amount}` — Stripe payment amount
-- `{sensor.temperature}` — IoT sensor reading
+- `{issue.title}`: GitHub issue title
+- `{pull_request.user.login}`: PR author
+- `{data.object.amount}`: Stripe payment amount
+- `{sensor.temperature}`: IoT sensor reading
 
 If no prompt is specified, the full JSON payload is dumped into the agent prompt.
 
@@ -165,7 +165,7 @@ hermes webhook subscribe alerts \
 
 ### Direct delivery (no agent, zero LLM cost)
 
-For use cases where you just want to push a notification through to a user's chat — no reasoning, no agent loop — add `--deliver-only`. The rendered `--prompt` template becomes the literal message body and is dispatched directly to the target adapter.
+For use cases where you just want to push a notification through to a user's chat (no reasoning, no agent loop) add `--deliver-only`. The rendered `--prompt` template becomes the literal message body and is dispatched directly to the target adapter.
 
 Use this for:
 - External service push notifications (Supabase/Firebase webhooks → Telegram)
@@ -182,9 +182,9 @@ hermes webhook subscribe antenna-matches \
   --description "Antenna match notifications"
 ```
 
-The POST returns `200 OK` on successful delivery, `502` on target failure — so upstream services can retry intelligently. HMAC auth, rate limits, and idempotency still apply.
+The POST returns `200 OK` on successful delivery, `502` on target failure: so upstream services can retry intelligently. HMAC auth, rate limits, and idempotency still apply.
 
-Requires `--deliver` to be a real target (telegram, discord, slack, github_comment, etc.) — `--deliver log` is rejected because log-only direct delivery is pointless.
+Requires `--deliver` to be a real target (telegram, discord, slack, github_comment, etc.): `--deliver log` is rejected because log-only direct delivery is pointless.
 
 ### Let the user reply to a delivery
 

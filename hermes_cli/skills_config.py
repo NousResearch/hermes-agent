@@ -31,20 +31,17 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str
     skills_cfg = config.get("skills") or {}
     if not isinstance(skills_cfg, dict):
         return set()
-    from agent.skill_utils import ESSENTIAL_SKILLS
     disabled = _normalize_skill_names(skills_cfg.get("disabled"))
     if platform is not None:
         platform_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
         if platform_disabled is not None:
             disabled = disabled | _normalize_skill_names(platform_disabled)
-    return disabled - ESSENTIAL_SKILLS
+    return disabled
 
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
-    """Persist disabled skill names to config; essential skills (e.g. ``hermes-agent``) are
-    silently dropped — they cannot be disabled from any surface."""
-    from agent.skill_utils import ESSENTIAL_SKILLS
-    disabled = set(disabled) - ESSENTIAL_SKILLS
+    """Persist disabled skill names to config, including bundled skills."""
+    disabled = set(disabled)
     config.setdefault("skills", {})
     if platform is None:
         config["skills"]["disabled"] = sorted(disabled)

@@ -292,9 +292,10 @@ def _home_relative(p: Path) -> Path:
     return p if p.is_absolute() else get_hermes_home() / p
 
 
-# Never disableable: `hermes-agent` is the agent's own operating manual and the
-# system prompt points at it unconditionally.
-ESSENTIAL_SKILLS: frozenset = frozenset({"hermes-agent"})
+# Kept as a compatibility export for integrations that import this name.  No
+# bundled skill is pinned: homes may opt out of every bundled skill, and every
+# skill may be disabled through configuration.
+ESSENTIAL_SKILLS: frozenset = frozenset()
 
 
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
@@ -309,7 +310,7 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None
     if platform_disabled is not None:
         disabled |= _normalize_string_set(platform_disabled)
-    return disabled - ESSENTIAL_SKILLS
+    return disabled
 
 
 def parse_config_string_list(value) -> List[str]:

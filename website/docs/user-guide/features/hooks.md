@@ -1934,7 +1934,7 @@ The command string must match the configured hook command exactly. A path-keyed 
 | `hermes hooks list` | Dump configured hooks with matcher, timeout, and consent status |
 | `hermes hooks test <event> [--for-tool X] [--payload-file F]` | Fire every matching hook against a synthetic payload and print the parsed response |
 | `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (takes effect on next restart) |
-| `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time |
+| `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time. Exits nonzero when any check fails. It checks from the shell you run it in; a gateway running as a service can see a different filesystem and `HERMES_HOME` |
 
 ### Security
 

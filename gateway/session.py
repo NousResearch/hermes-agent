@@ -306,6 +306,11 @@ _SLACK_NO_TOOLS_NOTE = (
 def _slack_platform_notes(context: SessionContext) -> List[str]:
     # Capability note only when Slack tools are loaded; otherwise an honest disclaimer.
     lines = ["", _SLACK_TOOLS_NOTE if _slack_tools_loaded() else _SLACK_NO_TOOLS_NOTE]
+    # chat_name is the channel/peer display name, so without this the model cannot address "this
+    # channel" (DMs and private channels have no resolvable name). Session-stable: cache-safe.
+    src = context.source
+    target = f"slack:{src.chat_id}:{src.thread_id}" if src.thread_id else f"slack:{src.chat_id}"
+    lines.append(f"**This conversation's delivery target:** `{target}`")
     if context.shared_multi_user_session:
         lines.append(
             "In shared Slack threads, use the current turn's sender prefix as the only verified "

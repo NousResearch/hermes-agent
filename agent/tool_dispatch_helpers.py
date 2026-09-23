@@ -98,7 +98,7 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
     def _walk(value: Any, path: str) -> None:
         if isinstance(value, str):
             stripped = value.rstrip()
-            if marker_re.search(value) or (
+            if (marker_re.search(stripped) and stripped.endswith("⟫")) or (
                 len(stripped) > 200 and stripped.endswith(_LEGACY_CONTEXT_PRUNED_ARG_TAILS)
             ):
                 found.append(path)

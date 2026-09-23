@@ -326,6 +326,10 @@ def test_setuptools_pins_meet_advisory_floor():
         if _distribution_name(req) == "setuptools":
             assert "==" in req, f"build-system must exact-pin setuptools, got {req!r}"
             declared.add(req.split("==", 1)[1].split(";", 1)[0].strip())
+    for req in data.get("project", {}).get("dependencies", []):
+        if _distribution_name(req) == "setuptools":
+            assert "==" in req, f"core dependencies must exact-pin setuptools, got {req!r}"
+            declared.add(req.split("==", 1)[1].split(";", 1)[0].strip())
     extras = data["project"].get("optional-dependencies", {})
     for extra, specs in extras.items():
         pins = _pins_from_specs(specs)

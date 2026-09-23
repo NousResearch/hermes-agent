@@ -75,6 +75,7 @@ from tests.conformance.persistence._harness import (
     reap,
     wait_for,
 )
+from tests.e2e.core.delivery._pending_fixes import expect_gap
 
 SESSION_KEY = "agent:main:telegram:dm:cell5"
 CHAT_ID = "4242"
@@ -446,16 +447,16 @@ def test_crash_between_send_and_record_never_double_delivers(tmp_path, kill_poin
     assert integrity_ok(cell.db_path)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FIRE (cell 5): sweep_recoverable claims a 'pending' row without flipping it to "
-        "'attempting', and _redeliver_claimed_obligations never marks it attempting before the "
-        "send — a boot killed inside that resend leaves it 'pending', so the next boot resends it "
-        "UNMARKED (2 unmarked copies). strict: flips red when fixed so the xfail is removed."
-    ),
+PLAIN_REDELIVERY_GAP = (
+    "FIRE (cell 5, fixed by #120450): sweep_recoverable claims a 'pending' row without flipping it "
+    "to 'attempting', and _redeliver_claimed_obligations never marks it attempting before the send "
+    "— a boot killed inside that resend leaves it 'pending', so the next boot resends it UNMARKED "
+    "(2 unmarked copies)."
 )
-def test_boot_killed_inside_plain_redelivery_never_double_delivers(tmp_path):
+
+
+def test_boot_killed_inside_plain_redelivery_never_double_delivers(tmp_path, request):
+    expect_gap(request, 120450, PLAIN_REDELIVERY_GAP)  # strict xfail only while the gap reproduces
     cell = Cell(tmp_path)
     ids = cell.seed_and_crash(["pending"] * N_OBLIGATIONS)
     cell.crashing_boot()

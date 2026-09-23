@@ -45,7 +45,8 @@ from tests.e2e.core.delivery._fake_platform import (
     visible_copies,
     wait_until,
 )
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
+from tests.e2e.core.delivery._pending_fixes import expect_gap, gap_open
+from tests.fakes.fake_llm_provider import FakeLLMServer, StallMidStream, Text, ToolCall
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL + process-group restart harness")
 
@@ -221,9 +222,14 @@ FAULTS = {
     "tool_then_answer": (None, "any", "footer",
                          lambda aid: [ToolCall("terminal", {"command": "echo hi"}),
                                       Director.answer(aid, "after the tool, done.")], "exact"),
-    "long_split": (None, "any", "footer", _say(LONG, chunk_chars=400), "exact"),
-    "long_streamed": (None, "any", "footer", _say(LONG, chunk_chars=120, delay_per_chunk=0.01), "exact"),
-    # Two 4.5k bursts 3 s apart (edit interval 0.8 s): the first send overflows (split, tail kept as
+    # The whole 8.1k reply in ONE stream chunk: the first send overflows every cap and is split
+    # once, with nothing streamed after the split.
+    "long_split": (None, "any", "footer", _say(LONG, chunk_chars=10_000), "exact"),
+    # 2.5k chunks 1 s apart (edit interval 0.05 s), so every chunk lands in its own consumer tick:
+    # the Discord-like first send already overflows (split, tail kept as the live preview) and the
+    # next chunks extend that tail; the Telegram-like one overflows on an edit and seals.
+    "long_streamed": (None, "any", "footer", _say(LONG, chunk_chars=2500, delay_per_chunk=1.0), "exact"),
+    # Two 4.5k bursts 3 s apart (edit interval 0.05 s): the first send overflows (split, tail kept as
     # the live preview), then the second burst leaves a remainder over the limit after sealing.
     "burst_overflow": (None, "any", "footer", _say(LONG, chunk_chars=4500, delay_per_chunk=3.0), "exact"),
     "slow_stream": (None, "any", "footer", _say("a slowly streamed answer " * 6, **SLOW), "exact"),
@@ -238,25 +244,22 @@ FAULTS = {
                                   "one_copy"),
     "stream_ack_lost_final_edit": ("ack_lost", "any", "footer", _say("stream ack lost " * 8, **SLOW),
                                    "marked_dupes"),
-    "stream_timeout_first_send": ("timeout", "send", "header", _say("preview never landed " * 8, **SLOW),
+    # The first preview send times out; four more chunks follow, each in its own consumer tick.
+    "stream_timeout_first_send": ("timeout", "send", "header",
+                                  _say("preview never landed " * 8, chunk_chars=42, delay_per_chunk=0.5),
                                   "one_copy"),
 }
 
 
-# Red until #120315 lands (overflow tail keeps the "(n/n)" indicator / seal remainder re-sent;
-# uneditable partial preview after a failed first send): every streamed reply over the platform
-# limit, plus the first-send timeout. Value = strict: burst_overflow and the 2000-char first-send
-# timeout fail every run; the others depend on stream/edit-tick timing, so a strict mark would flake
-# on the runs where the bug does not trigger. Delete the table with #120315.
-UNLANDED_STREAM_FIX = {
-    ("burst_overflow", "fk_tg"): True,
-    ("burst_overflow", "fk_dc"): True,
-    ("stream_timeout_first_send", "fk_dc"): True,
-    ("stream_timeout_first_send", "fk_tg"): False,
-    ("long_split", "fk_tg"): False,
-    ("long_split", "fk_dc"): False,
-    ("long_streamed", "fk_tg"): False,
-    ("long_streamed", "fk_dc"): False,
+# Streaming gaps #120315 fixes: an overflowing first send keeps the " (n/n)" indicator on the live
+# tail that later chunks extend / a sealed remainder over the limit is re-sent; a failed first send
+# leaves an uneditable partial preview next to the final. Every cell here fails every run while the
+# gap is open (the chunk pacing above puts each chunk in its own consumer tick).
+STREAM_OVERFLOW_GAP = "LIVE GAP (fixed by #120315): streamed overflow / failed first send"
+STREAM_OVERFLOW_GAP_CELLS = {
+    ("burst_overflow", "fk_tg"), ("burst_overflow", "fk_dc"),
+    ("long_streamed", "fk_dc"),
+    ("stream_timeout_first_send", "fk_tg"), ("stream_timeout_first_send", "fk_dc"),
 }
 
 
@@ -296,9 +299,8 @@ def test_delivery_fault_matrix(gw, director, platform, fault, request):
         assert faults_fired(gw, aid), f"injected {kind} never hit a platform call\n{dump(gw, platform, chat)}"
     if fault == "ack_lost" and STREAMING[platform]:
         request.applymarker(pytest.mark.xfail(strict=True, reason=STREAM_ACK_LOST_GAP))
-    if (fault, platform) in UNLANDED_STREAM_FIX:
-        request.applymarker(pytest.mark.xfail(strict=UNLANDED_STREAM_FIX[(fault, platform)],
-                                              reason="fixed by #120315"))
+    if (fault, platform) in STREAM_OVERFLOW_GAP_CELLS:
+        expect_gap(request, 120315, STREAM_OVERFLOW_GAP)
     assert_exactly_once(gw, director, platform, chat, token, aid,
                         marked_duplicates_allowed=expect == "marked_dupes",
                         first_copy_may_be_marked=expect == "one_copy")
@@ -401,7 +403,7 @@ def test_redelivered_inbound_id_processed_once(gw, director, when, request):
     if when == "after_turn":
         gw.inject(platform, text, message_id=mid, chat_id=chat)
     if when == "after_reconnect":
-        request.applymarker(pytest.mark.xfail(strict=True, reason=RECONNECT_DEDUP_GAP))
+        expect_gap(request, 120444, RECONNECT_DEDUP_GAP)
         before = gw.rpc("reconnect", platform=platform)["id"]
         wait_until(lambda: gw.rpc("adapter_id", platform=platform)["id"] not in (before, None),
                    "the reconnect watcher to install a fresh adapter", proc=gw.proc, log=gw.log)
@@ -412,7 +414,7 @@ def test_redelivered_inbound_id_processed_once(gw, director, when, request):
 
 
 RECONNECT_DEDUP_GAP = (
-    "LIVE GAP (#119848 family): inbound de-duplication state lives on the adapter instance "
+    "LIVE GAP (#119848 family, fixed by #120444): inbound de-duplication state lives on the adapter instance "
     "(MessageDeduplicator); the gateway's reconnect watcher builds a FRESH adapter, so a platform "
     "replaying a recent inbound id after the reconnect gets it processed and answered a second time.")
 
@@ -425,15 +427,22 @@ CRASH_POINTS = {
     "completed_not_ledgered": ("pre_ledger", "hold"),
     # the final send/edit is in flight and the platform never saw it
     "send_in_flight": ("any", "hold"),
-    # the platform accepted the final send/edit; the ack died with the process
+    # the turn is persisted and the platform accepted the final send/edit; the ack died with the process
     "sent_ack_lost": ("any", "hold_after"),
+    # streaming: the platform accepted a preview edit that already shows the complete answer, while
+    # the provider stream (so the turn) is still open -> nothing persisted when the process dies
+    "stream_accepted_unpersisted": ("any", "hold_after"),
 }
 
-# completed_not_ledgered: GatewayRunner._handle_message clears the durable active-turn marker in its
-# finally BEFORE the base adapter records the delivery obligation, so a SIGKILL in that window leaves
-# neither a resume marker nor a ledger row. Today the reply is still recovered - by the 120 s recency
-# fallback re-running the turn (see RECENCY_FALLBACK_GAP). If that fallback is narrowed without
-# closing the window, this scenario goes red: the persisted answer is then never delivered.
+# completed_not_ledgered: until #120377, GatewayRunner._handle_message clears the durable active-turn
+# marker in its finally BEFORE the base adapter records the delivery obligation, so a SIGKILL in that
+# window leaves neither a resume marker nor a ledger row and only the 120 s recency fallback recovers
+# the reply (by re-running the turn, see RECENCY_FALLBACK_GAP). #120377 removes that fallback and
+# hands the persisted reply to the ledger instead; either way exactly one complete reply must show.
+SENT_ACK_LOST_STREAM_GAP = (
+    "LIVE GAP (fixed by #120377): streaming turn persisted, the platform accepted the final edit, "
+    "SIGKILL before the ack -> the unclean restart re-runs the already-answered turn (turn marker / "
+    "120 s recency fallback) and the model's second answer is sent UNMARKED next to the first.")
 STREAM_CRASH_AFTER_ACCEPT_GAP = (
     "LIVE GAP: streaming turn, the platform already shows the complete final answer, SIGKILL before "
     "the turn is persisted -> restart auto-resumes and the model answers AGAIN; the second answer is "
@@ -449,7 +458,8 @@ def _replies(gw: GatewayProcess, platform: str, chat: str, token: str, aid: str)
 
 CRASH_MATRIX = [("completed_not_ledgered", "fk_ne"),  # streaming finals are sent before the handler returns
                 ("send_in_flight", "fk_ne"), ("send_in_flight", "fk_tg"),
-                ("sent_ack_lost", "fk_ne"), ("sent_ack_lost", "fk_tg")]
+                ("sent_ack_lost", "fk_ne"), ("sent_ack_lost", "fk_tg"),
+                ("stream_accepted_unpersisted", "fk_tg")]
 
 
 @pytest.fixture
@@ -475,15 +485,23 @@ def test_crash_between_completion_and_send(fresh_gw, director, point, platform, 
     op, kind = CRASH_POINTS[point]
     streaming = STREAMING[platform]
     if point == "sent_ack_lost" and streaming:
+        expect_gap(request, 120377, SENT_ACK_LOST_STREAM_GAP)
+    if point == "stream_accepted_unpersisted":
         request.applymarker(pytest.mark.xfail(strict=True, reason=STREAM_CRASH_AFTER_ACCEPT_GAP))
     token = f"{platform}.crash-{point}"
     chat = f"k-{platform}-{point}"
     aid = f"A-{token}"
-    director.script(token, Director.answer(aid, "answer computed before the crash."))
+    answer = Director.answer(aid, "answer computed before the crash.")
+    if point == "stream_accepted_unpersisted":  # the whole answer streams, then the stream stays open
+        answer = StallMidStream(text=answer.text, after_chars=len(answer.text), seconds=60)
+    director.script(token, answer)
     gw.fault(platform=platform, op=op, kind=kind, contains=footer(aid), chat_id=chat)
     gw.inject(platform, f"[in:{token}] question", message_id=f"in-{token}", chat_id=chat)
     wait_until(lambda: any(footer(aid) in h["content"] for h in gw.holds()), f"{token} to reach the crash point",
                proc=gw.proc, log=gw.log)
+    if point == "sent_ack_lost":  # the stream's footer edit can land before the turn is persisted
+        wait_until(lambda: persisted_answers(gw.db_path, aid), f"{token} answer persisted before the kill",
+                   proc=gw.proc, log=gw.log)
     gw.kill9()
     gw.start()
 
@@ -518,8 +536,15 @@ def test_crash_between_completion_and_send(fresh_gw, director, point, platform, 
 
 
 # Scenarios whose strict xfail documents a live gap: excluded from the whole-run audit below.
-KNOWN_GAP_TOKENS = {"fk_tg.ack_lost", "fk_dc.ack_lost", "fk_tg.redeliver-after_reconnect"}
+KNOWN_GAP_TOKENS = {"fk_tg.ack_lost", "fk_dc.ack_lost"}
 RESUME_EXPECTED: set = set()
+
+
+def known_gap_tokens() -> set:
+    gaps = set(KNOWN_GAP_TOKENS)
+    if gap_open(120444):
+        gaps.add("fk_tg.redeliver-after_reconnect")
+    return gaps
 
 
 def test_zz_whole_run_audit(gw, director):
@@ -529,8 +554,9 @@ def test_zz_whole_run_audit(gw, director):
     visible = gw.platform_view().visible()
     head = re.compile(r"<<((?:A-|R-)?[A-Za-z0-9_.-]+?)>>")
     problems = []
+    gaps = known_gap_tokens()
     for token in sorted(director.turns):
-        if token in KNOWN_GAP_TOKENS or ".crash-" in token:  # crash scenarios run on their own homes
+        if token in gaps or ".crash-" in token:  # crash scenarios run on their own homes
             continue
         ids = {m.group(1) for v in visible for m in head.finditer(v.text)
                if m.group(1) in (f"A-{token}",) or m.group(1).startswith((f"R-{token}-", f"{token}-extra"))}
@@ -549,7 +575,7 @@ def test_zz_whole_run_audit(gw, director):
 
 
 RECENCY_FALLBACK_GAP = (
-    "LIVE GAP: on an unclean startup GatewayRunner._recover_unclean_sessions also runs the legacy "
+    "LIVE GAP (fixed by #120377): on an unclean startup GatewayRunner._recover_unclean_sessions also runs the legacy "
     "recency fallback SessionStore.suspend_recently_active(120), which marks EVERY session updated in "
     "the last 120 s resume_pending with reason 'restart_interrupted' - a reason in _AUTO_RESUME_REASONS - "
     "so _schedule_resume_pending_sessions synthesizes a turn for sessions whose turn had already "
@@ -557,10 +583,10 @@ RECENCY_FALLBACK_GAP = (
     "unsolicited second answer.")
 
 
-@pytest.mark.xfail(strict=True, reason=RECENCY_FALLBACK_GAP)
-def test_zzz_unclean_restart_reruns_nothing(gw, director):
+def test_zzz_unclean_restart_reruns_nothing(gw, director, request):
     """Runs LAST on the module gateway: after every scenario above has been answered, an unclean
     restart with NOTHING in flight must not re-run or re-deliver anything."""
+    expect_gap(request, 120377, RECENCY_FALLBACK_GAP)
     tok = "fk_tg.quiet-restart"
     director.script(tok, Director.answer(f"A-{tok}", "answered long before the crash."))
     gw.inject("fk_tg", f"[in:{tok}] hi", message_id=f"in-{tok}", chat_id="quiet")
@@ -569,7 +595,9 @@ def test_zzz_unclean_restart_reruns_nothing(gw, director):
                "ledger quiescent before the crash", proc=gw.proc, log=gw.log)
     assert_exactly_once(gw, director, "fk_tg", "quiet", tok, f"A-{tok}")
     before = {m.message_id for m in gw.platform_view().visible()}
-    turns = dict(director.turns)
+    # The Director is module-wide: crash cells on their own homes may legitimately resume their
+    # in-flight turn, so only what THIS restart adds counts.
+    turns, resumes = dict(director.turns), dict(director.resumes)
     gw.kill9()
     gw.start()
     # A buggy restart shows its first extra reply within a few seconds of boot; a correct one never
@@ -584,7 +612,8 @@ def test_zzz_unclean_restart_reruns_nothing(gw, director):
     new = [m for m in gw.platform_view().visible() if m.message_id not in before]
     assert not new, f"an unclean restart with nothing in flight delivered {len(new)} new messages, e.g.:\n" + \
         "\n".join(f"  {m.chat_id}: {m.text[:100]!r}" for m in new[:8])
-    assert director.turns == turns and not director.resumes, f"model re-run after restart: {director.resumes}"
+    assert director.turns == turns and director.resumes == resumes, (
+        f"model re-run after restart: {director.resumes} (before the kill: {resumes})")
 
 
 

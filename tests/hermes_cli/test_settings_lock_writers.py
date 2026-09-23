@@ -319,6 +319,27 @@ def test_roundtrip_key_update_in_a_profile_is_refused_by_the_root_lock(home):
 # ── hermes agent import (command_allowlist / approvals.deny / mcp_servers → config.yaml) ─────
 
 
+def test_profile_clone_channel_strip_is_refused_by_the_root_lock(home):
+    # `hermes profile create --clone`: strip_channel_config rewrites the clone's config.yaml whole.
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.profile_channels import strip_channel_config
+
+    (home / "config.yaml").write_text(
+        CONFIG + LOCK.replace("providers.*", "platforms.*"), encoding="utf-8")
+    config_path = home / "profiles" / "clone" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("model:\n  default: gpt-4o\nplatforms:\n  discord:\n    token: t\n", encoding="utf-8")
+    before = _text(config_path)
+
+    with pytest.raises(sl.SettingsLockError, match="platforms"):
+        strip_channel_config(config_path)
+    assert _text(config_path) == before
+
+    sl.begin_unlock(home, seconds=60)
+    assert strip_channel_config(config_path) == ["platforms"]
+    assert "platforms" not in read_user_config_raw(config_path)
+
+
 def test_agent_import_config_write_is_refused(home):
     # `AgentImporter._import_permission_rules` / `import_mcp_servers` both end in dump_yaml_file
     # on <root>/config.yaml.

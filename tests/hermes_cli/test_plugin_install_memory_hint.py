@@ -90,3 +90,21 @@ def test_failed_install_does_not_print_activation_guidance(install_fixture):
     assert "hermes memory setup" not in f.output.getvalue()
     assert f.config.read_bytes() == before
     f.activation.assert_not_called()
+
+
+@pytest.mark.parametrize("tty, consent", [(False, False), (True, False), (True, True)])
+def test_memory_capability_consent_does_not_claim_activation(install_fixture, monkeypatch, tty, consent):
+    from hermes_cli.plugin_capabilities import granted_capabilities
+    from hermes_cli.config import load_config
+
+    f = install_fixture
+    f.manifest["capabilities"] = ["tools.override"]
+    monkeypatch.setattr(f.pc, "_is_tty", lambda: tty)
+    f.asked.return_value = consent
+    f.pc.cmd_install("fixture/plugin", enable=True, no_deps=True)
+    out = f.output.getvalue()
+    assert "stays enabled" not in out
+    assert "does not select memory.provider" in out
+    assert ("tools.override" in granted_capabilities("fixture-memory")) == (tty and consent)
+    assert load_config()["memory"]["provider"] == "existing"
+    f.activation.assert_not_called()

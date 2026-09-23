@@ -180,6 +180,14 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 |------|-------------|----------------------|
 | `memory` | Save important information to persistent memory that survives across sessions. Your memory appears in your system prompt at session start -- it's how you remember things about the user and your environment between conversations. WHEN TO SA… | — |
 
+## `setup` toolset
+
+Granted only to sessions of the desktop setup profile (`role: setup` in its `profile.yaml`); never configurable.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `manage_catalog` | Setup profile only (the `setup` toolset), desktop chat only. `search` lists catalog plugins and hub skills matching `query` (optionally one `kind`) with `id`, `kind`, `display`, `tier`, `platforms` and `installed` (present in the `default` profile); it changes nothing. `install` takes `items: [{kind, id}]` and shows one approval card with a row per item (Install, Advanced, Skip); an id the catalog does not know, or a plugin this OS cannot run, is drawn failed with the reason. An approved row installs into `default` (or the profile chosen under Advanced) at the catalog's reviewed commit, with the same kill list, security scan and live activation as the Plugins tab, so the plugin's MCP tools and skills are usable in that profile's open chats at once. The result lists each row as `connected` (with `tools` and `skill`), `skipped`, `failed` (with `detail`) or `not_connected`. The model cannot pass a source, commit, profile or setting. Anywhere else the call returns the `hermes plugins install` / `hermes skills install` command to run instead. | — |
+
 ## `session_search` toolset
 
 | Tool | Description | Requires environment |

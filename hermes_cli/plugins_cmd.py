@@ -11,9 +11,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.parse
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, NoReturn, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
@@ -491,6 +493,38 @@ def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
         path, json.dumps(metadata, indent=2, sort_keys=True) + "\n", tmp_prefix=f"{path.name}.tmp-")
 
 
+_INSTALL_METADATA_LOCK_HOLDER = threading.local()
+
+
+@contextmanager
+def _install_metadata_lock():
+    """Serialize read-modify-write of the sidecar across threads and processes. Installs overlap (the
+    Desktop install card runs its rows a second apart); each held a snapshot read before its clone, so
+    the later write dropped the earlier plugin's record."""
+    from hermes_cli.auth import _file_lock
+
+    path = _install_metadata_path()
+    with _file_lock(path.with_name(f"{path.name}.lock"), _INSTALL_METADATA_LOCK_HOLDER, 10.0,
+                    "Timed out waiting for the plugin install metadata lock"):
+        yield
+
+
+def _update_install_record(name: str, update: Callable[[Optional[dict]], Optional[dict]]) -> None:
+    """Rewrite one plugin's record in the CURRENT sidecar, under the lock. *update* maps the current
+    record (None when absent) to the new one (None removes it); every other record is re-read here,
+    never carried over from a caller's earlier snapshot."""
+    with _install_metadata_lock():
+        metadata = _read_install_metadata()
+        record = update(metadata.get(name))
+        if record is None:
+            if name not in metadata:
+                return
+            del metadata[name]
+        else:
+            metadata[name] = record
+        _write_install_metadata(metadata)
+
+
 def pinned_revision(name: str, metadata: Optional[dict] = None) -> Optional[str]:
     """Full SHA a ``--ref`` install of *name* is pinned to, else ``None``."""
     entry = (metadata if metadata is not None else _read_install_metadata()).get(name)
@@ -718,24 +752,22 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
         )
 
 
-def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
-    """Move the validated clone into place and persist metadata; on any failure restore the
-    previous tree (if one was replaced) and the previous metadata sidecar, then re-raise."""
+def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, plugin_name: str, record: dict) -> None:
+    """Move the validated clone into place and record it; on any failure restore the previous tree
+    (if one was replaced) and re-raise. The record write is the last step and atomic, so a failure
+    leaves the sidecar untouched: nothing to roll back there, and restoring a snapshot would erase
+    a concurrent install's record."""
     replaced_existing = target.exists()
     if replaced_existing:
         os.replace(target, backup)
     try:
         os.replace(tmp_target, target)
-        _write_install_metadata(new_metadata)
+        _update_install_record(plugin_name, lambda _current: record)
     except Exception:
         if target.exists():
             rmtree_readonly(target)
         if replaced_existing and backup.exists():
             os.replace(backup, target)
-        if old_metadata:
-            _write_install_metadata(old_metadata)
-        else:
-            _install_metadata_path().unlink(missing_ok=True)
         raise
 
 
@@ -823,8 +855,7 @@ def _install_plugin_core(
             record["catalog"] = {**catalog, "sha": installed_revision, "pin": reviewed_pin if at_reviewed_pin else ""}
         if allow_removed:
             record["allow_removed"] = True
-        new_metadata = {**old_metadata, plugin_name: record}
-        _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", old_metadata, new_metadata)
+        _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", plugin_name, record)
 
     if not _looks_like_plugin_dir(target):
         logger.warning("%s has no plugin.yaml / __init__.py; may not be a valid plugin", plugin_name)
@@ -951,9 +982,8 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
     # Store the new HEAD in the plugin's install-metadata record (if it has one).
     git_exe = _resolve_git_executable() if install_record else None
     if git_exe:
-        install_record["revision"] = _git_head_revision(target, git_exe)
-        metadata[target.name] = install_record
-        _write_install_metadata(metadata)
+        revision = _git_head_revision(target, git_exe)
+        _update_install_record(target.name, lambda current: {**current, "revision": revision} if current else None)
     return output
 
 
@@ -1047,16 +1077,14 @@ def _post_pull_housekeeping(target: Path, console) -> None:
 
 def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
-    metadata = _read_install_metadata()
-    if target.name not in metadata:
+    if target.name not in _read_install_metadata():
         rmtree_readonly(target)
         return
-    updated = {k: v for k, v in metadata.items() if k != target.name}
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent))
     backup = staging / "plugin"
     os.replace(target, backup)
     try:
-        _write_install_metadata(updated)
+        _update_install_record(target.name, lambda _current: None)
     except Exception:
         try:
             os.replace(backup, target)

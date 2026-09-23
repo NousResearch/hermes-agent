@@ -24,11 +24,11 @@ from hermes_cli.codex_models import _finalize_codex_models
 from hermes_cli.model_switch import _model_sort_key
 from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
 
-GPT6_TIERS = ("gpt-6-sol", "gpt-6-terra", "gpt-6-luna")
+GPT6_TIERS = ("gpt-6-sol", "gpt-6-luna")  # terra: never published by OpenAI, not on OpenRouter/Codex (2026-09-22)
 
 
 def test_model_gpt_resolves_flagship_across_gpt6_tiers():
-    models = ["gpt-6-luna", "gpt-5.6-sol", "gpt-6-terra", "gpt-6-sol", "gpt-6-astra"]
+    models = ["gpt-6-luna", "gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra"]
     models.sort(key=lambda m: _model_sort_key(m, "gpt"))
     assert models[:2] == ["gpt-6-astra", "gpt-6-sol"]
     assert models.index("gpt-6-luna") < models.index("gpt-5.6-sol")
@@ -58,3 +58,11 @@ def test_gpt6_tiers_replace_56_in_aggregator_catalogs_with_pricing_aliases():
         assert entry.cache_write_cost_per_million == entry.input_cost_per_million * Decimal("1.25"), base
         for suffix in ("pro", "900k"):
             assert _OFFICIAL_DOCS_PRICING[("openai", f"{base}-{suffix}")] is entry, (base, suffix)
+
+
+def test_codex_forward_compat_only_synthesizes_published_gpt6_tiers():
+    """Forward-compat synthesis puts names in the picker before the account catalog lists them, so it
+    must stay within tiers OpenAI has actually published (sol, luna; astra is discovery-only). A guessed
+    name such as gpt-6-terra shipped as a live picker choice once."""
+    synthesized = {m for m in _finalize_codex_models(["gpt-5.5"]) if m.startswith("gpt-6-")}
+    assert synthesized == {f"{base}{suffix}" for base in GPT6_TIERS for suffix in ("", "-900k")}

@@ -620,7 +620,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         return "900k" not in bare
     return bare == "gpt-daybreak-blue-latest" or any(
         bare == fam or bare.startswith(fam + "-") or bare.startswith(fam + ".")
-        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-sol", "gpt-6-terra", "gpt-6-luna"))
+        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-sol", "gpt-6-luna"))
 
 
 def _codex_route_bare_model(model: Optional[str], provider: Optional[str]) -> Optional[str]:

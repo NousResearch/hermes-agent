@@ -3482,9 +3482,14 @@ class GatewayRunner(
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
         # See #64674.
-        # An injected config (tests, ``gateway run --config``) is taken verbatim: an unset flag there
-        # stays None (= standalone); only the loaded path runs the boot-time default-on guard.
+        # Injected configs keep their mode (including None), except the launching profile's
+        # standalone opt-out: --config must not turn that profile into a host multiplexer.
         self.config = config if config is not None else load_gateway_config_for_runner()
+        if config is not None:
+            from hermes_cli.gateway_multiplex_mode import standalone_launcher_decision, log_multiplex_decision
+            decision = standalone_launcher_decision(self.config)
+            if decision is not None:
+                log_multiplex_decision(decision)
         # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
         try:
@@ -5361,6 +5366,15 @@ def _claim_host_gateway_role(force: bool = False) -> None:
     """
     from gateway import host_rendezvous as hr
 
+    # The host lock can be free after a standalone owner exits while a coexisting
+    # multiplexer remains live. Its per-home channel still governs our opt-out.
+    if not force:
+        from gateway.host_attach import REFUSE, standalone_attach_decision
+        decision = standalone_attach_decision(get_hermes_home(), None)
+        if decision is not None and decision.outcome == REFUSE:
+            from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+            print(decision.message)
+            raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
     try:
         outcome, error = hr.claim_host_lock(hr.ROLE_GATEWAY)
         if outcome is hr.HostLockOutcome.ACQUIRED:
@@ -5394,6 +5408,22 @@ def _claim_host_gateway_role(force: bool = False) -> None:
         logger.warning("--force: starting a second gateway although %s owns this host.",
                        hr.describe(owner) if owner else "another process")
         return
+    from gateway.host_attach import (
+        ATTACH_CHANNEL_WAIT_S, START, host_gateway, standalone_attach_decision,
+    )
+    from hermes_cli.profiles import profile_is_standalone
+    if profile_is_standalone(get_hermes_home()):
+        # Recheck after losing the atomic lock: the pre-lock served set may be stale.
+        live_owner = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
+        if live_owner is not None:
+            decision = standalone_attach_decision(get_hermes_home(), live_owner)
+            if decision is not None:
+                if decision.outcome == START:
+                    return
+                from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+                print(decision.message)
+                raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+        _refuse_second_host_gateway(owner)
     if _owner_is_standalone():
         # COMPOSITION with #118236: `host_attach.decide` sent us here with START precisely because
         # the owner is another profile's STANDALONE gateway and will never serve us. Refusing now
@@ -5452,6 +5482,26 @@ def _refuse_second_host_gateway(owner) -> None:
     logger.error("Refusing to start a second gateway on this host: %s", who)
     print(message)
     raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+
+
+def _log_standalone_profiles_at_boot(runner) -> None:
+    """One INFO line per standalone profile when the MULTIPLEXER takes its served set at boot.
+
+    The host gateway silently omits an opted-out profile from its served set; without this line an
+    operator reading the boot log cannot tell "not created yet" from "excluded by config".
+    """
+    try:
+        if not getattr(runner.config, "multiplex_profiles", False):
+            return
+        from hermes_cli.profiles import profiles_to_serve, profile_is_standalone
+        from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
+        served = set(runner.served_profile_names())
+        for name, home in profiles_to_serve(True, include_standalone=True):
+            if name != "default" and name not in served and profile_is_standalone(home):
+                logger.warning("profile '%s' is standalone (gateway.standalone: true); not served by "
+                               "this gateway. %s", name, STANDALONE_DEPRECATION_NOTICE)
+    except Exception:
+        logger.warning("standalone-profile boot notice failed", exc_info=True)
 
 
 def _refresh_host_gateway_record(runner) -> None:
@@ -5810,6 +5860,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _control_server = await _start_gateway_start_control_socket(runner)
     # Now the attach channel answers: republish the host record with the settled served set.
     _refresh_host_gateway_record(runner)
+    _log_standalone_profiles_at_boot(runner)
 
     def _lifecycle_record_startup() -> None:
         # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the

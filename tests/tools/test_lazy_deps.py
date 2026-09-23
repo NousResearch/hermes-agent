@@ -225,20 +225,19 @@ class TestIsSatisfiedVersionAware:
 
     def test_plugin_owned_sdk_newer_compatible_release_is_satisfied(self, monkeypatch):
         """A newer release inside the plugin.yaml range must not be re-pinned downward on refresh
-        (#86992 hindsight-client 0.9.x -> 0.6.1, #98407 mem0ai 2.0.19 -> 2.0.10)."""
-        self._fake_version(monkeypatch, {"hindsight-client": "0.9.2", "mem0ai": "2.0.19"})
-        assert ld.feature_missing("memory.hindsight") == ()
+        (#98407 mem0ai 2.0.19 -> 2.0.10; the same class hit the former hindsight extra, #86992)."""
+        self._fake_version(monkeypatch, {"mem0ai": "2.0.19"})
         assert ld.feature_missing("memory.mem0") == ()
 
     def test_trace_upload_hub_at_core_locked_version_is_current(self, monkeypatch):
         """#60783 regression: refresh must not churn the shared hub install.
 
         huggingface-hub arrives in the venv via the core lock (transformers /
-        sentence-transformers for local Hindsight, faster-whisper, tokenizers).
+        sentence-transformers for local memory-plugin embeddings, faster-whisper, tokenizers).
         With the LAZY_DEPS pin held in lockstep with uv.lock, the version the
         core installs satisfies the trace-upload spec, so the `hermes update`
         lazy-refresh pass reports "current" instead of reinstalling — the
-        downgrade that used to break the Hindsight daemon can't happen.
+        downgrade that used to break embedding daemons (#60783) can't happen.
         """
         spec = ld.LAZY_DEPS["tool.trace_upload"][0]
         pinned = ld._specifier_from_spec(spec).lstrip("=")

@@ -83,6 +83,7 @@ def compress_now(
     ``_compress_context`` still does useful work there — codex_app_server native compaction, and the
     phase-1 tool-result prune / blank-echo drop that ``ContextCompressor.compress`` commits even when no
     summary window exists."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER, _fresh_compaction_message_copy
     from agent.conversation_compression import finalize_context_engine_compression_notification
     from agent.manual_compression_feedback import summarize_manual_compression
     from hermes_cli.partial_compress import (
@@ -103,10 +104,14 @@ def compress_now(
     has_content = getattr(compressor, "has_content_to_compress", None)
     if skip_without_window and callable(has_content) and has_content(head) is False:
         return CompressResult("nothing_to_do", before, before, before_tokens, before_tokens, request)
+    # An in-place commit archives every durable row under the lease watermark, the kept tail's included, so
+    # it must store the tail again itself. It gets copies because the insert writes row ids onto them.
+    tail_rows = [_fresh_compaction_message_copy(m) for m in tail]
     try:
         compressed, _ = agent._compress_context(
             head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=True,
-            defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}))
+            defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}),
+            **({"verbatim_tail": tail_rows} if tail_rows else {}))
     except Exception:
         finalize_context_engine_compression_notification(agent, committed=False)
         raise
@@ -117,7 +122,9 @@ def compress_now(
         finalize_context_engine_compression_notification(agent, committed=False)
         return CompressResult("lock_skipped", before, before, before_tokens, before_tokens, request,
                               lock_holder=lock_signal if isinstance(lock_signal, str) else None)
-    if tail:
+    # Stamped copies mean the in-place commit stored the tail and already returned head + tail. Rotation, a
+    # no-op or a rolled-back commit leave them unstamped, and the tail is then only in the caller's dicts.
+    if tail and not all(row.get(_DB_PERSISTED_MARKER) is True for row in tail_rows):
         compressed = rejoin_compressed_head_and_tail(compressed, tail)
     after_tokens = estimate_request_tokens(agent, compressed)
     summary = summarize_manual_compression(before, compressed, before_tokens, after_tokens, compression_state=compressor)

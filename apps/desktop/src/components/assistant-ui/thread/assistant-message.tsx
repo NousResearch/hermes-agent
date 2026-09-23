@@ -320,14 +320,15 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
               </ErrorPrimitive.Root>
             </MessagePrimitive.Error>
           </div>
-          <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
-          {hasVisibleText && !isInterim && responseTail && (
+          {hasVisibleText && !isInterim && responseTail ? (
             <AssistantFooter
               durationS={turnDurationS}
               getMessageText={getMessageText}
               messageId={messageId}
               onBranchInNewChat={onBranchInNewChat}
             />
+          ) : (
+            <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" showIcon suppressIfDuplicatePart />
           )}
           {/* Last thing in the turn — under the action bar, the way Cursor ends a
           turn on its summary rather than burying it above the controls. */}
@@ -958,15 +959,18 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
 
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
-      {durationS !== undefined && (
-        <span
-          className="mr-auto select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
-          data-slot="aui_turn-duration"
-          title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
-        >
-          ⏱ {formatElapsed(durationS)}
-        </span>
-      )}
+      <div className="mr-auto flex min-w-0 items-center gap-2" data-slot="aui_message-timing">
+        <MessageTimelineTimestamp showIcon suppressIfDuplicatePart />
+        {durationS !== undefined && (
+          <span
+            className="select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
+            data-slot="aui_turn-duration"
+            title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
+          >
+            ⏱ {formatElapsed(durationS)}
+          </span>
+        )}
+      </div>
       <ActionBarPrimitive.Root
         className={
           // NOTE: intentionally NOT `hideWhenRunning`. That prop unmounts the

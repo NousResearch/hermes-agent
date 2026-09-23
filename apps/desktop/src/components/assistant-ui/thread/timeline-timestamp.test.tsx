@@ -43,4 +43,17 @@ describe('TimelineTimestamp display.timestamps gate', () => {
 
     expect(container.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
   })
+
+  it('can show the compact clock icon used by message chrome', () => {
+    $displayTimestamps.set(true)
+
+    const { container } = render(<TimelineTimestamp showIcon timestamp={timestamp} />)
+
+    const stamp = container.querySelector('[data-slot="timeline-timestamp"]')
+
+    expect(stamp?.querySelector('svg')).toBeTruthy()
+    expect(stamp?.getAttribute('aria-label')).toContain('2026')
+    expect(stamp?.getAttribute('role')).toBe('note')
+    expect(stamp?.getAttribute('tabindex')).toBe('0')
+  })
 })

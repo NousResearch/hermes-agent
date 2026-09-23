@@ -607,10 +607,11 @@ describe('assistant-ui streaming renderer', () => {
     const actions = container.querySelector('[data-slot="aui_msg-actions"]')
 
     // Same row as the (always-mounted) action bar: the footer's height is
-    // already reserved while the turn streams, so landing the duration there
-    // adds no height when the turn settles.
+    // already reserved while the turn streams, so landing the timing metadata
+    // there adds no height when the turn settles.
     expect(duration).toBeTruthy()
-    expect(duration?.parentElement).toBe(actions?.parentElement)
+    expect(duration?.closest('[data-slot="aui_message-timing"]')).toBeTruthy()
+    expect(duration?.parentElement?.parentElement).toBe(actions?.parentElement)
   })
 
   it('renders assistant provider errors inline', () => {

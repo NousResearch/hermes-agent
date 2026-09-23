@@ -2,6 +2,7 @@ import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import type { FC } from 'react'
 
+import { Clock } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
@@ -33,8 +34,9 @@ const unixDate = (value: unknown): Date | null => {
 export const TimelineTimestamp: FC<{
   className?: string
   completedAt?: number
+  showIcon?: boolean
   timestamp?: number
-}> = ({ className, completedAt, timestamp }) => {
+}> = ({ className, completedAt, showIcon = false, timestamp }) => {
   // One config key everywhere (#41531): `display.timestamps` in config.yaml
   // gates transcript timestamps here exactly as it gates the classic CLI's
   // [HH:MM] labels. Display-only, so toggling never touches model context.
@@ -61,10 +63,17 @@ export const TimelineTimestamp: FC<{
       // `text-muted-foreground/55` doubled an alpha: muted-foreground is
       // already a 54% mix of the base ink, so the stamp landed near 30% —
       // faint over a dark chrome and fainter over a light one.
-      className={cn('text-[0.625rem] leading-4 tabular-nums text-(--conversation-scaffold-meta)', className)}
+      aria-label={showIcon ? title : undefined}
+      className={cn(
+        'inline-flex items-center gap-1 text-[0.625rem] leading-4 tabular-nums text-(--conversation-scaffold-meta)',
+        className
+      )}
       data-slot="timeline-timestamp"
+      role={showIcon ? 'note' : undefined}
+      tabIndex={showIcon ? 0 : undefined}
       title={title}
     >
+      {showIcon && <Clock aria-hidden className="size-2.5 shrink-0" />}
       <time dateTime={started.toISOString()}>{startLabel}</time>
       {completed && validCompletedAt !== undefined && (
         <>
@@ -80,7 +89,8 @@ export const TimelineTimestamp: FC<{
 export const MessageTimelineTimestamp: FC<{
   className?: string
   suppressIfDuplicatePart?: boolean
-}> = ({ className, suppressIfDuplicatePart = false }) => {
+  showIcon?: boolean
+}> = ({ className, showIcon = false, suppressIfDuplicatePart = false }) => {
   const timestamp = useAuiState(s => {
     const value = (s.message.metadata?.custom as { timelineTimestamp?: unknown } | undefined)?.timelineTimestamp
 
@@ -114,5 +124,5 @@ export const MessageTimelineTimestamp: FC<{
     return null
   }
 
-  return <TimelineTimestamp className={className} completedAt={completedAt} timestamp={timestamp} />
+  return <TimelineTimestamp className={className} completedAt={completedAt} showIcon={showIcon} timestamp={timestamp} />
 }

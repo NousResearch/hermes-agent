@@ -170,15 +170,17 @@ function LocationProbe() {
 
 function Harness({
   assistant = assistantMessage(),
+  messages,
   onBranchInNewChat,
   onReload
 }: {
   assistant?: ThreadMessage
+  messages?: ThreadMessage[]
   onBranchInNewChat?: (messageId: string) => void
   onReload?: () => Promise<void>
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistant],
+    messages: messages ?? [userMessage(), assistant],
     isRunning: false,
     onNew: async () => {},
     ...(onReload ? { onReload } : {})
@@ -466,6 +468,97 @@ describe('message timeline timestamps', () => {
     expect(stamps).toContain(formatTimelineRange(startedAt, completedAt))
     expect(stamps).toContain(formatTimelineRange(startedAt + 0.05, startedAt + 0.1))
     expect(stamps).toContain(formatTimelineRange(startedAt + 0.125, startedAt + 0.5))
+
+    expect(container.querySelector('[data-slot="aui_user-message-meta"] [data-slot="timeline-timestamp"]')).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_message-timing"] [data-slot="timeline-timestamp"]')).toBeTruthy()
+  })
+
+  it('keeps the generation duration beside the assistant timestamp', async () => {
+    const base = assistantMessage()
+
+    const assistant = {
+      ...base,
+      metadata: {
+        ...base.metadata,
+        custom: { ...base.metadata?.custom, durationS: 12 }
+      }
+    } as ThreadMessage
+
+    const { container } = render(<Harness assistant={assistant} />)
+
+    await screen.findByText('done')
+
+    const timing = container.querySelector('[data-slot="aui_message-timing"]')
+
+    expect(timing?.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
+    expect(timing?.querySelector('[data-slot="aui_turn-duration"]')?.textContent).toContain('12s')
+  })
+
+  it('keeps a lifecycle stamp on assistant bubbles without visible text', async () => {
+    const assistant = { ...assistantMessage(), content: [] } as ThreadMessage
+
+    const { container } = render(<Harness assistant={assistant} />)
+
+    await waitFor(() => expect(container.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy())
+
+    expect(container.querySelector('[data-slot="aui_message-timing"]')).toBeNull()
+  })
+
+  it('keeps lifecycle stamps on non-tail assistant bubbles', async () => {
+    const first = assistantMessage()
+    const second = { ...assistantMessage(), id: 'assistant-2' } as ThreadMessage
+
+    const { container } = render(<Harness messages={[userMessage(), first, second]} />)
+
+    await screen.findAllByText('done')
+
+    const roots = container.querySelectorAll('[data-slot="aui_assistant-message-root"]')
+
+    expect(roots[0]?.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
+    expect(roots[0]?.querySelector('[data-slot="aui_message-timing"]')).toBeNull()
+    expect(roots[1]?.querySelector('[data-slot="aui_message-timing"]')).toBeTruthy()
+  })
+
+  it('keeps lifecycle stamps on interim and error assistant bubbles', async () => {
+    const base = assistantMessage()
+
+    const interim = {
+      ...base,
+      metadata: {
+        ...base.metadata,
+        custom: { ...base.metadata?.custom, interim: true }
+      }
+    } as ThreadMessage
+
+    const error = ownershipRefusalMessage()
+    error.metadata = {
+      ...error.metadata,
+      custom: { ...error.metadata?.custom, timelineTimestamp: createdAt.getTime() / 1000 }
+    }
+
+    const { container } = render(<Harness messages={[userMessage(), interim, error]} />)
+
+    expect(await screen.findByText(/open in another Hermes window or terminal/)).toBeTruthy()
+
+    const roots = container.querySelectorAll('[data-slot="aui_assistant-message-root"]')
+
+    expect(roots[0]?.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
+    expect(roots[0]?.querySelector('[data-slot="aui_message-timing"]')).toBeNull()
+    expect(roots[1]?.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
+  })
+
+  it('respects display.timestamps when message timing chrome is mounted', async () => {
+    $displayTimestamps.set(false)
+
+    try {
+      const { container } = render(<Harness />)
+
+      await screen.findByText('done')
+
+      expect(container.querySelector('[data-slot="timeline-timestamp"]')).toBeNull()
+    } finally {
+      $displayTimestamps.set(true)
+    }
   })
 
   it('suppresses an aggregate assistant stamp that exactly duplicates its sole part', async () => {

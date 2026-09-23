@@ -555,31 +555,33 @@ export const UserMessage: FC<{
               onRetract={() => react(null)}
               reactions={shownReactions}
             />
-            <MessageTimelineTimestamp className="self-end pr-1.5" />
-            <BranchPickerPrimitive.Root
-              className={cn(
-                'checkpoint-container flex items-center gap-1 pb-0 pt-1 pl-1.5 text-[0.75rem] leading-none text-(--ui-text-tertiary)',
-                readOnly && 'hidden'
-              )}
-              hideWhenSingleBranch
-            >
-              <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
-              <BranchPickerPrimitive.Previous
-                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title={copy.restorePrevious}
+            <div className="flex items-center justify-end gap-1.5 pr-1.5" data-slot="aui_user-message-meta">
+              <MessageTimelineTimestamp showIcon />
+              <BranchPickerPrimitive.Root
+                className={cn(
+                  'checkpoint-container flex items-center gap-1 pb-0 pt-1 pl-1.5 text-[0.75rem] leading-none text-(--ui-text-tertiary)',
+                  readOnly && 'hidden'
+                )}
+                hideWhenSingleBranch
               >
-                {copy.restoreCheckpoint}
-              </BranchPickerPrimitive.Previous>
-              <span className="checkpoint-divider opacity-55">
-                <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
-              </span>
-              <BranchPickerPrimitive.Next
-                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title={copy.restoreNext}
-              >
-                {copy.goForward}
-              </BranchPickerPrimitive.Next>
-            </BranchPickerPrimitive.Root>
+                <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
+                <BranchPickerPrimitive.Previous
+                  className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                  title={copy.restorePrevious}
+                >
+                  {copy.restoreCheckpoint}
+                </BranchPickerPrimitive.Previous>
+                <span className="checkpoint-divider opacity-55">
+                  <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
+                </span>
+                <BranchPickerPrimitive.Next
+                  className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                  title={copy.restoreNext}
+                >
+                  {copy.goForward}
+                </BranchPickerPrimitive.Next>
+              </BranchPickerPrimitive.Root>
+            </div>
           </div>
         </ActionBarPrimitive.Root>
       </StickyHumanMessageContainer>

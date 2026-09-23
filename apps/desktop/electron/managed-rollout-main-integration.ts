@@ -613,8 +613,11 @@ async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, auth
     const receipt = raw.receipt
     const correlated = receipt?.correlationId === authorization.correlationId
     const clear = ['absent', 'dead'].includes(raw.marker) && ['absent', 'dead'].includes(raw.launchIntent)
+    const receiptRequired = record.phase === 'launching'
 
-    if (!correlated || !clear) {
+    // A prepared record was persisted before launch. It may correctly have no
+    // receipt; the durable scope record and clear remote markers govern recovery.
+    if (!clear || (receiptRequired && !correlated) || (!receiptRequired && receipt && !correlated)) {
       return { correlationId: typeof receipt?.correlationId === 'string' ? receipt.correlationId : '', clearanceProved: false }
     }
 

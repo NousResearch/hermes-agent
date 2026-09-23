@@ -483,4 +483,31 @@ describe('managed rollout main integration', () => {
     })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
     expect(recoverManagedSsh).toHaveBeenCalledWith(record)
   })
+
+  test('Recover restores a prepared prelaunch obligation without inventing a receipt', async () => {
+    let record: any = {
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      phase: 'prepared',
+      scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
+      source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
+    }
+    const recoverManagedSsh = vi.fn(async () => {record = null})
+    const { integration } = makeIntegration(TARGET_SHA, {
+      readRecoveryRecord: () => record,
+      recoverManagedSsh
+    })
+
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent', receipt: null
+    } as any)
+
+    await expect((integration.observe as any).recover({
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID
+    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: true })
+    expect(recoverManagedSsh).toHaveBeenCalledWith(expect.objectContaining({
+      phase: 'prepared', scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }]
+    }))
+  })
 })

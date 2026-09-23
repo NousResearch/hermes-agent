@@ -20,9 +20,11 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+REASONING_EFFORT_MIDDLEWARE = "reasoning_effort"
 
 VALID_MIDDLEWARE: set[str] = {
     TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    REASONING_EFFORT_MIDDLEWARE,
 }
 
 
@@ -97,6 +99,38 @@ def apply_llm_request_middleware(request: Dict[str, Any], **context: Any) -> Req
         LLM_REQUEST_MIDDLEWARE, "request", [], original_request,
         request=_safe_copy(original_request), original_request=original_request, **context,
     )
+
+
+def apply_reasoning_effort_middleware(effort: str, **context: Any) -> str:
+    """Return the last valid effort selected by a pre-turn policy middleware.
+
+    This runs once per user turn before the durable user row and effort marker are
+    appended.  Policies can select an effort but cannot disable reasoning or change
+    the model/provider.  Invalid or failing callbacks leave the current effort intact.
+    """
+    from hermes_cli.plugins import has_middleware, invoke_middleware
+
+    current = str(effort or "").strip().lower()
+    if context.get("reasoning_effort_updates_supported") is not True:
+        return current
+    declared = context.get("supported_reasoning_efforts")
+    if not isinstance(declared, (list, tuple, set, frozenset)):
+        return current
+    if not has_middleware(REASONING_EFFORT_MIDDLEWARE):
+        return current
+    from agent.reasoning_effort import EFFORT_LADDER
+
+    offered = {str(level).strip().lower() for level in declared}
+    allowed = (set(EFFORT_LADDER) - {"none"}) & offered
+    for result in invoke_middleware(
+        REASONING_EFFORT_MIDDLEWARE,
+        **middleware_payload(effort=current, **context),
+    ):
+        candidate = result.get("effort") if isinstance(result, dict) else None
+        candidate = str(candidate or "").strip().lower()
+        if candidate in allowed:
+            current = candidate
+    return current
 
 
 def apply_tool_request_middleware(

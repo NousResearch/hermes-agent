@@ -530,6 +530,7 @@ def test_actual_oneshot_reasoning_override_reaches_agent(monkeypatch):
             "provider": "actual",
             "requested_provider": "actual",
             "api_mode": "chat_completions",
+            "capabilities": {"reasoning_effort_updates": True},
         },
     )
     monkeypatch.setattr(
@@ -551,6 +552,7 @@ def test_actual_oneshot_reasoning_override_reaches_agent(monkeypatch):
 
     assert response == "ok"
     assert captured["reasoning_config"] == {"enabled": True, "effort": "ultra"}
+    assert captured["capabilities"] == {"reasoning_effort_updates": True}
 
 
 def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():

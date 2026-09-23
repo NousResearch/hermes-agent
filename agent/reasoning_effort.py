@@ -94,6 +94,12 @@ def is_astra_model(model: Optional[str]) -> bool:
     return (model or "").strip().lower().rsplit("/", 1)[-1] in ASTRA_MODEL_IDS
 
 
+def is_gpt6_model(model: Optional[str]) -> bool:
+    """Whether ``model`` belongs to the GPT-6 family supported by configuration updates."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return is_astra_model(model) or bare.startswith(GPT6_TIER_PREFIXES)
+
+
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
     if is_astra_model(model):

@@ -157,6 +157,28 @@ describe('applyDisplay', () => {
 })
 
 describe('normalizeStatusBar', () => {
+  it('uses display.statusbar before tui_statusbar and accepts the CLI hidden alias', () => {
+    const setBell = vi.fn()
+
+    applyDisplay(
+      {
+        config: {
+          display: {
+            statusbar: 'hidden',
+            tui_statusbar: 'bottom'
+          }
+        }
+      },
+      setBell
+    )
+
+    expect($uiState.get().statusBar).toBe('off')
+
+    applyDisplay({ config: { display: { tui_statusbar: 'bottom' } } }, setBell)
+
+    expect($uiState.get().statusBar).toBe('bottom')
+  })
+
   it('maps legacy bool + on alias to top/off', () => {
     expect(normalizeStatusBar(true)).toBe('top')
     expect(normalizeStatusBar(false)).toBe('off')

@@ -1022,6 +1022,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if grace <= 0:
             return
         _wait_for_exit(targets)
+        # A parent that ignored SIGTERM (the interactive ``bash -lic`` wrapper does) keeps
+        # running its script through both grace windows and can spawn children the first
+        # snapshot never saw. Re-snapshot while it is still alive: once it is SIGKILLed
+        # they reparent to init and nothing can find them again.
+        with suppress(gone):
+            if cls._proc_alive(parent):
+                known = {proc.pid for proc in targets}
+                targets.extend(p for p in parent.children(recursive=True) if p.pid not in known)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):

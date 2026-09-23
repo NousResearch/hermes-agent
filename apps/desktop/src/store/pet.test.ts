@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import {
   $petActivity,
@@ -12,10 +14,97 @@ import {
   hasPetSpriteForMeta,
   mergePetInfoMeta,
   type PetInfo,
+  petOwner,
+  petOwnerChanged,
+  petOwnerUsesAmbientGateway,
+  petProfile,
+  requestPetForOwner,
   setPetActivity
 } from './pet'
 import { $activeSessionId, $busy } from './session'
 import { clearAllSessionStates, publishSessionState } from './session-states'
+
+describe('pet owner routing', () => {
+  it('follows the exact Bot workspace owner instead of the ambient default profile', () => {
+    $activeGatewayProfile.set('default')
+    setWorkspaceScope('bots', 'jaime-vpn::scout', {
+      kind: 'route',
+      route: {
+        connectionId: 'jaime-vpn',
+        mode: 'remote',
+        profile: 'scout',
+        targetProfile: 'scout'
+      }
+    })
+
+    expect(petProfile()).toBe('scout')
+    expect(petOwner()).toEqual({
+      connectionId: 'jaime-vpn',
+      profile: 'scout',
+      targetProfile: 'scout'
+    })
+    expect(petOwnerUsesAmbientGateway(petOwner())).toBe(false)
+
+    setWorkspaceScope('sessions')
+  })
+
+  it('does not treat initial owner hydration as a switch', () => {
+    const ambient = { profile: 'default', targetProfile: 'default' }
+    const routed = { connectionId: 'jaime-vpn', profile: 'scout', targetProfile: 'scout' }
+
+    expect(petOwnerChanged(undefined, ambient)).toBe(false)
+    expect(petOwnerChanged(ambient, { ...ambient })).toBe(false)
+    expect(petOwnerChanged(ambient, routed)).toBe(true)
+  })
+
+  it('falls back to ambient ownership for a malformed Bot route', () => {
+    $activeGatewayProfile.set('default')
+    setWorkspaceScope('bots', 'broken::route', {
+      kind: 'route',
+      route: { connectionId: undefined, profile: undefined } as never
+    })
+
+    expect(() => petOwner()).not.toThrow()
+    expect(petOwner()).toEqual({ profile: 'default', targetProfile: 'default' })
+
+    setWorkspaceScope('sessions')
+  })
+
+  it('routes a Bot pet RPC through the selected bot connection', async () => {
+    const ambient = vi.fn()
+    const routed = vi.fn(async () => ({ slug: 'cache-capy' }))
+
+    const owner = {
+      connectionId: 'jaime-vpn',
+      profile: 'scout',
+      targetProfile: 'scout'
+    }
+
+    await expect(
+      requestPetForOwner(owner, 'pet.info', { knownRevision: 'old' }, ambient, routed)
+    ).resolves.toEqual({ slug: 'cache-capy' })
+    expect(routed).toHaveBeenCalledWith('jaime-vpn', 'scout', 'pet.info', {
+      knownRevision: 'old',
+      profile: 'scout'
+    })
+    expect(ambient).not.toHaveBeenCalled()
+  })
+
+  it('uses the ambient profile outside an exactly routed Bot workspace', () => {
+    $activeGatewayProfile.set('nightwatch')
+    setWorkspaceScope('bots', 'group:ops', {
+      kind: 'blocked',
+      message: 'Group chats have no single owner.'
+    })
+
+    expect(petProfile()).toBe('nightwatch')
+    expect(petOwner()).toEqual({ profile: 'nightwatch', targetProfile: 'nightwatch' })
+    expect(petOwnerUsesAmbientGateway(petOwner())).toBe(true)
+
+    setWorkspaceScope('sessions')
+    $activeGatewayProfile.set('default')
+  })
+})
 
 describe('derivePetState', () => {
   it('rests at idle by default and uses waiting when awaiting input', () => {

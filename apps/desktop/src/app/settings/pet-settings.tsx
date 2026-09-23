@@ -16,7 +16,7 @@ import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { $petInfo, $petRoam, setPetRoam } from '@/store/pet'
+import { $petInfo, $petOwner, $petRoam, petOwnerUsesAmbientGateway, setPetRoam } from '@/store/pet'
 import {
   $petBusy,
   $petGallery,
@@ -57,6 +57,7 @@ export function PetSettings() {
   const error = useStore($petGalleryError)
   const busySlug = useStore($petBusy)
   const petInfo = useStore($petInfo)
+  const petOwner = useStore($petOwner)
   const roam = useStore($petRoam)
   const [query, setQuery] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<GalleryPet | null>(null)
@@ -65,12 +66,12 @@ export function PetSettings() {
   const scale = petInfo.scale ?? PET_SCALE_DEFAULT
 
   useEffect(() => {
-    if (gatewayState !== 'open') {
+    if (petOwnerUsesAmbientGateway(petOwner) && gatewayState !== 'open') {
       return
     }
 
     void loadPetGallery(requestGateway)
-  }, [gatewayState, requestGateway])
+  }, [gatewayState, petOwner, requestGateway])
 
   const enabled = gallery?.enabled ?? false
   const active = gallery?.active ?? ''

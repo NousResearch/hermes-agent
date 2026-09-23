@@ -102,6 +102,8 @@ export interface KanbanTaskFull extends KanbanTask {
   model_override?: null | string
   provider_override?: null | string
   reasoning_effort?: null | string
+  goal_mode?: boolean
+  goal_max_turns?: null | number
   completed_at?: null | number
   last_failure_error?: null | string
   workspace_kind?: null | string

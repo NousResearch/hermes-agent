@@ -87,6 +87,21 @@ def test_patch_priority_fires_task_updated(client, captured_updates):
     assert kw["board"]
 
 
+def test_patch_goal_settings_lock_after_first_claim(client):
+    tid = _make_task()
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}", json={"goal_mode": True, "goal_max_turns": 40},
+    )
+    assert response.status_code == 200
+
+    with kbc.connect() as conn:
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+
+    locked = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={"goal_mode": False})
+    assert locked.status_code == 400
+    assert "cannot be changed after execution has started" in locked.json()["detail"]
+
+
 def test_patch_priority_uses_shared_edit_task_primitive(client, monkeypatch):
     """The dashboard reprioritizes through ``kanban_db.edit_task`` (one event
     kind, one observer) instead of a duplicate raw UPDATE/INSERT (#117434)."""

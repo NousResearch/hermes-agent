@@ -1201,6 +1201,91 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)
 
 
+# Built-in memory is an empty provider name. These spellings show up in configs and
+# UIs; none of them owns a ``<home>/<provider>/`` directory.
+_BUILTIN_MEMORY_PROVIDERS = frozenset({"", "builtin", "built-in", "default", "none"})
+_MEMORY_PROVIDER_DIR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def _configured_memory_provider(config_path: Path) -> str:
+    """``memory.provider`` from a profile config, or ``""`` when unset / unreadable."""
+    if not config_path.is_file():
+        return ""
+    from hermes_cli.config import read_user_config_raw
+    try:
+        raw = read_user_config_raw(config_path) or {}
+    except Exception:
+        return ""
+    memory = raw.get("memory") if isinstance(raw, dict) else None
+    if not isinstance(memory, dict):
+        return ""
+    provider = memory.get("provider")
+    if not isinstance(provider, str):
+        return ""
+    return provider.strip()
+
+
+def _external_memory_state_dir_provider(source_dir: Path) -> Optional[str]:
+    """Provider id whose state is a real directory ``<home>/<provider>/``.
+
+    Light ``--clone`` copies ``config.yaml`` (so the selection survives) but not that
+    directory. Honcho keeps its config in ``honcho.json``, not a directory, and is
+    left selected. A name that is not a single path component is ignored.
+    """
+    provider = _configured_memory_provider(source_dir / "config.yaml")
+    if not provider or provider.lower() in _BUILTIN_MEMORY_PROVIDERS:
+        return None
+    if not _MEMORY_PROVIDER_DIR_RE.fullmatch(provider):
+        return None
+    state_dir = source_dir / provider
+    try:
+        if not state_dir.is_dir():
+            return None
+    except OSError:
+        return None
+    return provider
+
+
+def _detach_light_clone_memory_provider(source_dir: Path, staging: Path) -> Optional[str]:
+    """Drop ``memory.provider`` when ``--clone`` did not copy ``<provider>/``.
+
+    Otherwise the clone boots with the source's provider selected, the catalog
+    auto-installs it, and the provider reports unavailable because its config
+    directory never arrived. ``--clone-all`` copies the directory and is not
+    handled here. Returns the provider id when the selection was removed.
+    """
+    provider = _external_memory_state_dir_provider(source_dir)
+    if not provider or (staging / provider).exists():
+        return None
+    config_path = staging / "config.yaml"
+    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    raw = read_user_config_raw(config_path) or {}
+    if not isinstance(raw, dict):
+        return None
+    memory = raw.get("memory")
+    if not isinstance(memory, dict) or memory.get("provider") != provider:
+        return None
+    memory.pop("provider", None)
+    if not memory:
+        raw.pop("memory", None)
+    atomic_config_write(config_path, raw)
+    return provider
+
+
+def skipped_light_clone_memory_provider(source_dir: Path, profile_dir: Path) -> Optional[str]:
+    """Provider a light clone left behind, or None when the selection still stands.
+
+    Used by the CLI notice. ``--clone-all`` copies the directory, so the selection
+    remains and this returns None.
+    """
+    provider = _external_memory_state_dir_provider(source_dir)
+    if not provider or (profile_dir / provider).exists():
+        return None
+    if _configured_memory_provider(profile_dir / "config.yaml") == provider:
+        return None
+    return provider
+
+
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
@@ -1217,7 +1302,10 @@ def create_profile(
     ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
     re-seeding its skills; it is mutually exclusive with the clone options, which copy skills.
     ``sync_imports`` (``--clone`` only; ``--clone-all`` copies the file anyway) also copies the
-    ``import-agent`` sync manifest so the clone can keep pulling the same external agent trees."""
+    ``import-agent`` sync manifest so the clone can keep pulling the same external agent trees.
+    A light clone that selects an external memory provider whose state lives in
+    ``<home>/<provider>/`` drops that selection (the directory is not copied) so the
+    new profile boots on built-in memory instead of a provider that reports unavailable."""
     if no_skills and (clone_from is not None or clone_config or clone_all):
         raise ValueError(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
@@ -1269,6 +1357,13 @@ def create_profile(
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
+        if source_dir is not None and not clone_all:
+            dropped = _detach_light_clone_memory_provider(source_dir, staging)
+            if dropped:
+                logger.info(
+                    "profile %s: memory provider %s was not cloned "
+                    "(--clone does not copy %s/)", canon, dropped, dropped,
+                )
         os.rename(staging, profile_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)

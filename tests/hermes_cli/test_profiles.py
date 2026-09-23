@@ -217,6 +217,53 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    def test_light_clone_drops_memory_provider_whose_state_dir_was_not_copied(self, profile_env):
+        """--clone copies memory.provider but not <provider>/. Leaving the selection
+        makes the next boot auto-install the plugin and report it unavailable (#120115).
+        """
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "memory:\n  provider: hindsight\n  limit: 5\n"
+        )
+        state = default_home / "hindsight"
+        state.mkdir()
+        (state / "config.json").write_text('{"mode": "local_embedded"}\n')
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        memory = cfg.get("memory") or {}
+        assert memory.get("provider") in (None, "")
+        assert memory.get("limit") == 5
+        assert not (profile_dir / "hindsight").exists()
+        assert (default_home / "hindsight" / "config.json").is_file()
+        assert profiles.skipped_light_clone_memory_provider(default_home, profile_dir) == "hindsight"
+
+    def test_light_clone_keeps_memory_provider_that_has_no_state_directory(self, profile_env):
+        """Honcho stores honcho.json, not a honcho/ directory. --clone must keep that selection."""
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("memory:\n  provider: honcho\n")
+        (default_home / "honcho.json").write_text("{}\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg["memory"]["provider"] == "honcho"
+        assert profiles.skipped_light_clone_memory_provider(default_home, profile_dir) is None
+
+    def test_clone_all_keeps_memory_provider_and_its_state_dir(self, profile_env):
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("memory:\n  provider: hindsight\n")
+        (default_home / "hindsight").mkdir()
+        (default_home / "hindsight" / "config.json").write_text("{}\n")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg["memory"]["provider"] == "hindsight"
+        assert (profile_dir / "hindsight" / "config.json").read_text() == "{}\n"
+        assert profiles.skipped_light_clone_memory_provider(default_home, profile_dir) is None
+
     def test_clone_sync_imports_carries_manifest_but_never_links_profiles(self, profile_env):
         """--sync-imports copies import-sync.json (a pointer at EXTERNAL agent trees) and nothing
         else changes: the clone still gets its own config/skills copies, never a live link."""

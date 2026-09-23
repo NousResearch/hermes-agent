@@ -219,6 +219,20 @@ def _profile_create(args):
             print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
                   "keeps pulling the same Claude Code / Codex trees.")
         _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
+        if not clone_all:
+            from hermes_cli.profiles import skipped_light_clone_memory_provider
+            try:
+                source_dir = _source_profile_dir(source_label)
+            except FileNotFoundError:
+                source_dir = None
+            skipped = skipped_light_clone_memory_provider(source_dir, profile_dir) if source_dir else None
+            if skipped:
+                print(
+                    f"Memory provider '{skipped}' was NOT cloned: --clone does not copy "
+                    f"{skipped}/ (its config and data). '{name}' uses built-in memory. "
+                    f"`hermes profile create --clone-all` copies that directory; an embedded "
+                    f"store copied that way can stay shared with {source_label}."
+                )
         # Auto-clone Honcho config for the new profile (only with clone operations)
         try:
             from plugins.memory import import_provider_module

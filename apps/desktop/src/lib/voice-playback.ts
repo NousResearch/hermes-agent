@@ -252,6 +252,14 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
       }
       stopSources = []
 
+      // Close the AudioContext so we don't leak one per session.
+      // Browsers cap concurrent contexts (~6 in Chrome); without this,
+      // repeated voice replies silently degrade into no playback.
+      if (audioCtx) {
+        void audioCtx.close().catch(() => undefined)
+        audioCtx = null
+      }
+
       resolve(value)
     }
   })
@@ -370,7 +378,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         nextStartAt = startAt + duration
 
         // Track so stopVoicePlayback() can cut it immediately.
-        stopSources.push({
+        const trackedSrc = {
           stop: () => {
             try {
               source.stop()
@@ -378,12 +386,19 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
               // already stopped
             }
           }
-        })
+        }
+        stopSources.push(trackedSrc)
 
         // Wait until this buffer finishes before scheduling the next one
         // (keeps the queue FIFO and avoids overlapping sentences).
         await new Promise<void>(resolve => {
-          source.addEventListener('ended', () => resolve(), { once: true })
+          source.addEventListener('ended', () => {
+            // Prune the dead source so stopSources doesn't grow unbounded
+            // during long replies.
+            const idx = stopSources.indexOf(trackedSrc)
+            if (idx >= 0) stopSources.splice(idx, 1)
+            resolve()
+          }, { once: true })
         })
       }
 

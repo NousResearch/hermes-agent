@@ -385,6 +385,7 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
         seen_sessions[title_lineage] = {"_title_only": True}
+    excluded_by_id = excluded_live = 0
     # Dedupe by lineage (lineage_root -> first surviving FTS row) up to `limit`. The raw
     # owning session_id stays on the row — only it pairs validly with the FTS match id.
     # Current-lineage hits are skipped UNLESS the transcript left live context
@@ -395,6 +396,7 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             break
         raw_sid, resolved_sid = r["session_id"], _resolve_lineage(db, r["session_id"])
         if raw_sid in excluded_roots or resolved_sid in excluded_roots:
+            excluded_by_id += 1
             continue
         # Skip the current session lineage — UNLESS the hit's transcript has left live context. Three
         # sub-cases: Legacy compression rotation: the FTS hit lives in a session that itself ended with
@@ -409,8 +411,10 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         is_compacted_hit = _is_compacted_message(db, r.get("id"))
         if current_lineage_root and resolved_sid == current_lineage_root and not (
                 _session_left_live_context(db, raw_sid) or is_compacted_hit):
+            excluded_live += 1
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
+            excluded_live += 1
             continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
     for lineage_root, match_info in seen_sessions.items():
@@ -422,7 +426,24 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             results.append(entry)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
-    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
+    extra = {}
+    if not results and raw_results and excluded_by_id + excluded_live == len(raw_results):
+        reasons = []
+        if excluded_live:
+            reasons.append(f"{excluded_live} in the current session's live context")
+        if excluded_by_id:
+            reasons.append(f"{excluded_by_id} from exclude_session_ids")
+        advice = []
+        if excluded_live:
+            advice.append("search from another session for live-context matches")
+        if excluded_by_id:
+            advice.append("remove exclude_session_ids to include those sessions")
+        extra["message"] = (f"All {len(raw_results)} scanned search matches were excluded: "
+                            f"{', '.join(reasons)}. To see them, {'; '.join(advice)}. "
+                            "The role_filter is applied before this scan; the default includes "
+                            "user and assistant, not tool output (use role_filter='user,assistant,tool' "
+                            "to include tool output).")
+    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), **extra, link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "

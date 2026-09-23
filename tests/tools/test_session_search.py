@@ -330,6 +330,33 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_all_scanned_hits_excluded_explains_each_reason(self, db):
+        db.create_session("s_live", source="cli")
+        db.create_session("s_seen", source="cli")
+        for sid in ("s_live", "s_seen"):
+            db.append_message(sid, role="assistant", content="rare amber compass")
+        db.append_message("s_live", role="tool", content="rare amber compass")
+
+        result = json.loads(session_search(
+            query="rare amber compass", db=db, current_session_id="s_live",
+            exclude_session_ids=["s_seen"],
+        ))
+        assert result["count"] == result["sessions_searched"] == 0
+        assert result["results"] == []
+        assert "2 scanned search matches" in result["message"]
+        assert "1 in the current session's live context" in result["message"]
+        assert "1 from exclude_session_ids" in result["message"]
+        assert "role_filter" in result["message"]
+        assert "No matching sessions found" not in result["message"]
+        assert json.loads(session_search(query="rare amber compass", db=db))["count"] == 2
+
+    def test_no_raw_hits_retains_query_guidance(self, db):
+        result = json.loads(session_search(query="nonexistent obsidian compass", db=db))
+        assert result["count"] == 0
+        assert "No matching sessions found" in result["message"]
+        assert "FTS5 ANDs" in result["message"]
+        assert "scanned search matches" not in result["message"]
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):

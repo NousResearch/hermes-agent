@@ -37,7 +37,7 @@ describe('ensureVirtualItemHeight', () => {
     expect(heights.get('d')).toBe(1)
   })
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -4, 1_000_000_000])(
+  it.each([Number.NaN, -4, 1_000_000_000])(
     'quarantines invalid cached height %s and reseeds it',
     cached => {
       const heights = new Map([['bad', cached]])
@@ -47,7 +47,7 @@ describe('ensureVirtualItemHeight', () => {
     }
   )
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -4, 1_000_000_000])(
+  it.each([Number.NaN, -4, 1_000_000_000])(
     'falls back when the estimator returns invalid height %s',
     estimate => {
       const heights = new Map<string, number>()

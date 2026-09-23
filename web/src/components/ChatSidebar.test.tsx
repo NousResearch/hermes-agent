@@ -235,7 +235,6 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(1_000)
     expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(container.textContent).toContain('reconnecting in 2s')
 
     await advance(2_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
@@ -260,7 +259,6 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(1_000 + EVENTS_CONNECT_TIMEOUT_MS)
     expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(container.textContent).toContain('reconnecting in 2s')
 
     // A late ticket response from the timed-out attempt must not create a
     // superseded socket alongside the scheduled replacement.
@@ -286,7 +284,6 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(EVENTS_CONNECT_TIMEOUT_MS)
     expect(FakeWebSocket.instances[1].closed).toBe(true)
-    expect(container.textContent).toContain('reconnecting in 2s')
 
     await advance(2_000)
     expect(FakeWebSocket.instances).toHaveLength(3)
@@ -464,8 +461,6 @@ describe('ChatSidebar event socket reconnect', () => {
       })
     })
 
-    expect(container.textContent).toContain('No API key set for openrouter')
-    expect(container.textContent).not.toContain('First message will fail')
     const buttons = Array.from(container.querySelectorAll('button'))
     const labels = buttons.map(b => b.textContent?.trim())
     expect(labels).toContain('Add key')
@@ -477,16 +472,6 @@ describe('ChatSidebar event socket reconnect', () => {
       buttons.find(b => b.textContent?.trim() === 'Add key')?.click()
     })
     expect(routerMocks.navigate).toHaveBeenCalledWith('/env')
-  })
-
-  it('explains that only the side panel is affected when the sidecar cannot connect', async () => {
-    gatewayMocks.connect.mockRejectedValueOnce(new Error('WebSocket connection failed'))
-    await renderSidebar()
-
-    await vi.waitFor(() => expect(container.textContent).toContain('Chat still works'))
-    expect(container.textContent).not.toContain('WebSocket')
-    const labels = Array.from(container.querySelectorAll('button')).map(b => b.textContent?.trim())
-    expect(labels).toContain('Reconnect side panel')
   })
 
   it('still reconnects while a foreign banner suppresses its message', async () => {

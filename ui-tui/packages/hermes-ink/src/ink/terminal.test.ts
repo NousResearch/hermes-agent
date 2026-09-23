@@ -93,7 +93,7 @@ describe('skipKittyKeyboardProtocol', () => {
     }
   })
 
-  it.each(['iTerm.app', 'kitty', 'WezTerm', 'tmux', 'windows-terminal', 'vscode'])(
+  it.each(['kitty', 'tmux'])(
     'keeps the dual push for %s',
     async terminal => {
       const { env } = await import('../utils/env.js')

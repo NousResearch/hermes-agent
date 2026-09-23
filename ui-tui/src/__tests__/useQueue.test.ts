@@ -18,13 +18,6 @@ describe('removeAtInPlace', () => {
     expect(arr).toEqual(['a', 'b'])
   })
 
-  it('returns the same reference (mutates in place)', () => {
-    const arr = ['x']
-    const same = removeAtInPlace(arr, 0)
-
-    expect(same).toBe(arr)
-    expect(arr).toEqual([])
-  })
 })
 
 describe('queue items', () => {

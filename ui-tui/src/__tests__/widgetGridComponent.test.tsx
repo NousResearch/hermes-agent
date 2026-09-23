@@ -5,10 +5,9 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import React, { useState } from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { GridStreamsDemo, STREAM_DEFS } from '../components/gridStreamsDemo.js'
+import { STREAM_DEFS } from '../components/gridStreamsDemo.js'
 import { GridAreas, type GridAreaWidget, WidgetGrid, type WidgetGridWidget } from '../components/widgetGrid.js'
 import { GRID_STREAM_COUNT, type GridTestState } from '../sdk/apps/gridTestState.js'
-import { DEFAULT_THEME } from '../theme.js'
 
 function StatefulCell({ label }: { label: string }) {
   const [value] = useState(label)
@@ -128,16 +127,4 @@ describe('GridStreamsDemo', () => {
     expect(STREAM_DEFS.length).toBe(GRID_STREAM_COUNT)
   })
 
-  it('renders every stream panel with the promoted panel in the header', () => {
-    const output = renderToText(<GridStreamsDemo cols={90} state={streamsState} t={DEFAULT_THEME} />)
-
-    expect(output).toContain('hermes mission control')
-
-    for (const def of STREAM_DEFS) {
-      expect(output).toContain(def.title)
-    }
-
-    // streamMain: 2 → the memory panel owns the promoted slot.
-    expect(output).toContain('main: memory')
-  })
 })

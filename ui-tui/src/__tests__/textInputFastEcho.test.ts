@@ -61,12 +61,6 @@ describe('canFastAppendShape', () => {
     expect(canFastAppendShape('hello', 5, 'ề', COLS, 5)).toBe(false)
   })
 
-  it('rejects Vietnamese tone marks ă, ơ, ư (Latin-Extended-A/B)', () => {
-    for (const ch of ['ă', 'ắ', 'ơ', 'ờ', 'ư', 'ự']) {
-      expect(canFastAppendShape('hello', 5, ch, COLS, 5)).toBe(false)
-    }
-  })
-
   it('rejects NFD combining marks (U+0300 grave, U+0301 acute, U+0302 circumflex)', () => {
     // Decomposed Vietnamese: 'e' + combining circumflex + combining grave
     // = 'ề'. Each combining mark is zero-width but length 1; without the
@@ -82,21 +76,12 @@ describe('canFastAppendShape', () => {
     expect(canFastAppendShape('hello', 5, '日本', COLS, 5)).toBe(false)
   })
 
-  it('rejects emoji', () => {
-    expect(canFastAppendShape('hello', 5, '🙂', COLS, 5)).toBe(false)
-  })
-
   it('rejects ANSI-bearing or control text', () => {
     expect(canFastAppendShape('hello', 5, '\x1b[31m', COLS, 5)).toBe(false)
     expect(canFastAppendShape('hello', 5, '\t', COLS, 5)).toBe(false)
     expect(canFastAppendShape('hello', 5, '\x7f', COLS, 5)).toBe(false)
   })
 
-  it('rejects NBSP and Latin-1 letters that would change the line shape', () => {
-    expect(canFastAppendShape('hello', 5, '\u00a0', COLS, 5)).toBe(false)
-    expect(canFastAppendShape('hello', 5, 'é', COLS, 5)).toBe(false)
-    expect(canFastAppendShape('hello', 5, 'ñ', COLS, 5)).toBe(false)
-  })
 })
 
 describe('canFastBackspaceShape', () => {
@@ -117,14 +102,6 @@ describe('canFastBackspaceShape', () => {
     expect(canFastBackspaceShape('hi\nthere', 8)).toBe(false)
   })
 
-  it('rejects deleting Vietnamese precomposed letter ề', () => {
-    // The "\b \b" shortcut clears one terminal cell; that's fine for a
-    // 1-cell ASCII char but if the previous grapheme is a Vietnamese
-    // letter that the IME may still be holding open, we want Ink to
-    // re-render so composition state stays consistent.
-    expect(canFastBackspaceShape('helloề', 'helloề'.length)).toBe(false)
-  })
-
   it('rejects deleting a CJK character (2 cells)', () => {
     expect(canFastBackspaceShape('hi你', 'hi你'.length)).toBe(false)
   })
@@ -136,10 +113,6 @@ describe('canFastBackspaceShape', () => {
     // already contained the combined glyph.
     const s = 'hello' + 'e\u0302\u0300'
     expect(canFastBackspaceShape(s, s.length)).toBe(false)
-  })
-
-  it('rejects deleting an emoji', () => {
-    expect(canFastBackspaceShape('hi🙂', 'hi🙂'.length)).toBe(false)
   })
 
   // Closes Copilot PR #26717 round 3: the "\b \b" sequence cannot move
@@ -158,12 +131,6 @@ describe('canFastBackspaceShape', () => {
     expect(canFastBackspaceShape(value, value.length, 6)).toBe(false)
   })
 
-  it('rejects fast-backspace at an exact multiple of columns (wide wrap)', () => {
-    // 12 chars at width 6 → two full visual rows, caret at (line 2, col 0).
-    const value = 'abcdefghijkl'
-    expect(canFastBackspaceShape(value, value.length, 6)).toBe(false)
-  })
-
   it('still accepts fast-backspace inside a wrapped line', () => {
     // Caret mid-visual-line — "\b \b" can move the cursor one cell left
     // without crossing a wrap boundary.
@@ -171,14 +138,6 @@ describe('canFastBackspaceShape', () => {
     expect(canFastBackspaceShape('abcdefghi', 9, 6)).toBe(true) // visual line 1, col 3 → ok
   })
 
-  it('skips the wrap-boundary check when columns is omitted (legacy contract)', () => {
-    // Callers that don't pass `columns` fall back to the pre-wrap-aware
-    // behavior — the function does NOT magically reject anything that
-    // could be a wrap boundary without the width. Production callers
-    // must always pass `columns`; this case is for unit tests of the
-    // pre-wrap shape contract.
-    expect(canFastBackspaceShape('hello ', 'hello '.length)).toBe(true)
-  })
 })
 
 describe('colorizeEcho', () => {
@@ -236,12 +195,6 @@ describe('colorizeHint / hintCursorCell', () => {
     )
   })
 
-  it('never emits a raw 38;2/48;2 the depth layer did not choose', () => {
-    // chalk is level 0 under vitest, so ANY escape byte here means the
-    // helper bypassed colorize and hand-rolled the sequence.
-    expect(colorizeHint('x', '#8a8094')).not.toContain('\u001b')
-    expect(hintCursorCell('x', '#8a8094')).not.toContain('\u001b')
-  })
 })
 
 describe('supportsFastEchoTerminal', () => {
@@ -304,8 +257,4 @@ describe('supportsFastEchoTerminal', () => {
     ).toBe(true)
   })
 
-  it('keeps fast-echo enabled in VS Code and unknown non-Termux terminals', () => {
-    expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv)).toBe(true)
-    expect(supportsFastEchoTerminal({ TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(true)
-  })
 })

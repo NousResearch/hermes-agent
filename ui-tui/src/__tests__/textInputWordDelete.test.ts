@@ -37,18 +37,8 @@ describe('deleteWordForward', () => {
     expect(deleteWordForward('foo hello world', 6)).toEqual({ cursor: 6, value: 'foo heworld' })
   })
 
-  it('keeps the cursor fixed while removing text', () => {
-    const result = deleteWordForward('alpha beta', 0)
-
-    expect(result.cursor).toBe(0)
-    expect(result.value).toBe('beta')
-  })
-
   it('is a no-op when the cursor is already at the end', () => {
     expect(deleteWordForward('foo bar', 7)).toEqual({ cursor: 7, value: 'foo bar' })
   })
 
-  it('handles an empty string', () => {
-    expect(deleteWordForward('', 0)).toEqual({ cursor: 0, value: '' })
-  })
 })

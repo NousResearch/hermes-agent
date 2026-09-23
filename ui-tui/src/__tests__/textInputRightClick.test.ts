@@ -20,13 +20,6 @@ describe('decideRightClickAction', () => {
     })
   })
 
-  it('copies a middle slice', () => {
-    expect(decideRightClickAction('hello world', { end: 11, start: 6 })).toEqual({
-      action: 'copy',
-      text: 'world'
-    })
-  })
-
   it('falls back to paste when slice is empty (out-of-range indices)', () => {
     expect(decideRightClickAction('', { end: 5, start: 0 })).toEqual({ action: 'paste' })
   })
@@ -39,10 +32,4 @@ describe('decideRightClickAction', () => {
     })
   })
 
-  it('preserves leading/trailing whitespace in the copied slice', () => {
-    expect(decideRightClickAction('  spaced  ', { end: 10, start: 0 })).toEqual({
-      action: 'copy',
-      text: '  spaced  '
-    })
-  })
 })

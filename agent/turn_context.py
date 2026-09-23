@@ -616,6 +616,13 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
         if scrubber is not None:
             scrubber.reset()
 
+    # #109682: a genuine user turn breaks any consecutive-compaction fixed point — the
+    # transcript holds new input now, so auto-compaction and continuations are live again.
+    _note_fresh_turn = getattr(getattr(agent, "context_compressor", None), "note_fresh_user_turn", None)
+    if callable(_note_fresh_turn):
+        with suppress(Exception):
+            _note_fresh_turn()
+
 
 def _stage_turn_user_message(
     agent: Any, user_message: Any, persist_user_message: Any,

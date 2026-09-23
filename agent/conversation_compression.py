@@ -1580,7 +1580,8 @@ def _automatic_compression_gate_blocks(agent: Any, bypass_cooldown: bool, *, inc
 
 def compression_blocked_transiently(agent: Any) -> bool:
     """Type-pinned read of the transient-block signal.
-    Set when an automatic pass no-ops on a TRANSIENT guard (summary-failure cooldown or structural backoff).
+    Set when an automatic pass no-ops on a TRANSIENT guard (summary-failure cooldown, structural backoff,
+    or a #109682 compaction fixed point).
     Consumers must defer, not count it toward ``compression_exhausted``, or an overflow auto-reset wipes a
     session that was merely cooling down. The permanent ``ineffective`` breaker never sets it.
 
@@ -1597,14 +1598,19 @@ def compression_blocked_transiently(agent: Any) -> bool:
 
 def _mark_compression_blocked_transient(agent: Any, compressor: Any) -> None:
     """Publish the transient-block signal when the active guard is transient.
-    Classification comes from ``_compression_block_reason``: ``cooldown:*`` and ``structural_backoff:*`` are
-    transient; ``ineffective`` stays unmarked."""
+    Classification comes from ``_compression_block_reason``: ``cooldown:*``, ``structural_backoff:*`` and
+    ``fixed_point`` are transient (all three are deferrals that lapse or clear on new input); ``ineffective``
+    stays unmarked."""
     reason_fn = getattr(compressor, "_compression_block_reason", None)
     reason = None
     if callable(reason_fn):
         with _swallow('compression block-reason read failed', exc_info=True):
             reason = reason_fn()
-    if isinstance(reason, str) and (reason.startswith("cooldown") or reason.startswith("structural_backoff")):
+    if isinstance(reason, str) and (
+        reason.startswith("cooldown")
+        or reason.startswith("structural_backoff")
+        or reason.startswith("fixed_point")
+    ):
         logger.info(
             "Skipping automatic compression re-entry: transient guard "
             "active (%s, session=%s, last failure: %s) — will retry after "
@@ -3465,6 +3471,12 @@ def _finish_compaction_boundary(
         compressed, system_prompt=new_system_prompt or "", tools=agent.tools or None
     )
     compressor.last_compression_rough_tokens = _compressed_est
+    # #109682: let the compressor judge this pass against the previous one — two near-identical
+    # sizes with only continuation nudges in between are a fixed point, not progress.
+    _record_size = getattr(compressor, "record_compaction_size", None)
+    if callable(_record_size):
+        with _swallow('compaction fixed-point size record failed', exc_info=True):
+            _record_size(_compressed_est)
     compressor.last_prompt_tokens = -1
     compressor.last_completion_tokens = 0
     compressor.awaiting_real_usage_after_compression = True

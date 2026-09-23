@@ -5,7 +5,11 @@
 // Heuristic on inter-event gap + direction flips:
 //
 //   gap < 5ms                 → same-batch burst → 1 row/event
-//   gap < 40ms (native)       → ramp +0.3, cap 6
+//   gap < 40ms (native)       → fast ramp +0.5, cap 6
+//   gap 40-500ms (native)     → sustained-direction ramp: decay-then-grow
+//                               so scrolling stays accelerated even when the
+//                               terminal quantises deltas to ~120ms intervals
+//                               (Windows Terminal, Ghostty, iTerm2, Alacritty)
 //   gap 80-500ms (xterm.js)   → mult = 1 + (mult-1)·0.5^(gap/150) + 5·decay
 //                               cap 3 slow / 6 fast
 //   gap > 500ms               → reset (deliberate click stays responsive)
@@ -14,13 +18,28 @@
 //
 // Native terminals (Ghostty, iTerm2) and xterm.js embedders (VS Code,
 // Cursor) emit wheel events with different cadences, hence two paths.
+//
+// Fix for issue #98295: modern terminals (Windows Terminal, Ghostty, iTerm2)
+// accumulate continuous pixel/touchpad deltas and only emit SGR mouse
+// sequences when an entire character line is crossed — typical inter-event
+// gaps are 80-300ms, well above the old WHEEL_ACCEL_WINDOW_MS=40ms reset
+// threshold.  The sustained-direction ramp replaces the hard reset so
+// acceleration engages at normal scrolling cadences.
 
 import { isXtermJs } from '@hermes/ink'
 
 // ── Native (ghostty, iTerm2, WezTerm, …) ───────────────────────────────
+// Fast-burst window: events within this gap get the full +STEP ramp.
 const WHEEL_ACCEL_WINDOW_MS = 40
-const WHEEL_ACCEL_STEP = 0.3
+const WHEEL_ACCEL_STEP = 0.5
 const WHEEL_ACCEL_MAX = 6
+// Sustained-direction window: events beyond the fast-burst window but still
+// within this gap are considered "user is still scrolling" on quantised
+// terminals.  We apply a gentle half-life decay and a smaller grow step so
+// the multiplier stays elevated rather than hard-resetting to base.
+const WHEEL_SUSTAINED_WINDOW_MS = 500
+const WHEEL_SUSTAINED_STEP = 0.15
+const WHEEL_SUSTAINED_HALFLIFE_MS = 200
 
 // ── Encoder bounce / wheel-mode (mechanical wheels) ────────────────────
 const WHEEL_BOUNCE_GAP_MAX_MS = 200
@@ -146,14 +165,23 @@ function nativeStep(state: WheelAccelState, dir: -1 | 1, now: number): number {
     return Math.floor(state.mult)
   }
 
-  // Trackpad / hi-res native: tight 40ms window — sub-window ramps,
-  // anything slower resets to baseline.
-  if (gap > WHEEL_ACCEL_WINDOW_MS) {
-    state.mult = state.base
-  } else {
-    const cap = Math.max(WHEEL_ACCEL_MAX, state.base * 2)
+  // Trackpad / hi-res native — two tiers:
+  //
+  // Fast burst (gap < 40ms): sub-window ramps aggressively (+0.5/event).
+  // Sustained scroll (40ms ≤ gap < 500ms): apply half-life decay then a
+  //   gentle grow step so quantised-delta terminals (Windows Terminal,
+  //   Ghostty, iTerm2, Alacritty — typical gap 80-300ms) keep accelerating
+  //   instead of hard-resetting to base on every event (fixes #98295).
+  // Idle (gap ≥ 500ms): hard reset — deliberate single click stays crisp.
+  const cap = Math.max(WHEEL_ACCEL_MAX, state.base * 2)
 
+  if (gap < WHEEL_ACCEL_WINDOW_MS) {
     state.mult = Math.min(cap, state.mult + WHEEL_ACCEL_STEP)
+  } else if (gap < WHEEL_SUSTAINED_WINDOW_MS) {
+    const decay = Math.pow(0.5, gap / WHEEL_SUSTAINED_HALFLIFE_MS)
+    state.mult = Math.min(cap, 1 + (state.mult - 1) * decay + WHEEL_SUSTAINED_STEP)
+  } else {
+    state.mult = state.base
   }
 
   return Math.floor(state.mult)

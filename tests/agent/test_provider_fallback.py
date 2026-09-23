@@ -14,7 +14,7 @@ from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
-def _make_agent(fallback_model=None):
+def _make_agent(fallback_model=None, reasoning_config=None):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
@@ -28,6 +28,7 @@ def _make_agent(fallback_model=None):
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            reasoning_config=reasoning_config,
         )
         agent.client = MagicMock()
         return agent
@@ -105,8 +106,10 @@ class TestFallbackChainAdvancement:
             {"provider": "zai", "model": "glm-4.7"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        with patch("agent.auxiliary_client.resolve_provider_client",
-                    return_value=(_mock_client(), "gpt-4o")):
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
             assert agent._try_activate_fallback() is True
             assert agent._fallback_index == 1
             assert agent.model == "gpt-4o"
@@ -308,8 +311,181 @@ class TestFallbackChainAdvancement:
         assert agent.api_mode == "chat_completions"
         assert agent.client is not None
 
+    def test_fallback_entry_reasoning_effort_overrides_current_config(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning_effort": "high",
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+
+    def test_fallback_entry_reasoning_mapping_overrides_current_config(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning": {"enabled": False},
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "reasoning_config") == {"enabled": False}
+
+    def test_empty_fallback_reasoning_mapping_keeps_primary_config(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning": {},
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "reasoning_config") == {"enabled": True, "effort": "medium"}
+
+    def test_fallback_entry_reasoning_effort_false_disables_reasoning(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning_effort": False,
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "reasoning_config") == {"enabled": False}
+
+    def test_bare_fallback_after_override_restores_primary_reasoning_config(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning_effort": "high",
+            },
+            {
+                "provider": "zai",
+                "model": "glm-4.7",
+            },
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "resolved"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert getattr(agent, "reasoning_config") == {"enabled": True, "effort": "high"}
+
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "model") == "glm-4.7"
+        assert getattr(agent, "reasoning_config") == {"enabled": True, "effort": "medium"}
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("entry_config", "model_effort", "global_effort", "expected"),
+    [
+        ({"reasoning_effort": "max"}, "low", "medium", {"enabled": True, "effort": "max"}),
+        ({"reasoning": {"enabled": False}, "reasoning_effort": "max"}, "low", "medium", {"enabled": False}),
+        ({"reasoning_effort": False}, "high", "medium", {"enabled": False}),
+        ({}, "low", "medium", {"enabled": True, "effort": "low"}),
+        ({"reasoning_effort": "invalid"}, "low", "medium", {"enabled": True, "effort": "low"}),
+        ({"reasoning": {}, "reasoning_effort": "high"}, "low", "medium", {"enabled": True, "effort": "high"}),
+        ({"reasoning": {}}, None, "medium", {"enabled": True, "effort": "medium"}),
+        ({"reasoning": "max"}, None, False, {"enabled": False}),
+        ({"reasoning_effort": True}, None, None, {"enabled": True, "effort": "medium"}),
+        ({"reasoning_effort": None}, None, None, {"enabled": True, "effort": "medium"}),
+    ],
+)
+def test_fallback_reasoning_yaml_resolution_chain(entry_config, model_effort, global_effort, expected):
+    """Real YAML loader, provider/client resolution, activation and restore; no API calls."""
+    import yaml
+
+    from hermes_cli.config import load_config
+    from hermes_constants import get_hermes_home
+
+    config = {
+        "agent": {"reasoning_effort": global_effort, "reasoning_overrides": {"gpt-4o": model_effort}},
+        "fallback_providers": [
+            {"provider": "custom", "model": "gpt-4.1", "base_url": "https://fallback.invalid/v1",
+             "api_key": "test-key", "reasoning_effort": "xhigh"},
+            {"provider": "custom", "model": "gpt-4o", "base_url": "https://fallback.invalid/v1",
+             "api_key": "test-key", **entry_config},
+        ],
+    }
+    (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    primary = {"enabled": True, "effort": "medium"}
+    agent = _make_agent(fallback_model=load_config()["fallback_providers"], reasoning_config=primary)
+
+    assert agent._try_activate_fallback() is True
+    assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
+    assert agent._try_activate_fallback() is True
+    assert agent.model == "gpt-4o"
+    assert agent.reasoning_config == expected
+    assert agent._primary_runtime["reasoning_config"] == primary
+    assert agent._restore_primary_runtime() is True
+    assert agent.reasoning_config == primary
+
+
+@pytest.mark.parametrize("failure", ["config", "parser"])
+def test_fallback_reasoning_failure_does_not_leak_previous_override(failure):
+    primary = {"enabled": True, "effort": "medium"}
+    agent = _make_agent(reasoning_config=primary)
+    agent.reasoning_config = {"enabled": True, "effort": "max"}
+    target = (
+        "hermes_cli.config.load_config" if failure == "config"
+        else "agent.chat_completion_helpers.parse_reasoning_effort"
+    )
+    with patch(target, side_effect=ValueError("invalid configuration")):
+        chat_completion_helpers._reresolve_fallback_reasoning_config(agent, {})
+    assert agent.reasoning_config == primary
+    assert agent.reasoning_config is not agent._primary_runtime["reasoning_config"]
 
 
 def _pool(n_entries: int, has_available: bool = True):

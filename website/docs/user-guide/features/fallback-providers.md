@@ -55,6 +55,39 @@ Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 client, including its `generationConfig.thinkingConfig` translation. A custom
 OpenAI-compatible base URL continues to use the compatible client instead.
 
+Fallback entries may also override reasoning for that fallback only. Use the short
+`reasoning_effort` form for the standard levels (`none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`). YAML `reasoning_effort: false` disables reasoning:
+
+```yaml
+fallback_providers:
+  - provider: minimax
+    model: MiniMax-M2.7
+    reasoning_effort: high
+```
+
+For provider-specific reasoning options, use the full `reasoning` mapping:
+
+```yaml
+fallback_providers:
+  - provider: anthropic
+    model: claude-sonnet-4-5
+    reasoning:
+      enabled: true
+      effort: high
+```
+
+The non-empty `reasoning` mapping takes precedence over `reasoning_effort`.
+An entry override takes precedence over `agent.reasoning_overrides` for the
+fallback model and then the global `agent.reasoning_effort`. Missing or invalid
+shortcuts and empty mappings use those normal model/global settings, or the
+saved primary reasoning configuration when neither supplies a value. They never
+inherit a previous fallback entry's override.
+
+The override applies only while Hermes is running on that fallback. When Hermes
+retries the primary after any cooldown, it restores the primary's saved reasoning
+configuration. A config-loading failure also falls back to that saved configuration.
+
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::

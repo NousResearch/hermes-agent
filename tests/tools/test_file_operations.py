@@ -421,6 +421,17 @@ class TestShellFileOpsWriteDenied:
         assert "Failed to move" in result.error
 
 
+
+def _fenced_base64_reply(command: str, payload: bytes, rc: int = 0) -> str:
+    """The reply shape ``_read_exact_bytes`` asks for: its per-call sentinel around the base64
+    payload, then the read's exit status. Mirrors what the real shell emits, so a double stays
+    honest about the fence the transport relies on."""
+    import base64 as _b64
+    import re as _re
+    sentinel = _re.search(r"__HERMES_RB_[0-9a-f]+__", command).group(0)
+    body = _b64.b64encode(payload).decode() if rc == 0 else ""
+    return f"{sentinel}\n{body}\n{sentinel}\n{rc}\n"
+
 class TestPatchReplacePostWriteVerification:
     """Tests for the post-write verification added in patch_replace.
 
@@ -436,10 +447,11 @@ class TestPatchReplacePostWriteVerification:
 
         def side_effect(command, **kwargs):
             # the byte-exact read (base64 over the transport) — both the initial read and the verify read
-            if command.startswith("base64 < "):
+            if "base64 < " in command:
                 for path in file_contents:
                     if path in command:
-                        return {"output": base64.b64encode(file_contents[path].encode()).decode(), "returncode": 0}
+                        return {"output": _fenced_base64_reply(command, file_contents[path].encode()),
+                                "returncode": 0}
                 return {"output": "", "returncode": 1}
             # mkdir for parent dir
             if command.startswith("mkdir "):
@@ -474,11 +486,11 @@ class TestPatchReplacePostWriteVerification:
             if stdin_data is not None:  # write (atomic temp-file + mv script)
                 state["content"] = stdin_data
                 return {"output": "", "returncode": 0}
-            if command.startswith("base64 < "):  # byte-exact read
+            if "base64 < " in command:  # byte-exact read
                 call_count["read"] += 1
                 # First read (initial fetch) succeeds; second read (verify) fails
                 if call_count["read"] == 1:
-                    return {"output": base64.b64encode(state["content"].encode()).decode(), "returncode": 0}
+                    return {"output": _fenced_base64_reply(command, state["content"].encode()), "returncode": 0}
                 return {"output": "", "returncode": 1}
             if command.startswith("mkdir "):
                 return {"output": "", "returncode": 0}

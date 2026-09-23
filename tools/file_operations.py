@@ -149,6 +149,7 @@ MISSING_SENTINEL = "__hermes_missing__"
 
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
+_BYTES_SENTINEL_PREFIX = "__HERMES_RB_"
 
 
 def _new_sentinel(prefix: str) -> str:
@@ -281,12 +282,34 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                         return fh.read(), None
             except OSError:
                 pass  # missing/unreadable: the shell read below reports it the usual way
-        result = self._exec(f"base64 < {self._escape_shell_arg(path)}")
-        if result.exit_code != 0:
-            return None, result
-        data = self._decode_base64_sample(result.stdout)
+        # Fenced like the compound read probe, and for the same reason: a backend whose merged
+        # stdout carries login-shell noise (a remote shell announcing TERM, a banner) would
+        # otherwise have it whitespace-joined onto the payload and decoded INTO the file's bytes,
+        # which the edit paths then write back. Noise outside the fence is dropped; noise inside
+        # it fails base64 validation instead, because the sentinel is not in the base64 alphabet.
+        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
+        mark = f"echo {sentinel}"
+        result = self._exec(f"{mark}; base64 < {self._escape_shell_arg(path)}; __hb=$?; {mark}; echo $__hb")
+        segments = _split_segments(result.stdout or "", sentinel)
+        garbled = ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read", exit_code=1)
+        if len(segments) != 3:
+            # No fenced reply: the command never ran as written (a wrapper ``cd`` failed, the backend
+            # refused it). Hand the backend's own text back so the caller reports what it said.
+            return None, result if result.exit_code != 0 else garbled
+        status = _strip_terminal_fence_leaks(segments[2]).split()
+        try:
+            read_rc = int(status[0])
+        except (IndexError, ValueError):
+            return None, garbled
+        if read_rc != 0:
+            # stderr is merged into the fenced segment, so that segment holds base64's own diagnostic
+            # ("No such file or directory", "Permission denied"): keep it for the caller's message.
+            return None, ExecuteResult(
+                stdout=_strip_terminal_fence_leaks(segments[1]).strip() or f"{path}: exit {read_rc}",
+                exit_code=read_rc)
+        data = self._decode_base64_sample(segments[1])
         if data is None:  # stray output in the payload: refuse rather than guess (never echo it back)
-            return None, ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read", exit_code=1)
+            return None, garbled
         return data, None
 
     @staticmethod

@@ -16,7 +16,7 @@ description: "将 Hermes 连接到 GitHub，使其自动获取 PR diff、审查�
 :::
 
 :::info 参考文档
-完整的 webhook 平台参考（所有配置选项、投递类型、动态订阅、安全模型），请参阅 [Webhooks](/user-guide/messaging/webhooks)。
+完整的 webhook 平台参考（所有配置选项、投递类型、动态订阅、安全模型），请参阅 [Webhooks](../user-guide/messaging/webhooks.md)。
 :::
 
 :::warning Prompt 注入风险
@@ -196,7 +196,7 @@ GitHub 会针对多种 action 发送 `pull_request` 事件：`opened`、`synchro
 
 ## 使用 skill 保持一致的审查风格
 
-加载一个 [Hermes skill](/user-guide/features/skills) 以赋予 agent 一致的审查风格。在 `config.yaml` 的 `platforms.webhook.extra.routes` 中，向你的路由添加 `skills`：
+加载一个 [Hermes skill](../user-guide/features/skills.md) 以赋予 agent 一致的审查风格。在 `config.yaml` 的 `platforms.webhook.extra.routes` 中，向你的路由添加 `skills`：
 
 ```yaml
 platforms:
@@ -324,6 +324,6 @@ platforms:
 ## 下一步
 
 - **[基于 Cron 的 PR 审查](./github-pr-review-agent.md)** —— 按计划轮询 PR，无需公网端点
-- **[Webhook 参考](/user-guide/messaging/webhooks)** —— webhook 平台的完整配置参考
-- **[构建 Plugin](/guides/build-a-hermes-plugin)** —— 将审查逻辑打包为可共享的 plugin
-- **[Profiles](/user-guide/profiles)** —— 运行一个拥有独立内存和配置的专属审查者 profile
+- **[Webhook 参考](../user-guide/messaging/webhooks.md)** —— webhook 平台的完整配置参考
+- **[构建 Plugin](../developer-guide/plugins/index.md)** —— 将审查逻辑打包为可共享的 plugin
+- **[Profiles](../user-guide/profiles.md)** —— 运行一个拥有独立内存和配置的专属审查者 profile

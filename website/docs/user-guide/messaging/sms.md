@@ -10,7 +10,7 @@ description: "Set up Hermes Agent as an SMS chatbot via Twilio"
 Hermes connects to SMS through the [Twilio](https://www.twilio.com/) API. People text your Twilio phone number and get AI responses back — same conversational experience as Telegram or Discord, but over standard text messages.
 
 :::info Shared Credentials
-The SMS gateway shares credentials with the optional [telephony skill](/reference/skills-catalog). If you've already set up Twilio for voice calls or one-off SMS, the gateway works with the same `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER`.
+The SMS gateway shares credentials with the optional [telephony skill](../../reference/skills-catalog.md). If you've already set up Twilio for voice calls or one-off SMS, the gateway works with the same `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER`.
 :::
 
 ---
@@ -20,7 +20,7 @@ The SMS gateway shares credentials with the optional [telephony skill](/referenc
 - **Twilio account** — [Sign up at twilio.com](https://www.twilio.com/try-twilio) (free trial available)
 - **A Twilio phone number** with SMS capability
 - **A publicly accessible server** — Twilio sends webhooks to your server when SMS arrives
-- **aiohttp** — `pip install 'hermes-agent[sms]'`
+- **aiohttp** — `cd ~/.hermes/hermes-agent && uv pip install -e ".[sms]"`
 
 ---
 

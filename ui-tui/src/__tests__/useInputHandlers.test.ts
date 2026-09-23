@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { applyVoiceRecordResponse, shouldFallThroughForScroll } from '../app/useInputHandlers.js'
+import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { rememberServerRequest, resetServerRequestsForTests } from '../app/serverRequestStore.js'
+import {
+  applyVoiceRecordResponse,
+  composerHasDraft,
+  dismissSensitivePrompt,
+  handleIdleHotkeyExit,
+  resolveCtrlCComposerAction,
+  shouldAllowIdleHotkeyExit,
+  shouldDetachEditedHistoryInput,
+  shouldFallThroughForScroll
+} from '../app/useInputHandlers.js'
 
 const baseKey = {
   downArrow: false,
@@ -42,6 +53,85 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
   })
 })
 
+describe('composerHasDraft — Ctrl+D exits only from an empty composer (#116443)', () => {
+  it('is false for an empty composer and true for text, multi-line buffer or attachments', () => {
+    expect(composerHasDraft({ input: '', inputBuf: [], tokens: [] })).toBe(false)
+    expect(composerHasDraft({ input: 'hi', inputBuf: [], tokens: [] })).toBe(true)
+    expect(composerHasDraft({ input: '', inputBuf: ['line 1'], tokens: [] })).toBe(true)
+    expect(composerHasDraft({ input: '', inputBuf: [], tokens: [{ kind: 'image' }] })).toBe(true)
+  })
+})
+
+describe('shouldAllowIdleHotkeyExit', () => {
+  it('keeps idle exit hotkeys enabled in normal terminals', () => {
+    expect(shouldAllowIdleHotkeyExit(false)).toBe(true)
+  })
+
+  it('disables idle exit hotkeys in dashboard chat', () => {
+    expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  })
+})
+
+describe('shouldDetachEditedHistoryInput', () => {
+  const history = ['older message', 'line one\nline two']
+
+  it('detaches a recalled entry as soon as the user edits it', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one edited\nline two')).toBe(true)
+  })
+
+  it('keeps unchanged recalled entries in history navigation', () => {
+    expect(shouldDetachEditedHistoryInput(1, history, 'line one\nline two')).toBe(false)
+  })
+
+  it('does not detach an ordinary current draft', () => {
+    expect(shouldDetachEditedHistoryInput(null, history, 'new draft')).toBe(false)
+  })
+})
+
+describe('resolveCtrlCComposerAction — draft wins over interrupt', () => {
+  it('clears a non-empty composer even while the agent is streaming', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('interrupts a running turn when the composer is empty', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: true })).toBe('interrupt')
+  })
+
+  it('clears an idle composer instead of exiting', () => {
+    expect(resolveCtrlCComposerAction({ busy: false, hasDraft: true, hasSession: true })).toBe('clear')
+  })
+
+  it('exits when idle with an empty composer', () => {
+    expect(resolveCtrlCComposerAction({ busy: false, hasDraft: false, hasSession: true })).toBe('exit')
+  })
+
+  it('does not interrupt a busy session that has no sid yet', () => {
+    expect(resolveCtrlCComposerAction({ busy: true, hasDraft: false, hasSession: false })).toBe('exit')
+  })
+})
+
+describe('handleIdleHotkeyExit', () => {
+  it('exits in normal terminals', () => {
+    const actions = { die: vi.fn(), sys: vi.fn() }
+
+    handleIdleHotkeyExit(actions, false)
+
+    expect(actions.die).toHaveBeenCalledTimes(1)
+    expect(actions.sys).not.toHaveBeenCalled()
+  })
+
+  it('asks the dashboard for a fresh chat instead of leaving a ghost session', () => {
+    const actions = { die: vi.fn(), sys: vi.fn() }
+    const requestDashboardNewSession = vi.fn()
+
+    handleIdleHotkeyExit(actions, true, requestDashboardNewSession)
+
+    expect(actions.die).not.toHaveBeenCalled()
+    expect(requestDashboardNewSession).toHaveBeenCalledTimes(1)
+    expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat...')
+  })
+})
+
 describe('applyVoiceRecordResponse', () => {
   it('reverts optimistic REC state when the gateway reports voice busy', () => {
     const setProcessing = vi.fn()
@@ -73,5 +163,41 @@ describe('applyVoiceRecordResponse', () => {
 
     expect(setRecording).toHaveBeenCalledWith(false)
     expect(setProcessing).toHaveBeenCalledWith(false)
+  })
+})
+
+describe('dismissSensitivePrompt', () => {
+  const openRequest = (id: string, method: string) => {
+    const respond = vi.fn()
+
+    rememberServerRequest({ fail: vi.fn(), id, method, params: {}, respond })
+
+    return respond
+  }
+
+  it('clears a sudo overlay and answers the server request with an empty value', () => {
+    resetOverlayState()
+    resetServerRequestsForTests()
+    patchOverlayState({ sudo: { requestId: 'srq-sudo' } })
+    const respond = openRequest('srq-sudo', 'sudo')
+    const sys = vi.fn()
+
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+
+    expect(getOverlayState().sudo).toBeNull()
+    expect(sys).toHaveBeenCalledWith('sudo cancelled')
+    expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
+
+  it('clears a secret overlay even when its request already expired (nothing left to answer)', () => {
+    resetOverlayState()
+    resetServerRequestsForTests()
+    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'srq-gone' } })
+    const sys = vi.fn()
+
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+
+    expect(getOverlayState().secret).toBeNull()
+    expect(sys).toHaveBeenCalledWith('secret entry cancelled')
   })
 })

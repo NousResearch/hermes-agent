@@ -12,6 +12,8 @@ interface SegmentedControlProps<T extends string> {
   value: T
   onChange: (id: T) => void
   className?: string
+  /** Dims the whole track and blocks selection (e.g. gated behind a prerequisite). */
+  disabled?: boolean
 }
 
 /**
@@ -19,11 +21,18 @@ interface SegmentedControlProps<T extends string> {
  * (color mode, tool-call display, usage period, etc.). Flat by design —
  * no per-option borders, just a tinted track with a raised active pill.
  */
-export function SegmentedControl<T extends string>({ options, value, onChange, className }: SegmentedControlProps<T>) {
+export function SegmentedControl<T extends string>({
+  className,
+  disabled = false,
+  onChange,
+  options,
+  value
+}: SegmentedControlProps<T>) {
   return (
     <div
       className={cn(
         'inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-[5px] bg-(--ui-bg-tertiary) p-0.5',
+        disabled && 'opacity-50',
         className
       )}
     >
@@ -34,9 +43,10 @@ export function SegmentedControl<T extends string>({ options, value, onChange, c
           <button
             aria-pressed={active}
             className={cn(
-              'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors',
+              'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors disabled:cursor-default',
               active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
             )}
+            disabled={disabled}
             key={id}
             onClick={() => onChange(id)}
             type="button"

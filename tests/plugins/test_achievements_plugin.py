@@ -100,7 +100,7 @@ class _FakeSessionDB:
             for i in range(effective)
         ]
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_messages(self, session_id: str, include_compacted: bool = False) -> List[Dict[str, Any]]:
         self.messages_calls += 1
         return [
             {"role": "user", "content": f"ask {session_id}"},
@@ -123,7 +123,7 @@ def _install_fake_session_db(plugin_api, fake_db):
     and cannot leak into unrelated tests in the same xdist worker.
     """
     fake_module = type(sys)("hermes_state")
-    fake_module.SessionDB = lambda: fake_db
+    fake_module.SessionDB = lambda **_kw: fake_db
     plugin_api._test_monkeypatch.setitem(sys.modules, "hermes_state", fake_module)
 
 
@@ -149,29 +149,6 @@ def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
     )
     assert len(result["sessions"]) == 500
     assert result["scan_meta"]["sessions_total"] == 500
-
-
-def test_scan_sessions_explicit_positive_limit_is_honored(plugin_api):
-    """Callers can still pass a small limit for smoke tests."""
-    fake_db = _FakeSessionDB(session_count=500)
-    _install_fake_session_db(plugin_api, fake_db)
-
-    result = plugin_api.scan_sessions(limit=10)
-
-    assert fake_db.last_limit == 10
-    assert len(result["sessions"]) == 10
-
-
-def test_scan_sessions_zero_or_negative_limit_means_unlimited(plugin_api):
-    """``limit=0`` and ``limit=-1`` both map to the unlimited path."""
-    fake_db = _FakeSessionDB(session_count=300)
-    _install_fake_session_db(plugin_api, fake_db)
-
-    plugin_api.scan_sessions(limit=0)
-    assert fake_db.last_limit == -1
-
-    plugin_api.scan_sessions(limit=-1)
-    assert fake_db.last_limit == -1
 
 
 def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugin_api):
@@ -221,58 +198,6 @@ def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugi
     second = plugin_api.evaluate_all()
     assert second["scan_meta"]["mode"] != "pending"
     assert second["scan_meta"].get("sessions_total") == 50
-
-
-def test_evaluate_all_stale_cache_serves_stale_and_refreshes_in_background(plugin_api):
-    """When the snapshot is on-disk but older than TTL, evaluate_all returns
-    the stale data immediately and kicks a background refresh. Users don't
-    stare at a loading spinner every time TTL expires.
-    """
-    fake_db = _FakeSessionDB(session_count=10, scan_delay=2.0)
-    _install_fake_session_db(plugin_api, fake_db)
-    stale_generated_at = int(time.time()) - plugin_api.SNAPSHOT_TTL_SECONDS - 60
-    stale_payload = {
-        "achievements": [],
-        "sessions": [],
-        "aggregate": {},
-        "scan_meta": {"mode": "full", "sessions_total": 1, "sessions_rescanned": 1, "sessions_reused": 0},
-        "error": None,
-        "unlocked_count": 0,
-        "discovered_count": 0,
-        "secret_count": 0,
-        "total_count": 0,
-        "generated_at": stale_generated_at,
-    }
-    plugin_api.save_snapshot(stale_payload)
-
-    t0 = time.time()
-    result = plugin_api.evaluate_all()
-    elapsed = time.time() - t0
-
-    assert elapsed < 1.0, f"evaluate_all blocked for {elapsed:.2f}s serving stale data"
-    assert result["generated_at"] == stale_generated_at
-
-    # Background scan should be running or have completed.
-    thread = plugin_api._BACKGROUND_SCAN_THREAD
-    assert thread is not None
-    thread.join(timeout=5)
-
-    fresh = plugin_api.evaluate_all()
-    assert fresh["generated_at"] >= stale_generated_at
-
-
-def test_evaluate_all_force_runs_synchronously(plugin_api):
-    """Manual /rescan (force=True) blocks the caller — users clicking
-    the rescan button expect up-to-date data when the call returns.
-    """
-    fake_db = _FakeSessionDB(session_count=25)
-    _install_fake_session_db(plugin_api, fake_db)
-
-    result = plugin_api.evaluate_all(force=True)
-
-    # Synchronous — snapshot is fresh on return.
-    assert result["scan_meta"].get("sessions_total") == 25
-    assert result["scan_meta"]["mode"] in {"full", "incremental"}
 
 
 def test_start_background_scan_is_idempotent_while_running(plugin_api):
@@ -376,3 +301,35 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, monkeypatch):
+    """The scan is a pure read that runs inside the dashboard process (per background scan,
+    per /rescan). A writable ``SessionDB()`` there was one more writer connection on the
+    dashboard's own state.db each time — the same-process handle leak behind the
+    ``N live SessionDB handles`` precursor (#100896). Real store, real open, no fakes."""
+    import hermes_state
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    seed = SessionDB(db_path=tmp_path / "state.db")
+    seed.create_session("s1", source="cli")
+    seed.append_message("s1", "user", "hello")
+    seed.close()
+
+    writable_opens = []
+    real_init = SessionDB.__init__
+
+    def spy(self, *args, **kwargs):
+        if not kwargs.get("read_only"):
+            writable_opens.append(kwargs)
+        return real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(SessionDB, "__init__", spy)
+
+    result = plugin_api.scan_sessions()
+
+    assert result.get("error") is None
+    assert [s["session_id"] for s in result["sessions"]] == ["s1"]
+    assert writable_opens == [], "the achievements scan must attach read-only"

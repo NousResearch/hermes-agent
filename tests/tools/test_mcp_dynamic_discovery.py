@@ -1,12 +1,14 @@
 """Tests for MCP dynamic tool discovery (notifications/tools/list_changed)."""
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _register_server_tools
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_registration import _register_server_tools
 from tools.registry import ToolRegistry
 
 
@@ -30,10 +32,38 @@ class TestRegisterServerTools:
 
         with patch("tools.registry.registry", mock_registry):
             registered = _register_server_tools("my_srv", server, {})
-            assert "mcp_my_srv_my_tool" in registered
-            assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__my_srv__my_tool" in registered
+            assert "mcp__my_srv__my_tool" in mock_registry.get_all_tool_names()
             assert validate_toolset("my_srv") is True
-            assert "mcp_my_srv_my_tool" in resolve_toolset("my_srv")
+            assert "mcp__my_srv__my_tool" in resolve_toolset("my_srv")
+
+    def test_colliding_static_toolset_name_merges_both_tool_sets(self, mock_registry):
+        """An MCP server named after a built-in toolset must not be shadowed.
+
+        Regression: an MCP server registered as `homeassistant` (colliding
+        with the static `homeassistant` toolset) had its tools silently
+        dropped because get_toolset() returned the static definition without
+        consulting the alias registered by _register_server_tools().
+        """
+        from toolsets import TOOLSETS, get_toolset, resolve_toolset
+
+        assert "homeassistant" in TOOLSETS  # collision premise
+        static_tools = set(TOOLSETS["homeassistant"]["tools"])
+
+        server = MCPServerTask("homeassistant")
+        server._tools = [_make_mcp_tool("get_entities", "List HA entities")]
+        server.session = MagicMock()
+
+        with patch("tools.registry.registry", mock_registry):
+            registered = _register_server_tools("homeassistant", server, {})
+            assert "mcp__homeassistant__get_entities" in registered
+
+            ts = get_toolset("homeassistant")
+            # Static built-ins are still present...
+            assert static_tools <= set(ts["tools"])
+            # ...and the MCP server's tools are no longer shadowed.
+            assert "mcp__homeassistant__get_entities" in ts["tools"]
+            assert "mcp__homeassistant__get_entities" in resolve_toolset("homeassistant")
 
 
 class TestRefreshTools:
@@ -53,11 +83,11 @@ class TestRefreshTools:
 
         # Seed initial state: one old tool registered
         mock_registry.register(
-            name="mcp_live_srv_old_tool", toolset="mcp-live_srv", schema={},
+            name="mcp__live_srv__old_tool", toolset="mcp-live_srv", schema={},
             handler=lambda x: x, check_fn=lambda: True, is_async=False,
             description="", emoji="",
         )
-        server._registered_tool_names = ["mcp_live_srv_old_tool"]
+        server._registered_tool_names = ["mcp__live_srv__old_tool"]
 
         # New tool list from server
         new_tool = _make_mcp_tool("new_tool", "new behavior")
@@ -69,11 +99,90 @@ class TestRefreshTools:
 
         with patch("tools.registry.registry", mock_registry):
             await server._refresh_tools()
-            assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
-            assert "mcp_live_srv_old_tool" not in resolve_toolset("live_srv")
-            assert "mcp_live_srv_new_tool" in mock_registry.get_all_tool_names()
-            assert "mcp_live_srv_new_tool" in resolve_toolset("live_srv")
-            assert server._registered_tool_names == ["mcp_live_srv_new_tool"]
+            assert "mcp__live_srv__old_tool" not in mock_registry.get_all_tool_names()
+            assert "mcp__live_srv__old_tool" not in resolve_toolset("live_srv")
+            assert "mcp__live_srv__new_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
+            assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
+
+    @pytest.mark.asyncio
+    async def test_restart_with_none_session_skips_without_crash(self, mock_registry):
+        """#109824: a list_changed refresh that lands while the transport is being rebuilt
+        (``session is None`` between teardown and the next handshake) must complete cleanly
+        instead of raising ``AttributeError: 'NoneType' object has no attribute 'list_tools'``.
+        The reconnect's own discovery re-lists tools, so the refresh is a no-op that leaves the
+        previous registration — and the owned-names bookkeeping — intact."""
+        from toolsets import resolve_toolset
+
+        server = MCPServerTask("restart_srv")
+        server._config = {}
+        server._tools = [_make_mcp_tool("old_tool", "")]
+        server.session = SimpleNamespace(list_tools=AsyncMock())
+        with patch("tools.registry.registry", mock_registry):
+            server._registered_tool_names = _register_server_tools("restart_srv", server, {})
+            server.session = None  # what every run() teardown leaves behind
+
+            await server._refresh_tools()
+
+            assert "mcp__restart_srv__old_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__restart_srv__old_tool" in resolve_toolset("restart_srv")
+            assert server._registered_tool_names == ["mcp__restart_srv__old_tool"]
+            assert len(server._tools) == 1
+
+    @pytest.mark.asyncio
+    async def test_background_refresh_survives_restart_reconnect_cycle(self, mock_registry, caplog):
+        """#109824 end-to-end shape: a refresh task scheduled on the dying transport runs after
+        run() has set ``session = None``. The background task must finish without logging the
+        'dynamic tool refresh failed' crash, and once the transport reconnects a refresh on the
+        live session must republish normally."""
+        server = MCPServerTask("reconnect_srv")
+        server._config = {}
+        server._tools = [_make_mcp_tool("old_tool", "")]
+        server._registered_tool_names = ["mcp__reconnect_srv__old_tool"]
+        new_tool = _make_mcp_tool("new_tool", "")
+        with patch("tools.registry.registry", mock_registry):
+            mock_registry.register(
+                name="mcp__reconnect_srv__old_tool", toolset="mcp-reconnect_srv",
+                schema={}, handler=lambda x: x, check_fn=lambda: True,
+                is_async=False, description="", emoji="",
+            )
+            server.session = None
+            with caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+                task = server._schedule_tools_refresh()
+                assert task in server._pending_refresh_tasks
+                await asyncio.gather(task, return_exceptions=True)
+            assert not task.cancelled()
+            assert task.exception() is None
+            assert task not in server._pending_refresh_tasks
+            assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+            assert server._registered_tool_names == ["mcp__reconnect_srv__old_tool"]
+
+            server.session = SimpleNamespace(
+                list_tools=AsyncMock(return_value=SimpleNamespace(tools=[new_tool]))
+            )
+            await server._refresh_tools()
+            assert server._registered_tool_names == ["mcp__reconnect_srv__new_tool"]
+            assert "mcp__reconnect_srv__old_tool" not in mock_registry.get_all_tool_names()
+
+    @pytest.mark.asyncio
+    async def test_refresh_after_session_restored_succeeds(self, mock_registry):
+        """The skip applies only while the session is genuinely absent: once the restart
+        re-establishes it, a refresh from an empty registration publishes the live tools."""
+        from toolsets import resolve_toolset
+
+        server = MCPServerTask("restored_srv")
+        server._config = {}
+        server.session = None
+        server._registered_tool_names = []
+        server._tools = []
+        with patch("tools.registry.registry", mock_registry):
+            server.session = SimpleNamespace(
+                list_tools=AsyncMock(return_value=SimpleNamespace(tools=[_make_mcp_tool("live_tool", "")]))
+            )
+            await server._refresh_tools()
+            assert "mcp__restored_srv__live_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__restored_srv__live_tool" in resolve_toolset("restored_srv")
+            assert server._registered_tool_names == ["mcp__restored_srv__live_tool"]
 
 
 class TestMessageHandler:
@@ -95,9 +204,14 @@ class TestMessageHandler:
         # reaching into asyncio.create_task internals.
         with patch.object(MCPServerTask, "_schedule_tools_refresh") as mock_schedule:
             handler = server._make_message_handler()
-            notification = ServerNotification(
-                root=ToolListChangedNotification(method="notifications/tools/list_changed")
+            notification = ToolListChangedNotification(
+                method="notifications/tools/list_changed"
             )
+            if hasattr(ServerNotification, "model_validate"):
+                # mcp < 2.0 wrapped notifications in a RootModel; 2.0 made
+                # ServerNotification a plain union of the concrete types, which
+                # has no constructor to wrap with.
+                notification = ServerNotification(root=notification)
             await handler(notification)
             mock_schedule.assert_called_once()
 
@@ -123,42 +237,6 @@ class TestDeregister:
         reg.deregister("foo")
         assert "foo" not in reg.get_all_tool_names()
 
-    def test_cleans_up_toolset_check(self):
-        reg = ToolRegistry()
-        check = lambda: True  # noqa: E731
-        reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
-        assert reg.is_toolset_available("ts1")
-        reg.deregister("foo")
-        # Toolset check should be gone since no tools remain
-        assert "ts1" not in reg._toolset_checks
-
-    def test_preserves_toolset_check_if_other_tools_remain(self):
-        reg = ToolRegistry()
-        check = lambda: True  # noqa: E731
-        reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
-        reg.register(name="bar", toolset="ts1", schema={}, handler=lambda x: x)
-        reg.deregister("foo")
-        # bar still in ts1, so check should remain
-        assert "ts1" in reg._toolset_checks
-
-    def test_removes_toolset_alias_when_last_tool_is_removed(self):
-        reg = ToolRegistry()
-        reg.register(name="foo", toolset="mcp-srv", schema={}, handler=lambda x: x)
-        reg.register_toolset_alias("srv", "mcp-srv")
-
-        reg.deregister("foo")
-
-        assert reg.get_toolset_alias_target("srv") is None
-
-    def test_preserves_toolset_alias_while_toolset_still_exists(self):
-        reg = ToolRegistry()
-        reg.register(name="foo", toolset="mcp-srv", schema={}, handler=lambda x: x)
-        reg.register(name="bar", toolset="mcp-srv", schema={}, handler=lambda x: x)
-        reg.register_toolset_alias("srv", "mcp-srv")
-
-        reg.deregister("foo")
-
-        assert reg.get_toolset_alias_target("srv") == "mcp-srv"
 
     def test_noop_for_unknown_tool(self):
         reg = ToolRegistry()

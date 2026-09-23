@@ -16,12 +16,12 @@ Delegate coding to xAI Grok Build CLI (features, PRs).
 |---|---|
 | Source | Optional — install with `hermes skills install official/autonomous-ai-agents/grok` |
 | Path | `optional-skills/autonomous-ai-agents/grok` |
-| Version | `0.1.0` |
+| Version | `0.1.1` |
 | Author | Matt Maximo (MattMaximo), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Coding-Agent`, `Grok`, `xAI`, `Code-Review`, `Refactoring`, `Automation` |
-| Related skills | [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| Related skills | [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 
@@ -126,14 +126,16 @@ For pure automation, headless `-p` is still cleaner than the TUI.
 |------|--------|
 | `-p, --single <PROMPT>` | Send one prompt, run headless, exit |
 | `-m, --model <MODEL>` | Choose a model |
-| `-s, --session-id <ID>` | Create or resume a named headless session |
-| `-r, --resume <ID>` | Resume an existing session |
+| `-s, --session-id <UUID>` | Assign a **NEW** valid UUID to a fresh conversation (must not already exist). Does **not** resume — use `--resume`/`--continue` for that. Only valid with `--resume`/`--continue` when paired with `--fork-session` |
+| `-r, --resume [<UUID>]` | Resume an existing session by its UUID (or the most recent if omitted) |
 | `-c, --continue` | Continue the most recent session in the current directory |
+| `--fork-session` | When resuming, create a new session ID instead of reusing the original |
+| `--max-turns <N>` | Cap the maximum number of agent turns |
 | `--cwd <PATH>` | Set the working directory |
 | `--output-format <FMT>` | `plain` (default), `json`, or `streaming-json` |
 | `--always-approve` | Auto-approve all tool executions (the `--full-auto` / `--yolo` equivalent) |
 | `--no-alt-screen` | Run inline, no fullscreen TUI takeover |
-| `--no-auto-update` | Skip background update checks (use in all automation) |
+| `--no-auto-update` | Skip background update checks (use in all automation; hidden from `--help` but still works) |
 
 ### Output Formats
 
@@ -169,14 +171,19 @@ with `tmux capture-pane`, exactly like the `claude-code` / `codex` skills.
 
 ### Session Continuation
 
+Sessions are keyed by **UUID**, not by name. `--session-id` assigns a *new* UUID
+to a fresh run (it does **not** resume); `--resume` takes an existing session's
+UUID (or omit the value to resume the most recent).
+
 ```
-# Start a named session
-terminal(command="grok --no-auto-update -s refactor-db -p 'Start refactoring the database layer' --always-approve", workdir="/project", timeout=240)
+# Start a session with a self-assigned UUID (must be a valid, unused UUID)
+SID=$(uuidgen)
+terminal(command="grok --no-auto-update -s $SID -p 'Start refactoring the database layer' --always-approve", workdir="/project", timeout=240)
 
-# Resume it later
-terminal(command="grok --no-auto-update -r refactor-db -p 'Now add connection pooling' --always-approve", workdir="/project", timeout=180)
+# Resume that exact session later by its UUID
+terminal(command="grok --no-auto-update -r $SID -p 'Now add connection pooling' --always-approve", workdir="/project", timeout=180)
 
-# Or continue the most recent session in this directory
+# Or just continue the most recent session in this directory (no UUID needed)
 terminal(command="grok --no-auto-update -c -p 'What did you change last time?'", workdir="/project", timeout=60)
 ```
 
@@ -193,7 +200,7 @@ Obsidian or a repo) without mutating anything:
 3. Save Grok's stdout straight into the destination note with `write_file()`.
 
 ```
-grok --no-auto-update -p "Read /tmp/current.md and /tmp/inventory.md. Produce markdown only, no preamble. Output a clean note titled 'Cleanup Review'." --output-format plain
+grok --no-auto-update -p "Read ~/.hermes/cache/scratch/current.md and ~/.hermes/cache/scratch/inventory.md. Produce markdown only, no preamble. Output a clean note titled 'Cleanup Review'." --output-format plain
 ```
 
 **Pitfall (same as Claude Code):** for document rewrites, a loose "rewrite this"
@@ -226,22 +233,22 @@ terminal(command="gh pr comment 42 --body '<review text>'", workdir="/path/to/re
 
 ```
 # Create worktrees
-terminal(command="git worktree add -b fix/issue-78 /tmp/issue-78 main", workdir="~/project")
-terminal(command="git worktree add -b fix/issue-99 /tmp/issue-99 main", workdir="~/project")
+terminal(command="git worktree add -b fix/issue-78 ~/.hermes/cache/scratch/issue-78 main", workdir="~/project")
+terminal(command="git worktree add -b fix/issue-99 ~/.hermes/cache/scratch/issue-99 main", workdir="~/project")
 
 # Launch Grok headless in each (background)
-terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #78: <description>. Commit when done.'", workdir="/tmp/issue-78", background=true, notify_on_complete=true)
-terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #99: <description>. Commit when done.'", workdir="/tmp/issue-99", background=true, notify_on_complete=true)
+terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #78: <description>. Commit when done.'", workdir="~/.hermes/cache/scratch/issue-78", background=true, notify_on_complete=true)
+terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #99: <description>. Commit when done.'", workdir="~/.hermes/cache/scratch/issue-99", background=true, notify_on_complete=true)
 
 # Monitor
 process(action="list")
 
 # After completion: push and open PRs
-terminal(command="cd /tmp/issue-78 && git push -u origin fix/issue-78")
+terminal(command="cd ~/.hermes/cache/scratch/issue-78 && git push -u origin fix/issue-78")
 terminal(command="gh pr create --repo user/repo --head fix/issue-78 --title 'fix: ...' --body '...'")
 
 # Cleanup
-terminal(command="git worktree remove /tmp/issue-78", workdir="~/project")
+terminal(command="git worktree remove ~/.hermes/cache/scratch/issue-78", workdir="~/project")
 ```
 
 ## Useful Subcommands & TUI Commands

@@ -10,7 +10,7 @@ description: "通过 Twilio 将 Hermes Agent 设置为 SMS 聊天机器人"
 Hermes 通过 [Twilio](https://www.twilio.com/) API 接入 SMS。用户向你的 Twilio 电话号码发送短信，即可获得 AI 回复——与 Telegram 或 Discord 的对话体验相同，但通过标准短信进行。
 
 :::info 共享凭据
-SMS gateway（网关）与可选的 [telephony skill](/reference/skills-catalog) 共享凭据。如果你已为语音通话或单次 SMS 配置了 Twilio，该 gateway 可直接使用相同的 `TWILIO_ACCOUNT_SID`、`TWILIO_AUTH_TOKEN` 和 `TWILIO_PHONE_NUMBER`。
+SMS gateway（网关）与可选的 [telephony skill](../../reference/skills-catalog.md) 共享凭据。如果你已为语音通话或单次 SMS 配置了 Twilio，该 gateway 可直接使用相同的 `TWILIO_ACCOUNT_SID`、`TWILIO_AUTH_TOKEN` 和 `TWILIO_PHONE_NUMBER`。
 :::
 
 ---
@@ -20,7 +20,7 @@ SMS gateway（网关）与可选的 [telephony skill](/reference/skills-catalog)
 - **Twilio 账户** — [在 twilio.com 注册](https://www.twilio.com/try-twilio)（提供免费试用）
 - **具备 SMS 功能的 Twilio 电话号码**
 - **可公开访问的服务器** — Twilio 在收到 SMS 时会向你的服务器发送 webhook
-- **aiohttp** — `pip install 'hermes-agent[sms]'`
+- **aiohttp** — `cd ~/.hermes/hermes-agent && uv pip install -e ".[sms]"`
 
 ---
 

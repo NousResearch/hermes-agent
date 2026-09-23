@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { getScrollbarSnapshot, getViewportSnapshot, scrollbarSnapshotKey, viewportSnapshotKey } from '../lib/viewportStore.js'
+import {
+  getScrollbarSnapshot,
+  getViewportSnapshot,
+  scrollbarSnapshotKey,
+  viewportSnapshotKey
+} from '../lib/viewportStore.js'
 
 describe('viewportStore', () => {
   it('normalizes absent scroll handles', () => {
@@ -81,5 +86,23 @@ describe('viewportStore', () => {
     }
 
     expect(getScrollbarSnapshot(handle as any).top).toBe(10)
+  })
+
+  it('uses fresh scroll height to clear stale scrollbar non-bottom state after shrink', () => {
+    const handle = {
+      getFreshScrollHeight: () => 40,
+      getScrollHeight: () => 60,
+      getScrollTop: () => 20,
+      getViewportHeight: () => 20
+    }
+
+    const snap = getScrollbarSnapshot(handle as any)
+
+    expect(snap).toEqual({
+      scrollHeight: 40,
+      top: 20,
+      viewportHeight: 20
+    })
+    expect(scrollbarSnapshotKey(snap)).toBe('20:20:40')
   })
 })

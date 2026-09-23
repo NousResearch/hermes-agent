@@ -1,6 +1,7 @@
 import asyncio
 
 from hermes_cli import web_server
+import hermes_cli.web_routers.sessions as _rt_sessions
 
 
 class _FakeSessionDB:
@@ -13,23 +14,63 @@ class _FakeSessionDB:
     """
 
     closed = False
+    opened_read_only = None
+    requested_fields = None
 
-    def search_sessions_by_id(self, query, limit=20, include_archived=True):
+    def __init__(self, *args, **kwargs):
+        type(self).opened_read_only = kwargs.get("read_only")
+
+    @staticmethod
+    def _source_allowed(row, source=None, sources=None, exclude_sources=None):
+        row_source = row.get("source")
+        if source and row_source != source:
+            return False
+        if sources and row_source not in sources:
+            return False
+        if exclude_sources and row_source in exclude_sources:
+            return False
+        return True
+
+    def search_sessions_by_id(
+        self,
+        query,
+        limit=20,
+        include_archived=True,
+        source=None,
+        sources=None,
+        exclude_sources=None,
+    ):
         assert query == "20260603"
         assert include_archived is True
-        return [
+        rows = [
             {
                 "id": "20260603_090200_exact",
                 "preview": "ID match preview",
                 "source": "cli",
                 "model": "claude",
                 "started_at": 100,
+                "last_active": 150,
             }
         ]
-
-    def search_messages(self, query, limit=20):
-        assert query == "20260603*"
         return [
+            row
+            for row in rows
+            if self._source_allowed(
+                row, source=source, sources=sources, exclude_sources=exclude_sources
+            )
+        ][:limit]
+
+    def search_messages(
+        self,
+        query,
+        source_filter=None,
+        exclude_sources=None,
+        limit=20,
+        fields=None,
+    ):
+        assert query == "20260603*"
+        type(self).requested_fields = fields
+        rows = [
             {
                 "session_id": "20260603_090200_exact",
                 "snippet": "duplicate content hit should not replace ID hit",
@@ -47,6 +88,13 @@ class _FakeSessionDB:
                 "session_started": 200,
             },
         ]
+        return [
+            row
+            for row in rows
+            if self._source_allowed(
+                row, sources=source_filter, exclude_sources=exclude_sources
+            )
+        ][:limit]
 
     def get_session(self, session_id):
         # No compression chains in this fixture — every session is its own root.
@@ -60,15 +108,22 @@ class _FakeSessionDB:
 
 
 def test_desktop_session_search_merges_id_matches_before_content_matches(monkeypatch):
+    _FakeSessionDB.opened_read_only = None
+    _FakeSessionDB.requested_fields = None
     monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
 
-    response = asyncio.run(web_server.search_sessions(q="20260603", limit=2))
+    response = asyncio.run(_rt_sessions.search_sessions(q="20260603", limit=2))
 
+    assert _FakeSessionDB.requested_fields is not None
+    assert "context" not in _FakeSessionDB.requested_fields
     # ID match surfaces first; the content hit on the SAME session is deduped
     # by lineage root (not double-listed); the unrelated content hit follows.
     assert response == {
         "results": [
             {
+                "id": "20260603_090200_exact",
+                "profile": "default",
+                "is_default_profile": True,
                 "session_id": "20260603_090200_exact",
                 "lineage_root": "20260603_090200_exact",
                 "snippet": "ID match preview",
@@ -76,8 +131,13 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "cli",
                 "model": "claude",
                 "session_started": 100,
+                # Row recency rides on id-match rows (sessions table)...
+                "last_active": 150,
             },
             {
+                "id": "content_session",
+                "profile": "default",
+                "is_default_profile": True,
                 "session_id": "content_session",
                 "lineage_root": "content_session",
                 "snippet": "content hit",
@@ -85,6 +145,29 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "desktop",
                 "model": "gpt",
                 "session_started": 200,
+                # ...while FTS hits have none and leave it null.
+                "last_active": None,
             },
         ]
     }
+    assert _FakeSessionDB.opened_read_only is True
+
+
+def test_desktop_session_search_stamps_the_requested_profile(monkeypatch):
+    monkeypatch.setattr(
+        _rt_sessions, "_cron_profile_home", lambda profile: (profile, None)
+    )
+    monkeypatch.setattr(
+        _rt_sessions,
+        "_open_session_db_for_profile",
+        lambda profile, *, read_only: _FakeSessionDB(read_only=read_only),
+    )
+
+    response = asyncio.run(
+        _rt_sessions.search_sessions(q="20260603", limit=2, profile="worker")
+    )
+
+    assert {
+        (row["profile"], row["is_default_profile"])
+        for row in response["results"]
+    } == {("worker", False)}

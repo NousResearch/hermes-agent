@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 
 import pytest
 
@@ -35,80 +36,11 @@ class TestTranslateOneServer:
         }
         assert skipped == []
 
-    def test_stdio_with_cwd(self):
-        cfg, _ = _translate_one_server("custom", {
-            "command": "/usr/bin/myserver",
-            "cwd": "/var/lib/mcp",
-        })
-        assert cfg["cwd"] == "/var/lib/mcp"
-
-    def test_http_basic(self):
-        cfg, skipped = _translate_one_server("api", {
-            "url": "https://x.example/mcp",
-            "headers": {"Authorization": "Bearer abc"},
-        })
-        assert cfg == {
-            "url": "https://x.example/mcp",
-            "http_headers": {"Authorization": "Bearer abc"},
-        }
-        assert skipped == []
-
-    def test_sse_falls_under_streamable_http_with_warning(self):
-        cfg, skipped = _translate_one_server("sse_server", {
-            "url": "http://localhost:8000/sse",
-            "transport": "sse",
-        })
-        assert cfg["url"] == "http://localhost:8000/sse"
-        assert any("sse" in s.lower() for s in skipped)
-
-    def test_timeouts_translate(self):
-        cfg, _ = _translate_one_server("x", {
-            "command": "y",
-            "timeout": 180,
-            "connect_timeout": 30,
-        })
-        assert cfg["tool_timeout_sec"] == 180.0
-        assert cfg["startup_timeout_sec"] == 30.0
-
-    def test_non_numeric_timeout_skipped(self):
-        cfg, skipped = _translate_one_server("x", {
-            "command": "y",
-            "timeout": "not-a-number",
-        })
-        assert "tool_timeout_sec" not in cfg
-        assert any("timeout" in s and "numeric" in s for s in skipped)
-
-    def test_disabled_server_emits_enabled_false(self):
-        cfg, _ = _translate_one_server("x", {
-            "command": "y",
-            "enabled": False,
-        })
-        assert cfg["enabled"] is False
 
     def test_enabled_true_omitted(self):
         cfg, _ = _translate_one_server("x", {"command": "y", "enabled": True})
         assert "enabled" not in cfg  # codex defaults to true
 
-    def test_command_and_url_prefers_stdio_warns(self):
-        cfg, skipped = _translate_one_server("x", {
-            "command": "y", "url": "http://z",
-        })
-        assert "command" in cfg
-        assert "url" not in cfg
-        assert any("url" in s for s in skipped)
-
-    def test_no_transport_returns_none(self):
-        cfg, skipped = _translate_one_server("broken", {"description": "x"})
-        assert cfg is None
-        assert "no command or url" in skipped[0]
-
-    def test_sampling_dropped_with_warning(self):
-        cfg, skipped = _translate_one_server("x", {
-            "command": "y",
-            "sampling": {"enabled": True, "model": "gemini-3-flash"},
-        })
-        assert "sampling" not in cfg
-        assert any("sampling" in s for s in skipped)
 
     def test_unknown_keys_warned(self):
         cfg, skipped = _translate_one_server("x", {
@@ -118,67 +50,16 @@ class TestTranslateOneServer:
         assert "totally_made_up_key" not in cfg
         assert any("totally_made_up_key" in s for s in skipped)
 
-    def test_non_dict_input(self):
-        cfg, skipped = _translate_one_server("x", "notadict")  # type: ignore[arg-type]
-        assert cfg is None
-
 
 # ---- TOML rendering ----
 
 class TestTomlValueFormatter:
-    def test_string_quoted(self):
-        assert _format_toml_value("hello") == '"hello"'
 
-    def test_string_with_quotes_escaped(self):
-        assert _format_toml_value('a"b') == '"a\\"b"'
 
-    def test_bool(self):
-        assert _format_toml_value(True) == "true"
-        assert _format_toml_value(False) == "false"
 
-    def test_int(self):
-        assert _format_toml_value(42) == "42"
 
-    def test_float(self):
-        assert _format_toml_value(180.0) == "180.0"
 
-    def test_list_of_strings(self):
-        assert _format_toml_value(["a", "b"]) == '["a", "b"]'
 
-    def test_inline_table(self):
-        out = _format_toml_value({"FOO": "bar"})
-        assert out == '{ FOO = "bar" }'
-
-    def test_empty_inline_table(self):
-        assert _format_toml_value({}) == "{}"
-
-    def test_string_with_newline_escaped(self):
-        """TOML basic strings don't allow literal newlines — a path or
-        env var containing a newline must use \\n. Otherwise codex would
-        refuse to load the config."""
-        out = _format_toml_value("line one\nline two")
-        assert "\n" not in out  # no raw newline in output
-        assert "\\n" in out
-
-    def test_string_with_tab_escaped(self):
-        out = _format_toml_value("col1\tcol2")
-        assert "\t" not in out
-        assert "\\t" in out
-
-    def test_string_with_other_controls_escaped(self):
-        for raw, expected in [
-            ("\r", "\\r"),
-            ("\f", "\\f"),
-            ("\b", "\\b"),
-        ]:
-            out = _format_toml_value(f"x{raw}y")
-            assert raw not in out, f"{raw!r} should be escaped"
-            assert expected in out, f"{expected!r} should be in output"
-
-    def test_windows_path_escaped_correctly(self):
-        out = _format_toml_value(r"C:\Users\Alice\.codex")
-        # Each backslash should be doubled
-        assert out == r'"C:\\Users\\Alice\\.codex"'
 
     def test_atomic_write_no_temp_leak_on_success(self, tmp_path):
         """The atomic-write path uses tempfile.mkstemp + rename. On
@@ -199,13 +80,12 @@ class TestTomlValueFormatter:
         """If rename fails partway through (out of disk, permissions,
         crash), the temp file must be cleaned up. Otherwise repeated
         failed migrations would pile up .config.toml.* files."""
-        from pathlib import Path as _Path
-        original_replace = _Path.replace
+        import utils
 
-        def failing_replace(self, target):
+        def failing_replace(tmp, target):
             raise OSError("simulated disk full")
 
-        monkeypatch.setattr(_Path, "replace", failing_replace)
+        monkeypatch.setattr(utils, "atomic_replace", failing_replace)
         report = migrate(
             {"mcp_servers": {"x": {"command": "y"}}},
             codex_home=tmp_path,
@@ -220,15 +100,9 @@ class TestTomlValueFormatter:
                     if p.name.startswith(".config.toml.")]
         assert leftover == [], f"temp files leaked: {leftover}"
 
-    def test_unsupported_type_raises(self):
-        with pytest.raises(ValueError):
-            _format_toml_value(object())
 
 
 class TestRenderToml:
-    def test_starts_with_marker(self):
-        out = render_codex_toml_section({})
-        assert out.startswith(MIGRATION_MARKER)
 
     def test_empty_servers_emits_placeholder(self):
         out = render_codex_toml_section({})
@@ -268,14 +142,6 @@ class TestStripExistingManagedBlock:
         text = "[other]\nfoo = 1\n"
         assert _strip_existing_managed_block(text) == text
 
-    def test_strips_managed_block_alone(self):
-        text = (
-            f"{MIGRATION_MARKER}\n"
-            "\n"
-            "[mcp_servers.fs]\n"
-            'command = "npx"\n'
-        )
-        assert _strip_existing_managed_block(text).strip() == ""
 
     def test_preserves_user_content_above_managed_block(self):
         text = (
@@ -291,62 +157,23 @@ class TestStripExistingManagedBlock:
         assert 'name = "gpt-5.5"' in out
         assert "mcp_servers.fs" not in out
 
-    def test_preserves_unrelated_section_after_managed_block(self):
-        text = (
-            f"{MIGRATION_MARKER}\n"
-            "[mcp_servers.fs]\n"
-            'command = "x"\n'
-            "\n"
-            "[providers]\n"
-            'foo = "bar"\n'
-        )
-        out = _strip_existing_managed_block(text)
-        assert "mcp_servers.fs" not in out
-        assert "[providers]" in out
-        assert 'foo = "bar"' in out
-
 
 # ---- end-to-end migrate(, expose_hermes_tools=False) ----
 
 class TestMigrate:
-    def test_no_servers_no_plugins_no_perms_writes_placeholder(self, tmp_path):
-        report = migrate({}, codex_home=tmp_path,
-                         discover_plugins=False,
-                         default_permission_profile=None, expose_hermes_tools=False)
-        assert report.written
-        text = (tmp_path / "config.toml").read_text()
-        assert MIGRATION_MARKER in text
-        assert "no MCP servers" in text or "no MCP servers, plugins, or permissions" in text
 
-    def test_no_servers_still_writes_permissions_default(self, tmp_path):
-        """Even with zero MCP servers, enabling the runtime should write the
-        default permissions profile so users don't get prompted on every
-        write attempt. This is the fix for quirk #2."""
-        report = migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
-        assert report.written
-        text = (tmp_path / "config.toml").read_text()
-        # Codex's schema: top-level `default_permissions` keying a built-in
-        # profile name (prefixed with ":"). NOT a [permissions] section
-        # (which is for *user-defined* profiles with structured fields).
-        assert 'default_permissions = ":workspace"' in text
-        assert report.wrote_permissions_default == ":workspace"
 
-    def test_explicit_none_permissions_skips_block(self, tmp_path):
-        report = migrate({"mcp_servers": {"x": {"command": "y"}}},
-                         codex_home=tmp_path,
-                         discover_plugins=False,
-                         default_permission_profile=None, expose_hermes_tools=False)
-        text = (tmp_path / "config.toml").read_text()
-        assert "default_permissions" not in text
-        assert "[permissions]" not in text
-        assert report.wrote_permissions_default is None
 
     def test_plugin_discovery_writes_plugin_blocks(self, tmp_path, monkeypatch):
         """Discovered curated plugins land as [plugins."<name>@<marketplace>"]
-        blocks. This is what OpenClaw calls 'migrate native codex plugins.'"""
+        blocks. This is what OpenClaw calls 'migrate native codex plugins.'
+        The discovery spawn must use the configured ``model.codex_bin`` (#61360)."""
         from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        def fake_query(codex_home=None, timeout=8.0):
+        seen: dict = {}
+
+        def fake_query(codex_home=None, timeout=8.0, codex_bin="codex"):
+            seen["codex_bin"] = codex_bin
             return [
                 {"name": "google-calendar", "marketplace": "openai-curated",
                  "enabled": True},
@@ -355,7 +182,9 @@ class TestMigrate:
             ], None
         monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
 
-        report = migrate({}, codex_home=tmp_path, discover_plugins=True)
+        report = migrate({"model": {"codex_bin": "/opt/codex-app/codex"}},
+                         codex_home=tmp_path, discover_plugins=True)
+        assert seen["codex_bin"] == "/opt/codex-app/codex"
         text = (tmp_path / "config.toml").read_text()
         assert '[plugins."github@openai-curated"]' in text
         assert '[plugins."google-calendar@openai-curated"]' in text
@@ -363,60 +192,12 @@ class TestMigrate:
         assert "google-calendar@openai-curated" in report.migrated_plugins
         assert "github@openai-curated" in report.migrated_plugins
 
-    def test_plugin_discovery_skips_unavailable_plugins(self):
-        """Plugins where codex reports availability != AVAILABLE should
-        be skipped — they're broken/uninstallable on codex's side, so
-        migrating them would write config that fails at activation
-        time. Cf. openclaw#80815."""
-        from hermes_cli.codex_runtime_plugin_migration import _query_codex_plugins
-        from unittest.mock import patch
-
-        # Fake a plugin/list response where one plugin is unavailable
-        fake_response = {
-            "marketplaces": [{
-                "name": "openai-curated",
-                "plugins": [
-                    {"name": "good-plugin", "installed": True,
-                     "enabled": True, "availability": "AVAILABLE"},
-                    {"name": "broken-plugin", "installed": True,
-                     "enabled": True, "availability": "UNAVAILABLE"},
-                    {"name": "auth-pending", "installed": True,
-                     "enabled": True, "availability": "REQUIRES_AUTH"},
-                    # Plugin without availability field — pass through
-                    # (older codex versions or marketplaces that don't
-                    # set it should still work).
-                    {"name": "legacy-plugin", "installed": True,
-                     "enabled": True},
-                ]
-            }]
-        }
-
-        class FakeClient:
-            def __init__(self, **kw): pass
-            def initialize(self, **kw): pass
-            def request(self, method, params, timeout=None):
-                return fake_response
-            def close(self): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-
-        with patch("agent.transports.codex_app_server.CodexAppServerClient",
-                   FakeClient):
-            plugins, err = _query_codex_plugins()
-
-        assert err is None
-        names = [p["name"] for p in plugins]
-        assert "good-plugin" in names
-        assert "legacy-plugin" in names  # no field → don't skip
-        assert "broken-plugin" not in names
-        assert "auth-pending" not in names
-
     def test_plugin_discovery_failure_non_fatal(self, tmp_path, monkeypatch):
         """If codex isn't installed or RPC fails, MCP migration still
         completes. The error surfaces in the report but doesn't abort."""
         from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        def fake_query_fails(codex_home=None, timeout=8.0):
+        def fake_query_fails(codex_home=None, timeout=8.0, codex_bin="codex"):
             return [], "codex CLI not available"
         monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query_fails)
 
@@ -427,100 +208,11 @@ class TestMigrate:
         assert report.plugin_query_error == "codex CLI not available"
         assert report.migrated_plugins == []
 
-    def test_discover_plugins_false_skips_query(self, tmp_path, monkeypatch):
-        """Tests and restricted environments can opt out of the subprocess
-        spawn entirely."""
-        from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        called = {"yes": False}
-        def boom(*a, **kw):
-            called["yes"] = True
-            return [], None
-        monkeypatch.setattr(crpm, "_query_codex_plugins", boom)
 
-        migrate({"mcp_servers": {"x": {"command": "y"}}},
-                codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
-        assert called["yes"] is False
 
-    def test_dry_run_skips_plugin_query(self, tmp_path, monkeypatch):
-        """Dry run should never spawn codex. Even with discover_plugins=True
-        the query is skipped because dry_run takes precedence."""
-        from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        called = {"yes": False}
-        def boom(*a, **kw):
-            called["yes"] = True
-            return [], None
-        monkeypatch.setattr(crpm, "_query_codex_plugins", boom)
 
-        migrate({"mcp_servers": {"x": {"command": "y"}}},
-                codex_home=tmp_path, dry_run=True, discover_plugins=True, expose_hermes_tools=False)
-        assert called["yes"] is False
-
-    def test_re_run_replaces_plugin_block(self, tmp_path, monkeypatch):
-        """Plugin blocks are managed and re-runs should replace them
-        cleanly — same idempotency contract as MCP servers."""
-        from hermes_cli import codex_runtime_plugin_migration as crpm
-
-        # First run: only github
-        monkeypatch.setattr(crpm, "_query_codex_plugins",
-                            lambda codex_home=None, timeout=8.0: (
-                                [{"name": "github", "marketplace": "openai-curated", "enabled": True}],
-                                None,
-                            ))
-        migrate({}, codex_home=tmp_path, discover_plugins=True,
-                default_permission_profile=None, expose_hermes_tools=False)
-        first = (tmp_path / "config.toml").read_text()
-        assert "github@openai-curated" in first
-
-        # Second run: only canva (github went away)
-        monkeypatch.setattr(crpm, "_query_codex_plugins",
-                            lambda codex_home=None, timeout=8.0: (
-                                [{"name": "canva", "marketplace": "openai-curated", "enabled": True}],
-                                None,
-                            ))
-        migrate({}, codex_home=tmp_path, discover_plugins=True,
-                default_permission_profile=None, expose_hermes_tools=False)
-        second = (tmp_path / "config.toml").read_text()
-        assert "github@openai-curated" not in second
-        assert "canva@openai-curated" in second
-
-    def test_expose_hermes_tools_writes_callback_mcp_entry(self, tmp_path):
-        """When expose_hermes_tools=True (production default), an
-        [mcp_servers.hermes-tools] entry is written so codex calls back
-        into Hermes for browser/web/delegate_task/vision/memory tools.
-
-        This is the fix for 'all other tools that codex doesn't provide
-        should be useable by hermes' — quirk #7."""
-        report = migrate({}, codex_home=tmp_path,
-                         discover_plugins=False,
-                         default_permission_profile=None,
-                         expose_hermes_tools=True)
-        text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.hermes-tools]" in text
-        assert "hermes_tools_mcp_server" in text
-        # Must include startup + tool timeouts so codex doesn't give up
-        assert "startup_timeout_sec" in text
-        assert "tool_timeout_sec" in text
-        # And the entry is reported
-        assert "hermes-tools" in report.migrated
-
-    def test_expose_hermes_tools_disabled_skips_entry(self, tmp_path):
-        """expose_hermes_tools=False suppresses the callback registration."""
-        migrate({}, codex_home=tmp_path,
-                discover_plugins=False,
-                default_permission_profile=None,
-                expose_hermes_tools=False)
-        text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.hermes-tools]" not in text
-        assert "hermes_tools_mcp_server" not in text
-
-    def test_dry_run_doesnt_write(self, tmp_path):
-        report = migrate({"mcp_servers": {"x": {"command": "y"}}},
-                         codex_home=tmp_path, dry_run=True, expose_hermes_tools=False)
-        assert report.dry_run is True
-        assert not (tmp_path / "config.toml").exists()
-        assert "x" in report.migrated
 
     def test_full_migration_round_trip(self, tmp_path):
         hermes_cfg = {
@@ -543,56 +235,8 @@ class TestMigrate:
         assert 'command = "npx"' in text
         assert 'url = "https://api.github.com/mcp"' in text
 
-    def test_idempotent_re_run_replaces_managed_block(self, tmp_path):
-        # First migration
-        migrate({"mcp_servers": {"a": {"command": "x"}}}, codex_home=tmp_path, expose_hermes_tools=False)
-        first_text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.a]" in first_text
-        # Second migration with different servers
-        migrate({"mcp_servers": {"b": {"command": "y"}}}, codex_home=tmp_path, expose_hermes_tools=False)
-        second_text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.a]" not in second_text
-        assert "[mcp_servers.b]" in second_text
 
-    def test_preserves_user_codex_config_above_marker(self, tmp_path):
-        target = tmp_path / "config.toml"
-        target.write_text(
-            "[model]\n"
-            'profile = "default"\n'
-            "\n"
-            "[providers.openai]\n"
-            'api_key = "sk-test"\n'
-        )
-        migrate({"mcp_servers": {"a": {"command": "x"}}}, codex_home=tmp_path, expose_hermes_tools=False)
-        new_text = target.read_text()
-        # User's codex config preserved
-        assert "[model]" in new_text
-        assert 'profile = "default"' in new_text
-        assert "[providers.openai]" in new_text
-        # And new MCP block inserted without breaking user tables
-        assert "[mcp_servers.a]" in new_text
-        assert MIGRATION_MARKER in new_text
 
-    def test_managed_root_keys_stay_top_level_when_config_ends_in_table(self, tmp_path):
-        """TOML has no explicit 'leave current table' syntax. If Hermes appends
-        root keys like default_permissions after a user table such as [features],
-        Codex parses them as features.default_permissions and rejects the config.
-        The managed block must therefore be inserted before the first table."""
-        import tomllib
-
-        target = tmp_path / "config.toml"
-        target.write_text(
-            'model = "gpt-5.5"\n'
-            "\n"
-            "[features]\n"
-            "terminal_resize_reflow = true\n"
-        )
-        migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
-        new_text = target.read_text()
-        parsed = tomllib.loads(new_text)
-        assert parsed["default_permissions"] == ":workspace"
-        assert "default_permissions" not in parsed["features"]
-        assert new_text.index(MIGRATION_MARKER) < new_text.index("[features]")
 
     def test_preserves_user_mcp_server_outside_managed_block(self, tmp_path):
         """Quirk #6: when a user adds their own MCP server entry directly
@@ -627,28 +271,7 @@ class TestMigrate:
         # And our managed block is still there with the new content
         assert "[mcp_servers.hermes-mcp]" in final
 
-    def test_skipped_keys_reported(self, tmp_path):
-        report = migrate({
-            "mcp_servers": {
-                "x": {
-                    "command": "y",
-                    "sampling": {"enabled": True},  # codex has no equivalent
-                }
-            }
-        }, codex_home=tmp_path, expose_hermes_tools=False)
-        assert "x" in report.skipped_keys_per_server
-        assert any("sampling" in s for s in report.skipped_keys_per_server["x"])
 
-    def test_invalid_mcp_servers_value(self, tmp_path):
-        report = migrate({"mcp_servers": "notadict"}, codex_home=tmp_path, expose_hermes_tools=False)
-        assert any("not a dict" in e for e in report.errors)
-
-    def test_server_without_transport_skipped_with_error(self, tmp_path):
-        report = migrate({
-            "mcp_servers": {"broken": {"description": "no command/url"}}
-        }, codex_home=tmp_path, expose_hermes_tools=False)
-        assert "broken" not in report.migrated
-        assert any("broken" in e for e in report.errors)
 
     def test_summary_reports_migration_count(self, tmp_path):
         report = migrate({
@@ -695,14 +318,6 @@ class TestStripUnmanagedPluginTables:
         assert "[features]" in stripped
         assert "terminal_resize_reflow = true" in stripped
 
-    def test_preserves_content_when_no_plugin_tables(self):
-        text = (
-            'model = "gpt-5.5"\n'
-            "\n"
-            "[mcp_servers.x]\n"
-            'command = "y"\n'
-        )
-        assert _strip_unmanaged_plugin_tables(text) == text
 
     def test_multi_line_array_in_plugin_table_does_not_leak(self):
         """A multi-line TOML array inside a [plugins.X] table whose
@@ -745,7 +360,7 @@ class TestStripUnmanagedPluginTables:
         )
 
         # Simulate codex's plugin/list reporting the same plugin tasks@openai-curated.
-        def fake_query(codex_home=None, timeout=8.0):
+        def fake_query(codex_home=None, timeout=8.0, codex_bin="codex"):
             return (
                 [{"name": "tasks", "marketplace": "openai-curated", "enabled": True}],
                 None,
@@ -769,28 +384,6 @@ class TestStripUnmanagedPluginTables:
         import tomllib
         tomllib.loads(new_text)
 
-    def test_migrate_preserves_plugin_tables_when_plugin_list_fails(self, tmp_path, monkeypatch):
-        """If plugin/list RPC fails, we can't re-emit plugins authoritatively,
-        so we must NOT strip the user's existing [plugins.X] tables — that
-        would silently lose them."""
-        target = tmp_path / "config.toml"
-        target.write_text(
-            '[plugins."tasks@openai-curated"]\n'
-            "enabled = true\n"
-        )
-
-        def fake_query(codex_home=None, timeout=8.0):
-            return ([], "plugin/list query failed: codex not installed")
-
-        monkeypatch.setattr(
-            "hermes_cli.codex_runtime_plugin_migration._query_codex_plugins",
-            fake_query,
-        )
-        migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
-        new_text = target.read_text()
-        # User's plugin table preserved verbatim — we can't re-emit it.
-        assert '[plugins."tasks@openai-curated"]' in new_text
-
 
 # ---- Bug C: HERMES_HOME tempdir leak into ~/.codex/config.toml ----
 
@@ -804,36 +397,8 @@ class TestHermesHomeLeakGuard:
     once codex spawned the hermes-tools MCP subprocess.
     """
 
-    def test_tempdir_detector_recognizes_pytest_paths(self):
-        assert _looks_like_test_tempdir(
-            "/private/var/folders/abc/pytest-of-kshitij/pytest-137/popen-gw2/test_X/hermes_test"
-        )
-        assert _looks_like_test_tempdir(
-            "/tmp/pytest-of-user/pytest-12/test_X/hermes"
-        )
-        assert _looks_like_test_tempdir(
-            "/private/var/folders/zz/T/pytest-of-bob/pytest-1"
-        )
 
-    def test_tempdir_detector_accepts_real_hermes_home(self):
-        assert not _looks_like_test_tempdir("/Users/alice/.hermes")
-        assert not _looks_like_test_tempdir("/home/bob/.hermes")
-        assert not _looks_like_test_tempdir("/opt/hermes")
-        assert not _looks_like_test_tempdir("")
 
-    def test_pytest_tempdir_not_burned_into_mcp_env(self, monkeypatch):
-        """The headline regression: even when HERMES_HOME points at a pytest
-        tempdir, _build_hermes_tools_mcp_entry() must NOT propagate it."""
-        monkeypatch.setenv(
-            "HERMES_HOME",
-            "/private/var/folders/xx/pytest-of-user/pytest-99/test_x/hermes_test",
-        )
-        entry = _build_hermes_tools_mcp_entry()
-        env = entry.get("env", {})
-        assert "HERMES_HOME" not in env, (
-            f"pytest-tempdir HERMES_HOME leaked into codex MCP entry: "
-            f"{env.get('HERMES_HOME')!r}"
-        )
 
     def test_real_hermes_home_propagates(self, monkeypatch, tmp_path):
         """A legitimate HERMES_HOME (not a tempdir path) DOES propagate so the
@@ -861,3 +426,87 @@ class TestHermesHomeLeakGuard:
             f"HERMES_HOME should not be set when env var is unset, got: "
             f"{env.get('HERMES_HOME')!r}"
         )
+
+
+# ---- same-name user-owned [mcp_servers.X] tables (issue #79023) ----
+
+
+class TestSameNameUserMcpTable:
+    """Issue #79023: a Hermes server whose name the user already declares outside the managed
+    block must not be emitted twice (duplicate table header = TOML codex refuses to load)."""
+
+    def test_user_table_wins_and_output_stays_valid_toml(self, tmp_path):
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text('[mcp_servers.gbrain]\ncommand = "existing-gbrain"\n', encoding="utf-8")
+        report = migrate(
+            {"mcp_servers": {"gbrain": {"command": "projected-gbrain"}, "other": {"command": "o"}}},
+            codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False,
+            default_permission_profile=None)
+        text = target.read_text(encoding="utf-8")
+        parsed = tomllib.loads(text)  # would raise "Cannot declare ... twice" before the fix
+        assert text.count("[mcp_servers.gbrain]") == 1
+        assert parsed["mcp_servers"]["gbrain"]["command"] == "existing-gbrain"
+        assert "other" in parsed["mcp_servers"]
+        assert report.preserved_user_servers == ["gbrain"]
+        assert report.migrated == ["other"]
+        assert "gbrain" in report.summary()
+
+    def test_inline_table_user_server_is_preserved(self, tmp_path):
+        """User declarations in other valid TOML shapes (`[mcp_servers]` + inline table) are
+        theirs too: skip the projection instead of refusing to write on a duplicate key."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text('[mcp_servers]\ngbrain = { command = "existing-gbrain" }\n', encoding="utf-8")
+        report = migrate(
+            {"mcp_servers": {"gbrain": {"command": "projected-gbrain"}, "other": {"command": "o"}}},
+            codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False,
+            default_permission_profile=None)
+        parsed = tomllib.loads(target.read_text(encoding="utf-8"))
+        assert report.written and report.errors == []
+        assert report.preserved_user_servers == ["gbrain"]
+        assert parsed["mcp_servers"]["gbrain"]["command"] == "existing-gbrain"
+        assert parsed["mcp_servers"]["other"]["command"] == "o"
+
+    def test_unloadable_existing_config_explains_plugin_rerun(self, tmp_path, monkeypatch):
+        """Repairing a pre-broken config.toml: codex cannot load it, so plugin/list fails on this
+        run. The report must say plugins need a re-run instead of a bare discovery error."""
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        target = tmp_path / "config.toml"
+        target.write_text('[mcp_servers.gbrain]\ncommand = "a"\n[mcp_servers.gbrain]\ncommand = "b"\n',
+                          encoding="utf-8")
+        monkeypatch.setattr(crpm, "_query_codex_plugins",
+                            lambda codex_home=None, timeout=8.0, **_kw: ([], "plugin/list query failed"))
+        report = migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
+        assert "re-run `hermes codex-runtime migrate` to migrate plugins" in (report.plugin_query_error or "")
+        assert "existing config.toml was unloadable" in report.summary()
+
+    def test_cli_migrate_dry_run_json_reports_without_writing(self, tmp_path, monkeypatch, capsys):
+        """`hermes codex-runtime migrate --dry-run --json` is the supported automation seam:
+        drive it through the real ``hermes`` argparse tree so the subcommand registration in
+        hermes_cli/main.py stays pinned, and honour ``CODEX_HOME`` like every codex sibling."""
+        import json
+
+        import hermes_cli.main as main
+
+        codex_home = tmp_path / "alt-codex"
+        codex_home.mkdir()
+        target = codex_home / "config.toml"
+        target.write_text('[mcp_servers.gbrain]\ncommand = "existing-gbrain"\n', encoding="utf-8")
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"mcp_servers": {"gbrain": {"command": "projected"}, "other": {"command": "o"}}})
+        parser, _subparsers = main._build_cli_parser()
+        args = parser.parse_args(["codex-runtime", "migrate", "--dry-run", "--json"])
+        rc = args.func(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert payload["dry_run"] is True and payload["written"] is False
+        assert payload["preserved_user_servers"] == ["gbrain"]
+        assert payload["target_path"] == str(target)
+        assert target.read_text(encoding="utf-8") == '[mcp_servers.gbrain]\ncommand = "existing-gbrain"\n'

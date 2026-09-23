@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
+import { useNavigate } from "react-router";
 import {
   Package,
   Search,
@@ -25,6 +26,8 @@ import {
   AlertTriangle,
   Sparkles,
   Loader2,
+  Pencil,
+  Plus,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -36,7 +39,10 @@ import type {
   SkillHubPreview,
   SkillHubScan,
 } from "@/lib/api";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
+import { SkillEditorDialog } from "@/components/SkillEditorDialog";
+import { LoadErrorNotice } from "@/components/LoadErrorNotice";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -55,8 +61,10 @@ import {
 import { cn } from "@/lib/utils";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -124,30 +132,60 @@ export default function SkillsPage() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  // Humanized error from the last skills/toolsets load; drives a persistent
+  // Retry notice. `loadNonce` re-runs the load effect on Retry.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadNonce, setLoadNonce] = useState(0);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
+  // Skill editor dialog: open + which skill is being edited (null = create).
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorSkill, setEditorSkill] = useState<string | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
+  // ── Profile scoping ──
+  // The write target comes from the GLOBAL profile switcher (sidebar) via
+  // ProfileContext — one selector for the whole dashboard, deep-linkable
+  // as ?profile=<name>. This page just consumes it: the fetchJSON layer
+  // appends the param automatically; we still pass it explicitly where the
+  // call signature supports it (clearer, and robust if a caller bypasses
+  // the auto-injection).
+  const {
+    profile: selectedProfile,
+  } = useProfileScope();
+
   useEffect(() => {
-    Promise.all([api.getSkills(), api.getToolsets()])
+    // Promise-chain shape: setState fires only inside async callbacks so the
+    // effect body stays lint-clean (react-hooks/set-state-in-effect). On a
+    // profile switch the old list stays visible until the new one arrives.
+    let cancelled = false;
+    Promise.all([
+      api.getSkills(selectedProfile || undefined),
+      api.getToolsets(selectedProfile || undefined),
+    ])
       .then(([s, tsets]) => {
+        if (cancelled) return;
         setSkills(s);
         setToolsets(tsets);
+        setLoadError(null);
       })
-      .catch(() => showToast(t.common.loading, "error"))
-      .finally(() => setLoading(false));
-  }, []);
+      .catch((e: unknown) => !cancelled && setLoadError(errorMessage(e)))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProfile, loadNonce]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
     setTogglingSkills((prev) => new Set(prev).add(skill.name));
     try {
-      await api.toggleSkill(skill.name, !skill.enabled);
+      await api.toggleSkill(skill.name, !skill.enabled, selectedProfile || undefined);
       setSkills((prev) =>
         prev.map((s) =>
           s.name === skill.name ? { ...s, enabled: !s.enabled } : s,
@@ -171,12 +209,65 @@ export default function SkillsPage() {
   /* ---- Refresh toolsets after a config change ---- */
   const refreshToolsets = async () => {
     try {
-      const tsets = await api.getToolsets();
+      const tsets = await api.getToolsets(selectedProfile || undefined);
       setToolsets(tsets);
     } catch {
       /* non-fatal: the drawer already toasted on the failing write */
     }
   };
+
+  /* ---- Skill editor (create / edit SKILL.md) ---- */
+  const openCreateEditor = useCallback(() => {
+    setEditorSkill(null);
+    setEditorOpen(true);
+  }, []);
+  // ── "Learn a skill" panel ──────────────────────────────────────────────
+  // Open-ended: dir + URL + free-text inputs are composed into a single-line
+  // /learn command and handed to the chat. /learn resolves to a normal agent
+  // turn (command.dispatch → send), so the live agent gathers the sources
+  // with its own tools and authors the skill via skill_manage. No backend
+  // distill endpoint — one code path with the CLI/TUI/gateway /learn.
+  const navigate = useNavigate();
+  const [learnOpen, setLearnOpen] = useState(false);
+  const [learnDir, setLearnDir] = useState("");
+  const [learnUrl, setLearnUrl] = useState("");
+  const [learnText, setLearnText] = useState("");
+  const openLearn = useCallback(() => {
+    setLearnDir("");
+    setLearnUrl("");
+    setLearnText("");
+    setLearnOpen(true);
+  }, []);
+  const submitLearn = useCallback(() => {
+    const segs: string[] = [];
+    const dir = learnDir.trim();
+    const url = learnUrl.trim();
+    const text = learnText.trim();
+    if (dir) segs.push(`local source: ${dir}`);
+    if (url) segs.push(`URL: ${url}`);
+    if (text) segs.push(text);
+    // Flatten to a single line — the chat composer submits on the first Enter.
+    const composed = segs.join("; ").replace(/\s*\n\s*/g, " ").trim();
+    if (!composed) return;
+    setLearnOpen(false);
+    navigate(`/chat?learn=${encodeURIComponent(composed)}`);
+  }, [learnDir, learnUrl, learnText, navigate]);
+  const openEditEditor = useCallback((skillName: string) => {
+    setEditorSkill(skillName);
+    setEditorOpen(true);
+  }, []);
+  const handleEditorSaved = useCallback(
+    (skillName: string) => {
+      showToast(`${skillName} saved ✓`, "success");
+      // Reload the list so a newly created skill (or an edited description)
+      // shows up immediately.
+      api
+        .getSkills(selectedProfile || undefined)
+        .then(setSkills)
+        .catch(() => {});
+    },
+    [selectedProfile, showToast],
+  );
 
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
@@ -233,7 +324,7 @@ export default function SkillsPage() {
       return;
     }
     setAfterTitle(
-      <span className="whitespace-nowrap text-xs text-muted-foreground">
+      <span className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
         {t.skills.enabledOf
           .replace("{enabled}", String(enabledCount))
           .replace("{total}", String(skills.length))}
@@ -265,7 +356,15 @@ export default function SkillsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [enabledCount, loading, search, setAfterTitle, setEnd, skills.length, t]);
+  }, [
+    enabledCount,
+    loading,
+    search,
+    setAfterTitle,
+    setEnd,
+    skills.length,
+    t,
+  ]);
 
   const filteredToolsets = useMemo(() => {
     return toolsets.filter(
@@ -290,6 +389,17 @@ export default function SkillsPage() {
     <div className="flex flex-col gap-4">
       <PluginSlot name="skills:top" />
       <Toast toast={toast} />
+
+      {loadError && (
+        <LoadErrorNotice
+          what={t.skills.loadWhat ?? en.skills.loadWhat!}
+          detail={loadError}
+          onRetry={() => {
+            setLoading(true);
+            setLoadNonce((n) => n + 1);
+          }}
+        />
+      )}
 
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
@@ -405,6 +515,7 @@ export default function SkillsPage() {
                         skill={skill}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
+                        onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -426,20 +537,50 @@ export default function SkillsPage() {
                         )
                       : t.skills.all}
                   </CardTitle>
-                  <Badge tone="secondary" className="text-xs">
-                    {t.skills.skillCount
-                      .replace("{count}", String(activeSkills.length))
-                      .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge tone="secondary" className="text-xs">
+                      {t.skills.skillCount
+                        .replace("{count}", String(activeSkills.length))
+                        .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                    </Badge>
+                    <Button
+                      size="sm"
+                      outlined
+                      onClick={openLearn}
+                      prefix={<Sparkles />}
+                    >
+                      Learn a skill
+                    </Button>
+                    <Button
+                      size="sm"
+                      outlined
+                      onClick={openCreateEditor}
+                      prefix={<Plus />}
+                    >
+                      New skill
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="px-4 pb-4">
-                {activeSkills.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-8">
-                    {skills.length === 0
-                      ? t.skills.noSkills
-                      : t.skills.noSkillsMatch}
-                  </p>
+                {loadError ? null : activeSkills.length === 0 ? (
+                  <div className="flex flex-col items-center gap-3 py-8 text-center">
+                    <p className="text-sm text-muted-foreground">
+                      {skills.length === 0
+                        ? t.skills.noSkills
+                        : t.skills.noSkillsMatch}
+                    </p>
+                    {skills.length === 0 && (
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <Button size="sm" onClick={() => setView("hub")}>
+                          {t.skills.browseHub ?? en.skills.browseHub}
+                        </Button>
+                        <Button size="sm" outlined onClick={openCreateEditor}>
+                          {t.skills.createSkill ?? en.skills.createSkill}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="grid gap-1">
                     {activeSkills.map((skill) => (
@@ -448,6 +589,7 @@ export default function SkillsPage() {
                         skill={skill}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
+                        onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -522,11 +664,11 @@ export default function SkillsPage() {
                               )}
                               <div className="mt-3">
                                 <Button
-                                  size="xs"
+                                  size="sm"
                                   outlined
                                   onClick={() => setConfigToolset(ts)}
+                                  prefix={<Wrench />}
                                 >
-                                  <Wrench className="h-3 w-3 mr-1" />
                                   Configure
                                 </Button>
                               </div>
@@ -540,17 +682,83 @@ export default function SkillsPage() {
               )}
             </>
           ) : (
-            <HubBrowser showToast={showToast} />
+            <HubBrowser showToast={showToast} profile={selectedProfile || undefined} />
           )}
         </div>
       </div>
       {configToolset && (
         <ToolsetConfigDrawer
           toolset={configToolset}
+          profile={selectedProfile || undefined}
           onClose={() => setConfigToolset(null)}
           onChanged={() => void refreshToolsets()}
         />
       )}
+      <SkillEditorDialog
+        open={editorOpen}
+        editName={editorSkill}
+        profile={selectedProfile || undefined}
+        onClose={() => setEditorOpen(false)}
+        onSaved={handleEditorSaved}
+      />
+      <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Learn a skill</DialogTitle>
+            <DialogDescription>
+              Point Hermes at anything and it will distill a reusable skill —
+              following the house authoring standards. Fill in any combination
+              below; the agent gathers the sources and writes the skill in chat.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <div className="grid gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Local file or directory
+              </label>
+              <Input
+                placeholder="~/projects/some-sdk  (read with read_file / search_files)"
+                value={learnDir}
+                onChange={(e) => setLearnDir(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                URL
+              </label>
+              <Input
+                placeholder="https://docs.example.com/api  (fetched with web_extract)"
+                value={learnUrl}
+                onChange={(e) => setLearnUrl(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Anything else — describe the workflow, paste notes, or say
+                "what we just did"
+              </label>
+              <textarea
+                className="min-h-[90px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                placeholder="e.g. how I file an expense report: open the portal, …"
+                value={learnText}
+                onChange={(e) => setLearnText(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button ghost onClick={() => setLearnOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={submitLearn}
+              prefix={<Sparkles />}
+              disabled={!learnDir.trim() && !learnUrl.trim() && !learnText.trim()}
+            >
+              Learn it
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <PluginSlot name="skills:bottom" />
     </div>
   );
@@ -560,6 +768,7 @@ function SkillRow({
   skill,
   toggling,
   onToggle,
+  onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
   return (
@@ -585,6 +794,16 @@ function SkillRow({
           {skill.description || noDescriptionLabel}
         </p>
       </div>
+      <Button
+        ghost
+        size="icon"
+        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+        title="Edit SKILL.md"
+        aria-label={`Edit ${skill.name}`}
+        onClick={onEdit}
+      >
+        <Pencil />
+      </Button>
     </div>
   );
 }
@@ -616,6 +835,7 @@ interface PanelItemProps {
 interface SkillRowProps {
   noDescriptionLabel: string;
   onToggle: () => void;
+  onEdit: () => void;
   skill: SkillInfo;
   toggling: boolean;
 }
@@ -668,8 +888,11 @@ const SEVERITY_TONE: Record<string, "destructive" | "warning" | "secondary" | "o
 
 function HubBrowser({
   showToast,
+  profile,
 }: {
   showToast: (msg: string, kind: "success" | "error") => void;
+  /** Optional profile scoping installs + installed-state badges. */
+  profile?: string;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillHubResult[]>([]);
@@ -699,7 +922,7 @@ function HubBrowser({
   useEffect(() => {
     let cancelled = false;
     api
-      .getSkillHubSources()
+      .getSkillHubSources(profile)
       .then((r) => {
         if (cancelled) return;
         setSources(r.sources);
@@ -715,7 +938,7 @@ function HubBrowser({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [profile]);
 
   /* ---- Search ---- */
   const runSearch = useCallback(async () => {
@@ -725,13 +948,13 @@ function HubBrowser({
     setSearched(true);
     const t0 = performance.now();
     try {
-      const r = await api.searchSkillsHub(q);
+      const r = await api.searchSkillsHub(q, "all", 20, profile);
       setResults(r.results);
       setSourceCounts(r.source_counts || {});
       setTimedOut(r.timed_out || []);
       setInstalled((prev) => ({ ...prev, ...(r.installed || {}) }));
     } catch (e) {
-      showToast(`Hub search failed: ${e}`, "error");
+      showToast(`Hub search failed: ${errorMessage(e)}`, "error");
       setResults([]);
       setSourceCounts({});
       setTimedOut([]);
@@ -739,7 +962,7 @@ function HubBrowser({
       setSearchMs(Math.round(performance.now() - t0));
       setSearching(false);
     }
-  }, [query, showToast]);
+  }, [query, showToast, profile]);
 
   /* ---- Poll a spawned action's log until it exits ---- */
   useEffect(() => {
@@ -757,7 +980,7 @@ function HubBrowser({
         } else {
           // Install finished — refresh installed-state so badges update.
           api
-            .getSkillHubSources()
+            .getSkillHubSources(profile)
             .then((r) => !cancelled && setInstalled(r.installed))
             .catch(() => {});
         }
@@ -770,35 +993,35 @@ function HubBrowser({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [action]);
+  }, [action, profile]);
 
   const install = useCallback(
     async (identifier: string) => {
       try {
-        const res = await api.installSkillFromHub(identifier);
+        const res = await api.installSkillFromHub(identifier, profile);
         showToast(`Installing ${identifier}…`, "success");
         setActionLog([]);
         setActionRunning(true);
         setAction(res.name);
         setDetail(null);
       } catch (e) {
-        showToast(`Install failed: ${e}`, "error");
+        showToast(`Install failed: ${errorMessage(e)}`, "error");
       }
     },
-    [showToast],
+    [showToast, profile],
   );
 
   const updateAll = useCallback(async () => {
     try {
-      const res = await api.updateSkillsFromHub();
+      const res = await api.updateSkillsFromHub(profile);
       showToast("Updating installed skills…", "success");
       setActionLog([]);
       setActionRunning(true);
       setAction(res.name);
     } catch (e) {
-      showToast(`Update failed: ${e}`, "error");
+      showToast(`Update failed: ${errorMessage(e)}`, "error");
     }
-  }, [showToast]);
+  }, [showToast, profile]);
 
   const isInstalled = useCallback(
     (identifier: string) => Boolean(installed[identifier]),
@@ -1170,7 +1393,7 @@ function SkillDetailDialog({
       .previewSkillFromHub(result.identifier)
       .then((p) => !cancelled && setPreview(p))
       .catch((e) => {
-        if (!cancelled) showToast(`Preview failed: ${e}`, "error");
+        if (!cancelled) showToast(`Preview failed: ${errorMessage(e)}`, "error");
       })
       .finally(() => !cancelled && setPreviewLoading(false));
     return () => {
@@ -1185,7 +1408,7 @@ function SkillDetailDialog({
       const s = await api.scanSkillFromHub(result.identifier);
       setScan(s);
     } catch (e) {
-      showToast(`Scan failed: ${e}`, "error");
+      showToast(`Scan failed: ${errorMessage(e)}`, "error");
     } finally {
       setScanning(false);
     }

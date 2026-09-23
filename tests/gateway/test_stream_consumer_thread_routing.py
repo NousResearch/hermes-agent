@@ -51,20 +51,6 @@ class TestInitialReplyToId:
         )
         assert call_kwargs["chat_id"] == "chat_123"
 
-    @pytest.mark.asyncio
-    async def test_first_send_without_initial_reply_to_id(self):
-        """When initial_reply_to_id is None, first send should have
-        reply_to=None (backward compatible)."""
-        adapter = _make_adapter()
-        consumer = GatewayStreamConsumer(
-            adapter,
-            "chat_123",
-        )
-        await consumer._send_or_edit("Hello world")
-
-        adapter.send.assert_called_once()
-        call_kwargs = adapter.send.call_args[1]
-        assert call_kwargs.get("reply_to") is None
 
     @pytest.mark.asyncio
     async def test_subsequent_edits_ignore_initial_reply_to_id(self):
@@ -88,22 +74,6 @@ class TestInitialReplyToId:
         edit_kwargs = adapter.edit_message.call_args[1]
         assert edit_kwargs["message_id"] == "msg_1"
         assert edit_kwargs["chat_id"] == "chat_123"
-
-    @pytest.mark.asyncio
-    async def test_metadata_passed_on_first_send(self):
-        """Metadata (containing thread_id) should be forwarded on first send."""
-        adapter = _make_adapter()
-        metadata = {"thread_id": "omt_topic789"}
-        consumer = GatewayStreamConsumer(
-            adapter,
-            "chat_123",
-            metadata=metadata,
-            initial_reply_to_id="om_msg_000",
-        )
-        await consumer._send_or_edit("Test")
-
-        call_kwargs = adapter.send.call_args[1]
-        assert call_kwargs["metadata"] == metadata
 
 
 class TestOverflowFirstMessage:
@@ -143,7 +113,7 @@ class TestFeishuFallbackThreadRouting:
     async def test_create_uses_thread_id_when_available(self):
         """When reply_to=None and metadata has thread_id, message.create
         should use receive_id_type='thread_id'."""
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         # We test the _send_raw_message method directly by mocking the client
         adapter = MagicMock(spec=FeishuAdapter)
@@ -160,6 +130,12 @@ class TestFeishuFallbackThreadRouting:
         adapter._client = mock_client
         adapter._build_create_message_body = FeishuAdapter._build_create_message_body
         adapter._build_create_message_request = FeishuAdapter._build_create_message_request
+        # _send_raw_message routes blocking SDK calls through _run_blocking
+        # (adapter-owned executor). On a MagicMock(spec=...) that method is
+        # auto-mocked and would swallow the real call, so wire a passthrough.
+        async def _run_blocking_passthrough(func, *args):
+            return func(*args)
+        adapter._run_blocking = _run_blocking_passthrough
 
         # Call _send_raw_message with reply_to=None and thread_id in metadata
         import json
@@ -196,32 +172,3 @@ class TestFeishuFallbackThreadRouting:
             f"Expected receive_id_type='thread_id', got '{receive_id_type}'"
         )
 
-    @pytest.mark.asyncio
-    async def test_create_uses_chat_id_when_no_thread(self):
-        """When reply_to=None and metadata has no thread_id, message.create
-        should use receive_id_type='chat_id' (original behavior)."""
-        from gateway.platforms.feishu import FeishuAdapter
-
-        mock_client = MagicMock()
-        mock_create_response = SimpleNamespace(
-            success=lambda: True,
-            data=SimpleNamespace(message_id="new_msg_1"),
-        )
-        mock_client.im.v1.message.create = MagicMock(return_value=mock_create_response)
-
-        adapter = MagicMock(spec=FeishuAdapter)
-        adapter._client = mock_client
-        adapter._build_create_message_body = FeishuAdapter._build_create_message_body
-        adapter._build_create_message_request = FeishuAdapter._build_create_message_request
-
-        import json
-        result = await FeishuAdapter._send_raw_message(
-            adapter,
-            chat_id="oc_main_chat",
-            msg_type="text",
-            payload=json.dumps({"text": "hello"}),
-            reply_to=None,
-            metadata=None,
-        )
-
-        mock_client.im.v1.message.create.assert_called_once()

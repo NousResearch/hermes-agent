@@ -1,6 +1,7 @@
 import { Command as CommandPrimitive } from 'cmdk'
 import * as React from 'react'
 
+import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { SearchIcon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -17,7 +18,12 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
   )
 }
 
-function CommandInput({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.Input>) {
+interface CommandInputProps extends React.ComponentProps<typeof CommandPrimitive.Input> {
+  /** Inline trailing slot, rendered on the right of the search row. */
+  right?: React.ReactNode
+}
+
+function CommandInput({ className, right, ...props }: CommandInputProps) {
   return (
     <div className="flex h-11 items-center gap-2 border-b border-border px-3" data-slot="command-input-wrapper">
       <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
@@ -29,14 +35,21 @@ function CommandInput({ className, ...props }: React.ComponentProps<typeof Comma
         data-slot="command-input"
         {...props}
       />
+      {right}
     </div>
   )
 }
 
 function CommandList({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.List>) {
+  // cmdk selects on pointer-enter, so a list that opens under a parked cursor —
+  // or re-flows under one as the query narrows — hands the selection to
+  // whatever row slid beneath the mouse, and Enter commits THAT. Inert until
+  // the pointer actually moves (see usePointerQuiet).
+  const pointerQuiet = usePointerQuiet()
+
   return (
     <CommandPrimitive.List
-      className={cn('max-h-100 overflow-y-auto overflow-x-hidden', className)}
+      className={cn('max-h-100 overflow-y-auto overflow-x-hidden', pointerQuiet && 'pointer-events-none', className)}
       data-slot="command-list"
       {...props}
     />

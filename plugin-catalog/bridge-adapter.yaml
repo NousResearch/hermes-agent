@@ -1,0 +1,16 @@
+name: bridge-adapter
+repo: https://github.com/Kesuek/hermes-bridge-adapter
+sha: 3615cc9f313716ee25d21908765774a13ebda983
+description: Generic JSON-file-based bridge adapter. Bridges self-register via a registry/ manifest (presence
+  = registered, rm = unregistered). Polls inbox/ for incoming messages, writes outgoing to outbox/. External
+  services (imsg, Matrix, Telegram, ...) write/read JSON files in a shared directory.
+maintainer: Kesuek
+tier: community
+category: platform
+docs_url: https://github.com/Kesuek/hermes-bridge-adapter#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - name

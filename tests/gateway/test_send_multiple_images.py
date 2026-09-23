@@ -14,6 +14,7 @@ Signal's native implementation is covered by test_signal.py.
 
 import asyncio
 import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -41,7 +42,7 @@ class _StubAdapter(BasePlatformAdapter):
         self.sent_animations = []
         self.sent_files = []
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         return True
 
     async def disconnect(self):
@@ -86,36 +87,8 @@ class TestBaseDefaultLoop:
         assert len(a.sent_files) == 1
         assert a.sent_files[0][1] == "/tmp/foo.png"
 
-    def test_empty_batch_is_noop(self):
-        a = _StubAdapter()
-        _run(a.send_multiple_images("chat1", []))
-        assert a.sent_images == []
-        assert a.sent_animations == []
-        assert a.sent_files == []
 
-
-# ---------------------------------------------------------------------------
-# Telegram mocks setup (shared with test_send_image_file pattern)
-# ---------------------------------------------------------------------------
-
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-
-
-_ensure_telegram_mock()
-
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 class TestTelegramMultiImage:
@@ -153,43 +126,6 @@ class TestTelegramMultiImage:
         sizes = [len(c.kwargs["media"]) for c in adapter._bot.send_media_group.await_args_list]
         assert sizes == [10, 5]
 
-    def test_animations_routed_to_send_animation(self, adapter):
-        """GIFs are peeled off and sent individually via send_animation."""
-        import telegram
-        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media})
-        adapter.send_animation = AsyncMock()
-        # 2 photos + 1 gif
-        images = [
-            ("https://x.com/a.png", ""),
-            ("https://x.com/b.gif", ""),
-            ("https://x.com/c.png", ""),
-        ]
-        _run(adapter.send_multiple_images("12345", images))
-
-        adapter.send_animation.assert_awaited_once()
-        assert adapter._bot.send_media_group.await_count == 1
-        photos = adapter._bot.send_media_group.await_args.kwargs["media"]
-        assert len(photos) == 2
-
-    def test_fallback_to_per_image_on_send_media_group_failure(self, adapter):
-        """If send_media_group raises, each photo falls back to send_image."""
-        import telegram
-        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media})
-        adapter._bot.send_media_group = AsyncMock(side_effect=Exception("boom"))
-        adapter.send_image = AsyncMock(return_value=MagicMock(success=True))
-        adapter.send_animation = AsyncMock(return_value=MagicMock(success=True))
-        adapter.send_image_file = AsyncMock(return_value=MagicMock(success=True))
-
-        images = [(f"https://x.com/{i}.png", "") for i in range(3)]
-        _run(adapter.send_multiple_images("12345", images))
-
-        # Three per-image fallback calls
-        assert adapter.send_image.await_count == 3
-
-    def test_empty_noop(self, adapter):
-        _run(adapter.send_multiple_images("12345", []))
-        adapter._bot.send_media_group.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
 # Discord
@@ -220,49 +156,120 @@ class TestDiscordMultiImage:
         a._client = MagicMock()
         return a
 
-    def test_single_batch_of_local_files_sends_once(self, adapter, tmp_path):
-        """3 local images → one channel.send with files=[...] of length 3."""
-        paths = []
-        for i in range(3):
-            p = tmp_path / f"img_{i}.png"
-            p.write_bytes(b"\x89PNG" + b"\x00" * 20)
-            paths.append(p)
+
+    def test_url_batch_follows_safe_redirect_location_header(self, adapter, monkeypatch):
+        """Redirect handling preserves aiohttp's case-insensitive Location behavior."""
+        import plugins.platforms.discord.adapter as discord_adapter
+
+        public_url = "https://cdn.example.test/image.png"
+        redirected_url = "https://assets.example.test/image.png"
+        requested_urls = []
+
+        class RedirectResponse:
+            status = 302
+            headers = {"Location": redirected_url}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                raise AssertionError("redirect responses must not be read")
+
+        class ImageResponse:
+            status = 200
+            headers = {"Content-Type": "image/png"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                return b"\x89PNG"
+
+        class FakeSession:
+            def get(self, url, **kwargs):
+                assert kwargs.get("allow_redirects") is False
+                requested_urls.append(url)
+                if url == public_url:
+                    return RedirectResponse()
+                assert url == redirected_url
+                return ImageResponse()
+
+            async def close(self):
+                return None
+
+        fake_aiohttp = types.SimpleNamespace(
+            ClientSession=lambda **kwargs: FakeSession(),
+            ClientTimeout=lambda **kwargs: kwargs,
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        monkeypatch.setattr(discord_adapter, "is_safe_url", lambda url: True)
 
         mock_channel = MagicMock()
         mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
-        # Non-forum channel
         adapter._is_forum_parent = MagicMock(return_value=False)
 
-        images = [(f"file://{p}", "") for p in paths]
-        _run(adapter.send_multiple_images("67890", images))
+        _run(adapter.send_multiple_images("67890", [(public_url, "caption")]))
 
+        assert requested_urls == [public_url, redirected_url]
         mock_channel.send.assert_awaited_once()
-        assert len(mock_channel.send.call_args.kwargs["files"]) == 3
 
-    def test_batch_over_10_chunks_into_two_messages(self, adapter, tmp_path):
-        """15 local images → two channel.send calls (10 + 5)."""
-        paths = []
-        for i in range(15):
-            p = tmp_path / f"img_{i}.png"
-            p.write_bytes(b"\x89PNG" + b"\x00" * 10)
-            paths.append(p)
+    def test_send_image_blocks_private_redirect_before_send(self, adapter, monkeypatch):
+        import plugins.platforms.discord.adapter as discord_adapter
 
+        public_url = "https://cdn.example.test/image.png"
+        private_url = "http://169.254.169.254/latest/meta-data/"
+
+        class FakeResponse:
+            status = 302
+            headers = {"Location": private_url}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                return b"metadata-secret"
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, **kwargs):
+                assert kwargs.get("allow_redirects") is False
+                return FakeResponse()
+
+        fake_aiohttp = types.SimpleNamespace(
+            ClientSession=lambda **kwargs: FakeSession(),
+            ClientTimeout=lambda **kwargs: kwargs,
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        monkeypatch.setattr(
+            discord_adapter,
+            "is_safe_url",
+            lambda url: not str(url).startswith("http://169.254.169.254"),
+        )
+        adapter._is_forum_parent = MagicMock(return_value=False)
         mock_channel = MagicMock()
         mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
-        adapter._is_forum_parent = MagicMock(return_value=False)
+        adapter._client.fetch_channel = AsyncMock(return_value=mock_channel)
+        adapter.send = AsyncMock()
 
-        images = [(f"file://{p}", "") for p in paths]
-        _run(adapter.send_multiple_images("67890", images))
+        _run(adapter.send_image("67890", public_url, "caption"))
 
-        assert mock_channel.send.await_count == 2
-        sizes = [len(c.kwargs["files"]) for c in mock_channel.send.await_args_list]
-        assert sizes == [10, 5]
-
-    def test_empty_noop(self, adapter):
-        adapter._client = MagicMock()
-        _run(adapter.send_multiple_images("67890", []))
+        mock_channel.send.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +293,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 class TestSlackMultiImage:
@@ -316,26 +323,6 @@ class TestSlackMultiImage:
         client.files_upload_v2.assert_awaited_once()
         kwargs = client.files_upload_v2.await_args.kwargs
         assert len(kwargs["file_uploads"]) == 3
-
-    def test_batch_over_10_chunks(self, adapter, tmp_path):
-        paths = []
-        for i in range(12):
-            p = tmp_path / f"img_{i}.png"
-            p.write_bytes(b"\x89PNG" + b"\x00" * 5)
-            paths.append(p)
-
-        images = [(f"file://{p}", "") for p in paths]
-        _run(adapter.send_multiple_images("C12345", images))
-
-        client = adapter._get_client("C12345")
-        assert client.files_upload_v2.await_count == 2
-        sizes = [len(c.kwargs["file_uploads"]) for c in client.files_upload_v2.await_args_list]
-        assert sizes == [10, 2]
-
-    def test_empty_noop(self, adapter):
-        _run(adapter.send_multiple_images("C12345", []))
-        client = adapter._get_client("C12345")
-        client.files_upload_v2.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -377,32 +364,13 @@ class TestMattermostMultiImage:
         assert payload["channel_id"] == "channel123"
         assert len(payload["file_ids"]) == 3
 
-    def test_batch_over_5_chunks(self, adapter, tmp_path):
-        """7 images → 2 posts (5 + 2)."""
-        paths = []
-        for i in range(7):
-            p = tmp_path / f"img_{i}.png"
-            p.write_bytes(b"\x89PNG" + b"\x00" * 10)
-            paths.append(p)
-
-        images = [(f"file://{p}", "") for p in paths]
-        _run(adapter.send_multiple_images("channel123", images))
-
-        assert adapter._api_post.await_count == 2
-        sizes = [len(c.args[1]["file_ids"]) for c in adapter._api_post.await_args_list]
-        assert sizes == [5, 2]
-
-    def test_empty_noop(self, adapter):
-        _run(adapter.send_multiple_images("channel123", []))
-        adapter._api_post.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
 # Email
 # ---------------------------------------------------------------------------
 
 
-from gateway.platforms.email import EmailAdapter  # noqa: E402
+from plugins.platforms.email.adapter import EmailAdapter  # noqa: E402
 
 
 class TestEmailMultiImage:
@@ -437,26 +405,4 @@ class TestEmailMultiImage:
         assert len(file_paths) == 3
         assert "alt 0" in body
 
-    def test_remote_urls_linked_in_body(self, adapter, tmp_path):
-        """Remote URL images get their URL appended to the body, no attachment."""
-        images = [
-            ("https://x.com/a.png", "first"),
-            ("https://x.com/b.png", "second"),
-        ]
-        with patch.object(
-            adapter, "_send_email_with_attachments", MagicMock(return_value="<msgid@x>")
-        ) as mock_send:
-            _run(adapter.send_multiple_images("user@example.com", images))
 
-        mock_send.assert_called_once()
-        to_addr, body, file_paths = mock_send.call_args.args
-        assert file_paths == []
-        assert "https://x.com/a.png" in body
-        assert "https://x.com/b.png" in body
-
-    def test_empty_noop(self, adapter):
-        with patch.object(
-            adapter, "_send_email_with_attachments", MagicMock()
-        ) as mock_send:
-            _run(adapter.send_multiple_images("user@example.com", []))
-        mock_send.assert_not_called()

@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useContext, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import type { DesktopUninstallMode, DesktopUninstallSummary } from '@/global'
+import { useI18n } from '@/i18n'
 import { AlertTriangle, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import type { DesktopUninstallMode, DesktopUninstallSummary } from '@/global'
 
-import { SectionHeading } from './primitives'
+import { SectionHeading, SettingsBreadcrumbContext } from './primitives'
 
 interface ModeOption {
   mode: DesktopUninstallMode
@@ -46,6 +47,8 @@ const OPTIONS: ModeOption[] = [
 ]
 
 export function UninstallSection() {
+  const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
+  const { t } = useI18n()
   const [summary, setSummary] = useState<DesktopUninstallSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState<DesktopUninstallMode | null>(null)
@@ -55,10 +58,13 @@ export function UninstallSection() {
   useEffect(() => {
     let alive = true
     const bridge = window.hermesDesktop?.uninstall
+
     if (!bridge) {
       setLoading(false)
+
       return
     }
+
     void bridge
       .summary()
       .then(result => {
@@ -74,12 +80,14 @@ export function UninstallSection() {
           setLoading(false)
         }
       })
+
     return () => {
       alive = false
     }
   }, [])
 
   const bridge = window.hermesDesktop?.uninstall
+
   if (!bridge) {
     return null
   }
@@ -93,10 +101,13 @@ export function UninstallSection() {
     if (!pending) {
       return
     }
+
     setRunning(true)
     setError(null)
+
     try {
       const result = await bridge.run(pending)
+
       if (!result.ok) {
         setError(result.message || result.error || 'Uninstall could not start.')
         setRunning(false)
@@ -113,8 +124,8 @@ export function UninstallSection() {
   const pendingOption = OPTIONS.find(opt => opt.mode === pending) ?? null
 
   return (
-    <div className="mx-auto mt-8 w-full max-w-2xl">
-      <SectionHeading icon={AlertTriangle} title="Danger zone" />
+    <div className={cn('mx-auto w-full max-w-2xl', !hasBreadcrumb && 'mt-8')}>
+      <SectionHeading icon={AlertTriangle} page title={t.settings.uninstallSection.dangerZone} />
 
       <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3">
         {loading ? (
@@ -124,23 +135,16 @@ export function UninstallSection() {
           </div>
         ) : pendingOption ? (
           <div>
-            <p className="text-sm font-medium text-destructive">Confirm uninstall</p>
+            <p className="text-sm font-medium text-destructive">{t.settings.uninstallSection.confirmUninstall}</p>
             <p className="mt-1 text-xs text-muted-foreground">
               This removes {pendingOption.consequence}. This can&apos;t be undone.
             </p>
             {summary?.running_app_path && (
-              <p className="mt-1 font-mono text-[0.68rem] text-muted-foreground/60">
-                App: {summary.running_app_path}
-              </p>
+              <p className="mt-1 font-mono text-[0.68rem] text-muted-foreground/60">App: {summary.running_app_path}</p>
             )}
             {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              <Button
-                disabled={running}
-                onClick={() => void handleConfirm()}
-                size="sm"
-                variant="destructive"
-              >
+              <Button disabled={running} onClick={() => void handleConfirm()} size="sm" variant="destructive">
                 {running && <Loader2 className="size-3 animate-spin" />}
                 {running ? 'Uninstalling…' : 'Yes, uninstall'}
               </Button>
@@ -151,7 +155,7 @@ export function UninstallSection() {
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">Uninstall Hermes</p>
+            <p className="text-sm font-medium">{t.settings.uninstallSection.uninstallHermes}</p>
             <p className="text-xs text-muted-foreground">
               Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.
             </p>

@@ -1,0 +1,24 @@
+[
+  {
+    "id": "windows-launcher-self-lock",
+    "title": "Released Windows updater locks its own console launcher",
+    "commits": ["a370ab8391ca5f8de7ebbc449f05cb0df36ade7c", "86960cdbb0148145890e2ee90b4e157fa899f6e1"],
+    "cases": [["installer-script", "hermes-update"]],
+    "errors": ["^E2E ASSERTION FAILED: hermes update exited [1-9][0-9]* \\(expected 0\\)$"],
+    "log": "update",
+    "signatures": ["failed to remove file[^\\r\\n]*Scripts[/\\\\]hermes\\.exe[^\\r\\n]*Access is denied\\. \\(os error 5\\)", "hermes\\.exe[/\\\\]__main__\\.py", "CalledProcessError[^\\r\\n]*pip[^\\r\\n]*install[^\\r\\n]*returned non-zero exit status 2"],
+    "explanation": "The March/April Windows updater is already running from hermes.exe when uv tries to replace it. Windows refuses the locked launcher. The update target cannot change that loaded code; re-running the installer is a separate recovery route.",
+    "evidence": "https://github.com/ethernet8023/hermes-agent/actions/runs/34055462305/job/101546487700"
+  },
+  {
+    "id": "windows-july-manual-app-update",
+    "title": "July script installs offer a manual update instead of an app hand-off",
+    "commits": ["7c1a029553d87c43ecff8a3821336bc95872213b"],
+    "cases": [["installer-script", "hermes-desktop-app-update"], ["installer-script+desktop", "hermes-desktop-app-update"], ["installer-script+desktop", "open-app-update"]],
+    "errors": ["^E2E ASSERTION FAILED: app driven via captured hermes desktop spec; update completed$", "^E2E ASSERTION FAILED: GUI driver clicked Update now and the app quit for hand-off$"],
+    "log": "desktop",
+    "signatures": ["\\[updates\\] no staged updater; surfacing manual `hermes update` for CLI install at", "\\[updates\\] manual: hermes update(?:\\r?\\n|$)"],
+    "explanation": "The July Windows app has no staged updater after a script install. Its Update button explicitly returns manual: hermes update without starting a hand-off. Desktop-installer installs are not covered by this exception.",
+    "evidence": "https://github.com/ethernet8023/hermes-agent/actions/runs/34055462305/job/101546487667"
+  }
+]

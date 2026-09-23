@@ -1,14 +1,23 @@
 import { useCallback } from 'react'
 
-import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
+import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
+import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
+import { LARGE_PASTE_TITLE_PREVIEW_CHARS, pasteSizeLabel } from '@/app/chat/composer/large-paste'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
+import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
+import { downscaleDataUrlForPreview } from '@/lib/image-resize'
+import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
   type ComposerAttachment,
+  type ComposerAttachmentPatch,
+  createComposerAttachmentOccurrenceId,
+  patchMainComposerAttachmentOccurrence,
   removeComposerAttachment,
-  setComposerTerminalSelection
+  setComposerTerminalSelection,
+  updateComposerAttachment
 } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -28,13 +37,44 @@ const BLOB_MIME_EXTENSION: Record<string, string> = {
 }
 
 function blobExtension(blob: Blob): string {
-  const mime = blob.type.split(';')[0]?.trim().toLowerCase()
+  const mime = normalize(blob.type.split(';')[0])
 
-  return (mime && BLOB_MIME_EXTENSION[mime]) || '.png'
+  return BLOB_MIME_EXTENSION[mime] || '.png'
 }
 
-function isImagePath(filePath: string): boolean {
+export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
+}
+
+/**
+ * Read an attachment's thumbnail preview, local disk first. Paperclip picks,
+ * clipboard saves, and OS drops always hand us paths on THIS machine — the
+ * remote-routed fs facade would 404 them against the gateway and toast a bogus
+ * "preview failed" even though the attach itself works (upload reads local
+ * bytes too). In-app drags from the remote project tree are the opposite case:
+ * the local read fails there, so fall back to the facade (remote fs bridge).
+ * In local mode the facade IS the local bridge, so this stays a single read.
+ */
+export async function attachmentPreviewDataUrl(filePath: string): Promise<string> {
+  return readDesktopFileDataUrlLocalFirst(filePath)
+}
+
+let attachmentPreviewQueue = Promise.resolve()
+
+async function queuedAttachmentPreview(filePath: string): Promise<{ previewUrl: string; thumbnailUrl?: string }> {
+  const task = attachmentPreviewQueue.then(async () => {
+    const previewUrl = await attachmentPreviewDataUrl(filePath)
+    const thumbnailUrl = previewUrl.startsWith('data:image/') ? await downscaleDataUrlForPreview(previewUrl) : undefined
+
+    return { previewUrl, thumbnailUrl }
+  })
+
+  attachmentPreviewQueue = task.then(
+    () => undefined,
+    () => undefined
+  )
+
+  return task
 }
 
 export interface DroppedFile {
@@ -42,12 +82,15 @@ export interface DroppedFile {
   file?: File
   /** Absolute filesystem path. Empty when an OS drop didn't carry one. */
   path: string
-  /** True if the entry is a directory. Currently only set by in-app drags. */
+  /** True if the entry is a directory. Set by in-app drags, and by OS drops via
+   * DataTransferItem.webkitGetAsEntry(). */
   isDirectory?: boolean
   /** First line number for in-app line-ref drags (source view gutter). */
   line?: number
   /** Last line number for line-range drags (`line..lineEnd` inclusive). */
   lineEnd?: number
+  /** A link dragged out of a browser (`text/uri-list`). Path-less; becomes an `@url:` chip. */
+  url?: string
 }
 
 /** MIME emitted by in-app drag sources (project tree, gutter line numbers).
@@ -68,6 +111,7 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
   const seenPaths = new Set<string>()
   const seenFiles = new Set<File>()
   const getPath = window.hermesDesktop?.getPathForFile
+  const urls = droppedLinkUrls(transfer)
 
   // In-app drags first — they carry richer metadata (isDirectory) than the
   // File-based fallback can provide, and produce no overlapping native files.
@@ -106,39 +150,64 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
     // Malformed payload — fall through to native files.
   }
 
-  const fileList = transfer.files
-
-  if (fileList) {
-    for (let i = 0; i < fileList.length; i += 1) {
-      const file = fileList.item(i)
-
-      if (!file || seenFiles.has(file)) {
-        continue
-      }
-
-      seenFiles.add(file)
-      let path = ''
-
-      if (getPath) {
-        try {
-          path = getPath(file) || ''
-        } catch {
-          path = ''
-        }
-      }
-
-      if (path && seenPaths.has(path)) {
-        continue
-      }
-
-      if (path) {
-        seenPaths.add(path)
-      }
-
-      result.push({ file, path })
+  // Add a native OS-drop entry. A dropped directory has no byte content to
+  // upload, so it's emitted as a path-only entry with `isDirectory: true` —
+  // that routes it to a `@folder:` ref / folder attachment (like the folder
+  // picker) instead of the file-upload pipeline, which can't stage a directory
+  // (the gateway can't read its bytes and there's no data_url to send).
+  const pushNativeEntry = (file: File, isDirectory: boolean) => {
+    if (seenFiles.has(file)) {
+      return
     }
+
+    seenFiles.add(file)
+    let path = ''
+
+    if (getPath) {
+      try {
+        path = getPath(file) || ''
+      } catch {
+        path = ''
+      }
+    }
+
+    // A link dragged out of a browser rides along as a virtual shortcut File
+    // (`<title>.url` on Windows, `.webloc` on macOS) with no on-disk path. It
+    // is the same link `text/uri-list` already carries, so drop the stub and
+    // let the URL become a chip instead of toasting "Could not attach X.url".
+    // A path-less *image* (dragged off a web page) keeps its bytes and wins
+    // over the link to its own src.
+    if (!path && urls.length) {
+      if (isImagePath(file.name) || file.type.startsWith('image/')) {
+        urls.length = 0
+      } else {
+        return
+      }
+    }
+
+    if (path && seenPaths.has(path)) {
+      return
+    }
+
+    if (path) {
+      seenPaths.add(path)
+    }
+
+    if (isDirectory) {
+      if (path) {
+        result.push({ isDirectory: true, path })
+      }
+
+      return
+    }
+
+    result.push({ file, path })
   }
 
+  // Process items first: DataTransferItem.webkitGetAsEntry() is the only
+  // synchronous way to tell a dropped folder from a file, and it lives only on
+  // items (not transfer.files). Must be read here, inside the drop handler,
+  // before the DataTransfer detaches.
   const items = transfer.items
 
   if (items) {
@@ -149,56 +218,149 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
         continue
       }
 
+      let isDirectory = false
+
+      try {
+        const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+        isDirectory = entry?.isDirectory === true
+      } catch {
+        isDirectory = false
+      }
+
       const file = item.getAsFile()
 
-      if (!file || seenFiles.has(file)) {
+      if (!file) {
         continue
       }
 
-      seenFiles.add(file)
-      let path = ''
-
-      if (getPath) {
-        try {
-          path = getPath(file) || ''
-        } catch {
-          path = ''
-        }
-      }
-
-      if (path && seenPaths.has(path)) {
-        continue
-      }
-
-      if (path) {
-        seenPaths.add(path)
-      }
-
-      result.push({ file, path })
+      pushNativeEntry(file, isDirectory)
     }
   }
 
+  // Fallback for environments that populate transfer.files but not items.
+  // webkitGetAsEntry isn't available on this path, so directory detection
+  // relies on the items pass above; anything reaching here is treated as a file.
+  const fileList = transfer.files
+
+  if (fileList) {
+    for (let i = 0; i < fileList.length; i += 1) {
+      const file = fileList.item(i)
+
+      if (!file) {
+        continue
+      }
+
+      pushNativeEntry(file, false)
+    }
+  }
+
+  for (const url of urls) {
+    result.push({ path: '', url })
+  }
+
   return result
+}
+
+/** `http(s)` links from a `text/uri-list` payload (one per line, `#` comments
+ * skipped), deduped. Empty when the drag carried none. */
+function droppedLinkUrls(transfer: DataTransfer): string[] {
+  let raw = ''
+
+  try {
+    raw = transfer.getData('text/uri-list') || ''
+  } catch {
+    return []
+  }
+
+  const urls: string[] = []
+
+  for (const line of raw.split(/\r?\n/)) {
+    const url = line.trim()
+
+    if (/^https?:\/\/[^/\s]/i.test(url) && !urls.includes(url)) {
+      urls.push(url)
+    }
+  }
+
+  return urls
+}
+
+/**
+ * Split dropped entries by origin. OS/Finder drops carry a native `File`
+ * handle; in-app drags (project tree, gutter line refs) are path-only.
+ *
+ * The distinction is load-bearing: an in-app path is workspace-relative and
+ * resolves on the gateway as-is, so it stays an inline `@file:`/`@line:` ref.
+ * An OS drop is an absolute path on *this* machine — the gateway can't read it
+ * in remote mode, and an image needs its bytes uploaded to get vision either
+ * way. So OS drops must go through the attachment/upload pipeline rather than
+ * leaking a local path into the prompt text.
+ */
+export function partitionDroppedFiles(candidates: DroppedFile[]): {
+  osDrops: DroppedFile[]
+  inAppRefs: DroppedFile[]
+} {
+  const osDrops: DroppedFile[] = []
+  const inAppRefs: DroppedFile[] = []
+
+  for (const candidate of candidates) {
+    if (candidate.file) {
+      osDrops.push(candidate)
+    } else {
+      inAppRefs.push(candidate)
+    }
+  }
+
+  return { osDrops, inAppRefs }
+}
+
+/** The composer these actions feed. Defaults to the main chat's scope;
+ *  session tiles pass their own so picks/drops/pastes land in THEIR chips. */
+interface ComposerActionsScope {
+  add: (attachment: ComposerAttachment) => void
+  remove: (id: string) => ComposerAttachment | null
+  update: (attachment: ComposerAttachment) => boolean
+  updateIfCurrent: (expected: ComposerAttachment, patch: ComposerAttachmentPatch) => boolean
+  target: string
+}
+
+const MAIN_ACTIONS_SCOPE: ComposerActionsScope = {
+  add: addComposerAttachment,
+  remove: removeComposerAttachment,
+  update: updateComposerAttachment,
+  updateIfCurrent: patchMainComposerAttachmentOccurrence,
+  target: 'main'
 }
 
 interface ComposerActionsOptions {
   activeSessionId: string | null
   currentCwd: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  scope?: ComposerActionsScope
 }
 
-/** Add to the main composer and focus it. All sidebar/picker/drop attach paths funnel through here. */
-const attachToMain = (attachment: ComposerAttachment) => {
-  addComposerAttachment(attachment)
-  requestComposerFocus('main')
-}
-
-export function useComposerActions({ activeSessionId, currentCwd, requestGateway }: ComposerActionsOptions) {
+export function useComposerActions({
+  activeSessionId,
+  currentCwd,
+  requestGateway,
+  scope = MAIN_ACTIONS_SCOPE
+}: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
+  /** Add to this scope's composer and focus it. All sidebar/picker/drop
+   *  attach paths funnel through here. */
+  const attachToMain = useCallback(
+    (attachment: ComposerAttachment) => {
+      scope.add(attachment)
+      requestComposerFocus(scope.target)
+    },
+    [scope]
+  )
+
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
-  }, [copy.imagePreviewFailed])
+  }, [])
 
   const addTerminalSelectionAttachment = useCallback((text: string, label = 'selection') => {
     const trimmed = text.trim()
@@ -213,25 +375,28 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     requestComposerInsert(refText, { mode: 'inline' })
   }, [])
 
-  const addContextRefAttachment = useCallback((refText: string, label?: string, detail?: string) => {
-    const kind: ComposerAttachment['kind'] = refText.startsWith('@folder:')
-      ? 'folder'
-      : refText.startsWith('@url:')
-        ? 'url'
-        : 'file'
+  const addContextRefAttachment = useCallback(
+    (refText: string, label?: string, detail?: string) => {
+      const kind: ComposerAttachment['kind'] = refText.startsWith('@folder:')
+        ? 'folder'
+        : refText.startsWith('@url:')
+          ? 'url'
+          : 'file'
 
-    attachToMain({
-      id: attachmentId(kind, refText),
-      kind,
-      label: label || refText.replace(/^@(file|folder|url):/, ''),
-      detail,
-      refText
-    })
-  }, [])
+      attachToMain({
+        id: attachmentId(kind, refText),
+        kind,
+        label: label || refText.replace(/^@(file|folder|url):/, ''),
+        detail,
+        refText
+      })
+    },
+    [attachToMain]
+  )
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
-      const paths = await window.hermesDesktop?.selectPaths({
+      const paths = await selectDesktopPaths({
         title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
         defaultPath: currentCwd || undefined,
         directories: kind === 'folder'
@@ -254,7 +419,27 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         })
       }
     },
-    [currentCwd]
+    [attachToMain, currentCwd]
+  )
+
+  const insertContextPathInlineRef = useCallback(
+    (path: string, isDirectory = false) => {
+      if (!path) {
+        return false
+      }
+
+      const ref = droppedFileInlineRef({ isDirectory, path }, currentCwd)
+
+      if (!ref) {
+        return false
+      }
+
+      requestComposerInsertRefs([ref], { target: scope.target })
+      requestComposerFocus(scope.target)
+
+      return true
+    },
+    [currentCwd, scope.target]
   )
 
   const attachContextFilePath = useCallback(
@@ -276,42 +461,53 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     },
-    [currentCwd]
+    [attachToMain, currentCwd]
   )
 
-  const attachImagePath = useCallback(async (filePath: string) => {
-    if (!filePath) {
-      return false
-    }
-
-    const baseAttachment: ComposerAttachment = {
-      id: attachmentId('image', filePath),
-      kind: 'image',
-      label: pathLabel(filePath),
-      detail: filePath,
-      path: filePath
-    }
-
-    attachToMain(baseAttachment)
-
-    try {
-      const previewUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
-
-      if (previewUrl) {
-        addComposerAttachment({ ...baseAttachment, previewUrl })
+  const attachImagePath = useCallback(
+    async (filePath: string) => {
+      if (!filePath) {
+        return false
       }
 
-      return true
-    } catch (err) {
-      notifyError(err, copy.imagePreviewFailed)
+      const baseAttachment: ComposerAttachment = {
+        id: attachmentId('image', filePath),
+        occurrenceId: createComposerAttachmentOccurrenceId(),
+        kind: 'image',
+        label: pathLabel(filePath),
+        detail: filePath,
+        path: filePath
+      }
 
-      return true
-    }
-  }, [])
+      attachToMain(baseAttachment)
+
+      try {
+        const { previewUrl, thumbnailUrl } = await queuedAttachmentPreview(filePath)
+
+        if (previewUrl) {
+          // Keep only the bounded thumbnail in composer state. The full source
+          // is read on demand for lightbox/download and separately at submit
+          // for the model, so retaining 72 multi-MB data URLs serves no purpose.
+          // Bind the late preview to this attachment occurrence's stable token.
+          // Object identity is insufficient because a session draft round-trip
+          // clones attachments; id alone is insufficient because remove +
+          // reattach of the same path reuses it.
+          scope.updateIfCurrent(baseAttachment, thumbnailUrl ? { thumbnailUrl } : { previewUrl })
+        }
+
+        return true
+      } catch (err) {
+        notifyError(err, copy.imagePreviewFailed)
+
+        return true
+      }
+    },
+    [attachToMain, copy.imagePreviewFailed, scope]
+  )
 
   const attachImageBlob = useCallback(
-    async (blob: Blob) => {
-      if (blob.size === 0) {
+    async (blob: Blob, isCurrent: () => boolean = () => true) => {
+      if (blob.size === 0 || !isCurrent()) {
         return false
       }
 
@@ -321,8 +517,14 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       try {
         const buffer = await blob.arrayBuffer()
+
+        if (!isCurrent()) {
+          return false
+        }
+
         const data = new Uint8Array(buffer)
-        const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
+        const name = blob instanceof File ? blob.name : undefined
+        const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob), name)
 
         if (!savedPath) {
           notify({ kind: 'error', title: copy.imageAttach, message: copy.imageWriteFailed })
@@ -330,7 +532,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           return false
         }
 
-        return attachImagePath(savedPath)
+        return isCurrent() ? attachImagePath(savedPath) : false
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
@@ -341,7 +543,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
   )
 
   const pickImages = useCallback(async () => {
-    const paths = await window.hermesDesktop?.selectPaths({
+    const paths = await selectDesktopPaths({
       title: copy.attachImages,
       defaultPath: currentCwd || undefined,
       filters: [
@@ -361,25 +563,79 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     }
   }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
 
-  const pasteClipboardImage = useCallback(async () => {
-    try {
-      const path = await window.hermesDesktop?.saveClipboardImage()
+  const pasteClipboardImage = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      try {
+        const path = await window.hermesDesktop?.saveClipboardImage()
 
-      if (!path) {
-        notify({
-          kind: 'warning',
-          title: copy.clipboard,
-          message: copy.noClipboardImage
-        })
+        if (!path) {
+          if (!silent) {
+            notify({
+              kind: 'warning',
+              title: copy.clipboard,
+              message: copy.noClipboardImage
+            })
+          }
 
-        return
+          return false
+        }
+
+        await attachImagePath(path)
+
+        return true
+      } catch (err) {
+        if (!silent) {
+          notifyError(err, copy.clipboardPasteFailed)
+        }
+
+        return false
+      }
+    },
+    [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage]
+  )
+
+  /**
+   * Convert a very large plain-text paste into a `.txt` attachment chip.
+   * The trimmed, sanitized paste text is written to a
+   * Hermes-managed composer-pastes file via the main process, then attached
+   * through the same `@file:` pipeline as a manually attached text file.
+   * Returns false (paste stays inline) when the desktop bridge is missing
+   * or the write fails.
+   */
+  const attachPastedText = useCallback(
+    async (text: string) => {
+      const save = window.hermesDesktop?.savePastedText
+
+      if (!text || !save) {
+        return false
       }
 
-      await attachImagePath(path)
-    } catch (err) {
-      notifyError(err, copy.clipboardPasteFailed)
-    }
-  }, [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage])
+      try {
+        const savedPath = await save(text)
+
+        if (!savedPath) {
+          return false
+        }
+
+        attachToMain({
+          id: attachmentId('file', savedPath),
+          kind: 'file',
+          label: `${copy.pastedContent} (${pasteSizeLabel(text)})`,
+          detail: contextPath(savedPath, currentCwd),
+          refText: `@file:${formatRefValue(savedPath)}`,
+          path: savedPath,
+          titlePreview: text.slice(0, LARGE_PASTE_TITLE_PREVIEW_CHARS)
+        })
+
+        return true
+      } catch (err) {
+        notifyError(err, copy.pasteAttachFailed)
+
+        return false
+      }
+    },
+    [attachToMain, copy.pasteAttachFailed, copy.pastedContent, currentCwd]
+  )
 
   const attachContextFolderPath = useCallback(
     (folderPath: string) => {
@@ -400,7 +656,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     },
-    [currentCwd]
+    [attachToMain, currentCwd]
   )
 
   const attachDroppedItems = useCallback(
@@ -459,7 +715,14 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
-          if ((filePath && (await attachImagePath(filePath))) || (await attachImageBlob(file))) {
+          // Finder may expose a dropped screenshot through a short-lived
+          // TemporaryItems/NSIRD_screencaptureui path even when the visible
+          // file has already landed on Desktop. Reading that path for the
+          // preview can succeed, then image.attach fails after macOS removes
+          // it before submit. Persist the File bytes into Desktop's durable
+          // composer-image cache first; keep the native path as a compatibility
+          // fallback for older shells that cannot save the buffer.
+          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath)))) {
             attached = true
 
             continue
@@ -490,7 +753,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
   const removeAttachment = useCallback(
     async (id: string) => {
-      const removed = removeComposerAttachment(id)
+      const removed = scope.remove(id)
 
       if (
         removed?.kind === 'image' &&
@@ -505,7 +768,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         }).catch(() => undefined)
       }
     },
-    [activeSessionId, requestGateway]
+    [activeSessionId, requestGateway, scope]
   )
 
   return {
@@ -517,6 +780,8 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
+    attachPastedText,
+    insertContextPathInlineRef,
     pasteClipboardImage,
     pickContextPaths,
     pickImages,

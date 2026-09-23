@@ -2,7 +2,11 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { Slot } from 'radix-ui'
 import * as React from 'react'
 
+import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+
+// Text+icon actions underline the label on hover, not the glyph.
+const TEXT_ACTION_ICON = '[&_.codicon]:no-underline [&_svg]:no-underline'
 
 // Text buttons are square (no radius) and sized by padding + line-height — no
 // fixed heights — so they stay snug and scale with content. Only icon buttons
@@ -22,13 +26,18 @@ const buttonVariants = cva(
         secondary:
           'bg-(--ui-bg-quaternary) text-(--ui-text-primary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
         ghost: 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
-        link: 'text-primary underline-offset-4 decoration-current/20 hover:underline',
+        // A control floating free of any surface (fan-menu discs, detached
+        // chips): the menu/popover treatment — opaque popover fill + the
+        // shared `shadow-md` ring-and-drop. Hover only lifts the glyph; a fill
+        // change on a lone disc reads as a toggle flipping.
+        floating: 'bg-popover text-(--ui-text-secondary) shadow-md hover:text-(--ui-text-primary)',
+        link: `text-primary underline-offset-4 decoration-current/20 hover:underline ${TEXT_ACTION_ICON}`,
         // Boxless inline-text action (no bg/border). Quiet by default — reads as
         // muted label text, underlines on hover (e.g. "Cancel", "Clear").
-        text: 'text-muted-foreground underline-offset-4 hover:text-foreground hover:underline',
+        text: `text-muted-foreground underline-offset-4 hover:text-foreground hover:underline ${TEXT_ACTION_ICON}`,
         // Emphasized inline-text action: bold + always-underlined link. Use for
         // the actionable affordance in a row ("Change", "Set", "Open logs", …).
-        textStrong: 'font-semibold text-muted-foreground underline underline-offset-4 hover:text-foreground'
+        textStrong: `font-semibold text-muted-foreground underline underline-offset-4 hover:text-foreground ${TEXT_ACTION_ICON}`
       },
       size: {
         default: 'px-3 py-1.5 has-[>svg]:px-2.5',
@@ -39,14 +48,25 @@ const buttonVariants = cva(
         // variants when the button must sit inline in a heading or sentence
         // (replaces ad-hoc `h-auto px-0 py-0` overrides).
         inline: 'h-auto gap-1 p-0 has-[>svg]:px-0',
+        // Status-stack headers, table footers — 12px text actions beside a label.
+        micro:
+          "h-auto gap-0.5 px-1 py-0 text-xs leading-4 font-normal has-[>svg]:px-0.5 [&_svg:not([class*='size-'])]:size-3",
         icon: 'size-9 rounded-[4px]',
         'icon-xs': "size-6 rounded-[4px] [&_svg:not([class*='size-'])]:size-3",
         'icon-sm': 'size-8 rounded-[4px]',
         'icon-lg': 'size-10 rounded-[4px]',
         'icon-titlebar':
-          'h-(--titlebar-control-height) w-(--titlebar-control-size) rounded-[4px] [&_.codicon]:text-[0.875rem]'
+          'titlebar-icon-button h-(--titlebar-control-height) w-(--titlebar-control-size) rounded-[4px] [&_svg:not([class*="size-"])]:size-(--titlebar-icon-size)'
       }
     },
+    compoundVariants: [
+      // textStrong is a boxless link — size variants still inject px-*; strip
+      // inline padding so the underline sits flush with the label.
+      {
+        variant: 'textStrong',
+        class: 'px-0 has-[>svg]:px-0'
+      }
+    ],
     defaultVariants: {
       variant: 'default',
       size: 'default'
@@ -59,21 +79,47 @@ function Button({
   variant = 'default',
   size = 'default',
   asChild = false,
+  loading = false,
+  children,
+  disabled,
   ...props
 }: React.ComponentProps<'button'> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
+    /** Working. The label stays in flow but goes invisible and a spinner
+     *  sits over it, so the button keeps its exact width and height — a
+     *  label swapped for a glyph reflows every sibling on the row. */
+    loading?: boolean
   }) {
   const Comp = asChild ? Slot.Root : 'button'
 
   return (
     <Comp
-      className={cn(buttonVariants({ variant, size }), className)}
+      aria-busy={loading || undefined}
+      className={cn(buttonVariants({ variant, size }), loading && 'relative', className)}
       data-size={size}
       data-slot="button"
       data-variant={variant}
+      disabled={disabled || loading}
       {...props}
-    />
+    >
+      {loading ? (
+        <>
+          {/* Same flex + gap as the button itself, so the ghost label measures
+              exactly what the live one did. The spinner sits in a wrapper so
+              it is never a direct-child svg — the size variants' `has-[>svg]`
+              would otherwise switch to icon padding and shave the width. */}
+          <span aria-hidden className="invisible inline-flex items-center gap-[inherit]">
+            {children}
+          </span>
+          <span aria-hidden className="absolute inset-0 grid place-items-center">
+            <Loader2 className="animate-spin" />
+          </span>
+        </>
+      ) : (
+        children
+      )}
+    </Comp>
   )
 }
 

@@ -1,14 +1,14 @@
 ---
-title: "Lbo Model"
+title: "Lbo Model — Build leveraged buyout workbooks with IRR/MOIC in Excel"
 sidebar_label: "Lbo Model"
-description: "Build leveraged buyout models in Excel — sources & uses, debt schedule, cash sweep, exit multiple, IRR/MOIC sensitivity"
+description: "Build leveraged buyout workbooks with IRR/MOIC in Excel"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Lbo Model
 
-Build leveraged buyout models in Excel — sources & uses, debt schedule, cash sweep, exit multiple, IRR/MOIC sensitivity. Pairs with excel-author. Use for PE screening, sponsor-case valuation, or illustrative LBO in a pitch.
+Build leveraged buyout workbooks with IRR/MOIC in Excel.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Build leveraged buyout models in Excel — sources & uses, debt schedule, cash s
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `finance`, `valuation`, `lbo`, `private-equity`, `excel`, `openpyxl`, `modeling` |
-| Related skills | [`excel-author`](/docs/user-guide/skills/optional/finance/finance-excel-author), [`pptx-author`](/docs/user-guide/skills/optional/finance/finance-pptx-author), [`dcf-model`](/docs/user-guide/skills/optional/finance/finance-dcf-model), [`3-statement-model`](/docs/user-guide/skills/optional/finance/finance-3-statement-model) |
+| Related skills | [`excel-author`](../../optional/finance/finance-excel-author.md), [`pptx-author`](../../optional/finance/finance-pptx-author.md), [`dcf-model`](../../optional/finance/finance-dcf-model.md), [`3-statement-model`](../../optional/finance/finance-3-statement-model.md) |
 
 ## Reference: full SKILL.md
 

@@ -118,3 +118,81 @@ class TestMinimaxAuxModelNotHighspeed:
             "is a -highspeed variant — that costs 2x for the same model and "
             "broke #4082 the first time. Revert to plain M2.7 or M3."
         )
+
+
+class TestMinimaxM3OpenAIReasoningWireShape:
+    """MiniMax-M3 on api.minimax.io/v1 gets MiniMax's OpenAI-compatible knobs."""
+
+    def test_m3_openai_route_requests_reasoning_split_by_default(self):
+        import model_tools  # noqa: F401
+        import providers
+
+        profile = providers.get_provider_profile("minimax")
+        assert profile is not None
+        extra_body, top_level = profile.build_api_kwargs_extras(
+            reasoning_config=None,
+            model="MiniMax-M3",
+            base_url="https://api.minimax.io/v1",
+        )
+        assert extra_body == {"reasoning_split": True}
+        assert top_level == {}
+
+
+    @pytest.mark.parametrize(
+        "model,base_url",
+        [
+            ("MiniMax-M2.7", "https://api.minimax.io/v1"),
+            ("MiniMax-M3", "https://api.minimax.io/anthropic"),
+            ("MiniMax-M3", "https://api.minimaxi.com/v1"),
+        ],
+    )
+    def test_non_m3_or_non_global_openai_routes_emit_no_openai_reasoning_knobs(
+        self, model, base_url
+    ):
+        import model_tools  # noqa: F401
+        import providers
+
+        profile = providers.get_provider_profile("minimax")
+        assert profile is not None
+        extra_body, top_level = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model=model,
+            base_url=base_url,
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_transport_threads_base_url_to_profile(self):
+        import model_tools  # noqa: F401
+        import providers
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        profile = providers.get_provider_profile("minimax")
+        assert profile is not None
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=profile,
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://api.minimax.io/v1",
+        )
+        assert kwargs["extra_body"] == {
+            "reasoning_split": True,
+            "thinking": {"type": "adaptive"},
+        }
+
+
+class TestMinimaxOauthAliases:
+    """Every ``--provider`` alias the user guide (website/docs/guides/minimax-oauth.md)
+    promises for ``minimax-oauth`` must resolve through the plugin registry, not only the
+    CLI alias tables — ``get_provider_profile(agent.provider)`` is what selects the
+    anthropic_messages wire, extra_body and headers (#107928)."""
+
+    def test_each_documented_oauth_alias_resolves_to_minimax_oauth(self):
+        import model_tools  # noqa: F401
+        import providers
+
+        for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):
+            resolved = providers.get_provider_profile(alias)
+            assert resolved is not None and resolved.name == "minimax-oauth", alias

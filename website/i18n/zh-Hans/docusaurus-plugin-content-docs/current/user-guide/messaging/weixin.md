@@ -34,7 +34,7 @@ description: "通过 iLink Bot API 将 Hermes Agent 连接到个人微信账号"
 ```bash
 pip install aiohttp cryptography
 # 可选：用于终端二维码显示
-pip install hermes-agent[messaging]
+cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
 ```
 
 ## 配置步骤
@@ -301,6 +301,7 @@ iLink Bot API 要求在每条出站消息中回传 `context_token`（针对特�
 | `Weixin startup failed: WEIXIN_ACCOUNT_ID is required` | 在 `.env` 中设置 `WEIXIN_ACCOUNT_ID`，或运行 `hermes gateway setup` |
 | `Another local Hermes gateway is already using this Weixin token` | 先停止另一个网关实例——每个 token 只允许一个轮询器 |
 | 会话过期（`errcode=-14`） | 登录会话已过期。重新运行 `hermes gateway setup` 扫描新二维码 |
+| 主动发送（cron / 通知）失败并报 `ret=-2 errmsg=prepare failed` 或 `unknown error` | 对方的 `context_token` 已失效（近期没有收到其入站消息）。适配器将其视为会话失效而非限流，并且会不带 token 重发一次，因此消息仍能送达。只有其他 `-2` 响应才会触发限流退避/冷却 |
 | 配置过程中二维码过期 | 二维码最多自动刷新 3 次。若持续过期，请检查网络连接 |
 | Bot 不响应私信 | 检查 `WEIXIN_DM_POLICY`——若设置为 `allowlist`，发送方必须在 `WEIXIN_ALLOWED_USERS` 中 |
 | Bot 忽略群消息 | 群组策略默认为 `disabled`。设置 `WEIXIN_GROUP_POLICY=open` 或 `allowlist`——但请注意，扫码登录的 iLink bot 身份（`...@im.bot`）通常根本无法接收普通微信群消息。若网关日志中没有群消息的原始入站事件，限制来自 iLink 侧，而非 Hermes。 |
@@ -309,4 +310,4 @@ iLink Bot API 要求在每条出站消息中回传 `context_token`（针对特�
 | 语音消息显示为文本 | 若微信提供了转录文本，适配器会使用文本内容，这是预期行为 |
 | 消息出现重复 | 适配器通过消息 ID 去重。若仍出现重复，检查是否有多个网关实例在运行 |
 | `iLink POST ... HTTP 4xx/5xx` | iLink 服务返回 API 错误。检查 token 有效性和网络连通性 |
-| 终端二维码无法渲染 | 使用 messaging 扩展重新安装：`pip install hermes-agent[messaging]`。或者，打开二维码上方打印的 URL |
+| 终端二维码无法渲染 | 使用 messaging 扩展重新安装：`cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"`。或者，打开二维码上方打印的 URL |

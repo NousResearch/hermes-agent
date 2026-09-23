@@ -334,7 +334,9 @@ describe('parseVoiceRecordKey (#18994)', () => {
     // Some terminals surface bare Esc as meta=true + escape=true.
     expect(isVoiceToggleKey({ ctrl: false, escape: true, meta: true, super: false }, '', altEscape)).toBe(false)
     // Explicit alt bit (kitty-style) still fires the configured chord.
-    expect(isVoiceToggleKey({ alt: true, ctrl: false, escape: true, meta: false, super: false }, '', altEscape)).toBe(true)
+    expect(isVoiceToggleKey({ alt: true, ctrl: false, escape: true, meta: false, super: false }, '', altEscape)).toBe(
+      true
+    )
   })
 
   it('rejects matches when Shift is held (different chord than configured)', async () => {
@@ -348,7 +350,9 @@ describe('parseVoiceRecordKey (#18994)', () => {
     const ctrlO = parseVoiceRecordKey('ctrl+o')
 
     expect(isVoiceToggleKey({ ctrl: true, meta: false, shift: true, super: false, tab: true }, '', ctrlTab)).toBe(false)
-    expect(isVoiceToggleKey({ alt: true, ctrl: false, meta: false, return: true, shift: true, super: false }, '', altEnter)).toBe(false)
+    expect(
+      isVoiceToggleKey({ alt: true, ctrl: false, meta: false, return: true, shift: true, super: false }, '', altEnter)
+    ).toBe(false)
     expect(isVoiceToggleKey({ ctrl: true, meta: false, shift: true, super: false }, 'o', ctrlO)).toBe(false)
 
     // Sanity: same events without Shift still fire.
@@ -545,6 +549,17 @@ describe('isMacActionFallback', () => {
     // Must not fire when Cmd (meta/super) is held — those are distinct chords.
     expect(isMacActionFallback({ ctrl: true, meta: true, super: false }, 'k', 'k')).toBe(false)
     expect(isMacActionFallback({ ctrl: true, meta: false, super: true }, 'w', 'w')).toBe(false)
+  })
+
+  it('routes literal Ctrl+D (terminal EOF) on macOS, where the action modifier is Cmd (#116443)', async () => {
+    const { isAction, isMacActionFallback } = await importPlatform('darwin')
+    const ctrlD = { ctrl: true, meta: false, super: false }
+
+    // The exit binding used isAction alone: Ctrl+D never matched on macOS, and Ghostty eats Cmd+D.
+    expect(isAction(ctrlD, 'd', 'd')).toBe(false)
+    expect(isMacActionFallback(ctrlD, 'd', 'd')).toBe(true)
+    expect(isMacActionFallback({ ctrl: true, meta: true, super: false }, 'd', 'd')).toBe(false)
+    expect(isMacActionFallback({ ctrl: false, meta: false, super: true }, 'd', 'd')).toBe(false)
   })
 
   it('is a no-op on non-macOS (Linux routes Ctrl+K/W through isActionMod directly)', async () => {

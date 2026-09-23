@@ -38,7 +38,7 @@ class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -198,3 +198,153 @@ class TestKeepTypingTimeoutPerTick:
         assert calls == [], (
             f"send_typing was called on a paused chat: {calls}"
         )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_refresh_blocks_late_cancel_tick(self, monkeypatch):
+        """Final cleanup must not let a cancelled refresh loop send typing again."""
+        adapter = _StubAdapter()
+        late_sends = []
+        stop_calls = []
+
+        async def send_typing(chat_id, metadata=None):
+            late_sends.append(chat_id)
+
+        async def stop_typing(chat_id):
+            stop_calls.append((chat_id, chat_id in adapter._typing_paused))
+
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        monkeypatch.setattr(adapter, "stop_typing", stop_typing)
+
+        async def late_refresh_after_cancel():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                if "discord-chat" not in adapter._typing_paused:
+                    await adapter.send_typing("discord-chat")
+                raise
+
+        task = asyncio.create_task(late_refresh_after_cancel())
+        await asyncio.sleep(0)
+
+        await adapter._stop_typing_refresh("discord-chat", task, timeout=1.0)
+
+        assert late_sends == []
+        assert stop_calls == [
+            ("discord-chat", True),
+            ("discord-chat", True),
+        ]
+        assert "discord-chat" not in adapter._typing_paused
+
+
+class TestPreDeliveryTypingSuspend:
+    """Regression guard for #117300: once delivery begins, the refresh loop
+    must be suspended so a stalled final send (platform accepted it, HTTP ack
+    lost) cannot keep ``send_typing`` firing while the agent is idle.
+
+    The fix reuses the existing ``_typing_paused`` mechanism: the delivery path
+    pauses the chat before the first send attempt, and ``_stop_typing_refresh``'s
+    finally discards it so it never leaks into the next turn.
+    """
+
+    @pytest.mark.asyncio
+    async def test_paused_before_delivery_stall_suppresses_refresh(self, monkeypatch):
+        """Pause the chat the way the delivery path does; a refresh loop running
+        during the stall must never call send_typing (0 ticks)."""
+        adapter = _StubAdapter()
+        ticks = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            ticks.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        # The delivery path pauses typing before the first send attempt.
+        adapter.pause_typing_for_chat("123")
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="123",
+                interval=0.2,
+                stop_event=stop_event,
+            )
+        )
+        # Simulate the 9s stall from the issue's repro: the refresh loop is
+        # still live but the chat is paused, so no tick should reach send_typing.
+        await asyncio.sleep(0.8)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert ticks == [], (
+            f"typing kept refreshing across a pre-delivery pause: {ticks}"
+        )
+        # Pausing the delivery path must not leave the chat permanently paused.
+        await adapter._stop_typing_refresh("123", None, stop_attempts=1)
+        assert "123" not in adapter._typing_paused
+
+    @pytest.mark.asyncio
+    async def test_unpaused_stall_still_ticks(self, monkeypatch):
+        """Control case: without the pre-delivery pause, the refresh loop keeps
+        ticking (the buggy pre-fix behavior), proving the test discriminates."""
+        adapter = _StubAdapter()
+        ticks = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            ticks.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="456",
+                interval=0.2,
+                stop_event=stop_event,
+            )
+        )
+        await asyncio.sleep(0.8)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert len(ticks) >= 2, (
+            f"expected the unpaused refresh loop to keep ticking, "
+            f"got {len(ticks)}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_process_message_pauses_typing_before_a_stalled_final_send():
+    """Production entry point (#117300): ``_process_message_background`` must pause the chat
+    BEFORE awaiting the final send. With the send parked forever the turn's ``finally`` never
+    runs, so only a pre-delivery pause keeps ``_keep_typing`` from refreshing an idle agent."""
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    adapter = _StubAdapter()
+    send_started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def _stalled_final_send(*args, **kwargs):
+        send_started.set()
+        await never.wait()  # platform accepted the message; the HTTP ack never comes back
+
+    async def _handler(evt):
+        return "a long final answer the user can already read"
+
+    adapter.set_message_handler(_handler)
+    adapter._send_final_text = _stalled_final_send
+    adapter._start_typing_refresh = MagicMock(return_value=None)  # loop shape irrelevant here
+    event = MessageEvent(
+        text="hi", message_id="msg-1", message_type=MessageType.TEXT,
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="77", user_id="u-1"),
+    )
+    turn = asyncio.create_task(adapter._process_message_background(event, "agent:main:telegram:private:77"))
+    try:
+        await asyncio.wait_for(send_started.wait(), timeout=5)
+        assert "77" in adapter._typing_paused, "typing not paused while the final send is stalled"
+    finally:
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turn

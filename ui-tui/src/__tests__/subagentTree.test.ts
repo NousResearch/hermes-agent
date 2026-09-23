@@ -139,8 +139,8 @@ describe('fmtCost + fmtTokens', () => {
   })
 })
 
-describe('formatSummary with tokens + cost', () => {
-  it('includes token + cost when present', () => {
+describe('formatSummary with tokens', () => {
+  it('includes tokens but not cost', () => {
     expect(
       formatSummary({
         activeCount: 0,
@@ -154,7 +154,7 @@ describe('formatSummary with tokens + cost', () => {
         totalDuration: 30,
         totalTools: 14
       })
-    ).toBe('d2 · 3 agents · 14 tools · 30s · 10k tok · $0.42')
+    ).toBe('d2 · 3 agents · 14 tools · 30s · 10k tok')
   })
 })
 

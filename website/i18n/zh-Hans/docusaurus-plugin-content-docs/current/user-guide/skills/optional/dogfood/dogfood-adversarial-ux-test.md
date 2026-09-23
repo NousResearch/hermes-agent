@@ -21,7 +21,7 @@ description: "扮演产品最难搞的技术抵触用户"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `qa`, `ux`, `testing`, `adversarial`, `dogfood`, `personas`, `user-testing` |
-| 相关 skill | [`dogfood`](/user-guide/skills/bundled/dogfood/dogfood-dogfood) |
+| 相关 skill | [`dogfood`](/user-guide/skills/bundled/software-development/software-development-dogfood) |
 
 ## 参考：完整 SKILL.md
 

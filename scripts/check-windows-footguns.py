@@ -176,6 +176,32 @@ FOOTGUNS: list[Footgun] = [
         ),
     ),
     Footgun(
+        name="os.fdopen() without encoding= on text mode",
+        # ruff PLW1514 covers builtins.open/Path.read_text/write_text/
+        # Path.open but NOT os.fdopen — a bare text-mode fdopen still
+        # decodes/encodes with the locale default (cp1252 on Windows).
+        # This is the exact hole the July 2026 encoding sweep kept
+        # re-fixing by hand (PRs #56033/#56940/#65565), so gate it here.
+        pattern=re.compile(
+            r"""(?:os\s*\.\s*)?\bfdopen\s*\(\s*[^,)]+\s*(?:,\s*['"](?P<mode>[^'"]*)['"])?"""
+        ),
+        message=(
+            "os.fdopen() without an explicit encoding= uses the platform "
+            "default (cp1252/mbcs on Windows) in text mode — the same "
+            "mojibake class as bare open(). ruff PLW1514 does not cover "
+            "fdopen, so this checker is the only gate."
+        ),
+        fix=(
+            "os.fdopen(fd, 'w', encoding='utf-8')  # or mode 'wb' for binary"
+        ),
+        post_filter=lambda m, line: (
+            "b" not in (m.group("mode") or "")
+            and "encoding=" not in line
+            and "encoding =" not in line
+            and "**" not in line
+        ),
+    ),
+    Footgun(
         name="os.kill(pid, 0)",
         pattern=re.compile(r"\bos\.kill\s*\(\s*[^,]+,\s*0\s*\)"),
         message=(
@@ -324,6 +350,87 @@ FOOTGUNS: list[Footgun] = [
             "    pass  # Windows asyncio doesn't support signal handlers"
         ),
     ),
+    Footgun(
+        name="subprocess text=True without explicit encoding=",
+        # Match ``text=True`` (or ``text = True``) anywhere on a line. We
+        # rely on the post_filter to (a) skip lines that already pass
+        # ``encoding=`` on the same line, and (b) skip false positives like
+        # ``def text(self, ...)`` or string literals. ``text=True`` is
+        # overwhelmingly a subprocess kwarg, so a bare match + filter has a
+        # high signal-to-noise ratio and avoids the complexity of parsing
+        # multi-line subprocess calls (which the line-based scanner can't
+        # reliably attribute to a single line anyway).
+        pattern=re.compile(r"\btext\s*=\s*True\b"),
+        message=(
+            "subprocess text=True without explicit encoding= decodes "
+            "child output with locale.getpreferredencoding() — cp936 "
+            "(GBK) on Chinese Windows, cp1252 on Western Windows — "
+            "which crashes _readerthread with UnicodeDecodeError on "
+            "non-default-codepage bytes. Always pass encoding='utf-8' "
+            "(and errors='replace' for Windows-native CLIs that emit "
+            "non-UTF-8). See issues #47939, #53428, #57238."
+        ),
+        fix=(
+            "subprocess.run(..., text=True, encoding='utf-8', "
+            "errors='replace')\n"
+            "Both params are required: encoding alone still crashes on "
+            "non-UTF-8 bytes from Windows-native CLIs (tasklist, "
+            "schtasks)."
+        ),
+        post_filter=lambda m, line: (
+            # Skip if the same line already specifies encoding=.
+            "encoding=" not in line
+            and "encoding =" not in line
+            # Skip method definitions named ``text`` (def text(self, ...)).
+            and not line.lstrip().startswith("def ")
+            and not line.lstrip().startswith("async def ")
+            # Skip ``text=True`` inside string literals (heuristic: the
+            # substring appears between matching quotes that aren't part
+            # of an f-string expression). This is imperfect but catches
+            # the common case of docstrings mentioning text=True.
+            and not _looks_like_string_literal(line, m)
+            # Skip lines that are obviously not subprocess calls — e.g.
+            # DataFrame.rename(text=True) or similar. We can't know for
+            # sure without parsing, so we accept some false negatives by
+            # only flagging when ``subprocess`` or a known subprocess-
+            # shaped call (run/Popen/call/check_output/check_call/
+            # check_output) appears on the same line. This keeps the
+            # rule focused on the actual footgun.
+            and _is_likely_subprocess_call(line)
+        ),
+    ),
+    Footgun(
+        name="bare Path.read_text()/write_text() without encoding=",
+        # Match ``.read_text(`` / ``.write_text(`` when the same line does
+        # not pass ``encoding=``. Multi-line calls where encoding= sits on
+        # a later line are handled by the post_filter's lookahead-free
+        # heuristic accepting a small false-negative rate — the AST guard
+        # test in tests/gateway/test_gateway_utf8_encoding.py catches the
+        # gateway/adapters exactly, and this rule catches the common
+        # single-line form everywhere else.
+        pattern=re.compile(r"\.(read_text|write_text)\s*\("),
+        message=(
+            "Path.read_text()/write_text() without encoding= uses "
+            "locale.getpreferredencoding() — cp936/cp1252 on Windows — "
+            "so UTF-8 content (config JSON, session state, skills) "
+            "crashes with UnicodeDecodeError or writes mojibake. "
+            "See issue #37423 and the #71014 / read_text campaign."
+        ),
+        fix='path.read_text(encoding="utf-8") / path.write_text(data, encoding="utf-8")',
+        post_filter=lambda m, line: (
+            "encoding=" not in line
+            and "encoding =" not in line
+            and not _looks_like_string_literal(line, m)
+            # Skip calls that continue onto the next line — if the call's
+            # own closing paren isn't on this line, encoding= may follow
+            # on a later line. Balance parens from the call opener instead
+            # of requiring the line to END with ``)`` so chained forms like
+            # ``read_text()[:4000]`` / ``read_text().splitlines()`` are
+            # still caught. AST-level enforcement for multi-line calls
+            # lives in the gateway guard test.
+            and _call_closes_on_line(line, m.end())
+        ),
+    ),
 ]
 
 
@@ -406,6 +513,82 @@ def _find_unquoted_hash(line: str) -> int | None:
             return i
         i += 1
     return None
+
+
+# Subprocess method names that accept ``text=`` and are affected by the
+# encoding-default footgun. Used by ``_is_likely_subprocess_call`` below to
+# keep the ``text=True`` rule focused on subprocess calls (and avoid flagging
+# unrelated APIs that happen to accept a ``text`` kwarg).
+_SUBPROCESS_METHODS = (
+    "subprocess.run",
+    "subprocess.Popen",
+    "subprocess.call",
+    "subprocess.check_output",
+    "subprocess.check_call",
+    "_sp.run",            # common alias
+    "_sp.Popen",
+    "_sp.check_output",
+    "_sp.check_call",
+    "_sp.call",
+    ".run(",              # bare .run( — usually subprocess.run
+    ".Popen(",
+    ".check_output(",
+    ".check_call(",
+    ".call(",
+)
+
+
+def _is_likely_subprocess_call(line: str) -> bool:
+    """Heuristic: does this line look like a subprocess invocation?
+
+    The ``text=True`` footgun rule only fires when the matched line also
+    contains a subprocess-shaped call site. This avoids false positives on
+    unrelated APIs that accept a ``text`` kwarg (e.g. DataFrame.rename,
+    custom library calls). Multi-line calls where the ``subprocess.X(``
+    prefix is on a previous line won't be flagged — that's an acceptable
+    false negative for a line-based scanner.
+    """
+    return any(token in line for token in _SUBPROCESS_METHODS)
+
+
+def _call_closes_on_line(line: str, open_paren_end: int) -> bool:
+    """True when the call whose ``(`` sits at ``open_paren_end - 1`` closes
+    on this same line (paren-balance walk). Multi-line calls return False —
+    the missing ``encoding=`` may sit on a continuation line, so the caller
+    should skip them rather than false-positive."""
+    depth = 1
+    for ch in line[open_paren_end:]:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return True
+    return False
+
+
+def _looks_like_string_literal(line: str, match: "re.Match") -> bool:
+    """Heuristic: is the ``text=True`` match inside a string literal?
+
+    Catches the common case of docstrings/comments that mention ``text=True``
+    as prose. Walks the line tracking single/double quote state and returns
+    True if the match start index falls inside a quoted region.
+    """
+    start = match.start()
+    in_s = False
+    in_d = False
+    i = 0
+    while i < start and i < len(line):
+        c = line[i]
+        if c == "\\" and (in_s or in_d) and i + 1 < len(line):
+            i += 2
+            continue
+        if not in_d and c == "'":
+            in_s = not in_s
+        elif not in_s and c == '"':
+            in_d = not in_d
+        i += 1
+    return in_s or in_d
 
 
 def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footgun]]:
@@ -492,7 +675,7 @@ def get_staged_files() -> list[Path]:
             ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
             cwd=REPO_ROOT,
             stderr=subprocess.DEVNULL,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
@@ -506,7 +689,7 @@ def get_diff_files(ref: str) -> list[Path]:
             ["git", "diff", f"{ref}...HEAD", "--name-only", "--diff-filter=ACMR"],
             cwd=REPO_ROOT,
             stderr=subprocess.DEVNULL,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
@@ -576,7 +759,6 @@ def main(argv: list[str]) -> int:
             REPO_ROOT / "plugins",
             REPO_ROOT / "scripts",
             REPO_ROOT / "acp_adapter",
-            REPO_ROOT / "acp_registry",
         ]
         roots = [r for r in roots if r.exists()]
     elif args.diff:

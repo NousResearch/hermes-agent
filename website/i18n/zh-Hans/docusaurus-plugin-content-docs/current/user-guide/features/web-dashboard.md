@@ -23,7 +23,7 @@ hermes dashboard
 | `--port` | `9119` | Web 服务器运行端口 |
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--no-open` | — | 不自动打开浏览器 |
-| `--insecure` | 关闭 | 允许绑定到非 localhost 主机（**危险**——会在网络上暴露 API 密钥；请配合防火墙和强认证使用） |
+| `--insecure` | 关闭 | **已弃用 / 无实际作用。** 此参数曾用于在非回环绑定上绕过鉴权；自 2026 年 6 月安全加固后，公网绑定始终需要用户名/密码或 OAuth 鉴权提供方。若需保持仅本地访问，请绑定 `127.0.0.1` 并通过隧道连接。 |
 
 ```bash
 # 自定义端口
@@ -41,10 +41,10 @@ hermes dashboard --no-open
 默认的 `hermes-agent` 安装不包含 HTTP 栈或 PTY 辅助工具——这些是可选扩展。**Web Dashboard** 需要 FastAPI 和 Uvicorn（`web` 扩展）。**Chat** 标签页还需要 `ptyprocess` 来在伪终端（pseudo-terminal）后面启动嵌入式 TUI（POSIX 上的 `pty` 扩展）。使用以下命令同时安装：
 
 ```bash
-pip install 'hermes-agent[web,pty]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"
 ```
 
-`web` 扩展会引入 FastAPI/Uvicorn；`pty` 扩展会引入 `ptyprocess`（POSIX）或 `pywinpty`（原生 Windows——注意嵌入式 TUI 本身仍需要 WSL）。`pip install hermes-agent[all]` 包含两个扩展，如果你还需要消息/语音等功能，这是最简便的方式。
+`web` 扩展会引入 FastAPI/Uvicorn；`pty` 扩展会引入 `ptyprocess`（POSIX）或 `pywinpty`（原生 Windows——注意嵌入式 TUI 本身仍需要 WSL）。`cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"` 包含两个扩展，如果你还需要消息/语音等功能，这是最简便的方式。
 
 在没有依赖项的情况下运行 `hermes dashboard` 时，它会告诉你需要安装什么。如果前端尚未构建且 `npm` 可用，则会在首次启动时自动构建。
 
@@ -80,7 +80,7 @@ Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏�
 **前置条件：**
 
 - Node.js（与 `hermes --tui` 相同的要求；TUI 包在首次启动时构建）
-- `ptyprocess`——由 `pty` 扩展安装（`pip install 'hermes-agent[web,pty]'`，或 `[all]` 同时包含两者）
+- `ptyprocess`——由 `pty` 扩展安装（`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`，或 `[all]` 同时包含两者）
 - POSIX 内核（Linux、macOS 或 WSL2）。`/chat` 终端面板特别需要 POSIX PTY——原生 Windows Python 没有等效实现，因此在原生 Windows 安装上，Dashboard 的其余部分（sessions、jobs、metrics、config editor）可以正常工作，但 `/chat` 标签页会显示提示，告知你需要使用 WSL2 才能使用该功能。
 
 关闭浏览器标签页后，PTY 会在服务器端被干净地回收。重新打开会启动一个新会话。
@@ -95,7 +95,7 @@ Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏�
 - **agent** — 最大迭代次数、gateway 超时、服务层级
 - **delegation** — 子 agent 限制、推理力度
 - **memory** — 提供商选择、上下文注入设置
-- **approvals** — 危险命令审批模式（ask/yolo/deny）
+- **approvals** — 危险命令审批模式（smart/manual/off）
 - 更多——config.yaml 的每个部分都有对应的表单字段
 
 具有已知有效值的字段（terminal 后端、皮肤、审批模式等）渲染为下拉菜单。布尔值渲染为开关。其余均为文本输入框。
@@ -238,7 +238,7 @@ Web Dashboard 暴露了一个供前端使用的 REST API。你也可以直接调
 
 ### GET /api/sessions/\{session_id\}/messages
 
-返回会话的完整消息历史，包含工具调用和时间戳。
+返回有上限的会话消息页，包含工具调用和时间戳。默认按时间升序返回最近 500 条；可用 `limit`（最大 500）、`offset` 和 `order=oldest|latest` 显式分页。
 
 ### GET /api/sessions/search
 

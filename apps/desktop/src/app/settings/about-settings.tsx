@@ -3,8 +3,9 @@ import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
-import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
+import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $desktopVersion,
@@ -13,13 +14,15 @@ import {
   $updateStatus,
   checkUpdates,
   openUpdatesWindow,
-  refreshDesktopVersion
+  refreshDesktopVersion,
+  startActiveUpdate
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { UninstallSection } from './uninstall-section'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
+const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
 
 function relativeTime(ms: number | undefined, a: Translations['settings']['about']) {
   if (!ms) {
@@ -43,7 +46,23 @@ function relativeTime(ms: number | undefined, a: Translations['settings']['about
   return a.daysAgo(Math.round(diff / 86_400_000))
 }
 
-export function AboutSettings() {
+interface AboutSettingsProps {
+  subpage?: string
+}
+
+export function AboutSettings({ subpage }: AboutSettingsProps = {}) {
+  if (subpage === 'uninstall') {
+    return (
+      <SettingsContent>
+        <UninstallSection />
+      </SettingsContent>
+    )
+  }
+
+  return <AppUpdatesSettings includeUninstall={subpage === undefined} />
+}
+
+function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean }) {
   const { t } = useI18n()
   const a = t.settings.about
   const version = useStore($desktopVersion)
@@ -61,12 +80,15 @@ export function AboutSettings() {
   }, [])
 
   const behind = status?.behind ?? 0
+  // behind is null when the exact count is unknowable (shallow clone): the
+  // backend flags that case via updateAvailable instead of a number.
+  const updateAvailable = behind > 0 || Boolean(status?.updateAvailable)
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
 
   const handleCheck = async () => {
     setJustChecked(false)
-    const next = await checkUpdates()
+    const next = await checkUpdates({ force: true })
     setJustChecked(Boolean(next))
   }
 
@@ -77,13 +99,15 @@ export function AboutSettings() {
     statusLine = status?.message ?? a.cantUpdate
     statusTone = 'error'
   } else if (status?.error) {
-    statusLine = a.cantReach
+    // A git that never ran is a local problem; leading with "couldn't reach
+    // the update server" would misdiagnose it as a network failure.
+    statusLine = [status.error === 'git-unusable' ? '' : a.cantReach, status.message].filter(Boolean).join(' ')
     statusTone = 'error'
   } else if (applying) {
     statusLine = a.installing
     statusTone = 'available'
-  } else if (behind > 0) {
-    statusLine = a.updateReady(behind)
+  } else if (updateAvailable) {
+    statusLine = behind > 0 ? a.updateReady(behind) : a.updateReadyUnknown
     statusTone = 'available'
   } else if (status) {
     statusLine = a.onLatest
@@ -101,6 +125,54 @@ export function AboutSettings() {
             {version?.appVersion ? a.version(version.appVersion) : a.versionUnavailable}
           </p>
         </div>
+        {(version?.bundleOutOfSync || version?.bundleSwapPending) && (
+          <div className="mx-auto w-full max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-left text-sm">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div className="min-w-0">
+                {version?.bundleSwapPending ? (
+                  // The updated app is already on disk — the updater swapped it
+                  // under this running process — so a restart loads it. Saying
+                  // "App build out of date" here would repeat the contradiction
+                  // this banner is meant to resolve: the Updates card below
+                  // already reports the runtime as current.
+                  <>
+                    <p className="font-medium">{a.bundleSwapPending}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{a.bundleSwapPendingDesc}</p>
+                    <Button
+                      className="mt-2"
+                      onClick={() => void window.hermesDesktop?.relaunchApp?.()}
+                      size="sm"
+                      variant="textStrong"
+                    >
+                      <RefreshCw className="size-3" />
+                      {a.bundleSwapPendingAction}
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-medium">{a.bundleOutOfSync}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{a.bundleOutOfSyncDesc}</p>
+                    <Button asChild className="mt-2" size="sm" variant="textStrong">
+                      <a
+                        href={INSTALLER_URL}
+                        onClick={event => {
+                          event.preventDefault()
+                          void window.hermesDesktop?.openExternal?.(INSTALLER_URL)
+                        }}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        <ExternalLink className="size-3" />
+                        {a.bundleOutOfSyncAction}
+                      </a>
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="mx-auto mt-4 w-full max-w-2xl">
@@ -116,7 +188,7 @@ export function AboutSettings() {
         >
           <div className="flex items-start gap-2">
             {statusTone === 'available' ? (
-              <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" />
+              <Codicon className="mt-0.5 size-4 shrink-0 text-primary" name="cloud-download" size="1rem" />
             ) : statusTone === 'error' ? null : (
               <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
             )}
@@ -140,10 +212,15 @@ export function AboutSettings() {
               {checking ? a.checking : a.checkNow}
             </Button>
 
-            {behind > 0 && supported && !applying && (
-              <Button onClick={() => openUpdatesWindow()} size="sm">
-                {a.seeWhatsNew}
-              </Button>
+            {updateAvailable && supported && !applying && (
+              <>
+                <Button onClick={() => startActiveUpdate()} size="sm">
+                  {a.updateNow}
+                </Button>
+                <Button onClick={() => openUpdatesWindow('client')} size="sm" variant="textStrong">
+                  {a.seeWhatsNew}
+                </Button>
+              </>
             )}
 
             <Button asChild className="ml-auto" size="sm" variant="text">
@@ -169,7 +246,7 @@ export function AboutSettings() {
           title={a.automaticUpdates}
         />
 
-        <UninstallSection />
+        {includeUninstall && <UninstallSection />}
       </div>
     </SettingsContent>
   )

@@ -65,9 +65,8 @@ optional_env:
 
 ```python
 import os
-from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, MessageEvent, MessageType,
-)
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 
 
@@ -472,13 +471,12 @@ class Platform(str, Enum):
 
 ### 2. 适配器文件
 
-创建 `gateway/platforms/newplat.py`：
+创建 `plugins/platforms/newplat/adapter.py`：
 
 ```python
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-)
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 
 def check_newplat_requirements() -> bool:
     """如果依赖可用则返回 True。"""
@@ -537,9 +535,9 @@ await self.handle_message(event)
 
 ### 4. Gateway Runner（`gateway/run.py`）
 
-五个接触点：
+六个接触点：
 
-1. **`_create_adapter()`** — 添加 `elif platform == Platform.NEWPLAT:` 分支
+1. **`_instantiate_adapter()`** — 添加 `elif platform == Platform.NEWPLAT:` 分支。`_create_adapter()` 包装器会将每个成功创建的适配器绑定到其网关运行器。
 2. **`_is_user_authorized()` allowed_users 映射** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all 映射** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
 4. **早期环境检查 `_any_allowlist` 元组** — 添加 `"NEWPLAT_ALLOWED_USERS"`
@@ -685,4 +683,4 @@ async def disconnect(self):
 | `bluebubbles.py` | REST + webhook | 中 | 简单 REST API 集成 |
 | `weixin.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
 | `wecom_callback.py` | 回调/webhook | 中 | HTTP 服务器、AES 加密、多应用 |
-| `telegram.py` | 长轮询 + Bot API | 高 | 支持群组、线程的全功能适配器 |
+| `plugins/platforms/irc/adapter.py` | 长轮询 + IRC 协议 | 高 | 带作用域令牌锁的全功能插件适配器 |

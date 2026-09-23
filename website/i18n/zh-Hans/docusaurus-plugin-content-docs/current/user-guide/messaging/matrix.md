@@ -21,6 +21,7 @@ Hermes 兼容任何 Matrix homeserver——Synapse、Conduit、Dendrite 或 matr
 | **线程** | Hermes 支持 Matrix 线程（MSC3440）。在线程中回复时，Hermes 会将线程上下文与主房间时间线隔离。机器人已参与的线程无需提及即可响应。 |
 | **自动线程** | 默认情况下，Hermes 会为其在房间中响应的每条消息自动创建线程，以保持对话隔离。设置 `MATRIX_AUTO_THREAD=false` 可禁用此功能。设置 `MATRIX_DM_AUTO_THREAD=true`（默认 false）可同时为私聊消息自动创建线程——这与 `MATRIX_DM_MENTION_THREADS` 不同，后者仅在私聊中 @提及 Bot 时才创建线程。 |
 | **多用户共享房间** | 默认情况下，Hermes 在房间内按用户隔离会话历史。同一房间中的两个人不会共享同一对话记录，除非你明确禁用该功能。 |
+| **LaTeX 数学公式** | 回复中的 `$...$`（行内）和 `$$...$$`（独立行）会以 Element 的 `data-mx-maths` 标记发送，启用了 **设置 → 实验室 → 渲染消息中的 LaTeX 数学公式** 的客户端会用 KaTeX 排版。未配对的美元符号（`$5 or $10`）保持原样，纯文本 `body` 仍保留原始 TeX 供其他客户端显示。 |
 
 :::tip
 机器人在被邀请时会自动加入房间。只需将机器人的 Matrix 用户邀请到任意房间，它就会加入并开始响应。
@@ -246,7 +247,7 @@ E2EE 需要带有加密扩展的 `mautrix` 库以及 `libolm` C 库：
 pip install 'mautrix[encryption]'
 
 # 或通过 hermes extras 安装
-pip install 'hermes-agent[matrix]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
 你还需要在系统上安装 `libolm`：
@@ -427,7 +428,7 @@ pip install 'mautrix[encryption]'
 或通过 Hermes extras：
 
 ```bash
-pip install 'hermes-agent[matrix]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
 ### 加密错误/"无法解密事件"
@@ -589,7 +590,7 @@ services:
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y libolm-dev && rm -rf /var/lib/apt/lists/*
-RUN pip install 'hermes-agent[matrix]'
+RUN cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 
 CMD ["hermes", "gateway"]
 ```

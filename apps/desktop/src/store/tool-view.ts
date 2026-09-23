@@ -7,20 +7,28 @@ export type ToolViewMode = 'product' | 'technical'
 type ToolDisclosureStates = Record<string, boolean>
 
 const TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
+const HIDE_CODE_DIFFS_STORAGE_KEY = 'hermes.desktop.toolView.hideCodeDiffs'
 const TOOL_DISCLOSURE_STORAGE_KEY = 'hermes.desktop.toolDisclosure.v1'
 const MAX_DISCLOSURE_STATES = 240
 
 export const $toolViewMode = atom<ToolViewMode>(
   storedBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, false) ? 'technical' : 'product'
 )
+export const $hideCodeDiffs = atom(storedBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, false))
 export const $toolDisclosureStates = atom<ToolDisclosureStates>(loadToolDisclosureStates())
 const disclosureOpenCache = new Map<string, ReadableAtom<boolean | undefined>>()
+const anyDisclosureOpenCache = new Map<string, ReadableAtom<boolean>>()
 
 $toolViewMode.subscribe(mode => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical'))
+$hideCodeDiffs.subscribe(hidden => persistBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, hidden))
 $toolDisclosureStates.subscribe(persistToolDisclosureStates)
 
 export function setToolViewMode(mode: ToolViewMode) {
   $toolViewMode.set(mode)
+}
+
+export function setHideCodeDiffs(hidden: boolean) {
+  $hideCodeDiffs.set(hidden)
 }
 
 export function $toolDisclosureOpen(id: string): ReadableAtom<boolean | undefined> {
@@ -29,6 +37,24 @@ export function $toolDisclosureOpen(id: string): ReadableAtom<boolean | undefine
   if (!cached) {
     cached = computed($toolDisclosureStates, states => states[id])
     disclosureOpenCache.set(id, cached)
+  }
+
+  return cached
+}
+
+/**
+ * Whether any of a set of disclosures is open — a run asking about its rows.
+ *
+ * Computed rather than reading the whole map so a toggle anywhere in the
+ * transcript only re-renders the runs whose own answer changed.
+ */
+export function $anyToolDisclosureOpen(ids: readonly string[]): ReadableAtom<boolean> {
+  const key = ids.join('|')
+  let cached = anyDisclosureOpenCache.get(key)
+
+  if (!cached) {
+    cached = computed($toolDisclosureStates, states => ids.some(id => Boolean(states[id])))
+    anyDisclosureOpenCache.set(key, cached)
   }
 
   return cached

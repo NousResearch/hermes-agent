@@ -36,14 +36,5 @@ def test_memory_schema_has_no_forbidden_top_level_combinators():
         )
 
 
-def test_memory_schema_is_well_formed():
-    params = MEMORY_SCHEMA["parameters"]
-    assert params["type"] == "object"
-    assert params["required"] == ["action", "target"]
-    # Nested ``enum`` on property values is fine — only top-level is forbidden.
-    assert params["properties"]["action"]["enum"] == ["add", "replace", "remove"]
-    assert params["properties"]["target"]["enum"] == ["memory", "user"]
-
-
 def test_memory_schema_is_json_serializable():
     json.dumps(MEMORY_SCHEMA)

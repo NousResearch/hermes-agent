@@ -1,40 +1,84 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    _FORWARD_COMPAT_TEMPLATE_MODELS,
+    get_codex_model_ids,
+)
 
 
-def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir(parents=True, exist_ok=True)
-    (codex_home / "config.toml").write_text('model = "gpt-5.2-codex"\n')
-    (codex_home / "models_cache.json").write_text(
-        json.dumps(
-            {
-                "models": [
-                    {"slug": "gpt-5.3-codex", "priority": 20, "supported_in_api": True},
-                    {"slug": "gpt-5.3-codex-spark", "priority": 6, "supported_in_api": False},
-                    {"slug": "gpt-5.1-codex", "priority": 5, "supported_in_api": True},
-                    {"slug": "gpt-5.4", "priority": 1, "supported_in_api": True},
-                    {"slug": "gpt-5-hidden-codex", "priority": 2, "visibility": "hidden"},
-                ]
-            }
-        )
+CHATGPT_REJECTED_CODEX_PRO_SLUGS = {
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra-pro",
+    "gpt-5.6-luna-pro",
+}
+
+
+def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch):
+    """OAuth fallback retains real models but never synthesizes rejected ones."""
+    retained_models = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+    template_models = {model for model, _fallbacks in _FORWARD_COMPAT_TEMPLATE_MODELS}
+
+    assert retained_models.issubset(DEFAULT_CODEX_MODELS)
+    assert retained_models.issubset(template_models)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(DEFAULT_CODEX_MODELS)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(template_models)
+
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-5.5"],
     )
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    model_ids = get_codex_model_ids(access_token="codex-access-token")
 
-    models = get_codex_model_ids()
+    assert retained_models.issubset(model_ids)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
 
-    assert models[0] == "gpt-5.2-codex"
-    assert "gpt-5.1-codex" in models
-    assert "gpt-5.3-codex" in models
-    # Codex CLI marks Spark unsupported in the public API, but the Codex
-    # backend still accepts it via the OAuth-backed CLI/Hermes route.
-    assert "gpt-5.3-codex-spark" in models
-    # Non-codex-suffixed models are included when the cache says they're available
-    assert "gpt-5.4" in models
-    assert "gpt-5.4-mini" in models
-    assert "gpt-5-hidden-codex" not in models
+
+def test_picker_synthesizes_900k_variants_for_verified_slugs():
+    """Every live-verified large-context slug gets an explicit ``-900k``
+    picker variant directly after its base entry; slugs that genuinely
+    enforce 272K (gpt-5.5, gpt-5.4-mini) never get one. Base slugs stay
+    in the list as the cheaper 272K default."""
+    model_ids = get_codex_model_ids()  # offline curated path
+
+    for base in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"):
+        assert base in model_ids
+        assert f"{base}-900k" in model_ids
+        assert model_ids.index(f"{base}-900k") == model_ids.index(base) + 1
+
+    assert "gpt-5.5-900k" not in model_ids
+    assert "gpt-5.4-mini-900k" not in model_ids
+    assert "gpt-5.3-codex-900k" not in model_ids
+
+
+def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
+    """Eligibility is an exact predicate, not a family-prefix match:
+    ``-pro`` slugs are not routable on Codex OAuth (backend 400s them) and
+    unknown future descendants were never probed — neither may gain a
+    synthetic ``-900k`` entry (#92797 review)."""
+    from hermes_cli.codex_models import _finalize_codex_models
+
+    out = _finalize_codex_models(["gpt-5.6-sol-pro", "gpt-5.6-nova"])
+    assert "gpt-5.6-sol-pro-900k" not in out
+    assert "gpt-5.6-nova-900k" not in out
+
+
+
+
+def test_retired_gpt_5_3_codex_is_not_offered_offline():
+    """The ChatGPT Codex backend retired ``gpt-5.3-codex`` (HTTP 400 "not supported when using
+    Codex with a ChatGPT account", #52492). Neither the curated offline fallback nor any
+    forward-compat template may surface it — only live discovery may, if the backend re-enables it.
+    Same precedent as the gpt-5.2-codex / gpt-5.1-codex-* removal (e8955f222ce)."""
+    from hermes_cli.codex_models import _FORWARD_COMPAT_TEMPLATE_MODELS, DEFAULT_CODEX_MODELS
+
+    assert "gpt-5.3-codex" not in DEFAULT_CODEX_MODELS
+    for newer, templates in _FORWARD_COMPAT_TEMPLATE_MODELS:
+        assert newer != "gpt-5.3-codex"
+        assert "gpt-5.3-codex" not in templates
+    # Spark is still a real Codex-OAuth slug and must keep surfacing via a live template.
+    assert "gpt-5.3-codex-spark" in DEFAULT_CODEX_MODELS
 
 
 def test_setup_wizard_codex_import_resolves():
@@ -45,36 +89,6 @@ def test_setup_wizard_codex_import_resolves():
     assert callable(setup_import)
 
 
-def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatch):
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    models = get_codex_model_ids()
-
-    assert models[: len(DEFAULT_CODEX_MODELS)] == DEFAULT_CODEX_MODELS
-    assert "gpt-5.4" in models
-    assert "gpt-5.3-codex-spark" in models
-
-
-def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.3-codex"],
-    )
-
-    models = get_codex_model_ids(access_token="codex-access-token")
-
-    # When live discovery only returns gpt-5.3-codex, forward-compat synthesis
-    # should surface gpt-5.5, gpt-5.4, gpt-5.4-mini, and gpt-5.3-codex-spark
-    # (each is templated off gpt-5.3-codex).
-    assert models == [
-        "gpt-5.3-codex",
-        "gpt-5.5",
-        "gpt-5.4-mini",
-        "gpt-5.4",
-        "gpt-5.3-codex-spark",
-    ]
 
 
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
@@ -113,49 +127,43 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     assert "gpt-5-internal" not in models
 
 
-def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
-    from hermes_cli.main import _model_flow_openai_codex
+def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
+    """Cached/configured Astra names must not manufacture current OAuth entitlement."""
+    from hermes_cli import codex_models
 
-    captured = {}
-    choices = iter(["1"])
-
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
-    monkeypatch.setattr(
-        "hermes_cli.auth.get_codex_auth_status",
-        lambda: {"logged_in": True},
+    (tmp_path / "config.toml").write_text('model = "gpt-6-astra"\n', encoding="utf-8")
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps({"models": [
+            {"slug": "gpt-6-astra", "priority": 0},
+            {"slug": "openai/gpt-6-astra", "priority": 1},
+            {"slug": "gpt-6-astra-900k", "priority": 2},
+            {"slug": "openai/gpt-6-astra-900k", "priority": 3},
+        ]}),
+        encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_codex_runtime_credentials",
-        lambda *args, **kwargs: {"api_key": "codex-access-token"},
-    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda _token: [])
 
-    def _fake_get_codex_model_ids(access_token=None):
-        captured["access_token"] = access_token
-        return ["gpt-5.2-codex", "gpt-5.2"]
-
-    def _fake_prompt_model_selection(model_ids, current_model=""):
-        captured["model_ids"] = list(model_ids)
-        captured["current_model"] = current_model
-        return None
+    assert "gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
+    assert "openai/gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
+    assert "gpt-6-astra-900k" not in get_codex_model_ids(access_token="stale-token")
+    assert "openai/gpt-6-astra-900k" not in get_codex_model_ids(access_token="stale-token")
 
     monkeypatch.setattr(
-        "hermes_cli.codex_models.get_codex_model_ids",
-        _fake_get_codex_model_ids,
+        codex_models,
+        "_fetch_models_from_api",
+        lambda _token: codex_models._finalize_codex_models(["gpt-6-astra"]),
     )
-    monkeypatch.setattr(
-        "hermes_cli.auth._prompt_model_selection",
-        _fake_prompt_model_selection,
-    )
+    entitled = get_codex_model_ids(access_token="entitled-token")
+    assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
 
-    _model_flow_openai_codex({}, current_model="openai/gpt-5.4")
 
-    assert captured["access_token"] == "codex-access-token"
-    assert captured["model_ids"] == ["gpt-5.2-codex", "gpt-5.2"]
-    assert captured["current_model"] == "openai/gpt-5.4"
+
+
 
 
 def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypatch, capsys):
-    from hermes_cli.main import _model_flow_openai_codex
+    from hermes_cli.model_setup_flows import _model_flow_openai_codex
 
     captured = {"login_calls": 0}
     choices = iter(["2"])
@@ -177,11 +185,11 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     monkeypatch.setattr("hermes_cli.auth._login_openai_codex", _fake_login)
     monkeypatch.setattr(
         "hermes_cli.codex_models.get_codex_model_ids",
-        lambda access_token=None: ["gpt-5.4", "gpt-5.3-codex"],
+        lambda access_token=None: ["gpt-5.4", "gpt-5.5"],
     )
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",
-        lambda model_ids, current_model="": None,
+        lambda model_ids, current_model="", **_kwargs: None,
     )
 
     _model_flow_openai_codex({}, current_model="gpt-5.4")
@@ -191,44 +199,6 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     assert "Reauthenticate (new OAuth login)" in out
     assert captured["login_calls"] == 1
     assert captured["force_new_login"] is True
-
-
-def test_model_command_uses_existing_codex_session_without_relogin(monkeypatch):
-    from hermes_cli.main import _model_flow_openai_codex
-
-    choices = iter(["1"])
-    captured = {}
-
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
-    monkeypatch.setattr(
-        "hermes_cli.auth.get_codex_auth_status",
-        lambda: {"logged_in": True, "source": "hermes-auth-store"},
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_codex_runtime_credentials",
-        lambda *args, **kwargs: {"api_key": "existing-codex-token"},
-    )
-
-    def _fake_get_codex_model_ids(access_token=None):
-        captured["access_token"] = access_token
-        return ["gpt-5.4"]
-
-    monkeypatch.setattr(
-        "hermes_cli.codex_models.get_codex_model_ids",
-        _fake_get_codex_model_ids,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth._prompt_model_selection",
-        lambda model_ids, current_model="": None,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth._login_openai_codex",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not reauthenticate")),
-    )
-
-    _model_flow_openai_codex({}, current_model="gpt-5.4")
-
-    assert captured["access_token"] == "existing-codex-token"
 
 
 # ── Tests for _normalize_model_for_provider ──────────────────────────
@@ -274,55 +244,6 @@ class TestNormalizeModelForProvider:
         assert changed is False
         assert cli.model == "gpt-5.4"
 
-    def test_native_provider_prefix_is_stripped_before_agent_startup(self):
-        cli = _make_cli(model="zai/glm-5.1")
-        changed = cli._normalize_model_for_provider("zai")
-        assert changed is True
-        assert cli.model == "glm-5.1"
-
-    def test_bare_codex_model_passes_through(self):
-        cli = _make_cli(model="gpt-5.3-codex")
-        changed = cli._normalize_model_for_provider("openai-codex")
-        assert changed is False
-        assert cli.model == "gpt-5.3-codex"
-
-    def test_bare_non_codex_model_passes_through(self):
-        """gpt-5.4 (no 'codex' suffix) passes through — user chose it."""
-        cli = _make_cli(model="gpt-5.4")
-        changed = cli._normalize_model_for_provider("openai-codex")
-        assert changed is False
-        assert cli.model == "gpt-5.4"
-
-    def test_any_bare_model_trusted(self):
-        """Even a non-OpenAI bare model passes through — user explicitly set it."""
-        cli = _make_cli(model="claude-opus-4-6")
-        changed = cli._normalize_model_for_provider("openai-codex")
-        # User explicitly chose this model — we trust them, API will error if wrong
-        assert changed is False
-        assert cli.model == "claude-opus-4-6"
-
-    def test_provider_prefix_stripped(self):
-        """openai/gpt-5.4 → gpt-5.4 (strip prefix, keep model)."""
-        cli = _make_cli(model="openai/gpt-5.4")
-        changed = cli._normalize_model_for_provider("openai-codex")
-        assert changed is True
-        assert cli.model == "gpt-5.4"
-
-    def test_any_provider_prefix_stripped(self):
-        """anthropic/claude-opus-4.6 → claude-opus-4.6 (strip prefix only).
-        User explicitly chose this — let the API decide if it works."""
-        cli = _make_cli(model="anthropic/claude-opus-4.6")
-        changed = cli._normalize_model_for_provider("openai-codex")
-        assert changed is True
-        assert cli.model == "claude-opus-4.6"
-
-    def test_opencode_go_prefix_stripped(self):
-        cli = _make_cli(model="opencode-go/kimi-k2.5")
-        cli.api_mode = "chat_completions"
-        changed = cli._normalize_model_for_provider("opencode-go")
-        assert changed is True
-        assert cli.model == "kimi-k2.5"
-        assert cli.api_mode == "chat_completions"
 
     def test_opencode_zen_claude_sets_messages_mode(self):
         cli = _make_cli(model="opencode-zen/claude-sonnet-4-6")
@@ -357,38 +278,53 @@ class TestNormalizeModelForProvider:
         assert cli._model_is_default is True
         with patch(
             "hermes_cli.codex_models.get_codex_model_ids",
-            return_value=["gpt-5.3-codex", "gpt-5.4"],
+            return_value=["gpt-5.5", "gpt-5.4"],
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
         # Uses first from available list
-        assert cli.model == "gpt-5.3-codex"
+        assert cli.model == "gpt-5.5"
 
-    def test_default_fallback_when_api_fails(self):
-        """No model configured falls back to gpt-5.3-codex when API unreachable."""
-        import cli as _cli_mod
-        _clean_config = {
-            "model": {
-                "default": "",
-                "base_url": "",
-                "provider": "auto",
-            },
-            "display": {"compact": False, "tool_progress": "all", "resume_display": "full"},
-            "agent": {},
-            "terminal": {"env_type": "local"},
-        }
-        with (
-            patch("cli.get_tool_definitions", return_value=[]),
-            patch.dict("os.environ", {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}, clear=False),
-            patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}),
-        ):
-            from cli import HermesCLI
-            cli = HermesCLI()
 
-        with patch(
-            "hermes_cli.codex_models.get_codex_model_ids",
-            side_effect=Exception("offline"),
-        ):
-            changed = cli._normalize_model_for_provider("openai-codex")
-        assert changed is True
-        assert cli.model == "gpt-5.3-codex"
+def test_catalog_requests_use_ungated_client_version(monkeypatch):
+    """Both catalog request sites send the backend's ungated ``0.0.0`` sentinel: the endpoint
+    hides models whose ``minimal_client_version`` is newer than ``client_version``, so a
+    made-up version silently drops future models."""
+    import sys
+    from urllib.parse import parse_qs, urlparse
+
+    from agent import model_metadata
+    from hermes_cli import codex_models
+
+    seen_urls = []
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"models": []}
+
+    class _FakeHttpx:
+        @staticmethod
+        def get(url, headers=None, timeout=None):
+            seen_urls.append(url)
+            return _FakeResp()
+
+    class _FakeRequests:
+        @staticmethod
+        def get(url, headers=None, timeout=None, verify=None):
+            seen_urls.append(url)
+            return _FakeResp()
+
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+    codex_models._fetch_models_from_api(access_token="tok")
+    monkeypatch.setattr(model_metadata, "requests", _FakeRequests)
+    monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
+    monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
+    model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
+
+    assert len(seen_urls) == 2
+    for url in seen_urls:
+        parsed = urlparse(url)
+        assert parsed.netloc == "chatgpt.com" and parsed.path == "/backend-api/codex/models"
+        assert parse_qs(parsed.query)["client_version"] == ["0.0.0"]

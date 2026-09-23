@@ -1,6 +1,7 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
 import asyncio
+import base64
 import os
 import json
 import re
@@ -1136,8 +1137,46 @@ class TestWebServerEndpoints:
 
     # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
 
+    _TINY_BMP_DATA_URL = "data:image/bmp;base64," + base64.b64encode(b"BM" + b"\x00" * 10).decode()
 
+    def test_image_upload_writes_under_the_default_profile(self):
+        resp = self.client.post("/api/chat/image-upload", json={"data_url": self._TINY_BMP_DATA_URL})
 
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert Path(data["path"]).is_file()
+        assert Path(data["path"]).parent.name == "images"
+
+    def test_image_upload_refuses_to_resurrect_a_tombstoned_profile_dir(self, monkeypatch):
+        """A delete racing this request's profile-exists check (at _profile_scope entry,
+        before this test's fake scope skips straight to the tombstoned dir) must not let
+        the mkdir silently recreate the profile's directory — the same guard the
+        deleted-profile mkdir sweep (#109267-adjacent) applied to every other pre-write
+        directory creation under HERMES_HOME/profiles/<name>."""
+        from contextlib import contextmanager
+
+        from hermes_constants import get_hermes_home, profile_tombstone_path
+        from hermes_cli import web_server_profiles
+
+        ghost = get_hermes_home() / "profiles" / "ghost"
+        ghost.mkdir(parents=True)
+        tombstone = profile_tombstone_path(ghost)
+        tombstone.parent.mkdir(parents=True, exist_ok=True)
+        tombstone.touch()
+
+        @contextmanager
+        def _fake_scope(profile):
+            yield ghost
+
+        monkeypatch.setattr(web_server_profiles, "_profile_scope", _fake_scope)
+
+        resp = self.client.post(
+            "/api/chat/image-upload?profile=ghost", json={"data_url": self._TINY_BMP_DATA_URL}
+        )
+
+        assert resp.status_code == 500
+        assert not (ghost / "images").exists()
 
 
     # ── Dashboard font override ─────────────────────────────────────────

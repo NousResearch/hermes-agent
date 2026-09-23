@@ -4,10 +4,10 @@
 Uses the city's Socrata-backed open data API. No auth required for read access.
 
 Datasets:
-  bnx9-e6tj — Real Property Master (one row per recorded document)
-  636b-3b5g — Real Property Parties (names — grantor, grantee, etc.)
-  8h5j-fqxa — Real Property Legal (lot / property identifiers)
-  uqqa-hym2 — Real Property References
+  bnx9-e6tj: Real Property Master (one row per recorded document)
+  636b-3b5g: Real Property Parties (names: grantor, grantee, etc.)
+  8h5j-fqxa: Real Property Legal (lot / property identifiers)
+  uqqa-hym2: Real Property References
 
 The Parties dataset has the names. We search by name and optionally join to
 Master to get the doc type and date.

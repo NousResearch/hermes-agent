@@ -45,7 +45,7 @@ def _parse_feed(xml_bytes: bytes):
         tag = _strip_ns(item.tag)
         if tag not in {"item", "entry"}:
             continue
-        # ElementTree Elements without children are *falsy* — use `is not None`.
+        # ElementTree Elements without children are *falsy*: use `is not None`.
         children = {_strip_ns(c.tag): c for c in item}
 
         guid_el = children.get("guid")
@@ -113,7 +113,7 @@ def main() -> int:
     output = format_items_as_markdown(new_items, body_key=body_key)
     if output:
         sys.stdout.write(output)
-    # Empty stdout on no-new — cron treats that as silent.
+    # Empty stdout on no-new: cron treats that as silent.
     return 0
 
 

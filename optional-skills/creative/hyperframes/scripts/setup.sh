@@ -6,7 +6,7 @@
 #
 # Pins `hyperframes@>=0.4.2` so the OpenClaw/Chromium-147 fix from
 # https://github.com/heygen-com/hyperframes/issues/294 (commit 4c72ba4)
-# is always present — the engine auto-detects `HeadlessExperimental.beginFrame`
+# is always present: the engine auto-detects `HeadlessExperimental.beginFrame`
 # support and falls back to screenshot capture otherwise.
 #
 # Idempotent: safe to re-run.
@@ -102,7 +102,7 @@ fi
 #
 # Chromium 147+ removed HeadlessExperimental.beginFrame. System Chrome (e.g.
 # /usr/bin/google-chrome) can't render with the fast path, so the engine
-# auto-detects and falls back to screenshot mode — but BeginFrame mode is
+# auto-detects and falls back to screenshot mode: but BeginFrame mode is
 # faster and produces higher-quality output. Install chrome-headless-shell
 # up front so the engine picks it over system Chrome.
 

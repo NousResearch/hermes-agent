@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-evm_client.py — EVM blockchain CLI tool for the Hermes Agent project.
+evm_client.py: EVM blockchain CLI tool for the Hermes Agent project.
 Zero external dependencies. Uses stdlib only: urllib, json, argparse, time, os, sys, typing.
 """
 
@@ -246,7 +246,7 @@ def hex_to_int(h: str) -> int:
 def is_valid_address(s: str) -> bool:
     """Return True if `s` looks like a 20-byte hex Ethereum address.
 
-    Does NOT validate EIP-55 checksum — RPC endpoints accept any-case hex.
+    Does NOT validate EIP-55 checksum: RPC endpoints accept any-case hex.
     Just guards against typos / wrong-length input before we burn an RPC call.
     """
     if not isinstance(s, str):
@@ -406,7 +406,7 @@ def rpc_batch(chain: str, calls: list[tuple[str, list[Any]]], batch_limit: int =
     """Send a batch of JSON-RPC calls; returns list of results in same order.
 
     Auto-chunks at `batch_limit` (default 10) so we stay under per-RPC limits.
-    Base's public RPC caps batches at 10 — exceeding that returns a single error
+    Base's public RPC caps batches at 10: exceeding that returns a single error
     dict instead of a results list, which would mask all our calls.
     """
     url = get_rpc_url(chain)
@@ -422,7 +422,7 @@ def rpc_batch(chain: str, calls: list[tuple[str, list[Any]]], batch_limit: int =
         chunk = items[start:start + batch_limit]
         resp = _http_post(url, chunk)
         if not isinstance(resp, list):
-            # Single error response (e.g. batch-too-large) — leave this chunk as None
+            # Single error response (e.g. batch-too-large): leave this chunk as None
             continue
         for r in resp:
             rid = r.get("id")
@@ -1381,7 +1381,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="evm_client",
-        description="EVM blockchain CLI — stdlib only, zero dependencies.",
+        description="EVM blockchain CLI: stdlib only, zero dependencies.",
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True

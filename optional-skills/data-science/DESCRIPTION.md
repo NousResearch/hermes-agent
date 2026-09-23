@@ -1,3 +1,3 @@
 ---
-description: Skills for data science workflows — interactive exploration, Jupyter notebooks, data analysis, and visualization.
+description: Skills for data science workflows, interactive exploration, Jupyter notebooks, data analysis, and visualization.
 ---

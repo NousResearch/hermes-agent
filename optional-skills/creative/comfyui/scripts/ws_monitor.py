@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ws_monitor.py — Real-time ComfyUI WebSocket monitor.
+ws_monitor.py: Real-time ComfyUI WebSocket monitor.
 
 Connects to /ws and pretty-prints execution events: node start/finish, sampling
 progress, cached nodes, errors. Optionally writes preview frames to disk.
@@ -8,13 +8,13 @@ progress, cached nodes, errors. Optionally writes preview frames to disk.
 Useful for:
   - Watching a long-running job in real time without parsing JSON yourself
   - Saving in-progress preview frames for video / animation workflows
-  - Debugging "why is this hanging?" — see exactly which node is stuck
+  - Debugging "why is this hanging?": see exactly which node is stuck
 
 Usage:
-    # Local — watch all jobs from this client_id
+    # Local: watch all jobs from this client_id
     python3 ws_monitor.py
 
-    # Cloud — watch a specific prompt_id
+    # Cloud: watch a specific prompt_id
     python3 ws_monitor.py --host https://cloud.comfy.org \
         --prompt-id abc-123-def
 
@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 msg = ws.recv()
             except websocket.WebSocketTimeoutException:
-                log(f"Idle for {args.timeout}s — exiting")
+                log(f"Idle for {args.timeout}s: exiting")
                 return 0
             if isinstance(msg, bytes):
                 parsed = parse_binary_frame(msg)

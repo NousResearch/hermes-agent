@@ -1,20 +1,20 @@
 # Jobs to Be Done
 
-Clayton Christensen et al., *Competing Against Luck* (HarperBusiness, 2016). Customers don't buy products based on demographics — they "hire" products to do specific jobs in specific situations.
+Clayton Christensen et al., *Competing Against Luck* (HarperBusiness, 2016). Customers don't buy products based on demographics, they "hire" products to do specific jobs in specific situations.
 
 ## When to use
 
 - Product / service / business design
-- Differentiation from competitors (the real competitor is whatever currently does the job — often non-obvious)
+- Differentiation from competitors (the real competitor is whatever currently does the job, often non-obvious)
 - Failure analysis (a product that "should have worked" often was designed for a job customers don't have)
 - Pricing (price in the unit of the job, not the cost of the product)
 - Marketing copy (speak to the job, not the features)
 
 ## Don't use when
 
-- Artistic or expressive work — "what job is this novel hired to do?" collapses what makes it specific
-- Civic / social design — imports market logic that's wrong here
-- Pure-research questions (no customer, no hire — use compression-progress)
+- Artistic or expressive work, "what job is this novel hired to do?" collapses what makes it specific
+- Civic / social design, imports market logic that's wrong here
+- Pure-research questions (no customer, no hire, use compression-progress)
 - You don't have access to actual customers
 
 ## Core form
@@ -27,10 +27,10 @@ The form forces specificity. Generic jobs ("when I want to be productive") are s
 
 A customer changes from one solution to another when **(push + pull) > (anxiety + habit)**:
 
-1. **Push** of the situation — pain of current.
-2. **Pull** of the new solution — appeal of where they're moving.
-3. **Anxiety** about the new solution — fears it'll let them down.
-4. **Habit** of the present — inertia.
+1. **Push** of the situation, pain of current.
+2. **Pull** of the new solution, appeal of where they're moving.
+3. **Anxiety** about the new solution, fears it'll let them down.
+4. **Habit** of the present, inertia.
 
 Most failed product launches don't lose on (2). They have an excellent product. They lose on (3) and (4): unaddressed anxieties + inertia. **Design for forces 3 and 4, not just 2.**
 
@@ -60,7 +60,7 @@ Then identify the job ("When... I want to... so I can...") and the four forces.
 
 **Job**: "When my reference manager fails me and I have years of accumulated work in it, I want to migrate to a new tool without losing my notes, so I can stay productive on my research."
 
-**Design implication**: a citation manager whose strongest pitch is *migration*, not features. Killer feature: "import from anywhere with notes preserved." Verified import quality from each major competitor. Reverse-migration tool. All addresses force 3 (anxiety) and force 4 (habit) — what most competitors neglect. The *features* (citation management) are barely differentiating. The *migration* is the product.
+**Design implication**: a citation manager whose strongest pitch is *migration*, not features. Killer feature: "import from anywhere with notes preserved." Verified import quality from each major competitor. Reverse-migration tool. All addresses force 3 (anxiety) and force 4 (habit), what most competitors neglect. The *features* (citation management) are barely differentiating. The *migration* is the product.
 
 ## Anti-slop notes
 

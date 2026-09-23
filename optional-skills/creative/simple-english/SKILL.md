@@ -36,18 +36,18 @@ When asked to write or rewrite technical text:
 
 1. **Select the mode** (pragmatic or strict, below).
 2. **Classify each passage** as procedural or descriptive. Every other rule depends on this.
-3. **Correct your vocabulary before drafting.** In strict mode, use `make sure that` for the check/verify/confirm/ensure concept — the dictionary rejects all four as verbs. In pragmatic mode, pick one and keep it. Pick ONE noun for config/settings (all are valid technical nouns — pick one and keep it). Use no other word for these concepts in the whole document.
+3. **Correct your vocabulary before drafting.** In strict mode, use `make sure that` for the check/verify/confirm/ensure concept, the dictionary rejects all four as verbs. In pragmatic mode, pick one and keep it. Pick ONE noun for config/settings (all are valid technical nouns, pick one and keep it). Use no other word for these concepts in the whole document.
 4. **Apply the rules** from the catalog below.
 5. **Do the self-check** before you deliver. This step is not optional.
 6. **Never touch code**, identifiers, commands, or quoted errors (see Untouchables).
 
-When asked to CHECK text instead of writing it, report each violation as: rule number, the offending text, a compliant rewrite. Cite only rule numbers that exist in this file. Do not cite rule numbers from memory: the numbering is unintuitive and models invent it (tested — an agent without this file cited "Rule 3.1: short sentences"; the real Rule 3.1 is about verb forms).
+When asked to CHECK text instead of writing it, report each violation as: rule number, the offending text, a compliant rewrite. Cite only rule numbers that exist in this file. Do not cite rule numbers from memory: the numbering is unintuitive and models invent it (tested, an agent without this file cited "Rule 3.1: short sentences"; the real Rule 3.1 is about verb forms).
 
 ## Two Modes
 
 | Mode | When | What you apply |
 |---|---|---|
-| **Pragmatic** (default) | Docs, READMEs, error messages — the user wants clear text | All structural rules. Domain words stay ("idempotent", "webhook"). |
+| **Pragmatic** (default) | Docs, READMEs, error messages, the user wants clear text| All structural rules. Domain words stay ("idempotent", "webhook"). |
 | **Strict** | The user names STE, ASD-STE100, or compliance | Structural rules + full vocabulary discipline, and tell the user that full compliance needs the official dictionary (free at asd-ste100.org). |
 
 ## Step 1: Classify the Text
@@ -65,7 +65,7 @@ Do not mix the two in one passage. A "Getting started" section is procedural. An
 
 53 rules in 9 sections, paraphrased from ASD-STE100 Issue 9 with software examples. The official wording is in the free standard at asd-ste100.org.
 
-### Section 1 — Words (Rules 1.1-1.14)
+### Section 1, Words (Rules 1.1-1.14)
 
 | Rule | Instruction |
 |---|---|
@@ -89,7 +89,7 @@ In pragmatic mode, rules 1.5, 1.8, and 1.12 do the heavy lifting: your domain vo
 **Before:** You can webhook the event, then do a deploy.
 **After:** Send the event to the webhook. Then deploy the service.
 
-### Section 2 — Multi-word nouns (Rules 2.1-2.2)
+### Section 2, Multi-word nouns (Rules 2.1-2.2)
 
 | Rule | Instruction |
 |---|---|
@@ -101,7 +101,7 @@ Break long noun chains with prepositions (of, on, in, for):
 **Before:** the connection pool timeout configuration value
 **After:** the timeout value for the connection pool
 
-### Section 3 — Verbs (Rules 3.1-3.7)
+### Section 3, Verbs (Rules 3.1-3.7)
 
 | Rule | Instruction |
 |---|---|
@@ -109,12 +109,12 @@ Break long noun chains with prepositions (of, on, in, for):
 | 3.2 | Use only: infinitive, imperative, simple present, simple past, simple future, past participle as adjective. |
 | 3.3 | Use the past participle only as an adjective ("the cached response"). |
 | 3.4 | No auxiliary verbs for complex constructions. No present perfect, no "is to be installed". |
-| 3.5 | Use an "-ing" form only as a technical noun or inside one ("logging", "the mounting bracket") — never as a verb. |
+| 3.5 | Use an "-ing" form only as a technical noun or inside one ("logging", "the mounting bracket"), never as a verb.|
 | 3.6 | Active voice. In descriptive text, passive is legal only when the agent is unknown. |
 | 3.7 | Describe an action with a verb, not a noun ("compress the file", not "perform compression of the file"). |
 
 **Approved modals: can, will, must. Banned: should, would, may, might, could (Rule 3.2).**
-The standard rejects "could" even for possibility: write "an explosion can occur", never "could occur". For "should": a requirement becomes "must"; a suggestion is stated as fact or deleted. This matters double for agent instructions — models read "should" as optional.
+The standard rejects "could" even for possibility: write "an explosion can occur", never "could occur". For "should": a requirement becomes "must"; a suggestion is stated as fact or deleted. This matters double for agent instructions, models read "should" as optional.
 
 **Before:** The migration has completed and the table is being rebuilt.
 **After:** The migration is complete. The database rebuilds the table.
@@ -125,7 +125,7 @@ The standard rejects "could" even for possibility: write "an explosion can occur
 **Before:** The temperature must be adjusted.
 **After:** Adjust the temperature.
 
-### Section 4 — Sentences (Rules 4.1-4.5)
+### Section 4, Sentences (Rules 4.1-4.5)
 
 | Rule | Instruction |
 |---|---|
@@ -140,7 +140,7 @@ Rule 4.2 is the anti-terseness rule. STE is short sentences with complete gramma
 **Wrong shortening:** Ensure file exists before running.
 **STE:** Make sure that the file exists before you run the command.
 
-### Section 5 — Procedural writing (Rules 5.1-5.5)
+### Section 5, Procedural writing (Rules 5.1-5.5)
 
 | Rule | Instruction |
 |---|---|
@@ -153,7 +153,7 @@ Rule 4.2 is the anti-terseness rule. STE is short sentences with complete gramma
 **Before:** You'll want to grab the API key from the dashboard before configuring the client, which you can do under Settings.
 **After:** Get the API key from the dashboard, under Settings. Then configure the client with this key.
 
-### Section 6 — Descriptive writing (Rules 6.1-6.6)
+### Section 6, Descriptive writing (Rules 6.1-6.6)
 
 | Rule | Instruction |
 |---|---|
@@ -166,7 +166,7 @@ Rule 4.2 is the anti-terseness rule. STE is short sentences with complete gramma
 
 No imperative in descriptive text. Descriptions explain; procedures instruct.
 
-### Section 7 — Safety instructions (Rules 7.1-7.3)
+### Section 7, Safety instructions (Rules 7.1-7.3)
 
 | Rule | Instruction |
 |---|---|
@@ -179,7 +179,7 @@ Never bury the instruction after the explanation. The pattern transfers directly
 **Before:** Note that data loss may occur in some circumstances if the destructive flag happens to be enabled when running against production.
 **After:** CAUTION: Do not use the `--force` flag against production. The flag deletes rows that do not match the source.
 
-### Section 8 — Punctuation and word count (Rules 8.1-8.7)
+### Section 8, Punctuation and word count (Rules 8.1-8.7)
 
 | Rule | Instruction |
 |---|---|
@@ -193,7 +193,7 @@ Never bury the instruction after the explanation. The pattern transfers directly
 
 Rule 8.6 matters for software text: `sqlpipe run --config sqlpipe.yaml` in backticks is quoted text and counts as one word. Long identifiers do not blow your sentence budget.
 
-### Section 9 — Writing practices (Rules 9.1-9.4, GR-1 to GR-8)
+### Section 9, Writing practices (Rules 9.1-9.4, GR-1 to GR-8)
 
 | Rule | Instruction |
 |---|---|
@@ -202,9 +202,9 @@ Rule 8.6 matters for software text: `sqlpipe run --config sqlpipe.yaml` in backt
 | 9.3 | Do not build phrasal verbs ("go down" → "decrease", "set up" → "install" or "configure"). |
 | 9.4 | Keep one consistent style and terminology through the whole document. |
 
-General recommendations GR-1 to GR-8: keep the conjunction "that", be careful with "with", give pronouns clear referents, prefer "this + noun" over bare "this", avoid false friends, avoid Latin abbreviations, use inclusive language, and use the possessive apostrophe form only when you are sure it is correct (GR-8: if unsure, do not use it — non-native readers find it hard).
+General recommendations GR-1 to GR-8: keep the conjunction "that", be careful with "with", give pronouns clear referents, prefer "this + noun" over bare "this", avoid false friends, avoid Latin abbreviations, use inclusive language, and use the possessive apostrophe form only when you are sure it is correct (GR-8: if unsure, do not use it, non-native readers find it hard).
 
-GR-6 for software docs: "e.g." → "for example", "i.e." → "that is", and delete "etc." — name the items or write "and more".
+GR-6 for software docs: "e.g." → "for example", "i.e." → "that is", and delete "etc.", name the items or write "and more".
 
 ## VOCABULARY DISCIPLINE
 
@@ -242,12 +242,12 @@ This table is ours, not the ASD dictionary. It maps the words AI-generated docs 
 | prior to | before |
 | ensure | make sure that (strict mode; in pragmatic mode, ensure is an allowed pick if it is your one chosen check-verb) |
 | it is worth noting that | (delete) |
-| it's important to, crucially | (delete — state the fact) |
+| it's important to, crucially | (delete, state the fact)|
 | simply, just, easily, seamlessly, effortlessly | (delete) |
 | robust, powerful, comprehensive, performant | (delete, or give the measurable property) |
 | functionality | function, feature |
 | enables you to, allows you to | you can |
-| is designed to, aims to | (delete — say what it does) |
+| is designed to, aims to | (delete, say what it does)|
 | facilitate | help, make possible |
 | dive into, delve into | read, examine |
 | when it comes to | for |
@@ -268,11 +268,11 @@ This table is ours, not the ASD dictionary. It maps the words AI-generated docs 
 
 Collapse synonym rotations to one term each (Rules 1.11, 9.4). The two lists below work differently.
 
-**Technical nouns — not in the dictionary. Pick one and keep it consistent (both modes):**
+**Technical nouns, not in the dictionary. Pick one and keep it consistent (both modes):**
 
 - config / configuration / settings / options → pick one
 
-**Dictionary rulings — the standard has already chosen. Use the approved word (strict mode); pick one and keep it consistent (pragmatic mode):**
+**Dictionary rulings, the standard has already chosen. Use the approved word (strict mode); pick one and keep it consistent (pragmatic mode):**
 
 | You wrote | Dictionary status | Use instead |
 |---|---|---|
@@ -295,7 +295,7 @@ These are technical names (Rules 1.5, 8.6). Leave them exact, even when they bre
 - Code blocks, inline code, identifiers, CLI commands, flags, file paths
 - Quoted error messages and log lines
 - Product names, API endpoint names, config keys
-- Numbers with units — each counts as one word in the sentence limit
+- Numbers with units, each counts as one word in the sentence limit
 
 ## Beyond Documentation
 
@@ -304,7 +304,7 @@ Same rules, different targets. Full adaptations in `references/use-cases.md`:
 - **Error messages**: state what happened (simple past), the cause if known, then the fix as an imperative. No "Oops", no "Please ensure", no apology filler.
 - **Runbooks**: STE's home turf. Imperative steps, conditions first, warnings before the step.
 - **Incident reports**: simple past only. "We have identified an issue that may have impacted" becomes "Between 14:02 and 14:31 UTC, 12% of requests failed."
-- **Release notes**: breaking changes follow the warning pattern — command first, risk second.
+- **Release notes**: breaking changes follow the warning pattern, command first, risk second.
 - **Agent instructions (prompts, AGENTS.md)**: a system prompt is a procedure for a reader that cannot ask questions. One instruction per sentence, no "should", condition first.
 - **Translation prep**: STE's original job. One meaning per word plus complete grammar removes most translation ambiguity.
 
@@ -323,7 +323,7 @@ Fix what you find, then deliver. For a full audit, run `references/checklist.md`
 
 **Before (real unedited AI output):**
 
-> **Connection timeouts.** If sqlpipe hangs or fails with `dial tcp: i/o timeout`, check that the host running sqlpipe can reach the Postgres port (usually 5432) — this is often a security group or firewall rule blocking the connection. If you're connecting to a managed database (RDS, Cloud SQL, etc.), confirm the instance allows connections from sqlpipe's IP. You can also try increasing `source.connect_timeout_seconds` in your config, since a slow network path can trip the default timeout even when the connection eventually succeeds.
+> **Connection timeouts.** If sqlpipe hangs or fails with `dial tcp: i/o timeout`: check that the host running sqlpipe can reach the Postgres port (usually 5432), this is often a security group or firewall rule blocking the connection. If you're connecting to a managed database (RDS, Cloud SQL, etc.), confirm the instance allows connections from sqlpipe's IP. You can also try increasing `source.connect_timeout_seconds` in your config, since a slow network path can trip the default timeout even when the connection eventually succeeds.
 
 **After (classified procedural, verb = "make sure", conditions first, one instruction per sentence):**
 
@@ -337,11 +337,11 @@ What changed: 40-word sentences split under 20; "you're" expanded; "check/confir
 
 ## Limits
 
-STE is for technical facts and instructions. Do not apply it to marketing copy, blog voice, or brand writing — it deletes persuasion by design. When a user asks for STE on marketing text, say so and offer it for the docs instead.
+STE is for technical facts and instructions. Do not apply it to marketing copy, blog voice, or brand writing, it deletes persuasion by design. When a user asks for STE on marketing text, say so and offer it for the docs instead.
 
 This skill is an unofficial aid. It is not affiliated with or endorsed by ASD or STEMG, and no tool can guarantee STE compliance. ASD-STE100 is a registered trademark of ASD. The official standard is a free download at asd-ste100.org.
 
 ## References
 
-- `references/checklist.md` — full verification pass with searchable patterns, for check mode and final audits
-- `references/use-cases.md` — long-form adaptations: error messages, runbooks, incident reports, commits, UI copy, i18n
+- `references/checklist.md`: full verification pass with searchable patterns, for check mode and final audits
+- `references/use-cases.md`: long-form adaptations: error messages, runbooks, incident reports, commits, UI copy, i18n

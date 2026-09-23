@@ -1,4 +1,4 @@
-// tldraw offline — document script (script/main.js)
+// tldraw offline: document script (script/main.js)
 //
 // A document script's default export receives a ctx object and runs whenever the
 // document loads (and reruns when you save the script). Contract, verified against
@@ -6,15 +6,15 @@
 //
 //   export default function ({ editor, helpers, signal }) { ... }
 //
-//   editor   — the live tldraw Editor for this document
-//   helpers  — editor-bound conveniences: createShapeIfMissing, createShapesIfMissing,
+//   editor: the live tldraw Editor for this document
+//   helpers: editor-bound conveniences: createShapeIfMissing, createShapesIfMissing,
 //              createArrowBetweenShapes, translateShapes, onShapeTranslate,
 //              richTextToPlainText, boxShapes, getLints
-//   signal   — an AbortSignal fired before the script reruns and when the board
+//   signal: an AbortSignal fired before the script reruns and when the board
 //              closes. Register ALL cleanup on it (this is how you avoid leaks).
 //
 // Pure tldraw primitives (createShapeId, toRichText, Vec, ...) are imported from
-// the `tldraw` app module — NOT globals. react / react-dom are also importable.
+// the `tldraw` app module: NOT globals. react / react-dom are also importable.
 // It is not a Node project; only those modules are available.
 
 import { createShapeId, toRichText } from 'tldraw'
@@ -54,7 +54,7 @@ export default function ({ editor, helpers, signal }) {
 	createArrowBetweenShapes(nodes[1].id, nodes[2].id, { arrowheadEnd: 'arrow' })
 
 	// --- 2. Add reactive behavior: recolor the last node based on arrow count.
-	// store.listen fires on the tick AFTER a commit — never read state you just
+	// store.listen fires on the tick AFTER a commit: never read state you just
 	// wrote synchronously and expect the listener to have run yet.
 	const targetId = nodes[2].id
 	function update() {

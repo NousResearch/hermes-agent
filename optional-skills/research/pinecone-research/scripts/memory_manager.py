@@ -1,4 +1,4 @@
-"""Pinecone memory manager — namespace-based session memory for agents.
+"""Pinecone memory manager: namespace-based session memory for agents.
 
 Provides helpers for storing and retrieving agent conversation memory
 using Pinecone namespaces. Each session gets its own namespace for isolation,

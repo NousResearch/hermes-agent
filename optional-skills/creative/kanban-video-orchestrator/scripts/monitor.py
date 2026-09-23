@@ -8,7 +8,7 @@ Usage:
     monitor.py --tenant <project-slug> [--interval 30]
 
 Outputs a periodic snapshot to stdout. Sends alerts via stderr when issues
-are detected. Designed to run alongside the kanban — kill with Ctrl-C when
+are detected. Designed to run alongside the kanban: kill with Ctrl-C when
 you're satisfied (or scripted to stop on completion).
 
 This is best-effort observability. It does not auto-restart tasks; intervention
@@ -98,7 +98,7 @@ def detect_issues(tasks: list[dict]) -> list[str]:
             continue
         if now - hb_dt > timedelta(minutes=2):
             issues.append(
-                f"STUCK: {t['id']} ({t.get('assignee', '?')}) — "
+                f"STUCK: {t['id']} ({t.get('assignee', '?')}): "
                 f"no heartbeat in {(now - hb_dt).total_seconds():.0f}s"
             )
 
@@ -115,7 +115,7 @@ def detect_issues(tasks: list[dict]) -> list[str]:
         elapsed = (now - started_dt).total_seconds()
         if elapsed > max_rt:
             issues.append(
-                f"OVERTIME: {t['id']} ({t.get('assignee', '?')}) — "
+                f"OVERTIME: {t['id']} ({t.get('assignee', '?')}): "
                 f"running {elapsed:.0f}s, cap was {max_rt}s"
             )
 
@@ -124,8 +124,8 @@ def detect_issues(tasks: list[dict]) -> list[str]:
         retries = t.get("retries", 0)
         if retries and retries >= 2:
             issues.append(
-                f"FLAPPING: {t['id']} ({t.get('assignee', '?')}) — "
-                f"retried {retries}× — fix root cause before next run"
+                f"FLAPPING: {t['id']} ({t.get('assignee', '?')}): "
+                f"retried {retries}×: fix root cause before next run"
             )
 
     return issues

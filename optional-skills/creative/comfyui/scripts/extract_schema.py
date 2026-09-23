@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract_schema.py — Analyze a ComfyUI API-format workflow and extract
+extract_schema.py: Analyze a ComfyUI API-format workflow and extract
 controllable parameters.
 
 Improvements over v1:
@@ -292,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except json.JSONDecodeError as e:
-        print(f"Error: invalid JSON — {e}", file=sys.stderr)
+        print(f"Error: invalid JSON: {e}", file=sys.stderr)
         return 1
 
     schema = extract_schema(workflow)

@@ -43,7 +43,7 @@ nix-shell -p ast-grep
 > 1. Always invoke `ast-grep` (full name).
 > 2. Add an alias: `alias sg=ast-grep` in your `~/.bashrc` / `~/.zshrc`.
 >
-> The `ast_grep_helper.py` script in `scripts/` already handles this — when it sees `sg` on PATH on Linux, it runs `--version` and rejects the binary if it isn't ast-grep.
+> The `ast_grep_helper.py` script in `scripts/` already handles this, when it sees `sg` on PATH on Linux, it runs `--version` and rejects the binary if it isn't ast-grep.
 
 ### Windows
 

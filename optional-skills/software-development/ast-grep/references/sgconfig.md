@@ -1,4 +1,4 @@
-# sgconfig.yml — project configuration
+# sgconfig.yml: project configuration
 
 `sgconfig.yml` lives at your project root (the same place as `package.json`, `Cargo.toml`, `pyproject.toml`, etc.) and tells `sg scan`/`sg test` where to find rules and tests.
 
@@ -44,25 +44,25 @@ That's it. `sg scan src/` will load every `.yml` in `rules/`, find every `.ts`/`
 ## Full schema
 
 ```yaml
-# Rule directories — required
+# Rule directories: required
 ruleDirs:
   - rules
   - team-rules
   - vendor/sg-rules
 
-# Test directories — optional
+# Test directories: optional
 testConfigs:
   - testDir: tests
     snapshotDir: __snapshots__
   - testDir: integration-tests
 
-# Utility rule directories — optional
+# Utility rule directories: optional
 # Files here become global utilities accessible via `matches: <id>` from any rule.
 utilDirs:
   - utils
   - team-utils
 
-# Override file-extension -> language mapping — optional
+# Override file-extension -> language mapping: optional
 # Useful when your code uses non-standard extensions.
 languageGlobs:
   html:
@@ -77,7 +77,7 @@ languageGlobs:
   tsx:
     - '*.ts'                 # treat all .ts as TSX (so TSX rules work everywhere)
 
-# Custom tree-sitter languages (experimental) — optional
+# Custom tree-sitter languages (experimental): optional
 customLanguages:
   mojo:
     libraryPath: tree-sitter-mojo.so
@@ -85,7 +85,7 @@ customLanguages:
     expandoChar: _           # Replace $ in patterns when language uses $ syntactically
     languageSymbol: tree_sitter_mojo
 
-# Language injection — embedded code in another language (experimental) — optional
+# Language injection: embedded code in another language (experimental): optional
 # Example: CSS inside styled-components template literals.
 languageInjections:
   - hostLanguage: js
@@ -100,7 +100,7 @@ languageInjections:
 
 ### `ruleDirs` (required)
 
-`Array<string>` — directories containing rule YAML files. Resolved relative to `sgconfig.yml`.
+`Array<string>`: directories containing rule YAML files. Resolved relative to `sgconfig.yml`.
 
 Each `.yml`/`.yaml` file in these directories is loaded as a rule. One file can contain multiple rules separated by `---`.
 
@@ -125,11 +125,11 @@ invalid:
 
 ### `utilDirs`
 
-`Array<string>` — directories with global utility rules. Each util file must have `id` and `language`. Utils become referenceable via `matches: <id>` from any rule in the project.
+`Array<string>`: directories with global utility rules. Each util file must have `id` and `language`. Utils become referenceable via `matches: <id>` from any rule in the project.
 
 ### `languageGlobs`
 
-`HashMap<string, Array<string>>` — override which extensions map to which language. Takes precedence over the built-in defaults.
+`HashMap<string, Array<string>>`: override which extensions map to which language. Takes precedence over the built-in defaults.
 
 Useful for:
 
@@ -146,7 +146,7 @@ Register a tree-sitter parser that ast-grep doesn't ship with. Requires:
 - `languageSymbol`: the C symbol exported by the grammar (typically `tree_sitter_<name>`).
 - `expandoChar` (optional): character to substitute for `$` in patterns when the host language uses `$` syntactically (PHP, jQuery, etc.).
 
-This is **rarely needed** — ast-grep already supports 25 languages out of the box.
+This is **rarely needed**: ast-grep already supports 25 languages out of the box.
 
 ### `languageInjections` (experimental)
 
@@ -170,7 +170,7 @@ After this, a `css` rule with pattern `color: $C` will match `$CONTENT` strings.
 
 ```
 monorepo/
-├── sgconfig.yml          # root config — applies to entire monorepo
+├── sgconfig.yml          # root config: applies to entire monorepo
 ├── shared-rules/
 │   ├── no-todo.yml
 │   └── no-as-any.yml
@@ -243,6 +243,6 @@ rule:
 
 ## See also
 
-- `references/yaml-rules.md` — rule schema (atomic / relational / composite / transform / fix).
-- `references/cli.md` — `sg scan`, `sg test`, `sg new project`.
+- `references/yaml-rules.md`: rule schema (atomic / relational / composite / transform / fix).
+- `references/cli.md`, `sg scan`, `sg test`, `sg new project`.
 - Official: <https://ast-grep.github.io/reference/sgconfig.html>, <https://ast-grep.github.io/guide/project/project-config.html>

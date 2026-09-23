@@ -1,11 +1,11 @@
-"""Pixel art video — overlay procedural animations onto a source image.
+"""Pixel art video: overlay procedural animations onto a source image.
 
 Takes any image (typically pre-processed with pixel_art()) and overlays
 animated pixel effects (stars, rain, fireflies, etc.), then encodes to MP4
 (and optionally GIF) via ffmpeg.
 
-Scene animations ported from pixel-art-studio (MIT) — see ATTRIBUTION.md.
-The generative/Pollinations code is intentionally dropped — Hermes uses
+Scene animations ported from pixel-art-studio (MIT): see ATTRIBUTION.md.
+The generative/Pollinations code is intentionally dropped: Hermes uses
 `image_generate` + `pixel_art()` for base frames instead.
 
 Usage (import):

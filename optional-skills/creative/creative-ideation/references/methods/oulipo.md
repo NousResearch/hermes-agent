@@ -4,7 +4,7 @@
 
 ## When to use
 
-- Writing — fiction, poetry, copy, lyrics, anything text
+- Writing, fiction, poetry, copy, lyrics, anything text
 - Writing feels samey; constraint suppresses your default sentence shape
 - Generating titles, names, taglines (short forms benefit most)
 - Software constraint by analogy (code golf, no-dependency, single-file)
@@ -21,7 +21,7 @@
 Exclude one or more letters. Perec's *La Disparition* (1969): 300 pages without E. The previous sentence is a lipogram in B, F, J, K, Q, V, Y, Z.
 
 ### Univocalism
-Only one vowel letter. (Letter, not phoneme — "born" and "cot" both qualify in English.)
+Only one vowel letter. (Letter, not phoneme, "born" and "cot" both qualify in English.)
 
 ### Snowball / Rhopalism
 Each line one word; each word one letter longer than the previous.

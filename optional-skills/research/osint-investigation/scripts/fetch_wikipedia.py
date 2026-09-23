@@ -67,7 +67,7 @@ def _wp_search(query: str, limit: int) -> list[dict]:
 
 
 def _wp_summary(title: str) -> dict:
-    """Pull the REST summary for a title — short bio, image, type."""
+    """Pull the REST summary for a title: short bio, image, type."""
     url = f"{WP_SUMMARY}{urllib.parse.quote(title.replace(' ', '_'))}"
     try:
         return get_json(url)  # type: ignore[return-value]

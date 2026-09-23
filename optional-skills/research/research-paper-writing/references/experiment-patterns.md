@@ -242,7 +242,7 @@ Human Evaluation Protocol:
 1. Define the evaluation dimensions (fluency, relevance, factual accuracy, etc.)
 2. Create annotation guidelines with examples of each score level
 3. Run a pilot with 2-3 annotators on 20-30 examples
-4. Compute pilot inter-annotator agreement — if low, revise guidelines
+4. Compute pilot inter-annotator agreement: if low, revise guidelines
 5. Run full evaluation
 6. Report: annotator count, agreement metrics, compensation, time per item
 ```
@@ -258,7 +258,7 @@ Human Evaluation Protocol:
 | Informativeness | Does it provide useful information? | 1-5 Likert |
 | Overall preference | Which output is better? | A/B/Tie (pairwise) |
 
-**Pairwise comparison** (preferred over absolute scoring — more reliable):
+**Pairwise comparison** (preferred over absolute scoring, more reliable):
 - Present two outputs side-by-side (randomize left/right position)
 - Ask: "Which is better? A / B / Tie"
 - More discriminative and less susceptible to annotator calibration drift
@@ -268,7 +268,7 @@ Human Evaluation Protocol:
 Always report agreement metrics. Without them, reviewers assume your annotations are unreliable.
 
 ```python
-# Krippendorff's alpha (preferred — handles missing data, any scale)
+# Krippendorff's alpha (preferred: handles missing data, any scale)
 # pip install krippendorffs-alpha
 import krippendorff
 
@@ -305,10 +305,10 @@ print(f"Cohen's kappa: {kappa:.3f}")
 
 | Platform | Best For | Cost | Quality |
 |----------|----------|------|---------|
-| **Prolific** | Academic research, higher quality | $8-15/hr | High — academic participant pool |
-| **MTurk** | Large-scale, fast turnaround | $2-10/hr | Variable — use qualifications |
-| **Surge AI** | NLP-specific annotations | Premium | High — trained annotators |
-| **Expert annotators** | Domain-specific (medical, legal) | Highest | Highest — but slow |
+| **Prolific** | Academic research, higher quality | $8-15/hr | High, academic participant pool|
+| **MTurk** | Large-scale, fast turnaround | $2-10/hr | Variable, use qualifications|
+| **Surge AI** | NLP-specific annotations | Premium | High, trained annotators|
+| **Expert annotators** | Domain-specific (medical, legal) | Highest | Highest, but slow|
 
 **Ethics requirements**:
 - Report compensation rate (must be at minimum local minimum wage)
@@ -441,13 +441,13 @@ If nothing has changed since the last check, respond with [SILENT].
 
 ### Monitoring Best Practices
 
-1. **Check processes first** — don't read results if the experiment is still running and results are incomplete
-2. **Read the log tail** — look for errors, progress indicators, completion messages
-3. **Count completed vs expected** — "45/150 problems done" is more useful than "some results exist"
-4. **Report in structured tables** — always include key metrics in a table
-5. **Answer the key question** — each experiment should have a specific analytical question to answer when done
-6. **[SILENT] for no-news** — suppress notifications when nothing has changed
-7. **Commit on completion** — every completed batch gets committed with a descriptive message
+1. **Check processes first**: don't read results if the experiment is still running and results are incomplete
+2. **Read the log tail**: look for errors, progress indicators, completion messages
+3. **Count completed vs expected**: "45/150 problems done" is more useful than "some results exist"
+4. **Report in structured tables**: always include key metrics in a table
+5. **Answer the key question**: each experiment should have a specific analytical question to answer when done
+6. **[SILENT] for no-news**: suppress notifications when nothing has changed
+7. **Commit on completion**: every completed batch gets committed with a descriptive message
 
 ### Example Monitoring Report
 
@@ -456,7 +456,7 @@ If nothing has changed since the last check, respond with [SILENT].
 
 | Strategy | Pass Rate (150 problems) | vs Single |
 |----------|------------------------|-----------|
-| single_pass | 38.0% | — |
+| single_pass | 38.0% |: |
 | critique_revise | 35.2% | -2.8pp |
 | **autoreason** | **40.0%** | **+2.0pp** |
 | best_of_6 | 31.0% | -7.0pp |
@@ -530,7 +530,7 @@ Design tasks that have clear objectives but subjective quality:
 
 ## Requirements
 - [Specific, measurable requirements]
-- [Not vague — "be comprehensive" is bad, "include exactly 6 sections" is good]
+- [Not vague: "be comprehensive" is bad, "include exactly 6 sections" is good]
 ```
 
 ### Constrained Tasks (for Testing Scope Effects)
@@ -538,11 +538,11 @@ Design tasks that have clear objectives but subjective quality:
 Constrained tasks test whether methods respect scope boundaries. Design with:
 
 - **Fixed facts**: "Use only these N data points, add nothing else"
-- **Fixed deliverable**: Specific format (pitch, postmortem, memo — not "improve this")
+- **Fixed deliverable**: Specific format (pitch, postmortem, memo, not "improve this")
 - **Fixed structure**: "These sections in this order, do not add/remove"
 - **Fixed change items**: "Address exactly these N points, nothing else"
 
-**Do NOT use word count as a scope constraint.** Word limits cause false convergence — outputs get rejected for length, not quality. Constrain scope (what to include) not length.
+**Do NOT use word count as a scope constraint.** Word limits cause false convergence, outputs get rejected for length, not quality. Constrain scope (what to include) not length.
 
 ### Example: Good vs Bad Constraints
 
@@ -565,16 +565,16 @@ Install SciencePlots for publication-ready defaults:
 pip install SciencePlots matplotlib numpy
 ```
 
-**Option A: SciencePlots styles** (recommended — handles most defaults automatically):
+**Option A: SciencePlots styles** (recommended, handles most defaults automatically):
 
 ```python
 import matplotlib.pyplot as plt
 import scienceplots  # registers the styles
 
 # Pick a style:
-# 'science'        — clean, serif fonts, suitable for most venues
-# 'science+ieee'   — IEEE-style (good for two-column papers)
-# 'science+nature' — Nature-style
+# 'science': clean, serif fonts, suitable for most venues
+# 'science+ieee': IEEE-style (good for two-column papers)
+# 'science+nature': Nature-style
 # Add 'no-latex' if LaTeX is not installed on the machine generating plots
 
 with plt.style.context(['science', 'no-latex']):
@@ -712,8 +712,8 @@ with plt.style.context(style):
 
 ### Output Rules
 
-- **Always save as PDF**: `fig.savefig('fig.pdf')` — vector graphics, sharp at any zoom
-- **Never save as PNG** for paper figures — raster PNGs look blurry when printed/zoomed
+- **Always save as PDF**: `fig.savefig('fig.pdf')`: vector graphics, sharp at any zoom
+- **Never save as PNG** for paper figures, raster PNGs look blurry when printed/zoomed
 - **Exception**: Screenshots, photographs, or pixel-art visualizations → PNG at 600 DPI
 - **Verify grayscale**: Print to grayscale PDF and check all information is still visible
 

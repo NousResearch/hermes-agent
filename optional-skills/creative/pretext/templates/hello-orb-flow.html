@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>pretext hello — text flowing around an orb</title>
+<title>pretext hello: text flowing around an orb</title>
 <style>
   html,body { margin:0; padding:0; height:100%; background:#0c0d10; color:#e8e6df; overflow:hidden; }
   body { font-family: "Iowan Old Style", Georgia, serif; }
@@ -13,7 +13,7 @@
 <canvas id="c"></canvas>
 <script type="module">
 // Minimal pretext starter: long paragraph flows around a moving orb.
-// Uses layoutNextLineRange + variable-width streaming — the "killer app"
+// Uses layoutNextLineRange + variable-width streaming: the "killer app"
 // pattern that only pretext can do cheaply in the browser.
 import {
   prepareWithSegments,
@@ -21,7 +21,7 @@ import {
   materializeLineRange,
 } from "https://esm.sh/@chenglou/pretext@0.0.6";
 
-const TEXT = `Pretext measures text without touching the DOM. It returns numbers — widths, line breaks, cursors — and those numbers, arranged with a little imagination, become layouts the browser could never draw on its own. Here, a paragraph flows around a moving orb. Each line is asked for its own width, live. No reflows. No cheats. Just measurement. `.repeat(18);
+const TEXT = `Pretext measures text without touching the DOM. It returns numbers: widths, line breaks, cursors: and those numbers, arranged with a little imagination, become layouts the browser could never draw on its own. Here, a paragraph flows around a moving orb. Each line is asked for its own width, live. No reflows. No cheats. Just measurement. `.repeat(18);
 
 const FONT = '17px/1.4 "Iowan Old Style", Georgia, serif';
 const LINE_H = 24;

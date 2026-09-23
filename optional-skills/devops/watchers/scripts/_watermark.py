@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 def _state_dir() -> Path:
-    """Where watermark files live — respects WATCHER_STATE_DIR override."""
+    """Where watermark files live: respects WATCHER_STATE_DIR override."""
     override = os.environ.get("WATCHER_STATE_DIR")
     if override:
         return Path(override)
@@ -59,7 +59,7 @@ class Watermark:
                 wm._data.setdefault("seen_ids", [])
                 wm._data["first_run"] = False
             except (OSError, json.JSONDecodeError):
-                # Corrupt state file — treat as a first run but don't crash.
+                # Corrupt state file: treat as a first run but don't crash.
                 wm._data = {"seen_ids": [], "first_run": True}
         return wm
 
@@ -125,7 +125,7 @@ def format_items_as_markdown(
     """Render a list of items as Markdown for cron delivery.
 
     One heading per item + its URL + optional snippet of body.  Output is
-    empty string when items is empty — cron will then treat stdout as
+    empty string when items is empty: cron will then treat stdout as
     silent and skip delivery (existing behavior).
     """
     if not items:

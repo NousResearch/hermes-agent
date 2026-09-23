@@ -110,6 +110,9 @@ export interface ManagedRolloutObservationReader {
     correlationId: string
     outcome: ManagedRolloutObservation['outcome']
     terminal: boolean
+    receipt?: ManagedConnectionUpdateResult['receipt']
+    health?: HealthEvidence | null
+    recoveryRecordClear?: boolean
   }>
   recover?: (authorization: ManagedRolloutAuthorization) => Promise<{
     correlationId: string
@@ -183,6 +186,7 @@ type Runtime = {
   targets: Map<string, ManagedRolloutTarget>
   authorizations: Map<string, ManagedRolloutAuthorization>
   observations: Map<string, ObservationState>
+  reprobeObservations: Map<string, NonNullable<Awaited<ReturnType<NonNullable<ManagedRolloutObservationReader['reprobe']>>>>>
   launches: Map<string, LaunchPromise>
   coordinator: Coordinator
   snapshot: RolloutSnapshot
@@ -270,9 +274,11 @@ function restoredAttemptState(phase: RolloutSnapshot['attempts'][number]['phase'
 
     case 'skipped': return 'skipped'
 
-    case 'draining': return 'intent-recorded'
+    case 'draining':
 
     case 'awaiting-receipt':
+
+    case 'updating':
 
     case 'verifying': return 'unverified'
 
@@ -301,17 +307,20 @@ function restoredState(
     }]
   }))
 
-  const hasUnknown = Object.values(attempts).some(attempt => attempt.state === 'unverified' || attempt.state === 'recovery-required')
+  const hasUnknown = Object.values(attempts).some(attempt =>
+    attempt.state === 'unverified' || attempt.state === 'recovery-required' ||
+    attempt.state === 'failed' || attempt.state === 'refused'
+  )
 
   return {
     id: snapshot.id,
     revision: 1,
     queueGeneration: metadata.queueGeneration,
-    phase: hasUnknown ? 'attention-required' : metadata.phase,
+    phase: hasUnknown ? 'attention-required' : metadata.phase === 'running' ? 'paused' : metadata.phase,
     policy: metadata.policy,
     currentWave: Math.min(metadata.currentWave, Math.max(0, metadata.plan.waves.length - 1)),
     canaryApproved: metadata.canaryApproved,
-    continuationRequired: hasUnknown || metadata.continuationRequired,
+    continuationRequired: true,
     stopRequested: metadata.stopRequested,
     attempts
   }
@@ -599,7 +608,7 @@ function receiptOutput(
   }
 }
 
-function snapshotFromState(runtime: Runtime, state: ManagedRolloutState, current: RolloutSnapshot): RolloutSnapshot {
+function snapshotFromState(runtime: Runtime, state: ManagedRolloutState, current: RolloutSnapshot, unresolvedKeys: ReadonlySet<string>): RolloutSnapshot {
   const attempts: TargetAttempt[] = [...runtime.targets.values()].map(target => {
     const attempt = state.attempts[target.installId]
     const row = runtime.plan.rows.find(item => item.installId === target.installId)
@@ -636,7 +645,8 @@ function snapshotFromState(runtime: Runtime, state: ManagedRolloutState, current
       reprobes: attempt.reprobeCount,
       receipt: receiptOutput(observation?.receipt ?? null, target.targetSha, target.installId),
       health: observation?.health ? clone(observation.health) : null,
-      recoveryRequired: attempt.state === 'unverified' || attempt.state === 'recovery-required',
+      recoveryRequired: attempt.state === 'unverified' || attempt.state === 'recovery-required' ||
+        unresolvedKeys.has(`managed-rollout:${runtime.id}:${target.installId}:${target.correlationId}`),
       reasons
     }
   })
@@ -899,8 +909,15 @@ export function createManagedRolloutProvider(
     facts: JournalEvidenceFact[] = [],
     unresolved?: UnresolvedFenceChange
   ): JournalAck => {
-    const current = currentSnapshot(runtime.id)
-    const next = snapshotFromState(runtime, state, current)
+    const record = currentRecord(runtime.id)
+    const current = validateRolloutSnapshot(record.snapshot)
+    const unresolvedKeys = new Set(record.unresolved.map(item => item.key))
+
+    for (const key of unresolved?.remove ?? []) {unresolvedKeys.delete(key)}
+
+    for (const item of unresolved?.add ?? []) {unresolvedKeys.add(item.key)}
+
+    const next = snapshotFromState(runtime, state, current, unresolvedKeys)
 
     const ack = deps.journal.record({
       id: runtime.id,
@@ -1029,6 +1046,7 @@ export function createManagedRolloutProvider(
       observations: new Map<string, ObservationState>(restoredAttempts
         .filter(attempt => attempt.receipt || attempt.health)
         .map(attempt => [attempt.identity.installId, { receipt: attempt.receipt, health: attempt.health }])),
+      reprobeObservations: new Map(),
       launches: new Map<string, LaunchPromise>(),
       coordinator: null as unknown as Coordinator,
       snapshot: restored?.snapshot ?? initialSnapshot(id, plan, isoNow(now), new Map([...targets.values()].map(target => [target.installId, target.correlationId]))),
@@ -1103,13 +1121,7 @@ export function createManagedRolloutProvider(
           runtime.handoffBarrier?.resolve()
           runtime.handoffBarrier = null
 
-          const tracked = Promise.resolve(request).then(result => {
-            if (!result.ok || !result.updateOk || !result.restoreOk) {
-              throw new Error(`managed-update-${result.outcome}`)
-            }
-
-            return result
-          })
+          const tracked = Promise.resolve(request)
 
           runtime.launches.set(authorization.installId, tracked)
 
@@ -1120,7 +1132,25 @@ export function createManagedRolloutProvider(
       processGeneration: deps.processGeneration,
       nowMono,
       recovery: deps.observe.reprobe && deps.observe.recover ? {
-        reprobe: authorization => deps.observe.reprobe!(authorization),
+        reprobe: async authorization => {
+          runtime.reprobeObservations.delete(authorization.installId)
+          const observation = await deps.observe.reprobe!(authorization)
+
+          if (observation.correlationId !== authorization.correlationId) {return observation}
+
+          const requiredScopeIds = runtime.plan.rows.find(row => row.installId === authorization.installId)?.requiredScopeIds ?? []
+          const receiptCorrelated = observation.receipt?.correlationId === authorization.correlationId
+          const successProved = SUCCESSFUL_OUTCOMES.has(observation.outcome) && observation.recoveryRecordClear === true &&
+            receiptCorrelated && successfulHealth(observation.health ?? null, authorization, requiredScopeIds)
+          const failureProved = (observation.outcome === 'failed' || observation.outcome === 'refused') && receiptCorrelated
+          const result = observation.terminal && !successProved && !failureProved
+            ? { ...observation, outcome: 'unverified' as const, terminal: false, receipt: null, health: null }
+            : observation
+
+          runtime.reprobeObservations.set(authorization.installId, result)
+
+          return result
+        },
         recover: authorization => deps.observe.recover!(authorization)
       } : undefined
     }
@@ -1191,7 +1221,22 @@ export function createManagedRolloutProvider(
         }
 
         const state = restoredState(snapshot, metadata, targets)
-        runtimes.set(summary.id, makeRuntime(summary.id, metadata.plan, { snapshot, state }))
+        const runtime = makeRuntime(summary.id, metadata.plan, { snapshot, state })
+
+        if (
+          snapshot.phase !== state.phase || snapshot.continuationRequired !== state.continuationRequired ||
+          snapshot.attempts.some(attempt => targetPhase(state.attempts[attempt.identity.installId].state) !== attempt.phase)
+        ) {
+          persistNow(
+            runtime,
+            `restart-reconcile:${snapshot.revision}`,
+            { kind: 'restart-reconcile', previousRevision: snapshot.revision },
+            state,
+            [event(state.phase === 'attention-required' ? 'attention-required' : 'pause-requested', null, 'process-restart-reconciliation')]
+          )
+        }
+
+        runtimes.set(summary.id, runtime)
       } catch {
         // A record without complete recovery metadata remains visible in the
         // journal but never receives a guessed in-process coordinator.
@@ -1261,6 +1306,12 @@ export function createManagedRolloutProvider(
 
       for (const installId of runtime.plan.waves[wave]) {
         if (runtime.coordinator.snapshot.phase !== 'running') {return}
+        const restoredAttempt = runtime.coordinator.snapshot.attempts[installId]
+
+        if (restoredAttempt?.state === 'updated' || restoredAttempt?.state === 'already-current' || restoredAttempt?.state === 'skipped') {continue}
+
+        if (restoredAttempt?.state !== 'none') {return}
+
         const capacity = currentCapabilities()
 
         if (!capacity.available || runtime.plan.rows.length > capacity.maxInstallations) {
@@ -1290,14 +1341,19 @@ export function createManagedRolloutProvider(
 
         try {
           const update = await launch
+          if (update.correlationId !== authorization.correlationId) {throw new Error('update-correlation-mismatch')}
           const observation = await deps.observe.observe({ authorization, update })
 
           if (observation.authorization && !sameAuthorization(observation.authorization, authorization)) {throw new Error('observation-correlation-mismatch')}
 
           if (observation.receipt && observation.receipt.correlationId !== authorization.correlationId) {throw new Error('observation-correlation-mismatch')}
+          if ((observation.outcome === 'failed' || observation.outcome === 'refused') && !observation.receipt) {
+            throw new Error('terminal-observation-receipt-missing')
+          }
           const requiredScopeIds = runtime.plan.rows.find(row => row.installId === installId)?.requiredScopeIds ?? []
 
           if (SUCCESSFUL_OUTCOMES.has(observation.outcome) && (
+            !update.ok || !update.updateOk || !update.restoreOk ||
             !observation.receipt || observation.receipt.correlationId !== authorization.correlationId ||
             !successfulHealth(observation.health, authorization, requiredScopeIds)
           )) {
@@ -1311,11 +1367,11 @@ export function createManagedRolloutProvider(
           const facts = observation.receipt
             ? [
                 fact('terminal-receipt', runtime.id, installId, authorization.correlationId, isoNow(now), 'managed SSH service returned a correlated receipt'),
-                ...(observation.outcome === 'unverified' ? [] : [fact('settlement-validated', runtime.id, installId, authorization.correlationId, isoNow(now), 'trusted observation validated update and restoration')])
+                ...(SUCCESSFUL_OUTCOMES.has(observation.outcome) ? [fact('settlement-validated', runtime.id, installId, authorization.correlationId, isoNow(now), 'trusted observation validated update and restoration')] : [])
               ]
             : []
 
-          const unresolved: UnresolvedFenceChange | undefined = observation.outcome === 'unverified'
+          const unresolved: UnresolvedFenceChange | undefined = !SUCCESSFUL_OUTCOMES.has(observation.outcome)
             ? undefined
             : { remove: [fence(runtime.id, installId, authorization.correlationId, isoNow(now)).key] }
 
@@ -1528,7 +1584,59 @@ export function createManagedRolloutProvider(
       }
 
       const reason = transition.reason ?? null
-      const ack = persistNow(runtime, parsed.requestId, payload, transition.state, [event(commandEventKind(parsed.action, transition.ok), parsed.installId, reason, 'local-operator')])
+      const facts: JournalEvidenceFact[] = []
+      let unresolved: UnresolvedFenceChange | undefined
+
+      if (transition.ok && parsed.installId && parsed.action === 'reprobe') {
+        const observation = runtime.reprobeObservations.get(parsed.installId)
+        const authorization = runtime.authorizations.get(parsed.installId)
+
+        if (
+          observation?.terminal && observation.receipt && authorization &&
+          observation.correlationId === authorization.correlationId &&
+          observation.receipt.correlationId === authorization.correlationId &&
+          transition.state.attempts[parsed.installId]?.state === observation.outcome
+        ) {
+          runtime.observations.set(parsed.installId, {
+            receipt: observation.receipt,
+            health: observation.health ?? null
+          })
+          facts.push(fact('terminal-receipt', runtime.id, parsed.installId, authorization.correlationId, isoNow(now), 'read-only recheck found the correlated terminal receipt'))
+
+          if (SUCCESSFUL_OUTCOMES.has(observation.outcome) && observation.recoveryRecordClear === true) {
+            const ownedFence = liveRecord.unresolved.find(item =>
+              item.key === `managed-rollout:${runtime.id}:${parsed.installId}:${authorization.correlationId}` &&
+              item.rolloutId === runtime.id && item.installId === parsed.installId &&
+              item.correlationId === authorization.correlationId
+            )
+
+            if (ownedFence) {
+              facts.push(fact('settlement-validated', runtime.id, parsed.installId, authorization.correlationId, isoNow(now), 'read-only recheck proved correlated healthy completion and original recovery-record clearance'))
+              unresolved = { remove: [ownedFence.key] }
+            }
+          }
+        }
+      }
+
+      if (transition.ok && parsed.installId && parsed.action === 'recover') {
+        const authorization = runtime.authorizations.get(parsed.installId)
+        const ownedFence = authorization && liveRecord.unresolved.find(item =>
+          item.key === `managed-rollout:${runtime.id}:${parsed.installId}:${authorization.correlationId}` &&
+          item.rolloutId === runtime.id && item.installId === parsed.installId &&
+          item.correlationId === authorization.correlationId
+        )
+
+        if (ownedFence) {
+          facts.push(fact('settlement-validated', runtime.id, parsed.installId, authorization.correlationId, isoNow(now), 'correlated recovery cleared the original durable scope obligation'))
+          unresolved = { remove: [ownedFence.key] }
+        }
+      }
+
+      const ack = persistNow(
+        runtime, parsed.requestId, payload, transition.state,
+        [event(commandEventKind(parsed.action, transition.ok), parsed.installId, reason, 'local-operator')],
+        facts, unresolved
+      )
 
       const result = {
         ok: transition.ok,

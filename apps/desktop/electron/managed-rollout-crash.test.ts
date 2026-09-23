@@ -78,6 +78,21 @@ test('recovery requires exact correlation and positive clearance while preservin
   assert.equal(restored.snapshot.attempts.canary.state, 'unverified')
 })
 
+test.each(['failed', 'refused', 'updated', 'already-current'] as const)(
+  'recovery after a %s terminal observation can clear original scope without changing outcome or dispatching again',
+  async outcome => {
+    const calls: string[] = []
+    const state = reduceManagedRollout(authorizedState(), { kind: 'terminal', installId: 'canary', outcome }).state
+    const restored = coordinator(state, calls)
+
+    const result = await restored.recover('canary')
+
+    assert.equal(result.ok, true)
+    assert.equal(restored.snapshot.attempts.canary.state, outcome)
+    assert.deepEqual(calls, [])
+  }
+)
+
 test('reconciliation cannot declare an unresolved committed attempt completed', () => {
   let state = authorizedState()
   state = reduceManagedRollout(state, { kind: 'restart' }).state

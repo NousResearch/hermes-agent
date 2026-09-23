@@ -743,7 +743,7 @@ export function createManagedRolloutCoordinator(
     admit(async () => {
       const attempt = state.attempts[installId]
 
-      if (!attempt || !['unverified', 'recovery-required'].includes(attempt.state)) {
+      if (!attempt || !['unverified', 'recovery-required', 'failed', 'refused', 'updated', 'already-current'].includes(attempt.state)) {
         return refuse(state, 'recovery-not-admissible')
       }
 

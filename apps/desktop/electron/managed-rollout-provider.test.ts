@@ -448,10 +448,110 @@ test('runs an injected trusted rollout without exposing the launch capability', 
   }
 })
 
-test('hydrates an active journal record in a fresh provider and reprobes without redispatch', async () => {
+test.each([
+  { serviceOutcome: 'update-failed' as const, observedOutcome: 'failed' as const },
+  { serviceOutcome: 'refused' as const, observedOutcome: 'refused' as const }
+])('records a correlated $observedOutcome terminal result instead of losing it to an unverified launch', async ({ serviceOutcome, observedOutcome }) => {
+  const { dependencies, journalDirectory } = makeDependencies()
+  let observations = 0
+  dependencies.managedSshUpdateService = {
+    ...dependencies.managedSshUpdateService,
+    requestCoordinator: (connectionId, options) => ({
+      admitted: true,
+      operation: Promise.resolve({
+        connectionId: String(connectionId), correlationId: options?.correlationId || '',
+        ok: false, updateOk: false, restoreOk: true, outcome: serviceOutcome,
+        exitCode: serviceOutcome === 'refused' ? null : 1,
+        receipt: {
+          correlationId: options?.correlationId || '', outcome: observedOutcome,
+          startedAt: NOW_ISO, finishedAt: NOW_ISO, preSha: ADMITTED_SHA, postSha: ADMITTED_SHA
+        },
+        scopes: []
+      })
+    })
+  }
+  dependencies.observe = {
+    observe: async ({ authorization, update }) => {
+      observations += 1
+      return { authorization, outcome: observedOutcome, receipt: update.receipt, health: null }
+    },
+    reprobe: async authorization => ({ correlationId: authorization.correlationId, outcome: 'unverified', terminal: false }),
+    recover: async authorization => ({ correlationId: authorization.correlationId, clearanceProved: true })
+  }
+
+  try {
+    const provider = createManagedRolloutProvider(dependencies)
+    await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null })
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision, targetResolutionId: RESOLUTION.id,
+      waves: [[INSTALL_ID]], concurrency: 1, promotionPolicy: 'auto-if-healthy', retryOf: null
+    }) as { token: string; requestId: string }
+    const started = await provider.start(preflight) as { id: string }
+    await provider.waitForIdle()
+
+    const record = dependencies.journal.read(started.id)
+    assert.equal(observations, 1)
+    assert.equal(record.snapshot.phase, 'attention-required')
+    assert.equal((record.snapshot.attempts[0] as any).phase, observedOutcome)
+    assert.equal(record.unresolved.length, 1)
+    assert.equal(record.facts.some(item => item.kind === 'settlement-validated'), false)
+
+    const recovered = await provider.command({
+      id: started.id, expectedRevision: record.snapshot.revision,
+      requestId: crypto.randomUUID(), action: 'recover', kind: 'recover',
+      installId: INSTALL_ID, reason: null, promotionPolicy: null
+    } as any) as Record<string, unknown>
+    assert.equal(recovered.ok, true)
+    const settled = dependencies.journal.read(started.id)
+    assert.equal((settled.snapshot.attempts[0] as any).phase, observedOutcome)
+    assert.equal(settled.unresolved.length, 0)
+    assert.ok(settled.facts.some(item => item.kind === 'settlement-validated'))
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('keeps a missing terminal receipt unverified after a failed managed update', async () => {
+  const { dependencies, journalDirectory } = makeDependencies()
+  dependencies.managedSshUpdateService = {
+    ...dependencies.managedSshUpdateService,
+    requestCoordinator: (connectionId, options) => ({
+      admitted: true,
+      operation: Promise.resolve({
+        connectionId: String(connectionId), correlationId: options?.correlationId || '',
+        ok: false, updateOk: false, restoreOk: true, outcome: 'update-failed',
+        exitCode: 1, receipt: null, scopes: []
+      })
+    })
+  }
+  dependencies.observe = {
+    observe: async ({ authorization }) => ({ authorization, outcome: 'failed', receipt: null, health: null })
+  }
+
+  try {
+    const provider = createManagedRolloutProvider(dependencies)
+    await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null })
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision, targetResolutionId: RESOLUTION.id,
+      waves: [[INSTALL_ID]], concurrency: 1, promotionPolicy: 'auto-if-healthy', retryOf: null
+    }) as { token: string; requestId: string }
+    const started = await provider.start(preflight) as { id: string }
+    await provider.waitForIdle()
+
+    const record = dependencies.journal.read(started.id)
+    assert.equal((record.snapshot.attempts[0] as any).phase, 'unverified')
+    assert.equal(record.unresolved.length, 1)
+    assert.equal(record.facts.some(item => item.kind === 'settlement-validated'), false)
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('hydrates an authorized running journal record as recoverable unknown without redispatch', async () => {
   const { dependencies, journalDirectory, launchCalls } = makeDependencies()
   const rolloutId = '33333333-3333-4333-8333-333333333333'
   const correlationId = '44444444-4444-4444-8444-444444444444'
+  let clearanceMode: 'missing' | 'foreign' | 'proved' = 'missing'
 
   try {
     dependencies.journal.create({
@@ -464,12 +564,12 @@ test('hydrates an active journal record in a fresh provider and reprobes without
       retryOf: null,
       archivedAt: null,
       target: TARGET,
-      phase: 'attention-required',
+      phase: 'running',
       activeWave: 0,
       concurrency: 1,
       promotionPolicy: 'auto-if-healthy',
       canaryApproved: false,
-      continuationRequired: true,
+      continuationRequired: false,
       attempts: [{
         identity: {
           connectionId: CONNECTION_ID,
@@ -483,14 +583,14 @@ test('hydrates an active journal record in a fresh provider and reprobes without
         },
         correlationId,
         wave: 0,
-        phase: 'awaiting-receipt',
+        phase: 'updating',
         launchState: 'authorized',
         requiredScopeIds: ['scope-main'],
         skipReason: null,
         reprobes: 0,
         receipt: null,
         health: null,
-        recoveryRequired: true,
+        recoveryRequired: false,
         reasons: []
       }],
       eventCount: 0
@@ -506,7 +606,12 @@ test('hydrates an active journal record in a fresh provider and reprobes without
         stopRequested: false,
         plan: BASE_PLAN
       },
-      events: []
+      events: [],
+      unresolved: [{
+        key: `managed-rollout:${rolloutId}:${INSTALL_ID}:${correlationId}`,
+        rolloutId, installId: INSTALL_ID, correlationId,
+        reason: 'remote-launch-settlement-required', recordedAt: NOW_ISO
+      }]
     })
 
     const freshJournal = createManagedRolloutJournal({ directory: journalDirectory, clock: () => NOW_ISO })
@@ -519,9 +624,18 @@ test('hydrates an active journal record in a fresh provider and reprobes without
         reprobe: async authorization => ({
           correlationId: authorization.correlationId,
           outcome: 'updated' as const,
-          terminal: true
+          terminal: true,
+          recoveryRecordClear: true,
+          receipt: {
+            correlationId: authorization.correlationId, outcome: 'updated',
+            startedAt: NOW_ISO, finishedAt: NOW_ISO, preSha: ADMITTED_SHA, postSha: TARGET_SHA
+          },
+          health: health()
         }),
-        recover: async authorization => ({ correlationId: authorization.correlationId, clearanceProved: true })
+        recover: async authorization => ({
+          correlationId: clearanceMode === 'foreign' ? 'foreign-correlation' : authorization.correlationId,
+          clearanceProved: clearanceMode !== 'missing'
+        })
       }
     }
 
@@ -529,10 +643,46 @@ test('hydrates an active journal record in a fresh provider and reprobes without
     const before = await provider.get(rolloutId) as Record<string, unknown>
 
     assert.equal(before.phase, 'attention-required')
+    assert.equal((before.attempts as Array<Record<string, unknown>>)[0].phase, 'unverified')
+    assert.equal((before.attempts as Array<Record<string, unknown>>)[0].recoveryRequired, true)
+    assert.equal(freshJournal.read(rolloutId).unresolved.length, 1)
+    assert.equal(launchCalls.length, 0)
+
+    let revision = before.revision as number
+
+    for (const [mode, requestId] of [
+      ['missing', '77777777-7777-4777-8777-777777777777'],
+      ['foreign', '88888888-8888-4888-8888-888888888888']
+    ] as const) {
+      clearanceMode = mode
+      const refused = await provider.command({
+        id: rolloutId, expectedRevision: revision, requestId,
+        action: 'recover', kind: 'recover', installId: INSTALL_ID,
+        reason: null, promotionPolicy: null
+      } as any) as Record<string, unknown>
+      assert.equal(refused.ok, false)
+      assert.equal(freshJournal.read(rolloutId).unresolved.length, 1)
+      assert.equal(freshJournal.read(rolloutId).facts.some(item => item.kind === 'settlement-validated'), false)
+      revision = refused.revision as number
+    }
+
+    clearanceMode = 'proved'
+    const recovered = await provider.command({
+      id: rolloutId, expectedRevision: revision,
+      requestId: '99999999-9999-4999-8999-999999999999',
+      action: 'recover', kind: 'recover', installId: INSTALL_ID,
+      reason: null, promotionPolicy: null
+    } as any)
+    assert.equal((recovered as Record<string, unknown>).ok, true)
+    assert.equal(freshJournal.read(rolloutId).unresolved.length, 0)
+    assert.ok(freshJournal.read(rolloutId).facts.some(item => item.kind === 'settlement-validated'))
+
+    const afterRecovery = await provider.get(rolloutId) as Record<string, unknown>
+    assert.equal((afterRecovery.attempts as Array<Record<string, unknown>>)[0].phase, 'unverified')
 
     const result = await provider.command({
       id: rolloutId,
-      expectedRevision: before.revision as number,
+      expectedRevision: afterRecovery.revision as number,
       requestId: '55555555-5555-4555-8555-555555555555',
       action: 'reprobe',
       kind: 'reprobe',

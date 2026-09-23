@@ -2312,6 +2312,48 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         server._wake_owner_surface = ""
 
 
+def test_wake_start_reports_restart_required_as_structured_refusal(monkeypatch):
+    """A successful wake-word install that still cannot import must return a structured refusal."""
+    from tools import wake_word
+    from tools.lazy_deps import FeatureUnavailable
+
+    config = {"enabled": True, "phrase": "hey hermes", "surface": "auto",
+              "start_new_session": True}
+    monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: dict(config))
+    monkeypatch.setattr(wake_word, "check_wake_word_requirements", lambda _cfg: {
+        "available": True,
+        "phrase": "hey hermes",
+        "provider": "test",
+        "hint": "",
+    })
+    def fake_start_listening(callback, *, owner, config, external_audio=False):
+        raise FeatureUnavailable(
+            "wake.openwakeword", ("openwakeword==0.6.0",),
+            "install reported success but packages still not importable (may require Python restart)",
+            restart_required=True,
+        )
+
+    monkeypatch.setattr(wake_word, "start_listening", fake_start_listening)
+    monkeypatch.setattr(wake_word, "owns_listener", lambda owner: False)
+
+    transport = types.SimpleNamespace(_closed=False)
+    server._wake_owner_transport = None
+    server._wake_owner_surface = ""
+    try:
+        result = _dispatch_sync({
+            "id": "wake-restart-1",
+            "method": "wake.start",
+            "params": {"surface": "gui"},
+        }, transport=transport)
+
+        assert result["result"]["started"] is False
+        assert result["result"]["reason"] == "restart_required"
+        assert "restart" in result["result"]["hint"].lower()
+    finally:
+        server._wake_owner_transport = None
+        server._wake_owner_surface = ""
+
+
 def test_wake_status_reports_configured_input_device_and_windows_silence_hint(monkeypatch):
     from tools import wake_word
 

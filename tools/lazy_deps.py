@@ -229,14 +229,18 @@ _SAFE_SPEC = re.compile(rf"^{_NAME_RE}(?:\[[A-Za-z0-9_,\-]+\])?(?:[<>=!~]=?[A-Za
 
 
 class FeatureUnavailable(RuntimeError):
-    """A lazily-installable feature is missing and cannot be made available (installs disabled or failed)."""
+    """A lazily-installable feature is missing and cannot be made available (installs disabled or
+    failed). ``restart_required`` is set when an install in this same process reported
+    success but the packages still didn't import — the fix is a process restart, not another
+    install attempt, so callers should stop retrying and surface that explicitly."""
 
-    def __init__(self, feature: str, missing: tuple[str, ...], reason: str):
-        self.feature, self.missing, self.reason = feature, missing, reason
+    def __init__(self, feature: str, missing: tuple[str, ...], reason: str, *, restart_required: bool = False):
+        self.feature, self.missing, self.reason, self.restart_required = feature, missing, reason, restart_required
         spec_list = " ".join(repr(s) for s in missing)
-        super().__init__(
-            f"Feature {feature!r} unavailable: {reason}. "
-            f"To enable manually: uv pip install {spec_list}  (or: pip install {spec_list}).")
+        message = f"Feature {feature!r} unavailable: {reason}."
+        if not restart_required:
+            message += f" To enable manually: uv pip install {spec_list}  (or: pip install {spec_list})."
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -653,6 +657,13 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
                 constraints.unlink()
 
 
+# Features that installed successfully in THIS process but were still not importable afterward
+# (stale `sys.path` / `importlib.metadata` caches that only a real restart clears — see
+# `_invalidate_import_caches`'s own limits). Keyed to skip repeat installer runs; a fresh
+# process starts with an empty set and re-probes for real.
+_restart_required: set[str] = set()
+
+
 def feature_missing(feature: str) -> tuple[str, ...]:
     """Return the subset of specs for ``feature`` not currently installed."""
     if feature not in LAZY_DEPS:
@@ -680,7 +691,16 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         raise FeatureUnavailable(feature, (), f"feature {feature!r} not in LAZY_DEPS allowlist")
     missing = feature_missing(feature)
     if not missing:
+        _restart_required.discard(feature)
         return
+    if feature in _restart_required:
+        # Already proved un-installable in this process; installing again would just repeat the
+        # exact same outcome (and, for wake.start's auto-arm retries, hammer pip every call).
+        raise FeatureUnavailable(
+            feature, missing,
+            "install already completed in this process but packages are still not importable; "
+            "restart Hermes to finish enabling this feature",
+            restart_required=True)
     if unsupported := _unsupported_feature_reason(feature):
         raise FeatureUnavailable(feature, missing, unsupported)
     # Package-manager installs (NixOS etc.) have read-only site-packages: fail fast instead of burning
@@ -716,7 +736,11 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         raise FeatureUnavailable(feature, missing, f"pip install failed: {snippet or 'no error output'}")
     _invalidate_import_caches()
     if still_missing := feature_missing(feature):
-        raise FeatureUnavailable(feature, still_missing, "install reported success but packages still not importable (may require Python restart)")
+        _restart_required.add(feature)
+        raise FeatureUnavailable(
+            feature, still_missing,
+            "install reported success but packages still not importable (may require Python restart)",
+            restart_required=True)
     logger.info("Lazy install complete for feature %r", feature)
 
 

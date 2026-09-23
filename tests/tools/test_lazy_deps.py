@@ -146,6 +146,7 @@ class TestEnsure:
     def test_install_succeeds_but_still_missing_raises(self, monkeypatch):
         # Pip says success but the package still isn't importable
         # (e.g. site-packages caching, wrong python). Surface this.
+        monkeypatch.setattr(ld, "_restart_required", set())
         monkeypatch.setitem(ld.LAZY_DEPS, "test.cache", ("zzzfake>=1",))
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
@@ -153,8 +154,35 @@ class TestEnsure:
             ld, "_venv_pip_install",
             lambda specs, **kw: ld._InstallResult(True, "ok", ""),
         )
-        with pytest.raises(ld.FeatureUnavailable, match="still not importable"):
+        with pytest.raises(ld.FeatureUnavailable, match="still not importable") as exc_info:
             ld.ensure("test.cache", prompt=False)
+        assert exc_info.value.restart_required is True
+
+    def test_restart_required_short_circuits_repeat_ensure_without_reinstalling(self, monkeypatch):
+        # Once a process has seen "install succeeded, still not importable" for a feature,
+        # a real Python restart is the only fix — repeat ensure() calls in the SAME process
+        # (e.g. desktop auto-arm retrying wake.start) must not re-run the installer.
+        monkeypatch.setattr(ld, "_restart_required", set())
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.restart", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        install_calls = []
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: install_calls.append(specs) or ld._InstallResult(True, "ok", ""),
+        )
+
+        with pytest.raises(ld.FeatureUnavailable):
+            ld.ensure("test.restart", prompt=False)
+        assert len(install_calls) == 1
+
+        with pytest.raises(ld.FeatureUnavailable) as exc_info:
+            ld.ensure("test.restart", prompt=False)
+
+        assert len(install_calls) == 1, "installer must not run again in the same process"
+        assert exc_info.value.restart_required is True
+        assert "restart" in exc_info.value.reason.lower()
+        assert "pip install" not in str(exc_info.value).lower()
 
 
 # ---------------------------------------------------------------------------

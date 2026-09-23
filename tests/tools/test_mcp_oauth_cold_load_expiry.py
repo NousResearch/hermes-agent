@@ -210,6 +210,117 @@ class TestGetTokensReconstructsExpiresIn:
         )
 
 
+class TestGetTokensCorruptExpiryMetadata:
+    """Corrupt ``expires_at``/``expires_in`` values must never escape ``get_tokens``.
+
+    ``_rebase_expires_in`` reads untrusted file JSON: a non-numeric
+    ``expires_at`` raised TypeError outside ``_load_model``'s try-block, and
+    non-finite values raised OverflowError, which neither the fixup guard nor
+    the model-load ``except`` covered. Corrupt bookkeeping must not discard the
+    grant: the access token is clamped to ``expires_in=0`` (the established
+    past-due marker) so the stored refresh token drives a refresh and the next
+    ``set_tokens`` self-heals the file.
+    """
+
+    def _storage_with_payload(self, tmp_path, monkeypatch, payload: dict):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_oauth import HermesTokenStorage
+
+        storage = HermesTokenStorage("srv")
+        path = storage._tokens_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload))
+        return storage
+
+    @pytest.mark.parametrize(
+        "expires_at",
+        ["soon", {"x": 1}, [1], float("nan"), float("inf"), 1e400],
+    )
+    def test_corrupt_expires_at_expires_token_not_crash(
+        self, tmp_path, monkeypatch, expires_at
+    ):
+        """Non-numeric or non-finite expires_at must clamp to expires_in=0."""
+        storage = self._storage_with_payload(
+            tmp_path,
+            monkeypatch,
+            {
+                "access_token": "a",
+                "refresh_token": "r",
+                "expires_at": expires_at,
+            },
+        )
+        reloaded = asyncio.run(storage.get_tokens())
+        assert reloaded is not None
+        assert reloaded.expires_in == 0
+        assert reloaded.refresh_token == "r", (
+            "Corrupt expiry bookkeeping must not discard the refresh token"
+        )
+
+    def test_corrupt_expires_at_with_no_expires_in(
+        self, tmp_path, monkeypatch
+    ):
+        """expires_at corrupt + no expires_in: still loadable, marked expired."""
+        storage = self._storage_with_payload(
+            tmp_path,
+            monkeypatch,
+            {"access_token": "a", "refresh_token": "r", "expires_at": "later"},
+        )
+        reloaded = asyncio.run(storage.get_tokens())
+        assert reloaded is not None
+        assert reloaded.expires_in == 0
+
+    @pytest.mark.parametrize("expires_in", ["x", 1e400, float("inf")])
+    def test_corrupt_expires_in_ignored_as_corrupt_file(
+        self, tmp_path, monkeypatch, expires_in
+    ):
+        """A corrupt SDK field (expires_in) fails validation -> file ignored."""
+        storage = self._storage_with_payload(
+            tmp_path,
+            monkeypatch,
+            {"access_token": "a", "refresh_token": "r", "expires_in": expires_in},
+        )
+        assert asyncio.run(storage.get_tokens()) is None
+
+    def test_valid_expires_at_still_rebases(self, tmp_path, monkeypatch):
+        """Control: a healthy expires_at still produces remaining TTL."""
+        storage = self._storage_with_payload(
+            tmp_path,
+            monkeypatch,
+            {
+                "access_token": "a",
+                "refresh_token": "r",
+                "expires_at": time.time() + 3600,
+            },
+        )
+        reloaded = asyncio.run(storage.get_tokens())
+        assert reloaded is not None
+        assert 3500 < reloaded.expires_in <= 3600
+
+    def test_set_tokens_huge_expires_in_does_not_crash(
+        self, tmp_path, monkeypatch
+    ):
+        """``time.time() + int(10**400)`` overflows float; persistence must skip
+        the bookkeeping field rather than fail the write."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from mcp.shared.auth import OAuthToken
+
+        from tools.mcp_oauth import HermesTokenStorage
+
+        storage = HermesTokenStorage("srv")
+        asyncio.run(
+            storage.set_tokens(
+                OAuthToken(
+                    access_token="a",
+                    token_type="Bearer",
+                    expires_in=10**400,
+                    refresh_token="r",
+                )
+            )
+        )
+        on_disk = json.loads(storage._tokens_path().read_text())
+        assert on_disk["access_token"] == "a"
+
+
 # ---------------------------------------------------------------------------
 # HermesMCPOAuthProvider._initialize — seed token_expiry_time
 # ---------------------------------------------------------------------------
@@ -553,3 +664,34 @@ async def test_initialize_skips_prefetch_when_no_tokens(tmp_path, monkeypatch):
     assert calls == [], (
         f"Pre-flight must not fire when no tokens are stored, but got {calls}"
     )
+
+
+class TestTokenFileShapeContract:
+    """``_read_json`` declares ``dict | None``: a non-object or undecodable
+    token file must read as absent, not crash the state-mutation helpers that
+    ``.get`` on the result."""
+
+    def _storage_with_raw(self, tmp_path, monkeypatch, raw: bytes):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_oauth import HermesTokenStorage
+
+        storage = HermesTokenStorage("srv")
+        path = storage._tokens_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        return storage
+
+    @pytest.mark.parametrize("raw", [b"[1]", b'"x"', b"5", b"\xff\xfe{}"])
+    def test_get_tokens_treats_non_object_or_undecodable_as_absent(
+        self, tmp_path, monkeypatch, raw
+    ):
+        storage = self._storage_with_raw(tmp_path, monkeypatch, raw)
+        assert asyncio.run(storage.get_tokens()) is None
+
+    @pytest.mark.parametrize("raw", [b"[1]", b'"x"', b"\xff\xfe{}"])
+    def test_stamp_and_strip_survive_non_object_files(
+        self, tmp_path, monkeypatch, raw
+    ):
+        storage = self._storage_with_raw(tmp_path, monkeypatch, raw)
+        storage.stamp_issuer("https://issuer.example")
+        storage.strip_refresh_token()

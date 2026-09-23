@@ -363,13 +363,28 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     kc_valid, file_valid = is_claude_code_token_valid(kc_creds), is_claude_code_token_valid(file_creds)
     if kc_valid != file_valid:
         return kc_creds if kc_valid else file_creds
-    return kc_creds if (kc_creds.get("expiresAt", 0) or 0) >= (file_creds.get("expiresAt", 0) or 0) else file_creds
+    return kc_creds if _expires_at_ms(kc_creds) >= _expires_at_ms(file_creds) else file_creds
+
+
+def _expires_at_ms(creds: Dict[str, Any]) -> float:
+    """``expiresAt`` as a comparable number; anything unreadable sorts oldest (0)."""
+    try:
+        return float(creds.get("expiresAt") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
 
 
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     """Non-expired access token (60s buffer); no expiresAt means managed key → valid if present."""
     expires_at = creds.get("expiresAt", 0)
-    return int(time.time() * 1000) < (expires_at - 60_000) if expires_at else bool(creds.get("accessToken"))
+    if not expires_at:
+        return bool(creds.get("accessToken"))
+    try:
+        return int(time.time() * 1000) < (expires_at - 60_000)
+    except (TypeError, ValueError, OverflowError):
+        # Unreadable expiry cannot be proven fresh: treat as expired so the
+        # credential falls back to refresh rather than being trusted.
+        return False
 
 
 # ── OAuth token endpoint ──
@@ -424,7 +439,10 @@ def _post_oauth_token(
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode())
+                parsed = json.loads(resp.read().decode())
+                if not isinstance(parsed, dict):
+                    raise ValueError(f"Anthropic token {what} response was not a JSON object")
+                return parsed
         except urllib.error.HTTPError as exc:
             last_error = _oauth_http_error(exc, what=what)
             logger.debug("Anthropic token %s failed at %s: %s", what, endpoint, last_error)
@@ -436,12 +454,20 @@ def _post_oauth_token(
     raise last_error or ValueError(f"Anthropic token {what} failed")
 
 
+def _expires_in_ms(result: Dict[str, Any]) -> int:
+    """``expires_in`` seconds -> ms; an unreadable value falls back to the documented default."""
+    try:
+        return int(result.get("expires_in", 3600)) * 1000
+    except (TypeError, ValueError, OverflowError):
+        return 3600 * 1000
+
+
 def _oauth_token_state(result: Dict[str, Any], *, fallback_refresh_token: str = "") -> Dict[str, Any]:
     """Token-endpoint JSON -> ``{access_token, refresh_token, expires_at_ms}`` (expires_in defaults to 3600s)."""
     return {
         "access_token": result.get("access_token", ""),
         "refresh_token": result.get("refresh_token", fallback_refresh_token),
-        "expires_at_ms": int(time.time() * 1000) + (result.get("expires_in", 3600) * 1000),
+        "expires_at_ms": int(time.time() * 1000) + _expires_in_ms(result),
     }
 
 
@@ -475,7 +501,7 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
             current = read_claude_code_credentials() or {}
             current_token = current.get("accessToken", "")
             if (current_token and current_token != creds.get("accessToken", "")
-                    and (current.get("expiresAt", 0) or 0) > 0 and is_claude_code_token_valid(current)):
+                    and _expires_at_ms(current) > 0 and is_claude_code_token_valid(current)):
                 logger.debug("Adopted Claude Code's already-refreshed OAuth token")
                 return current_token
 

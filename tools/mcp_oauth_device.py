@@ -135,7 +135,10 @@ async def _register(client, provider, cfg):
 
 
 def _positive_seconds(value, label):
-    value = float(value)
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise RuntimeError(f"Device authorization has invalid {label}") from None
     if not math.isfinite(value) or value <= 0:
         raise RuntimeError(f"Device authorization has invalid {label}")
     return value

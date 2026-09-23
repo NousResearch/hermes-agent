@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -452,3 +453,20 @@ class TestConnectorTokenPath:
         assert token and token != _jwt(exp=1)
         assert _load_auth_store()["providers"]["nous"]["anon_token"] != first["anon_token"]
         assert portal.minted == 2
+
+
+class TestApplyExchangeCorruptExpiry:
+    """NAS exchange fields are server-supplied: a corrupt ``expires_in`` or a
+    JWT ``exp`` that overflows ``fromtimestamp`` must fall back to the 900s
+    default rather than crash the state write."""
+
+    @pytest.mark.parametrize("expires_in", ["x", 10**400])
+    def test_corrupt_expires_in_falls_back_to_default(self, expires_in):
+        from hermes_cli.anon_auth import apply_exchange_to_state
+
+        state: dict = {}
+        apply_exchange_to_state(state, {"access_token": "not-a-jwt",
+                                        "expires_in": expires_in})
+        assert state["access_token"] == "not-a-jwt"
+        expires_at = datetime.fromisoformat(state["expires_at"])
+        assert expires_at is not None

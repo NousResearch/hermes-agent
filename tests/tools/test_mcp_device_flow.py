@@ -38,3 +38,28 @@ def test_device_login_failure_does_not_persist_or_disclose_credentials(mode):
     assert "Authentication failed" in result["output"], result
     assert "fixture-device-secret" not in result["output"], result
     assert "Authenticated" not in result["output"], result
+
+
+class TestPositiveSeconds:
+    """``_positive_seconds`` validates server-supplied interval/expiry fields;
+    a non-numeric value must raise the intended RuntimeError, not a raw
+    TypeError/ValueError from ``float()``."""
+
+    @pytest.mark.parametrize("bad", ["x", {"a": 1}, [1], None, 10**400])
+    def test_non_numeric_raises_runtime_error(self, bad):
+        from tools.mcp_oauth_device import _positive_seconds
+
+        with pytest.raises(RuntimeError, match="invalid interval"):
+            _positive_seconds(bad, "interval")
+
+    @pytest.mark.parametrize("bad", [0, -5, float("nan"), float("inf")])
+    def test_non_positive_or_non_finite_raises(self, bad):
+        from tools.mcp_oauth_device import _positive_seconds
+
+        with pytest.raises(RuntimeError, match="invalid expires_in"):
+            _positive_seconds(bad, "expires_in")
+
+    def test_numeric_string_coerces(self):
+        from tools.mcp_oauth_device import _positive_seconds
+
+        assert _positive_seconds("5", "interval") == 5.0

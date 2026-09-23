@@ -473,6 +473,8 @@ class GatewayTopicThreadsMixin:
 
     def _schedule_telegram_group_title_rename(self, source: SessionSource, session_id: str, title: str) -> None:
         """Reuse the final persisted title without spending another model call."""
+        if self._telegram_group_auto_rename_disabled(source):
+            return
         self._schedule_rename_from_title_thread(
             source,
             lambda copied: self._rename_telegram_group_for_session_title(copied, session_id, title),
@@ -499,6 +501,9 @@ class GatewayTopicThreadsMixin:
 
     async def _rename_telegram_group_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:
         if source.platform != Platform.TELEGRAM or source.chat_type not in {"group", "forum"} or not source.chat_id:
+            return
+        # Operator kill-switch, mirroring the topic lane's disable_topic_auto_rename.
+        if self._telegram_group_auto_rename_disabled(source):
             return
         adapter = self._delivery_adapter_for(source)
         bot = getattr(adapter, "_bot", None)
@@ -593,6 +598,14 @@ class GatewayTopicThreadsMixin:
         if platform_cfg is None:
             return False
         return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("disable_topic_auto_rename"))
+
+    def _telegram_group_auto_rename_disabled(self, source: SessionSource) -> bool:
+        """``gateway.platforms.telegram.extra.disable_group_auto_rename``; default False (auto-rename on)."""
+        config = getattr(self, "config", None)
+        platform_cfg = config.platforms.get(source.platform) if config and getattr(config, "platforms", None) else None
+        if platform_cfg is None:
+            return False
+        return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("disable_group_auto_rename"))
 
     async def _rename_telegram_topic_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:
         """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""

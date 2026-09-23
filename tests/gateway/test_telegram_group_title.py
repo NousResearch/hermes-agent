@@ -364,3 +364,25 @@ async def test_filtered_titles_and_rejection_do_not_interrupt_replies(tmp_path, 
     finally:
         bot.release.set()
         db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disabled", [True, False])
+async def test_disable_group_auto_rename_knob(disabled):
+    """extra.disable_group_auto_rename=true suppresses the whole lane; absent/false keeps it on."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    runner.config = SimpleNamespace(platforms={
+        Platform.TELEGRAM: SimpleNamespace(extra={"disable_group_auto_rename": disabled}),
+    })
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _store_session(db, "session-knob", started_at=time.time())
+        callback = _attach(runner, source, "session-knob")
+        await asyncio.to_thread(callback, "Knobbed conversation", "llm")
+        # No _fire here: it waits for a rename, which the disabled lane must never issue.
+        await asyncio.sleep(0.05)
+        assert len(adapter._bot.renames) == (0 if disabled else 1)
+    finally:
+        db.close()

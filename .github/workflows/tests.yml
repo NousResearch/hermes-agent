@@ -46,7 +46,8 @@ jobs:
             tests/hermes_cli/test_postgres_session_readers.py \
             tests/tui_gateway/test_postgres_profile_sessions.py \
             tests/gateway/test_postgres_state_health.py \
-            tests/agent/test_postgres_insights.py
+            tests/agent/test_postgres_insights.py \
+            tests/gateway/test_postgres_delivery_ledger.py
         env:
           HERMES_TEST_POSTGRES: "1"
           HERMES_TEST_WORKERS: "4"

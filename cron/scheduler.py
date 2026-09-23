@@ -2723,8 +2723,7 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            if _launch_external_cron_worker(job):
-                return True
+            handed_off = _launch_external_cron_worker(job)
         except Exception as handoff_error:
             error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
             logger.error("Job '%s': %s", job["id"], error)
@@ -2739,6 +2738,15 @@ def run_one_job(
                 )
             finally:
                 finish_execution(execution_id, success=False, error=error)
+            return True
+        if handed_off:
+            # Outside the try: a bookkeeping error here is not a dispatch failure.
+            try:
+                _record_unknown_worker_outcome(job, adapters=adapters, loop=loop)
+            except Exception as record_err:
+                # Never let bookkeeping mask the completed handoff.
+                logger.error(
+                    "Failed to record unknown worker outcome for job %s: %s", job["id"], record_err)
             return True
     if extra_prompt is None:
         # Gateway-forwarded manual run stamps its prompt on the job via trigger_job; the fire that
@@ -3429,6 +3437,37 @@ def _wait_for_external_cron_worker(
                 stale.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _record_unknown_worker_outcome(job: dict, *, adapters, loop) -> None:
+    """Record a handed-off run whose worker died before recording it (#120328).
+
+    Recovery leaves such an execution ``unknown``, the honest ledger state, but only the worker
+    writes the job's outcome: without this the job kept no last run, no incident, no failure
+    notice, and a stale ``fire_claim``. Goes through the crash-failure path, fenced on the fire
+    claim so a run the worker did record before dying is never marked twice.
+    """
+    execution = get_execution(str(job["execution_id"]))
+    # Only recovery writes ``unknown``; a worker that terminalized its run also recorded it.
+    if not execution or execution.get("status") != "unknown":
+        return
+    claim = job.get("fire_claim")
+    owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    # mark_job_run clears the claim: a worker that recorded the run before dying released it.
+    if not owner or not heartbeat_fire_claim(job["id"], expected_owner=owner):
+        return
+    error = execution["error"]
+    logger.error("Job '%s': restart-safe cron worker died before recording its run: %s", job["id"], error)
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+
+    # get_secret() fails closed outside a scope and delivery adapters resolve credentials.
+    scope_token = set_secret_scope(
+        build_profile_secret_scope(_get_hermes_home()), profile_home=str(_get_hermes_home()))
+    try:
+        delivery_error, _ = _deliver_crash_failure(job, error, adapters=adapters, loop=loop)
+    finally:
+        reset_secret_scope(scope_token)
+    mark_job_run(job["id"], False, error, delivery_error=delivery_error, expected_fire_owner=owner)
 
 
 def _launch_external_cron_worker(job: dict) -> bool:

@@ -9,6 +9,7 @@ import {
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
+import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
@@ -905,6 +906,22 @@ export function useGatewayBoot({
 
     const gateway = adoptedFromHmr ? survivor!.gateway : new HermesGateway()
 
+    // Every socket this window owns (the primary below, every registry
+    // secondary via onEvent) funnels through this one gate before any store
+    // sees the event: two sockets to ONE backend both receive each frame of a
+    // chat they joined, and handled twice a delta doubles the streaming text
+    // (#120005). Keyed by the backend's own (epoch, session, seq) stamp.
+    const eventDedupe = createGatewayEventDedupe()
+
+    const deliverGatewayEvent = (event: GatewayEvent) => {
+      if (!eventDedupe.admit(event)) {
+        return
+      }
+
+      recordSessionEventScope(event)
+      callbacksRef.current.handleGatewayEvent(event)
+    }
+
     callbacksRef.current.onGatewayReady(gateway)
     setPrimaryGateway(gateway, survivor?.profile ?? normalizeProfileKey($activeGatewayProfile.get()))
     // Secondary (background-profile) sockets funnel into the same handler.
@@ -947,10 +964,7 @@ export function useGatewayBoot({
           $activeGatewayProfile.set(key)
         }
       },
-      onEvent: event => {
-        recordSessionEventScope(event)
-        callbacksRef.current.handleGatewayEvent(event)
-      },
+      onEvent: deliverGatewayEvent,
       onActiveConnectionInvalidated: (fallbackProfile, invalidationEpoch) => {
         $activeGatewayProfile.set(fallbackProfile)
         // Bounded like every other getConnection() call in this file (#93454):
@@ -1042,8 +1056,7 @@ export function useGatewayBoot({
       const ownedEvent =
         $connection.get()?.sharedPrimary === true ? stampSecondaryProfileOwner(scopedEvent, sourceProfile) : scopedEvent
 
-      recordSessionEventScope(ownedEvent)
-      callbacksRef.current.handleGatewayEvent(ownedEvent)
+      deliverGatewayEvent(ownedEvent)
     })
 
     // Secondary sockets reach the same handler through the registry's onServerRequest.

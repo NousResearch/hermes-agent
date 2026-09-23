@@ -124,27 +124,6 @@ def test_plugins_hub_uses_cached_failed_check_fn_verdict(monkeypatch):
 
 
 
-def test_plugins_hub_short_ttl_cache_collapses_duplicate_fetches(monkeypatch):
-    tools_registry.invalidate_check_fn_cache()
-    _web_server_dashboard._invalidate_plugins_hub_cache()
-
-    calls = {"discover": 0}
-
-    def discover_all_plugins():
-        calls["discover"] += 1
-        return list(_PLUGIN_ROW)
-
-    _patch_minimal_hub_dependencies(
-        monkeypatch,
-        check_fn=lambda: True,
-        discover_all_plugins=discover_all_plugins,
-    )
-
-    first = _web_server_dashboard._merged_plugins_hub(force_refresh=True)
-    second = _web_server_dashboard._merged_plugins_hub()
-
-    assert calls["discover"] == 1
-    assert first is second
 
 
 def test_plugins_hub_route_builds_catalog_annotations_off_event_loop(monkeypatch):

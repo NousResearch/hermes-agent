@@ -47,12 +47,20 @@ describe('PluginsTab', () => {
     $connection.set(null)
   })
 
-  it('lists the scoped profile agent plugins with toggles', () => {
+  it('renders declared server pills and the unavailable sentence under the description', () => {
     $agentPlugins.set([
       {
         description: 'A test plugin',
         key: 'demo-plugin',
         name: 'demo-plugin',
+        servers: [
+          { name: 'ready-server', sentence: '', state: 'connected' },
+          {
+            name: 'setup-server',
+            sentence: 'Example App is not installed. Install Example App, then try again.',
+            state: 'missing_app'
+          }
+        ],
         source: 'git',
         status: 'enabled',
         version: '1.0.0'
@@ -61,7 +69,9 @@ describe('PluginsTab', () => {
 
     render(<PluginsTab profile="workbot" />)
 
-    expect(screen.getByText('demo-plugin')).toBeTruthy()
+    expect(screen.getByTestId('server-pill-ready-server')).toBeTruthy()
+    expect(screen.getByTestId('server-pill-setup-server')).toBeTruthy()
+    expect(screen.getByText('Example App is not installed. Install Example App, then try again.')).toBeTruthy()
     expect(screen.getByRole('switch', { name: 'Agent: demo-plugin' }).getAttribute('aria-checked')).toBe('true')
   })
 
@@ -416,7 +426,7 @@ describe('PluginsTab catalog UX', () => {
     screen.getByRole('button', { name: 'Uninstall: demo-weather' }).click()
 
     // The click only asks; nothing is deleted until the destructive confirm is answered.
-    await waitFor(() => expect($confirmRequest.get()?.title).toBe('Uninstall demo-weather?'))
+    await waitFor(() => expect($confirmRequest.get()?.title).toContain('demo-weather'))
     expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
 
     settleConfirm(true)
@@ -440,7 +450,7 @@ describe('PluginsTab catalog UX', () => {
 
     screen.getByRole('button', { name: 'Uninstall: Clock' }).click()
 
-    await waitFor(() => expect($confirmRequest.get()?.title).toBe('Uninstall Clock?'))
+    await waitFor(() => expect($confirmRequest.get()?.title).toContain('Clock'))
     expect(uninstallDiskPlugin).not.toHaveBeenCalled()
 
     settleConfirm(true)

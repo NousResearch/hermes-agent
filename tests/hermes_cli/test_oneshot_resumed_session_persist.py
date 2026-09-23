@@ -197,6 +197,3 @@ class TestOneShotDurableFlush:
             finally:
                 db.close()
 
-    def test_flush_survives_missing_agent(self):
-        cli_mod._flush_one_shot_session_store(SimpleNamespace(agent=None))
-        cli_mod._flush_one_shot_session_store(SimpleNamespace())

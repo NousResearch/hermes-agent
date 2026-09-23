@@ -78,3 +78,20 @@ def test_probe_is_one_graphql_request_and_a_failure_keeps_previous_counts(mod, t
     monkeypatch.setattr(mod, "_graphql", limited)
     assert mod.main(catalog_dir=cat, output=out, probe=True, live_url=None, token="t") == 0
     assert json.loads(out.read_text())["stars"] == {"a/one": 42, "b/two": 9}
+
+
+def test_failed_probe_keeps_the_previous_timestamp_and_warns(mod, tmp_path, monkeypatch, capsys):
+    """An expired-token 401 must not restamp ``fetched_at``: the catalog footer reads it as
+    "ranking as of <date>" and showed today's date over five-day-old counts (#118113)."""
+    cat = _catalog(tmp_path, "https://github.com/a/one", "https://github.com/b/two")
+    out = tmp_path / "plugin-stars.json"
+    out.write_text(json.dumps({"fetched_at": "2026-09-16T18:40:16+00:00", "stars": {"a/one": 7}}), encoding="utf-8")
+
+    def unauthorized(query, token):
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", hdrs=None, fp=None)
+    monkeypatch.setattr(mod, "_graphql", unauthorized)
+
+    assert mod.main(catalog_dir=cat, output=out, probe=True, live_url=None, token="expired") == 0
+    data = json.loads(out.read_text())
+    assert data == {"fetched_at": "2026-09-16T18:40:16+00:00", "stars": {"a/one": 7}}
+    assert "::warning::" in capsys.readouterr().out

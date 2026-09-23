@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -536,24 +535,24 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 def test_references_run_in_parallel(monkeypatch):
     """References fan out concurrently (delegate-batch semantics), not serially.
 
-    Each reference sleeps; wall-time must approximate the slowest single call,
-    not the sum. Order is preserved and a failing reference is isolated.
+    The two dispatched references rendezvous on a barrier: a serial fan-out
+    could never release it, so the call would fail instead of returning
+    ``resp-p1``. Order is preserved and a failing reference is isolated.
     """
-    import time
+    import threading
 
     from agent import moa_loop
 
     # Force _extract_text down its fallback path (no transport normalize).
     monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
 
-    barrier_hits = []
+    both_in_flight = threading.Barrier(2, timeout=10)
 
     def slow_call_llm(**kwargs):
-        barrier_hits.append(time.monotonic())
         model = kwargs["model"]
         if model == "boom":
             raise RuntimeError("kaboom")
-        time.sleep(0.5)
+        both_in_flight.wait()
         return _response(f"resp-{kwargs['provider']}")
 
     monkeypatch.setattr(moa_loop, "call_llm", slow_call_llm)
@@ -565,48 +564,18 @@ def test_references_run_in_parallel(monkeypatch):
         {"provider": "p3", "model": "ok"},
     ]
 
-    start = time.monotonic()
     out = moa_loop._run_references_parallel(
         refs, [{"role": "user", "content": "hi"}], temperature=0.6, max_tokens=64
     )
-    elapsed = time.monotonic() - start
 
-    # Two 0.5s sleeps run concurrently → well under the 1.0s serial floor.
-    # Threshold sits at 0.95s (not tight against 0.5s) to tolerate CI
-    # thread-pool startup jitter while still failing hard if the two calls
-    # ran serially (which would be ≥1.0s).
-    assert elapsed < 0.95, f"references did not run in parallel (took {elapsed:.2f}s)"
     # Output order matches input order (stable Reference N labelling).
     assert [label for label, _, _ in out] == ["p1:ok", "moa:preset", "p2:boom", "p3:ok"]
     assert "recursively reference MoA" in out[1][1]
     assert out[2][1].startswith("[failed:")
     assert out[0][1] == "resp-p1"
+    assert out[3][1] == "resp-p3"
 
 
-def test_references_parallel_without_agent_is_unaffected(monkeypatch):
-    """No agent passed (the pre-fix call shape) must behave exactly as
-    before: block until every reference completes, no interrupt check."""
-    import time
-
-    from agent import moa_loop
-
-    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
-    # Poll interval shorter than the reference's own sleep so the assertion
-    # below would catch a regression that waits a whole poll cycle extra.
-    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
-
-    def slow_call_llm(**kwargs):
-        time.sleep(0.2)
-        return _response(f"resp-{kwargs['provider']}")
-
-    monkeypatch.setattr(moa_loop, "call_llm", slow_call_llm)
-
-    refs = [{"provider": "p1", "model": "ok"}]
-    out = moa_loop._run_references_parallel(
-        refs, [{"role": "user", "content": "hi"}],
-    )
-
-    assert out[0][1] == "resp-p1"
 
 
 def test_references_parallel_interrupt_aborts_wait(monkeypatch):
@@ -627,9 +596,6 @@ def test_references_parallel_interrupt_aborts_wait(monkeypatch):
 
     def fake_call_llm(**kwargs):
         if kwargs["provider"] == "fast":
-            # Simulate the interrupt arriving right after the fast reference
-            # finishes, while the wedged one is still in flight.
-            fake_agent._interrupt_requested = True
             return _response("fast output")
         # "wedged" — never returns within the test unless released, standing
         # in for a reference whose own (possibly very long) timeout hasn't
@@ -647,6 +613,9 @@ def test_references_parallel_interrupt_aborts_wait(monkeypatch):
         start = time.monotonic()
         out = moa_loop._run_references_parallel(
             refs, [{"role": "user", "content": "hi"}], agent=fake_agent,
+            # The interrupt arrives right after the fast reference is recorded,
+            # while the wedged one is still in flight.
+            progress_callback=lambda done, total, label: setattr(fake_agent, "_interrupt_requested", True),
         )
         elapsed = time.monotonic() - start
 
@@ -659,26 +628,6 @@ def test_references_parallel_interrupt_aborts_wait(monkeypatch):
         release_wedged.set()  # don't leak a blocked thread past the test
 
 
-def _ref_config(home, fanout: str | None = None):
-    home.mkdir()
-    fanout_line = f"\n      fanout: {fanout}" if fanout else ""
-    (home / "config.yaml").write_text(
-        f"""
-moa:
-  default_preset: review
-  presets:
-    review:
-      reference_models:
-        - provider: openai-codex
-          model: gpt-5.5
-        - provider: openrouter
-          model: anthropic/claude-opus-4.8
-      aggregator:
-        provider: openrouter
-        model: anthropic/claude-opus-4.8{fanout_line}
-""".strip(),
-        encoding="utf-8",
-    )
 
 
 
@@ -1016,58 +965,6 @@ def test_aggregate_skips_aggregator_when_all_references_failed(monkeypatch):
 
 
 
-def _facade_all_failed_fixture(monkeypatch, tmp_path, policy):
-    """Common scaffolding: a 'review' preset whose references ALL fail."""
-    from agent import moa_loop
-    from agent.usage_pricing import CanonicalUsage
-
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    (home / "config.yaml").write_text(
-        f"""
-moa:
-  default_preset: review
-  presets:
-    review:
-      degraded_reference_policy: {policy}
-      reference_models:
-        - provider: openrouter
-          model: bad-model-a
-        - provider: openrouter
-          model: bad-model-b
-      aggregator:
-        provider: openrouter
-        model: aggregator
-""".strip(),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    outputs = [
-        (
-            "bad-model-a",
-            "[failed: HTTP 401 key=super-secret]",
-            moa_loop._RefAccounting(CanonicalUsage(input_tokens=5), 0.05),
-        ),
-        (
-            "bad-model-b",
-            "[failed: timeout after 900s]",
-            moa_loop._RefAccounting(CanonicalUsage(input_tokens=3), 0.03),
-        ),
-    ]
-    aggregator_calls = []
-
-    def fake_call_llm(**kwargs):
-        aggregator_calls.append(kwargs)
-        return _response("aggregator acted alone")
-
-    monkeypatch.setattr(moa_loop, "_run_references_parallel", lambda *a, **k: outputs)
-    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
-    monkeypatch.setattr(
-        moa_loop,
-        "_slot_runtime",
-        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
-    )
-    return moa_loop, outputs, aggregator_calls
 
 
 
@@ -1122,7 +1019,6 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
     """A reference still in flight at interrupt time gets a placeholder in
     the results, but its eventual REAL accounting must reach the sink."""
     import threading
-    import time
 
     from agent import moa_loop
 

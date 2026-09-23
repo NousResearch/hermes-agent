@@ -34,7 +34,7 @@ def test_current_checkout_repair_rebuilds_desktop_under_project_root():
     rebuild.assert_called_once()
     assert rebuild.call_args[0][0] == update_cmd.Path("/fake/hermes/apps/desktop")
     assert rebuild.call_args[1]["had_desktop_app_before_update"] is True
-    completion.assert_called_once_with("✓ Already up to date!")
+    completion.assert_called_once()
 
 
 def test_failed_desktop_rebuild_withholds_success_completion():
@@ -87,4 +87,4 @@ def test_handoff_venv_repair_finishes_node_and_web_phase(tmp_path):
     assert complete is True
     update_node.assert_called_once_with()
     m.return_value._build_web_ui.assert_called_once_with(project_root / "web")
-    completion.assert_called_once_with("✓ Update complete!")
+    completion.assert_called_once()

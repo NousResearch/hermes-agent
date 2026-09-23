@@ -603,7 +603,7 @@ _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
 def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4/5.5/5.6, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
+    """True for gpt-5.4/5.5/5.6, gpt-6 Sol/Terra/Luna, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
 
     Other routes expose a larger window for the same slug and keep the user's threshold.
     Prefix-matched so ``-pro`` and dated snapshots track every 272K-capped family; ``-900k``
@@ -620,7 +620,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         return "900k" not in bare
     return bare == "gpt-daybreak-blue-latest" or any(
         bare == fam or bare.startswith(fam + "-") or bare.startswith(fam + ".")
-        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6"))
+        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-sol", "gpt-6-luna"))
 
 
 def _codex_route_bare_model(model: Optional[str], provider: Optional[str]) -> Optional[str]:
@@ -2606,10 +2606,16 @@ def _relay_sync_completion(
         return _run_protected_sync_provider_call(callback, kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
-    return relay_llm.execute_current(
-        kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-        name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata, defer_logical_completion=True,
+    from agent.auxiliary_hooks import run_with_aux_hooks
+    model_name = str(kwargs.get("model") or fallback_model)
+    return run_with_aux_hooks(
+        lambda: relay_llm.execute_current(
+            kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+            name=provider_name, model_name=model_name, metadata=metadata,
+            defer_logical_completion=True,
+        ),
+        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
     )
 
 
@@ -2627,9 +2633,15 @@ async def _relay_async_completion(
         return await callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
-    return await relay_llm.execute_current_async(
-        kwargs, callback, name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata, defer_logical_completion=True,
+    from agent.auxiliary_hooks import arun_with_aux_hooks
+    model_name = str(kwargs.get("model") or fallback_model)
+    return await arun_with_aux_hooks(
+        lambda: relay_llm.execute_current_async(
+            kwargs, callback, name=provider_name, model_name=model_name,
+            metadata=metadata, defer_logical_completion=True,
+        ),
+        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
     )
 
 
@@ -2647,10 +2659,15 @@ def _relay_sync_stream(
         return create(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
-    return relay_llm.stream_current(
-        kwargs, create, name=provider_name,
-        model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
-        completed_response_predicate=lambda value: hasattr(value, "choices"),
+    from agent.auxiliary_hooks import run_with_aux_hooks
+    model_name = str(kwargs.get("model") or fallback_model)
+    return run_with_aux_hooks(
+        lambda: relay_llm.stream_current(
+            kwargs, create, name=provider_name, model_name=model_name, finalizer=dict,
+            metadata=metadata, completed_response_predicate=lambda value: hasattr(value, "choices"),
+        ),
+        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""), streaming=True,
     )
 
 

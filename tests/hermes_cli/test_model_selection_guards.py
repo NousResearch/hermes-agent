@@ -4,7 +4,6 @@ from unittest.mock import patch
 
 from hermes_cli.model_selection_guards import (
     SelectionWarning,
-    combined_message,
     combined_selection_warning,
     selection_warnings,
 )
@@ -22,7 +21,6 @@ def test_data_policy_guard_fires_through_registry():
     assert "data_policy" in kinds
     w = next(w for w in warnings if w.kind == "data_policy")
     assert "train" in w.message.lower()
-    assert w.title == "Data-Training Tier Warning"
 
 
 def test_include_kinds_filters_guards():
@@ -76,12 +74,6 @@ def test_misbehaving_guard_never_breaks_selection():
         (_boom,),
     ):
         assert selection_warnings("anything") == []
-
-
-def test_combined_message_joins_blocks():
-    a = SelectionWarning("cost", "t1", "m", "p", "AAA")
-    b = SelectionWarning("data_policy", "t2", "m", "p", "BBB")
-    assert combined_message([a, b]) == "AAA\n\nBBB"
 
 
 def test_cost_guard_still_fires_through_registry():

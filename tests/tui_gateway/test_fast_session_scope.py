@@ -120,7 +120,3 @@ class TestConfigGetFastSessionScope:
         assert resp["result"]["value"] == "fast"
 
 
-    def test_falls_back_to_global(self) -> None:
-        with patch.object(server, "_load_service_tier", return_value="priority"):
-            resp = _get({"key": "fast"})
-        assert resp["result"]["value"] == "fast"

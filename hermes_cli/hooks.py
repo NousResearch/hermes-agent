@@ -151,6 +151,24 @@ _DEFAULT_PAYLOADS = {
         # response, so without this an observer cannot see or price the fan-out.
         "moa_references": None,
     },
+    "pre_auxiliary_call": {
+        "aux_task": "title_generation", "session_id": "test-session", "task_id": "test-task",
+        "turn_id": "test-turn", "api_request_id": "aux-0123abcd", "platform": "cli",
+        "model": "claude-haiku-4-5", "provider": "anthropic",
+        "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
+        "api_call_count": 1, "retry_count": 0, "streaming": False, "message_count": 2,
+        "tool_count": 0, "approx_input_tokens": 256, "request_char_count": 1024, "max_tokens": 64,
+    },
+    "post_auxiliary_call": {
+        "aux_task": "title_generation", "session_id": "test-session", "task_id": "test-task",
+        "turn_id": "test-turn", "api_request_id": "aux-0123abcd", "platform": "cli",
+        "model": "claude-haiku-4-5", "provider": "anthropic",
+        "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
+        "api_call_count": 1, "retry_count": 0, "streaming": False, "api_duration": 0.42,
+        "started_at": 1756000000.0, "ended_at": 1756000000.42, "finish_reason": "stop",
+        "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12},
+        "assistant_content_chars": 40, "assistant_tool_call_count": 0, "error": None, "error_type": None,
+    },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",

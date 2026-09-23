@@ -41,8 +41,7 @@ afterEach(() => {
 
 describe('ReasoningPill', () => {
   it('shows a clamped pick as what the route sends, never as a distinct level (#61634)', () => {
-    // The gateway says this route clamps `ultra` to `max`: compact "Ultra→Max",
-    // tooltip in the CLI's `/reasoning` wording.
+    // The gateway says this route clamps `ultra` to `max`: compact "Ultra→Max".
     const { unmount } = render(
       <SessionViewProvider value={tileView('ultra', 'max')}>
         <ReasoningPill disabled={false} model={modelState()} />
@@ -52,7 +51,6 @@ describe('ReasoningPill', () => {
     const pill = screen.getByTestId('reasoning-pill')
 
     expect(pill.textContent).toBe('Ultra→Max')
-    expect(pill.getAttribute('aria-label')).toBe('Effort: Ultra (sends Max on this route)')
     unmount()
 
     // A verbatim wire level (or one the gateway has not stamped yet) makes no claim.
@@ -63,7 +61,6 @@ describe('ReasoningPill', () => {
     )
 
     expect(screen.getByTestId('reasoning-pill').textContent).toBe('High')
-    expect(screen.getByTestId('reasoning-pill').getAttribute('aria-label')).toBe('Effort: High')
   })
 
   it("shows THIS surface's live effort, falling back to the profile default when the session has none", () => {

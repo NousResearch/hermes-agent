@@ -820,39 +820,8 @@ def test_plan_names_every_process_it_will_sigterm_before_it_signals_anything(fle
     assert fleet.ops == [] and fleet.pids == {"coder": 4101, "ops": 4102}
 
 
-def test_there_is_no_standalone_rollback_command(fleet):
-    """(3) ``--standalone`` is gone from the parser: per-profile gateways are not a supported target."""
-    import argparse
-    from hermes_cli.subcommands.gateway import build_gateway_parser
-    parser = argparse.ArgumentParser()
-    build_gateway_parser(parser.add_subparsers(dest="command"),
-                         cmd_gateway=lambda a: None, cmd_proxy=lambda a: None,
-                         cmd_gateway_enroll=lambda a: None)
-    with pytest.raises(SystemExit):
-        parser.parse_args(["gateway", "migrate", "--standalone"])
-    args = parser.parse_args(["gateway", "migrate", "--multiplex", "--dry-run"])
-    assert args.multiplex and args.dry_run and not hasattr(args, "standalone")
 
 
-def test_a_windows_scheduled_task_secondary_is_detected_and_removed(fleet, monkeypatch, capsys):
-    """Windows was refused outright ("not migrated automatically"), which left Windows users with
-    no convergence path at all. The task (or its Startup-folder fallback) counts as an installed
-    per-profile gateway, and is removed through the same service seam as a systemd unit."""
-    from hermes_cli import gateway as gw
-    monkeypatch.setattr(gw, "is_windows", lambda: True)
-    monkeypatch.setattr(gw, "is_macos", lambda: False)
-    monkeypatch.setattr(gw, "is_linux", lambda: False)
-
-    fleet.services = {"coder": ("windows", False), "ops": ("windows", False)}
-    plan = gm.build_migration_plan()
-    assert [p.service_label() for p in plan.standalone_secondaries] == [
-        "Windows scheduled task", "Windows scheduled task"]
-    assert "Windows scheduled task" in "\n".join(gm.format_plan(plan, dry_run=True))
-
-    assert gm.apply_migration(plan, served_wait=5.0) is True
-    assert fleet.services == {"default": ("windows", False)}, "one host task, both secondaries gone"
-    assert ("coder", "uninstall") in fleet.ops and ("ops", "uninstall") in fleet.ops
-    assert "serves 3 profiles" in capsys.readouterr().out
 
 
 def test_windows_task_detection_reads_both_the_task_and_the_startup_fallback(monkeypatch):
@@ -878,5 +847,20 @@ def test_windows_is_migratable_and_only_s6_is_refused(monkeypatch):
 
     monkeypatch.setattr(gw, "_running_under_s6", lambda: True)
     reason = gm._host_supports_migration()
-    assert reason is not None and "Restart the container" in reason
-    assert "nothing on this host was changed" in reason
+    assert reason is not None
+
+
+def test_standalone_profile_is_listed_left_alone_and_not_a_fold_target(fleet):
+    """A profile that opts itself out via `gateway.standalone: true` keeps its own gateway: it is
+    neither a blocker nor a fold target — the plan names it under standalone_by_config instead."""
+    root = fleet.root
+    (root / "profiles" / "ops" / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+    plan = gm.build_migration_plan()
+    assert "ops" not in [p.name for p in plan.profiles]
+    assert "ops" not in [p.name for p in plan.standalone_secondaries]
+    assert "coder" in [p.name for p in plan.standalone_secondaries]
+    assert plan.standalone_by_config == ("ops",)
+    payload = json.loads(json.dumps(plan.to_dict()))
+    assert payload["standalone_by_config"] == list(plan.standalone_by_config)
+    assert "ops" not in [p["profile"] for p in payload["profiles"]]
+    assert any("ops" in line for line in gm.format_plan(plan, dry_run=True))

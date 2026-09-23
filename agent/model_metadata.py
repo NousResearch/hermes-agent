@@ -913,10 +913,27 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _merge_model_entry(existing: Optional[Dict[str, Any]], new_entry: Dict[str, Any]) -> Dict[str, Any]:
+    if not existing:
+        return new_entry
+    merged = dict(existing)
+    merged.update(new_entry)
+    old_ctx = existing.get("context_length")
+    new_ctx = new_entry.get("context_length")
+    if old_ctx is not None and (new_ctx is None or old_ctx > new_ctx):
+        merged["context_length"] = old_ctx
+    old_mct = existing.get("max_completion_tokens")
+    new_mct = new_entry.get("max_completion_tokens")
+    if old_mct is not None and new_mct is None:
+        merged["max_completion_tokens"] = old_mct
+    return merged
+
+
 def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: Dict[str, Any]) -> None:
-    cache[model_id] = entry
+    cache[model_id] = _merge_model_entry(cache.get(model_id), entry)
     if "/" in model_id:
-        cache.setdefault(model_id.split("/", 1)[1], entry)
+        bare_model = model_id.split("/", 1)[1]
+        cache[bare_model] = _merge_model_entry(cache.get(bare_model), entry)
 
 
 def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:

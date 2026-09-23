@@ -974,6 +974,44 @@ class TestFetchEndpointModelMetadata:
             mm.fetch_endpoint_model_metadata("https://custom.example/v1")
         mock_get.assert_called_once()
 
+    def test_parse_models_payload_preserves_context_length_across_aliases_and_duplicates(self):
+        """Regression test for alias/bare model context collision.
+
+        When /v1/models returns both a prefixed model (xai/grok-4.7: 500000) and
+        a bare model (grok-4.7: None), or vice-versa, the valid context_length
+        must be preserved rather than degraded to None.
+        """
+        import agent.model_metadata as mm
+
+        payload_prefixed_first = {
+            "data": [
+                {"id": "xai/grok-4.7", "context_length": 500000},
+                {"id": "grok-4.7"},
+            ]
+        }
+        cache1 = mm._parse_models_payload(payload_prefixed_first)
+        assert cache1["xai/grok-4.7"]["context_length"] == 500000
+        assert cache1["grok-4.7"]["context_length"] == 500000
+
+        payload_bare_first = {
+            "data": [
+                {"id": "grok-4.7"},
+                {"id": "xai/grok-4.7", "context_length": 500000},
+            ]
+        }
+        cache2 = mm._parse_models_payload(payload_bare_first)
+        assert cache2["xai/grok-4.7"]["context_length"] == 500000
+        assert cache2["grok-4.7"]["context_length"] == 500000
+
+        payload_multi = {
+            "data": [
+                {"id": "channel1/test-model", "context_length": 128000},
+                {"id": "channel2/test-model", "context_length": 500000},
+            ]
+        }
+        cache3 = mm._parse_models_payload(payload_multi)
+        assert cache3["test-model"]["context_length"] == 500000
+
 
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")

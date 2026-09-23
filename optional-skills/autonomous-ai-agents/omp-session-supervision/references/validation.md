@@ -31,6 +31,13 @@ The skill is Linux-only; unrelated OS test jobs skip it before POSIX imports.
 
 ## Actual native delivery
 
+The gateway must propagate `SessionContext.session_id` into its per-turn context
+([upstream correction](https://github.com/NousResearch/hermes-agent/pull/58914)).
+Some gateways export it during fresh agent construction but leave it empty on
+cached turns. A successful first wake does not establish renewable observation:
+the second watcher must inherit the genuine ID too. Never fill an absent ID from
+the enrollment file or ambient process environment to bypass this check.
+
 Synthetic tests do not establish a live gateway wake. From a real originating
 conversation, use the installed helper to prepare an empty-workspace, tools-disabled
 canary, arm it through the native background terminal tool, then launch. Let the

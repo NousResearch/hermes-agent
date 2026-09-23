@@ -37,6 +37,10 @@ interactive-session integration, not a generic agent protocol or RPC launcher.
   `terminal`; never upgrade or restart existing workers merely to enable observation.
 - A Hermes gateway that supports session-owned native background completion.
   Do not substitute shell backgrounding, a second notification bot, or plugin injection.
+  It must also export the durable session ID on every turn, including cached-agent
+  resumes. This depends on the gateway correction tracked in
+  [Hermes #58914](https://github.com/NousResearch/hermes-agent/pull/58914).
+  Without it, the first notification can arrive but safe re-arming is refused.
 - Genuine inherited `HERMES_HOME`, `HERMES_SESSION_PLATFORM`, `HERMES_SESSION_KEY`,
   `HERMES_SESSION_ID`, `HERMES_SESSION_CHAT_ID`, and `HERMES_SESSION_THREAD_ID`
   (present but allowed to be empty). Never fabricate scope to make enrollment pass.

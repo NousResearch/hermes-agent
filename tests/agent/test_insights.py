@@ -1,6 +1,7 @@
 """Tests for agent/insights.py — InsightsEngine analytics and reporting."""
 
 import sqlite3
+import threading
 import time
 import pytest
 
@@ -240,6 +241,167 @@ class TestInsightsEmpty:
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
         assert "No sessions found" in text
+
+
+class TestFleetInsights:
+    def test_ordinary_insights_never_reads_sibling_profile_stores(self, tmp_path, monkeypatch):
+        """Gateway and ordinary CLI /insights use generate(), which is profile-local."""
+        root = tmp_path / "hermes"
+        worker_home = root / "profiles" / "worker"
+        worker_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        default_db = SessionDB(db_path=root / "state.db")
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            default_db.create_session("default", source="cli", model="m")
+            worker_db.create_session("worker", source="cli", model="m")
+            default_db._conn.commit()
+            worker_db._conn.commit()
+            report = InsightsEngine(default_db).generate(days=30)
+        finally:
+            worker_db.close()
+            default_db.close()
+
+        assert report["overview"]["total_sessions"] == 1
+        assert "profile_totals" not in report
+
+    def test_default_store_aggregates_named_profile_usage_without_exposing_sessions(self, tmp_path, monkeypatch):
+        """Fleet totals include each store once even when ids collide."""
+        root = tmp_path / "hermes"
+        worker_home = root / "profiles" / "worker"
+        worker_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        default_db = SessionDB(db_path=root / "state.db")
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            for store, tokens in ((default_db, 100), (worker_db, 250)):
+                store.create_session(session_id="same-id", source="cli", model="test-model")
+                store.update_token_counts("same-id", input_tokens=tokens)
+                store._conn.commit()
+
+            report = InsightsEngine(default_db).generate_fleet(days=30)
+            rendered = InsightsEngine(default_db).format_terminal(report)
+        finally:
+            worker_db.close()
+            default_db.close()
+
+        assert report["overview"]["total_sessions"] == 2
+        assert report["overview"]["total_input_tokens"] == 350
+        assert report["profile_totals"] == [
+            {"profile": "default", "sessions": 1, "total_tokens": 100},
+            {"profile": "worker", "sessions": 1, "total_tokens": 250},
+        ]
+        assert report["top_sessions"] == []
+        assert "Profiles" in rendered
+        assert "worker" in rendered
+
+    def test_named_profile_insights_remain_isolated(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        worker_home = root / "profiles" / "worker"
+        worker_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(worker_home))
+
+        default_db = SessionDB(db_path=root / "state.db")
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            default_db.create_session(session_id="default", source="cli", model="test-model")
+            worker_db.create_session(session_id="worker", source="cli", model="test-model")
+            default_db._conn.commit()
+            worker_db._conn.commit()
+            report = InsightsEngine(worker_db).generate(days=30)
+        finally:
+            worker_db.close()
+            default_db.close()
+
+        assert report["overview"]["total_sessions"] == 1
+        assert "profile_totals" not in report
+
+    def test_empty_default_aggregates_named_profile_without_detail_leak(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        worker_home = root / "profiles" / "worker"
+        worker_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        default_db = SessionDB(db_path=root / "state.db")
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            worker_db.create_session("worker-secret", source="cli", model="SECRET-WORKER")
+            worker_db.update_token_counts("worker-secret", input_tokens=250)
+            worker_db._conn.commit()
+            report = InsightsEngine(default_db).generate_fleet(days=30)
+        finally:
+            worker_db.close()
+            default_db.close()
+
+        assert report["overview"]["total_sessions"] == 1
+        assert report["models"] == []
+        assert report["platforms"] == []
+        assert report["tools"] == []
+        assert report["top_sessions"] == []
+
+    @pytest.mark.linux_only
+    def test_fleet_discovery_rejects_symlinked_profile_and_store(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes"
+        profiles = root / "profiles"
+        profiles.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        default_db = SessionDB(db_path=root / "state.db")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_db = SessionDB(db_path=outside / "state.db")
+        (profiles / "alias").symlink_to(root, target_is_directory=True)
+        (profiles / "escape").symlink_to(outside, target_is_directory=True)
+        real = profiles / "real"
+        real.mkdir()
+        (real / "state.db").symlink_to(root / "state.db")
+        deleted = profiles / "deleted"
+        deleted.mkdir()
+        deleted_db = SessionDB(db_path=deleted / "state.db")
+        from hermes_constants import mark_named_profile_deleted
+        mark_named_profile_deleted(deleted)
+        try:
+            assert InsightsEngine(default_db)._named_profile_stores() == []
+        finally:
+            deleted_db.close()
+            outside_db.close()
+            default_db.close()
+
+    def test_generate_does_not_interrupt_concurrent_transcript_and_accounting_writes(self, db):
+        """Insights reads an isolated snapshot, never a transaction on the live writer."""
+        db.create_session("busy", source="cli", model="test-model")
+        db._conn.commit()
+        started = threading.Event()
+        failures = []
+        engine = InsightsEngine(db)
+
+        class WriterConnectionMustNotRead:
+            def execute(self, *_args, **_kwargs):
+                pytest.fail("insights must not query or start a transaction on the writable connection")
+
+        # The report must open a separate read-only handle before querying.
+        engine._conn = WriterConnectionMustNotRead()
+
+        def write_live_state():
+            started.set()
+            try:
+                for i in range(40):
+                    db.append_message("busy", role="assistant", content=f"live-{i}")
+                    db.update_token_counts("busy", input_tokens=1, api_call_count=1)
+            except Exception as exc:
+                failures.append(exc)
+
+        writer = threading.Thread(target=write_live_state)
+        writer.start()
+        assert started.wait(timeout=2)
+        try:
+            for _ in range(20):
+                report = engine.generate(days=30)
+                assert report["empty"] is False
+        finally:
+            writer.join(timeout=5)
+
+        assert not writer.is_alive()
+        assert failures == []
 
 
 # =========================================================================

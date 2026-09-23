@@ -68,9 +68,9 @@ def snapshot_recent_messages(messages: List[Dict[str, Any]], limit: int = DEFAUL
 
 
 def collect_parent_loaded_skills(parent_agent, messages: List[Dict[str, Any]], limit: int = 8) -> List[str]:
-    """Skills the parent was operating under: launch-preloaded (marker in ``ephemeral_system_prompt``)
-    first, then ``skill_view`` loads from history, deduped, capped at ``limit`` (a reviewer told to load 30
-    skills would burn its budget before working)."""
+    """Parent skill history for advisory provenance: launch-preloaded (marker in
+    ``ephemeral_system_prompt``) first, then ``skill_view`` loads from history, deduped and capped.
+    History records how the work was produced; it never determines what a reviewer must load."""
     names: List[str] = []
     prompt = str(getattr(parent_agent, "ephemeral_system_prompt", "") or "")
     candidates = [m.group(1) for m in re.finditer(r'with the "([^"]+)" skill\s+preloaded', prompt)]
@@ -106,6 +106,10 @@ def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loa
     lines = [
         _REVIEW_GOAL,
         "",
+        "Determine required review context from the review assignment, referenced artifact, selected criteria, "
+        "receiver role, and explicit dependencies. Load the smallest task-relevant set of skills. When authority, "
+        "safety, acceptance, or an explicit dependency requires a skill, load it before assessing that part.",
+        "",
         "You were spawned by the /review command. The following is an excerpt of the most recent conversation "
         "between the user and their primary agent. It is your starting evidence — the work to "
         "review is referenced in it.",
@@ -119,11 +123,9 @@ def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loa
         skill_list = ", ".join(loaded_skills)
         lines += [
             "",
-            "The primary agent was operating under these loaded skills: "
-            f"{skill_list}. Before reviewing, load each with "
-            "skill_view(name=...) and treat their conventions, invariants, "
-            "and review standards as binding for your assessment — the work "
-            "was produced under them and must be judged against them.",
+            "Parent skill history (advisory provenance only): "
+            f"{skill_list}. Do not load any skill solely because the parent loaded it; use this history only to "
+            "investigate a concrete review dependency.",
         ]
     if user_prompt.strip():
         lines += ["", "Additional review instructions from the user:", user_prompt.strip()]

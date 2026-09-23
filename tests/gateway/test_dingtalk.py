@@ -610,11 +610,20 @@ class TestNativeMentionOnlyChats:
         assert adapter._dingtalk_native_mention_only_chats() == {"grpA", "grpB"}
 
 
-    def test_extra_config_wins_over_env(self, monkeypatch):
+    def test_env_wins_over_extra_config(self, monkeypatch):
+        """Shared ``extra_or_secret`` contract: an explicit env value beats YAML,
+        like every other DingTalk list setting read through ``_csv_setting``."""
         adapter = _make_gating_adapter(
             monkeypatch,
             extra={"native_mention_only_chats": ["grp-cfg"]},
             env={"DINGTALK_NATIVE_MENTION_ONLY_CHATS": "grp-env"},
+        )
+        assert adapter._dingtalk_native_mention_only_chats() == {"grp-env"}
+
+    def test_extra_config_used_when_env_unset(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"native_mention_only_chats": ["grp-cfg"]},
         )
         assert adapter._dingtalk_native_mention_only_chats() == {"grp-cfg"}
 

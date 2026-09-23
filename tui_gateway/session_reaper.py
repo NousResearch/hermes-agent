@@ -151,17 +151,21 @@ _exit_flush_handlers_installed = False
 def _handle_exit_flush_signal(signum, frame) -> None:
     """Flush in-memory sessions, then hand off to the prior handler (uvicorn's graceful shutdown, a supervisor's
     handler, or the default disposition) — this only *prepends* a bounded flush."""
+    import signal as _signal
+    prev = _exit_flush_prev_handlers.get(signum)
+    if prev is _signal.SIG_IGN:
+        # An inherited ignore (`cmd &` from a non-interactive shell) ends nothing: stopping turns here
+        # would raise the one-way exit fence in a process that keeps running and refuses every command.
+        return
     with contextlib.suppress(Exception):
         _flush_sessions_before_exit()
     # The group signal that stopped us never reaches a command in its own session: reap it now,
     # before a supervisor's SIGKILL can cut the graceful shutdown (and its atexit) short.
     with contextlib.suppress(Exception):
         _stop_turns_before_exit()
-    import signal as _signal
-    prev = _exit_flush_prev_handlers.get(signum)
     if callable(prev):
         prev(signum, frame)
-    elif prev is not _signal.SIG_IGN:
+    else:
         # Default disposition: restore it and re-raise so the process dies with the correct signal (exit status
         # visible to supervisors).
         try:

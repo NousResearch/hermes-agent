@@ -113,6 +113,27 @@ def test_sigterm_flushes_populated_session_into_state_db(
     assert any("survive the kill" in str(r.get("content", "")) for r in rows)
 
 
+def test_ignored_sigint_leaves_terminal_commands_runnable():
+    """SIGINT inherited as SIG_IGN (a server started as ``cmd &`` from a non-interactive shell) ends
+    nothing, so it must not raise the one-way exit fence: the process lives on and every later
+    terminal command would return 'host is exiting' rc 130."""
+    from tools.environments.local import LocalEnvironment
+
+    prev = {signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+            signal.SIGINT: signal.signal(signal.SIGINT, signal.SIG_IGN)}
+    try:
+        assert server.install_exit_flush_signal_handlers() is True
+        os.kill(os.getpid(), signal.SIGINT)
+        time.sleep(0.05)
+    finally:
+        _restore_signal_state(prev)
+    env = LocalEnvironment(cwd=os.getcwd())
+    try:
+        assert env.execute("echo still-alive", timeout=30)["returncode"] == 0
+    finally:
+        env.cleanup()
+
+
 def test_exit_flush_is_bounded(registered_session):
     """A hung persist must never block exit longer than the budget."""
 

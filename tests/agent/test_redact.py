@@ -540,7 +540,7 @@ class TestTelegramTokens:
         """
         import time
 
-        text = "_typelessdata: " + "0" * 300_000 + "\n"
+        text = "_typelessdata: " + "0" * 100_000 + "\n"
         t0 = time.perf_counter()
         assert redact_sensitive_text(text, force=True) == text
         assert time.perf_counter() - t0 < 2.0

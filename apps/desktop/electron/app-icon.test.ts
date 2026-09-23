@@ -52,6 +52,28 @@ test('decodingFileProbe rejects a directory', () => {
   }
 })
 
+// #96857: on a packaged build every path inside app.asar is stat'ed through Electron's asar
+// fs.Stats shim, which emits Node's DEP0180 ("fs.Stats constructor is deprecated") on every launch.
+// dist/** is asarUnpack'ed, so the real on-disk copy must be tried before any in-archive rung;
+// resolveAppIcon stops at the first decodable candidate and never reaches the archive.
+test('the unpacked on-disk icon precedes every in-archive PNG rung', () => {
+  for (const isWindows of [false, true]) {
+    const appRoot = path.join('/opt/Hermes/resources', 'app.asar')
+
+    const candidates = appIconCandidates({
+      isWindows,
+      appRoot,
+      resourcesPath: '/opt/Hermes/resources',
+      unpackedPathFor: p => p.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
+    })
+
+    const pngs = candidates.filter(c => c.endsWith('.png'))
+    const firstInArchive = pngs.findIndex(c => c.startsWith(appRoot + path.sep))
+    const unpacked = pngs.findIndex(c => c.includes('app.asar.unpacked'))
+    assert.ok(unpacked !== -1 && unpacked < firstInArchive, `unpacked first (isWindows=${isWindows}): ${pngs.join(', ')}`)
+  }
+})
+
 test('appIconCandidates keeps the documented precedence ladder', () => {
   const mac = appIconCandidates({
     isWindows: false,
@@ -60,9 +82,9 @@ test('appIconCandidates keeps the documented precedence ladder', () => {
   })
 
   assert.deepEqual(mac, [
+    path.join('/Applications/Hermes.app/Contents/Resources.unpacked', 'dist', 'apple-touch-icon.png'),
     path.join('/Applications/Hermes.app/Contents/Resources', 'public', 'apple-touch-icon.png'),
-    path.join('/Applications/Hermes.app/Contents/Resources', 'dist', 'apple-touch-icon.png'),
-    path.join('/Applications/Hermes.app/Contents/Resources.unpacked', 'dist', 'apple-touch-icon.png')
+    path.join('/Applications/Hermes.app/Contents/Resources', 'dist', 'apple-touch-icon.png')
   ])
 
   // Windows prepends the two full-bleed .ico rungs ahead of the PNG ladder.

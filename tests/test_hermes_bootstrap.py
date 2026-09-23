@@ -501,3 +501,40 @@ class TestNeverFreeEnviron:
                 assert [words[i] for i in range(len(entries))] == entries, "a superseded environ array was freed"
             assert os.environ["HERMES_ENVIRON_PROBE_79"] == "1"
         """)], check=True, cwd=str(Path(__file__).resolve().parents[1]), timeout=60)
+
+    def test_concurrent_writers_lose_no_name_in_the_c_environ(self):
+        # Unserialized writers each copied the live array; the later publish dropped the others' names.
+        subprocess.run([sys.executable, "-c", textwrap.dedent("""
+            import ctypes, os, sys, threading, hermes_bootstrap
+            getenv = ctypes.CDLL(None).getenv
+            getenv.restype, getenv.argtypes = ctypes.c_char_p, [ctypes.c_char_p]
+            sys.setswitchinterval(1e-6)
+            batches = [[f"HERMES_ENVIRON_RACE_{t}_{i}" for i in range(200)] for t in range(8)]
+            barrier = threading.Barrier(len(batches))
+            def write(batch):
+                barrier.wait()
+                for name in batch:
+                    os.environ[name] = name
+            threads = [threading.Thread(target=write, args=(b,)) for b in batches]
+            [t.start() for t in threads]; [t.join() for t in threads]
+            lost = [n for b in batches for n in b if getenv(n.encode()) != n.encode()]
+            assert not lost, f"{len(lost)}/1600 names in os.environ but missing from C getenv"
+        """)], check=True, cwd=str(Path(__file__).resolve().parents[1]), timeout=120)
+
+    def test_set_del_churn_of_the_same_names_keeps_memory_bounded(self):
+        # Kanban ticks, the spinner pause and _restore_env set and pop the same names forever.
+        subprocess.run([sys.executable, "-c", textwrap.dedent("""
+            import os, tracemalloc, hermes_bootstrap
+            def churn(cycles):
+                for _ in range(cycles):
+                    for k in range(4):
+                        os.environ[f"HERMES_ENVIRON_CHURN_{k}"] = "1"
+                    for k in range(4):
+                        del os.environ[f"HERMES_ENVIRON_CHURN_{k}"]
+            churn(50)
+            tracemalloc.start()
+            before = tracemalloc.get_traced_memory()[0]
+            churn(5000)
+            grown = tracemalloc.get_traced_memory()[0] - before
+            assert grown < 64 * 1024, f"20k set/del of 4 names grew the heap by {grown} bytes"
+        """)], check=True, cwd=str(Path(__file__).resolve().parents[1]), timeout=120)

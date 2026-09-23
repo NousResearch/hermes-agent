@@ -293,47 +293,86 @@ def _glibc_frees_environ() -> bool:
 
 
 def install_never_free_environ() -> None:
-    """Make ``os.environ[new_name] = ...`` safe against native ``getenv`` in other threads.
+    """Make ``os.environ`` writes safe against native ``getenv`` in other threads.
 
     On glibc < 2.41 adding a name reallocs ``environ`` and frees the old array while a
     thread that dropped the GIL (``getaddrinfo``, OpenSSL's ``SSL_CERT_FILE`` lookup) may
     still be walking it; the freed slots hold tcache pointers, so the walk segfaults the
     whole process. Hermes writes new names at runtime from many places (``session.create``
     turns on gateway prompts, the agent build sets ``HERMES_SESSION_ID``) while background
-    threads fetch catalogs, so the tui_gateway died with SIGSEGV. New names go into a
-    fresh array published with one pointer store, and no array is ever freed — glibc
-    2.41's own fix. Replacing or removing an existing name is already in place in glibc.
+    threads fetch catalogs, so the tui_gateway died with SIGSEGV. This is glibc 2.41's own
+    fix: entry strings are cached per ``NAME=value`` and never freed; a new name is
+    appended in place to an array with spare room, and only a full array is replaced by
+    a bigger one, the old one kept forever. Set/del churn of the same names therefore
+    allocates nothing after the first cycle.
+
+    Residual: a NEW-name ``setenv`` from native code (a C or Rust extension, not
+    ``os.environ``) bypasses the lock and still reallocs glibc's own last array, so a
+    ``getenv`` that started walking that array before our swap can still fault. None of
+    the gateway's crash paths do this.
     """
     if getattr(os.putenv, "_hermes_never_free_environ", False) or not _glibc_frees_environ():
         return
+    import _thread
     import ctypes
 
     try:
-        environ = ctypes.c_void_p.in_dll(ctypes.CDLL(None), "environ")
+        libc = ctypes.CDLL(None)
+        environ = ctypes.c_void_p.in_dll(libc, "environ")
+        getenv = libc.getenv
     except (AttributeError, OSError, ValueError):
         return
-    real_putenv = os.putenv
-    retained: list = []  # every array/entry handed to libc lives as long as the process
+    getenv.restype, getenv.argtypes = ctypes.c_void_p, [ctypes.c_char_p]
+    real_putenv, real_unsetenv = os.putenv, os.unsetenv
+    # Two unserialized writers both copy the live array and the later publish drops the
+    # other's new name or undoes its replacement. Reentrant: audit hooks run inside it.
+    lock = _thread.RLock()
+    # A fork while another thread holds the lock would leave it held forever in the child.
+    os.register_at_fork(before=lock.acquire, after_in_parent=lock.release, after_in_child=lock.release)
+    lines: dict[bytes, ctypes.Array] = {}  # b"NAME=value" -> its C string (glibc's known_values)
+    arrays: list[ctypes.Array] = []  # every array we published; only the last one grows
 
     def _putenv(key, value) -> None:
         name, val = os.fsencode(key), os.fsencode(value)
-        entries: list[int] = []  # raw pointers: libc owns (or we retain) what they point at
-        if environ.value:
-            array = ctypes.cast(environ.value, ctypes.POINTER(ctypes.c_void_p))
-            while entry := array[len(entries)]:
-                entries.append(entry)
-        prefix = name + b"="
-        if (not name or b"=" in name or b"\0" in name + val
-                or any(ctypes.string_at(e).startswith(prefix) for e in entries)):
-            real_putenv(key, value)  # in-place replace, or the usual ValueError
+        if not name or b"=" in name or b"\0" in name + val:
+            real_putenv(key, value)  # the usual OSError/ValueError
             return
-        line = ctypes.create_string_buffer(prefix + val)
-        fresh = (ctypes.c_void_p * (len(entries) + 2))(*entries, ctypes.addressof(line), None)
-        retained.extend((line, fresh))
-        environ.value = ctypes.addressof(fresh)
+        sys.audit("os.putenv", name, val)
+        prefix = name + b"="
+        with lock:
+            if (line := lines.get(prefix + val)) is None:
+                line = lines[prefix + val] = ctypes.create_string_buffer(prefix + val)
+            entry = ctypes.addressof(line)
+            live = ctypes.cast(environ.value, ctypes.POINTER(ctypes.c_void_p)) if environ.value else None
+            # getenv returns a pointer just past "NAME=" inside the matching entry, so the
+            # walk compares pointers instead of reading every string.
+            found = getenv(name)
+            target = found - len(prefix) if found else None
+            n = 0
+            while live and (current := live[n]):
+                if current == target:
+                    live[n] = entry  # replace in place, as glibc does
+                    return
+                n += 1
+            # Plain aligned stores: a concurrent walker sees them in order on x86-64 (TSO).
+            # aarch64 may reorder them, which is theoretical there and matches glibc < 2.41's
+            # own plain-store publish; Python has no cheap portable fence to add.
+            own = arrays[-1] if arrays else None
+            if own is not None and environ.value == ctypes.addressof(own) and n + 2 <= len(own):
+                own[n + 1] = None  # terminator first, so a walker never runs past the new entry
+                own[n] = entry
+                return
+            fresh = (ctypes.c_void_p * max(2 * (n + 2), 64))(*(live[:n] if live else ()), entry)
+            arrays.append(fresh)
+            environ.value = ctypes.addressof(fresh)
+
+    def _unsetenv(key) -> None:
+        with lock:  # glibc shifts the entries of the live array (ours included) in place
+            real_unsetenv(key)
 
     _putenv._hermes_never_free_environ = True  # type: ignore[attr-defined]
-    os.putenv = _putenv
+    _unsetenv._hermes_never_free_environ = True  # type: ignore[attr-defined]
+    os.putenv, os.unsetenv = _putenv, _unsetenv
 
 
 def harden_import_path(src_root: str | None = None) -> None:

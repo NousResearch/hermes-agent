@@ -446,7 +446,7 @@ def _resolve_profile_db(profile: str):
 
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
-    """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
+    """Read shape: visible session messages, or ``head`` + ``tail`` with a scroll pointer."""
     meta = _get_session_meta(db, session_id)
     if not meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
@@ -454,6 +454,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
                       session_id)
     if err:
         return err
+    rows = [m for m in rows if m.get("display_kind") != "hidden"]
     shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
     total, truncated = len(shaped), len(shaped) > head + tail
     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),

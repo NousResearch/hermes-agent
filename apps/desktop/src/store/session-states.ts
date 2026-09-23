@@ -1266,8 +1266,16 @@ syncPreviewScope()
 export function isSessionRemote(sessionId: null | string | undefined): boolean {
   const owner = knownOwnerForSession(sessionId)
 
-  if (owner && typeof owner === 'object' && owner.mode) {
-    return owner.mode === 'remote'
+  if (owner && typeof owner === 'object') {
+    if (owner.mode) {
+      return owner.mode === 'remote'
+    }
+
+    // Connection-tagged unified session rows reconstruct an exact owner route,
+    // but the row intentionally stores only connection_id and profile. A
+    // non-local route with no retained mode must fail safe to bytes: treating
+    // it as the ambient local backend sends a client-only path to the peer.
+    return owner.connectionId.trim() !== LOCAL_CONNECTION_ID
   }
 
   return $connection.get()?.mode === 'remote'

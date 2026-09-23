@@ -2901,6 +2901,81 @@ describe('usePromptActions file attachment sync', () => {
     })
   })
 
+  it('uploads dragged and pasted images for a non-current remote session whose row has no mode', async () => {
+    // Unified session rows retain their owning connection id but not its mode.
+    // The ambient Mac gateway is local, while this bot chat belongs to the
+    // homelab backend. Both picker/drop paths and pasted composer copies must
+    // cross that boundary as bytes rather than leaking a client-only path.
+    $connection.set({ connectionId: 'local', mode: 'local' } as never)
+    setSessions([sessionInfo({ connection_id: 'homelab', id: 'stored-remote' })])
+
+    const readFileDataUrl = vi.fn(async (path: string) =>
+      path.endsWith('captura.png')
+        ? 'data:image/png;base64,ZHJhZw=='
+        : 'data:image/png;base64,c2hvdWxkLW5vdC1yZWFk'
+    )
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/remote/.hermes/desktop-attachments/image.png' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="runtime-remote"
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([['stored-remote', 'runtime-remote']]) }}
+        storedSessionId="stored-remote"
+      />
+    )
+
+    expect(
+      await handle!.submitText('describe both images', {
+        attachments: [
+          {
+            id: 'image:dragged',
+            kind: 'image',
+            label: 'captura.png',
+            path: '/Users/alice/Desktop/captura.png'
+          },
+          {
+            id: 'image:pasted',
+            kind: 'image',
+            label: 'pasted.png',
+            path: '/Users/alice/Library/Application Support/Hermes/composer-images/pasted.png',
+            previewUrl: 'data:image/png;base64,cGFzdGVk'
+          }
+        ]
+      })
+    ).toBe(true)
+
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/alice/Desktop/captura.png')
+    expect(readFileDataUrl).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledTimes(3)
+    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
+      content_base64: 'ZHJhZw==',
+      filename: 'captura.png',
+      session_id: 'runtime-remote'
+    })
+    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
+      content_base64: 'cGFzdGVk',
+      filename: 'pasted.png',
+      session_id: 'runtime-remote'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
+  })
+
   it('uploads Windows file bytes when local mode fronts a POSIX WSL/Docker backend', async () => {
     $connection.set({ mode: 'local' } as never)
     $currentCwd.set('/root')

@@ -404,6 +404,50 @@ class TestTranscribeLocalCommand:
         assert result["transcript"] == "hello from local command"
         assert result["provider"] == "local_command"
 
+    def test_local_command_template_receives_prompt(self, monkeypatch, sample_wav, tmp_path):
+        """``{prompt}`` is interpolated into the legacy HERMES_LOCAL_STT_COMMAND
+        template as a single argv token — same prompt contract as built-ins."""
+        prompt = "Hermes, Teknium, Nous Research kanban"
+        out_dir = tmp_path / "prompt-out"
+        out_dir.mkdir()
+
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --output_dir {output_dir} --initial_prompt {prompt}",
+        )
+        invocation = {}
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, *exc):
+                    return False
+
+            return _TempDir()
+
+        def fake_run(command, **kwargs):
+            invocation["command"] = command
+            (out_dir / "transcript.txt").write_text("ok", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr(
+            "tools.transcription_local._prepare_local_audio",
+            lambda *a, **k: (str(sample_wav), None),
+        )
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(str(sample_wav), "base", prompt=prompt)
+
+        assert result["success"] is True
+        command = invocation["command"]
+        assert "--initial_prompt" in command
+        assert command[command.index("--initial_prompt") + 1] == prompt
+
 
 # ============================================================================
 # _transcribe_local — additional tests

@@ -22,7 +22,7 @@ from tools.tts_command_provider import (
     command_failure_detail, render_command_template as _render_command_stt_template,
     run_command_provider as _run_command_stt)
 from tools.transcription_common import (
-    BUILTIN_STT_PROVIDERS, _error_result, _log_prompt_unsupported, _ok_result)
+    BUILTIN_STT_PROVIDERS, _error_result, _ok_result)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
@@ -72,10 +72,9 @@ def _transcribe_command_stt(
     """Transcribe via a user-declared ``stt.providers.<name>: type: command``. Placeholders
     (shell-quote-aware; ``{{``/``}}`` stay literal): ``{input_path}``, ``{output_path}`` (transcript
     file), ``{output_dir}``, ``{format}`` txt/json/srt/vtt, ``{language}`` (default ``en``),
-    ``{model}`` (empty when unset)."""
+    ``{model}`` (empty when unset), ``{prompt}`` — the effective ``stt.prompt`` after
+    ``pre_transcription`` overrides, empty when no prompt is configured."""
     from tools.transcription_tools import _resolve_stt_language
-    if prompt:
-        _log_prompt_unsupported(f"Command STT provider '{provider_name}'")
 
     def fail(error: str) -> Dict[str, Any]:
         return _error_result(error, provider=provider_name)
@@ -96,6 +95,7 @@ def _transcribe_command_stt(
                 "input_path": str(audio.resolve()), "output_path": str(output_path),
                 "output_dir": str(output_path.parent), "format": output_format,
                 "language": str(language), "model": str(model_override or config.get("model") or ""),
+                "prompt": str(prompt or ""),
             })
             logger.info("Transcribing %s via command STT provider '%s'...", audio.name, provider_name)
             result = _run_command_stt(command, timeout, env_passthrough=_command_stt_env_passthrough(config))

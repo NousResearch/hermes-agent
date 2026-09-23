@@ -69,7 +69,9 @@ class TestSkillManageBatch(unittest.TestCase):
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
         r = self._call("probe", [
             {"action": "patch", "old_string": "Step 1.", "new_string": "Step ONE."},
-            {"action": "write_file", "file_path": "bad/nope.md", "file_content": "x"},
+            # Must fail at RUNTIME, after op[0] was applied: an invalid file_path is now
+            # refused up front with the shape errors, so an unmatched patch is the trigger.
+            {"action": "patch", "old_string": "NOT IN THE FILE", "new_string": "x"},
         ])
         self.assertFalse(r["success"])
         self.assertEqual(r["failed_index"], 1)
@@ -176,8 +178,8 @@ class TestSkillManageBatch(unittest.TestCase):
             {"name": "alpha", "action": "patch",
              "old_string": "Step 1.", "new_string": "Step A."},
             {"name": "beta", "action": "create", "content": SK.format(n="beta")},
-            {"name": "beta", "action": "write_file",
-             "file_path": "bad/nope.md", "file_content": "x"},
+            {"name": "beta", "action": "patch",
+             "old_string": "NOT IN THE FILE", "new_string": "x"},
         ]))
         self.assertFalse(r["success"])
         self.assertEqual(r["failed_index"], 2)
@@ -211,8 +213,8 @@ class TestSkillManageBatch(unittest.TestCase):
             r = self._call("probe", [
                 {"action": "patch",
                  "old_string": "Step 1.", "new_string": "Step ONE."},
-                {"action": "write_file",
-                 "file_path": "bad/nope.md", "file_content": "x"},
+                {"action": "patch",
+                 "old_string": "NOT IN THE FILE", "new_string": "x"},
             ])
         self.assertFalse(r["success"], r)
         self.assertIn("ROLLBACK FAILED", r["error"])

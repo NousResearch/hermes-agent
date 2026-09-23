@@ -244,15 +244,65 @@ def render_full(snap: Optional[Dict[str, Any]] = None) -> str:
     return "\n".join(line for block in parts for line in block)
 
 
+# ---------------------------------------------------------------------------
+# Decoration for wm live: title, dead-channel static, Neuromancer
+# ---------------------------------------------------------------------------
+
+_GLYPHS = {  # three-row box-drawing letters
+    "W": ("╦ ╦", "║║║", "╚╩╝"), "I": ("╦", "║", "╩"), "N": ("╔╗╔", "║║║", "╝╚╝"),
+    "T": ("╔╦╗", " ║ ", " ╩ "), "E": ("╔═╗", "║╣ ", "╚═╝"), "R": ("╦═╗", "╠╦╝", "╩╚═"),
+    "M": ("╔╦╗", "║║║", "╩ ╩"), "U": ("╦ ╦", "║ ║", "╚═╝"),
+}
+
+QUOTES = [  # from the novel (William Gibson, 1984)
+    "The sky above the port was the color of television, tuned to a dead channel.",
+    "Cyberspace. A consensual hallucination experienced daily by billions of legitimate operators…",
+    "Wintermute was hive mind, decision maker, effecting change in the world outside.",
+    "Neuromancer was personality. Neuromancer was immortality.",
+    "He'd operated on an almost permanent adrenaline high, a byproduct of youth and proficiency…",
+    "The matrix has its roots in primitive arcade games.",
+    "I'm not Wintermute now.",
+    "Things aren't different. Things are things.",
+]
+
+
+def _title_art() -> List[str]:
+    rows = ["", "", ""]
+    for letter in "WINTERMUTE":
+        for i in range(3):
+            rows[i] += _GLYPHS[letter][i]
+    colours = (magenta, cyan, dim)
+    pad = " " * max(0, (W - len(rows[0])) // 2)
+    return [pad + colours[i](row) for i, row in enumerate(rows)]
+
+
+def _static(seed: int, width: int = W) -> str:
+    """A line of dead-channel snow, different every frame."""
+    import random
+    rng = random.Random(seed)
+    chars = " ·.:░▒▓"
+    weights = (30, 12, 8, 5, 6, 3, 1)
+    return dim(cyan("".join(rng.choices(chars, weights, k=width))))
+
+
+def _quote(panel: int) -> List[str]:
+    import textwrap
+    text = f"« {QUOTES[panel % len(QUOTES)]} »"
+    lines = textwrap.wrap(text, W - 6)
+    lines[-1] += dim("  — Neuromancer")
+    return [dim("   " + line) for line in lines]
+
+
 ROTATION = [("PULSIONS + HORMONES", lambda s: _drives_block(s) + [""] + _mods_block(s)),
             ("INCONSCIENT", _unc_block), ("LIENS", _peers_block), ("JOURNAL", _journal_block)]
 
 
-def render_live(snap: Dict[str, Any], panel: int) -> str:
+def render_live(snap: Dict[str, Any], panel: int, frame: int = 0) -> str:
     title, builder = ROTATION[panel % len(ROTATION)]
     dots = " ".join(bold("●") if i == panel % len(ROTATION) else dim("○") for i in range(len(ROTATION)))
-    parts = [_header(snap), [""], _witness_block(snap), [""], _activity_block(snap, 6), [""],
-             builder(snap), ["", dim(f" {dots}   Ctrl+C pour quitter")]]
+    banner = [_static(frame)] + _title_art() + _quote(panel) + [_static(frame + 7919)]
+    parts = [banner, _header(snap)[1:], [""], _witness_block(snap), [""], _activity_block(snap, 6), [""],
+             builder(snap), ["", dim(f" {dots}   {snap['ts'].strftime('%H:%M:%S')}   Ctrl+C pour quitter")]]
     return "\n".join(line for block in parts for line in block)
 
 
@@ -291,8 +341,9 @@ def live(period: float = 10.0) -> None:
         sys.stdout.write("\033[?1049h\033[?25l")   # alternate screen, hide cursor
     try:
         while True:
-            panel = int((time.monotonic() - start) // max(1.0, period))
-            screen = render_live(snapshot(), panel)
+            elapsed = time.monotonic() - start
+            panel = int(elapsed // max(1.0, period))
+            screen = render_live(snapshot(), panel, frame=int(elapsed * 10))
             sys.stdout.write(("\033[H\033[J" if tty else "") + screen + "\n")
             sys.stdout.flush()
             time.sleep(2)

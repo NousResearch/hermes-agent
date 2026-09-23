@@ -525,7 +525,12 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
 export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
   const resolved = previewTargetForSource(target, source)
   const current = $previewTabs.get()
-  const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
+  const id =
+    resolved.kind === 'url'
+      ? source === 'tool-result'
+        ? mintBrowserTabId()
+        : browserTabId(current)
+      : previewTabId(resolved)
   const index = current.findIndex(tab => tab.id === id)
   const tab: PreviewTab = { id, target: resolved }
 

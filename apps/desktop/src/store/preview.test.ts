@@ -71,18 +71,28 @@ describe('preview store', () => {
     expect($previewTabs.get().map(tab => tab.target.kind)).toEqual(['file', 'url', 'artifact'])
   })
 
-  // A Browser tab is a VESSEL, so a link hands its page to the browser you are
-  // already looking at. New tabs are something you ask for (`newBrowserTab`) —
-  // otherwise an agent opening five pages leaves five Browsers behind.
-  it('navigates the open Browser rather than stacking a second one', () => {
+  it('keeps agent-opened URLs in separate Browser tabs', () => {
     openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
     openPreview(urlTarget('https://www.reddit.com'), 'tool-result')
 
     const urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
 
+    expect(urlTabs.map(tab => tab.target.url)).toEqual([
+      'https://news.ycombinator.com',
+      'https://www.reddit.com'
+    ])
+    expect(new Set(urlTabs.map(tab => tab.id)).size).toBe(2)
+    expect($rightRailActiveTabId.get()).toBe(urlTabs[1].id)
+  })
+
+  it('still navigates the Browser on screen for an explicit user link', () => {
+    openPreview(urlTarget('https://news.ycombinator.com'), 'explicit-link')
+    openPreview(urlTarget('https://www.reddit.com'), 'explicit-link')
+
+    const urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
+
     expect(urlTabs).toHaveLength(1)
     expect(urlTabs[0].target.url).toBe('https://www.reddit.com')
-    expect($rightRailActiveTabId.get()).toBe(urlTabs[0].id)
   })
 
   it('commits the live page onto a Browser tab without changing its id', () => {
@@ -116,7 +126,7 @@ describe('preview store', () => {
 
     newBrowserTab()
     selectRightRailTab(first)
-    openPreview(urlTarget('https://www.reddit.com'), 'tool-result')
+    openPreview(urlTarget('https://www.reddit.com'), 'explicit-link')
 
     expect($previewTabs.get().find(tab => tab.id === first)?.target.url).toBe('https://www.reddit.com')
     expect($previewTabs.get()).toHaveLength(2)

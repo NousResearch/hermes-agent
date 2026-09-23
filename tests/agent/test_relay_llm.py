@@ -759,6 +759,56 @@ def test_non_stream_defers_logical_success_and_reuses_scope_for_retry(relay_turn
     assert turn.logical_llm_calls == {}
 
 
+def test_logical_close_skips_pop_under_concurrent_turn_scope(relay_turn):
+    """#115471: a sibling turn of the same session may hold a live scope above this handle.
+
+    The logical-LLM close must skip its pop instead of popping through the sibling (which would
+    close the sibling's scope) or letting the native binding raise "not at the top of the stack"
+    once per overlap. The skipped scope is reclaimed by the session-close drain.
+    """
+    relay, turn = relay_turn
+    metadata = {"api_mode": "custom", "api_request_id": "request-overlap"}
+
+    relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"content": "valid"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata=metadata,
+        defer_logical_completion=True,
+    )
+    own_handle = turn.logical_llm_calls["request-overlap"]
+    lease = turn.lease
+
+    # Scope views are context-local: the turn's scopes live in the session context, so the
+    # overlap and every stack assertion must be observed through that same context.
+    observe_top = lambda: lease.host.run_in_session(  # noqa: E731
+        lease.session, relay_runtime._current_top, relay
+    )
+    top_before_sibling = observe_top()
+
+    # A concurrent turn's live scope sits above ours.
+    sibling_handle = lease.host.run_in_session(
+        lease.session, relay.scope.push, relay_runtime.LOGICAL_LLM_SCOPE,
+        relay.ScopeType.Function, handle=None, input={},
+    )
+    assert relay_runtime._same_handle(observe_top(), sibling_handle), "sibling must be on top"
+
+    relay_llm.complete_logical_call("request-overlap", outcome="success")
+
+    # The close skipped its pop instead of popping through the sibling, and the handle still
+    # left the registry either way.
+    assert turn.logical_llm_calls == {}
+    assert relay_runtime._same_handle(observe_top(), sibling_handle)
+
+    # The sibling's scope is intact, so the stack unwinds to exactly what it was before.
+    lease.host.run_in_session(lease.session, relay.scope.pop, sibling_handle)
+    assert relay_runtime._same_handle(observe_top(), own_handle), (
+        "the skipped scope stays on the stack and is reclaimed by the session-close drain"
+    )
+
+
 def test_non_stream_result_survives_logical_scope_close_failure(
     relay_turn, monkeypatch
 ):

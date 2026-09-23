@@ -13,7 +13,7 @@ metadata:
 
 ## Environment
 
-This skill assumes **headless openpyxl** — you are producing an .xlsx file on disk.
+This skill assumes **headless openpyxl**: you are producing an .xlsx file on disk.
 Follow the `excel-author` skill's conventions for cell coloring, formulas, named ranges, and sensitivity tables.
 Recalculate before delivery: `python /path/to/excel-author/scripts/recalc.py ./out/model.xlsx`.
 
@@ -121,17 +121,17 @@ Calculate the minimum synergies needed for the deal to be EPS-neutral in Year 1.
 
 - Always show both GAAP and adjusted (cash) EPS where relevant
 - Stock deals: use acquirer's current price for exchange ratio, note dilution from new shares
-- Include purchase price allocation — goodwill and intangible amortization matter for GAAP EPS
-- Synergy phase-in is critical — Year 1 is often only 25-50% of run-rate synergies
+- Include purchase price allocation, goodwill and intangible amortization matter for GAAP EPS
+- Synergy phase-in is critical, Year 1 is often only 25-50% of run-rate synergies
 - Don't forget foregone interest income on cash used and new interest expense on debt raised
 - Tax rate on synergies and interest adjustments should match the acquirer's marginal rate
 
 
-## Data sources — MCP first, web fallback
+## Data sources, MCP first, web fallback
 
 Many passages below say "use the S&P Kensho MCP / Daloopa MCP / FactSet MCP". Those are commercial financial-data MCPs from the original Cowork plugin context. In Hermes:
 
-- **If you have any structured financial-data MCP configured** (Hermes supports MCP — see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
+- **If you have any structured financial-data MCP configured** (Hermes supports MCP, see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
 - **Otherwise**, fall back to:
   - `web_search` / `web_extract` against SEC EDGAR (`https://www.sec.gov/cgi-bin/browse-edgar`) for US filings
   - Company IR pages for press releases, earnings decks

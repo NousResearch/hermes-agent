@@ -1,6 +1,6 @@
 # Conference Paper Checklists
 
-This reference documents the mandatory checklist requirements for major ML/AI conferences. All major venues now require paper checklists—missing them results in desk rejection.
+This reference documents the mandatory checklist requirements for major ML/AI conferences. All major venues now require paper checklists, missing them results in desk rejection.
 
 ---
 
@@ -288,7 +288,7 @@ If applicable:
 
 AAAI enforces formatting rules more strictly than any other major venue. Papers that deviate from the template are desk-rejected.
 
-- [ ] Use the **exact** AAAI style file without modification — no `\setlength`, no `\vspace` hacks, no font overrides
+- [ ] Use the **exact** AAAI style file without modification, no `\setlength`: no `\vspace` hacks, no font overrides
 - [ ] 7 pages main content (8 for camera-ready with author info)
 - [ ] Two-column format, Times font (set by template)
 - [ ] References and appendices do not count toward page limit
@@ -304,14 +304,14 @@ AAAI enforces formatting rules more strictly than any other major venue. Papers 
 
 ### Ethics and Reproducibility
 
-- [ ] Broader impact statement (encouraged but not always mandatory — check current year's CFP)
+- [ ] Broader impact statement (encouraged but not always mandatory, check current year's CFP)
 - [ ] Reproducibility details (datasets, code availability)
 - [ ] Acknowledge use of AI writing tools if applicable
 
 ### Key Differences from Other Venues
 
 - **No separate limitations section required** (unlike ACL), but discussing limitations is recommended
-- **Strictest formatting enforcement** — the style checker will reject non-compliant PDFs
+- **Strictest formatting enforcement**: the style checker will reject non-compliant PDFs
 - **No paper checklist** like NeurIPS has, but the universal checklist below still applies
 - **Unified template** covers main paper and supplementary in the same file
 
@@ -345,9 +345,9 @@ COLM (Conference on Language Modeling) focuses specifically on language model re
 
 ### Key Differences from Other Venues
 
-- **Narrower scope** than NeurIPS/ICML — must frame for LM community
-- **Template derived from ICLR** — similar formatting rules
-- **Newer venue** — reviewer norms are still establishing; err on the side of thorough evaluation
+- **Narrower scope** than NeurIPS/ICML, must frame for LM community
+- **Template derived from ICLR**: similar formatting rules
+- **Newer venue**: reviewer norms are still establishing; err on the side of thorough evaluation
 - **No mandatory checklist** like NeurIPS, but broader impact discussion is expected
 - **LLM disclosure**: If LLMs were used in research (code generation, data annotation, writing assistance), disclose this
 

@@ -19,8 +19,8 @@ metadata:
 
 # Kanban Video Orchestrator
 
-Wrap any video request — from a 15-second product teaser to a 5-minute narrative
-short to a music video to an ASCII loop — in a Hermes Kanban pipeline that
+Wrap any video request, from a 15-second product teaser to a 5-minute narrative
+short to a music video to an ASCII loop, in a Hermes Kanban pipeline that
 decomposes the work to specialized agent profiles.
 
 This skill does **not** render anything itself. It is a meta-pipeline that:
@@ -32,16 +32,16 @@ This skill does **not** render anything itself. It is a meta-pipeline that:
 5. **Monitors** execution, helps intervene when tasks stall or fail
 
 The actual rendering happens inside the kanban once it's running, via whichever
-existing skills + tools fit the scenes — `ascii-video`, `manim-video`, `p5js`,
+existing skills + tools fit the scenes, `ascii-video`, `manim-video`, `p5js`,
 `comfyui`, `touchdesigner-mcp`, `songwriting-and-ai-music`,
 `heartmula`, external APIs, or plain Python with PIL + ffmpeg.
 
 ## When NOT to use this skill
 
 - The video is one continuous procedural project that needs no specialists. Just write the code directly.
-- The user wants a quick one-shot conversion (e.g. "convert this mp4 to a GIF") — use ffmpeg directly.
-- The output is a static image, GIF, or audio-only artifact — use the matching specific skill (`ascii-art`, `gifs`, `meme-generation`, `songwriting-and-ai-music`).
-- The work fits a single existing skill cleanly (e.g. a pure ASCII video — just use `ascii-video`).
+- The user wants a quick one-shot conversion (e.g. "convert this mp4 to a GIF"), use ffmpeg directly.
+- The output is a static image, GIF, or audio-only artifact, use the matching specific skill (`ascii-art`, `gifs`, `meme-generation`, `songwriting-and-ai-music`).
+- The work fits a single existing skill cleanly (e.g. a pure ASCII video, just use `ascii-video`).
 
 ## Workflow
 
@@ -49,7 +49,7 @@ existing skills + tools fit the scenes — `ascii-video`, `manim-video`, `p5js`,
 DISCOVER  →  BRIEF  →  TEAM DESIGN  →  SETUP  →  EXECUTE  →  MONITOR
 ```
 
-### Step 1 — Discover (ask the right questions)
+### Step 1, Discover (ask the right questions)
 
 The discovery process is **adaptive**: ask only what is actually needed. Always
 start with three questions to identify the broad shape:
@@ -66,22 +66,22 @@ implies an answer.
 For complete intake patterns and per-style question banks, see
 **[references/intake.md](references/intake.md)**.
 
-### Step 2 — Brief
+### Step 2, Brief
 
 Once enough is known, produce a structured `brief.md` using the template in
 `assets/brief.md.tmpl`. Stages:
 
-1. **Concept** — the one-sentence pitch + emotional north star
-2. **Scope** — duration, aspect, platform, deadline
-3. **Style** — visual references, brand constraints, tone
-4. **Scenes** — beat-by-beat breakdown (durations, content, target tool)
-5. **Audio** — narration / music / SFX / silent (per scene if needed)
-6. **Deliverables** — file format, resolution, optional alternates (vertical cut, GIF, etc.)
+1. **Concept**: the one-sentence pitch + emotional north star
+2. **Scope**: duration, aspect, platform, deadline
+3. **Style**: visual references, brand constraints, tone
+4. **Scenes**: beat-by-beat breakdown (durations, content, target tool)
+5. **Audio**: narration / music / SFX / silent (per scene if needed)
+6. **Deliverables**: file format, resolution, optional alternates (vertical cut, GIF, etc.)
 
 Show the brief to the user for confirmation before designing the team. **The
-brief is the contract** — every downstream task references it.
+brief is the contract**, every downstream task references it.
 
-### Step 3 — Team design
+### Step 3, Team design
 
 Pick role archetypes from the library that fit this video. **Compose, don't
 clone.** Most videos need 4-7 profiles. The director is always present; the
@@ -93,7 +93,7 @@ For the role library and per-style team compositions, see
 For mapping role → which Hermes skills + toolsets it loads, see
 **[references/tool-matrix.md](references/tool-matrix.md)**.
 
-### Step 4 — Setup
+### Step 4, Setup
 
 Generate a setup script (`setup.sh`) and run it. The script:
 
@@ -110,7 +110,7 @@ team-design JSON. See **[references/kanban-setup.md](references/kanban-setup.md)
 for the setup script structure, profile config patterns, and the critical
 "shared workspace" rule.
 
-### Step 5 — Execute
+### Step 5, Execute
 
 Run `setup.sh`. Then provide the user with monitoring commands:
 
@@ -123,9 +123,9 @@ hermes dashboard                                   # visual board UI
 The director profile takes over from here, decomposing the work and routing
 tasks to specialist profiles via the kanban toolset.
 
-### Step 6 — Monitor and intervene
+### Step 6, Monitor and intervene
 
-Stay engaged — the kanban runs autonomously but a stuck task or bad output
+Stay engaged, the kanban runs autonomously but a stuck task or bad output
 needs human (or AI) judgment.
 
 Monitoring patterns: poll `kanban list` periodically, inspect any RUNNING task
@@ -141,9 +141,9 @@ playbook, see **[references/monitoring.md](references/monitoring.md)**.
 
 ## Reference: worked examples
 
-Six concrete pipelines covering very different video styles — narrative film,
+Six concrete pipelines covering very different video styles, narrative film,
 product/marketing, music video, math/algorithm explainer, ASCII video, real-time
-installation — showing how the same workflow yields very different teams and
+installation, showing how the same workflow yields very different teams and
 task graphs. See **[references/examples.md](references/examples.md)**.
 
 ## Critical rules
@@ -173,7 +173,7 @@ task graphs. See **[references/examples.md](references/examples.md)**.
 
 6. **The director never executes.** Even with the full `kanban + terminal +
    file` toolset, the director's `SOUL.md` rules forbid it from executing
-   work itself. It decomposes and routes only — every concrete task becomes
+   work itself. It decomposes and routes only, every concrete task becomes
    a `hermes kanban create` call to a specialist profile. The kanban
    orchestration guidance auto-injected into every kanban worker's system
    prompt spells this out further.

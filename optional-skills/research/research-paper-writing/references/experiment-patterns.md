@@ -258,7 +258,7 @@ Human Evaluation Protocol:
 | Informativeness | Does it provide useful information? | 1-5 Likert |
 | Overall preference | Which output is better? | A/B/Tie (pairwise) |
 
-**Pairwise comparison** (preferred over absolute scoring — more reliable):
+**Pairwise comparison** (preferred over absolute scoring, more reliable):
 - Present two outputs side-by-side (randomize left/right position)
 - Ask: "Which is better? A / B / Tie"
 - More discriminative and less susceptible to annotator calibration drift
@@ -305,10 +305,10 @@ print(f"Cohen's kappa: {kappa:.3f}")
 
 | Platform | Best For | Cost | Quality |
 |----------|----------|------|---------|
-| **Prolific** | Academic research, higher quality | $8-15/hr | High — academic participant pool |
-| **MTurk** | Large-scale, fast turnaround | $2-10/hr | Variable — use qualifications |
-| **Surge AI** | NLP-specific annotations | Premium | High — trained annotators |
-| **Expert annotators** | Domain-specific (medical, legal) | Highest | Highest — but slow |
+| **Prolific** | Academic research, higher quality | $8-15/hr | High, academic participant pool|
+| **MTurk** | Large-scale, fast turnaround | $2-10/hr | Variable, use qualifications|
+| **Surge AI** | NLP-specific annotations | Premium | High, trained annotators|
+| **Expert annotators** | Domain-specific (medical, legal) | Highest | Highest, but slow|
 
 **Ethics requirements**:
 - Report compensation rate (must be at minimum local minimum wage)
@@ -441,13 +441,13 @@ If nothing has changed since the last check, respond with [SILENT].
 
 ### Monitoring Best Practices
 
-1. **Check processes first** — don't read results if the experiment is still running and results are incomplete
-2. **Read the log tail** — look for errors, progress indicators, completion messages
-3. **Count completed vs expected** — "45/150 problems done" is more useful than "some results exist"
-4. **Report in structured tables** — always include key metrics in a table
-5. **Answer the key question** — each experiment should have a specific analytical question to answer when done
-6. **[SILENT] for no-news** — suppress notifications when nothing has changed
-7. **Commit on completion** — every completed batch gets committed with a descriptive message
+1. **Check processes first**: don't read results if the experiment is still running and results are incomplete
+2. **Read the log tail**: look for errors, progress indicators, completion messages
+3. **Count completed vs expected**: "45/150 problems done" is more useful than "some results exist"
+4. **Report in structured tables**: always include key metrics in a table
+5. **Answer the key question**: each experiment should have a specific analytical question to answer when done
+6. **[SILENT] for no-news**: suppress notifications when nothing has changed
+7. **Commit on completion**: every completed batch gets committed with a descriptive message
 
 ### Example Monitoring Report
 
@@ -538,11 +538,11 @@ Design tasks that have clear objectives but subjective quality:
 Constrained tasks test whether methods respect scope boundaries. Design with:
 
 - **Fixed facts**: "Use only these N data points, add nothing else"
-- **Fixed deliverable**: Specific format (pitch, postmortem, memo — not "improve this")
+- **Fixed deliverable**: Specific format (pitch, postmortem, memo, not "improve this")
 - **Fixed structure**: "These sections in this order, do not add/remove"
 - **Fixed change items**: "Address exactly these N points, nothing else"
 
-**Do NOT use word count as a scope constraint.** Word limits cause false convergence — outputs get rejected for length, not quality. Constrain scope (what to include) not length.
+**Do NOT use word count as a scope constraint.** Word limits cause false convergence, outputs get rejected for length, not quality. Constrain scope (what to include) not length.
 
 ### Example: Good vs Bad Constraints
 
@@ -565,7 +565,7 @@ Install SciencePlots for publication-ready defaults:
 pip install SciencePlots matplotlib numpy
 ```
 
-**Option A: SciencePlots styles** (recommended — handles most defaults automatically):
+**Option A: SciencePlots styles** (recommended, handles most defaults automatically):
 
 ```python
 import matplotlib.pyplot as plt
@@ -712,8 +712,8 @@ with plt.style.context(style):
 
 ### Output Rules
 
-- **Always save as PDF**: `fig.savefig('fig.pdf')` — vector graphics, sharp at any zoom
-- **Never save as PNG** for paper figures — raster PNGs look blurry when printed/zoomed
+- **Always save as PDF**: `fig.savefig('fig.pdf')`: vector graphics, sharp at any zoom
+- **Never save as PNG** for paper figures, raster PNGs look blurry when printed/zoomed
 - **Exception**: Screenshots, photographs, or pixel-art visualizations → PNG at 600 DPI
 - **Verify grayscale**: Print to grayscale PDF and check all information is still visible
 

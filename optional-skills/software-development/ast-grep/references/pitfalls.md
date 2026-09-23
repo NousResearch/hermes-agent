@@ -1,4 +1,4 @@
-# Pitfalls — what breaks patterns and how to fix them
+# Pitfalls: what breaks patterns and how to fix them
 
 This is the failure-mode field guide. The `scripts/ast_grep_helper.py validate` subcommand mechanically checks for the items in §1 before calling `sg`; the rest are lower-frequency but still common.
 
@@ -13,7 +13,7 @@ ast-grep does **not** interpret regex inside patterns. The following all fail:
 | `foo\|bar` | `\|` is regex alternation. ast-grep does not alternate. | Two separate calls, OR `any: [pattern: foo, pattern: bar]` in a YAML rule, OR `rg -e foo -e bar`. |
 | `foo.*bar` | `.*` is a regex wildcard. | `foo($$$) bar` if the gap is a list of nodes; otherwise switch to `rg`. |
 | `\w+`, `\d+`, `\s` | Regex character classes. | `$VAR` to capture any identifier. For digits-only, use `kind: number_literal`. |
-| `[a-z]+` | Regex character class. | No AST equivalent — switch to `rg`. |
+| `[a-z]+` | Regex character class. | No AST equivalent, switch to `rg`.|
 | `^foo$` | Regex anchors. | Anchor by AST: use `kind: program > expression_statement` or use `inside`/`not has`. |
 
 **Why this happens**: LLMs default to regex thinking. The mental switch is "ast-grep patterns are *code*, not *strings*."
@@ -27,7 +27,7 @@ rule:
     - regex: '^[A-Z][a-z]+$'   # CamelCase identifiers only
 ```
 
-Note: `regex` matches the **whole node text** — no partial matches. Combine with `kind` or `pattern` for performance.
+Note: `regex` matches the **whole node text**: no partial matches. Combine with `kind` or `pattern` for performance.
 
 ---
 
@@ -103,7 +103,7 @@ rule:
     - pattern: bar
 ```
 
-In TypeScript union types (`A | B`), `|` is part of the type syntax — `pattern: A | B` correctly parses as a union type and matches that.
+In TypeScript union types (`A | B`), `|` is part of the type syntax, `pattern: A | B` correctly parses as a union type and matches that.
 
 ---
 
@@ -298,6 +298,6 @@ stderr shows the parsed pattern; stdout shows the JSON match result. If the patt
 
 ## See also
 
-- `references/patterns.md` — meta-variables, strictness, naming rules.
-- `references/recipes.md` — known-good patterns by language.
-- `references/cli.md` — `--debug-query`, `--strictness`, `--update-all`.
+- `references/patterns.md`: meta-variables, strictness, naming rules.
+- `references/recipes.md`: known-good patterns by language.
+- `references/cli.md`, `--debug-query`, `--strictness`, `--update-all`.

@@ -90,7 +90,7 @@ op --version
 Hermes terminal commands are non-interactive by default and can lose auth context between calls.
 For reliable `op` use with desktop app integration, run sign-in and secret operations inside a dedicated tmux session.
 
-Note: This is NOT needed when using `OP_SERVICE_ACCOUNT_TOKEN` — the token persists across terminal calls automatically.
+Note: This is NOT needed when using `OP_SERVICE_ACCOUNT_TOKEN`: the token persists across terminal calls automatically.
 
 ```bash
 SOCKET_DIR="${TMPDIR:-${HERMES_HOME:-$HOME/.hermes}/cache/scratch}/hermes-tmux-sockets"

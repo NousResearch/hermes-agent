@@ -90,7 +90,7 @@ comfy stop
 
 ### `comfy run`
 
-Submit a raw workflow JSON to a running server. **Limited** — no parameter
+Submit a raw workflow JSON to a running server. **Limited**: no parameter
 injection, no structured output download. For agents, use
 `scripts/run_workflow.py` instead.
 
@@ -123,7 +123,7 @@ comfy node update all      # update all custom nodes
 
 ---
 
-## `comfy node` — Custom Node Management
+## `comfy node`: Custom Node Management
 
 All node operations use ComfyUI-Manager (`cm-cli`) under the hood.
 
@@ -165,7 +165,7 @@ Make `uv-compile` default: `comfy manager uv-compile-default true`
 
 ---
 
-## `comfy model` — Model Management
+## `comfy model`: Model Management
 
 ```bash
 comfy model list
@@ -208,7 +208,7 @@ ComfyUI/models/
 
 ---
 
-## `comfy manager` — ComfyUI-Manager Settings
+## `comfy manager`: ComfyUI-Manager Settings
 
 ```bash
 comfy manager disable               # disable Manager completely
@@ -221,7 +221,7 @@ comfy manager clear                 # clear startup action
 
 ---
 
-## `comfy pr-cache` — Frontend PR Cache
+## `comfy pr-cache`: Frontend PR Cache
 
 ```bash
 comfy pr-cache list

@@ -21,7 +21,7 @@ metric signal. Explain the metric connection to the user.
 | Relaxation < 0.30, stress_index high | Cardiac Coherence or 4-7-8 Breathing |
 | Cognitive Load > 0.70 sustained | Cognitive Load Offload (Mind Dump) |
 | Engagement < 0.30 for > 20 min | Novel Stimulation Burst or Environment Change |
-| Flow State (focus > 0.75, engagement > 0.70) | **Do NOT interrupt — protect the session** |
+| Flow State (focus > 0.75, engagement > 0.70) | **Do NOT interrupt, protect the session**|
 | Drowsiness > 0.60, post-lunch | Ultradian Reset or Power Nap |
 | FAA < 0, depression_index elevated | FAA Rebalancing |
 | Low RMSSD (< 25ms) | Vagal Toning |
@@ -38,9 +38,9 @@ metric signal. Explain the metric connection to the user.
 **Trigger**: High TBR (> 1.5) and low focus
 **Instructions**:
 1. Close your eyes
-2. Breathe slowly — 4s inhale, 6s exhale
+2. Breathe slowly, 4s inhale, 6s exhale
 3. Count rhythmically from 1 to 10, matching your breath
-4. Focus on the counting — if you lose count, restart from 1
+4. Focus on the counting, if you lose count, restart from 1
 5. Open your eyes after 4–5 full cycles
 **Effect**: Suppresses theta dominance and lifts beta activity
 
@@ -66,12 +66,12 @@ metric signal. Explain the metric connection to the user.
 
 ### Creativity Unlock
 **Duration**: 5 minutes
-**Trigger**: High beta, low rel_alpha — system is too analytically locked
+**Trigger**: High beta, low rel_alpha, system is too analytically locked
 **Instructions**:
 1. Stop all structured work
 2. Let your mind wander without a goal
 3. Doodle, look out the window, or listen to ambient sound
-4. Don't force any outcome — just observe what arises
+4. Don't force any outcome, just observe what arises
 5. After 5 minutes, jot down any ideas that surfaced
 **Effect**: Promotes alpha and theta activity for creative ideation
 
@@ -140,9 +140,9 @@ metric signal. Explain the metric connection to the user.
 
 ### Alpha Induction (Open Focus)
 **Duration**: 5 minutes
-**Trigger**: High beta, low relaxation — cannot relax
+**Trigger**: High beta, low relaxation, cannot relax
 **Instructions**:
-1. Soften your gaze — don't focus on any single object
+1. Soften your gaze, don't focus on any single object
 2. Notice the space between and around objects
 3. Expand your awareness to peripheral vision
 4. Maintain this "open focus" for 5 minutes
@@ -150,17 +150,17 @@ metric signal. Explain the metric connection to the user.
 
 ### Open Monitoring
 **Duration**: 5–10 minutes
-**Trigger**: Low LZC (< 40 on 0-100 scale) — neural complexity too low
+**Trigger**: Low LZC (< 40 on 0-100 scale), neural complexity too low
 **Instructions**:
 1. Sit comfortably with eyes closed or softly focused
 2. Don't direct attention to anything specific
-3. Simply notice whatever arises — thoughts, sounds, sensations
+3. Simply notice whatever arises, thoughts, sounds, sensations
 4. Let each observation pass without engagement
 **Effect**: Raises neural complexity and consciousness metrics
 
 ### Vagal Toning
 **Duration**: 3 minutes
-**Trigger**: Low RMSSD (< 25 ms) — weak vagal tone
+**Trigger**: Low RMSSD (< 25 ms), weak vagal tone
 **Instructions**:
 1. Hum a long, steady note on each exhale for 30 seconds
 2. Alternatively: gargle cold water for 30 seconds
@@ -197,7 +197,7 @@ metric signal. Explain the metric connection to the user.
 **Instructions**:
 1. Take 30 seconds of vigorous, fast breathing (safely)
 2. Stop and take 3 slow, deep breaths
-3. Do a 60-second body scan — notice where tension is held
+3. Do a 60-second body scan, notice where tension is held
 4. Shake out your hands and arms for 15 seconds
 **Effect**: Releases trapped sympathetic energy, recalibrates
 
@@ -215,11 +215,11 @@ metric signal. Explain the metric connection to the user.
 **Duration**: ~8 minutes
 **Trigger**: Rising anxiety without clear cause
 **Instructions**:
-1. Notice where anxiety lives in your body — chest? stomach? throat?
+1. Notice where anxiety lives in your body, chest? stomach? throat?
 2. Describe the sensation without judging it (tight? hot? buzzing?)
 3. Breathe into that area for 3 breaths
 4. Notice: is it getting bigger, smaller, or changing shape?
-5. Continue observing for 5–8 minutes — anxiety typically peaks then subsides
+5. Continue observing for 5–8 minutes, anxiety typically peaks then subsides
 
 ### Anger: Palm-Press Discharge
 **Duration**: 2 minutes
@@ -243,7 +243,7 @@ metric signal. Explain the metric connection to the user.
 **Trigger**: Existential flatness, low engagement, loss of meaning
 **Instructions**:
 1. Imagine standing at the edge of the Grand Canyon, or beneath a starry sky
-2. Let yourself feel the scale — you are small, and that's beautiful
+2. Let yourself feel the scale, you are small, and that's beautiful
 3. Recall a moment of genuine wonder from your past
 4. Notice what changes in your body
 **Effect**: Counters hedonic adaptation, restores sense of meaning
@@ -257,7 +257,7 @@ metric signal. Explain the metric connection to the user.
 **Trigger**: End of a 90-minute focus block, drowsiness rising
 **Instructions**:
 1. Set a timer for 20 minutes
-2. No agenda — just rest (don't force sleep)
+2. No agenda, just rest (don't force sleep)
 3. Dim lights if possible, close eyes
 4. Let mind wander without structure
 **Effect**: Aligns with 90-minute ultradian rhythm, restores cognitive resources
@@ -278,7 +278,7 @@ metric signal. Explain the metric connection to the user.
 1. Lie on your back, palms up
 2. Close your eyes and do a slow body scan from toes to crown
 3. At each body part, notice sensation without changing anything
-4. If you fall asleep, that's fine — set an alarm
+4. If you fall asleep, that's fine, set an alarm
 **Effect**: Restores dopamine and cognitive resources without sleep inertia
 
 ### Power Nap
@@ -309,7 +309,7 @@ metric signal. Explain the metric connection to the user.
 **Duration**: 10 minutes
 **Trigger**: Relaxation < 0.25, HRV declining over session
 **Instructions**:
-1. Start with feet — tense for 5 seconds, release for 8–10 seconds
+1. Start with feet, tense for 5 seconds, release for 8–10 seconds
 2. Move upward: calves → thighs → abdomen → hands → arms → shoulders → face
 3. Hold each tension 5 seconds, release 8–10 seconds
 4. End with 3 deep breaths
@@ -336,10 +336,10 @@ metric signal. Explain the metric connection to the user.
 **Duration**: 3 minutes
 **Trigger**: High stillness (> 0.85) + headache_index elevated
 **Instructions**:
-1. Ear-to-shoulder tilt — hold 15 seconds each side
-2. Chin tucks — 10 reps (pull chin straight back)
-3. Gentle neck circles — 5 each direction
-4. Shoulder shrugs — 10 reps (squeeze up, release)
+1. Ear-to-shoulder tilt, hold 15 seconds each side
+2. Chin tucks, 10 reps (pull chin straight back)
+3. Gentle neck circles, 5 each direction
+4. Shoulder shrugs, 10 reps (squeeze up, release)
 
 ### Motor Cortex Activation
 **Duration**: 2 minutes
@@ -356,7 +356,7 @@ metric signal. Explain the metric connection to the user.
 **Instructions**:
 1. Open a blank document or grab paper
 2. Write everything on your mind without filtering or organizing
-3. Brain-dump worries, tasks, ideas — anything occupying working memory
+3. Brain-dump worries, tasks, ideas, anything occupying working memory
 4. Close the document (review later if needed)
 **Effect**: Externalizing working memory can reduce cognitive load by 20–40%
 
@@ -369,7 +369,7 @@ metric signal. Explain the metric connection to the user.
 **Trigger**: Phone addiction signals, urge to check social media
 **Instructions**:
 1. Notice the urge to check your phone
-2. Don't act on it — just observe for 90 seconds
+2. Don't act on it, just observe for 90 seconds
 3. Notice: does the urge peak and then fade?
 4. Resume what you were doing
 **Effect**: Breaks automatic dopamine-seeking loop
@@ -437,11 +437,11 @@ metric signal. Explain the metric connection to the user.
 
 When guiding the user through a protocol:
 1. **Match one protocol** to the single most salient metric signal
-2. **Explain the metric connection** — why this protocol for this state
-3. **Ask permission** — never start without the user's consent
+2. **Explain the metric connection**: why this protocol for this state
+3. **Ask permission**: never start without the user's consent
 4. **Announce each step** clearly with timing
-5. **Check in after** — run `npx neuroskill status --json` to see if metrics improved
-6. **Label the moment** — `npx neuroskill label "post-protocol: [name]"` for tracking
+5. **Check in after**: run `npx neuroskill status --json` to see if metrics improved
+6. **Label the moment**: `npx neuroskill label "post-protocol: [name]"` for tracking
 
 ### Timing Guidelines for Step-by-Step Guidance
 - Breath inhale: 3–5 seconds

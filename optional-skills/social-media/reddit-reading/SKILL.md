@@ -13,8 +13,8 @@ metadata:
 
 # Reddit Reading Skill
 
-Reads Reddit content — subreddit listings, site or subreddit search, full threads with
-comments, and user activity — from a server or headless machine where the normal routes
+Reads Reddit content, subreddit listings, site or subreddit search, full threads with
+comments, and user activity, from a server or headless machine where the normal routes
 are dead. It does not post, vote, or log in as a user. Idea credit: the per-platform
 backend routing in [Agent Reach](https://github.com/Panniantong/Agent-Reach).
 
@@ -84,7 +84,7 @@ Every command works on both backends; the script chooses the backend, you never 
 
 ## Procedure
 
-① `doctor` once per task if you have not called it this session — it tells you which
+① `doctor` once per task if you have not called it this session, it tells you which
 backend is live and how many seconds remain in the anonymous window.
 
 ② Plan your calls before making them. Anonymous Reddit allows roughly **one request per
@@ -113,7 +113,7 @@ account. Never ask for a Reddit password or browser cookies.
   an **old** thread that was archived; it cannot fetch fresh ones.
 - Anonymous thread feeds only contain the post plus top-level comments (Reddit caps the
   feed at a handful of entries); scores and reply nesting are OAuth-only.
-- Reddit's `limit` on feeds is advisory — expect 5–25 entries regardless of what you ask.
+- Reddit's `limit` on feeds is advisory, expect 5–25 entries regardless of what you ask.
 - Never paste `REDDIT_CLIENT_SECRET` into a chat or log; the script reads it from the
   environment only.
 - Do not "fix" a 429 by retrying in a loop or adding a proxy; the throttle is per IP and

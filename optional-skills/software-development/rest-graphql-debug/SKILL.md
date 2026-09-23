@@ -14,7 +14,7 @@ metadata:
 
 # API Testing & Debugging
 
-Drive REST and GraphQL diagnosis through Hermes tools — `terminal` for `curl`, `execute_code` for Python `requests`, `web_extract` for vendor docs. Isolate the failing layer before guessing at the fix.
+Drive REST and GraphQL diagnosis through Hermes tools, `terminal` for `curl`, `execute_code` for Python `requests`, `web_extract` for vendor docs. Isolate the failing layer before guessing at the fix.
 
 ## When to Use
 
@@ -107,7 +107,7 @@ print(resp.text[:500])
 
 ## Layered Debug Flow
 
-### Step 1 — Connectivity
+### Step 1, Connectivity
 
 ```python
 terminal('nslookup api.example.com')
@@ -116,7 +116,7 @@ terminal('curl -v --connect-timeout 5 https://api.example.com/health')
 
 Failures: DNS not resolving, firewall, VPN required, proxy missing.
 
-### Step 1.5 — Timeouts
+### Step 1.5, Timeouts
 
 Distinguish *can't reach* from *reaches but slow*:
 
@@ -125,7 +125,7 @@ terminal('''curl -w "dns:%{time_namelookup}s connect:%{time_connect}s tls:%{time
   -o /dev/null -s https://api.example.com/endpoint''')
 ```
 
-In Python, always pass a tuple timeout — `requests` has no default and will hang forever:
+In Python, always pass a tuple timeout, `requests` has no default and will hang forever:
 
 ```python
 execute_code('''
@@ -142,7 +142,7 @@ except ReadTimeout:
 
 Diagnosis: high `time_connect` is network/firewall; high `time_starttransfer` with low `time_connect` is a slow server.
 
-### Step 2 — TLS/SSL
+### Step 2, TLS/SSL
 
 ```python
 terminal('curl -vI https://api.example.com 2>&1 | grep -E "SSL|subject|expire|issuer"')
@@ -150,7 +150,7 @@ terminal('curl -vI https://api.example.com 2>&1 | grep -E "SSL|subject|expire|is
 
 Failures: expired cert, self-signed, hostname mismatch, missing CA bundle. Use `-k` only for ad-hoc debug, never in code.
 
-### Step 3 — Authentication
+### Step 3, Authentication
 
 ```python
 # Token validity check
@@ -172,7 +172,7 @@ Checklist:
 - Right environment? Staging key on prod is a classic
 - API key in header vs query param (`?api_key=…`)?
 
-### Step 4 — Request Format
+### Step 4, Request Format
 
 ```python
 terminal("""curl -v -X POST https://api.example.com/endpoint \\
@@ -180,7 +180,7 @@ terminal("""curl -v -X POST https://api.example.com/endpoint \\
   -d '{"key":"value"}' 2>&1""")
 ```
 
-**Content-Type / body mismatch — the silent 415/400:**
+**Content-Type / body mismatch, the silent 415/400:**
 
 ```python
 # WRONG — data= sends form-encoded, header lies
@@ -198,7 +198,7 @@ requests.post(url, files={"file": open("doc.pdf", "rb")})
 
 Common: form-encoded vs JSON, missing required fields, wrong HTTP method, unencoded query params.
 
-### Step 5 — Response Parsing
+### Step 5, Response Parsing
 
 Always inspect content-type before calling `.json()`:
 
@@ -218,9 +218,9 @@ else:
 
 Failures: HTML error page where JSON expected, empty body, wrong charset.
 
-### Step 6 — Semantic Validation
+### Step 6, Semantic Validation
 
-Parsed cleanly — but is the data *correct*?
+Parsed cleanly, but is the data *correct*?
 
 - Does `"status": "active"` mean what your code thinks?
 - ID in response matches the one requested?
@@ -229,41 +229,41 @@ Parsed cleanly — but is the data *correct*?
 
 ## HTTP Status Playbook
 
-### 401 Unauthorized — credentials missing or invalid
+### 401 Unauthorized: credentials missing or invalid
 
 1. `Authorization` header actually present? (`curl -v` to confirm)
 2. Token correct and unexpired?
 3. Right auth scheme? (`Bearer` vs `Basic` vs `Token`)
 4. Some APIs use query param (`?api_key=…`) instead of header.
 
-### 403 Forbidden — authenticated but not authorized
+### 403 Forbidden: authenticated but not authorized
 
 1. Token has the required scopes/permissions?
 2. Resource owned by a different account?
 3. IP allowlist blocking you?
 4. CORS in browser? (check `Access-Control-Allow-Origin`)
 
-### 404 Not Found — resource doesn't exist or URL is wrong
+### 404 Not Found: resource doesn't exist or URL is wrong
 
 1. Path correct? (trailing slash, typo, version prefix)
 2. Resource ID exists?
 3. Right API version (`/v1/` vs `/v2/`)?
 4. Right base URL (staging vs prod)?
 
-### 409 Conflict — state collision
+### 409 Conflict: state collision
 
 1. Resource already exists (duplicate create)?
 2. Stale `ETag` / `If-Match`?
 3. Concurrent modification by another process?
 
-### 422 Unprocessable Entity — valid JSON, invalid data
+### 422 Unprocessable Entity: valid JSON, invalid data
 
 The error body usually names the bad fields. Check:
 - Field types (string vs int, date format)
 - Required vs optional
 - Enum values inside the allowed set
 
-### 429 Too Many Requests — rate limited
+### 429 Too Many Requests: rate limited
 
 Check `Retry-After` and `X-RateLimit-*` headers. Exponential backoff:
 
@@ -282,20 +282,20 @@ def with_backoff(method, url, **kwargs):
 ''')
 ```
 
-### 5xx — server-side, usually not your fault
+### 5xx: server-side, usually not your fault
 
-- **500** — server bug. Capture correlation ID, file with provider.
-- **502** — upstream down. Backoff + retry.
-- **503** — overloaded / maintenance. Check status page.
-- **504** — upstream timeout. Reduce payload or raise timeout.
+- **500**: server bug. Capture correlation ID, file with provider.
+- **502**: upstream down. Backoff + retry.
+- **503**: overloaded / maintenance. Check status page.
+- **504**: upstream timeout. Reduce payload or raise timeout.
 
 For all 5xx: backoff with jitter, alert on persistence.
 
 ## Pagination & Idempotency
 
 **Pagination.** Verify you're getting *all* results. Look for `next_cursor`, `next_page`, `total_count`. Two patterns:
-- Offset (`?limit=100&offset=200`) — simple, can skip items if data shifts.
-- Cursor (`?cursor=abc123`) — preferred for live or large datasets.
+- Offset (`?limit=100&offset=200`), simple, can skip items if data shifts.
+- Cursor (`?cursor=abc123`), preferred for live or large datasets.
 
 **Idempotency.** For non-idempotent operations (POST), send `Idempotency-Key: <uuid>` so retries don't double-charge / double-create. Mandatory for payments and orders.
 
@@ -328,7 +328,7 @@ Run after API upgrades, when integrating new third parties, or in CI smoke tests
 
 ## Correlation IDs
 
-Always capture the provider's request ID — fastest path to vendor support:
+Always capture the provider's request ID, fastest path to vendor support:
 
 ```python
 execute_code('''
@@ -411,7 +411,7 @@ def redact_auth(headers: dict) -> dict:
 
 ### Leak checklist
 
-- [ ] **Credentials in URLs.** API keys in query strings end up in server logs, browser history, referrer headers — use headers.
+- [ ] **Credentials in URLs.** API keys in query strings end up in server logs, browser history, referrer headers, use headers.
 - [ ] **PII in error responses.** `404 on /users/123` shouldn't reveal whether the user exists (enumeration).
 - [ ] **Stack traces in prod.** 500s shouldn't leak file paths, framework versions.
 - [ ] **Internal hostnames/IPs.** `10.x.x.x`, `internal-api.corp.local` in error bodies.
@@ -420,14 +420,14 @@ def redact_auth(headers: dict) -> dict:
 
 ## Hermes Tool Patterns
 
-### terminal — for curl, dig, openssl
+### terminal: for curl, dig, openssl
 
 ```python
 terminal('curl -sI https://api.example.com')
 terminal('openssl s_client -connect api.example.com:443 -servername api.example.com </dev/null 2>/dev/null | openssl x509 -noout -dates')
 ```
 
-### execute_code — for multi-step Python flows
+### execute_code: for multi-step Python flows
 
 When debugging spans auth → fetch → paginate → validate, use `execute_code`. Variables persist for the script, results print to stdout, no risk of token spam in your context:
 
@@ -457,7 +457,7 @@ print(f"users={len(all_users)}")
 ''')
 ```
 
-### web_extract — for vendor API docs
+### web_extract: for vendor API docs
 
 Pull the spec for the endpoint you're debugging instead of guessing:
 
@@ -465,7 +465,7 @@ Pull the spec for the endpoint you're debugging instead of guessing:
 web_extract(urls=["https://docs.example.com/api/v1/users"])
 ```
 
-### delegate_task — for full CRUD test sweeps
+### delegate_task: for full CRUD test sweeps
 
 ```python
 delegate_task(
@@ -511,5 +511,5 @@ Missing required field `email`. Server validation rejects before processing.
 
 ## Related
 
-- `systematic-debugging` — once the failing API layer is isolated, root-cause your code
-- `test-driven-development` — write the regression test before shipping the fix
+- `systematic-debugging`: once the failing API layer is isolated, root-cause your code
+- `test-driven-development`: write the regression test before shipping the fix

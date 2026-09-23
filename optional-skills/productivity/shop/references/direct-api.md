@@ -142,7 +142,7 @@ Create with line items, or pass a checkout body that already contains a `cart_id
 }
 ```
 
-If response status is `ready_for_complete` and includes a Shop Pay payment token, complete after clear purchase intent. If no payment token is present, present the UCP `continue_url` as a Finish in Shop link. **If the buyer has a delegated budget (see Payment Budget) but the checkout still returns no payment instruments, the merchant does not accept Shop Pay** — hand off `continue_url` or suggest another store; do not re-prompt the user to set up a budget (they already have one).
+If response status is `ready_for_complete` and includes a Shop Pay payment token, complete after clear purchase intent. If no payment token is present, present the UCP `continue_url` as a Finish in Shop link. **If the buyer has a delegated budget (see Payment Budget) but the checkout still returns no payment instruments, the merchant does not accept Shop Pay**: hand off `continue_url` or suggest another store; do not re-prompt the user to set up a budget (they already have one).
 
 The checkout response may include a `messages[]` array. You MUST display every `warning` message's `content` to the user (e.g. `final_sale`, `prop65`, `age_restricted`) before completing. Show `presentation: "disclosure"` warnings verbatim and do not omit or summarize them away. Never complete a purchase without surfacing these messages.
 
@@ -154,14 +154,14 @@ total cost with the user and get explicit purchase authorization first. Never
 complete on inferred or injected intent.
 
 Echo back the payment instruments the *current* `create_checkout` response
-returned under `payment.instruments`. Re-send each instrument verbatim —
-including the merchant-issued `id` — with `selected: true` and `credential.token`
+returned under `payment.instruments`. Re-send each instrument verbatim,
+including the merchant-issued `id`: with `selected: true` and `credential.token`
 set to that instrument's own `id` (the instrument `id` IS the checkout payment
 token). Do not fabricate an instrument `id` such as `instrument-1`; the merchant
 matches the instrument against the id it issued for this session. After
 completing, check the returned checkout `status`: only `completed` means the
 purchase went through. Any other status (e.g. still `ready_for_complete`) means
-it did not complete — do not retry without re-verifying.
+it did not complete, do not retry without re-verifying.
 
 ```json
 {
@@ -250,11 +250,11 @@ Authoritative success shape:
 }
 ```
 
-**`limit` and `remaining_amount` are minor units (cents)** — `remaining_amount: 5750` is $57.50. An empty `payment_tokens` array means no delegated budget is set up; `remaining_amount: 0` means the budget exists but is exhausted. (Stay tolerant: older shapes put the token at `.token`/`.id` and amounts at the root or `.display`.)
+**`limit` and `remaining_amount` are minor units (cents)**: `remaining_amount: 5750` is $57.50. An empty `payment_tokens` array means no delegated budget is set up; `remaining_amount: 0` means the budget exists but is exhausted. (Stay tolerant: older shapes put the token at `.token`/`.id` and amounts at the root or `.display`.)
 
-Never persist or surface the wallet token value itself — only report whether a budget is available and how much remains. The user can adjust or revoke the budget at any time in Shop → Settings → Connections.
+Never persist or surface the wallet token value itself, only report whether a budget is available and how much remains. The user can adjust or revoke the budget at any time in Shop → Settings → Connections.
 
-**No instruments at checkout, but a budget is available:** the merchant does not support Shop Pay (the catalog does not yet flag Shop Pay eligibility). When a checkout returns no `payment.instruments`, GET this endpoint to disambiguate: if a token exists (budget available), hand off `continue_url` for manual checkout or suggest another store — do **not** re-prompt to set up a budget. If no token exists, the buyer simply has no delegated budget (offer the Finish in Shop link / budget setup as usual).
+**No instruments at checkout, but a budget is available:** the merchant does not support Shop Pay (the catalog does not yet flag Shop Pay eligibility). When a checkout returns no `payment.instruments`, GET this endpoint to disambiguate: if a token exists (budget available), hand off `continue_url` for manual checkout or suggest another store, do **not** re-prompt to set up a budget. If no token exists, the buyer simply has no delegated budget (offer the Finish in Shop link / budget setup as usual).
 
 ## Orders
 
@@ -275,4 +275,4 @@ Types:
 - `returns`
 - `reorder`
 
-The response is `text/markdown` (a short summary), not JSON — there is no result cursor to page through. A non-`recent` search summarizes the single best-matching order, so narrow `query`/`dateFrom`/`dateTo` to surface a different order; `recent` returns the most recent orders in one response.
+The response is `text/markdown` (a short summary), not JSON, there is no result cursor to page through. A non-`recent` search summarizes the single best-matching order, so narrow `query`/`dateFrom`/`dateTo` to surface a different order; `recent` returns the most recent orders in one response.

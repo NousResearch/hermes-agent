@@ -1,4 +1,4 @@
-# Recipes — copy-paste patterns by language
+# Recipes: copy-paste patterns by language
 
 Every pattern in this file has been verified against the canonical syntax. They are starting points; tweak metavariable names and constraints to fit your case.
 
@@ -396,7 +396,7 @@ rule:
 
 ## See also
 
-- `references/patterns.md` — meta-variable rules.
-- `references/yaml-rules.md` — full YAML rule schema (atomic / relational / composite / transform / fix).
-- `references/cli.md` — `sg run`, `sg scan`, `sg test`, `sg new`.
+- `references/patterns.md`: meta-variable rules.
+- `references/yaml-rules.md`: full YAML rule schema (atomic / relational / composite / transform / fix).
+- `references/cli.md`, `sg run`, `sg scan`, `sg test`, `sg new`.
 - Official catalog: <https://ast-grep.github.io/catalog/> (community-maintained, browse by language).

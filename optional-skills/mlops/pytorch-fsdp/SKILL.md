@@ -28,7 +28,7 @@ This skill should be triggered when:
 ## Quick Reference
 
 The full common-patterns catalog (~157k chars of runnable FSDP snippets) lives in
-`references/common-patterns.md` — load it with `read_file` when you need wrapping,
+`references/common-patterns.md`: load it with `read_file` when you need wrapping,
 sharding-strategy, checkpoint, or mixed-precision examples. Start there rather than
 reconstructing FSDP incantations from memory.
 

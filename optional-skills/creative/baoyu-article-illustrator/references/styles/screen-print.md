@@ -4,7 +4,7 @@ Bold poster art with limited colors, halftone textures, and symbolic storytellin
 
 ## Design Aesthetic
 
-Screen print / silkscreen aesthetic inspired by Mondo limited-edition posters and vintage concert prints. Flat color blocks, halftone dot patterns, bold silhouettes, and deliberate print imperfections. Conceptual and symbolic rather than literal — one iconic image tells the whole story. Perfect for opinion pieces, cultural commentary, and editorial content.
+Screen print / silkscreen aesthetic inspired by Mondo limited-edition posters and vintage concert prints. Flat color blocks, halftone dot patterns, bold silhouettes, and deliberate print imperfections. Conceptual and symbolic rather than literal, one iconic image tells the whole story. Perfect for opinion pieces, cultural commentary, and editorial content.
 
 ## Background
 
@@ -41,7 +41,7 @@ Screen print / silkscreen aesthetic inspired by Mondo limited-edition posters an
 - Slight color layer misregistration (print offset effect)
 - Geometric framing (circles, arches, triangles)
 - Figure-ground inversion (negative space forms secondary image)
-- Stencil-cut edges, no outlines — shapes defined by color boundaries
+- Stencil-cut edges, no outlines, shapes defined by color boundaries
 - Typography integrated as design element, not overlay
 - Vintage poster border treatments
 

@@ -30,7 +30,7 @@ just cd there and source .venv/bin/activate instead of recloning.
 
 You also need a ROM file. Ask the user for theirs (a previous setup may
 already have one at roms/pokemon_red.gb inside the checkout).
-NEVER download or provide ROM files — always ask the user.
+NEVER download or provide ROM files: always ask the user.
 
 ### 2. Start the game server
 From inside the pokemon-agent directory with the venv activated, run
@@ -46,7 +46,7 @@ port 9876 to remote port 80 on the keyless localhost.run endpoint
 (ssh -R 80:localhost:9876 ssh://nokey@localhost.run). Redirect output
 to a log file, wait 10 seconds, then grep the log for the .lhr.life
 URL. Give the user the URL with /dashboard/ appended.
-The tunnel URL changes each time — give the user the new one if restarted.
+The tunnel URL changes each time: give the user the new one if restarted.
 
 ## Save and Load
 
@@ -72,10 +72,10 @@ This is faster than loading via the API after startup.
 
 ## The Gameplay Loop
 
-### Step 1: OBSERVE — check state AND take a screenshot
+### Step 1: OBSERVE, check state AND take a screenshot
 GET /state for position, HP, battle, dialog.
 GET /screenshot and save to ~/.hermes/cache/scratch/pokemon.png, then use vision_analyze.
-Always do BOTH — RAM state gives numbers, vision gives spatial awareness.
+Always do BOTH: RAM state gives numbers, vision gives spatial awareness.
 
 ### Step 2: ORIENT
 - Dialog/text on screen → advance it
@@ -86,10 +86,10 @@ Always do BOTH — RAM state gives numbers, vision gives spatial awareness.
 ### Step 3: DECIDE
 Priority: dialog > battle > heal > story objective > training > explore
 
-### Step 4: ACT — move 2-4 steps max, then re-check
+### Step 4: ACT, move 2-4 steps max, then re-check
 POST /action with a SHORT action list (2-4 actions, not 10-15).
 
-### Step 5: VERIFY — screenshot after every move sequence
+### Step 5: VERIFY, screenshot after every move sequence
 Take a screenshot and use vision_analyze to confirm you moved where
 intended. This is the MOST IMPORTANT step. Without vision you WILL get lost.
 
@@ -98,20 +98,20 @@ intended. This is the MOST IMPORTANT step. Without vision you WILL get lost.
 ### Step 7: SAVE periodically
 
 ## Action Reference
-- press_a — confirm, talk, select
-- press_b — cancel, close menu
-- press_start — open game menu
-- walk_up/down/left/right — move one tile
-- hold_b_N — hold B for N frames (use for speeding through text)
-- wait_60 — wait about 1 second (60 frames)
-- a_until_dialog_end — press A repeatedly until dialog clears
+- press_a: confirm, talk, select
+- press_b: cancel, close menu
+- press_start: open game menu
+- walk_up/down/left/right: move one tile
+- hold_b_N: hold B for N frames (use for speeding through text)
+- wait_60: wait about 1 second (60 frames)
+- a_until_dialog_end: press A repeatedly until dialog clears
 
 ## Critical Tips from Experience
 
 ### USE VISION CONSTANTLY
 - Take a screenshot every 2-4 movement steps
 - The RAM state tells you position and HP but NOT what is around you
-- Ledges, fences, signs, building doors, NPCs — only visible via screenshot
+- Ledges, fences, signs, building doors, NPCs: only visible via screenshot
 - Ask the vision model specific questions: "what is one tile north of me?"
 - When stuck, always screenshot before trying random directions
 
@@ -145,7 +145,7 @@ gap is. Ask the vision model explicitly.
 - When entering a new area, screenshot immediately to orient
 - Ask the vision model "which direction to [destination]?"
 - If stuck for 3+ attempts, screenshot and re-evaluate completely
-- Do not spam 10-15 movements — you will overshoot or get stuck
+- Do not spam 10-15 movements: you will overshoot or get stuck
 
 ### Running from Wild Battles
 On the battle menu, RUN is bottom-right. To reach it from the default
@@ -194,14 +194,14 @@ Then hold B to speed through attack animations and text.
 ## Progression Milestones
 - Choose starter
 - Deliver Parcel from Viridian Mart, receive Pokedex
-- Boulder Badge — Brock (Rock) → use Water/Grass
-- Cascade Badge — Misty (Water) → use Grass/Electric
-- Thunder Badge — Lt. Surge (Electric) → use Ground
-- Rainbow Badge — Erika (Grass) → use Fire/Ice/Flying
-- Soul Badge — Koga (Poison) → use Ground/Psychic
-- Marsh Badge — Sabrina (Psychic) → hardest gym
-- Volcano Badge — Blaine (Fire) → use Water/Ground
-- Earth Badge — Giovanni (Ground) → use Water/Grass/Ice
+- Boulder Badge: Brock (Rock) → use Water/Grass
+- Cascade Badge: Misty (Water) → use Grass/Electric
+- Thunder Badge: Lt. Surge (Electric) → use Ground
+- Rainbow Badge: Erika (Grass) → use Fire/Ice/Flying
+- Soul Badge: Koga (Poison) → use Ground/Psychic
+- Marsh Badge: Sabrina (Psychic) → hardest gym
+- Volcano Badge: Blaine (Fire) → use Water/Ground
+- Earth Badge: Giovanni (Ground) → use Water/Grass/Ice
 - Elite Four → Champion!
 
 ## Stopping Play
@@ -215,6 +215,6 @@ Then hold B to speed through attack animations and text.
 - Do NOT send more than 4-5 actions without checking vision
 - Always sidestep after exiting buildings before going north
 - Always add wait_60 x2-3 after door/stair warps
-- Dialog detection via RAM is unreliable — verify with screenshots
+- Dialog detection via RAM is unreliable: verify with screenshots
 - Save BEFORE risky encounters
 - The tunnel URL changes each time you restart it

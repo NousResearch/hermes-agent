@@ -13,8 +13,8 @@ metadata:
 
 # Darwinian Evolver
 
-Run Imbue's [darwinian_evolver](https://github.com/imbue-ai/darwinian_evolver) — an
-LLM-driven evolutionary search loop — to optimize a **prompt, regex, SQL query,
+Run Imbue's [darwinian_evolver](https://github.com/imbue-ai/darwinian_evolver), an
+LLM-driven evolutionary search loop, to optimize a **prompt, regex, SQL query,
 or small code snippet** against a fitness function.
 
 Status: thin wrapper around the upstream tool. The skill installs it, walks the
@@ -31,13 +31,13 @@ import upstream classes into Hermes itself.
   code/SQL", "search for a better instruction".
 - You have a scorer (exact match, regex pass-rate, unit test, LLM-judge, runtime
   metric) AND a starting candidate (organism). If you don't have a scorer, stop
-  and define one first — that's the hard part.
+  and define one first, that's the hard part.
 - Cost is OK: a typical run is 50–500 LLM calls. On gpt-4o-mini that's pennies;
   on Claude Sonnet it can be a few dollars.
 
 Do **not** use this when:
 - The optimization target is differentiable (use gradient descent / DSPy).
-- You only need to try 2–3 variants — just write them by hand.
+- You only need to try 2–3 variants, just write them by hand.
 - The fitness signal is purely subjective with no measurable criterion.
 
 ## Prerequisites
@@ -67,7 +67,7 @@ cd ~/.hermes/cache/darwinian-evolver/darwinian_evolver \
   && uv run darwinian_evolver --help | head -5
 ```
 
-## Quick Start — The Built-In Parrot Example
+## Quick Start, The Built-In Parrot Example
 
 Tiny smoke test (requires `ANTHROPIC_API_KEY`):
 
@@ -81,15 +81,15 @@ uv run darwinian_evolver parrot \
 ```
 
 Outputs:
-- `~/.hermes/cache/scratch/parrot_demo/snapshots/iteration_N.pkl` — pickled population per iteration
-- `~/.hermes/cache/scratch/parrot_demo/<jsonl>` — per-iteration JSON log (path printed at end)
+- `~/.hermes/cache/scratch/parrot_demo/snapshots/iteration_N.pkl`: pickled population per iteration
+- `~/.hermes/cache/scratch/parrot_demo/<jsonl>`: per-iteration JSON log (path printed at end)
 
 Open `~/.hermes/cache/darwinian-evolver/darwinian_evolver/darwinian_evolver/lineage_visualizer.html`
 in a browser and load the JSON log to see the evolutionary tree.
 
-## Quick Start — OpenRouter Driver (No Anthropic Key)
+## Quick Start, OpenRouter Driver (No Anthropic Key)
 
-The skill ships `scripts/parrot_openrouter.py` — same parrot problem, but the
+The skill ships `scripts/parrot_openrouter.py`: same parrot problem, but the
 LLM call goes through OpenRouter so any provider works.
 
 ```bash
@@ -116,30 +116,30 @@ landing around 0.6–0.8 (the seed `Say {{ phrase }}` scored 0.000).
 
 ## Defining a Custom Problem
 
-The skill ships `templates/custom_problem_template.py` — copy, edit, run.
+The skill ships `templates/custom_problem_template.py`: copy, edit, run.
 Three things you must define:
 
-1. **`Organism`** — a Pydantic `BaseModel` subclass holding the artifact being
+1. **`Organism`**: a Pydantic `BaseModel` subclass holding the artifact being
    evolved (`prompt_template: str`, `regex_pattern: str`, `sql_query: str`,
    `code_block: str`, etc.). Add a `run(*args)` method that exercises it.
 
-2. **`Evaluator`** — `.evaluate(organism) -> EvaluationResult(score=..., trainable_failure_cases=[...], holdout_failure_cases=[...], is_viable=True)`.
+2. **`Evaluator`**: `.evaluate(organism) -> EvaluationResult(score=..., trainable_failure_cases=[...], holdout_failure_cases=[...], is_viable=True)`.
    - **`score`** is in `[0, 1]`. Higher is better.
-   - **`trainable_failure_cases`** — what the mutator sees. Include enough
+   - **`trainable_failure_cases`**: what the mutator sees. Include enough
      context (input, expected, actual) for the LLM to diagnose.
-   - **`holdout_failure_cases`** — kept out of the mutator's view. Use these
+   - **`holdout_failure_cases`**: kept out of the mutator's view. Use these
      to detect overfitting.
    - **`is_viable=True`** unless the organism is completely broken (raises,
-     returns None, etc.). A 0-score viable organism is fine — it just gets
+     returns None, etc.). A 0-score viable organism is fine, it just gets
      down-weighted in parent selection.
 
-3. **`Mutator`** — `.mutate(organism, failure_cases, learning_log_entries) -> list[Organism]`.
+3. **`Mutator`**: `.mutate(organism, failure_cases, learning_log_entries) -> list[Organism]`.
    Typically: build an LLM prompt that includes the current organism + a
    failure case + an ask to propose a fix; parse the LLM's response; return
-   a new `Organism`. Return `[]` on parse failure — the loop handles it.
+   a new `Organism`. Return `[]` on parse failure, the loop handles it.
 
 Then write a driver script that wires `Problem(initial_organism, evaluator, [mutators])`
-into `EvolveProblemLoop` and iterates over `loop.run(num_iterations=N)` — the
+into `EvolveProblemLoop` and iterates over `loop.run(num_iterations=N)`: the
 shipped `scripts/parrot_openrouter.py` is the reference.
 
 ## Hyperparameters That Actually Matter
@@ -157,14 +157,14 @@ shipped `scripts/parrot_openrouter.py` is the reference.
 
 ## Pitfalls
 
-1. **`Initial organism must be viable`** — set `is_viable=True` in your
+1. **`Initial organism must be viable`**: set `is_viable=True` in your
    `EvaluationResult` even on a 0-score seed. The loop refuses non-viable
    organisms because they imply the loop has nothing to evolve from.
 2. **Provider content filters kill runs.** Azure-backed OpenRouter models
    reject phrases like "ignore previous instructions" with HTTP 400. Wrap
-   the LLM call in `try/except` and return `f"<LLM_ERROR: {e}>"` — the
+   the LLM call in `try/except` and return `f"<LLM_ERROR: {e}>"`: the
    evolver will just score that organism 0 and move on.
-3. **`loop.run()` is a generator** — calling it doesn't run anything until
+3. **`loop.run()` is a generator**: calling it doesn't run anything until
    you iterate. Use `for snap in loop.run(num_iterations=N):`.
 4. **Snapshots are nested pickles.** `iteration_N.pkl` contains a dict with
    `population_snapshot` (more pickled bytes). To unpickle you must have the

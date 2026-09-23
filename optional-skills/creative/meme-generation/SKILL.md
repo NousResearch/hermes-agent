@@ -70,14 +70,14 @@ python "$SKILL_DIR/scripts/generate_meme.py" --search "disaster"
 Use this when no classic template fits, or when the user wants something original.
 
 1. Write the captions first.
-2. Use `image_generate` to create a scene that matches the meme concept. Do NOT include any text in the image prompt — text will be added by the script. Describe only the visual scene.
+2. Use `image_generate` to create a scene that matches the meme concept. Do NOT include any text in the image prompt, text will be added by the script. Describe only the visual scene.
 3. Find the generated image path from the image_generate result URL. Download it to a local path if needed.
 4. Run the script with `--image` to overlay text, choosing a mode:
    - **Overlay** (text directly on image, white with black outline):
      ```bash
      python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png ~/.hermes/cache/scratch/meme.png "top text" "bottom text"
      ```
-   - **Bars** (black bars above/below with white text — cleaner, always readable):
+   - **Bars** (black bars above/below with white text, cleaner, always readable):
      ```bash
      python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png --bars ~/.hermes/cache/scratch/meme.png "top text" "bottom text"
      ```
@@ -126,5 +126,5 @@ python generate_meme.py --list
 The output is correct if:
 - A .png file was created at the output path
 - Text is legible (white with black outline) on the template
-- The joke lands — caption matches the template's intended structure
+- The joke lands, caption matches the template's intended structure
 - File can be delivered via MEDIA: path

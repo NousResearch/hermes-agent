@@ -4,11 +4,11 @@ A multi-section flowchart showing Karpathy's autoresearch framework: human-agent
 
 ## Key Patterns Used
 
-- **Three-section layout**: Setup row, main loop container, and detail container — each visually distinct
+- **Three-section layout**: Setup row, main loop container, and detail container, each visually distinct
 - **Neutral dashed containers**: Loop and training pipeline use `var(--bg-secondary)` fill with dashed borders to recede behind colored content nodes
 - **Decision branching with convergence**: "val_bpb improved?" splits into Keep (green) and Discard (red), then both converge back to "Log to results.tsv"
 - **Loop-back arrow**: Dashed path with rounded corners on the right side of the container showing infinite repetition
-- **Semantic color for outcomes**: Green = improvement (keep), Red = no improvement (discard) — not arbitrary decoration
+- **Semantic color for outcomes**: Green = improvement (keep), Red = no improvement (discard), not arbitrary decoration
 - **Highlighted key step**: "Run training" uses `c-coral` to visually distinguish the most important step from other `c-teal` actions
 - **Horizontal pipeline flow**: Training details section uses left-to-right arrow-connected nodes (GPT → MuonAdamW → Evaluation)
 - **Footer metadata**: Fixed constraints shown as subtle centered text below the pipeline nodes
@@ -218,19 +218,19 @@ A multi-section flowchart showing Karpathy's autoresearch framework: human-agent
 | Human, program.md | `c-gray` | Neutral setup / input nodes |
 | AI agent | `c-purple` | The active intelligent actor |
 | Loop action steps | `c-teal` | Agent's analytical/editing actions |
-| Run training | `c-coral` | Highlighted key step — the 5-min training run |
+| Run training | `c-coral` | Highlighted key step, the 5-min training run|
 | Decision check | `c-gray` | Neutral evaluation checkpoint |
-| Keep (improved) | `c-green` | Semantic success — val_bpb decreased |
-| Discard (not improved) | `c-red` | Semantic failure — no improvement |
+| Keep (improved) | `c-green` | Semantic success, val_bpb decreased|
+| Discard (not improved) | `c-red` | Semantic failure, no improvement|
 | Training pipeline nodes | `c-coral` | Training infrastructure components |
-| Evaluation node | `c-amber` | Distinct from training — measurement/metric role |
+| Evaluation node | `c-amber` | Distinct from training, measurement/metric role|
 | Containers | Neutral (dashed) | Subtle grouping that recedes behind content |
 
 ## Layout Notes
 
 - **ViewBox**: 680×920 (standard width, tall for 3 sections)
 - **Three sections**: Setup row (y=30–98), loop container (y=142–670), training details (y=710–880)
-- **Container style**: Dashed border (`stroke-dasharray="6 4"`), neutral fill (`var(--bg-secondary)`), `stroke-width="1"` — not colored, so inner nodes pop
+- **Container style**: Dashed border (`stroke-dasharray="6 4"`), neutral fill (`var(--bg-secondary)`), `stroke-width="1"`: not colored, so inner nodes pop
 - **Loop-back arrow**: Dashed `<path>` with quadratic curves (`Q`) at corners for smooth rounded turns, running up the right side of the loop container from "Log" back to "Read code"
 - **Decision pattern**: Single question node ("val_bpb improved?") with diagonal arrows to Keep/Discard, then convergent diagonal arrows back to "Log to results.tsv"
 - **Decision labels**: "yes"/"no" labels placed along the diagonal arrows with `opacity=".6"` to stay subtle

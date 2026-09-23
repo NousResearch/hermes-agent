@@ -34,7 +34,7 @@ Every comic MUST follow the four-panel 起承转合 structure:
 
 - The entire story is told in ONE page with exactly 4 panels
 - Page count: always 1 (plus optional cover)
-- No multi-page four-panel stories — if content requires more, create multiple separate four-panel comics
+- No multi-page four-panel stories, if content requires more, create multiple separate four-panel comics
 - Storyboard structure: Cover (optional) + 1 page
 
 ### Accent Color System
@@ -44,23 +44,23 @@ Every comic MUST follow the four-panel 起承转合 structure:
 - Rules:
   - Key concept label or object: filled with accent color or outlined in accent
   - Panel 3 (转 Turn) should have the strongest color emphasis
-  - Characters remain B&W — color is for concepts/objects/labels only
+  - Characters remain B&W, color is for concepts/objects/labels only
   - Consistent accent color across all 4 panels (do not switch colors between panels)
 
 ### Character Design Rules
 
 - Simplified stick-figure-like characters
 - Distinguish characters through simple props: ties, glasses, hats, briefcases, aprons
-- No detailed faces — dot eyes, line mouth at most
+- No detailed faces, dot eyes, line mouth at most
 - Characters should be generic enough to represent archetypes (the manager, the employee, the customer)
 - Maximum 2-3 characters per strip
 
 ### Text in Panels
 
 - Chinese text for dialogue and labels (or match source language)
-- Keep text minimal — 1-2 short lines per panel maximum
+- Keep text minimal, 1-2 short lines per panel maximum
 - Key concept terms can be highlighted with accent color background
-- No narrator boxes — dialogue and labels only
+- No narrator boxes, dialogue and labels only
 - Speech bubbles: simple rectangles or ovals, thin black outline
 
 ### Optional Title & Caption

@@ -77,7 +77,7 @@ Under the hood this is a three-step flow: create/update -> upload files -> final
 Without an API key this creates an **anonymous site** that expires in 24 hours.
 With a saved API key, the site is permanent.
 
-**File structure:** For HTML sites, place `index.html` at the root of the directory you publish, not inside a subdirectory. The directory's contents become the site root. For example, publish `my-site/` where `my-site/index.html` exists — don't publish a parent folder that contains `my-site/`.
+**File structure:** For HTML sites, place `index.html` at the root of the directory you publish, not inside a subdirectory. The directory's contents become the site root. For example, publish `my-site/` where `my-site/index.html` exists, don't publish a parent folder that contains `my-site/`.
 
 You can also publish raw files without any HTML. Single files get a rich auto-viewer (images, PDF, video, audio). Multiple files get an auto-generated directory listing with folder navigation and an image gallery.
 
@@ -113,7 +113,7 @@ Use scoped Drive tokens for agent-to-agent handoff. If you receive a `herenow_dr
 
 The publish script reads the API key from these sources (first match wins):
 
-1. `--api-key {key}` flag (CI/scripting only — avoid in interactive use)
+1. `--api-key {key}` flag (CI/scripting only, avoid in interactive use)
 2. `$HERENOW_API_KEY` environment variable
 3. `~/.herenow/credentials` file (recommended for agents)
 
@@ -123,7 +123,7 @@ To store a key, write it to the credentials file:
 mkdir -p ~/.herenow && echo "{API_KEY}" > ~/.herenow/credentials && chmod 600 ~/.herenow/credentials
 ```
 
-**IMPORTANT**: After receiving an API key, save it immediately — run the command above yourself. Do not ask the user to run it manually. Avoid passing the key via CLI flags (e.g. `--api-key`) in interactive sessions; the credentials file is the preferred storage method.
+**IMPORTANT**: After receiving an API key, save it immediately, run the command above yourself. Do not ask the user to run it manually. Avoid passing the key via CLI flags (e.g. `--api-key`) in interactive sessions; the credentials file is the preferred storage method.
 
 Never commit credentials or local state files (`~/.herenow/credentials`, `.herenow/state.json`) to source control.
 
@@ -210,7 +210,7 @@ For Drives:
 
 ## Beyond publish.sh
 
-For Drive operations, use `drive.sh` or the Drive API. For broader account and site management — delete, metadata, passwords, payments, domains, handles, links, variables, proxy routes, forking, duplication, and more — see the current docs:
+For Drive operations, use `drive.sh` or the Drive API. For broader account and site management, delete, metadata, passwords, payments, domains, handles, links, variables, proxy routes, forking, duplication, and more, see the current docs:
 
 → **https://here.now/docs**
 

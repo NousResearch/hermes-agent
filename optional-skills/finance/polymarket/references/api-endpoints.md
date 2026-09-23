@@ -2,7 +2,7 @@
 
 All endpoints are public REST (GET), return JSON, and need no authentication.
 
-## Gamma API — gamma-api.polymarket.com
+## Gamma API: gamma-api.polymarket.com
 
 ### Search Markets
 
@@ -42,14 +42,14 @@ GET /events?limit=N&active=true&closed=false&order=volume&ascending=false
 ```
 
 Parameters:
-- `limit` — max results (default varies)
-- `offset` — pagination offset
-- `active` — true/false
-- `closed` — true/false
-- `order` — sort field: `volume`, `createdAt`, `updatedAt`
-- `ascending` — true/false
-- `tag` — filter by tag slug
-- `slug` — get specific event by slug
+- `limit`: max results (default varies)
+- `offset`: pagination offset
+- `active`: true/false
+- `closed`: true/false
+- `order`: sort field: `volume`, `createdAt`, `updatedAt`
+- `ascending`: true/false
+- `tag`: filter by tag slug
+- `slug`: get specific event by slug
 
 Response: array of event objects. Each event includes a `markets` array.
 
@@ -64,7 +64,7 @@ GET /markets?limit=N&active=true&closed=false&order=volume&ascending=false
 ```
 
 Same filter parameters as events, plus:
-- `slug` — get specific market by slug
+- `slug`: get specific market by slug
 
 Market fields: `id`, `question`, `conditionId`, `slug`, `description`,
 `outcomes`, `outcomePrices`, `volume`, `liquidity`, `active`, `closed`,
@@ -84,7 +84,7 @@ Use the `slug` value when filtering events/markets by tag.
 
 ---
 
-## CLOB API — clob.polymarket.com
+## CLOB API: clob.polymarket.com
 
 All CLOB price endpoints use `token_id` from the market's `clobTokenIds` field.
 Index 0 = Yes outcome, Index 1 = No outcome.
@@ -143,9 +143,9 @@ GET /prices-history?market=CONDITION_ID&interval=INTERVAL&fidelity=N
 ```
 
 Parameters:
-- `market` — the conditionId (hex string with 0x prefix)
-- `interval` — time range: `all`, `1d`, `1w`, `1m`, `3m`, `6m`, `1y`
-- `fidelity` — number of data points to return
+- `market`: the conditionId (hex string with 0x prefix)
+- `interval`: time range: `all`, `1d`, `1w`, `1m`, `3m`, `6m`, `1y`
+- `fidelity`: number of data points to return
 
 Response:
 ```json
@@ -190,7 +190,7 @@ Response:
 
 ---
 
-## Data API — data-api.polymarket.com
+## Data API: data-api.polymarket.com
 
 ### Recent Trades
 

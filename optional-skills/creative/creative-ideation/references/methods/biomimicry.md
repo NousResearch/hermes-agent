@@ -1,6 +1,6 @@
 # Biomimicry
 
-Janine Benyus, *Biomimicry* (1997). Evolution has 3.8 billion years of R&D on most physical design problems. Use biological strategies as a library of mechanisms — adapt the *operative principle*, not the metaphor.
+Janine Benyus, *Biomimicry* (1997). Evolution has 3.8 billion years of R&D on most physical design problems. Use biological strategies as a library of mechanisms: adapt the *operative principle*, not the metaphor.
 
 ## When to use
 
@@ -44,8 +44,8 @@ Janine Benyus, *Biomimicry* (1997). Evolution has 3.8 billion years of R&D on mo
 
 1. **State the problem as a function.** "I need to attach this reversibly, holding 50 kg." "I need to extract water from desert air." "I need to route packets without central coordination."
 2. **Look up biological strategies.** AskNature.org is the curated database, indexed by function.
-3. **Identify the operative principle.** Compress the strategy to its mechanism. Not "geckos can stick to walls" — "many small van der Waals contacts via flexible setae provide strong reversible adhesion."
-4. **Match to your problem.** Be honest about what's missing — biological systems often work because of context (water, ambient temperature) your engineering context lacks.
+3. **Identify the operative principle.** Compress the strategy to its mechanism. Not "geckos can stick to walls": "many small van der Waals contacts via flexible setae provide strong reversible adhesion."
+4. **Match to your problem.** Be honest about what's missing: biological systems often work because of context (water, ambient temperature) your engineering context lacks.
 5. **Prototype with the principle, not the metaphor.** Don't build a "robot gecko." Build something that uses the operative principle in your form factor and material set.
 
 ## Anti-slop notes

@@ -4,8 +4,8 @@
 
 ## Components
 
-- **{{COMPONENT_1}}** — {{ONE_TO_TWO_SENTENCES}} See [`modules/{{MODULE}}.md`](modules/{{MODULE}}.md).
-- **{{COMPONENT_2}}** — {{ONE_TO_TWO_SENTENCES}}
+- **{{COMPONENT_1}}**: {{ONE_TO_TWO_SENTENCES}} See [`modules/{{MODULE}}.md`](modules/{{MODULE}}.md).
+- **{{COMPONENT_2}}**: {{ONE_TO_TWO_SENTENCES}}
 
 ## System Diagram
 
@@ -19,9 +19,9 @@ flowchart TD
 
 ## Data Flow
 
-1. **{{STEP_1}}** — [`{{FILE}}`]({{LINK}})
-2. **{{STEP_2}}** — [`{{FILE}}`]({{LINK}})
-3. **{{STEP_3}}** — [`{{FILE}}`]({{LINK}})
+1. **{{STEP_1}}**: [`{{FILE}}`]({{LINK}})
+2. **{{STEP_2}}**: [`{{FILE}}`]({{LINK}})
+3. **{{STEP_3}}**: [`{{FILE}}`]({{LINK}})
 
 ## Key Design Decisions
 

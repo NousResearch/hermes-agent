@@ -575,7 +575,9 @@ export function useMessageStream({
 
         if (streamId && nextMessages.some(m => m.id === streamId)) {
           // Seal the streaming bubble in place, marked interim so it renders
-          // without an action footer (see ChatMessage.interim).
+          // without an action footer (see ChatMessage.interim). Idempotent: an
+          // equal-text seal merges rather than appends, so a re-delivered frame
+          // (reconnect replay, duplicate transport) cannot grow the bubble.
           nextMessages = nextMessages.map(m =>
             m.id === streamId
               ? {
@@ -588,20 +590,50 @@ export function useMessageStream({
               : m
           )
         } else {
-          // No streaming bubble — create a standalone interim message
-          nextMessages = [
-            ...nextMessages,
-            {
-              id: nextStreamMessageId('assistant-interim'),
-              role: 'assistant' as const,
-              parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
-              timestamp: occurredAt,
-              completedAt: occurredAt,
-              pending: false,
-              interim: true,
-              branchGroupId: state.pendingBranchGroup ?? undefined
-            }
-          ]
+          // No streaming bubble — create a standalone interim message. The
+          // core dedupes identical interim texts within a turn
+          // (`_delivered_interim_texts`, reset per user turn in
+          // conversation_loop), so an interim that exactly repeats one THIS
+          // turn already sealed is a re-delivery (reconnect replay / duplicate
+          // transport), never a second authored comment: settle the newest
+          // same-turn match instead of appending a twin bubble.
+          const turnStartIndex = nextMessages.findLastIndex(m => m.role === 'user')
+
+          const sealedIndex = nextMessages.findLastIndex(
+            (m, index) =>
+              index > turnStartIndex &&
+              m.role === 'assistant' &&
+              m.interim === true &&
+              chatMessageText(m).trim() === authoritativeText
+          )
+
+          if (sealedIndex >= 0) {
+            nextMessages = nextMessages.map((m, index) =>
+              index === sealedIndex
+                ? {
+                    ...m,
+                    parts: completeOpenTimelineParts(replaceTextPart(m.parts), occurredAt),
+                    completedAt: occurredAt,
+                    pending: false,
+                    interim: true
+                  }
+                : m
+            )
+          } else {
+            nextMessages = [
+              ...nextMessages,
+              {
+                id: nextStreamMessageId('assistant-interim'),
+                role: 'assistant' as const,
+                parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
+                timestamp: occurredAt,
+                completedAt: occurredAt,
+                pending: false,
+                interim: true,
+                branchGroupId: state.pendingBranchGroup ?? undefined
+              }
+            ]
+          }
         }
 
         return {

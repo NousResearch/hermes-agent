@@ -365,6 +365,26 @@ class TestBomHandling:
         assert b"print('world')" in raw
 
 
+    def test_v4a_update_keeps_terminal_escape_bytes_on_untouched_lines(self, ops, tmp_path: Path):
+        # read_file_raw feeds the V4A write-back; its leak cleanup must not eat the file's own
+        # OSC title escapes and BEL bytes on lines the patch never touched.
+        target = tmp_path / "prompt.sh"
+        original = (b'set_title() { printf "\x1b]0;%s\x07" "$1"; }\n'
+                    b'beep() { printf "\x07"; }\n'
+                    b'VERSION=1\n')
+        target.write_bytes(original)
+        patch = (
+            "*** Begin Patch\n"
+            f"*** Update File: {target}\n"
+            "@@\n"
+            "-VERSION=1\n"
+            "+VERSION=2\n"
+            "*** End Patch"
+        )
+        res = ops.patch_v4a(patch)
+        assert res.success, res.error
+        assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
+
 
 class TestProtectedInstructionFiles:
     """Writes to agent-instruction files ALWAYS require approval.

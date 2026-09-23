@@ -1032,7 +1032,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
         # Strip a leading BOM (a phantom U+FEFF defeats an exact first-line match);
         # write_file re-probes disk and restores it.
-        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))
+        # V4A writes this back, so only lines carrying a leaked fence are cleaned.
+        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout, fenced_lines_only=True))
         return ReadResult(content=raw_content, file_size=file_size)
 
     def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:

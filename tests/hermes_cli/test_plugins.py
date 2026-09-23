@@ -1837,6 +1837,7 @@ class TestPreToolCallDirective:
                     "tool_call_id": "call-1",
                     "turn_id": "",
                     "api_request_id": "",
+                    "gateway_session_key": "",
                     "middleware_trace": [],
                 },
             )

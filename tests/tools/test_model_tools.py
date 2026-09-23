@@ -59,6 +59,30 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_gateway_session_key_reaches_pre_and_post_tool_hooks(self, monkeypatch):
+        """Gateway-backed calls keep their durable key across both hook phases."""
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _name: True)
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *_args, **_kwargs: '{"ok":true}')
+
+        handle_function_call(
+            "web_search",
+            {"q": "test"},
+            task_id="task-1",
+            session_id="rotated-session",
+            tool_call_id="tool-1",
+            gateway_session_key="agent:default:discord:dm:fixture",
+        )
+
+        hook_kwargs = {name: kwargs for name, kwargs in hook_calls}
+        for hook_name in ("pre_tool_call", "post_tool_call"):
+            assert hook_kwargs[hook_name]["gateway_session_key"] == "agent:default:discord:dm:fixture"
+            assert hook_kwargs[hook_name]["session_id"] == "rotated-session"
+
     def test_terminal_nonzero_exit_is_reported_as_error(self):
         result = json.dumps({"output": "", "exit_code": 1, "error": None})
         with (

@@ -2,6 +2,7 @@
 buttons, inbound tap routing, and DM-only enforcement."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -109,9 +110,22 @@ class TestApprovalCard:
             chat_id="zhangsan", session_key="sess-x", text="⚠️ fallback text",
             actions=[("Deny", "deny", "")], command="x", description="d", smart_denied=False)))
 
-        assert result.success is False  # card failure surfaced; text fallback attempted
+        # The text fallback IS the delivery, so report success: surfacing the card failure would
+        # make the gateway re-send the same prompt (duplicate approval prompts).
+        assert result.success is True
         assert adapter._approval_state == {}
         adapter.send.assert_awaited_once_with("zhangsan", "⚠️ fallback text")
+
+    def test_failed_card_and_failed_fallback_surfaces_the_error(self, monkeypatch):
+        """Both doors failing must report the failure, so the gateway can retry/escalate."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._send_card_inner = AsyncMock(return_value=SendResult(success=False, error="card boom"))
+        adapter.send = AsyncMock(return_value=SendResult(success=False, error="text boom"))
+        result = asyncio.run(adapter._send_exec_approval_prompt(ExecApprovalPrompt(
+            chat_id="zhangsan", session_key="sess-y", text="⚠️ fallback text",
+            actions=[("Deny", "deny", "")], command="x", description="d", smart_denied=False)))
+        assert result.success is False
+        assert adapter._approval_state == {}
 
 
 def _tap_payload(task_id, event_key, *, userid="zhangsan", chattype="single", chatid="", selected=None):
@@ -394,6 +408,100 @@ class TestModelPicker:
             chat_id="zhangsan", providers=[], current_model="x", current_provider="p",
             session_key="s", on_model_selected=AsyncMock()))
         assert result.success is False
+
+
+class TestSlashConfirmCard:
+    """`/new`, `/reset`, `/undo` confirmations: the gateway calls adapter.send_slash_confirm and
+    falls back to a plain-text prompt when an adapter does not implement it."""
+
+    _PROMPT = (
+        "⚠️ **Confirm /new**\n\n"
+        "This starts a fresh session and discards the current conversation history.\n\n"
+        "Choose:\n"
+        "• **Approve Once** — proceed this time only\n"
+        "• **Always Approve** — proceed and silence this prompt permanently\n"
+        "• **Cancel** — keep current conversation\n\n"
+        "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+    )
+
+    def test_renders_card_with_three_buttons(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        captured = {}
+        adapter._find_active_turn_for_chat = lambda *a: False
+        adapter._cached_reply_req_id = lambda *a: None
+
+        async def _fake_send(chat_id, body, *, reply_req_id=None, is_control=False):
+            captured["chat_id"], captured["body"] = chat_id, body
+            return SendResult(success=True, message_id="m1", raw_response=body)
+
+        adapter._send_card = _fake_send
+        sent = asyncio.run(adapter.send_slash_confirm(
+            chat_id="zhangsan", title="/new", message=self._PROMPT,
+            session_key="agent:main:wecom:dm:zhangsan", confirm_id="7"))
+
+        assert sent.success is True
+        card = captured["body"]
+        assert card["card_type"] == "button_interaction"
+        assert card["main_title"]["title"] == "⚠️ 确认 /new"
+        # The detail line is kept; the title line, the "Choose:" menu and the text fallback drop out
+        assert card["main_title"]["desc"] == (
+            "This starts a fresh session and discards the current conversation history.")
+        assert "Choose:" not in json.dumps(card, ensure_ascii=False)
+        assert "Text fallback" not in json.dumps(card, ensure_ascii=False)
+        # Three tiers, short labels that fit a WeCom button row, keys unique and choice-scoped
+        assert [b["text"] for b in card["button_list"]] == ["仅一次", "永久", "取消"]
+        assert [b["key"] for b in card["button_list"]] == ["sc:once:7", "sc:always:7", "sc:cancel:7"]
+        assert len(adapter._slash_confirm_state) == 1
+        state = next(iter(adapter._slash_confirm_state.values()))
+        assert state["confirm_id"] == "7" and state["session_key"] == "agent:main:wecom:dm:zhangsan"
+
+    def test_tap_resolves_through_slash_confirm_module(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._update_card = AsyncMock()
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        adapter._slash_confirm_state["sc-1"] = {
+            "session_key": "agent:main:wecom:dm:zhangsan", "confirm_id": "7", "chat_id": "zhangsan"}
+        with patch("tools.slash_confirm.resolve", new=AsyncMock(return_value="新会话已开始")) as resolve:
+            asyncio.run(adapter._handle_template_card_event(_tap_payload("sc-1", "sc:always:7")))
+        resolve.assert_awaited_once_with("agent:main:wecom:dm:zhangsan", "7", "always")
+        assert "sc-1" not in adapter._slash_confirm_state  # popped: a repeat tap cannot re-run it
+        # The card flips to a notice and the runner's own result text is delivered
+        adapter._update_card.assert_awaited_once()
+        assert "sc-1" in str(adapter._update_card.call_args[0][1])
+        adapter.send.assert_awaited_once_with("zhangsan", "新会话已开始")
+
+    def test_tap_repeat_is_ignored(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._update_card = AsyncMock()
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        adapter._slash_confirm_state["sc-2"] = {
+            "session_key": "s", "confirm_id": "8", "chat_id": "zhangsan"}
+        with patch("tools.slash_confirm.resolve", new=AsyncMock(return_value="ok")) as resolve:
+            asyncio.run(adapter._handle_template_card_event(_tap_payload("sc-2", "sc:once:8")))
+            asyncio.run(adapter._handle_template_card_event(_tap_payload("sc-2", "sc:once:8")))
+        resolve.assert_awaited_once()
+
+    def test_group_chat_falls_back_to_text(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._group_chat_ids.add("group_1")
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        result = asyncio.run(adapter.send_slash_confirm(
+            chat_id="group_1", title="/new", message=self._PROMPT, session_key="s", confirm_id="9"))
+        assert result.success is True
+        adapter.send.assert_awaited_once_with("group_1", self._PROMPT)
+        assert not adapter._slash_confirm_state
+
+    def test_failed_card_falls_back_to_text(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._find_active_turn_for_chat = lambda *a: False
+        adapter._cached_reply_req_id = lambda *a: None
+        adapter._send_card = AsyncMock(return_value=SendResult(success=False, error="boom"))
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        result = asyncio.run(adapter.send_slash_confirm(
+            chat_id="zhangsan", title="/new", message=self._PROMPT, session_key="s", confirm_id="10"))
+        assert result.success is True  # the text fallback carried the prompt
+        adapter.send.assert_awaited_once_with("zhangsan", self._PROMPT)
+        assert not adapter._slash_confirm_state  # no unresolvable card left behind
 
 
 class TestInboundTaps:

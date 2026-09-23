@@ -106,7 +106,7 @@ streaming is enabled by default (`display.platforms.wecom.streaming: true` in
 
 ## Interactive Cards (DM only)
 
-The adapter renders two interactive surfaces as native WeCom **template cards**
+The adapter renders three interactive surfaces as native WeCom **template cards**
 (`card_type: button_interaction`). Cards are **DM-only by design**: WeCom's
 template-card contract is single-chat only, so group chats keep the plain-text
 flows (approval stays `/approve`, `/model` falls back to the text listing).
@@ -123,6 +123,23 @@ deny variant offers only Allow Once and Deny). The tap resolves through the
 same `tools.approval.resolve_gateway_approval` path as the text `/approve`
 flow, so approvals work exactly as before, just with buttons. The card is
 replaced by a text_notice confirming the outcome after the tap.
+
+### Slash-command confirmations
+
+`/new`, `/reset`, and `/undo` are gated by `approvals.destructive_slash_confirm`
+and arrive as a three-button card (Once / Always / Cancel) instead of the plain
+text prompt with its `/approve` fallback. Taps resolve through
+`tools.slash_confirm.resolve`, the same entry the text path uses. Without this
+the gateway falls back to text for any adapter that does not implement
+`send_slash_confirm` — which is how those prompts reached WeCom before.
+
+Button labels are deliberately short CJK forms (仅一次 / 永久 / 取消 and
+仅一次 / 本会话 / 永久 / 拒绝 for approvals): WeCom packs buttons three per row
+inside a fixed-width card, so a button renders roughly three CJK characters and
+the gateway's own descriptive labels ("Always Approve") would be clipped into
+indistinguishable stubs. If the card cannot be sent, the adapter falls back to
+the plain-text prompt and reports that delivery as the outcome, so the gateway
+does not send the same prompt twice.
 
 ### Model picker cards
 

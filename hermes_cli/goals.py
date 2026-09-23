@@ -851,16 +851,38 @@ def _render_background_block(background_processes: Optional[List[Dict[str, Any]]
     return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
 
 
-def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout: Optional[float]) -> str:
+def _call_goal_judge_llm(
+    call_llm, system_prompt: str, user_prompt: str, timeout: Optional[float],
+    session_id: Optional[str] = None,
+) -> str:
     """Route through call_llm so auxiliary.goal_judge.* config (provider/model, extra_body,
-    reasoning_effort, retries) all apply. Returns the raw reply text."""
-    # See #35566.
-    # Route through call_llm — same #35566 fix as the judge call above.
-    resp = call_llm(
-        task="goal_judge",
-        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-        temperature=0, max_tokens=_goal_judge_max_tokens(), timeout=timeout,
-    )
+    reasoning_effort, retries) all apply. Returns the raw reply text.
+
+    ``session_id`` names the owner whose goal (or loop) is being judged, so this call declares that
+    owner's relay-affinity scope. The judge runs *after* the turn tore its runtime scope down, so
+    nothing is bound here; an undeclared call is left to the relay's ephemeral per-request key
+    (agent/opencode_affinity.py), which routes each judge call to a different backend and keeps no
+    prompt cache warm. Declaring ``goal:<session_id>`` — the namespace the goal state is stored under
+    (``_meta_key``) — pins the judge calls of one goal to one backend, the same shape the kanban
+    seams use for their ``kanban:<task_id>`` scope.
+    """
+    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+
+    # A caller that already carries a scope (in-turn callers, the kanban handoff gates) keeps it.
+    affinity_token = None
+    if session_id and not get_affinity_scope():
+        affinity_token = set_affinity_scope(f"goal:{session_id}")
+    try:
+        # See #35566.
+        # Route through call_llm — same #35566 fix as the judge call above.
+        resp = call_llm(
+            task="goal_judge",
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=0, max_tokens=_goal_judge_max_tokens(), timeout=timeout,
+        )
+    finally:
+        if affinity_token is not None:
+            reset_affinity_scope(affinity_token)
     try:
         return resp.choices[0].message.content or ""
     except Exception:
@@ -872,6 +894,7 @@ def judge_goal(
     last_response: str,
     *,
     timeout: Optional[float] = None,
+    session_id: Optional[str] = None,
     subgoals: Optional[List[str]] = None,
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
@@ -919,7 +942,7 @@ def judge_goal(
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
 
     try:
-        raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
+        raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout, session_id=session_id)
     except AuxiliaryClientUnavailable as exc:
         # No client at all (e.g. a dead Nous refresh token): name the cause so the user is sent to
         # re-authenticate, not to context-length / model debugging (#42177). Still fails open.
@@ -1017,9 +1040,14 @@ def gather_background_processes(task_id: Optional[str] = None, *, owner_task_id:
     return running
 
 
-def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Optional[GoalContract]:
+def draft_contract(objective: str, *, timeout: Optional[float] = None,
+                   session_id: Optional[str] = None) -> Optional[GoalContract]:
     """Expand a plain-language objective into a completion contract via the ``goal_judge`` auxiliary
-    task (a side LLM call, not a conversation turn). None when unavailable or unparseable."""
+    task (a side LLM call, not a conversation turn). None when unavailable or unparseable.
+
+    ``session_id`` is the session that will own the drafted goal. ``/goal draft`` is a slash command,
+    so it runs between turns, where no scope is bound — passing the owner keeps the draft call on the
+    same relay backend as the judge calls that will follow it (see ``_call_goal_judge_llm``)."""
     objective = (objective or "").strip()
     if not objective:
         return None
@@ -1036,7 +1064,7 @@ def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Option
         return None
 
     try:
-        raw = _call_goal_judge_llm(call_llm, DRAFT_CONTRACT_SYSTEM_PROMPT, f"Objective:\n{_truncate(objective, 4000)}", timeout)
+        raw = _call_goal_judge_llm(call_llm, DRAFT_CONTRACT_SYSTEM_PROMPT, f"Objective:\n{_truncate(objective, 4000)}", timeout, session_id=session_id)
     except Exception as exc:
         logger.info("goal draft: API call failed (%s)", exc)
         return None
@@ -1474,7 +1502,8 @@ class GoalManager:
             return gate_decision
 
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
-            state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
+            state.goal, last_response, session_id=self.session_id,
+            subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
         )
         state.last_verdict = verdict

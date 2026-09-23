@@ -583,7 +583,7 @@ def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
     started, release, returned, replied = (threading.Event() for _ in range(4))
     observed, frames = [], []
 
-    def draft(objective):
+    def draft(objective, session_id=None):
         observed.append(get_hermes_home())
         started.set()
         assert release.wait(10)

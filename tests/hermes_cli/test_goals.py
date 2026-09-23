@@ -96,6 +96,52 @@ class TestJudgeGoal:
         assert verdict == "done"
         assert reason == "achieved"
 
+    def test_judge_declares_the_goal_scope_for_its_aux_call(self):
+        """The judge runs between turns, where no runtime scope is bound. It must declare the judging
+        session's own relay-affinity scope (``goal:<session_id>``, the namespace its state is stored
+        under) for the aux call — otherwise the call falls through to the chokepoint's ephemeral
+        per-request key and every judge call of one goal lands on a different relay backend."""
+        from hermes_cli import goals
+        from agent.portal_tags import get_affinity_scope
+
+        seen = {}
+
+        def fake_call_llm(*_a, **_kw):
+            seen["scope"] = get_affinity_scope()
+            return MagicMock(choices=[MagicMock(message=MagicMock(content='{"done": true, "reason": "ok"}'))])
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
+            goals.judge_goal("goal", "agent response", session_id="sess-judge-1")
+
+        assert seen["scope"] == "goal:sess-judge-1"
+        assert get_affinity_scope() is None  # the declaration lives only as long as the aux call
+
+    def test_judge_neither_overrides_a_bound_scope_nor_leaks_its_own_on_failure(self):
+        """An in-turn caller (or a kanban handoff gate) has already declared its scope — the judge
+        keeps it — and a failing judge call still resets whatever the judge declared itself."""
+        from hermes_cli import goals
+        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+
+        seen = {}
+
+        def failing_call_llm(*_a, **_kw):
+            seen.setdefault("scope", get_affinity_scope())
+            raise RuntimeError("boom")
+
+        token = set_affinity_scope("kanban:task-9")
+        try:
+            with patch("agent.auxiliary_client.call_llm", side_effect=failing_call_llm):
+                verdict = goals.judge_goal("goal", "agent response", session_id="sess-judge-1")[0]
+            assert get_affinity_scope() == "kanban:task-9"
+        finally:
+            reset_affinity_scope(token)
+        assert seen["scope"] == "kanban:task-9"
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=failing_call_llm):
+            goals.judge_goal("goal", "agent response", session_id="sess-judge-1")
+        assert get_affinity_scope() is None
+        assert verdict == "continue"  # fail-open, unchanged
+
     def test_judge_is_told_to_quote_errors_verbatim_and_never_infer_a_service(self):
         """A bare provider 401 in the response must not become 'the GitHub token is invalidated' in
         the block reason (#114012): the system prompt the judge actually receives carries the rule."""

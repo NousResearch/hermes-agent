@@ -127,7 +127,7 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         if progress is not None:
             progress("Drafting completion contract…")
         try:
-            contract = goals.draft_contract(arg)
+            contract = goals.draft_contract(arg, session_id=mgr.session_id)
         except Exception as exc:
             logger.debug("goal draft failed: %s", exc)
             contract = None

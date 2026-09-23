@@ -20,6 +20,8 @@ policies:
   fires; manual runs (direct or trigger) never consume or re-stamp the next scheduled occurrence.
 After every tick: the actual fires == expected fires, every stored ``next_run_at`` equals the
 model's pending occurrence and is strictly after virtual now, and the ticker reported no error.
+A run held past the fire-claim TTL: after every virtual 30 s its claim was refreshed by the run's
+heartbeat, and a contender's ``claim_job_for_fire`` loses to it.
 At the end: no execution is non-terminal; every row's status/delivery outcome matches what the
 fake runner/sink actually saw (delivered => the sink got exactly that execution's message).
 """
@@ -43,7 +45,7 @@ import pytest
 croniter_mod = pytest.importorskip("croniter")
 
 from tests.e2e.core.delivery import _cron_clock as H  # noqa: E402
-from tests.e2e.core.delivery._pending_fixes import expect_gap  # noqa: E402
+from tests.e2e.core.delivery._pending_fixes import gap_open  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="flock/SIGKILL multi-process soak is Linux-only")
@@ -75,12 +77,13 @@ SCENARIOS = [
     Scenario("newyork_on_shanghai_fall", "America/New_York", "Asia/Shanghai",
              date(2026, 10, 23), child=True),
 ]
-# Scenario id -> (fix PR, gap). Strict xfail only while the PR's probe still reproduces the defect
-# (see _pending_fixes); once the fix is in the tree the scenario must pass.
+# Scenario id -> (fix PR, gap). While the PR's probe still reproduces the defect (see
+# _pending_fixes) ONLY the schedule oracle's two checks (fired set, stored next_run_at) may deviate:
+# each deviation is recorded, the model adopts the stored slot, and the soak runs on to its last
+# virtual day with every other check live; the cell XFAILs at the end only if a deviation was seen
+# (and fails if none was: the probe and the soak disagree). Once the fix is in the tree the
+# scenario is a plain test again.
 GAPS = {
-    # the due gate compares same-zone wall clocks: a slot in the repeated fall-back hour fires up
-    # to an hour early
-    "newyork_on_shanghai_fall": (120314, "cron DST fall-back early fire (fixed by #120314)"),
     # #119969: with NO timezone configured the next occurrence keeps the base time's fixed UTC
     # offset, so a DST process zone fires 09:00 at 10:00 local after spring-forward
     "unset_on_newyork_spring": (119970, "#119969 no-tz DST fixed offset (fixed by #119970)"),
@@ -204,7 +207,9 @@ class Soak:
         self.killed_execs: set = set()
         self.ticks = 0
         self.events: List[Event] = []
-        self.stalled_heartbeat = False
+        pr = GAPS.get(sc.id, (None,))[0]
+        self.tolerate_gap = pr is not None and gap_open(pr)
+        self.gap_hits: List[str] = []
 
     # helpers
     def local(self, day: int, hh: int, mm: int, ss: int = 0) -> float:
@@ -293,7 +298,8 @@ class Soak:
         self.seen_runs = len(starts)
         expected = sorted(self.model.fires)
         self.model.fires = []
-        assert actual == expected, f"{where} fired set mismatch: actual={actual} expected={expected}"
+        if actual != expected:
+            self.gap_deviation(f"{where} fired set mismatch: actual={actual} expected={expected}")
         err = get_ticker_last_error()
         assert not err, f"{where} ticker recorded an error: {err}"
         by_id = {j["id"]: j for j in H.store_jobs(self.home)}
@@ -305,8 +311,15 @@ class Soak:
             assert nra, f"{where} {name}: active job lost next_run_at: {stored}"
             nra_ts = datetime.fromisoformat(nra).timestamp()
             assert nra_ts > t, f"{where} {name}: next_run_at {nra} not after virtual now"
-            assert nra_ts == mj.pending, (
-                f"{where} {name}: next_run_at {nra} != expected {_iso(mj.pending)}")
+            if nra_ts != mj.pending:
+                self.gap_deviation(f"{where} {name}: next_run_at {nra} != expected {_iso(mj.pending)}")
+                mj.pending = nra_ts  # follow the store so the rest of the soak stays meaningful
+
+    def gap_deviation(self, msg: str) -> None:
+        """A schedule-oracle deviation: a failure, unless it is this scenario's open known gap."""
+        if not self.tolerate_gap:
+            raise AssertionError(msg)
+        self.gap_hits.append(msg)
 
     # fault handlers
     def handle(self, ev: Event) -> None:
@@ -379,20 +392,25 @@ class Soak:
         self.tick(entering=name)
         exec_id = self._entered_exec(name)
         t0 = self.now()
+        from cron.jobs import claim_job_for_fire
+
         for k in range(1, HOLD_STEPS + 1):
             self.clock.set(t0 + 30 * k)
-            if not self.stalled_heartbeat:
-                want = t0 + 30 * k - 1
+            want = t0 + 30 * k - 1
 
-                def fresh():
-                    job = next(j for j in H.store_jobs(self.home) if j["id"] == job_id)
-                    claim = job.get("fire_claim") or {}
-                    return claim.get("at") and datetime.fromisoformat(claim["at"]).timestamp() >= want
+            def fresh():
+                job = next(j for j in H.store_jobs(self.home) if j["id"] == job_id)
+                claim = job.get("fire_claim") or {}
+                return claim.get("at") and datetime.fromisoformat(claim["at"]).timestamp() >= want
 
-                try:
-                    H.wait_until(fresh, "fire-claim heartbeat", timeout=3.0)
-                except AssertionError:
-                    self.stalled_heartbeat = True
+            # The run's heartbeat thread must keep the lease fresh at virtual cadence; a broken
+            # heartbeat fails here, not silently later.
+            H.wait_until(fresh, f"{self.describe(self.now())} {name}: fire-claim heartbeat refresh")
+            # A contender (another replica's fire, a manual run) must meet a LIVE claim, also
+            # after the claim's first stamp is older than the TTL.
+            assert claim_job_for_fire(job_id) is False, (
+                f"{self.describe(self.now())} {name}: a contender took the fire claim "
+                f"{30 * k}s into a live run (lease not kept fresh)")
             self.tick()
         hold.unlink()
         self.held.discard(name)
@@ -572,19 +590,27 @@ def _run_scenario(sc: Scenario, soak_env) -> Dict[str, int]:
     try:
         soak.run()
     finally:
+        # A failure mid-hold must not leak a parked run (and its writes) into the next scenario.
+        for name in list(soak.held):
+            control.hold_file(name).unlink(missing_ok=True)
+        import cron.scheduler as sched
+
+        H.wait_until(lambda: not sched.get_running_job_ids(), f"{sc.id}: held runs to drain")
         if soak.child is not None:
             soak.child.kill()
         soak.ev_down(None)
-    return soak.final_checks()
+    return soak.final_checks(), soak.gap_hits
 
 
 @pytest.mark.parametrize("sc", [pytest.param(s, id=s.id) for s in SCENARIOS])
-def test_cron_virtual_clock_soak(sc, soak_env, request):
-    if sc.id in GAPS:
-        expect_gap(request, *GAPS[sc.id])
-    stats = _run_scenario(sc, soak_env)
+def test_cron_virtual_clock_soak(sc, soak_env):
+    stats, gap_hits = _run_scenario(sc, soak_env)
     print(f"C13 {sc.id}: {stats}")
     assert sc.days < 30 or stats["executions"] > 60
+    if gap_hits:  # only reachable while GAPS[sc.id]'s probe says the defect reproduces
+        pytest.xfail(f"{GAPS[sc.id][1]}: {len(gap_hits)} deviation(s), first: {gap_hits[0]}")
+    assert sc.id not in GAPS or not gap_open(GAPS[sc.id][0]), (
+        f"#{GAPS[sc.id][0]} probe says the defect reproduces, but the soak never deviated")
 
 
 # --- two replicas, one store: the fire claim decides every fire ---------------------------------

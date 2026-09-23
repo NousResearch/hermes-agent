@@ -133,7 +133,7 @@ export const ROLLOUT_ACTIONS = [
 ] as const
 
 export const MAX_ROLLOUT_INSTALLATIONS = 500
-export const MAX_ROLLOUT_CONCURRENCY = 4
+export const MAX_ROLLOUT_CONCURRENCY = 1
 
 export interface RolloutCapabilities {
   protocol: 1
@@ -742,7 +742,13 @@ export function validateRolloutSnapshot(value: unknown): RolloutSnapshot {
     target: validateRolloutTarget(value.target),
     phase: enumValue(value.phase, ROLLOUT_PHASES, 'snapshot.phase'),
     activeWave: integerValue(value.activeWave, 'snapshot.activeWave'),
-    concurrency: integerValue(value.concurrency, 'snapshot.concurrency'),
+    concurrency: (() => {
+      const concurrency = integerValue(value.concurrency, 'snapshot.concurrency', 1)
+
+      if (concurrency > MAX_ROLLOUT_CONCURRENCY) {fail('snapshot.concurrency', 'concurrency exceeds release bounds')}
+
+      return concurrency
+    })(),
     promotionPolicy: enumValue(value.promotionPolicy, PROMOTION_POLICIES, 'snapshot.promotionPolicy'),
     canaryApproved: booleanValue(value.canaryApproved, 'snapshot.canaryApproved'),
     continuationRequired: booleanValue(value.continuationRequired, 'snapshot.continuationRequired'),

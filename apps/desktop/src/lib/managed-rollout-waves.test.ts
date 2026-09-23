@@ -65,7 +65,7 @@ describe('managed rollout wave helpers', () => {
 
   it('estimates operational work without approval waiting', () => {
     expect(estimateOperationalMs([['a'], ['b', 'c']], { a: 10, b: 20, c: 30 }, 1)).toBe(60)
-    expect(estimateOperationalMs([['a', 'b', 'c']], { a: 10, b: 20, c: 30 }, 2)).toBe(40)
+    expect(estimateOperationalMs([['a', 'b', 'c']], { a: 10, b: 20, c: 30 }, 2)).toBeNull()
   })
 
   it('rejects an estimate whose concurrency exceeds the current capability', () => {

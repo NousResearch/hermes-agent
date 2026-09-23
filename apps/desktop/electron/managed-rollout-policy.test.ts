@@ -7,12 +7,14 @@ import {
   canPromote,
   isExcluded,
   needsManualPromotion,
+  type PriorWaveOptions,
   priorWaveStillValid,
   promotionContextDigest,
   targetHealthy
 } from './managed-rollout-policy'
 
-const SHA = 'a'.repeat(40)
+const SHA = 'b'.repeat(40)
+const PRIOR_SHA = 'a'.repeat(40)
 const INSTALL = '1'.repeat(32)
 
 function scope(scopeId: string, codeSha = SHA): ScopeEvidence {
@@ -58,7 +60,7 @@ function attempt(overrides: Partial<TargetAttempt> = {}): TargetAttempt {
       displayAddress: 'host-a',
       installationFingerprint: 'f'.repeat(64),
       sourceFingerprint: 's'.repeat(64),
-      admittedSha: SHA
+      admittedSha: PRIOR_SHA
     },
     correlationId: 'corr-a',
     wave: 0,
@@ -71,7 +73,7 @@ function attempt(overrides: Partial<TargetAttempt> = {}): TargetAttempt {
       correlationId: 'corr-a',
       installId: INSTALL,
       requestedSha: SHA,
-      preSha: 'b'.repeat(40),
+      preSha: PRIOR_SHA,
       postSha: SHA,
       outcome: 'success',
       startedAt: null,
@@ -146,7 +148,14 @@ describe('managed rollout policy', () => {
   it('requires correlated receipt and readiness for an updated target', () => {
     const current = attempt()
 
+    // The admitted HEAD is A, while the pinned rollout target and post-HEAD are B.
+    expect(targetHealthy(current, SHA, 'epoch-1')).toBe(true)
     expect(targetHealthy({ ...current, receipt: null }, SHA, 'epoch-1')).toBe(false)
+    expect(targetHealthy({ ...current, receipt: { ...current.receipt!, preSha: SHA } }, SHA, 'epoch-1')).toBe(false)
+    expect(targetHealthy({ ...current, receipt: { ...current.receipt!, requestedSha: PRIOR_SHA } }, SHA, 'epoch-1')).toBe(false)
+    expect(targetHealthy({ ...current, receipt: { ...current.receipt!, postSha: PRIOR_SHA } }, SHA, 'epoch-1')).toBe(false)
+    expect(targetHealthy({ ...current, identity: { ...current.identity, admittedSha: SHA } }, SHA, 'epoch-1')).toBe(false)
+    expect(targetHealthy({ ...current, launchState: 'authorized' }, SHA, 'epoch-1')).toBe(false)
     expect(
       targetHealthy({ ...current, health: health('epoch-1', [scope('default', 'c'.repeat(40))]) }, SHA, 'epoch-1')
     ).toBe(false)
@@ -155,11 +164,32 @@ describe('managed rollout policy', () => {
     ).toBe(false)
   })
 
-  it('allows already-current only with complete readiness evidence', () => {
-    const current = attempt({ phase: 'already-current', launchState: 'observed', receipt: null })
+  it('allows a proven preflight no-op without fabricating a receipt', () => {
+    const current = attempt({
+      identity: { ...attempt().identity, admittedSha: SHA },
+      phase: 'already-current',
+      launchState: 'none',
+      receipt: null
+    })
 
     expect(targetHealthy(current, SHA, 'epoch-1')).toBe(true)
     expect(targetHealthy({ ...current, health: { ...health(), dependencyReady: false } }, SHA, 'epoch-1')).toBe(false)
+    expect(targetHealthy({ ...current, identity: { ...current.identity, admittedSha: PRIOR_SHA } }, SHA, 'epoch-1')).toBe(false)
+  })
+
+  it('requires terminal evidence when an already-current attempt was authorized or observed', () => {
+    const current = attempt({
+      identity: { ...attempt().identity, admittedSha: SHA },
+      phase: 'already-current',
+      launchState: 'observed',
+      receipt: null
+    })
+
+    expect(targetHealthy(current, SHA, 'epoch-1')).toBe(false)
+    expect(targetHealthy({ ...current, launchState: 'authorized' }, SHA, 'epoch-1')).toBe(false)
+    expect(targetHealthy({ ...current, receipt: { ...attempt().receipt!, preSha: SHA } }, SHA, 'epoch-1')).toBe(true)
+    expect(targetHealthy({ ...current, receipt: { ...attempt().receipt!, preSha: PRIOR_SHA } }, SHA, 'epoch-1')).toBe(false)
+    expect(targetHealthy({ ...current, launchState: 'none', receipt: { ...attempt().receipt!, preSha: SHA } }, SHA, 'epoch-1')).toBe(false)
   })
 
   it('does not turn an executed failed canary into an exclusion', () => {
@@ -207,6 +237,32 @@ describe('managed rollout policy', () => {
     expect(canPromote(current, { ...proof, queueGeneration: 5 }, 2_500, 4, context)).toBe(false)
     expect(canPromote(current, proof, 12_001, 4, context)).toBe(false)
     expect(canPromote(current, { ...proof, sweepFinishedMono: 301_001 }, 301_500, 4, context)).toBe(false)
+  })
+
+  it('binds proof to the selected route and the serial release limit', () => {
+    const current = snapshot()
+
+    const proof = {
+      observationId: 'epoch-1', rolloutId: current.id, revision: current.revision,
+      queueGeneration: 4, processGeneration: 2, evidenceGeneration: 3,
+      contextDigest: promotionContextDigest(current), wave: current.activeWave,
+      sweepStartedMono: 1_000, sweepFinishedMono: 2_000,
+      nextAdmissionInstallIds: ['2'.repeat(32)], approval: 'manual' as const
+    }
+
+    const context = { processGeneration: 2, evidenceGeneration: 3 }
+    const parallel = { ...current, concurrency: 2 }
+
+    const changedRoute = {
+      ...current,
+      attempts: current.attempts.map((entry, index) => index === 1
+        ? { ...entry, identity: { ...entry.identity, connectionId: 'different-route' } }
+        : entry)
+    }
+
+    expect(canPromote(parallel, proof, 2_500, 4, context)).toBe(false)
+    expect(canPromote(parallel, { ...proof, contextDigest: promotionContextDigest(parallel) }, 2_500, 4, context)).toBe(false)
+    expect(canPromote(changedRoute, proof, 2_500, 4, context)).toBe(false)
   })
 
   it('requires explicit continuation after restart reconciliation', () => {
@@ -259,9 +315,32 @@ describe('managed rollout policy', () => {
       approval: 'manual' as const
     }
 
-    expect(priorWaveStillValid(prior, SHA)).toBe(true)
+    const priorWaveOptions = {
+      fenceIndex: new Set<string>(),
+      currentRequiredScopeIds: () => ['default']
+    }
+
+    expect(priorWaveStillValid(prior, SHA, priorWaveOptions)).toBe(true)
+    expect(priorWaveStillValid(prior, SHA, {
+      ...priorWaveOptions, fenceIndex: undefined
+    } as unknown as PriorWaveOptions)).toBe(false)
+    expect(priorWaveStillValid(prior, SHA, {
+      ...priorWaveOptions, currentRequiredScopeIds: undefined
+    } as unknown as PriorWaveOptions)).toBe(false)
     expect(targetHealthy(settled, SHA, 'epoch-2')).toBe(true)
-    expect(canPromote(current, proof, 2_500, 4, { processGeneration: 2, evidenceGeneration: 3 })).toBe(true)
+    expect(canPromote(current, proof, 2_500, 4, { processGeneration: 2, evidenceGeneration: 3 })).toBe(false)
+    expect(canPromote(current, proof, 2_500, 4, {
+      processGeneration: 2, evidenceGeneration: 3, priorWaveOptions
+    })).toBe(true)
+    expect(canPromote(current, proof, 2_500, 4, {
+      processGeneration: 2, evidenceGeneration: 3,
+      priorWaveOptions: { ...priorWaveOptions, fenceIndex: new Set([INSTALL]) }
+    })).toBe(false)
+    expect(canPromote(current, proof, 2_500, 4, {
+      processGeneration: 2, evidenceGeneration: 3,
+      priorWaveOptions: { ...priorWaveOptions, currentRequiredScopeIds: () => ['other'] }
+    })).toBe(false)
+    expect(priorWaveStillValid({ ...prior, receipt: null }, SHA, priorWaveOptions)).toBe(false)
   })
 
   it('accepts manual canary approval under auto policy before canaryApproved is set', () => {

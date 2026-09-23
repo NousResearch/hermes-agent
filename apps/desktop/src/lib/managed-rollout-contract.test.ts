@@ -6,6 +6,7 @@ import {
   validateReviewedSourceBinding,
   validateRolloutCapabilities,
   validateRolloutPlan,
+  validateRolloutSnapshot,
   validateScopeEvidence,
   validateTargetIdentity
 } from './managed-rollout-contract'
@@ -136,10 +137,30 @@ describe('managed rollout runtime contract', () => {
         protocol: 1,
         available: true,
         reason: null,
-        maxConcurrency: 4,
-        maxInstallations: 501
+        maxConcurrency: 2,
+        maxInstallations: 500
       })
     ).toThrow('release bounds')
+    expect(() => validateRolloutPlan({ ...plan(), concurrency: 2 })).toThrow('release bounds')
+    expect(() => validateRolloutSnapshot({
+      schemaVersion: 1,
+      id: 'rollout-1',
+      revision: 1,
+      createdAt: '2026-09-21T00:00:00.000Z',
+      updatedAt: '2026-09-21T00:00:00.000Z',
+      finishedAt: null,
+      retryOf: null,
+      archivedAt: null,
+      target: plan().target,
+      phase: 'running',
+      activeWave: 0,
+      concurrency: 2,
+      promotionPolicy: 'manual',
+      canaryApproved: false,
+      continuationRequired: false,
+      attempts: [],
+      eventCount: 0
+    })).toThrow('release bounds')
     expect(
       validateRolloutCapabilities({
         protocol: 1,

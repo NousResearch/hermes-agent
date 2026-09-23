@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 
-import type { RolloutSnapshot, TargetAttempt } from '../src/lib/managed-rollout-contract'
+import { MAX_ROLLOUT_CONCURRENCY, type RolloutSnapshot, type TargetAttempt } from '../src/lib/managed-rollout-contract'
 
 export interface PromotionProof {
   observationId: string
@@ -23,10 +23,10 @@ export const PROMOTION_PROOF_MAX_AGE_MS = 10 * 1000
 /** Bind the sweep to the exact reviewed policy, source, installation and scopes. */
 export function promotionContextDigest(snapshot: RolloutSnapshot): string {
   return crypto.createHash('sha256').update(JSON.stringify([
-    snapshot.id, snapshot.revision, snapshot.activeWave, snapshot.promotionPolicy,
+    snapshot.id, snapshot.revision, snapshot.activeWave, snapshot.concurrency, snapshot.promotionPolicy,
     snapshot.canaryApproved, snapshot.target,
     snapshot.attempts.map(attempt => [
-      attempt.identity.installId, attempt.identity.installationFingerprint,
+      attempt.identity.installId, attempt.identity.connectionId, attempt.identity.installationFingerprint,
       attempt.identity.sourceFingerprint, attempt.identity.admittedSha,
       attempt.wave, attempt.requiredScopeIds === null ? null : [...attempt.requiredScopeIds].sort(),
       attempt.recoveryRequired
@@ -69,7 +69,7 @@ export function targetHealthy(attempt: TargetAttempt, sha: string, observationId
 
   if (attempt.phase !== 'updated' && attempt.phase !== 'already-current') {return false}
 
-  if (attempt.identity.admittedSha !== sha || attempt.requiredScopeIds === null || attempt.recoveryRequired)
+  if (attempt.requiredScopeIds === null || attempt.recoveryRequired)
     {return false}
 
   if (!unique(attempt.requiredScopeIds)) {return false}
@@ -98,18 +98,31 @@ export function targetHealthy(attempt: TargetAttempt, sha: string, observationId
     return false
   }
 
-  if (attempt.phase === 'already-current') {return true}
-
   const receipt = attempt.receipt
+
+  if (attempt.phase === 'already-current' && attempt.identity.admittedSha !== sha) {return false}
+
+  if (attempt.phase === 'updated' && attempt.identity.admittedSha === sha) {return false}
+
+  // A preflight no-op has no mutation authority and needs no synthetic receipt.
+  // Once launch was authorized, the retained attempt needs its own terminal proof.
+  if (attempt.phase === 'already-current' && !receipt) {
+    return attempt.launchState === 'none' || attempt.launchState === 'intent-recorded'
+  }
+
+  if (attempt.phase === 'already-current' && attempt.launchState !== 'authorized' && attempt.launchState !== 'observed')
+    {return false}
 
   return Boolean(
     receipt &&
+    (attempt.phase === 'already-current' || attempt.launchState === 'observed') &&
     health.receiptCorrelated &&
     health.receiptSucceeded &&
     receipt.outcome === 'success' &&
     receipt.correlationId === attempt.correlationId &&
     receipt.installId === attempt.identity.installId &&
     receipt.requestedSha === sha &&
+    receipt.preSha === attempt.identity.admittedSha &&
     receipt.postSha === sha
   )
 }
@@ -125,11 +138,9 @@ function finiteMonotonic(value: number): boolean {
  */
 export interface PriorWaveOptions {
   /** A local fence index owned by main. Fenced installations never promote. */
-  fenceIndex?: ReadonlySet<string>
+  fenceIndex: ReadonlySet<string>
   /** Resolves the current required-scope set for an already-settled attempt. */
-  currentRequiredScopeIds?: (attempt: TargetAttempt) => readonly string[] | undefined
-  /** Compares the frozen attempt scope set with the current plan scope set. */
-  requiredScopesUnchanged?: (attempt: TargetAttempt, currentRequiredScopeIds: readonly string[]) => boolean
+  currentRequiredScopeIds: (attempt: TargetAttempt) => readonly string[] | undefined
 }
 
 export function requiredScopesUnchanged(
@@ -153,41 +164,21 @@ export function requiredScopesUnchanged(
 export function priorWaveStillValid(
   attempt: TargetAttempt,
   sha: string,
-  options: PriorWaveOptions = {}
+  options: PriorWaveOptions
 ): boolean {
   if (isExcluded(attempt)) {return true}
 
-  if (attempt.recoveryRequired || options.fenceIndex?.has(attempt.identity.installId)) {return false}
+  if (!options?.fenceIndex || !options.currentRequiredScopeIds) {return false}
 
-  if (attempt.phase !== 'updated' && attempt.phase !== 'already-current') {return false}
-
-  if (attempt.phase === 'updated' && attempt.launchState !== 'observed') {return false}
-
-  if (attempt.identity.admittedSha !== sha || attempt.requiredScopeIds === null) {return false}
+  if (options.fenceIndex.has(attempt.identity.installId)) {return false}
 
   const health = attempt.health
 
-  if (!health || health.checkoutSha !== sha || health.installId !== attempt.identity.installId) {return false}
+  if (!health || !targetHealthy(attempt, sha, health.observationId)) {return false}
 
-  if (!health.installReady || !health.markerClear || !health.recoveryClear || !health.dependencyReady) {return false}
+  const current = options.currentRequiredScopeIds(attempt)
 
-  if (health.scopeCapture !== 'complete' || health.reasons.length > 0) {return false}
-
-  if (!unique(attempt.requiredScopeIds) || !unique(health.scopes.map(scope => scope.scopeId))) {return false}
-
-  if (
-    attempt.requiredScopeIds.length !== health.scopes.length ||
-    !attempt.requiredScopeIds.every(scopeId => health.scopes.some(scope => scope.scopeId === scopeId)) ||
-    !health.scopes.every(scope => scope.restored && scope.ready && scope.codeSha === sha && scope.processIdentityVerified)
-  ) {return false}
-
-  if (options.requiredScopesUnchanged) {
-    const current = options.currentRequiredScopeIds?.(attempt)
-
-    if (!current || !options.requiredScopesUnchanged(attempt, current)) {return false}
-  }
-
-  return true
+  return Array.isArray(current) && requiredScopesUnchanged(attempt, current)
 }
 
 export function canPromote(
@@ -199,13 +190,12 @@ export function canPromote(
     processGeneration: number
     evidenceGeneration: number
     priorWaveOptions?: PriorWaveOptions
-    fenceIndex?: ReadonlySet<string>
-    currentRequiredScopeIds?: (attempt: TargetAttempt) => readonly string[] | undefined
-    requiredScopesUnchanged?: (attempt: TargetAttempt, currentRequiredScopeIds: readonly string[]) => boolean
   }
 ): boolean {
   if (!context || !Number.isSafeInteger(context.processGeneration) || !Number.isSafeInteger(context.evidenceGeneration))
     {return false}
+
+  if (snapshot.concurrency !== MAX_ROLLOUT_CONCURRENCY) {return false}
 
   if (snapshot.phase !== 'awaiting-promotion' || snapshot.continuationRequired) {return false}
 
@@ -252,14 +242,11 @@ export function canPromote(
 
   if (!next.every(attempt => admitted.has(attempt.identity.installId))) {return false}
 
-  const priorWaveOptions = context.priorWaveOptions ?? {
-    fenceIndex: context.fenceIndex,
-    currentRequiredScopeIds: context.currentRequiredScopeIds,
-    requiredScopesUnchanged: context.requiredScopesUnchanged
-  }
+  const priorWaveOptions = context.priorWaveOptions
 
   return settled.every(attempt => targetHealthy(attempt, snapshot.target.sha, proof.observationId)) &&
-    prior.every(attempt => priorWaveStillValid(attempt, snapshot.target.sha, priorWaveOptions))
+    (prior.length === 0 || (priorWaveOptions !== undefined &&
+      prior.every(attempt => priorWaveStillValid(attempt, snapshot.target.sha, priorWaveOptions))))
 }
 
 export function needsManualPromotion(snapshot: RolloutSnapshot): boolean {

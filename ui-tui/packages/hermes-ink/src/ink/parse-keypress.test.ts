@@ -12,6 +12,28 @@ describe('legacy modified return parsing', () => {
   })
 })
 
+describe('legacy function-key parsing', () => {
+  it.each([
+    ['f1', '\x1bOP'],
+    ['f2', '\x1bOQ'],
+    ['f3', '\x1bOR'],
+    ['f4', '\x1bOS'],
+    ['f5', '\x1b[15~'],
+    ['f6', '\x1b[17~'],
+    ['f7', '\x1b[18~'],
+    ['f8', '\x1b[19~'],
+    ['f9', '\x1b[20~'],
+    ['f10', '\x1b[21~'],
+    ['f11', '\x1b[23~'],
+    ['f12', '\x1b[24~']
+  ])('parses %s from its terminal sequence', (name, sequence) => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, sequence)
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({ name, fn: true, ctrl: false, meta: false, shift: false })
+  })
+})
+
 describe('parseMultipleKeypresses bracketed paste recovery', () => {
   it('emits empty bracketed pastes when the terminal sends both markers', () => {
     const [keys, state] = parseMultipleKeypresses(INITIAL_STATE, PASTE_START + PASTE_END)

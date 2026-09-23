@@ -68,10 +68,46 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
     # registered for the Nous gateway path and legacy cloud_provider configs.
     setup_tag = None
 
+    def __init__(self):
+        self._persistent_leases = {}
+
+    def requires_explicit_recovery(self):
+        from plugins.browser.browser_use.persistence import settings
+        return bool(settings().get("profile_id"))
+
+    def keep_session(self, session_id):
+        from gateway.session_context import get_session_env
+        if get_session_env("HERMES_CRON_SESSION"):
+            return False  # Cron has no next conversational turn; normal cleanup closes it.
+        lease = self._persistent_leases.get(session_id)
+        if lease is None:
+            return False
+        lease.checkpoint()
+        return True
+
+    def close_session(self, session_id):
+        closed = super().close_session(session_id)
+        lease = self._persistent_leases.pop(session_id, None)
+        if lease is not None:
+            lease.release(stopped=closed)
+        return closed
+
     def is_available(self) -> bool:
         return self._get_config_or_none(refresh_token=False) is not None
 
     def _get_config_or_none(self, *, refresh_token: bool = True) -> Optional[Dict[str, Any]]:
+        # An explicitly configured operator endpoint uses only its scoped credential.
+        from plugins.browser.browser_use.persistence import settings
+        from urllib.parse import urlsplit
+        gateway = settings().get("gateway_url")
+        if gateway:
+            endpoint = urlsplit(str(gateway))
+            if (endpoint.scheme != "https" or not endpoint.hostname or endpoint.username
+                    or endpoint.password or endpoint.query or endpoint.fragment):
+                raise ValueError("Browser gateway requires an HTTPS URL without credentials or query")
+            token = get_secret("BROWSER_USE_GATEWAY_TOKEN")
+            return {"api_key": token, "base_url": str(gateway).rstrip("/"),
+                    "managed_mode": False, "tenant_gateway": True} if token else None
         # Lazy: managed_tool_gateway pulls in the Nous auth stack direct-key users never need.
         from tools.managed_tool_gateway import peek_nous_access_token, resolve_managed_tool_gateway
         from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
@@ -130,6 +166,23 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
         config = self._get_config()
         managed_mode = bool(config.get("managed_mode"))
 
+        from plugins.browser.browser_use.persistence import Lease, owner, settings
+        profile_id = settings().get("profile_id")
+        if profile_id:
+            if managed_mode:
+                raise RuntimeError("Persistent Browser Use profiles require the direct provider")
+            lease = Lease(str(profile_id), owner(task_id))
+            try:
+                data = lease.acquire(self, config)
+            except Exception:
+                lease.release()
+                raise
+            self._persistent_leases[data["id"]] = lease
+            return {
+                "session_name": self._session_name(task_id), "bb_session_id": data["id"],
+                "cdp_url": data.get("cdpUrl") or data.get("connectUrl"),
+                "expires_at": data["timeoutAt"], "features": {"browser_use": True},
+            }
         headers = self._headers(config)
         if managed_mode:
             headers["X-Idempotency-Key"] = _get_or_create_pending_create_key(task_id)

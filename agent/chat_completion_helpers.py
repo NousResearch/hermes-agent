@@ -2333,9 +2333,13 @@ def cleanup_task_resources(agent, task_id: str) -> None:
         except Exception:
             return bool(os.environ.get("AGENT_BROWSER_HEADED"))
 
+    def _keep_browser(tid):
+        from tools.browser_tool_lifecycle import keep_browser_between_turns
+        return _headed() or keep_browser_between_turns(tid)
+
     for label, skip, skip_what, cleanup in (
         ("VM", is_persistent_env, "cleanup_vm for persistent env", lambda: _ra().cleanup_vm(task_id)),
-        ("browser", lambda _tid: _headed(), "cleanup_browser for headed session", lambda: _ra().cleanup_browser(task_id)),
+        ("browser", _keep_browser, "cleanup_browser for retained session", lambda: _ra().cleanup_browser(task_id)),
     ):
         try:
             if skip(task_id):

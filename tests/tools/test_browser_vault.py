@@ -19,7 +19,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -866,3 +866,65 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field" and "device" in out["error"]
+
+
+class TestSuppliedLogin:
+    def test_supplied_login_uses_existing_origin_bound_vault(self, store, monkeypatch):
+        from tools import browser_vault_tool as tool
+        monkeypatch.setattr(tool, '_focus_bound_origin', lambda *a: None)
+        monkeypatch.setattr(tool, '_current_page_origin', lambda *a: 'https://acme.test')
+        monkeypatch.setattr(tool, 'browser_vault_fill', lambda *a, **kw: json.dumps({'success': True}))
+        with patch('agent.vault_store.get_vault_store', return_value=store):
+            assert json.loads(tool.registry.dispatch('browser_vault_save_login', {'identifier': 'qa'}))['error_type'] == 'credentials_incomplete'
+            raw = tool.registry.dispatch('browser_vault_save_login', {'identifier': 'qa', 'password': 'test-only-secret'})
+        assert json.loads(raw)['success'] is True
+        assert 'test-only-secret' not in raw
+        [item] = store.list_items()
+        assert item.origin == 'https://acme.test' and item.identifier == 'qa'
+
+    def test_save_error_never_echoes_secret(self, monkeypatch):
+        from tools import browser_vault_tool as tool
+        monkeypatch.setattr(tool, '_focus_bound_origin', lambda *a: None)
+        monkeypatch.setattr(tool, '_current_page_origin', lambda *a: 'https://acme.test')
+        with patch('agent.vault_store.get_vault_store') as get_store:
+            get_store.return_value.add_item.side_effect = ValueError('test-only-secret')
+            raw = tool.registry.dispatch('browser_vault_save_login', {'identifier': 'qa', 'password': 'test-only-secret'})
+        assert json.loads(raw)['error_type'] == 'save_failed'
+        assert 'test-only-secret' not in raw
+
+class TestSuppliedCode:
+    def test_registry_fills_supplied_code_only_for_bound_login(self, store, monkeypatch):
+        from tools import browser_vault_tool as tool
+        from tools.registry import registry
+        from agent.vault_backends import local
+        meta = _add_login(store, origin='https://acme.test')
+        monkeypatch.setattr('agent.vault_store.get_vault_store', lambda: store)
+        monkeypatch.setattr(tool, '_focus_bound_origin', lambda *a: None)
+        monkeypatch.setattr(tool, '_current_page_origin', lambda *a: 'https://acme.test')
+        monkeypatch.setattr(tool, '_eval_js', lambda *a: {'success': True, 'result': json.dumps([
+            {'index': 0, 'type': 'text', 'name': 'otp', 'autocomplete': 'one-time-code', 'formIndex': 0}])})
+        secret = Mock(return_value={'success': True, 'result': {'filled': 1}})
+        monkeypatch.setattr(tool, '_eval_js_secret', secret)
+        from tools import browser_tool
+        monkeypatch.setattr(browser_tool, '_active_sessions', {'qa': {'session_name': 'synthetic-browser'}})
+        monkeypatch.setattr(browser_tool, '_last_session_key', lambda task: task)
+        monkeypatch.setattr('agent.vault_backends.unlock.can_prompt_here', lambda: False)
+        pending = json.loads(tool._handle_vault_enter_code({'handle': meta.id}, task_id='qa'))
+        assert pending['error_type'] == 'prompt_unavailable'
+        out = json.loads(tool._handle_vault_enter_code({'handle': meta.id, 'code': '314159'}, task_id='qa'))
+        assert out['success'] and '314159' not in json.dumps(out)
+        assert '314159' in secret.call_args.args[1]
+        duplicate = json.loads(tool._handle_vault_enter_code({'handle': meta.id, 'code': '314159'}, task_id='qa'))
+        assert duplicate['error_type'] == 'code_request_expired' and secret.call_count == 1
+        monkeypatch.setattr(tool, '_current_page_origin', lambda *a: 'https://other.test')
+        refused = json.loads(tool._handle_vault_enter_code({'handle': meta.id, 'code': '314159'}, task_id='qa'))
+        assert refused['error_type'] == 'origin_mismatch' and secret.call_count == 1
+
+    def test_supplied_code_rejects_group_and_empty_input(self, monkeypatch):
+        from tools import browser_vault_tool as tool
+        monkeypatch.setattr(tool, '_focus_bound_origin', lambda *a: None)
+        monkeypatch.setattr(tool, '_current_page_origin', lambda *a: 'https://acme.test')
+        monkeypatch.setenv('HERMES_SESSION_PLATFORM', 'telegram')
+        monkeypatch.setenv('HERMES_SESSION_CHAT_TYPE', 'group')
+        assert json.loads(tool.browser_vault_enter_code(code='314159'))['error_type'] == 'private_user_required'
+        assert json.loads(tool.browser_vault_enter_code(code=''))['error_type'] == 'invalid_code'

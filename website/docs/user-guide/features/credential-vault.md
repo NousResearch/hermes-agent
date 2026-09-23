@@ -120,3 +120,29 @@ site, that site (and any script it runs) has it, exactly as when you type it
 yourself. On a cloud browser backend the vendor's browser sees the page like any
 other. The origin binding is the guard against filling on the wrong site, not
 against a compromised right one.
+
+
+### User-supplied credentials
+
+`browser_vault_save_login` also accepts optional `identifier` and `password`
+together, using the existing origin-bound vault and fill operation. This follows
+the agent's ordinary conversation authorization; there is no separate
+transport or private/group permission. Without supplied values, the existing
+masked Desktop/CLI prompt remains unchanged.
+
+Unlike masked input, supplied credentials pass through conversation/model/tool
+inputs. Vault encryption does not erase those copies. Do not repeat passwords
+in responses or memory notes. The model-blind protection described above applies
+to the masked input and saved-handle paths, not to supplied credentials.
+
+### Verification codes supplied in private chat
+
+`browser_vault_enter_code(handle, code=...)` can fill a code supplied by the user
+when an interactive prompt is unavailable. First call it with the saved login
+handle and no code to observe the requested factor. The supplied code is accepted
+only for that origin and browser, within ten minutes, and the request is consumed
+before filling. Reobserve and request a fresh code if the browser changed; do not
+replay a fill whose outcome is unknown. Telegram groups and unattended turns do
+not accept this supplied-code path. Interactive prompts and stored TOTP seeds
+retain their existing behavior. Chat-supplied codes pass through model/tool inputs;
+they are never returned by the tool or saved as vault credentials.

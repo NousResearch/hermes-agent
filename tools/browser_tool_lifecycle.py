@@ -724,3 +724,14 @@ def cleanup_all_browsers() -> None:
     ):
         setattr(_bt, flag, False)
         setattr(_bt, cache, None)
+
+
+def keep_browser_between_turns(task_id: str) -> bool:
+    """An opted-in provider may retain a tracked browser; the existing idle reaper still owns it."""
+    with _bt._cleanup_lock:
+        info = _bt._active_sessions.get(task_id)
+    if not info or not info.get("bb_session_id") or _session_has_expired(info):
+        return False
+    provider = _cloud._get_cloud_provider()
+    keep = getattr(provider, "keep_session", None)
+    return bool(keep and keep(info["bb_session_id"]) is True)

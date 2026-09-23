@@ -269,6 +269,8 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
             session_info["cdp_url"] = _cdp._resolve_cdp_override(str(session_info["cdp_url"]))
         return session_info
     except Exception as e:
+        if getattr(provider, "requires_explicit_recovery", lambda: False)() is True:
+            raise
         provider_name = type(provider).__name__
         _bt.logger.warning("Cloud provider %s failed (%s); attempting fallback to local Chromium for task %s",
                            provider_name, e, task_id, exc_info=True)

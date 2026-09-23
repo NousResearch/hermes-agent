@@ -4041,10 +4041,18 @@ class BasePlatformAdapter(ABC):
         lo, hi = bounds
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:
-        """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
-        (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
-        post-handler."""
+    async def _synthesize_auto_tts(self, text_content: str, *, event: Optional[MessageEvent] = None) -> Tuple[List[str], Optional[str]]:
+        """Synthesize auto-TTS audio, building the path platform-aware here
+        (HERMES_SESSION_PLATFORM is cleared post-handler).
+
+        Args:
+            text_content: Reply text to synthesize.
+            event: Lets platform adapters pre-empt file synthesis with their own delivery
+                (e.g. Discord streaming into the voice channel) by returning no paths.
+
+        Returns:
+            ``(existing_paths, requested_path)``; empty/None on failure (logged, never raised).
+        """
         paths: List[str] = []
         requested_path = None
         try:
@@ -4436,7 +4444,8 @@ class BasePlatformAdapter(ABC):
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(
+                        text_content, event=event)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):

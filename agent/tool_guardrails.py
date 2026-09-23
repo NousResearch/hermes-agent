@@ -575,7 +575,8 @@ def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> s
 def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
     """Action-oriented guidance for recovering from repeated tool failures."""
     common = (
-        f"{tool_name} has failed {count} times this turn. This looks like a loop. "
+        f"{tool_name} has failed across {count} different calls this turn. "
+        "This may be a diagnostic sequence rather than an exact replay. "
         "Do not switch to text-only replies; keep using tools, but diagnose before retrying. "
         "First inspect the latest error/output and verify your assumptions. "
     )

@@ -17,8 +17,10 @@ _SKILL_VIEW_DEDUP_CAP = 200
 _SKILL_VIEW_DEDUP_MESSAGE = (
     "Skill content unchanged since it was loaded earlier in this "
     "conversation — refer to the earlier skill_view result; it is still "
-    "current and complete. (Re-issued after context compression, this "
-    "returns the full content again.)")
+    "current and complete. This satisfies any instruction requiring this "
+    "skill to be loaded; do not call skill_view again for the same target "
+    "unless compression later marks it pruned. (Re-issued after "
+    "context compression, this returns the full content again.)")
 
 
 def _skill_view_fingerprint(payload: dict) -> tuple | None:

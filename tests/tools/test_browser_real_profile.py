@@ -725,7 +725,12 @@ class TestReviewRound3:
         (tmp_path / "Default").mkdir(parents=True)
         assert bc._profile_is_locked(str(tmp_path), "Default") is False
 
-    def test_lock_probe_true_on_permissionerror(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("system, expect", [
+        ("Windows", True),   # a running browser holds the cookie DB deny-all
+        ("Darwin", False),   # EPERM is macOS TCC (no Full Disk Access), not a browser lock (#120396)
+        ("Linux", False),
+    ])
+    def test_lock_probe_permissionerror_only_means_locked_on_windows(self, tmp_path, monkeypatch, system, expect):
         import hermes_cli.browser_connect as bc
         (tmp_path / "Default").mkdir(parents=True)
         (tmp_path / "Default" / "Cookies").write_bytes(b"db")
@@ -738,7 +743,8 @@ class TestReviewRound3:
             return real_open(path, *a, **k)
 
         monkeypatch.setattr(builtins, "open", deny)
-        assert bc._profile_is_locked(str(tmp_path), "Default") is True
+        monkeypatch.setattr(bc.platform, "system", lambda: system)
+        assert bc._profile_is_locked(str(tmp_path), "Default") is expect
 
     def test_snapshot_fails_fast_when_locked(self, tmp_path, monkeypatch):
         """snapshot_real_profile always BLOCKS when locked — never kills, never

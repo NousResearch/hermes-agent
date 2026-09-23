@@ -212,7 +212,8 @@ class TestTranscribeAudioE2E:
         transcription_registry.register_provider(provider)
         audio_path = tmp_path / "oversized.mp3"
         with audio_path.open("wb") as audio_file:
-            audio_file.seek(transcription_tools.MAX_FILE_SIZE)
+            from tools.transcription_common import MAX_FILE_SIZE
+            audio_file.seek(MAX_FILE_SIZE)
             audio_file.write(b"\0")
 
         with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openrouter"}), \

@@ -12,10 +12,8 @@ from argparse import Namespace
 
 import pytest
 
-from hermes_cli.cron import (
-    _contains_gateway_lifecycle_command,
-    cron_command,
-)
+from cron.lifecycle_guard import contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command
+from hermes_cli.cron import cron_command
 
 
 # ---------------------------------------------------------------------------
@@ -26,15 +24,61 @@ class TestGatewayLifecyclePattern:
     """Verify the regex catches gateway lifecycle commands."""
 
     @pytest.mark.parametrize("text", [
-        "hermes gateway restart",
-        "hermes gateway stop",
-        "hermes gateway uninstall",
-        "hermes  gateway  restart",         # double spaces
-        "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
-        "HERMES GATEWAY RESTART",           # uppercase
+        # Branch E (#113667): the supervised gateway IS the interpreter image, so a killer aimed at
+        # `python*` carries no hermes/gateway token yet takes it down — on every platform.
+        "taskkill /F /IM python.exe",
+        "taskkill /F /IM python.exe 2>/dev/null | head -2; echo done",
+        'taskkill /F /FI "IMAGENAME eq python.exe"',
+        "taskkill.exe /T /IM pythonw.exe",
+        'task"kill" /I"M" "python.exe" /F',
+        'subprocess.run(["taskkill", "/IM", "python.exe", "/F"])',
+        "Stop-Process -Name python -Force",
+        "Stop-Process -ProcessName python3.12",
+        "Get-Process python | Stop-Process -Force",
+        "pkill python",
+        "pkill -9 python3",
+        "pkill -f python",
+        'pkill -f "python -m hermes_cli.main"',
+        "pkill -f hermes_cli",
+        "killall -9 python3.12",
+        "sudo pkill -9 python3",
+        "pgrep python | xargs kill -9",
+        "kill $(pidof python3)",
+        # Windows spellings of the hermes-gateway forms (salvaged from #94379).
+        "hermes.exe gateway restart",
+        "hermes.cmd gateway stop",
+        r'"C:\Program Files\hermes.exe" gateway restart',
+        "taskkill /F /IM hermes-gateway.exe",
+        "Stop-Process -Name hermes-gateway -Force",
     ])
-    def test_hermes_gateway_commands(self, text):
+    def test_interpreter_and_windows_kill_forms_are_blocked(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # Other images stay killable (evals/browser_use/orchestrate.py uses the first one).
+        "taskkill /F /IM agent-browser.exe /T",
+        "taskkill /F /IM notepad.exe",
+        "Stop-Process -Name chrome",
+        "killall node",
+        # The ownership-scoped route the rejection points to: explicit PID / proc id.
+        "taskkill /F /PID 46544",
+        "kill -9 46544",
+        "Stop-Process -Id 46544",
+        # Option VALUES are not targets; a `-f` pattern naming a specific script is not the gateway.
+        "pkill -u alice chrome",
+        "pkill -t pts/1 vim",
+        "pkill -f 'python mt_add_paused.py --go'",
+        # Unrelated scripts that merely contain "hermes" cannot match the gateway cmdline.
+        "pkill -f 'hermes-polis/run.sh'",
+        "pkill -f my_hermes_bot.py",
+        "pgrep python",
+        "hermes.exe gateway start",
+        "my-hermes.exe gateway restart",
+        "python -m pytest tests/ -k kill",
+        "skill python",
+    ])
+    def test_kill_forms_that_do_not_reach_the_gateway_are_allowed(self, text):
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
     @pytest.mark.parametrize("text", [
         # #62891: a blocked direct restart/kill laundered through a NEW
@@ -900,7 +944,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
             is True
@@ -930,7 +974,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"source {script}")
             is True
@@ -943,7 +987,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "activate.sh"
-        script.write_text("#!/bin/bash\nexport PATH=/usr/bin:$PATH\n")
+        script.write_text("#!/bin/bash\nexport PATH=/usr/bin:$PATH\n", encoding="utf-8")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
             is False
@@ -1777,17 +1821,6 @@ class TestRestartLoopGuard:
         import gateway.restart_loop_guard as rlg
         rlg.clear()
 
-
-
-
-    def test_is_tripped_reads_without_recording(self):
-        import gateway.restart_loop_guard as rlg
-        rlg.record_restart_interrupted_boot(60, now=1000.0)
-        rlg.record_restart_interrupted_boot(60, now=1001.0)
-        assert rlg.is_restart_loop_tripped(3, 60, now=1002.0) is False
-        rlg.record_restart_interrupted_boot(60, now=1002.0)
-        assert rlg.is_restart_loop_tripped(3, 60, now=1003.0) is True
-
     def test_clear_resets(self):
         import gateway.restart_loop_guard as rlg
         rlg.check_and_record(3, 60, now=1000.0)
@@ -1821,7 +1854,6 @@ class TestRestartLoopGuard:
         rlg.check_and_record(3, 60, now=1150.0)
         # 1h later: unrelated restart, chain reset to a single boot.
         assert rlg.check_and_record(3, 60, now=4800.0) is False
-        assert rlg.is_restart_loop_tripped(3, 60, now=4801.0) is False
 
     def test_fast_respawn_loop_still_trips(self):
         """#30719 regression: the original ~10s loop must keep tripping."""
@@ -1850,7 +1882,6 @@ class TestRestartLoopGuard:
         import gateway.restart_loop_guard as rlg
         for ts in (1000.0, 1150.0, 1300.0, 1450.0):
             assert rlg.check_and_record(0, 60, now=ts) is False
-        assert rlg.is_restart_loop_tripped(0, 60, now=1451.0) is False
 
 class TestTerminalToolGatewayLifecycleGuardRemote:
     """Remote-backend and two-session cwd regression coverage."""
@@ -1894,6 +1925,33 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         assert result["exit_code"] == 1
         assert "referenced script" in result["error"]
         assert any("head -c" in c for c in calls)
+
+
+    def test_unscannable_executed_script_names_the_reason(self, monkeypatch, tmp_path):
+        """A script the command EXECUTES that the guard cannot scan (here a live SQLite database)
+        still fails closed, but the error names that reason instead of claiming a lifecycle
+        command the model then rewords and retries in a loop (#113944)."""
+        import tools.terminal_tool as tt
+        from hermes_cli.sqlite_safe_read import connect_tracked
+
+        db = tmp_path / "state.db"
+        conn = connect_tracked(db)
+
+        class _LocalEnv:
+            env = {}
+            cwd = str(tmp_path)
+            def execute(self, command, **kwargs):
+                return {"output": "", "returncode": 1}
+
+        self._patch_env(monkeypatch, _LocalEnv(), inside_gateway=True)
+        try:
+            result = json.loads(tt.terminal_tool(command=f"bash {db}"))
+        finally:
+            conn.close()
+
+        assert result["exit_code"] == 1
+        assert "could not scan" in result["error"] and "SQLite" in result["error"]
+        assert "cannot restart, stop, or uninstall" not in result["error"]
 
 
 class TestCronCreateLifecycleBlockExtra:

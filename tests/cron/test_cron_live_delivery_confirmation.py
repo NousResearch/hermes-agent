@@ -18,13 +18,16 @@ and fail-closed on nothing-to-send.
 
 import asyncio
 import logging
+import time
 from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from cron import scheduler as sched
-from cron.scheduler import _confirm_adapter_delivery, _deliver_result
+from cron import scheduler_delivery as sched_delivery
+from cron.scheduler import _deliver_result
+from cron.scheduler_delivery import _confirm_adapter_delivery
 from gateway.config import Platform, PlatformConfig
 
 
@@ -155,7 +158,7 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
 
     router = MagicMock()
 
-    async def _deliver_to_platform(target, text, metadata):
+    async def _deliver_to_platform(target, text, metadata, transport=None):
         router_calls.append({"target": target, "text": text, "metadata": metadata})
         return send_result
 
@@ -168,7 +171,7 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
     with patch("gateway.config.load_gateway_config", return_value=_gateway_config(relay)), \
          patch("cron.scheduler.load_config",
                return_value={"cron": {"wrap_response": False, **(cron_cfg or {})}}), \
-         patch("cron.scheduler._record_delivery_verification", side_effect=_record_verification), \
+         patch("cron.scheduler_delivery._record_delivery_verification", side_effect=_record_verification), \
          patch("gateway.delivery.DeliveryRouter", return_value=router), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
@@ -298,7 +301,7 @@ class TestLiveDeliveryIsAFinalNotification:
             sent.append({"media": list(media_files), "metadata": metadata})
             return []
 
-        with patch("cron.scheduler._send_media_via_adapter", side_effect=fake_send_media), \
+        with patch("cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
              patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files: files):
             error, router_calls, _ = _run(
@@ -341,7 +344,7 @@ class TestNotifyIsConfigurable:
             sent.append(metadata)
             return []
 
-        with patch("cron.scheduler._send_media_via_adapter", side_effect=fake_send_media), \
+        with patch("cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
              patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files: files):
             _run(
@@ -382,14 +385,14 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
 
     def test_recorder_skips_the_write_when_nothing_changed(self):
         with patch("cron.jobs.update_job") as update_job:
-            sched._record_delivery_verification({"id": "j1", "last_delivery_unverified": None}, [])
+            sched_delivery._record_delivery_verification({"id": "j1", "last_delivery_unverified": None}, [])
             update_job.assert_not_called()
-            sched._record_delivery_verification({"id": "j1", "last_delivery_unverified": None}, ["slack:C1"])
+            sched_delivery._record_delivery_verification({"id": "j1", "last_delivery_unverified": None}, ["slack:C1"])
             update_job.assert_called_once_with("j1", {"last_delivery_unverified": ["slack:C1"]})
 
     def test_recorder_clears_a_stale_marker(self):
         with patch("cron.jobs.update_job") as update_job:
-            sched._record_delivery_verification({"id": "j1", "last_delivery_unverified": ["slack:C1"]}, [])
+            sched_delivery._record_delivery_verification({"id": "j1", "last_delivery_unverified": ["slack:C1"]}, [])
             update_job.assert_called_once_with("j1", {"last_delivery_unverified": None})
 
     def test_tool_listing_exposes_the_field(self):
@@ -401,4 +404,48 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
 
 def test_scheduler_module_exposes_the_confirmation_helper():
     """Guard the import surface the delivery block depends on."""
-    assert callable(sched._confirm_adapter_delivery)
+    assert callable(sched_delivery._confirm_adapter_delivery)
+
+
+class TestStandaloneSendIsBounded:
+    """The standalone fallback lane must not wait on its send unbounded (#115469).
+
+    ``_send_to_platform``'s gateway-loop dispatch awaits with a deliberate no-timeout shield
+    whose comment assumes an outer ``_run_async`` bound — but this lane's outer runner is a bare
+    ``asyncio.run``, so a mid-reconnect transport pinned the run (and the restart drain behind
+    it) for hours while the job's script had finished in seconds.
+    """
+
+    @staticmethod
+    def _deliver_standalone(sender, cron_cfg):
+        """Drive the production entry point with no live adapters (the standalone lane)."""
+        with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+             patch("cron.scheduler.load_config",
+                   return_value={"cron": {"wrap_response": False, **cron_cfg}}), \
+             patch("cron.scheduler_delivery._record_delivery_verification"), \
+             patch("tools.send_message_tool._send_to_platform", sender):
+            return _deliver_result(_job(), "Nightly report.")
+
+    def test_hung_send_is_released_at_the_configured_bound(self, caplog):
+        async def _hang(*_args, **_kwargs):
+            await asyncio.Event().wait()  # transport mid-reconnect: the send never resolves
+
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            started = time.monotonic()
+            error = self._deliver_standalone(_hang, {"standalone_send_timeout_seconds": 1})
+
+        assert time.monotonic() - started < 30  # released at the bound, not never
+        assert error is not None
+        assert "timed out after 1s" in error
+        assert "in flight" in error  # an un-cancelled shielded send may still land
+        assert "via live adapter" not in caplog.text and "delivered to" not in caplog.text
+
+    def test_a_timely_send_is_unaffected(self, caplog):
+        async def _ok(*_args, **_kwargs):
+            return {"success": True, "message_id": 7}
+
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error = self._deliver_standalone(_ok, {})
+
+        assert error is None
+        assert f"delivered to telegram:{CHAT_ID}" in caplog.text

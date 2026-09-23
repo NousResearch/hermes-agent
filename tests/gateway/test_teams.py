@@ -191,7 +191,7 @@ if _mt and _teams_mod.TypingActivityInput is None:
     _teams_mod.TypingActivityInput = _mt.TypingActivityInput
 
 TeamsAdapter = _teams_mod.TeamsAdapter
-TeamsSummaryWriter = _teams_mod.TeamsSummaryWriter
+from plugins.platforms.teams.summary_writer import TeamsSummaryWriter  # noqa: E402
 check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements
 validate_config = _teams_mod.validate_config
@@ -528,6 +528,50 @@ class TestTeamsMessageHandling:
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
 
+    @pytest.mark.anyio
+    async def test_aad_user_route_survives_conversation_changes(self, monkeypatch):
+        from gateway.profile_routing import parse_profile_routes
+        from gateway.run import GatewayRunner
+
+        routes = parse_profile_routes([
+            {"name": "owner", "platform": "teams", "user_id": "aad-456", "profile": "owner"},
+            {"name": "other", "platform": "teams", "user_id": "aad-789", "profile": "other"},
+        ])
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(multiplex_profiles=True, profile_routes=routes)
+        monkeypatch.setattr(
+            "gateway.run._multiplex_profile_homes",
+            lambda _config: [("owner", None), ("other", None)],
+        )
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter.gateway_runner = runner
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        for activity_id, conversation_id, conversation_type, user_id in (
+            ("activity-group", "19:shared@thread.v2", "groupChat", "aad-456"),
+            ("activity-channel", "19:channel@thread.v2", "channel", "aad-456"),
+            ("activity-dm", "19:dm@thread.v2", "personal", "aad-456"),
+            ("activity-other", "19:shared@thread.v2", "groupChat", "aad-789"),
+        ):
+            await adapter._on_message(self._make_ctx(self._make_activity(
+                activity_id=activity_id,
+                conversation_id=conversation_id,
+                conversation_type=conversation_type,
+                from_aad_id=user_id,
+            )))
+
+        sources = [call.args[0].source for call in adapter.handle_message.await_args_list]
+        assert [source.profile for source in sources] == ["owner", "owner", "owner", "other"]
+        assert [source.chat_type for source in sources] == ["group", "channel", "dm", "group"]
+        assert [runner._session_key_for_source(source).split(":", 2)[1] for source in sources] == [
+            "owner", "owner", "owner", "other",
+        ]
+
 
 class TestTeamsAttachmentClassification:
     """Document attachments must set MessageType.DOCUMENT so run.py's
@@ -592,7 +636,7 @@ class TestTeamsAttachmentClassification:
 
     @pytest.mark.anyio
     async def test_file_download_info_sets_document_type(self):
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         adapter = self._make_adapter()
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
@@ -610,7 +654,7 @@ class TestTeamsAttachmentClassification:
 
     @pytest.mark.anyio
     async def test_mixed_image_and_document_prefers_document(self):
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         adapter = self._make_adapter()
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
@@ -1109,3 +1153,86 @@ class TestTeamsMediaAttachments:
         adapter._app.send.assert_awaited_once()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Tests: require_mention gating (RSC-delivered history)
+# ---------------------------------------------------------------------------
+
+class TestTeamsRequireMention:
+    """With resource-specific consent Teams delivers every channel/groupChat message, not just
+    mentions. ``require_mention`` must drop unaddressed non-personal posts BEFORE the attachment
+    loop, keep @mentions (wire id ``28:<app id>``) / replies to the bot / personal chats, and be
+    read env-over-YAML like every other adapter."""
+
+    APP_ID = "bot-id"
+
+    def _make_adapter(self, monkeypatch=None, **extra):
+        adapter = TeamsAdapter(_make_config(
+            client_id=self.APP_ID, client_secret="secret", tenant_id="tenant", **extra))
+        adapter._app = MagicMock()
+        adapter._app.id = self.APP_ID
+        adapter.handle_message = AsyncMock()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG" + b"\0" * 32)
+        return adapter
+
+    def _activity(self, conversation_type, *, text="hello", mentioned_id=None, reply_to_id=None):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = f"act-{conversation_type}-{mentioned_id}-{reply_to_id}"
+        activity.from_ = MagicMock(aad_object_id="aad-456", name="Test User")
+        activity.from_.id = "29:user-123"
+        activity.recipient = MagicMock()
+        activity.recipient.id = f"28:{self.APP_ID}"
+        activity.conversation = MagicMock(conversation_type=conversation_type, tenant_id="t")
+        activity.conversation.id = "19:conv@thread.v2"
+        activity.conversation.name = "Conv"
+        att = MagicMock(content_type="image/png")
+        att.name = "a.png"
+        att.content_url = "https://smba.trafficmanager.net/emea/v3/attachments/1/views/original"
+        activity.attachments = [att]
+        activity.reply_to_id = reply_to_id
+        activity.entities = []
+        if mentioned_id:
+            entity = MagicMock(type="mention")
+            entity.mentioned = MagicMock()
+            entity.mentioned.id = mentioned_id
+            activity.entities = [entity]
+        return activity
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("conversation_type, kwargs, dispatched", [
+        ("channel", {}, False),
+        ("groupChat", {}, False),
+        ("channel", {"text": "<at>Alice</at> hi", "mentioned_id": "29:alice"}, False),  # someone else
+        ("channel", {"text": "<at>Hermes</at> hi", "mentioned_id": "28:bot-id"}, True),  # wire form of the bot id
+        ("groupChat", {"text": "<at>Hermes</at> hi", "mentioned_id": "bot-id"}, True),
+        ("channel", {"reply_to_id": "bot-msg-1"}, True),
+        ("personal", {}, True),
+    ])
+    async def test_gate_drops_unaddressed_non_personal_before_attachment_download(
+        self, conversation_type, kwargs, dispatched,
+    ):
+        adapter = self._make_adapter(require_mention=True)
+        adapter._sent_ids.append("bot-msg-1")
+        ctx = MagicMock()
+        ctx.activity = self._activity(conversation_type, **kwargs)
+        await adapter._on_message(ctx)
+        assert adapter.handle_message.await_count == (1 if dispatched else 0)
+        assert adapter._fetch_attachment_bytes.await_count == (1 if dispatched else 0)
+
+    @pytest.mark.parametrize("yaml_value, env_value, expected", [
+        (None, None, False),      # opt-in: absent key leaves every conversation ungated
+        (True, None, True),
+        ("false", None, False),
+        (True, "false", False),   # explicit env beats YAML, like MATRIX_/MATTERMOST_REQUIRE_MENTION
+        (False, "true", True),
+    ])
+    def test_require_mention_read_env_over_yaml(self, monkeypatch, yaml_value, env_value, expected):
+        monkeypatch.delenv("TEAMS_REQUIRE_MENTION", raising=False)
+        if env_value is not None:
+            monkeypatch.setenv("TEAMS_REQUIRE_MENTION", env_value)
+        extra = {} if yaml_value is None else {"require_mention": yaml_value}
+        adapter = self._make_adapter(**extra)
+        assert adapter._require_mention is expected
+        assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance

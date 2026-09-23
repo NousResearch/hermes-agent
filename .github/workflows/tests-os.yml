@@ -31,7 +31,7 @@ on:
       desktop_updater:
         description: >-
           Run the Windows desktop-update hand-off integration tests
-          (tests/test_desktop_update_windows_*.py). These spawn the real
+          (tests/scripts/desktop_update/test_desktop_update_windows_*.py). These spawn the real
           scripts/desktop-update/windows.ps1 and poll its loopback server, so
           they carry process-timing noise a shared runner amplifies; the
           caller gates them on the classifier's desktop_updater lane so a PR
@@ -92,7 +92,7 @@ jobs:
         # because it could not build here).
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web
 
       - name: Minimize uv cache
         run: uv cache prune --ci
@@ -156,7 +156,7 @@ jobs:
           # an unbound-variable error, hence the ``${arr[@]+...}`` idiom.)
           EXTRA_ARGS=()
           if [ "${{ inputs.desktop_updater }}" != "true" ]; then
-            echo "desktop_updater lane off: skipping tests/test_desktop_update_windows_*.py"
+            echo "desktop_updater lane off: skipping tests/scripts/desktop_update/test_desktop_update_windows_*.py"
             EXTRA_ARGS+=(--ignore-glob='*test_desktop_update_windows_*.py')
           fi
 

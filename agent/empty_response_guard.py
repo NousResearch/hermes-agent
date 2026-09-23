@@ -1,19 +1,19 @@
-"""Deterministic-empty detection and cost-aware retry budgets (NS-503).
+"""Deterministic-empty detection and cost-aware retry budgets.
 
-When a provider returns an empty completion, the agent loop retries up to
-3 times and then walks the fallback chain. Every attempt re-sends the full
-conversation input — at large context on paid routes this bills the user
-repeatedly for a turn that produces no text (the "charged ~$2.33 for an
-empty answer" incident class).
+On an empty completion the loop retries up to 3 times, then walks the fallback chain —
+each attempt re-bills the full input. Signaled refusals (``content_filter``, Anthropic
+``refusal``, Bedrock guardrails) are already terminal; this handles *unsignaled* empties
+(success, zero output tokens, generic finish reason — typical of portal-proxied refusals).
 
-Signaled refusals (``finish_reason="content_filter"``, Anthropic
-``stop_reason="refusal"``, Bedrock guardrails) are already terminal and
-never reach the empty-retry loop. This module addresses the *unsignaled*
-empties: the provider reports a successful completion with zero output
-tokens and a generic finish reason (portal-proxied refusals commonly look
-like this).
+Two independent guards, both failing OPEN to legacy behaviour:
 
-Two independent guards, both failing OPEN to today's behaviour:
+1. Deterministic-empty: two consecutive empties, both with usage present and
+   ``output_tokens == 0``, from the same (model, provider, finish_reason) → skip the
+   remaining retries and go straight to the fallback chain. Missing usage or
+   ``output_tokens > 0`` (think-block stripping, whitespace, flaky decoding) never classifies.
+2. Cost-aware budget: when one empty attempt's estimated input cost exceeds the threshold
+   (default $0.25), the retry budget drops from 3 to 1. Unknown pricing / missing usage /
+   included routes leave it untouched.
 
 1. **Deterministic-empty detection** — two consecutive empty attempts from
    the same (model, provider, finish_reason) are treated as deterministic
@@ -56,11 +56,9 @@ REDUCED_EMPTY_RETRY_BUDGET = 1
 DEFAULT_COST_THRESHOLD_USD = Decimal("0.25")
 DEFAULT_GUARD_ENABLED = True
 
-# Attribute names stashed on the agent object. State is scoped to one
-# consecutive empty streak: it is cleared whenever a streak starts
-# (``_empty_content_retries == 0`` at record time), which transparently
-# honours every existing reset site (turn start, compaction, tool
-# success, fallback activation) without touching them.
+# Agent-object attribute names. State is scoped to one consecutive empty streak: cleared
+# whenever ``_empty_content_retries == 0`` at record time, so every existing counter-reset
+# site (turn start, compaction, tool success, fallback activation) is honoured.
 _ATTEMPTS_ATTR = "_empty_attempt_history"
 _STREAK_COST_ATTR = "_empty_streak_cost_usd"
 _ENABLED_ATTR = "_empty_guard_enabled"
@@ -84,23 +82,14 @@ class EmptyAttempt:
 
 
 def resolve_guard_settings(section: Any) -> Tuple[bool, Decimal]:
-    """Resolve ``agent.empty_response_guard`` config into (enabled, threshold).
-
-    Tolerant of malformed input: anything that isn't a well-formed dict
-    (or well-formed values within it) falls back to the schema defaults.
-    Called once per agent at init; the resolved values are stashed on the
-    agent object so the hot loop never re-reads config.
-    """
+    """Resolve ``agent.empty_response_guard`` into (enabled, threshold); malformed input → schema defaults."""
     if not isinstance(section, dict):
         return (DEFAULT_GUARD_ENABLED, DEFAULT_COST_THRESHOLD_USD)
 
-    enabled_raw = section.get("enabled", DEFAULT_GUARD_ENABLED)
-    if isinstance(enabled_raw, bool):
-        enabled = enabled_raw
-    elif isinstance(enabled_raw, str):
-        # YAML quoting can turn true/false into strings.
-        enabled = enabled_raw.strip().lower() not in ("0", "false", "no", "off")
-    else:
+    enabled = section.get("enabled", DEFAULT_GUARD_ENABLED)
+    if isinstance(enabled, str):  # YAML quoting can turn true/false into strings.
+        enabled = enabled.strip().lower() not in ("0", "false", "no", "off")
+    elif not isinstance(enabled, bool):
         enabled = DEFAULT_GUARD_ENABLED
 
     threshold = DEFAULT_COST_THRESHOLD_USD
@@ -111,28 +100,19 @@ def resolve_guard_settings(section: Any) -> Tuple[bool, Decimal]:
             if candidate > 0:
                 threshold = candidate
         except Exception:  # noqa: BLE001 — malformed config must not break init
-            logger.debug(
-                "empty-guard: invalid cost_threshold_usd %r, using default",
-                threshold_raw,
-            )
+            logger.debug("empty-guard: invalid cost_threshold_usd %r, using default", threshold_raw)
     return (enabled, threshold)
 
 
 def guard_enabled(agent: Any) -> bool:
-    """Whether the guard is enabled for this agent (config-resolved).
-
-    Agents built before the config was threaded through (tests, embedded
-    callers) simply get the default: enabled.
-    """
+    """Config-resolved enabled flag; agents built without config default to enabled."""
     value = getattr(agent, _ENABLED_ATTR, DEFAULT_GUARD_ENABLED)
     return value if isinstance(value, bool) else DEFAULT_GUARD_ENABLED
 
 
 def _cost_threshold_usd(agent: Any) -> Decimal:
     value = getattr(agent, _THRESHOLD_ATTR, None)
-    if isinstance(value, Decimal) and value > 0:
-        return value
-    return DEFAULT_COST_THRESHOLD_USD
+    return value if isinstance(value, Decimal) and value > 0 else DEFAULT_COST_THRESHOLD_USD
 
 
 def _attempts(agent: Any) -> List[EmptyAttempt]:
@@ -143,25 +123,30 @@ def _attempts(agent: Any) -> List[EmptyAttempt]:
     return attempts
 
 
-def _estimate_attempt_cost(agent: Any, response: Any) -> Optional[Decimal]:
-    """Best-effort USD estimate for one attempt. None when unknown."""
+def _normalized_usage(agent: Any, response: Any, what: str) -> Any:
+    """Canonical usage for ``response`` or None (no usage / normalization failed)."""
     raw_usage = getattr(response, "usage", None)
     if not raw_usage:
         return None
     try:
-        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        from agent.usage_pricing import normalize_usage
+        return normalize_usage(raw_usage, provider=getattr(agent, "provider", None),
+                               api_mode=getattr(agent, "api_mode", None))
+    except Exception:  # noqa: BLE001 — pricing must never break the loop
+        logger.debug("empty-guard: %s failed", what, exc_info=True)
+        return None
 
-        canonical = normalize_usage(
-            raw_usage,
-            provider=getattr(agent, "provider", None),
-            api_mode=getattr(agent, "api_mode", None),
-        )
+
+def _estimate_attempt_cost(agent: Any, response: Any) -> Optional[Decimal]:
+    """Best-effort USD estimate for one attempt. None when unknown."""
+    canonical = _normalized_usage(agent, response, "cost estimation")
+    if canonical is None:
+        return None
+    try:
+        from agent.usage_pricing import estimate_usage_cost
         result = estimate_usage_cost(
-            getattr(agent, "model", "") or "",
-            canonical,
-            provider=getattr(agent, "provider", None),
-            base_url=getattr(agent, "base_url", None),
-            api_key=getattr(agent, "api_key", None),
+            getattr(agent, "model", "") or "", canonical, provider=getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None),
         )
     except Exception:  # noqa: BLE001 — pricing must never break the loop
         logger.debug("empty-guard: cost estimation failed", exc_info=True)
@@ -171,31 +156,16 @@ def _estimate_attempt_cost(agent: Any, response: Any) -> Optional[Decimal]:
 
 def _zero_output(agent: Any, response: Any) -> tuple:
     """Return (usage_present, zero_output) for a response, failing open."""
-    raw_usage = getattr(response, "usage", None)
-    if not raw_usage:
-        return (False, False)
-    try:
-        from agent.usage_pricing import normalize_usage
-
-        canonical = normalize_usage(
-            raw_usage,
-            provider=getattr(agent, "provider", None),
-            api_mode=getattr(agent, "api_mode", None),
-        )
-    except Exception:  # noqa: BLE001
-        logger.debug("empty-guard: usage normalization failed", exc_info=True)
+    canonical = _normalized_usage(agent, response, "usage normalization")
+    if canonical is None:
         return (False, False)
     output = getattr(canonical, "output_tokens", None)
-    if output is None:
+    # A present-but-empty usage object (some proxies) normalizes to all zeros;
+    # a genuine completion always has input tokens — no evidence, fail open.
+    if output is None or getattr(canonical, "prompt_tokens", 0) <= 0:
         return (False, False)
-    # A present-but-empty usage object (some proxies emit usage with no
-    # fields) normalizes to all zeros. A genuine completion always has
-    # input tokens — without them the usage is not evidence, fail open.
-    if getattr(canonical, "prompt_tokens", 0) <= 0:
-        return (False, False)
-    # Reasoning tokens count as real generation — a reasoning-only
-    # response is NOT a deterministic empty (the prefill-continuation
-    # path upstream owns that case).
+    # Reasoning tokens are real generation: a reasoning-only response is NOT
+    # a deterministic empty (the prefill-continuation path owns that case).
     reasoning = getattr(canonical, "reasoning_tokens", 0) or 0
     return (True, (output + reasoning) == 0)
 
@@ -209,11 +179,8 @@ def record_empty_attempt(
 ) -> None:
     """Record one empty completion in the current streak.
 
-    Must be called before ``_empty_content_retries`` is incremented for
-    this attempt: a counter of 0 marks the start of a new streak and
-    clears prior history (this transparently follows every existing
-    counter-reset site).
-    """
+    Call BEFORE ``_empty_content_retries`` is incremented: a counter of 0 marks a new
+    streak and clears prior history."""
     attempts = _attempts(agent)
     if getattr(agent, "_empty_content_retries", 0) == 0:
         attempts.clear()
@@ -260,14 +227,12 @@ def deterministic_empty(agent: Any) -> bool:
 
 
 def empty_retry_budget(agent: Any, response: Any) -> int:
-    """Empty-retry budget for the current streak (3, or 1 when a single
-    attempt is estimated to cost more than the configured threshold)."""
+    """Empty-retry budget for the current streak (3, or 1 when a single attempt is
+    estimated to cost more than the configured threshold)."""
     if not guard_enabled(agent):
         return DEFAULT_EMPTY_RETRY_BUDGET
     cost = _estimate_attempt_cost(agent, response)
-    if cost is None:
-        return DEFAULT_EMPTY_RETRY_BUDGET
-    if cost >= _cost_threshold_usd(agent):
+    if cost is not None and cost >= _cost_threshold_usd(agent):
         return REDUCED_EMPTY_RETRY_BUDGET
     return DEFAULT_EMPTY_RETRY_BUDGET
 
@@ -275,6 +240,4 @@ def empty_retry_budget(agent: Any, response: Any) -> int:
 def streak_cost_usd(agent: Any) -> Optional[Decimal]:
     """Accumulated estimated cost of the current empty streak, if known."""
     cost = getattr(agent, _STREAK_COST_ATTR, None)
-    if cost is None or cost <= 0:
-        return None
-    return cost
+    return cost if cost is not None and cost > 0 else None

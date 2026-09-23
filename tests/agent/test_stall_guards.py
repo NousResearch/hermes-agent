@@ -2,7 +2,7 @@
 
 Two guards, both notice/re-prompt-only:
 
-1. Identical-call loop breaker — ``ToolCallGuardrailController.observe_identical_call``
+1. Identical-call loop breaker — ``ToolCallGuardrailController.observe_call``
    appends a compact notice to the tool RESULT on the 3rd consecutive call
    with identical (tool, canonical args) AND an identical result. It never
    blocks execution, exempts legitimately-repeatable pollers, and resets on
@@ -29,7 +29,7 @@ def _observe_n(controller, n, tool="web_search", args=None, result="same result"
     notices = []
     for _ in range(n):
         notices.append(
-            controller.observe_identical_call(tool, args or {"query": "x"}, result)
+            controller.observe_call(tool, args or {"query": "x"}, result).notice
         )
     return notices
 
@@ -58,18 +58,18 @@ def test_keeps_firing_past_threshold():
 def test_does_not_fire_when_arguments_differ():
     c = ToolCallGuardrailController()
     for i in range(5):
-        notice = c.observe_identical_call(
+        notice = c.observe_call(
             "web_search", {"query": f"q{i}"}, "same result"
-        )
+        ).notice
         assert notice is None
 
 
 def test_does_not_fire_when_results_differ():
     c = ToolCallGuardrailController()
     for i in range(5):
-        notice = c.observe_identical_call(
+        notice = c.observe_call(
             "terminal", {"command": "poll-status"}, f"output {i}"
-        )
+        ).notice
         assert notice is None
 
 
@@ -77,7 +77,7 @@ def test_streak_resets_when_a_different_call_intervenes():
     c = ToolCallGuardrailController()
     assert _observe_n(c, 2)[-1] is None
     # Different tool breaks the consecutive streak.
-    assert c.observe_identical_call("read_file", {"path": "/a"}, "data") is None
+    assert c.observe_call("read_file", {"path": "/a"}, "data").notice is None
     # Two more of the original are a fresh streak of 2 — still no notice.
     assert all(n is None for n in _observe_n(c, 2))
 
@@ -85,16 +85,16 @@ def test_streak_resets_when_a_different_call_intervenes():
 def test_arg_canonicalization_ignores_key_order():
     c = ToolCallGuardrailController()
     r = "same"
-    assert c.observe_identical_call("t", {"a": 1, "b": 2}, r) is None
-    assert c.observe_identical_call("t", {"b": 2, "a": 1}, r) is None
-    assert c.observe_identical_call("t", {"a": 1, "b": 2}, r) is not None
+    assert c.observe_call("t", {"a": 1, "b": 2}, r).notice is None
+    assert c.observe_call("t", {"b": 2, "a": 1}, r).notice is None
+    assert c.observe_call("t", {"a": 1, "b": 2}, r).notice is not None
 
 
 def test_allowlisted_pollers_never_fire():
     c = ToolCallGuardrailController()
     for tool in ("process_manage", "vendor_get_result", "job_poll"):
         for _ in range(STALL_GUARD_IDENTICAL_CALL_THRESHOLD + 2):
-            assert c.observe_identical_call(tool, {"id": "j1"}, "Generating") is None
+            assert c.observe_call(tool, {"id": "j1"}, "Generating").notice is None
 
 
 def test_allowlist_membership_contract():
@@ -328,13 +328,6 @@ def test_multimodal_content_never_stubbed_and_breaks_streak():
     assert c.observe_call("vision", args, _BIG, tool_call_id="c3").stub is None
 
 
-def test_observe_identical_call_backcompat_notice_still_fires():
-    c = ToolCallGuardrailController()
-    for _ in range(STALL_GUARD_IDENTICAL_CALL_THRESHOLD - 1):
-        assert c.observe_identical_call("web_search", {"q": 1}, "r") is None
-    assert c.observe_identical_call("web_search", {"q": 1}, "r") is not None
-
-
 def test_extract_persisted_path_round_trip():
     # The stub's spillover reference is parsed from the <persisted-output>
     # block that maybe_persist_tool_result builds — assert the round trip.
@@ -394,3 +387,110 @@ def test_ignores_conversational_future_offers():
     assert not trailing_continue_intent(
         "If you want, I will happily review the PR once CI is green. Just say so!"
     )
+
+
+# ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
+
+
+def test_repeating_two_call_cycle_fires_notice_and_halts_under_hard_stop():
+    """An A,B,A,B,... cycle of identical (args, result) pairs defeats the
+    consecutive streak (every alternation resets it) but must still be caught:
+    notice at the threshold-th lap, halt at no_progress_block_after laps."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig
+
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    pairs = (({"command": "make build"}, "error: X\n"),
+             ({"command": "tail -5 build.log"}, "still broken\n"))
+    first_notice_call = None
+    calls = 0
+    for _ in range(30):
+        for args, result in pairs:
+            calls += 1
+            notice = c.observe_call("terminal", args, result).notice
+            if notice is not None and first_notice_call is None:
+                first_notice_call = calls
+                assert "cycle" in notice
+        if c.halt_decision is not None:
+            break
+    # Notice on the last call of the threshold-th lap (period 2 × threshold 3).
+    assert first_notice_call == 2 * STALL_GUARD_IDENTICAL_CALL_THRESHOLD
+    assert c.halt_decision is not None
+    assert c.halt_decision.code == "identical_cycle_halt"
+
+
+def test_cycle_guard_stays_silent_for_progressing_and_poller_cycles():
+    """A cycle whose results change every lap is real work; a cycle made only
+    of poller-exempt tools is legitimate waiting. Neither may fire."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig
+
+    progressing = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for i in range(20):
+        for args in ({"command": "make"}, {"command": "tail log"}):
+            assert progressing.observe_call("terminal", args, f"output {i}").notice is None
+    assert progressing.halt_decision is None
+
+    pollers = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for _ in range(20):
+        for args in ({"action": "poll", "session_id": "a"}, {"action": "poll", "session_id": "b"}):
+            assert pollers.observe_call("process_manage", args, "running").notice is None
+    assert pollers.halt_decision is None
+
+
+# ── promoted-reasoning plan-tail detector (#111761) ─────────────────────────
+
+
+def test_promoted_reasoning_detector_catches_first_person_plan_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    # Verbatim tails from the #111761 thread — none match the narrow visible-content detector.
+    for tail in (
+        "Let me batch the terminal calls and run them in parallel.",
+        "...Let me load the doctrine skill first, then run checks.",
+        "Initial hypothesis: the config is stale. I need to check the log.",
+        "I'm going to run the tests now",
+        "嗯，长度合适。Let me check the file first.",
+    ):
+        assert not trailing_continue_intent(tail), tail
+        assert promoted_reasoning_announces_action(tail), tail
+    # Long monologue: only the tail decides (no 400-char cap on this path).
+    assert promoted_reasoning_announces_action(("Thinking about the task. " * 60) + "Let me read the file.")
+
+
+def test_promoted_reasoning_detector_ignores_stated_answers():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for text in (
+        "The answer is 42.",
+        "Let me check the arithmetic. 6 times 7 is 42, so the answer is 42.",
+        "If you want, I will happily review the PR once CI is green. Just say so!",
+        "structured reasoning answer",
+        "",
+        None,
+    ):
+        assert not promoted_reasoning_announces_action(text), text
+
+
+def test_promoted_reasoning_detector_catches_thai_plan_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    # Thai is unsegmented (no spaces between words), so the tail-boundary check falls back to
+    # sentence punctuation, an em/en dash, or a run of ellipsis dots (#116495).
+    for tail in (
+        "พร้อมแล้ว — จะให้ผมส่ง JANUS...",  # verbatim tail from the issue
+        "ผมจะตรวจโค้ดให้เดี๋ยวนี้เลยครับ",
+        "เข้าใจแล้ว. ต่อไปจะลองรันเทสต์ดูครับ",
+        "คิดอยู่… ขอเริ่มจากไฟล์แรกก่อนนะครับ",
+        "บั๊กอยู่ตรงนี้\nจะแก้ให้เลยครับ",
+    ):
+        assert promoted_reasoning_announces_action(tail), tail
+
+
+def test_promoted_reasoning_detector_ignores_thai_stated_answers():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for text in (
+        "คำตอบคือ 42 ครับ",  # "the answer is 42"
+        "ตรวจสอบแล้ว. คำตอบคือ 42 ครับ",
+        "พรุ่งนี้จะฝนตกทั่วประเทศ",  # "tomorrow it will rain" — not a first-person action verb
+    ):
+        assert not promoted_reasoning_announces_action(text), text

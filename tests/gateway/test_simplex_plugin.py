@@ -8,6 +8,8 @@ sibling platform-plugin tests on the same xdist worker.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,7 +26,6 @@ is_connected = _simplex.is_connected
 register = _simplex.register
 _env_enablement = _simplex._env_enablement
 _standalone_send = _simplex._standalone_send
-_guess_extension = _simplex._guess_extension
 _is_image_ext = _simplex._is_image_ext
 _is_audio_ext = _simplex._is_audio_ext
 _CORR_PREFIX = _simplex._CORR_PREFIX
@@ -105,14 +106,6 @@ def test_adapter_init_custom_url():
 
 
 # ---------------------------------------------------------------------------
-# 5. Helper functions (magic-byte detection)
-# ---------------------------------------------------------------------------
-
-def test_guess_extension_png():
-    assert _guess_extension(b"\x89PNG\r\n\x1a\n") == ".png"
-
-
-# ---------------------------------------------------------------------------
 # 6. Correlation IDs
 # ---------------------------------------------------------------------------
 
@@ -188,6 +181,45 @@ async def test_send_group():
     ]
     assert msg_content == {"type": "text", "text": "Hello, group!"}
     assert result.success is True
+
+
+@pytest.mark.parametrize(("mode", "color"), [
+    ("RGBA", (255, 0, 0, 128)),
+    ("LA", (128, 128)),
+    ("P", 0),
+])
+def test_prepare_image_flattens_jpeg_incompatible_modes(tmp_path, mode, color):
+    from PIL import Image
+
+    image_path = tmp_path / f"{mode}.png"
+    image = Image.new(mode, (256, 128), color)
+    if mode == "P":
+        image.putpalette([255, 0, 0] + [0, 0, 0] * 255)
+        image.info["transparency"] = 0
+    image.save(image_path)
+
+    prepared_path, thumb_uri = SimplexAdapter._prepare_image(str(image_path))
+
+    assert prepared_path == str(image_path)
+    encoded = thumb_uri.removeprefix(_simplex._THUMB_URI_PREFIX)
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as thumbnail:
+        assert thumbnail.mode == "RGB"
+        assert thumbnail.size == (128, 64)
+
+
+@pytest.mark.asyncio
+async def test_send_image_reports_thumbnail_preparation_failure(tmp_path, monkeypatch):
+    adapter = _adapter_with_ws()
+    image_path = tmp_path / "broken.png"
+    image_path.write_bytes(b"not an image")
+    monkeypatch.setattr(adapter, "_prepare_image", MagicMock(side_effect=OSError("bad image")))
+    adapter._send_items = AsyncMock()
+
+    result = await adapter.send_image_file("contact-42", str(image_path))
+
+    assert result.success is False
+    assert result.error == "Failed to prepare image: bad image"
+    adapter._send_items.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

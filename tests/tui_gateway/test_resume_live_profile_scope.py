@@ -55,7 +55,7 @@ def homes(monkeypatch, tmp_path):
     homes = {name: tmp_path / name for name in ("a", "b")}
     for home in homes.values():
         home.mkdir()
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _DB)
+    monkeypatch.setattr("hermes_state_registry.acquire", _DB)
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_profile_home", lambda p: homes.get(p) if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))
@@ -66,7 +66,7 @@ def homes(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_default_session_cwd", lambda *a, **k: str(tmp_path))
     monkeypatch.setattr(server, "_child_run_active", lambda _key: False)
     monkeypatch.setattr(
-        server, "_live_session_payload", lambda sid, session, **_k: {"session_id": sid}
+        server, "_live_session_payload", lambda sid, session, **_k: {"session_id": sid, "message_count": 0, "messages": [], "info": {}}
     )
     known = set(server._sessions)
     yield homes

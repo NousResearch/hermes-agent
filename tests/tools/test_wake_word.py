@@ -55,9 +55,10 @@ def test_wake_surface_enabled_gate():
 
 
 def test_looks_like_path():
-    assert ww._looks_like_path("models/hey_hermes.onnx")
-    assert ww._looks_like_path("custom.ppn")
-    assert not ww._looks_like_path("hey_jarvis")
+    from tools.wake_word_engines import _looks_like_path
+    assert _looks_like_path("models/hey_hermes.onnx")
+    assert _looks_like_path("custom.ppn")
+    assert not _looks_like_path("hey_jarvis")
 
 
 def test_load_wake_word_config_is_a_dict_with_defaults():
@@ -616,6 +617,56 @@ def test_detection_callback_can_pause_and_close_stream(monkeypatch, tmp_path):
     assert ww.is_listening() is False
     assert streams[0].closed is True
     assert ww.stop_listening(owner=owner) is True
+
+
+def test_wedged_stream_halts_without_blocking_read_and_aborts_before_close(monkeypatch):
+    """A PortAudio device that never delivers samples (#117096) must not wedge pause().
+
+    ``read(n)`` on such a device blocks forever; the detector must never call it
+    while ``read_available`` is short, must return from pause() promptly once the
+    stop event is set, and must ``abort()`` the stream before ``close()``.
+    """
+    class _WedgedStream(_FakeStream):
+        read_available = 0
+
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.calls = []
+            self.read_calls = 0
+
+        def read(self, n):
+            self.read_calls += 1
+            time.sleep(30)  # a real wedged ALSA/PipeWire read never returns
+            return [0] * n, False
+
+        def abort(self):
+            self.calls.append("abort")
+
+        def stop(self):
+            self.calls.append("stop")
+
+        def close(self):
+            self.calls.append("close")
+            self.closed = True
+
+    streams = []
+
+    def _stream(**kw):
+        streams.append(_WedgedStream(**kw))
+        return streams[-1]
+
+    monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_stream), None))
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), on_wake=lambda: None)
+    det.start()
+    assert det.running is True
+    time.sleep(0.2)
+    t0 = time.monotonic()
+    det.pause()
+    assert time.monotonic() - t0 < 1.5, "pause() must not wait out the join timeout"
+    assert det.running is False
+    stream = streams[0]
+    assert stream.read_calls == 0, "read() must not be entered while read_available < frame_length"
+    assert stream.calls[:2] == ["abort", "close"]
 
 
 def test_startup_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):

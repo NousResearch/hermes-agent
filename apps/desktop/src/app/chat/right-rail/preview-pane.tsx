@@ -9,11 +9,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
-import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
+import { isLoopbackPreviewUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
 import {
   addAnnotatePin,
@@ -25,6 +26,7 @@ import {
   endAnnotateMode,
   flushAnnotateStack
 } from '@/lib/preview-annotate'
+import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -65,7 +67,7 @@ import {
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
-import { type PreviewInputEvent, registerPreviewInput } from './preview-input'
+import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
@@ -93,6 +95,7 @@ type PreviewWebview = HTMLElement & {
   replaceMisspelling?: (word: string) => void
   selectAll?: () => void
   sendInputEvent?: (event: PreviewInputEvent) => void
+  getZoomFactor?: () => number
 }
 
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
@@ -161,10 +164,6 @@ function loadErrorTitle(error: PreviewLoadErrorState, copy: Translations['previe
   return copy.failedToLoad
 }
 
-/** Loopback hosts — the address family that means "this machine", and so the
- *  one family whose meaning changes with WHICH machine is running the page. */
-const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[?::1\]?)$/i
-
 /**
  * True when this address can't mean what the agent meant.
  *
@@ -174,15 +173,7 @@ const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[?::1\]?)$
  * URL isn't wrong, it's just addressed to a different computer.
  */
 function isRemoteLoopbackUrl(url: string): boolean {
-  if (!isRemoteGateway()) {
-    return false
-  }
-
-  try {
-    return LOOPBACK_HOST_RE.test(new URL(url).hostname)
-  } catch {
-    return false
-  }
+  return isRemoteGateway() && isLoopbackPreviewUrl(url)
 }
 
 function isModuleMimeError(message: string): boolean {
@@ -799,7 +790,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     return registerPreviewInput(tabId, {
-      focus: () => webviewRef.current?.focus?.(),
+      focus: () => {
+        const webview = webviewRef.current
+
+        // Trusted input still reaches the guest while hidden. Focusing the
+        // webview element would steal the host's composer focus even when inert.
+        if (webview && !isElementInHiddenPane(webview)) {
+          webview.focus?.()
+        }
+      },
       send: event => {
         const webview = webviewRef.current
 
@@ -810,7 +809,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           throw new Error('preview webview cannot take input events')
         }
 
-        webview.sendInputEvent(event)
+        // The guest keeps its own (per-host) zoom, which the act engine's CSS
+        // measurements do not include — ask the webview, not the window.
+        webview.sendInputEvent(toWebviewInputSpace(event, webview.getZoomFactor?.()))
       }
     })
   }, [isRemoteHtml, isWebPreview, tabId])
@@ -898,7 +899,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     lastReloadRequestRef.current = reloadRequest
 
-    if (target.kind !== 'url') {
+    // An agent's file edit can only change a page a local dev server serves.
+    // Reloading any other site just throws away the user's page state.
+    if (target.kind !== 'url' || !isLoopbackPreviewUrl(currentUrl)) {
       return
     }
 
@@ -907,7 +910,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       message: copy.workspaceReloading
     })
     reloadPreview()
-  }, [appendConsoleEntry, copy.workspaceReloading, reloadPreview, reloadRequest, target.kind])
+  }, [appendConsoleEntry, copy.workspaceReloading, currentUrl, reloadPreview, reloadRequest, target.kind])
 
   useEffect(() => {
     if (
@@ -1025,6 +1028,25 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.setAttribute('partition', 'persist:hermes-preview')
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
+
+    // The guest preload (main.ts installs it on this partition) forwards a
+    // clicked `_blank` anchor here. Admission is our side of the contract —
+    // http/https only, so a guest page can never reach the local-file
+    // opener — and the open itself goes through the audited
+    // `hermes:openExternal` channel, never a popup side effect.
+    const onGuestExternal = (event: Event) => {
+      const detail = event as Event & { args?: unknown[]; channel?: string }
+
+      if (detail.channel !== PREVIEW_EXTERNAL_CHANNEL) {
+        return
+      }
+
+      const url = String(detail.args?.[0] ?? '')
+
+      if (admitPreviewExternalUrl(url)) {
+        void window.hermesDesktop?.openExternal?.(url)
+      }
+    }
 
     const onConsole = (event: Event) => {
       const detail = event as Event & {
@@ -1206,6 +1228,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     webview.addEventListener('console-message', onConsole)
+    webview.addEventListener('ipc-message', onGuestExternal)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
@@ -1223,6 +1246,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     return () => {
       annotateLoopRef.current += 1
       webview.removeEventListener('console-message', onConsole)
+      webview.removeEventListener('ipc-message', onGuestExternal)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
@@ -1303,7 +1327,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             }
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
-              isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
+              target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
+                ? undefined
+                : () => popOutBrowserTab(tabId)
             }
             onReload={reloadPreview}
             onToggleAnnotate={toggleAnnotate}

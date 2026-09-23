@@ -71,7 +71,7 @@ async def test_timed_out_codex_hygiene_worker_remains_visible_to_shutdown():
     assert runner._active_deferred_agent_worker_count() == 1
     with patch("gateway.run.request_hard_interrupt") as interrupt:
         runner._interrupt_running_agents("gateway shutdown")
-    interrupt.assert_called_once_with(agent, "gateway shutdown")
+    interrupt.assert_called_once_with(agent, "gateway shutdown", tool_reason="gateway shutdown")
 
     release.set()
     for _ in range(100):
@@ -112,7 +112,7 @@ async def test_deferred_hygiene_worker_times_out_and_receives_interrupt():
     assert _snapshot == {}
     with patch("gateway.run.request_hard_interrupt") as interrupt:
         runner._interrupt_running_agents("gateway shutdown")
-    interrupt.assert_called_once_with(agent, "gateway shutdown")
+    interrupt.assert_called_once_with(agent, "gateway shutdown", tool_reason="gateway shutdown")
 
     worker.cancel()
 
@@ -142,7 +142,7 @@ async def test_stop_interrupts_deferred_worker_before_teardown():
         patch("cron.scheduler.mark_job_run"),
         patch("tools.process_registry.process_registry.kill_all", return_value=0),
         patch("tools.terminal_tool.cleanup_all_environments"),
-        patch("tools.browser_tool.cleanup_all_browsers"),
+        patch("tools.browser_tool_lifecycle.cleanup_all_browsers"),
     ):
         await runner.stop()
 

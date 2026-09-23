@@ -113,7 +113,7 @@ def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys):
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: FakeDB())
     monkeypatch.setattr(
         sys,
         "argv",

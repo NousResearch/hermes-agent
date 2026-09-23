@@ -144,6 +144,17 @@ class TestDoctorExitCodes:
             code = doctor.run_doctor()
         assert code == 1
 
+    def test_spawn_denied_exits_2_with_diagnosis(self, capsys):
+        """The runtime interpreter cannot execute the resolved binary (Windows WinError 5 on a
+        `WindowsApps` install): a diagnosis + exit 2, never a raw traceback."""
+        from tools.computer_use import doctor
+
+        with patch("shutil.which", return_value="/protected/cua-driver"), \
+             patch("subprocess.Popen", side_effect=PermissionError(13, "Access is denied")):
+            code = doctor.run_doctor()
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "Access is denied" in err and "HERMES_CUA_DRIVER_CMD" in err
 
     def test_protocol_error_exits_2(self, capsys):
         """An empty stdout response (driver crashed during handshake) is a
@@ -429,3 +440,28 @@ class TestDoctorVersionIdentity:
         payload = json.loads(out.getvalue())
         assert payload["hermes_identity"]["version_mismatch"] is False
 
+
+
+def test_failed_tcc_row_from_health_report_names_the_stale_row_reset_for_that_service():
+    """A failed ``tcc_*`` row from the driver's own health_report (0.22+, not only the 0.10 fallback probes) must
+    carry the stale-grant recovery for its own TCC service, because System Settings can show the toggle ON while
+    the daemon is denied (trycua/cua#3170)."""
+    from tools.computer_use import doctor
+
+    report = _ok_report()
+    report["checks"] = [{"name": "tcc_screen_recording", "status": "fail", "message": "Screen Recording is not granted.",
+                         "hint": "Grant it in System Settings."},
+                        {"name": "tcc_accessibility", "status": "pass", "message": "granted"}]
+    proc = _fake_proc_with_responses(
+        {"jsonrpc": "2.0", "id": 1, "result": {}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": report}},
+    )
+    with patch("shutil.which", return_value="/fake/cua-driver"), patch("subprocess.Popen", return_value=proc), \
+         patch("sys.stdout", new_callable=StringIO) as out:
+        doctor.run_doctor(json_output=True)
+    checks = {c["name"]: c for c in json.loads(out.getvalue())["checks"]}
+
+    assert checks["tcc_screen_recording"]["hint"].startswith("Grant it in System Settings.")
+    assert "tccutil reset ScreenCapture com.trycua.driver" in checks["tcc_screen_recording"]["hint"]
+    assert "reset Accessibility" not in checks["tcc_screen_recording"]["hint"]
+    assert "tccutil" not in checks["tcc_accessibility"].get("hint", "")

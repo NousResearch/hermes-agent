@@ -69,7 +69,7 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
 # Legacy compressor builds ended long string leaves with these ambiguous tails.
-# Keep the compatibility guard narrow: real historical rewrites had a 200-char head.
+# The outgoing mutation may be shorter than the historical 200-char head after model recomposition.
 _LEGACY_CONTEXT_PRUNED_ARG_TAILS = ("...[truncated]", "…[truncated]")
 
 
@@ -98,9 +98,7 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
     def _walk(value: Any, path: str) -> None:
         if isinstance(value, str):
             stripped = value.rstrip()
-            if marker_re.search(value) or (
-                len(stripped) > 200 and stripped.endswith(_LEGACY_CONTEXT_PRUNED_ARG_TAILS)
-            ):
+            if marker_re.search(value) or stripped.endswith(_LEGACY_CONTEXT_PRUNED_ARG_TAILS):
                 found.append(path)
             return
         if isinstance(value, dict):

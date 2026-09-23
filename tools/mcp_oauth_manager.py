@@ -63,6 +63,10 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         self._hermes_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
         self._hermes_preregistered = preregistered
+        # Number of consecutive ``invalid_client`` rejections at the token endpoint. Poisoning the cached
+        # registration is destructive (the refresh token dies with the client that minted it), so one
+        # transient rejection must not trigger it; a successful token response resets the count.
+        self._hermes_invalid_client_strikes = 0
 
     def _hermes_storage(self):
         """The context storage when it is a ``HermesTokenStorage``, else None."""
@@ -156,10 +160,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         if existing is None or str(existing.token_endpoint) != str(meta.token_endpoint):
             storage.save_oauth_metadata(meta)
 
-    async def _is_invalid_client_at_token_endpoint(self, response: Any) -> bool:
-        """True when *response* is the token endpoint (same scheme/host/path, query ignored)
-        rejecting our client_id with ``invalid_client`` — whole word, so RFC 7591's
-        ``invalid_client_metadata`` does not trip it. The body is read only after the endpoint matches."""
+    def _is_token_endpoint_request(self, response: Any) -> bool:
+        """True when *response* came from the discovered ``token_endpoint`` (same scheme/host/path, query ignored)."""
         from urllib.parse import urlsplit
         token_endpoint = getattr(getattr(self.context, "oauth_metadata", None), "token_endpoint", None)
         req = getattr(response, "request", None)
@@ -169,9 +171,19 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             pa, pb = urlsplit(str(req.url)), urlsplit(str(token_endpoint))
         except ValueError:  # pragma: no cover — malformed URL
             return False
-        if (pa.scheme, pa.netloc.lower(), pa.path.rstrip("/")) != (pb.scheme, pb.netloc.lower(), pb.path.rstrip("/")):
+        return (pa.scheme, pa.netloc.lower(), pa.path.rstrip("/")) == (pb.scheme, pb.netloc.lower(), pb.path.rstrip("/"))
+
+    async def _is_invalid_client_at_token_endpoint(self, response: Any) -> bool:
+        """True when *response* is the token endpoint rejecting our client_id with ``invalid_client`` — whole word,
+        so RFC 7591's ``invalid_client_metadata`` does not trip it. The body is read only after the endpoint matches."""
+        if not self._is_token_endpoint_request(response):
             return False
         return re.search(rb"\binvalid_client\b", (await response.aread()).lower()) is not None
+
+    # ``invalid_client`` rejections tolerated before the cached registration is discarded. Real dead
+    # registrations reject every attempt; a single rejection is also what a transient authorization-
+    # server hiccup or a rate-limited refresh looks like, and poisoning on it orphans the refresh token.
+    _INVALID_CLIENT_STRIKES_TO_POISON = 2
 
     async def _maybe_flag_poisoned_client(self, response: Any) -> None:
         """An ``invalid_client`` rejection of our ``client_id`` at the token endpoint proves the cached registration
@@ -180,12 +192,30 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         ``client_id``) with ``invalid_client`` in the body; pre-registered clients are never poisoned; any failure
         is swallowed. The browser-side "Redirect URI Mismatch" case has no HTTP signal (``hermes mcp reauth``).
 
+        Two rejections are required before poisoning (``_INVALID_CLIENT_STRIKES_TO_POISON``): a refresh token is
+        bound to the client that minted it, so re-registering under a new ``client_id`` after ONE transient
+        ``invalid_client`` leaves tokens on disk that can never refresh again (every later refresh is a 400 and the
+        gateway demands a browser re-auth it cannot perform). A token-endpoint 2xx resets the count.
+
         See #36767.
         """
         try:
-            if (self._hermes_preregistered or getattr(response, "status_code", None) not in (400, 401)
-                    or not await self._is_invalid_client_at_token_endpoint(response)):
+            if self._hermes_preregistered:
                 return
+            status = getattr(response, "status_code", None)
+            if status is not None and 200 <= status < 300 and self._is_token_endpoint_request(response):
+                self._hermes_invalid_client_strikes = 0
+                return
+            if status not in (400, 401) or not await self._is_invalid_client_at_token_endpoint(response):
+                return
+            self._hermes_invalid_client_strikes += 1
+            if self._hermes_invalid_client_strikes < self._INVALID_CLIENT_STRIKES_TO_POISON:
+                logger.warning("MCP OAuth '%s': token endpoint rejected client_id as invalid_client (%d/%d); "
+                               "keeping cached registration until it repeats.",
+                               self._hermes_server_name, self._hermes_invalid_client_strikes,
+                               self._INVALID_CLIENT_STRIKES_TO_POISON)
+                return
+            self._hermes_invalid_client_strikes = 0
             storage = self._hermes_storage()
             # A rejected CIMD URL would loop if re-presented (the server already fetched and refused
             # it): drop it so the retry takes DCR, and mark it on disk so the next process doesn't walk

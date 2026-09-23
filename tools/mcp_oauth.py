@@ -625,22 +625,29 @@ class HermesTokenStorage:
 
     def poison_client_registration(self) -> bool:
         """Discard a dead DCR client (``invalid_client`` at the token endpoint) plus stale ``meta.json``
-        so the SDK re-registers next flow; tokens are kept (a valid refresh token survives if
-        re-registration never completes). Keeps one ``.bak``. True if a client file was removed."""
+        so the SDK re-registers next flow. Tokens go too: a refresh token is bound to the client that
+        minted it, so under the replacement ``client_id`` it can only ever produce ``invalid_grant`` —
+        keeping it leaves a gateway refreshing a dead token every probe and asking for a browser
+        re-auth it cannot run, instead of the clear "no cached tokens" failure at provider build.
+        Keeps one ``.bak`` of each file. True if a client file was removed."""
         client_path = self._client_info_path()
         if not client_path.exists():
             return False
-        backup = client_path.with_name(client_path.name + ".bak")
-        try:
-            backup.write_bytes(client_path.read_bytes())
-        except OSError as exc:  # non-fatal — proceed with the removal anyway
-            logger.warning("Could not back up client info at %s: %s", client_path, exc)
-        client_path.unlink(missing_ok=True)
+        for path in (client_path, self._tokens_path()):
+            if not path.exists():
+                continue
+            backup = path.with_name(path.name + ".bak")
+            try:
+                backup.write_bytes(path.read_bytes())
+                backup.chmod(0o600)
+            except OSError as exc:  # non-fatal — proceed with the removal anyway
+                logger.warning("Could not back up OAuth state at %s: %s", path, exc)
+            path.unlink(missing_ok=True)
         self._meta_path().unlink(missing_ok=True)
         logger.warning(
             "MCP OAuth '%s': cached client registration rejected as invalid_client; "
-            "removed client.json + meta.json (backup at %s) to force re-registration",
-            self._server_name, backup.name)
+            "removed client.json + tokens + meta.json (backups at *.bak) — run `hermes mcp login %s` to re-authorize",
+            self._server_name, self._server_name)
         return True
 
     def has_cached_tokens(self) -> bool:

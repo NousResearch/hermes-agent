@@ -507,7 +507,13 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     from hermes_cli.update_cmd_deps import _npm_lockfile_changed
     from hermes_constants import get_default_hermes_root
     if npm_cwd != PROJECT_ROOT or _npm_lockfile_changed(get_default_hermes_root()):
-        r1 = _install_web_deps(silent=True)
+        # Silent npm ci deletes node_modules and can sit with no output for
+        # longer than the Desktop hand-off's 600s idle ceiling.
+        from hermes_cli.update_cmd import _update_progress_heartbeat
+        with _update_progress_heartbeat(
+            "  ... still installing web UI dependencies ({elapsed}s elapsed)"
+        ):
+            r1 = _install_web_deps(silent=True)
         if r1.returncode != 0:
             return _report_web_build_failure("npm install", r1, fatal=fatal)
     r2 = _build()

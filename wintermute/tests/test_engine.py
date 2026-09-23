@@ -300,6 +300,7 @@ def plugin(home):
     spec = importlib.util.spec_from_file_location(
         "wintermute_plugin_under_test", WINTERMUTE_DIR / "plugin" / "__init__.py")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     store.set_hermes_home(home)
 
@@ -392,3 +393,14 @@ def test_every_model_call_counts_and_credits_show(plugin):
         session_id="s9", user_message="hi", platform="telegram", sender_id="7375758021")["context"]
     assert f"Token budget remaining today: {limits.DAILY_TOKEN_BUDGET - 2050:,}" in context
     assert "Credits: $4.54 left of $5.00" in context
+
+
+def test_balance_prefers_the_key_limit_then_the_account(plugin):
+    import sys as _sys
+    module = _sys.modules["wintermute_plugin_under_test"]
+    answers = {module.KEY_URL: {"limit": 5, "usage": 0.46, "limit_remaining": 4.54},
+               module.CREDITS_URL: {"total_credits": 20, "total_usage": 3}}
+    module._get_json = lambda url, key: answers[url]
+    assert module._read_balance("k") == {"total": 5.0, "used": 0.46, "remaining": 4.54}
+    answers[module.KEY_URL] = {"limit": None, "usage": 3}
+    assert module._read_balance("k") == {"total": 20.0, "used": 3.0, "remaining": 17.0}

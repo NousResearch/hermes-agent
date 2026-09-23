@@ -226,9 +226,11 @@ def _on_post_auxiliary_call(usage: Any = None, aux_task: str = "", **_: Any) -> 
 # in a background thread so no turn ever waits on it.
 # ---------------------------------------------------------------------------
 
-CREDITS_URL = "https://openrouter.ai/api/v1/credits"
+CREDITS_URL = "https://openrouter.ai/api/v1/credits"   # account balance (may be refused)
+KEY_URL = "https://openrouter.ai/api/v1/key"            # this key's own limit and usage
 CREDITS_REFRESH_S = 600
 _credits_checked = 0.0
+_credits_warned = False
 
 
 def _openrouter_key() -> str:
@@ -242,25 +244,51 @@ def _openrouter_key() -> str:
     return os.environ.get("OPENROUTER_API_KEY", "")
 
 
-def _fetch_credits() -> None:
+def _get_json(url: str, key: str) -> Dict[str, Any]:
     import urllib.request
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8")).get("data") or {}
+
+
+def _read_balance(key: str) -> Optional[Dict[str, float]]:
+    """``{total, used, remaining}`` in USD: the key's own limit when it has one (a key with a
+    fixed balance), else the account's credits. None when neither can be read."""
+    errors = []
+    try:
+        data = _get_json(KEY_URL, key)
+        if data.get("limit") is not None:
+            total, used = float(data["limit"]), float(data.get("usage") or 0)
+            remaining = data.get("limit_remaining")
+            return {"total": total, "used": used,
+                    "remaining": float(remaining) if remaining is not None else total - used}
+    except Exception as exc:
+        errors.append(f"key: {exc}")
+    try:
+        data = _get_json(CREDITS_URL, key)
+        total, used = float(data.get("total_credits") or 0), float(data.get("total_usage") or 0)
+        if total:
+            return {"total": total, "used": used, "remaining": total - used}
+    except Exception as exc:
+        errors.append(f"credits: {exc}")
+    global _credits_warned
+    if not _credits_warned:
+        _credits_warned = True
+        logger.warning("wintermute: OpenRouter balance unreadable (%s)", "; ".join(errors) or "no limit, no credits")
+    return None
+
+
+def _fetch_credits() -> None:
     key = _openrouter_key()
     if not key:
+        logger.warning("wintermute: no OPENROUTER_API_KEY visible to the plugin; credits not shown")
         return
-    request = urllib.request.Request(CREDITS_URL, headers={"Authorization": f"Bearer {key}"})
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            data = json.loads(response.read().decode("utf-8")).get("data") or {}
-        total = float(data.get("total_credits") or 0)
-        used = float(data.get("total_usage") or 0)
-    except Exception as exc:
-        logger.debug("wintermute: credits fetch failed: %s", exc)
+    balance = _read_balance(key)
+    if balance is None:
         return
     with store.locked_state() as (drives, _peers):
         drives["meta"]["credits"] = {
-            "total": round(total, 4), "used": round(used, 4),
-            "remaining": round(total - used, 4), "checked_at": store.iso(store.now()),
-        }
+            **{k: round(v, 4) for k, v in balance.items()}, "checked_at": store.iso(store.now())}
 
 
 def _maybe_refresh_credits() -> None:

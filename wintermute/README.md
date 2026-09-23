@@ -190,6 +190,16 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
   démarrage de la session (`/reset` pour recharger). Le bloc d'état, lui, est recalculé à
   chaque message.
 
+## Plus tard : Discord
+
+À ajouter quand on voudra. Pas compliqué côté identité : Hermes a déjà un adaptateur
+Discord, et chaque message Discord porte l'identifiant de son auteur. Le plugin crée donc
+tout seul un profil par personne (`discord:<id>`), comme pour Telegram. Il saurait qui
+parle, même dans un salon à plusieurs. Ce qu'il faudra régler : le token du bot
+(`DISCORD_BOT_TOKEN`), qui a le droit de lui parler (`DISCORD_ALLOWED_USERS` ou tout le
+monde), et sa méfiance envers les inconnus (valeurs de départ d'un nouveau profil dans
+`store.DEFAULT_PEER`).
+
 ## Tests
 
 ```bash

@@ -71,7 +71,8 @@ async def test_typing_indicator_enabled_spawns_refresh_loop():
 
     # Real handlers take time (tool calls); yield long enough for the spawned
     # refresh loop to fire at least one send_typing before delivery completes.
-    async def _slow_handler(_event):
+    async def _slow_handler(event):
+        event._gateway_start_typing_refresh()
         await asyncio.sleep(0.05)
         return "ok"
 
@@ -84,3 +85,29 @@ async def test_typing_indicator_enabled_spawns_refresh_loop():
     assert adapter.send_typing.await_count >= 1
 
 
+@pytest.mark.asyncio
+async def test_typing_starts_after_inbound_preprocessing_reaches_agent_execution():
+    """Voice/STT preprocessing must not show typing before the agent starts."""
+    adapter = _make_adapter(typing_indicator=True)
+    event = _make_event()
+    adapter._active_sessions[_sk()] = asyncio.Event()
+    preprocessing_done = asyncio.Event()
+
+    async def _voice_handler(event):
+        # This wait models delayed inbound STT enrichment before _run_agent.
+        await preprocessing_done.wait()
+        assert adapter.send_typing.await_count == 0
+
+        event._gateway_start_typing_refresh()
+        await asyncio.sleep(0)
+        assert adapter.send_typing.await_count >= 1
+        return "ok"
+
+    adapter._message_handler = _voice_handler
+
+    turn = asyncio.create_task(adapter._process_message_background(event, _sk()))
+    await asyncio.sleep(0.01)
+    assert adapter.send_typing.await_count == 0
+
+    preprocessing_done.set()
+    await turn

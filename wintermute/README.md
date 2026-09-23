@@ -193,6 +193,35 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
   démarrage de la session (`/reset` pour recharger). Le bloc d'état, lui, est recalculé à
   chaque message.
 
+## Observer Wintermute (`wm`) et le témoin
+
+| Commande | Ce que ça montre |
+|---|---|
+| `wm` | tout, une fois : état, témoin, pulsions, hormones, inconscient (en chiffres), liens, activité, journal |
+| `wm live` | moniteur en direct : rafraîchi toutes les 2 s, le panneau du bas change toutes les 10 s (`wm live 5` pour 5 s) |
+| `wm alerts` | tout ce que le témoin a vu, avec **pourquoi** il l'a fait |
+| `wm ack` / `wm ack soul` | accepter l'état actuel (tout, ou un seul élément) : les cases repassent au vert |
+
+**Le témoin** surveille les fichiers qui le constituent. Chaque case est verte (rien), orange
+(à savoir) ou rouge (grave) :
+
+| Case | Quoi | Niveau |
+|---|---|---|
+| SOUL | `~/.hermes/SOUL.md` | rouge |
+| ENGINE / PLUGIN / PULSE | son code installé | rouge |
+| .ENV | tes clés | rouge |
+| CONFIG | `config.yaml` | orange |
+| EMOTIONS | `drives.json`, `interlocutors.json` modifiés **par lui** (pas par le code) | orange |
+| RECORDS | son journal, son compteur de tokens, le fichier du témoin lui-même | rouge |
+
+Deux sources : une empreinte des fichiers vérifiée à chaque tick du pulse (voit tout, quel
+que soit le chemin), et ses appels d'outils au moment où ils arrivent, enregistrés avec **ce
+qu'il pensait à ce moment-là** (le raisonnement du tour qui a demandé l'outil). Un
+changement rouge envoie un message Telegram « 🛡 Témoin Wintermute » (au plus 15 min après),
+directement par l'API Telegram, même si Hermes est arrêté. Rien n'est interdit : il reste
+libre de se modifier, tu le sais simplement. `install.sh` accepte automatiquement ce qu'il
+vient lui-même de réécrire (moteur, plugin, pulse, config).
+
 ## Plus tard : Discord
 
 À ajouter quand on voudra. Pas compliqué côté identité : Hermes a déjà un adaptateur

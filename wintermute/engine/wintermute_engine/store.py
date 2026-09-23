@@ -67,6 +67,10 @@ def usage_path() -> Path:
     return state_dir() / "usage.jsonl"
 
 
+def activity_path() -> Path:
+    return state_dir() / "activity.jsonl"
+
+
 # ---------------------------------------------------------------------------
 # Time
 # ---------------------------------------------------------------------------
@@ -283,6 +287,33 @@ def log_event(kind: str, text: str, ts: Optional[datetime] = None, **fields: Any
     record = {"ts": iso(ts or now()), "kind": kind, "text": text, **fields}
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def log_activity(kind: str, text: str, **fields: Any) -> None:
+    """Fast, low-level feed of what he is doing right now (for ``wm live``)."""
+    if _dry_run:
+        return
+    path = activity_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        if path.exists() and path.stat().st_size > EVENTS_MAX_BYTES // 2:
+            os.replace(path, path.with_suffix(".jsonl.1"))
+    record = {"ts": iso(now()), "kind": kind, "text": " ".join(str(text).split())[:160], **fields}
+    with contextlib.suppress(OSError), open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def tail_jsonl(path: Path, limit: int) -> List[Dict[str, Any]]:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()[-limit:]
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        with contextlib.suppress(ValueError):
+            out.append(json.loads(line))
+    return out
 
 
 def events_since(since: Optional[datetime], limit: int = 12) -> List[Dict[str, Any]]:

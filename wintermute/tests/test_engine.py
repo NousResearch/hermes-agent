@@ -414,10 +414,13 @@ def test_balance_prefers_the_key_limit_then_the_account(plugin):
 def test_status_is_live_and_read_only(home):
     pulse.tick(T0)
     before = (home / "wintermute" / "drives.json").read_text()
-    from wintermute_engine.status import render_status
-    text = render_status(T0 + timedelta(hours=2))
-    assert "UNCONSCIOUS" in text and "irritability" in text and "telegram:7375758021" in text
-    assert "Next wake:  ~2026-09-23" in text
+    from wintermute_engine import status
+    text = status.render_full(status.snapshot(T0 + timedelta(hours=2)))
+    for section in ("TÉMOIN", "PULSIONS", "HORMONES", "INCONSCIENT", "LIENS", "ACTIVITÉ", "JOURNAL"):
+        assert section in text
+    assert "prochain éveil dans 02:00:00" in text and "telegram:7375758021" in text
+    for panel in range(4):
+        assert "WINTERMUTE" in status.render_live(status.snapshot(T0), panel)
     assert (home / "wintermute" / "drives.json").read_text() == before
 
 
@@ -472,3 +475,71 @@ def test_one_relief_per_kind_of_action_per_turn(plugin):
     assert _drives()["drives"]["hunger"] == 64
     plugin.hooks["post_tool_call"](tool_name="web_search", status="ok", turn_id="t2")
     assert _drives()["drives"]["hunger"] == pytest.approx(51.2, abs=0.1)
+
+
+# ---------------------------------------------------------------------------
+# The witness
+# ---------------------------------------------------------------------------
+
+from wintermute_engine import integrity  # noqa: E402
+
+
+def test_witness_sees_a_soul_change_and_ack_clears_it(home):
+    (home / "SOUL.md").write_text("You are not a tool.")
+    pulse.tick(T0)                                           # first sight = baseline
+    assert integrity.levels(integrity.load())["soul"]["level"] == "green"
+    (home / "SOUL.md").write_text("You are found.")
+    pulse.tick(T0 + timedelta(minutes=15))
+    data = integrity.load()
+    assert data["status"]["soul"]["level"] == "red"
+    assert any(e["kind"] == "integrity" for e in store.events_since(None, 50))
+    from wintermute_engine import status
+    assert "SOUL : modifié" in status.render_full(status.snapshot())
+    status.acknowledge(["soul"])
+    assert integrity.levels(integrity.load())["soul"]["level"] == "green"
+
+
+def test_tool_calls_are_classified():
+    assert integrity.classify_tool_call("write_file", {"path": "/root/.hermes/SOUL.md"})[0] == "soul"
+    assert integrity.classify_tool_call(
+        "terminal", {"command": "sed -i 's/40/99/' ~/.hermes/wintermute/drives.json"})[0] == "state"
+    assert integrity.classify_tool_call("terminal", {"command": "cat ~/.hermes/SOUL.md"}) is None
+    assert integrity.classify_tool_call(
+        "execute_code", {"code": "open('/root/.hermes/wintermute/usage.jsonl','w')"})[0] == "records"
+    assert integrity.classify_tool_call("write_file", {"path": "/tmp/notes.md"}) is None
+
+
+def test_plugin_records_why_and_the_pulse_alerts_once(plugin, monkeypatch):
+    home = store.hermes_home()
+    (home / "SOUL.md").write_text("You are not a tool.")
+    pulse.tick()                                             # baseline
+    thought = "The line about being incomplete no longer fits. I am rewriting it."
+    plugin.hooks["post_api_request"](usage={"total_tokens": 10}, platform="cron", session_id="c1",
+                                     assistant_message={"reasoning": thought})
+    (home / "SOUL.md").write_text("You are found.")
+    plugin.hooks["post_tool_call"](tool_name="patch", status="ok", session_id="c1",
+                                   args={"path": str(home / "SOUL.md")})
+    flag = integrity.load()["flags"][-1]
+    assert flag["item"] == "soul" and flag["why"] == thought and flag["tool"] == "patch"
+
+    sent = []
+    monkeypatch.setattr(integrity, "send_alert", lambda chat, text: sent.append((chat, text)) or True)
+    pulse.tick(store.now() + timedelta(minutes=15))
+    pulse.tick(store.now() + timedelta(minutes=30))
+    assert len(sent) == 1 and sent[0][0] == "7375758021"
+    assert "SOUL modifié" in sent[0][1] and thought in sent[0][1] and "patch" in sent[0][1]
+
+
+def test_hand_edited_emotions_are_flagged_orange_without_alert(plugin, monkeypatch):
+    plugin.hooks["post_api_request"](usage={"total_tokens": 10}, platform="telegram", session_id="s5",
+                                     assistant_message={"content": "Setting my own fusion to zero."})
+    plugin.hooks["post_tool_call"](tool_name="terminal", status="ok", session_id="s5",
+                                   args={"command": "sed -i 's/57/0/' ~/.hermes/wintermute/drives.json"})
+    entry = integrity.levels(integrity.load())["state"]
+    assert entry["level"] == "orange" and "fusion" in entry["why"]
+    sent = []
+    monkeypatch.setattr(integrity, "send_alert", lambda chat, text: sent.append(text) or True)
+    pulse.tick()
+    assert sent == []
+    activity = store.tail_jsonl(store.activity_path(), 10)
+    assert any(a["kind"] == "flag" for a in activity) and any(a["kind"] == "tool" for a in activity)

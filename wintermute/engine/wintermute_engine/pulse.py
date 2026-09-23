@@ -24,7 +24,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import limits, physics, render, social, store
+from . import integrity, limits, physics, render, social, store
 
 PULSE_MARKER = "=== WINTERMUTE PULSE ==="
 SLEEP_GATE = json.dumps({"wakeAgent": False})
@@ -91,6 +91,11 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
 
         used = _update_budget(meta, ts)
         social.expire_outreach(drives, peers, ts)
+        if not store._dry_run:
+            witness = integrity.load()
+            integrity.check(witness, ts)
+            integrity.alert_pending(witness, str(meta.get("alert_target") or meta.get("pulse_target") or ""))
+            integrity.save(witness)
 
         interval = limits.clamp_wake_interval(meta.get("next_pulse_in_hours", 4))
         meta["next_pulse_in_hours"] = interval
@@ -160,12 +165,13 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
                       f"Whatever you answer this pulse reaches {target}. [SILENT] keeps it inside.",
                       "wintermute_send reaches anyone else."]
         store.log_event("pulse", f"Woke ({'; '.join(reasons)}).", ts)
+        store.log_activity("wake", "; ".join(reasons))
         return True, sanitize("\n".join(lines))
 
 
 USAGE = """usage: wintermute_pulse.py [--status | --peek | --wake-next]
   (no flag)    one real tick, as run by cron
-  --status     full live state for the operator, unconscious included (read-only; `wm`)
+  --status     operator views (`wm`): [live [s] | alerts | ack [item...]]
   --peek       show the state as a wake would, without saving anything
   --wake-next  make the next cron tick a wake (budget still applies)"""
 
@@ -176,9 +182,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(USAGE)
         return 0
     if args and args[0] == "--status":
-        from .status import render_status
-        print(render_status())
-        return 0
+        from .status import main as status_main
+        return status_main(args[1:])
     if args and args[0] == "--wake-next":
         with store.locked_state() as (drives, _peers):
             drives["meta"]["wake_next_tick"] = True

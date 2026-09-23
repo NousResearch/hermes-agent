@@ -47,7 +47,7 @@ _HOME = _resolve_home()
 if str(_HOME / "wintermute") not in sys.path:
     sys.path.insert(0, str(_HOME / "wintermute"))
 
-from wintermute_engine import limits, physics, render, social, store  # noqa: E402
+from wintermute_engine import integrity, limits, physics, render, social, store  # noqa: E402
 from wintermute_engine.pulse import PULSE_MARKER, sanitize  # noqa: E402
 
 store.set_hermes_home(_HOME)
@@ -56,6 +56,7 @@ _lock = threading.Lock()
 _session_peer: Dict[str, str] = {}      # conversation session -> peer key
 _pulse_sessions: Set[str] = set()       # cron sessions started by a pulse
 _armed_waits: Dict[str, int] = {}       # session -> reply window (minutes) for this turn's words
+_last_thought: Dict[str, str] = {}      # session -> what the model was thinking when it asked for tools
 
 # Tool name -> behaviour event. Anything not listed (and not ours) counts as "acted".
 _TOOL_EVENTS = {
@@ -137,6 +138,7 @@ def _on_pre_llm_call(session_id: str = "", user_message: Any = None, platform: s
         key = social.peer_key(platform or "cli", sender_id or "local")
         with _lock:
             _session_peer[session_id] = key
+        store.log_activity("heard", f"{key}: {_text(user_message)[:80]}")
         ts = store.now()
         with store.locked_state() as (drives, peers):
             outreach_lines = social.on_incoming(drives, peers, key, ts)
@@ -161,6 +163,7 @@ def _on_post_llm_call(session_id: str = "", assistant_response: Any = None, plat
             if not is_pulse:
                 return
             silent = _is_silent(assistant_response, autonomous=True)
+            store.log_activity("said", "[kept inside]" if silent else _text(assistant_response)[:100])
             with store.locked_state() as (drives, peers):
                 pending = drives["meta"].pop("pending_pulse", None) or {}
                 target = str(pending.get("target") or drives["meta"].get("pulse_target") or "")
@@ -173,6 +176,7 @@ def _on_post_llm_call(session_id: str = "", assistant_response: Any = None, plat
         if not key:
             return
         silent = _is_silent(assistant_response, autonomous=False)
+        store.log_activity("said", "[silence]" if silent else _text(assistant_response)[:100])
         with store.locked_state() as (drives, peers):
             if wait is not None and not silent:
                 social.open_outreach(drives, peers, key, ts, _text(assistant_response), wait)
@@ -197,12 +201,35 @@ def _first_this_turn(turn: str, event: str) -> bool:
     return True
 
 
+def _tool_detail(tool: str, args: Any) -> str:
+    if not isinstance(args, dict):
+        return ""
+    for key in ("path", "command", "query", "url", "action", "code", "peer", "hours", "what"):
+        if args.get(key) not in (None, ""):
+            return f"{key}={args[key]}"
+    return ""
+
+
 def _on_post_tool_call(tool_name: str = "", status: str = "", turn_id: str = "",
-                       session_id: str = "", task_id: str = "", **_: Any) -> None:
+                       session_id: str = "", task_id: str = "", args: Any = None,
+                       **_: Any) -> None:
     try:
-        if not tool_name or tool_name.startswith("wintermute_"):
+        if not tool_name:
             return
-        if str(status or "").lower() in {"error", "blocked", "failed"}:
+        failed = str(status or "").lower() in {"error", "blocked", "failed"}
+        store.log_activity("tool", f"{tool_name} {_tool_detail(tool_name, args)}",
+                           status="failed" if failed else "ok")
+        touched = None if failed else integrity.classify_tool_call(tool_name, args)
+        if touched:
+            with _lock:
+                why = _last_thought.get(session_id or "", "")
+            ts = store.now()
+            with store.locked_state() as (_drives, _peers):
+                witness = integrity.load()
+                flag = integrity.record_flag(witness, touched[0], tool_name, touched[1], why, ts)
+                integrity.save(witness)
+            store.log_activity("flag", f"{flag['item']} touched by {tool_name}", level=flag["level"])
+        if tool_name.startswith("wintermute_") or failed:
             return
         event = _TOOL_EVENTS.get(tool_name, "acted")
         if tool_name.startswith("browser_"):
@@ -240,8 +267,25 @@ def _usage_detail(usage: Any) -> Dict[str, int]:
     return detail
 
 
-def _on_post_api_request(usage: Any = None, platform: str = "", **_: Any) -> None:
+def _thought_of(message: Any) -> str:
+    """The reasoning (or, failing that, the visible text) of the turn that asked for tools."""
+    for attr in ("reasoning", "reasoning_content", "content"):
+        value = message.get(attr) if isinstance(message, dict) else getattr(message, attr, None)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[-600:]
+    return ""
+
+
+def _on_post_api_request(usage: Any = None, platform: str = "", session_id: str = "",
+                         assistant_message: Any = None, **_: Any) -> None:
     try:
+        thought = _thought_of(assistant_message)
+        if thought and session_id:
+            with _lock:
+                _last_thought[session_id] = thought
+                while len(_last_thought) > 200:
+                    _last_thought.pop(next(iter(_last_thought)))
+        store.log_activity("think", f"{_usage_tokens(usage):,} tokens ({(platform or 'chat').lower()})")
         store.record_usage(_usage_tokens(usage), (platform or "chat").lower(), **_usage_detail(usage))
         _maybe_refresh_credits()
     except Exception:

@@ -57,7 +57,6 @@ import {
   isWslEnvironment
 } from './bootstrap-platform'
 import { detectBundleSwap } from './bundle-swap'
-import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { installCommandScreenshot } from './command-screenshot'
 import {
   connectionInstallIds,
@@ -111,7 +110,6 @@ import { createDesktopNativePreferencesRuntime, registerDesktopF12PreferenceIpc 
 import { createDesktopNativeWindowServicesRuntime } from './desktop-native-window-services-runtime'
 import { registerBackendPoolIpc, registerDesktopOperationsIpc, registerWorkspaceAndLogIpc } from './desktop-operational-ipc'
 import { registerDesktopPageInteractionIpc } from './desktop-page-interaction-ipc'
-import { createDesktopPetOverlayRuntime } from './desktop-pet-overlay-runtime'
 import { installDesktopPlatformPreflightRuntime } from './desktop-platform-preflight-runtime'
 import { createDesktopPluginCompatNoticeRuntime } from './desktop-plugin-compat-notice-runtime'
 import { registerDesktopPluginProfileRoutesIpc } from './desktop-plugin-profile-routes-ipc'
@@ -120,7 +118,6 @@ import { createDesktopPoolPolicyRuntime } from './desktop-pool-policy-runtime'
 import { createDesktopPowerRuntime } from './desktop-power-runtime'
 import { createDesktopPrimaryBackendRuntime } from './desktop-primary-backend-runtime'
 import { createDesktopPrimaryTeardownRuntime } from './desktop-primary-teardown-runtime'
-import { createDesktopPrimaryWindowRuntime } from './desktop-primary-window-runtime'
 import {
   type DesktopProfileRoute
 } from './desktop-profile'
@@ -131,14 +128,12 @@ import { registerDesktopQuitRuntime } from './desktop-quit-runtime'
 import { resolveDesktopRemoteRoute } from './desktop-remote-route'
 import { createDesktopRendererAssetsRuntime } from './desktop-renderer-assets-runtime'
 import { createDesktopRuntimeDiscovery } from './desktop-runtime-discovery'
-import { createDesktopSecondaryWindowRuntime } from './desktop-secondary-window-runtime'
-import { createDesktopShellOverlayRuntime } from './desktop-shell-overlay-runtime'
 import { createDesktopShellRuntime } from './desktop-shell-runtime'
 import { createDesktopStartupContext } from './desktop-startup-context'
 import { createDesktopUpdateCheckRuntime } from './desktop-update-check-runtime'
+import { createDesktopWindowAssembly } from './desktop-window-assembly'
 import { createDesktopWindowEventsRuntime } from './desktop-window-events-runtime'
 import { registerDesktopWindowIpcRuntime } from './desktop-window-ipc-runtime'
-import { createDesktopWindowWiringRuntime } from './desktop-window-wiring-runtime'
 import { createDesktopWorkspaceCwdRuntime } from './desktop-workspace-cwd-runtime'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
@@ -172,7 +167,6 @@ import {
 import { assertNoSecondLocalBackend } from './host-backend-singleton'
 import { registerHudIpc } from './hud-ipc'
 import { installHudModifierTap } from './hud-modifier'
-import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkMetadataRuntime } from './link-metadata-runtime'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
@@ -250,12 +244,8 @@ import { createUpdateGateRuntime, UPDATE_WAIT_POLL_MS, UPDATE_WAIT_TIMEOUT_MS } 
 import { createUpdateHandoffRuntime } from './update-handoff-runtime'
 import { readLiveUpdateMarker } from './update-marker'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
-import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
-import {
-  WindowConnectionRouteRegistry
-} from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
@@ -1518,198 +1508,46 @@ function scheduleUnexpectedPrimaryRecovery(
   return primaryBackendRuntime.scheduleUnexpectedPrimaryRecovery(options)
 }
 
-const { wireCommonWindowHandlers, installPreviewGuestPreload, wireWindowReveal } =
-  createDesktopWindowWiringRuntime({
-    DEV_SERVER,
-    PREVIEW_GUEST_PRELOAD_PATH,
-    app,
-    createWindowOpenHandler,
-    createWindowRevealController,
-    installBrowserNavGestures,
-    installContextMenuBridge,
-    installDevToolsShortcut,
-    installFindShortcut,
-    installPreviewShortcut,
-    installZoomReassertOnNavigation,
-    installZoomReassertOnWindowEvents,
-    installZoomShortcuts,
-    openExternalUrl,
-    rememberLog,
-    restorePersistedZoomLevel
-  })
-
-const { minimizeToTray, focusWindow, createSessionWindow, createBrowserWindow, createInstanceWindow } =
-  createDesktopSecondaryWindowRuntime({
-    DEV_SERVER,
-    IS_MAC,
-    PRELOAD_PATH,
-    RENDERER_RELOAD_MAX,
-    RENDERER_RELOAD_WINDOW_MS,
-    WINDOW_BUTTON_POSITION,
-    appearance,
-    createWindow,
-    ensureMainWindow,
-    getAppIconPath,
-    getIsQuittingForHandoff: () => isQuittingForHandoff,
-    getMainWindow: () => mainWindow,
-    getStreamThrottle: () => streamThrottle,
-    getWindowConnectionRoutes: () => windowConnectionRoutes,
-    loadWindowUrl,
-    primaryProfileKey,
-    readWindowState,
-    recordWindowConnectionRoute,
-    rememberLog,
-    rendererReloadTimesRef,
-    resolveRendererIndex,
-    sendWindowStateChanged,
-    validateDesktopProfileRoute,
-    wireCommonWindowHandlers,
-    wireWindowReveal
-  })
-
-// A macOS-only ambient wake cue. It is deliberately a gateway-less helper
-// window: the active renderer owns voice state and sends only the visual phase.
-const wakeIndicatorController = createWakeIndicatorWindowController({
-  devServer: DEV_SERVER,
-  isMac: IS_MAC,
-  loadWindowUrl,
-  log: rememberLog,
-  preloadPath: PRELOAD_PATH,
-  rendererIndex: resolveRendererIndex,
-  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
-})
-
-const introRevealController = createIntroRevealWindowController({
-  devServer: DEV_SERVER,
-  enabled: GUEST_ONBOARDING,
-  isMac: IS_MAC,
-  loadWindowUrl,
-  log: rememberLog,
-  mainWindow: () => mainWindow,
-  preloadPath: PRELOAD_PATH,
-  rendererIndex: resolveRendererIndex,
-  showMain: () => {
-    mainWindow.show()
-    mainWindow.focus()
-  },
-  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('petOverlay'))
-})
-
-registerChatOnboardingWindow({
-  enabled: GUEST_ONBOARDING,
-  mainWindow: () => mainWindow
-})
-
-const { getPetOverlayWindow, openPetOverlay, closePetOverlay } = createDesktopPetOverlayRuntime({
-  DEV_SERVER,
-  IS_MAC,
-  PRELOAD_PATH,
-  getMainWindow: () => mainWindow,
-  loadWindowUrl,
-  rememberLog,
-  resolveRendererIndex,
-  wireCommonWindowHandlers,
-  wireWindowReveal
-})
-
-const shellOverlayRuntime = createDesktopShellOverlayRuntime({
-  DEV_SERVER,
-  HUD_WINDOW_TITLE,
-  IS_MAC,
-  PRELOAD_PATH,
-  bindGeometryPersistence,
-  focusWindow,
-  getMainWindow: () => mainWindow,
-  getStreamThrottle: () => streamThrottle,
-  loadWindowUrl,
-  rememberLog,
-  resolveRendererIndex,
-  wireCommonWindowHandlers,
-  wireWindowReveal,
-  writeFileAtomic
-})
-
-const {
-  applyQuickEntrySettings,
-  closeHudWindow,
-  closeQuickEntryWindow,
-  hideQuickEntryWindow,
-  openHudWindow,
-  readQuickEntrySettings,
-  resetHudWindowLayout,
-  writeQuickEntrySettings
-} = shellOverlayRuntime
-
-const primaryWindowRuntime = createDesktopPrimaryWindowRuntime({
-  app,
-  BrowserWindow,
-  screen,
-  DEV_SERVER,
-  IS_MAC,
-  IS_WINDOWS,
-  PRELOAD_PATH,
-  RENDERER_RELOAD_MAX,
-  RENDERER_RELOAD_WINDOW_MS,
-  WINDOW_BUTTON_POSITION,
-  WINDOW_MIN_HEIGHT,
-  WINDOW_MIN_WIDTH,
-  alreadyHasNoSandbox,
-  appearance,
-  attachRendererConsoleCapture,
-  backendShutdown,
-  bindGeometryPersistence,
-  bindWindowChromeEvents,
-  buildNoSandboxRelaunchArgs,
-  chatWindowWebPreferences,
-  clearRendererReadyForDeepLink: () => {
-    _rendererReadyForDeepLink = false
-  },
-  closePetOverlay,
-  computeWindowOptions,
-  connectDesktopProfileRoute,
-  desktopProfilePreferences,
-  exitAfterBackendShutdown,
-  fallbackMarker,
-  firstRunBoot,
-  getAppIconPath,
+const windows = createDesktopWindowAssembly({
+  DEV_SERVER, PREVIEW_GUEST_PRELOAD_PATH, app, createWindowOpenHandler,
+  createWindowRevealController, installBrowserNavGestures,
+  installContextMenuBridge, installDevToolsShortcut, installFindShortcut,
+  installPreviewShortcut, installZoomReassertOnNavigation,
+  installZoomReassertOnWindowEvents, installZoomShortcuts, openExternalUrl,
+  rememberLog, restorePersistedZoomLevel, IS_MAC, PRELOAD_PATH,
+  RENDERER_RELOAD_MAX, RENDERER_RELOAD_WINDOW_MS, WINDOW_BUTTON_POSITION,
+  appearance, ensureMainWindow, getAppIconPath,
   getIsQuittingForHandoff: () => isQuittingForHandoff,
   getMainWindow: () => mainWindow,
   getStreamThrottle: () => streamThrottle,
-  installWindowRendererLifecycle,
-  introRevealController,
-  loadRendererLoadErrorPage,
-  loadWindowUrl,
-  markerAfterSuccessfulBoot,
-  minimizeToTray,
-  notifyLauncherWindowRevealed,
-  readWindowState,
-  recordWindowConnectionRoute,
-  rememberLog,
-  rendererReloadTimesRef,
-  resolveRendererIndex,
-  resolveRendererIndexWithMissing,
-  sandboxState,
-  schedulePersistWindowState,
-  sendWindowStateChanged,
-  setMainWindow: window => {
-    mainWindow = window
-  },
-  shouldRelaunchForRendererSandboxCrashLoop,
-  startHermes,
-  wakeIndicatorController,
-  wireCommonWindowHandlers,
-  wireWindowReveal,
-  writeSandboxMarker,
-  zoomWiringForWindowKind
+  loadWindowUrl, primaryProfileKey, readWindowState,
+  recordWindowConnectionRoute, rendererReloadTimesRef, resolveRendererIndex,
+  sendWindowStateChanged, validateDesktopProfileRoute, GUEST_ONBOARDING,
+  zoomWiringForWindowKind, HUD_WINDOW_TITLE, bindGeometryPersistence,
+  writeFileAtomic, BrowserWindow, screen, IS_WINDOWS,
+  WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, alreadyHasNoSandbox,
+  attachRendererConsoleCapture, backendShutdown, bindWindowChromeEvents,
+  buildNoSandboxRelaunchArgs, chatWindowWebPreferences,
+  clearRendererReadyForDeepLink: () => { _rendererReadyForDeepLink = false },
+  computeWindowOptions, connectDesktopProfileRoute, desktopProfilePreferences,
+  exitAfterBackendShutdown, fallbackMarker, firstRunBoot,
+  installWindowRendererLifecycle, loadRendererLoadErrorPage,
+  markerAfterSuccessfulBoot, notifyLauncherWindowRevealed,
+  resolveRendererIndexWithMissing, sandboxState, schedulePersistWindowState,
+  setMainWindow: window => { mainWindow = window },
+  shouldRelaunchForRendererSandboxCrashLoop, startHermes, writeSandboxMarker
 })
 
-// The secondary-window runtime receives this declaration before the primary
-// runtime is initialized; the callback is invoked only after app startup.
-function createWindow() {
-  return primaryWindowRuntime.createWindow()
-}
-
-const windowConnectionRoutes = new WindowConnectionRouteRegistry()
+const {
+  wireCommonWindowHandlers, installPreviewGuestPreload, wireWindowReveal,
+  minimizeToTray, focusWindow, createSessionWindow, createBrowserWindow,
+  createInstanceWindow, wakeIndicatorController, introRevealController,
+  getPetOverlayWindow, openPetOverlay, closePetOverlay, shellOverlayRuntime,
+  applyQuickEntrySettings, closeHudWindow, closeQuickEntryWindow,
+  hideQuickEntryWindow, openHudWindow, readQuickEntrySettings,
+  resetHudWindowLayout, writeQuickEntrySettings, createWindow,
+  windowConnectionRoutes
+} = windows
 
 const {
   connectDesktopProfileRoute: connectDesktopProfileRouteImpl,

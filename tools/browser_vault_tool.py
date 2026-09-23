@@ -332,10 +332,39 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
+    # The handle names the site the code belongs to: restrict tab selection to its saved
+    # origin(s), exactly like the password-fill path, instead of attaching to the first
+    # OTP-looking tab in the whole browser. Manager items locked behind an unlock keep the
+    # any-origin search — their metadata cannot be read without prompting first.
+    backend = backend_for_handle(handle) if handle else None
+    allowed = []
+    if backend is not None:
+        try:
+            meta = backend.get_meta(handle)
+        except Exception:
+            meta = None
+        if meta is not None:
+            allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
+    page_origin = None
+    if allowed:
+        for candidate in allowed:
+            page_origin = _focus_bound_origin(effective_task_id, candidate, "otp")
+            if page_origin:
+                break
+    else:
+        # No usable handle: prefer the tab the user is already on before scanning every open page.
+        current = _current_page_origin(effective_task_id)
+        if current:
+            page_origin = _focus_bound_origin(effective_task_id, current, "otp")
+        page_origin = page_origin or _focus_bound_origin(effective_task_id, "", "otp")
+    origin = page_origin or _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
+    if allowed and origin not in allowed:
+        return json.dumps({"success": False, "error_type": "origin_mismatch",
+                           "error": (f"Refused: current page origin ({origin}) does not match the saved login's "
+                                     f"bound origin(s) ({', '.join(allowed)}). One-time codes are entered only on "
+                                     "the exact origin(s) the login was saved for.")})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
@@ -351,7 +380,6 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     code: Optional[str] = None
     source = "user"
-    backend = backend_for_handle(handle) if handle else None
     if backend is not None:
         try:
             code = backend.resolve_otp(handle)

@@ -148,7 +148,7 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     try:
         from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
         from gateway.status import read_runtime_status
-        homes = profiles_to_serve(True)
+        homes = profiles_to_serve(True, include_standalone=True)
     except Exception:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
         return {"profiles": [], "gateway_mode": "unknown", "gateways": [], "profile_platforms": {}}
@@ -539,11 +539,20 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
     if not requested or requested.lower() in {"current", "default"}:
         return None
     served = _profile_is_multiplexed(requested)
+    from hermes_cli.profiles import profile_is_standalone
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    profile_dir = _resolve_profile_dir(requested)
+    standalone = profile_is_standalone(profile_dir)
+    if standalone:
+        # The profile opted out of the host multiplexer, so its own gateway is the answer now: only a
+        # host record that still lists it (the host started before the key was set) is refused.
+        if not served:
+            return None
+        from gateway.host_attach import standalone_rescan_message
+        return standalone_rescan_message(requested)
     if not served and verb != "start":
         return None
     from hermes_cli.profiles import _check_gateway_running
-    from hermes_cli.web_server_profiles import _resolve_profile_dir
-    profile_dir = _resolve_profile_dir(requested)
     if _check_gateway_running(profile_dir):
         return None
     if served:

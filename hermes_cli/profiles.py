@@ -944,19 +944,92 @@ def list_profiles(*, lazy_skill_count: bool = False) -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+#: One signature/result per home: the webhook and
+#: api-server callers run :func:`profiles_to_serve` per inbound request, so the reader
+#: must not re-parse a profile's config.yaml every time.
+_STANDALONE_MEMO: Dict[str, Tuple[Optional[tuple], Optional[bool]]] = {}
+_STANDALONE_WARNED = False
+
+_STANDALONE_DEFAULT_WARNING = (
+    "gateway.standalone is ignored on the default profile: it is the host gateway")
+
+
+def profile_is_standalone(home: Path) -> bool:
+    """Does ``home``'s own config.yaml opt this profile out of the host multiplexer
+    (``gateway.standalone: true``)? Memoised by file signature. The DEFAULT profile is
+    never standalone — it IS the host — and warns once per process if the key is set there."""
+    global _STANDALONE_WARNED
+    from yaml import YAMLError
+    from utils import file_signature
+
+    home = Path(home)
+    cfg_path = home / "config.yaml"
+    key = str(home)
+    try:
+        signature = file_signature(cfg_path.stat())
+    except FileNotFoundError:
+        signature = None
+    except OSError as exc:
+        signature = ("stat-error", exc.errno)
+        if _STANDALONE_MEMO.get(key) != (signature, False):
+            logger.warning("Cannot read gateway.standalone from %s (%s); treating as not standalone",
+                           cfg_path, type(exc).__name__)
+        _STANDALONE_MEMO[key] = (signature, False)
+        return False
+    cached = _STANDALONE_MEMO.get(key)
+    if cached is not None and cached[0] == signature and cached[1] is not None:
+        return cached[1]
+    value = None
+    if signature is not None:
+        from hermes_cli.config import read_user_config_raw
+        try:
+            cfg = read_user_config_raw(cfg_path) or {}
+        except (YAMLError, OSError, UnicodeError) as exc:
+            if cached is None or cached[0] != signature:
+                logger.warning("Cannot read gateway.standalone from %s (%s); treating as not standalone",
+                               cfg_path, type(exc).__name__)
+            # Access can recover without changing the signature. None retains the
+            # warning receipt without caching a transient failure as config.
+            _STANDALONE_MEMO[key] = (signature, False if isinstance(exc, YAMLError) else None)
+            return False
+        if isinstance(cfg.get("gateway"), dict):
+            value = cfg["gateway"].get("standalone")
+    result = _standalone_truthy(value)
+    if home == _get_default_hermes_home():
+        if result and not _STANDALONE_WARNED:
+            logger.warning(_STANDALONE_DEFAULT_WARNING)
+            _STANDALONE_WARNED = True
+        result = False
+    _STANDALONE_MEMO[key] = (signature, result)
+    return result
+
+
+def _standalone_truthy(value: object) -> bool:
+    """``gateway.standalone`` truthiness via the shared bool parser; only the
+    ``gateway:`` section's ``standalone`` key is read (no top-level alias)."""
+    from gateway.config import _bool_token
+    if isinstance(value, str):
+        return _bool_token(value) is True
+    return bool(value)
+
+
+def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
     ``multiplex=False``: exactly one entry for the *active* profile (byte-for-byte the
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
     ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
-    profiles skipped). Pure directory read: never creates a profile dir (#94590)."""
+    profiles skipped). Pure directory read: never creates a profile dir (#94590).
+
+    Named profiles that authored ``gateway.standalone: true`` are skipped because they opted
+    out of the host multiplexer; callers enumerating INSTALLED profiles pass ``include_standalone=True``."""
     active = get_active_profile_name() or "default"
     if not multiplex:
         return [(active, get_profile_dir(active))]
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
-    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs())
+    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
+                 if include_standalone or not profile_is_standalone(entry))
     return serve
 
 

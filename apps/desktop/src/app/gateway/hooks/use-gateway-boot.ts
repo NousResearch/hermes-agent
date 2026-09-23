@@ -103,6 +103,7 @@ import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warni
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+import { useConnectionsRegistry } from './use-connections-registry'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
@@ -185,6 +186,7 @@ export function useGatewayBoot({
   refreshSessions
 }: GatewayBootOptions) {
   useDefaultProfilePreference()
+  useConnectionsRegistry()
 
   const callbacksRef = useRef({
     beforeConnectionSwitch,
@@ -1128,8 +1130,7 @@ export function useGatewayBoot({
 
       // 'saved' is a pure registry-refresh push (new connection or label
       // rename — #95393): no endpoint moved, so there is nothing to dispose,
-      // redial, or forget. The switcher's own onChanged listener re-pulls the
-      // registry snapshot for it.
+      // redial, or forget. useConnectionsRegistry re-pulls the snapshot.
       if (payload.reason === 'saved') {
         return
       }

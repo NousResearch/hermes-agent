@@ -11,6 +11,7 @@ import {
   cn,
   Codicon,
   compactNumber,
+  CopyButton,
   Dialog,
   DialogContent,
   DialogTitle,
@@ -74,6 +75,7 @@ import {
   isLockedTarget,
   type KanbanText,
   lockedReason,
+  PriorityGlyph,
   ScrollFade,
   Section,
   shortId,
@@ -178,13 +180,37 @@ function eventText(event: KanbanEvent, k: KanbanText): { detail?: string; label:
   }
 }
 
-// Sidebar property row: muted label above the value (Linear's property list).
-// The value slot holds the same inline editors the old meta grid had.
+// Sidebar property row: a Section (so every sidebar label — these, Estimate,
+// Attachments — shares FIELD_LABEL and one rhythm) whose value slot holds the
+// inline editors. Values wrap anywhere so a long path never clips at the edge.
 function MetaRow({ children, label }: { children: ReactNode; label: string }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-[0.65rem] tracking-wide text-(--ui-text-quaternary) uppercase">{label}</span>
-      <div className="min-w-0 text-[0.75rem] text-(--ui-text-secondary)">{children}</div>
+    <Section label={label}>
+      <div className="min-w-0 text-[0.75rem] text-(--ui-text-secondary) [overflow-wrap:anywhere]">{children}</div>
+    </Section>
+  )
+}
+
+// The task's workspace: the kind as a badge when it says more than "a
+// directory", the path in mono (wrapping), and a copy affordance.
+function WorkspaceValue({ kind, path }: { kind: null | string | undefined; path: string }) {
+  return (
+    <div className="flex items-start gap-1.5">
+      <div className="flex min-w-0 flex-1 flex-col items-start gap-1">
+        {kind && kind !== 'dir' && (
+          <Badge size="xs" variant="muted">
+            {kind}
+          </Badge>
+        )}
+        <span className="font-mono text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{path}</span>
+      </div>
+      <CopyButton
+        appearance="icon"
+        buttonSize="icon-xs"
+        buttonVariant="ghost"
+        className="-mt-0.5 shrink-0"
+        text={path}
+      />
     </div>
   )
 }
@@ -563,17 +589,23 @@ function LinkChips({
 }) {
   return (
     <div className="flex flex-wrap gap-1">
-      {ids.map(linked => (
-        <button
-          aria-label={linkTitles.get(linked) || shortId(linked)}
-          className="max-w-full truncate rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-          key={linked}
-          onClick={() => onOpen(linked)}
-          type="button"
-        >
-          {linkTitles.get(linked) || shortId(linked)}
-        </button>
-      ))}
+      {ids.map(linked => {
+        const label = linkTitles.get(linked) || shortId(linked)
+
+        // Chips truncate in the narrow sidebar; the tip reveals the full title.
+        return (
+          <Tip key={linked} label={label} placement="row">
+            <button
+              aria-label={label}
+              className="max-w-full truncate rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+              onClick={() => onOpen(linked)}
+              type="button"
+            >
+              {label}
+            </button>
+          </Tip>
+        )
+      })}
     </div>
   )
 }
@@ -973,19 +1005,22 @@ export function TaskDrawer({
                   />
                 </div>
               </div>
-              <aside className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto border-l border-(--ui-stroke-tertiary) px-4 py-4">
+              <aside className="flex w-64 shrink-0 flex-col gap-4 overflow-y-auto border-l border-(--ui-stroke-tertiary) px-4 pb-5">
                 <MetaRow label={k.assignee}>
                   <AssigneeMenu
                     current={task.assignee}
                     onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
                   />
                 </MetaRow>
-                {typeof task.priority === 'number' && <MetaRow label={k.metaPriority}>{task.priority}</MetaRow>}
+                {typeof task.priority === 'number' && (
+                  <MetaRow label={k.metaPriority}>
+                    <PriorityGlyph priority={task.priority} />
+                  </MetaRow>
+                )}
                 {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
                 {task.workspace_path && (
                   <MetaRow label={k.workspace}>
-                    {task.workspace_kind ? `${task.workspace_kind}: ` : ''}
-                    {task.workspace_path}
+                    <WorkspaceValue kind={task.workspace_kind} path={task.workspace_path} />
                   </MetaRow>
                 )}
                 <MetaRow label={k.model}>

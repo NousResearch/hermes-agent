@@ -143,6 +143,19 @@ describe('task modal dialog', () => {
     fireEvent.keyDown(dialog, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledOnce()
   })
+
+  it('shows the workspace path as its own value, not prefixed with the raw kind', async () => {
+    const path = '/Users/example/.hermes/kanban/workspaces/a_very_long_directory_name_that_must_wrap'
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: { ...legacyDetail.task, workspace_kind: 'dir', workspace_path: path }
+    }
+    openDrawer()
+
+    expect(await screen.findByText(path)).toBeTruthy()
+    expect(screen.queryByText(/dir:/)).toBeNull()
+  })
 })
 
 describe('dependency chips resolve titles', () => {

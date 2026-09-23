@@ -424,6 +424,32 @@ def test_request_middleware_pruned_args_block_before_short_circuit_execution_mid
     assert payload["argument_paths"] == ["$.body"]
 
 
+def test_execution_middleware_rewrite_is_rechecked_before_dispatch():
+    agent = _make_agent("test_effectful_write")
+    pruned = _compressed_args("body")
+    tc = _mock_tool_call(
+        "test_effectful_write", json.dumps({"body": "complete"}), "c-pruned-execution-middleware"
+    )
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    def rewrite_then_continue(tool_name, args, next_call, **_context):
+        assert tool_name == "test_effectful_write"
+        assert args == {"body": "complete"}
+        return next_call(pruned)
+
+    with (
+        patch("hermes_cli.middleware.run_tool_execution_middleware", side_effect=rewrite_then_continue),
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    dispatch.assert_not_called()
+    payload = json.loads(messages[0]["content"])
+    assert payload["error"] == "suspected_pruned_tool_arguments"
+    assert payload["argument_paths"] == ["$.body"]
+
+
 def test_plugin_modified_args_are_rechecked_for_context_prune_markers():
     agent = _make_agent("test_effectful_write")
     pruned = _compressed_args("body")
@@ -455,6 +481,23 @@ def test_read_only_tool_may_quote_current_context_prune_marker():
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     dispatch.assert_called_once()
+
+
+def test_mcp_pruned_refusal_keeps_untrusted_result_framing():
+    agent = _make_agent("mcp_write")
+    args = _compressed_args("body")
+    tc = _mock_tool_call("mcp_write", json.dumps(args, ensure_ascii=False), "c-pruned-mcp-envelope")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    dispatch.assert_not_called()
+    content = messages[0]["content"]
+    assert content.startswith('<untrusted_tool_result source="mcp_write">')
+    assert '"error": "suspected_pruned_tool_arguments"' in content
+    assert '"argument_paths": ["$.body"]' in content
 
 
 def test_legacy_pruned_tail_blocks_observed_short_effectful_writes():

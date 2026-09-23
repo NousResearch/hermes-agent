@@ -1217,6 +1217,7 @@ const desktopMediaProtocolRuntime = createDesktopMediaProtocolRuntime({
 
 const managedSshLifecycle = createManagedSshLifecycleRuntime({
     assertManagedUpdatePreflightClear,
+    effectiveSshConfigFingerprint,
     backendConnectionState,
     backendPool,
     backendScopeKey,

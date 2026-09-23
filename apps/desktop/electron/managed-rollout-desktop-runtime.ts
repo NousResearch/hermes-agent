@@ -76,10 +76,10 @@ export function registerManagedRolloutDesktopRuntime(deps: DesktopRuntimeDeps) {
 
         return service.issueLaunchCapability(...args)
       },
-      request: (...args: Parameters<typeof service.request>) => {
+      requestCoordinator: (...args: Parameters<typeof service.requestCoordinator>) => {
         assertOwner()
 
-        return service.request(...args)
+        return service.requestCoordinator(...args)
       }
     },
     observe: integration.observe,

@@ -1,3 +1,5 @@
+import { readVerifiedHostKeyFingerprint } from './managed-rollout-host-key'
+import { verifyManagedRolloutSelectedTarget } from './managed-rollout-main-integration'
 import { recoverManagedSshScopes, type RemoteUpdateTarget } from './managed-ssh-update'
 import { createManagedSshUpdateService } from './managed-ssh-update-service'
 
@@ -16,6 +18,7 @@ export function createManagedSshLifecycleRuntime(deps: any) {
     detectRemotePlatform,
     encryptDesktopSecret,
     executeManagedRemoteUpdate,
+    effectiveSshConfigFingerprint,
     managedConnectionRecoveries,
     managedConnectionUpdateGate,
     managedConnectionUpdates,
@@ -546,6 +549,11 @@ export function createManagedSshLifecycleRuntime(deps: any) {
     captureScopes: captureManagedSshScopes,
     openTransport: openManagedSshUpdateTransport,
     targetFromState: remoteUpdateTargetFromState,
+    verifyCoordinatorSource: (source, target, expected) => verifyManagedRolloutSelectedTarget({
+      managedSshConfig,
+      readHostKeyFingerprint: readVerifiedHostKeyFingerprint,
+      effectiveConfigFingerprint: effectiveSshConfigFingerprint
+    }, source, target, expected),
     executeRemoteUpdate: (target, correlationId, context) =>
       executeManagedRemoteUpdate(target, correlationId, {}, async () => {
         markManagedSshRecoveryLaunching(context.connectionId, correlationId)

@@ -34,6 +34,12 @@ const INTENT: ManagedSshUpdateIntent = {
   }
 }
 
+const EXPECTED_SOURCE = {
+  installId: 'a'.repeat(32),
+  installationFingerprint: 'b'.repeat(64),
+  sourceFingerprint: 'c'.repeat(64)
+}
+
 function required(name: string): string {
   const value = process.env[name]
 
@@ -77,6 +83,9 @@ function service(counters: { transports: number; mutations: number }) {
       return { target: target(), close: async () => {} }
     },
     targetFromState: () => target(),
+    verifyCoordinatorSource: async (_source, _target, expected) => {
+      if (JSON.stringify(expected) !== JSON.stringify(EXPECTED_SOURCE)) {throw new Error('fixture-source-binding-changed')}
+    },
     executeRemoteUpdate: async (_target, correlationId, context) => {
       counters.mutations += 1
       await context.onLaunchProved()
@@ -178,15 +187,15 @@ async function run(): Promise<void> {
 
   if (mode === 'hold') {
     journal.create(snapshot(), { metadata: { processGeneration: generation } })
-    const freshCapability = updateService.issueLaunchCapability('fixture-ssh', FIRST_CORRELATION, INTENT)
-    const staleCapability = updateService.issueLaunchCapability('fixture-ssh', STALE_CORRELATION, INTENT)
+    const freshCapability = updateService.issueLaunchCapability('fixture-ssh', FIRST_CORRELATION, INTENT, EXPECTED_SOURCE)
+    const staleCapability = updateService.issueLaunchCapability('fixture-ssh', STALE_CORRELATION, INTENT, EXPECTED_SOURCE)
 
-    const accepted = await updateService.request('fixture-ssh', {
+    const accepted = await updateService.requestCoordinator('fixture-ssh', {
       correlationId: FIRST_CORRELATION,
       intent: INTENT,
-      mode: 'coordinator',
+      expectedSource: EXPECTED_SOURCE,
       launchCapability: freshCapability
-    })
+    }).operation
 
     if (!accepted.ok || counters.mutations !== 1) {throw new Error('fixture-owner-admission-failed')}
     fs.writeFileSync(stalePath, JSON.stringify(staleCapability))
@@ -203,12 +212,12 @@ async function run(): Promise<void> {
   const oldGeneration = Number(before.metadata?.processGeneration)
   const serializedCapability = JSON.parse(fs.readFileSync(stalePath, 'utf8'))
 
-  const staleAttempt = await updateService.request('fixture-ssh', {
+  const staleAttempt = await updateService.requestCoordinator('fixture-ssh', {
     correlationId: STALE_CORRELATION,
     intent: INTENT,
-    mode: 'coordinator',
+    expectedSource: EXPECTED_SOURCE,
     launchCapability: serializedCapability
-  })
+  }).operation
 
   const state = stateAwaitingPromotion()
   const coordinator = createManagedRolloutCoordinator(state, {

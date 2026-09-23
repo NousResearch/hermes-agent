@@ -3,8 +3,15 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
+import { $modelPresets } from '@/store/model-presets'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort,
+  $defaultReasoningEffort
+} from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -45,7 +52,10 @@ beforeEach(() => {
   $activeSessionId.set('runtime-1')
   $currentModel.set('')
   $currentProvider.set('')
+  $currentReasoningEffort.set('max')
+  $defaultReasoningEffort.set('max')
   $collapsedProviders.set([])
+  $modelPresets.set({})
   getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
 })
 
@@ -133,6 +143,36 @@ describe('ModelMenuPanel MoA presets', () => {
 })
 
 describe('ModelMenuPanel current selection', () => {
+  it('does not persist a computed per-model default as an explicit user preset', async () => {
+    const model = 'local-reasoner-27b'
+    $activeSessionId.set('')
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          capabilities: {
+            [model]: { default_reasoning_effort: 'medium', fast: false, reasoning: true }
+          },
+          models: [model],
+          name: 'LocalReasoner',
+          slug: 'custom:localreasoner'
+        }
+      ]
+    })
+    const { content } = renderPanel()
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'reasoner' } })
+
+    const row = await content.findByText((_, element) =>
+      Boolean(element?.classList.contains('truncate') && element.textContent?.toLowerCase().includes('27b'))
+    )
+
+    fireEvent.click(row.closest('[role="menuitem"]')!)
+
+    await vi.waitFor(() => expect($currentReasoningEffort.get()).toBe('medium'))
+    expect($modelPresets.get()).toEqual({})
+  })
+
   it('keeps the checkmark on the live SessionView model when a stale options response disagrees', async () => {
     $currentProvider.set('google')
     $currentModel.set('gemini-3.1-pro')

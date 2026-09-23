@@ -133,3 +133,38 @@ it('keeps an unstored errored turn at its original position instead of after new
     'assistant:later a'
   ])
 })
+
+it('returns a preserved failed turn to its timeline position once the conversation moved on (#118002)', () => {
+  const firstUser = row('u1', 'user', 'summarize the log')
+  const firstReply = row('a1', 'assistant', 'Done.')
+  const retriedPrompt = row('u2', 'user', 'retry the deploy')
+  const retriedReply = row('a2', 'assistant', 'Deployed.')
+  const failedPrompt = row('u0', 'user', 'retry the deploy')
+  const failed = row('local-failure', 'assistant', 'connection lost', { error: 'upstream timeout' })
+
+  const merged = preserveLocalAssistantErrors(
+    [firstUser, firstReply, retriedPrompt, retriedReply],
+    [firstUser, firstReply, failedPrompt, failed, retriedPrompt, retriedReply]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['u1', 'a1', 'local-failure', 'u2', 'a2'])
+  expect(merged.find(message => message.id === failed.id)).toMatchObject({
+    error: failed.error,
+    pending: false
+  })
+})
+
+it('keeps a failed tail at the end while its re-submitted prompt is still local-only', () => {
+  const firstUser = row('u1', 'user', 'summarize the log')
+  const firstReply = row('a1', 'assistant', 'Done.')
+  const failedPrompt = row('u0', 'user', 'retry the deploy')
+  const failed = row('local-failure', 'assistant', 'connection lost', { error: 'upstream timeout' })
+  const optimisticRetry = row('optimistic-retry', 'user', 'retry the deploy')
+
+  const merged = preserveLocalAssistantErrors(
+    [firstUser, firstReply],
+    [firstUser, firstReply, failedPrompt, failed, optimisticRetry]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['u1', 'a1', 'u0', 'local-failure'])
+})

@@ -35,8 +35,10 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '}',
     `$explicit=${explicit}`,
     'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
-    '$hermesHome=$env:HERMES_HOME',
-    'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    '$configuredHermesHome=[Environment]::GetEnvironmentVariable("HERMES_HOME","User")',
+    'if(-not $configuredHermesHome){$configuredHermesHome=[Environment]::GetEnvironmentVariable("HERMES_HOME","Machine")}',
+    'if($configuredHermesHome){$configuredHermesHome=[Environment]::ExpandEnvironmentVariables($configuredHermesHome)}',
+    'if($configuredHermesHome -and (Test-Path -LiteralPath $configuredHermesHome -PathType Container -ErrorAction SilentlyContinue)){$hermesHome=$configuredHermesHome}else{$localAppData=[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData);if(-not $localAppData){throw "Could not resolve the remote Windows local app data directory."};$hermesHome=Join-Path $localAppData "hermes"}',
     'Assert-NoReparse $hermesHome $true',
     '$candidate=[IO.Path]::Combine($hermesHome, "hermes-agent\\venv\\Scripts\\hermes.exe")',
     '$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe")',
@@ -219,6 +221,7 @@ function helperCommand(runtime, operation, args = []) {
 
   const script = [
     '$ErrorActionPreference="Stop"',
+    `$env:HERMES_HOME=${psLiteral(runtime.hermesHome)}`,
     `& ${argv.map(psLiteral).join(' ')}`,
     'if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}'
   ].join(';')
@@ -251,6 +254,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
   const script = [
     '$ErrorActionPreference="Stop"',
     `$hermesHome=${psLiteral(runtime.hermesHome)}`,
+    '$env:HERMES_HOME=$hermesHome',
     '$installRoot=$hermesHome',
     '$parent=Split-Path -Parent $hermesHome',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',

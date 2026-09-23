@@ -87,3 +87,11 @@ def held_archive_watermark(
             raise StaleHeldHistory(f"held row {newest_held} of session {session_id} is no longer active")
         return watermark
     return min(newest_held, watermark)
+
+
+def _restore_prune_rearm_tokens(compressor: Any, snapshot: dict) -> None:
+    """Restore ONLY the prune runway from the attempt snapshot.
+    compress() zeroes it in memory while the durable copy only clears on a successful commit; a kept
+    transcript keeps its cached prefix, and 0 would let the next prune break that cache."""
+    if "_proactive_prune_rearm_tokens" in snapshot:
+        compressor._proactive_prune_rearm_tokens = snapshot["_proactive_prune_rearm_tokens"]

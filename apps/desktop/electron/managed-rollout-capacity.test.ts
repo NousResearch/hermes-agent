@@ -24,7 +24,7 @@ function completeDependencies(measuredMaxInstallations?: () => number) {
     },
     managedSshUpdateService: {
       issueLaunchCapability: vi.fn(),
-      request: vi.fn()
+      requestCoordinator: vi.fn()
     },
     observe: { observe: vi.fn() },
     evidence: { sweep: vi.fn() },

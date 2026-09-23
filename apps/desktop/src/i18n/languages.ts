@@ -42,6 +42,12 @@ export const LOCALE_OPTIONS = [
     name: LOCALE_ENDONYMS.ru,
     englishName: 'Russian',
     configValue: 'ru'
+  },
+  {
+    id: 'lt',
+    name: 'Lietuvių',
+    englishName: 'Lithuanian',
+    configValue: 'lt'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -57,6 +63,10 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   en: 'en',
   'en-us': 'en',
   en_us: 'en',
+  lt: 'lt',
+  'lt-lt': 'lt',
+  lt_lt: 'lt',
+  lithuanian: 'lt',
   zh: 'zh',
   'zh-cn': 'zh',
   zh_cn: 'zh',

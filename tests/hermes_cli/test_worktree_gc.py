@@ -17,6 +17,7 @@ the entire value of these tests is exercising actual git verdicts):
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -255,6 +256,61 @@ class TestReclaim:
         assert _verdict(records, "hermes-zombie").verdict == "reap"
         worktree_gc.reclaim_worktrees(str(repo), records=records)
         assert not tree.exists()
+
+    def test_tree_is_removed_only_after_every_untracked_path_is_archived(self, repo):
+        """Plain porcelain C-quotes names with spaces or non-ASCII; every listed path (symlinks as
+        links) must reach the archive, and one that cannot must keep the tree."""
+        from hermes_constants import get_hermes_home
+        tree, _ = _add_worktree(repo, "hermes-scratch")
+        files = {"notes.txt": "plain\n", "my notes.md": "meeting\n",
+                 "日本語メモ.txt": "メモ\n", "design docs/spec.md": "spec\n"}
+        for rel, text in files.items():
+            (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tree / rel).write_text(text, encoding="utf-8")
+        os.symlink("notes.txt", tree / "latest")
+        worktree_gc.reclaim_worktrees(str(repo), records=worktree_gc.audit_worktrees(str(repo), with_sizes=False))
+        assert not tree.exists()
+        [archive] = (get_hermes_home() / "archive" / "worktree-prune").iterdir()
+        archived = {p.relative_to(archive).as_posix(): p.read_text(encoding="utf-8")
+                    for p in archive.rglob("*") if p.is_file() and not p.is_symlink()}
+        assert archived == files
+        assert os.readlink(archive / "latest") == "notes.txt"
+
+        stale, _ = _add_worktree(repo, "hermes-stale")
+        (stale / "a.txt").write_text("a\n")
+        (stale / "b.txt").write_text("b\n")
+        records = worktree_gc.audit_worktrees(str(repo), with_sizes=False)
+        (stale / "b.txt").unlink()  # the audit's list no longer matches the disk
+        worktree_gc.reclaim_worktrees(str(repo), records=records)
+        assert (stale / "a.txt").exists(), "an incomplete archive must keep the tree"
+
+    def test_untracked_only_work_survives_show_untracked_files_no(self, repo):
+        """status.showUntrackedFiles=no hides untracked files from plain porcelain; no reclaimer may
+        read a tree holding only new files as clean and force-remove it."""
+        from hermes_cli import worktree_ops
+        from hermes_constants import get_hermes_home
+        from tools.subagent_worktree import finalize_subagent_worktree
+        _git(["config", "status.showUntrackedFiles", "no"], repo)
+        trees = {}
+        for name in ("hermes-startup", "hermes-gc", "subagent-child"):
+            trees[name] = _add_worktree(repo, name)
+            (trees[name][0] / "analysis.md").write_text("two days of work\n")
+        aged = time.time() - 7 * 86400
+        os.utime(trees["hermes-startup"][0], (aged, aged))
+
+        worktree_ops._prune_stale_worktrees(str(repo))
+        assert (trees["hermes-startup"][0] / "analysis.md").exists(), "startup pruner"
+
+        child, branch = trees["subagent-child"]
+        result = finalize_subagent_worktree({"path": str(child), "branch": branch, "repo_root": str(repo),
+                                             "base_commit": _git(["rev-parse", "HEAD"], repo)})
+        assert result["dirty"] is True and result["pruned"] is False, "subagent finalizer"
+        assert (child / "analysis.md").exists()
+
+        gc_record = _verdict(worktree_gc.audit_worktrees(str(repo), with_sizes=False), "hermes-gc")
+        worktree_gc.reclaim_worktrees(str(repo), records=[gc_record])
+        archived = list((get_hermes_home() / "archive" / "worktree-prune").rglob("analysis.md"))
+        assert [p.read_text() for p in archived] == ["two days of work\n"], "hermes worktree prune"
 
 
 class TestBranchGC:

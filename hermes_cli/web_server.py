@@ -606,37 +606,33 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
     # parts: ['', 'api', 'plugins', '<name>', ...]
     parts = path.split("/")
     plugin_name = parts[3] if path.startswith("/api/plugins/") and len(parts) >= 4 else ""
-    # Only gate authenticated requests. Unauthenticated ones fall through so
-    # auth_middleware / the OAuth gate return 401 first and this route can't
-    # be used as a plugin-name oracle.
-    if plugin_name and (
-        getattr(request.state, "token_authenticated", False)
-        or getattr(request.app.state, "auth_required", False)
-        or _has_valid_session_token(request)
-        or _has_valid_query_token(request, path)
-    ):
-        try:
-            # Gate: only serve user plugins that are in plugins.enabled and not in plugins.disabled. This
-            # prevents the frontend from loading JS/CSS from plugins the user has not explicitly activated.
-            # (#46435)
-            from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-            enabled_set = _get_enabled_set()
-            disabled_set = _get_disabled_set()
-        except Exception:
-            enabled_set = set()
-            disabled_set = set()
-        # Source from the cached plugin list; unknown => user plugin (safe default — blocks).
-        plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == plugin_name), None)
-        source = plugin.get("source") if plugin else "user"
-        blocked = plugin_name in disabled_set or (source == "user" and plugin_name not in enabled_set)
-        if blocked and source in ("user", "bundled"):
-            return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
     if plugin_name:
         from hermes_cli.web_server_profiles import _config_profile_scope
-        # The scope spans call_next so async handlers and sync endpoint workers
-        # inherit the request's ContextVars, not the process launch defaults.
+        # Scope both the activation policy and handler to the same profile.
         try:
             with _config_profile_scope(request.query_params.get("profile")):
+                # Unauthenticated requests fall through to auth's 401, not a
+                # plugin-name oracle from the activation gate.
+                if (
+                    getattr(request.state, "token_authenticated", False)
+                    or getattr(request.app.state, "auth_required", False)
+                    or _has_valid_session_token(request)
+                    or _has_valid_query_token(request, path)
+                ):
+                    try:
+                        # Gate user plugins on explicit activation; disabled wins. (#46435)
+                        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+                        enabled_set = _get_enabled_set()
+                        disabled_set = _get_disabled_set()
+                    except Exception:
+                        enabled_set = set()
+                        disabled_set = set()
+                    # Unknown => user plugin (safe default — blocks).
+                    plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == plugin_name), None)
+                    source = plugin.get("source") if plugin else "user"
+                    blocked = plugin_name in disabled_set or (source == "user" and plugin_name not in enabled_set)
+                    if blocked and source in ("user", "bundled"):
+                        return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
                 return await call_next(request)
         except HTTPException as exc:
             return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})

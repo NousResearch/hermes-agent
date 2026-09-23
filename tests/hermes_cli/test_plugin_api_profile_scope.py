@@ -73,6 +73,17 @@ def test_plugin_api_secret_scope_across_profiles(tmp_path, monkeypatch, _isolate
                     assert response.status_code == 200, response.text
                     assert response.json() == {"secret": secret, "home": str(home)}
                 assert client.get(path, params={"profile": "missing"}, headers=headers).status_code == 404
+            for config in (
+                "plugins:\n  enabled:\n    - scope-test\n  disabled:\n    - scope-test\n",
+                "plugins:\n  enabled: []\n",
+            ):
+                (other_home / "config.yaml").write_text(config, encoding="utf-8")
+                for kind in ("sync", "async"):
+                    path = f"/api/plugins/scope-test/{kind}"
+                    assert client.get(path, params={"profile": "other"}, headers=headers).status_code == 404
+                    response = client.get(path, headers=headers)
+                    assert response.status_code == 200, response.text
+                    assert response.json() == {"secret": "launch-value", "home": str(launch_home)}
     finally:
         web_server.app.router.routes[:] = original_routes
         web_server._dashboard_plugins_cache = None

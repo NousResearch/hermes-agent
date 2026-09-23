@@ -406,3 +406,34 @@ def test_run_prompt_still_waits_for_result_when_no_terminal_update(tmp_path):
                     side_effect=_NoTerminalPopen) as _popen:
             with pytest.raises(TimeoutError, match="session/prompt"):
                 client._run_prompt("do the thing", timeout_seconds=1)
+
+
+def test_run_prompt_completes_on_terminal_session_update_reasoning_only(tmp_path):
+    """A reasoning-only turn (no assistant text parts) must also complete on terminal update."""
+    client = _make_home_client(tmp_path)
+
+    class _ReasoningOnlyPopen(_WedgePopen):
+        def __init__(self, cmd, **kwargs):
+            super().__init__(cmd, **kwargs)
+            self._lines = [
+                {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}},
+                {"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "sess-1"}},
+                {"jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": "sess-1",
+                    "update": {"sessionUpdate": "agent_thought_chunk",
+                               "content": {"type": "text", "text": "Reasoning steps..."}},
+                }},
+                {"jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": "sess-1",
+                    "update": {"sessionUpdate": "turn_complete", "content": {}},
+                }},
+            ]
+            self.stdout = iter([json.dumps(l) + "\n" for l in self._lines])
+
+    with _patch("agent.copilot_acp_client.subprocess.run",
+                side_effect=FileNotFoundError):
+        with _patch("agent.copilot_acp_client.subprocess.Popen",
+                    side_effect=_ReasoningOnlyPopen):
+            text, reasoning = client._run_prompt("do reasoning", timeout_seconds=5)
+    assert text == ""
+    assert "Reasoning steps..." in reasoning

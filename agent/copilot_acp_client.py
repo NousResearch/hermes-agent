@@ -705,19 +705,27 @@ class CopilotACPClient:
                     # (sessionUpdate == "turn_complete" / finished state)
                     # BEFORE the id-matched JSON-RPC result in some transports
                     # (opencode ACP v1.18+ when the event subscription wedges
-                    # — #90952). If we have accumulated text and the turn is
-                    # terminally complete, do not keep waiting for the
-                    # id-matched result that may never arrive: return the
-                    # accumulated parts as the prompt outcome.
+                    # — #90952). If the turn is terminally complete (including
+                    # pure-action or reasoning-only turns without text_parts),
+                    # do not keep waiting for the id-matched result that may
+                    # never arrive: return the accumulated parts as the outcome.
                     if (
                         method == "session/prompt"
-                        and text_parts
                         and _is_terminal_session_update(msg)
                     ):
+                        params_update = (
+                            (msg.get("params") or {}).get("update") or {}
+                            if isinstance(msg.get("params"), dict)
+                            else {}
+                        )
+                        update_kind = str(params_update.get("sessionUpdate") or "").strip()
                         return {
                             "sessionId": params.get("sessionId", ""),
                             "content": [],
                             "completed": True,
+                            "completedViaTerminalUpdate": True,
+                            "terminalUpdateKind": update_kind,
+                            "stopReason": "end_turn",
                         }
                     continue
 

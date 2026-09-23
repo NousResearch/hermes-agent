@@ -1153,6 +1153,7 @@ def _ensure_current_event_loop(request):
 _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
 _GATEWAY_LOOKALIKE_MARK = "spawns_gateway_lookalike"
 _REQUIRES_WAL_MARK = "requires_wal"
+_REQUIRES_IDLE_HOST_MARK = "requires_idle_host"
 
 
 def _wal_is_usable() -> bool:
@@ -1392,6 +1393,69 @@ def pytest_unconfigure(config):  # noqa: D401 — pytest hook
     _remove_relocated_basetemp(config)
 
 
+def _live_hermes_runtime_present(proc_root: Path = Path("/proc")) -> bool:
+    """True when this machine ALREADY runs a Hermes gateway/dashboard.
+
+    A few tests drive product code that deliberately refuses to act while the
+    machine's single local runtime slot is taken: ``web_server.start_server``
+    raises ``SystemExit(PORT_IN_USE_EXIT_CODE)`` and the local-models
+    quickstart endpoint answers ``409 Conflict``. Those are CORRECT product
+    behaviours, so on a box running Hermes 24/7 the tests can only ever fail,
+    and the failure says nothing about the code under test.
+
+    On a pristine CI runner nothing holds the slot, the probe returns False and
+    the tests execute for real - no coverage is lost where it can be had.
+
+    MEASURED 2026-09-16 on the Vostro nightly battery: 6 failures across
+    tests/hermes_cli/test_dashboard_auth_gate.py and test_local_quickstart.py,
+    every one of them this and nothing else.
+
+    Deliberately /proc-only and import-free: importing any hermes module during
+    COLLECTION would cache the developer's real ``~/.hermes`` before the
+    per-test ``_isolate_hermes_home`` fixture redirects it (same trap the
+    ``_wal_is_usable`` docstring above spells out). Non-Linux hosts get False,
+    i.e. no gating, which is the safe direction: a test that should run never
+    gets silently skipped.
+
+    ``proc_root`` exists only so tests can point the scan at a fake tree; the
+    cron/CI callers always take the default.
+    """
+    proc = proc_root
+    if not proc.is_dir():
+        return False
+    try:
+        my_uid = os.getuid()
+    except AttributeError:  # pragma: no cover - non-POSIX
+        return False
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != my_uid:
+                continue
+            raw = entry.joinpath("cmdline").read_bytes()
+        except OSError:
+            continue
+        # Match on ARGV TOKENS, never on the joined string: `grep "gateway run"`
+        # has the phrase in its command line and would otherwise be read as a
+        # live gateway. A false positive here skips a test that could have run,
+        # which is the one failure mode this gate must not have.
+        argv = [tok.decode("utf-8", "replace") for tok in raw.split(b"\x00") if tok]
+        if not argv:
+            continue
+        exe = argv[0].rsplit("/", 1)[-1]
+        is_hermes_entrypoint = (
+            ("hermes_cli.main" in argv[1:] and exe.startswith("python"))
+            or any(a.rsplit("/", 1)[-1] == "hermes" for a in argv[:2])
+        )
+        if not is_hermes_entrypoint:
+            continue
+        rest = argv[1:]
+        if ("gateway" in rest and "run" in rest) or "dashboard" in rest:
+            return True
+    return False
+
+
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
@@ -1418,6 +1482,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         f"{_REQUIRES_WAL_MARK}: test needs the runtime to actually enable "
         "SQLite WAL mode; skipped on builds where Hermes falls back to "
         "journal_mode=DELETE for the WAL-reset bug.",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{_REQUIRES_IDLE_HOST_MARK}: test needs the machine's local Hermes "
+        "runtime slot FREE; skipped where a live gateway/dashboard is already "
+        "running, because the product correctly refuses (exit 75 / HTTP 409).",
     )
     config.addinivalue_line(
         "markers",
@@ -1534,6 +1604,16 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
         for item in items:
             if item.get_closest_marker(mark_name) is not None:
                 item.add_marker(skip_os)
+
+    if _live_hermes_runtime_present():
+        skip_busy = pytest.mark.skip(
+            reason="a live Hermes gateway/dashboard holds this machine's local "
+                   "runtime slot; the product correctly refuses (exit 75 / HTTP "
+                   "409), so this test can only fail here"
+        )
+        for item in items:
+            if item.get_closest_marker(_REQUIRES_IDLE_HOST_MARK) is not None:
+                item.add_marker(skip_busy)
 
     if _wal_is_usable():
         return

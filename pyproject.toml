@@ -630,6 +630,7 @@ markers = [
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
     "real_retry_backoff: opt out of the tests/agent autouse stub that zeroes jittered_backoff",
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
+    "requires_idle_host: needs the machine's local Hermes runtime slot free (skipped where a live gateway/dashboard already holds it and the product correctly refuses)",
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
     "linux_only: exercises Linux-specific behaviour; skipped on other hosts",

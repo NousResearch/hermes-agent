@@ -20,6 +20,7 @@ from hermes_cli.plugins import (
     get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
     has_middleware,
+    invoke_plugin_command,
     resolve_plugin_command_result,
     _portable_skill_namespace,
 )
@@ -42,6 +43,46 @@ def test_portable_skill_namespace_is_ascii_safe():
 
     assert namespace.isascii()
     assert is_valid_namespace(namespace)
+
+
+@pytest.mark.parametrize("parameter_name", ["session_id", "session_key", "platform"])
+def test_legacy_plugin_command_parameter_names_keep_raw_args(parameter_name):
+    calls = []
+    handlers = {
+        "session_id": lambda session_id: calls.append(session_id),
+        "session_key": lambda session_key: calls.append(session_key),
+        "platform": lambda platform: calls.append(platform),
+    }
+
+    invoke_plugin_command(
+        handlers[parameter_name], "literal-user-args",
+        session_id="physical-session", session_key="durable-session", platform="telegram",
+    )
+
+    assert calls == ["literal-user-args"]
+
+
+def test_plugin_command_context_reaches_opt_in_parameters():
+    calls = []
+
+    def keyword_context(raw_args, *, session_key=None):
+        calls.append((raw_args, session_key))
+
+    def all_context(raw_args, **context):
+        calls.append((raw_args, context))
+
+    invoke_plugin_command(keyword_context, "literal-user-args", session_key="durable-session")
+    invoke_plugin_command(
+        all_context, "literal-user-args",
+        session_id="physical-session", session_key="durable-session", platform="telegram",
+    )
+
+    assert calls == [
+        ("literal-user-args", "durable-session"),
+        ("literal-user-args", {
+            "session_id": "physical-session", "session_key": "durable-session", "platform": "telegram",
+        }),
+    ]
 
 
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",

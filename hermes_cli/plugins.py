@@ -2259,20 +2259,31 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
 def invoke_plugin_command(handler: Callable, raw_args: str, **context: Any) -> Any:
     """Invoke a slash-command handler with only the context it declares."""
     try:
-        parameters = inspect.signature(handler).parameters.values()
+        signature = inspect.signature(handler)
     except (TypeError, ValueError):
         return handler(raw_args)
-    parameter_list = list(parameters)
+    parameter_list = list(signature.parameters.values())
+    try:
+        bound = signature.bind_partial(raw_args)
+    except TypeError:
+        return handler(raw_args)
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameter_list)
     accepted_names = {
         p.name for p in parameter_list
         if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     }
-    if not accepts_kwargs and not accepted_names.intersection(context):
-        return handler(raw_args)
+    unbound_context = {name: value for name, value in context.items() if name not in bound.arguments}
     if accepts_kwargs:
-        return handler(raw_args, **context)
-    return handler(raw_args, **{name: value for name, value in context.items() if name in accepted_names})
+        accepted_context = unbound_context
+    else:
+        accepted_context = {
+            name: value for name, value in unbound_context.items() if name in accepted_names
+        }
+    try:
+        signature.bind_partial(raw_args, **accepted_context)
+    except TypeError:
+        return handler(raw_args)
+    return handler(raw_args, **accepted_context)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

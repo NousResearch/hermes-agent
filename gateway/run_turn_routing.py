@@ -40,7 +40,7 @@ class GatewayTurnRoutingMixin:
         """Build one turn route; middleware is fail-open and never owns credentials.
 
         The default keeps internal/background turns out of user-turn middleware. The external
-        TurnRunner passes ``internal=False`` after loading the persisted turn history.
+        TurnRunner passes the event's internal identity after loading persisted turn history.
         """
         from gateway.run import _deep_merge_request_overrides
         from hermes_cli.models import resolve_fast_mode_overrides

@@ -11,6 +11,7 @@ to the python process, sleep 300 survived with PPID=1 for the full 300 s
 because _wait_for_process never got to call _kill_process before python
 died.  See commit message for full context.
 """
+import contextlib
 import os
 import signal
 import subprocess
@@ -200,3 +201,44 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
             env.cleanup()
         except Exception:
             pass
+
+
+def _descendant_running(marker: str):
+    import psutil
+    for p in psutil.Process(os.getpid()).children(recursive=True):
+        try:
+            if marker in " ".join(p.cmdline()):
+                return p
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return None
+
+
+def test_exit_cleanup_kills_foreground_command_still_running(monkeypatch):
+    """The host-exit funnel (CLI, one-shot, messaging gateway, serve atexit) must take an
+    in-flight foreground command's process group with it: it runs in its own session, so
+    the host exiting mid-command would otherwise orphan it to init."""
+    from tools import terminal_tool_lifecycle
+
+    monkeypatch.setattr(terminal_tool_lifecycle, "_scratch_paths", lambda: [])
+    env = LocalEnvironment(cwd="/tmp")
+    result: dict = {}
+    t = threading.Thread(target=lambda: result.update(env.execute("sleep 3517", timeout=600)), daemon=True)
+    try:
+        t.start()
+        deadline = time.monotonic() + 20.0
+        while (proc := _descendant_running("sleep 3517")) is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert proc is not None, "test setup: foreground sleep never started"
+        pgid = os.getpgid(proc.pid)
+
+        terminal_tool_lifecycle.cleanup_all_environments()
+
+        assert _wait_for_pgid_exit(pgid, timeout=15.0), (
+            f"foreground command survived exit cleanup:\n{_process_group_snapshot(pgid)}")
+        t.join(timeout=15.0)
+        assert not t.is_alive() and result.get("returncode") not in (None, 0), result
+    finally:
+        with contextlib.suppress(Exception):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        env.cleanup()

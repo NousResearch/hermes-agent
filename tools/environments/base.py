@@ -52,6 +52,24 @@ if _DEBUG_INTERRUPT:
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
 
+# Foreground commands in flight in THIS process, across every environment. Each runs in its
+# own session/process group, so a host that exits mid-command (TUI client gone, SIGTERM) would
+# orphan the whole tree; the process-exit funnel ``cleanup_all_environments`` kills them.
+_live_foreground: dict[int, tuple["BaseEnvironment", "ProcessHandle"]] = {}
+_live_foreground_lock = threading.Lock()
+
+
+def kill_live_foreground_processes() -> int:
+    """Kill every in-flight foreground command's process tree; returns how many were signalled."""
+    with _live_foreground_lock:
+        live = list(_live_foreground.values())
+    for env, proc in live:
+        try:
+            env._kill_process(proc)
+        except Exception:
+            logger.debug("exit-time kill of a foreground command failed", exc_info=True)
+    return len(live)
+
 
 class FileFetchError(RuntimeError):
     """A file could not be extracted from the backend filesystem."""
@@ -542,10 +560,16 @@ class BaseEnvironment(ABC):
                 set_activity_callback(parent_activity_cb)
             spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
             proc_holder.append(spawned)
-            return self._wait_for_process(
-                spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
-                watch_interrupt_tid=parent_tid,
-                **({"yield_handler": yield_handler} if yield_handler is not None else {}))
+            with _live_foreground_lock:
+                _live_foreground[id(spawned)] = (self, spawned)
+            try:
+                return self._wait_for_process(
+                    spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
+                    watch_interrupt_tid=parent_tid,
+                    **({"yield_handler": yield_handler} if yield_handler is not None else {}))
+            finally:
+                with _live_foreground_lock:
+                    _live_foreground.pop(id(spawned), None)
 
         def _on_timeout() -> None:
             if proc_holder:

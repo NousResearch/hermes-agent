@@ -157,6 +157,65 @@ def test_shutdown_sessions_flushes_before_teardown(monkeypatch):
     assert "close:sess-order" in order
 
 
+def test_shutdown_mid_tool_kills_the_command_and_keeps_its_result(monkeypatch):
+    """SIGTERM/EOF while a turn's foreground terminal command runs: the shutdown chokepoint must
+    end the command's process group (it would outlive the gateway, reparented to init) and the
+    turn's tool result must be in the transcript before per-session teardown persists it."""
+    import threading
+
+    import psutil
+
+    from tools.environments.local import LocalEnvironment
+    from tools.interrupt import set_interrupt
+
+    env = LocalEnvironment(cwd=os.getcwd())
+    messages = [{"role": "assistant", "tool_calls": [{"id": "call-1"}]}]
+
+    def turn():
+        out = env.execute("sleep 3518", timeout=600)
+        time.sleep(0.2)  # the agent's post-tool bookkeeping before the result lands in history
+        messages.append({"role": "tool", "tool_call_id": "call-1", "content": out["output"]})
+
+    run_thread = threading.Thread(target=turn, daemon=True)
+
+    class _Agent:
+        _session_messages = messages
+
+        def interrupt(self, message=None):  # the real agent fans this out to its tool threads
+            set_interrupt(True, thread_id=run_thread.ident)
+
+    run_thread.start()
+    deadline = time.monotonic() + 20.0
+    sleeper = None
+    while sleeper is None and time.monotonic() < deadline:
+        sleeper = next((p for p in psutil.Process().children(recursive=True)
+                        if p.name() == "sleep" and "3518" in " ".join(p.cmdline())), None)
+        time.sleep(0.05)
+    assert sleeper is not None, "test setup: foreground sleep never started"
+
+    at_teardown: list = []
+    monkeypatch.setattr(server, "_release_gateway_wake_owner", lambda: None, raising=False)
+    monkeypatch.setattr(server, "_flush_sessions_before_exit", lambda budget_s=None: 0)
+    monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: at_teardown.append(list(messages)))
+    session = {"agent": _Agent(), "session_key": "sess-mid-tool", "running": True,
+               "_run_thread": run_thread, "history_lock": threading.RLock()}
+    with server._sessions_lock:
+        server._sessions["sess-mid-tool"] = session
+    try:
+        server._shutdown_sessions()
+        _gone, alive = psutil.wait_procs([sleeper], timeout=15.0)
+        assert not alive, "foreground command survived gateway shutdown"
+        assert at_teardown and at_teardown[0][-1].get("tool_call_id") == "call-1", (
+            f"teardown persisted a tool_call with no result: {at_teardown}")
+    finally:
+        with server._sessions_lock:
+            server._sessions.pop("sess-mid-tool", None)
+        if sleeper.is_running():
+            sleeper.kill()
+        set_interrupt(False, thread_id=run_thread.ident)
+        env.cleanup()
+
+
 def test_periodic_flush_respects_interval_with_fake_clock(
     registered_session, monkeypatch
 ):

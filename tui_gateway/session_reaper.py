@@ -113,6 +113,29 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
     return result["flushed"]
 
 
+# Bounded wait for interrupted turns on the way out; the SIGTERM path hard-exits after a ~1s grace.
+_EXIT_TURN_SETTLE_S = 0.5
+
+
+def _stop_turns_before_exit(budget_s: float | None = None) -> None:
+    """Interrupt every in-flight turn and give it ``budget_s`` to settle, so a running tool call ends
+    with a result the teardown's final persist records, then kill any foreground command still alive:
+    it runs in its own process group and would otherwise outlive the gateway, reparented to init."""
+    with _sessions_lock:
+        running = [(sid, s) for sid, s in _sessions.items() if s.get("running")]
+    threads = []
+    for sid, session in running:
+        with contextlib.suppress(Exception):
+            _interrupt_session_turn(sid, session)
+        if (t := session.get("_run_thread")) is not None and t is not threading.current_thread():
+            threads.append(t)
+    deadline = time.monotonic() + (_EXIT_TURN_SETTLE_S if budget_s is None else max(0.0, budget_s))
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    from tools.environments.base import kill_live_foreground_processes
+    kill_live_foreground_processes()
+
+
 _exit_flush_prev_handlers: dict[int, Any] = {}
 _exit_flush_handlers_installed = False
 
@@ -122,6 +145,10 @@ def _handle_exit_flush_signal(signum, frame) -> None:
     handler, or the default disposition) — this only *prepends* a bounded flush."""
     with contextlib.suppress(Exception):
         _flush_sessions_before_exit()
+    # The group signal that stopped us never reaches a command in its own session: reap it now,
+    # before a supervisor's SIGKILL can cut the graceful shutdown (and its atexit) short.
+    with contextlib.suppress(Exception):
+        _stop_turns_before_exit()
     import signal as _signal
     prev = _exit_flush_prev_handlers.get(signum)
     if callable(prev):

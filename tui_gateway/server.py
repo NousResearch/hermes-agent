@@ -346,7 +346,7 @@ def _load_interim_assistant_messages() -> bool:
 
 def _shutdown_sessions() -> None:
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
-    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner):
+    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):
         with contextlib.suppress(Exception):
             step()
     with _sessions_lock:

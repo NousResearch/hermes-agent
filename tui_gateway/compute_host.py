@@ -96,6 +96,11 @@ class ComputeHost:
     def close(self) -> None:
         self._closed.set()
         self._executor.shutdown(wait=False, cancel_futures=True)
+        # Every caller hard-exits next (os._exit skips atexit): a foreground command still
+        # running in its own process group would outlive the host.
+        with contextlib.suppress(Exception):
+            from tools.environments.base import kill_live_foreground_processes
+            kill_live_foreground_processes()
 
     def shutdown(self, *, reason: str = "shutdown", wait: float = 10.0) -> None:
         """Drain in-flight turns, then finalize every session.

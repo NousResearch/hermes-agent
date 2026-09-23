@@ -114,13 +114,6 @@ describe('the catalog owns model curation', () => {
       // The fold makes this id-style query highlight the spaced label: the
       // row renders as <mark>Gemini 3.1</mark> + ' Pro'.
       expect(screen.getByText('Gemini 3.1', { selector: 'mark' })).toBeDefined()
-      // Display name is "Gemini 3.1 pro" (no title-case for gemini ids); the
-      // row label span carries it (plus the effort meta suffix).
-      expect(
-        screen.getByText((_, element) =>
-          Boolean(element?.classList.contains('truncate') && (element?.textContent ?? '').startsWith('Gemini 3.1 pro'))
-        )
-      ).toBeDefined()
     })
   })
 

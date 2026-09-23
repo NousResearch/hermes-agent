@@ -995,7 +995,8 @@ class GatewayInboundMixin:
             or self._gateway_idle_command_handlers().get(canonical)
         )
         if plain_handler is not None:
-            return True, await plain_handler(event)
+            async with self._async_profile_scope_for_source(source):
+                return True, await plain_handler(event)
         if canonical in self._HM_CANONICAL_COMMANDS:
             return await getattr(self, f"_hm_cmd_{canonical}")(event, source, _quick_key)
         return False, None

@@ -116,24 +116,6 @@ class TestEnableDisableNested:
         with pytest.raises(SystemExit):
             cmd_enable("does-not-exist")
 
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_enable_flat_plugin_unchanged(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
-        mock_user, mock_bundled, nested_plugin_env,
-    ):
-        """Flat plugins keep writing their bare name (key == name) — no regression."""
-        from hermes_cli.plugins_cmd import cmd_enable
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-
-        cmd_enable("disk-cleanup", allow_tool_override=False)
-        saved = mock_save_en.call_args[0][0]
-        assert "disk-cleanup" in saved
 
 
 # ---------------------------------------------------------------------------

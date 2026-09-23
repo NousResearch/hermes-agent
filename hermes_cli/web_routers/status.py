@@ -130,9 +130,11 @@ async def get_host_identity(request: Request):
     headless ``serve``, so a `hermes dashboard` user is never routed to a backend with no UI.
     """
     _require_token(request)
-    # ``role`` is the host ROLE this process owns (gateway/host_rendezvous.ROLE_SERVE), not the
-    # launch mode: `hermes serve` and `hermes dashboard` are one host role that differ in SPA.
-    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(), "role": "serve",
+    # ``role`` is the host ROLE this process published (gateway/host_rendezvous.ROLE_SERVE, or
+    # ROLE_DESKTOP_SERVE for a Desktop-owned child), not the launch mode: `hermes serve` and
+    # `hermes dashboard` are one host role that differ in SPA.
+    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(),
+            "role": getattr(app.state, "host_role", None) or "serve",
             "servesSpa": bool(getattr(app.state, "serves_spa", False))}
 
 
@@ -405,6 +407,9 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
         from gateway.readiness import _probe_state_db
         storage_check = await run_in_threadpool(_probe_state_db, get_hermes_home())
         components["storage"] = {"status": storage_check.get("status", "degraded")}
+        # The one reason enum consumers key off; same latch as readiness and the session lists.
+        if storage_check.get("detail") == "corrupt":
+            components["storage"]["reason"] = "corrupt"
     except Exception:
         components["storage"] = {"status": "degraded"}
     # ``disabled`` entries are platforms the multiplexer deliberately does not run for a served profile

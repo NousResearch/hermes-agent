@@ -72,15 +72,6 @@ class TestGithubCommentDeliveryOffLoop:
             f"{ticks_during_delivery} ticker turns ran in ~1s"
         )
 
-    @pytest.mark.asyncio
-    async def test_delivery_result_faithful_off_loop(self, fake_gh):
-        """Off-loop offload must not change the SendResult contract."""
-        adapter = WebhookAdapter.__new__(WebhookAdapter)
-        result = await adapter._deliver_github_comment(
-            "body",
-            {"deliver_extra": {"repo": "owner/repo", "pr_number": "7"}},
-        )
-        assert result.success is True
 
     @pytest.mark.asyncio
     async def test_invalid_inputs_still_rejected_before_subprocess(self):

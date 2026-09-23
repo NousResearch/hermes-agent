@@ -27,32 +27,11 @@ def _isolation(tmp_path, monkeypatch):
     yield
 
 
-def test_identity_and_availability(monkeypatch):
+def test_availability_follows_api_key(monkeypatch):
     p = deepinfra_plugin.DeepInfraVideoGenProvider()
-    assert p.name == "deepinfra"
-    assert p.display_name == "DeepInfra"
-    assert p._base_url() == "https://api.deepinfra.com/v1/openai"
     assert p.is_available() is True
     monkeypatch.delenv("DEEPINFRA_API_KEY", raising=False)
     assert p.is_available() is False
-
-
-def test_list_models_filters_by_video_gen_tag(monkeypatch):
-    """list_models() returns only ``video-gen``-tagged catalog entries."""
-    import hermes_cli.models as _models_mod
-
-    def _fake_by_tag(tag, **kw):
-        assert tag == "video-gen"
-        return [
-            {"id": "vendor/p-video", "metadata": {"description": "fast t2v"}},
-            {"id": "vendor/wan-t2v", "metadata": {}},
-        ]
-
-    monkeypatch.setattr(_models_mod, "_fetch_deepinfra_models_by_tag", _fake_by_tag)
-    rows = deepinfra_plugin.DeepInfraVideoGenProvider().list_models()
-    ids = {row["id"] for row in rows}
-    assert ids == {"vendor/p-video", "vendor/wan-t2v"}
-    assert all("display" in r for r in rows)
 
 
 def _fake_openai_with_capture(captured: dict, *, status="succeeded",

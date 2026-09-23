@@ -181,7 +181,8 @@ import {
   SidebarBlankState,
   SidebarLoadErrorState,
   SidebarPinnedEmptyState,
-  SidebarSessionSkeletons
+  SidebarSessionSkeletons,
+  SidebarStorageCorruptNotice
 } from './section-states'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
@@ -1686,6 +1687,8 @@ export function ChatSidebar({
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        <SidebarStorageCorruptNotice />
 
         {showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">

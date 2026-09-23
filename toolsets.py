@@ -149,7 +149,7 @@ TOOLSETS = {
     "setup": _ts(
         "Onboarding-only surface for the setup profile: catalog plugin/skill install "
         "requests through the approval card",
-        [],
+        ["manage_catalog"],
         role="setup",
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),

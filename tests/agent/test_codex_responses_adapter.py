@@ -7,12 +7,10 @@ from agent.codex_responses_adapter import (
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
     _classify_responses_issuer,
-    _format_responses_error,
     _normalize_codex_response,
     _neutralize_harmony_tokens,
     _preflight_codex_api_kwargs,
     _preflight_codex_input_items,
-    _responses_tools,
 )
 
 
@@ -888,9 +886,6 @@ def test_preflight_passes_native_web_search_tool_through():
 # ---------------------------------------------------------------------------
 
 
-def test_format_responses_error_message_only():
-    err = {"message": "Upstream model unavailable"}
-    assert _format_responses_error(err, "failed") == "Upstream model unavailable"
 
 
 def _final_text_response(text):

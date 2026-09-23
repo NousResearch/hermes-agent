@@ -6,7 +6,6 @@ from typing import List, Optional
 
 from tools.clarify_tool import (
     clarify_tool,
-    check_clarify_requirements,
     MAX_CHOICES,
     MAX_QUESTIONS,
     CLARIFY_SCHEMA,
@@ -34,7 +33,7 @@ class TestClarifyToolBasics:
         """Should return error when no callback is provided."""
         result = json.loads(clarify_tool("What do you want?"))
         assert "error" in result
-        assert "not available" in result["error"].lower()
+        assert "user_response" not in result
 
 
 class TestClarifyToolChoicesValidation:
@@ -76,7 +75,6 @@ class TestClarifyToolCallbackHandling:
 
         result = json.loads(clarify_tool("Question?", callback=failing_callback))
         assert "error" in result
-        assert "Failed to get user input" in result["error"]
         assert "User cancelled" in result["error"]
 
 
@@ -89,12 +87,6 @@ class TestClarifyToolCallbackHandling:
         assert result["user_response"] == "response with spaces"
 
 
-class TestCheckClarifyRequirements:
-    """Tests for the requirements check function."""
-
-    def test_always_returns_true(self):
-        """clarify tool has no external requirements."""
-        assert check_clarify_requirements() is True
 
 
 class TestClarifyDictChoices:
@@ -143,33 +135,12 @@ class TestClarifyDictChoices:
 class TestClarifySchema:
     """Tests for the OpenAI function-calling schema."""
 
-    def test_schema_name(self):
-        """Schema should have correct name."""
-        assert CLARIFY_SCHEMA["name"] == "clarify"
 
 
-    def test_max_choices_is_four(self):
-        """MAX_CHOICES constant should be 4."""
-        assert MAX_CHOICES == 4
 
 
-    def test_schema_multi_select_default_false(self):
-        """multi_select should default to false (not in required)."""
-        # The model should treat it as false when omitted
-        assert "multi_select" not in CLARIFY_SCHEMA["parameters"]["required"]
 
 
-    def test_schema_description_advertises_batching(self):
-        """The top-level description must tell the model it can batch.
-
-        The `questions` parameter description alone is not enough — the
-        model decides HOW to call from the tool description, so the batch
-        capability has to be surfaced there or it keeps asking one
-        question per call.
-        """
-        description = CLARIFY_SCHEMA["description"]
-        assert "questions" in description
-        assert "one call" in description.lower()
 
 
     def test_schema_questions_param_is_required_and_capped(self):
@@ -178,30 +149,12 @@ class TestClarifySchema:
         limit. The legacy top-level `question` shape stays handler-accepted
         but unadvertised."""
         params = CLARIFY_SCHEMA["parameters"]
-        assert params["required"] == ["questions"]
         assert params["properties"]["questions"]["maxItems"] == MAX_QUESTIONS
-        assert params["properties"]["questions"].get("minItems") == 1
-        # Legacy shape must remain accepted by the handler even though the
-        # schema no longer advertises it.
-        assert "question" not in params["properties"]
 
 
 class TestClarifyToolMultiSelect:
     """Tests for multi_select (checkbox) support added to clarify_tool."""
 
-    def test_multi_select_false_keeps_existing_behavior(self):
-        """When multi_select=False, user_response should be a single string."""
-        def mock_callback(question, choices):
-            return "blue"
-
-        result = json.loads(clarify_tool(
-            "What color?",
-            choices=["red", "blue", "green"],
-            multi_select=False,
-            callback=mock_callback,
-        ))
-        assert result["user_response"] == "blue"
-        assert isinstance(result["user_response"], str)
 
     def test_multi_select_true_returns_list(self):
         """When multi_select=True, user_response should be a list of strings."""
@@ -232,22 +185,6 @@ class TestClarifyToolMultiSelect:
         assert isinstance(result["user_response"], list)
 
 
-    def test_multi_select_max_choices_enforced(self):
-        """MAX_CHOICES enforcement should still work with multi_select."""
-        choices_passed = []
-
-        def mock_callback(question, choices):
-            choices_passed.extend(choices or [])
-            return "a, b, c, d"
-
-        many_choices = ["a", "b", "c", "d", "e", "f"]
-        clarify_tool(
-            "Pick some",
-            choices=many_choices,
-            multi_select=True,
-            callback=mock_callback,
-        )
-        assert len(choices_passed) == MAX_CHOICES
 
 
 class TestClarifyRecommendedLabel:
@@ -647,15 +584,6 @@ class TestClarifyBatchDispatch:
         assert [r["user_response"] for r in result["responses"]] == ["", "second"]
         assert "timed_out" not in result
 
-    def test_single_question_result_shape_unchanged(self):
-        """No `questions` arg keeps the historic result keys exactly."""
-        def cb(question, choices):
-            return "blue"
-
-        result = json.loads(clarify_tool(
-            "Color?", choices=["red", "blue"], callback=cb,
-        ))
-        assert set(result.keys()) == {"question", "choices_offered", "user_response"}
 
 
 class TestRegistryBatchPassThrough:

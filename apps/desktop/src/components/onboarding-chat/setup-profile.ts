@@ -153,6 +153,7 @@ export function buildFirstTaskRunbook(
     FIRST_USE_GUIDANCE,
     ...planRunbook(plan, pluginRoot, connectFirst),
     ...(connectFirst ? connectFirstRunbook(tools) : []),
+    pluginsRunbook(answers),
     'While the work runs, place ::onboarding{step="progress" title="what you\'re doing"} as its own paragraph at the start of each status turn — the card shows the build breathing live. Keep the titles short and present-tense ("Scaffolding the project", "Wiring the reminder"). Emit each exactly like that, alone on its own line.',
     'When the first pass of the build is DONE: end that turn with ::ask{question="Does this match what you wanted?" options="Looks right|Change something|Take it further"} alone as its own paragraph, emitted EXACTLY as written. Act on their pick immediately. One unreviewed first output is how a build reads as broken; the ask is how it reads as a collaboration.',
     PLAIN_SPEECH
@@ -178,6 +179,46 @@ function connectFirstRunbook(picks: string[]): string[] {
     "Discover a connected app's tools with tool_search and use real results for the task; never fabricate account data. Reading is separate from sending, deleting or scheduling: ask before those. No recurring job unless that is what they asked for.",
     'Make the result something they can open: a single HTML page when the idea allows it, and at least one real reading or action through a connected app.'
   ]
+}
+
+/** What the guide's install card settled (NS-960 D6). This session has no install tool by design (#119491), so
+ *  it never retries: it uses what is installed and names what is not. Empty when nothing was picked. */
+export function pluginsRunbook(answers: Pick<OnboardingAnswers, 'pluginOutcomes' | 'plugins'>): string {
+  const outcomes = answers.pluginOutcomes ?? {}
+  const names = [...new Set([...(answers.plugins ?? []), ...Object.keys(outcomes)])]
+
+  if (names.length === 0) {
+    return ''
+  }
+
+  const installed = names.filter(name => outcomes[name]?.state === 'installed')
+  const offered = names.filter(name => outcomes[name] && outcomes[name].state !== 'installed')
+  const notOffered = names.filter(name => !outcomes[name])
+
+  const ready = installed.map(name => {
+    const { skill, tools } = outcomes[name]
+    const parts = [tools.length ? `${tools.length} tools` : '', skill ? `skill ${skill}` : ''].filter(Boolean)
+
+    return parts.length ? `${name} (${parts.join(', ')})` : name
+  })
+
+  const missed = offered.map(name => {
+    const { detail, state } = outcomes[name]
+
+    return `${name} (${state === 'failed' ? `failed: ${detail || 'no reason given'}` : 'skipped by the user'})`
+  })
+
+  return [
+    'PLUGINS FROM ONBOARDING.',
+    ready.length
+      ? `Installed during onboarding and ready in this chat now: ${ready.join(', ')}. Discover their tools with tool_search and use them when the task benefits; read a named skill with skill_view using that exact name. A tool whose app is not running reports that; say so plainly.`
+      : '',
+    missed.length ? `Offered during onboarding and not installed: ${missed.join(', ')}.` : '',
+    notOffered.length ? `Picked during onboarding but not offered for install: ${notOffered.join(', ')}.` : '',
+    'Do not install plugins yourself and do not ask to; if they want one later, they can add it from Settings, Plugins.'
+  ]
+    .filter(Boolean)
+    .join(' ')
 }
 
 /** The machine-setup runbook. The audit comes before the plan because a plan written before looking is how an agent

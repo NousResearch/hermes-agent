@@ -161,8 +161,16 @@ workspace; absent or empty cwd remains unpinned.
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
-| `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
+| `on_memory_write(action, target, content, metadata=None)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+For native `replace` and `remove`, `metadata["previous_content"]` contains the full
+entry selected under the native-store lock. Notifications are emitted only after
+the complete write or batch succeeds. Batch notifications preserve operation order;
+each operation's previous content reflects earlier operations in that batch.
+`old_text` is the caller's search text, not the identity of the changed entry.
+Older Hermes versions can omit `previous_content`. Providers that require exact
+identity should skip destructive mirroring when it is absent.
 
 ### Oversized prefetch results
 

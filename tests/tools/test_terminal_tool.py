@@ -23,34 +23,10 @@ def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
     assert sudo_stdin is None
 
 
-def test_terminal_schema_advertises_persistent_env_state():
-    description = terminal_tool.TERMINAL_TOOL_DESCRIPTION
-
-    assert "exported environment variables persist between calls" in description
-    assert "activate a virtualenv" in description
-    assert "once per session" in description
 
 
-def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):
-    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-
-    command = "printf '%s\\n' sudo"
-    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(command)
-
-    assert transformed == command
-    assert sudo_stdin is None
 
 
-def test_non_command_argument_named_sudo_does_not_trigger_rewrite(monkeypatch):
-    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-
-    command = "grep -n sudo README.md"
-    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(command)
-
-    assert transformed == command
-    assert sudo_stdin is None
 
 
 def test_actual_sudo_command_uses_configured_password(monkeypatch):

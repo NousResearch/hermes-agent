@@ -39,6 +39,7 @@ import {
   effectiveVisibleKeys,
   type ModelFamily,
   modelVisibilityKey,
+  seedKnownModels,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
@@ -268,6 +269,8 @@ export function ModelCatalogMenu({
   // Resolve visibility HERE, against the catalog we actually fetched: an empty
   // provider list would otherwise resolve to an empty key set that reads as
   // "user hid everything" and blanks the menu on first open.
+  useEffect(() => seedKnownModels(pickerProviders), [pickerProviders])
+
   const shownKeys = useMemo(
     () => effectiveVisibleKeys(visibleModels, pickerProviders),
     [visibleModels, pickerProviders]

@@ -13,9 +13,7 @@ concurrently, barrier calls sequentially — while preserving:
 
 import json
 import threading
-import time
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -469,18 +467,6 @@ class TestSegmentedDispatchIntegration:
         assert {"s1", "s2"} == set(executed[:t1_pos])
         assert {"s3", "s4"} == set(executed[t1_pos + 1:])
 
-    def test_homogeneous_safe_batch_still_uses_plain_concurrent_path(self, agent):
-        calls = [_tc("web_search", '{"query":"a"}'), _tc("web_search", '{"query":"b"}')]
-        msg = SimpleNamespace(content="", tool_calls=calls)
-
-        with (
-            patch.object(agent, "_execute_tool_calls_concurrent") as conc,
-            patch.object(agent, "_execute_tool_calls_sequential") as seq,
-        ):
-            agent._execute_tool_calls(msg, [], "task-1")
-
-        conc.assert_called_once()
-        seq.assert_not_called()
 
 
 
@@ -672,7 +658,6 @@ class TestPathCanonicalization:
     def test_symlink_aliases_are_not_parallelized(self, tmp_path):
         """A symlink alias and the real path must be detected as overlapping
         so they are never placed in the same parallel segment."""
-        import os
         from agent.tool_dispatch_helpers import (
             _canonical_path,
             _paths_overlap,

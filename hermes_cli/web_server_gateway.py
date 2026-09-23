@@ -148,7 +148,7 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     try:
         from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
         from gateway.status import read_runtime_status
-        homes = profiles_to_serve(True)
+        homes = profiles_to_serve(True, include_standalone=True)
     except Exception:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
         return {"profiles": [], "gateway_mode": "unknown", "gateways": [], "profile_platforms": {}}
@@ -158,7 +158,9 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     multiplex = False
     for name, home in homes:
         try:
-            if not _check_gateway_running(home):
+            # A served profile's liveness is the multiplexer's: listing it here showed one phantom
+            # gateway per served profile beside the host.
+            if not (_check_gateway_running(home) if name == "default" else _has_own_gateway(home)):
                 continue
         except Exception:
             continue
@@ -518,14 +520,32 @@ def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
     profile = _own_profile_selector(profile)
     args = _profile_cli_args(profile)
     if profile and verb == "restart" and multiplexed_profile_refusal(profile, verb) is not None:
-        from hermes_constants import get_process_hermes_home, profile_name_for_home
-        args = [] if profile_name_for_home(get_process_hermes_home()) == "default" else ["-p", "default"]
+        # Always explicit, even from the default home: a bare child re-reads the sticky active_profile.
+        args = ["-p", "default"]
     return args + ["gateway", verb]
 
 
 def _profile_is_multiplexed(profile: str) -> bool:
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     return named_profile_served_by_running_multiplexer(profile)
+
+
+def _has_own_gateway(profile_dir: Path) -> bool:
+    """A live gateway of the profile's OWN (a ``--force``-started separate one), not the multiplexer that
+    serves it. Gateway liveness reports a served profile as running on the multiplexer's PID (#97120),
+    so reading liveness alone made every served profile look self-hosted and the refusal below never
+    fired while a multiplexer was live, which is the only time it is needed."""
+    from gateway.status import get_running_pid, multiplexer_liveness_for_profile, resolve_gateway_liveness
+    from hermes_cli.profiles import _check_gateway_running
+    if not _check_gateway_running(profile_dir):
+        return False
+    served = multiplexer_liveness_for_profile(profile_dir)
+    if served is None:
+        return True
+    liveness = resolve_gateway_liveness(
+        profile_dir=profile_dir, use_cache=False,
+        pid_probe=lambda path: get_running_pid(path, cleanup_stale=False))
+    return liveness.running and liveness.pid != served[0]
 
 
 def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[str]:
@@ -539,12 +559,20 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
     if not requested or requested.lower() in {"current", "default"}:
         return None
     served = _profile_is_multiplexed(requested)
-    if not served and verb != "start":
-        return None
-    from hermes_cli.profiles import _check_gateway_running
+    from hermes_cli.profiles import profile_is_standalone
     from hermes_cli.web_server_profiles import _resolve_profile_dir
     profile_dir = _resolve_profile_dir(requested)
-    if _check_gateway_running(profile_dir):
+    standalone = profile_is_standalone(profile_dir)
+    if standalone:
+        # The profile opted out of the host multiplexer, so its own gateway is the answer now: only a
+        # host record that still lists it (the host started before the key was set) is refused.
+        if not served:
+            return None
+        from gateway.host_attach import standalone_rescan_message
+        return standalone_rescan_message(requested)
+    if not served and verb != "start":
+        return None
+    if _has_own_gateway(profile_dir):
         return None
     if served:
         return (f"The default gateway already serves profile '{requested}' as a multiplexer; "

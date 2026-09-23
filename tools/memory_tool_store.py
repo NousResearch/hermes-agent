@@ -231,7 +231,7 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message + " No operations were applied (batch is all-or-nothing).", usage=self._usage(target)))
 
-    def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
+    def _mutate(self, target: str, mutate, *, skip_drift: bool = False, dedupe: bool = True) -> Dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
@@ -239,14 +239,21 @@ class MemoryStore:
         un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
         a failed second read used to count as "no drift". The closure may return a
         third value, a dict merged into the success payload (``_error``'s ``**extra``
-        convention) — e.g. the full text a replace overwrote (#117952)."""
+        convention) — e.g. the full text a replace overwrote (#117952).
+
+        *dedupe* collapses byte-identical entries on the reload, which is right for the tool's own
+        callers (an entry is addressed by its text, so duplicates are noise). A caller that
+        addresses entries by POSITION must pass ``dedupe=False``: the collapse renumbers the list
+        it is about to rewrite, so the mutation would land on the wrong entry and persist the
+        collapse — dropping a duplicate the caller never touched."""
         path = self._path_for(target)
         with self._file_lock(path):
             raw, read_ok = self._read_raw_checked(path)
             if not read_ok:
                 return _read_failed_error(path)
             bak = None if skip_drift else self._detect_external_drift(target, raw)
-            self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
+            parsed = self._parse_entries(raw)
+            self._set_entries(target, list(dict.fromkeys(parsed)) if dedupe else parsed)
             if bak:
                 return _drift_error(path, bak)
             result = mutate(self._entries_for(target), self._char_limit(target))

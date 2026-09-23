@@ -56,6 +56,20 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     return path, chunks, local
 
 
+def _resolve_occurrence(entries: list[str], expected: str, local: int) -> int | None:
+    """Index of the clicked entry in the freshly read list, or None when it cannot be named.
+
+    The position wins while it still holds the expected text — that is the occurrence the user
+    clicked, and identical entries are separate cards. A shifted list is resolved by text only
+    when exactly one entry carries it; with several copies and a moved position there is no way
+    to tell them apart, so the caller refuses instead of editing an arbitrary one.
+    """
+    if 0 <= local < len(entries) and entries[local] == expected:
+        return local
+    matches = [i for i, entry in enumerate(entries) if entry == expected]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _memory_target(source: str) -> str:
     """Journey's node-id source -> the memory tool's target name."""
     return "user" if source == "profile" else "memory"
@@ -72,9 +86,15 @@ def _apply_memory_mutation(node_id: str, apply_change, done: str) -> dict[str, A
     exists to prevent (#26045). ``_mutate`` holds the same cross-process lock the memory
     tool takes, re-reads under it, and keeps that guard.
 
-    The entry is identified by its TEXT, captured from the graph the user clicked: under the
-    lock the list may have shifted, and an index from the stale view would hit a different
-    entry. When that text is gone, the mutation refuses instead of guessing.
+    The entry is addressed by POSITION first — Journey's card identity is an occurrence, and two
+    identical entries are two cards — and re-checked against the text captured from the graph the
+    user clicked. When the list shifted under the lock, a single occurrence of that text is
+    unambiguous and is used instead. When the text is gone, or it occurs more than once and the
+    position no longer holds it, the mutation refuses rather than guessing.
+
+    ``dedupe=False`` keeps ``_mutate`` from collapsing identical entries on the reload: that
+    collapse renumbers the very list being rewritten, so an occurrence-addressed edit would land on
+    the first copy and persist the collapse, silently dropping a card the user never touched.
     """
     from tools.memory_tool import load_on_disk_store
 
@@ -83,13 +103,12 @@ def _apply_memory_mutation(node_id: str, apply_change, done: str) -> dict[str, A
     expected = chunks[local]
 
     def _mutate(entries: list[str], _limit: int):
-        try:
-            index = entries.index(expected)
-        except ValueError:
+        index = _resolve_occurrence(entries, expected, local)
+        if index is None:
             return {"success": False, "error": "memory node id is stale — refresh the graph"}
         return apply_change(list(entries), index)
 
-    result = load_on_disk_store()._mutate(_memory_target(source), _mutate)
+    result = load_on_disk_store()._mutate(_memory_target(source), _mutate, dedupe=False)
     if result.get("success"):
         return {"ok": True, "message": f"{done} {path.name}"}
     return {"ok": False, "message": str(result.get("error") or "memory write failed")}

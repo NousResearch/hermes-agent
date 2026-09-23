@@ -174,3 +174,76 @@ def test_a_vanished_entry_refuses_instead_of_deleting_a_neighbour(home, monkeypa
 
     assert result["ok"] is False and "stale" in result["message"]
     assert _memory_entries(home) == ["beta note"]  # the survivor is untouched
+
+
+# ── Duplicate entries: a Journey card is an occurrence, not a text ───────────
+
+
+def _write_memory_file(home, *entries):
+    from tools.memory_tool import ENTRY_DELIMITER
+
+    (home / "memories" / "MEMORY.md").write_text(ENTRY_DELIMITER.join(entries), encoding="utf-8")
+
+
+def test_editing_the_second_of_two_identical_cards_leaves_the_first_alone(home):
+    """Journey renders one card per chunk, so identical entries are two cards. Editing the second
+    must change that one — not the first, and not collapse the pair into one card."""
+    _write_memory_file(home, "same memory", "same memory", "other")
+
+    assert lm.edit_node("memory:memory:1", "edited second")["ok"]
+
+    assert _memory_entries(home) == ["same memory", "edited second", "other"]
+
+
+def test_deleting_one_of_two_identical_cards_keeps_the_other(home):
+    _write_memory_file(home, "same memory", "same memory")
+
+    assert lm.delete_node("memory:memory:0")["ok"]
+
+    assert _memory_entries(home) == ["same memory"]
+
+
+def test_a_mutation_never_collapses_duplicates_it_did_not_touch(home):
+    """The locked reload must not renumber the list being rewritten: an edit elsewhere would
+    otherwise persist the collapse and drop a card the user never selected."""
+    _write_memory_file(home, "keep", "dup", "dup")
+
+    assert lm.edit_node("memory:memory:0", "keep edited")["ok"]
+
+    assert _memory_entries(home) == ["keep edited", "dup", "dup"]
+
+
+def test_a_shifted_duplicate_still_leaves_both_cards_standing(home, monkeypatch):
+    """Identical copies are interchangeable, so editing either is the same to the reader — what
+    must never happen is one of them disappearing."""
+    _write_memory_file(home, "alpha", "dup", "dup")
+    real_locate = lm._locate_memory
+
+    def _locate_then_shift(node_id):
+        located = real_locate(node_id)
+        _write_memory_file(home, "dup", "dup")  # "alpha" is gone: the list renumbered
+        return located
+
+    monkeypatch.setattr(lm, "_locate_memory", _locate_then_shift)
+
+    assert lm.edit_node("memory:memory:1", "rewritten")["ok"]
+
+    assert sorted(_memory_entries(home)) == ["dup", "rewritten"]
+
+
+def test_a_vanished_duplicate_pair_refuses_rather_than_picking_one(home, monkeypatch):
+    """The clicked text is gone from a list that still holds other cards: nothing to target."""
+    _write_memory_file(home, "alpha", "beta")
+    real_locate = lm._locate_memory
+
+    def _locate_then_replace(node_id):
+        located = real_locate(node_id)
+        _write_memory_file(home, "gamma", "delta")
+        return located
+
+    monkeypatch.setattr(lm, "_locate_memory", _locate_then_replace)
+
+    result = lm.edit_node("memory:memory:1", "rewritten")
+
+    assert result["ok"] is False and "stale" in result["message"]
+    assert _memory_entries(home) == ["gamma", "delta"]

@@ -1377,6 +1377,26 @@ def _preflight_timeout_result(agent, exc, conversation_history) -> dict[str, Any
     )
 
 
+# Platforms whose turns run headless (no user watching): they honour full
+# provider parks instead of the 300s interactive sleep cap. The platform is
+# set explicitly at AIAgent construction (cron scheduler, batch runner) —
+# never argv-derived (root AGENTS.md). An explicit per-turn ``interactive=``
+# always wins over this table.
+_HEADLESS_PLATFORMS = frozenset({"cron", "batch"})
+
+
+def resolve_turn_interactive(agent: Any, interactive: Optional[bool] = None) -> bool:
+    """Whether this turn caps one backoff sleep at 300s.
+
+    Explicit ``interactive`` wins; otherwise the agent's construction-time
+    platform decides (cron/batch → False, everything else → True, so current
+    callers are unchanged).
+    """
+    if interactive is not None:
+        return bool(interactive)
+    return str(getattr(agent, "platform", "") or "").lower() not in _HEADLESS_PLATFORMS
+
+
 @dataclass
 class _LoopState:
     """Every local the turn loop threads through the phase helpers in ``agent/turn_*.py``.
@@ -1459,8 +1479,8 @@ class _LoopState:
     api_duration: Any = None
     assistant_message: Any = None
     # Fixed for the turn: user-facing turns cap one backoff sleep at 300s.
-    # Default True; no caller threads a headless/cron signal yet (named
-    # follow-up), so cron turns still take the cap until then.
+    # Seeded by resolve_turn_interactive: cron/batch platforms arrive False
+    # and honour full parks; an explicit per-turn interactive= always wins.
     interactive: bool = True
 
 
@@ -1564,6 +1584,7 @@ def _run_conversation_turn(
     moa_config: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
     prelude: Optional[Prelude] = None,
+    interactive: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
@@ -1574,7 +1595,9 @@ def _run_conversation_turn(
     model-facing message; an empty string suppresses titling for this turn).
     ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged.
-    ``prelude``: scripted tool calls played before the first model call (``agent/turn_scripted_prelude.py``)."""
+    ``prelude``: scripted tool calls played before the first model call (``agent/turn_scripted_prelude.py``).
+    ``interactive``: None resolves from the agent platform (cron/batch → False, full parks);
+    an explicit value always wins and seeds ``_LoopState.interactive``."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message
@@ -1639,6 +1662,7 @@ def _run_conversation_turn(
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
+        interactive=resolve_turn_interactive(agent, interactive),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
@@ -1726,6 +1750,7 @@ def run_conversation(
     turn_author: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
     prelude: Optional[Prelude] = None,
+    interactive: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
@@ -1733,6 +1758,8 @@ def run_conversation(
     tool-limit, preflight timeout, codex runtime — passes through here, so the
     ``{turn_id, current_turn_user_idx}`` pair is stamped beside the exact ``messages`` it
     addresses, after every history rewrite including post-turn micro-compaction.
+    ``interactive`` forwards to ``_run_conversation_turn`` (None resolves from
+    the agent platform; explicit wins).
     """
     from agent.turn_context import export_current_turn_boundary
     from agent.voice_turn_route import end_voice_turn_route
@@ -1760,6 +1787,7 @@ def run_conversation(
                 turn_author=turn_author,
                 title_user_message=title_user_message,
                 prelude=prelude,
+                interactive=interactive,
             )
         finally:
             end_voice_turn_route(agent)
@@ -1768,7 +1796,6 @@ def run_conversation(
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
     _close_durable_failed_turn(agent, result)
     return result
-
 
 _FAILED_TURN_ERROR_MAX_CHARS = 2000
 

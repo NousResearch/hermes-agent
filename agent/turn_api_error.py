@@ -64,8 +64,9 @@ def handle_api_error(
 
     ``interactive`` mirrors ``compute_error_backoff``: True caps one sleep at
     300s for a user-facing turn; False honours full parks. Default True, so
-    current callers are unchanged. NOTE: no caller threads a headless/cron
-    signal yet — cron turns still take the 300s cap until that follow-up lands.
+    current callers are unchanged. Headless turns arrive False via
+    ``_LoopState.interactive`` (resolved from the agent platform; cron/batch
+    entries also pass it explicitly).
     """
     _provider_overflow_recovery_pending = False
 

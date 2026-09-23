@@ -428,11 +428,16 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
-    occupied_error = (f"Cannot create skill '{name}': refusing to adopt or delete an existing path "
-                      f"at {skill_dir}.")
+    occupied_error = (f"Cannot create skill '{name}': {skill_dir} already exists and is not an empty "
+                      "directory. Choose another name, or move/remove that path and retry.")
     # Only a directory create made (or an EMPTY leftover, e.g. from an earlier create whose
     # SKILL.md write failed) may be used; anything with an entry is someone else's and is refused.
-    if skill_dir.is_symlink() or (skill_dir.exists() and (not skill_dir.is_dir() or any(skill_dir.iterdir()))):
+    try:
+        occupied = skill_dir.is_symlink() or (
+            skill_dir.exists() and (not skill_dir.is_dir() or any(skill_dir.iterdir())))
+    except OSError:  # unreadable / unstat-able (permissions, ACL): never adopt, never delete
+        occupied = True
+    if occupied:
         return _err(occupied_error)
     from hermes_constants import assert_named_profile_home_live
     assert_named_profile_home_live(skill_dir)
@@ -447,10 +452,12 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):
         # Undo only what this call wrote: the SKILL.md, plus the directory if create made it.
-        # An adopted (empty) directory stays in place — never rmtree a dir create did not make.
+        # An adopted (empty) directory stays in place. rmdir (not rmtree) so a file some other
+        # process dropped in meanwhile is never deleted — create wrote nothing but SKILL.md.
         skill_md.unlink(missing_ok=True)
         if created_dir:
-            shutil.rmtree(skill_dir, ignore_errors=True)
+            with suppress(OSError):
+                skill_dir.rmdir()
         return _err(scan_error)
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir

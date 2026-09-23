@@ -1,6 +1,8 @@
 """Ownership contracts for creating skills in occupied paths."""
 
 from contextlib import contextmanager
+import os
+import sys
 from unittest.mock import patch
 
 from tools.skill_manager_tool import _create_skill
@@ -25,6 +27,11 @@ def _skill_dir(tmp_path):
         yield
 
 
+def _can_make_unreadable_dir() -> bool:
+    # chmod 0 is ignored for root and has no directory-listing effect on Windows.
+    return sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() != 0
+
+
 def test_occupied_directory_is_preserved_when_scan_blocks(tmp_path):
     with _skill_dir(tmp_path), patch("tools.skill_manager_tool._security_scan_skill", return_value="blocked"):
         target = tmp_path / "new-skill"
@@ -39,7 +46,19 @@ def test_occupied_directory_is_preserved_when_scan_blocks(tmp_path):
         empty.mkdir()
         empty_result = _create_skill("empty-skill", VALID_CONTENT)
 
+        # A directory create cannot even list is somebody's: refuse cleanly, never raise.
+        unreadable_result = None
+        if _can_make_unreadable_dir():
+            unreadable = tmp_path / "unreadable-skill"
+            unreadable.mkdir()
+            unreadable.chmod(0)
+            try:
+                unreadable_result = _create_skill("unreadable-skill", VALID_CONTENT)
+            finally:
+                unreadable.chmod(0o700)
+
     assert result["success"] is False
+    assert "Choose another name" in result["error"]
     assert data.read_bytes() == b"keep me"
     assert target.is_dir()
     assert not (target / "SKILL.md").exists()
@@ -47,6 +66,11 @@ def test_occupied_directory_is_preserved_when_scan_blocks(tmp_path):
     assert empty_result["success"] is False
     assert empty.is_dir()
     assert not any(empty.iterdir())
+
+    if unreadable_result is not None:
+        assert unreadable_result["success"] is False
+        assert "Choose another name" in unreadable_result["error"]
+        assert not (unreadable / "SKILL.md").exists()
 
 
 def test_category_directory_collision_is_refused(tmp_path):

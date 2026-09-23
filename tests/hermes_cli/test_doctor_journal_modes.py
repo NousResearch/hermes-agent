@@ -426,7 +426,6 @@ class TestConfiguredDeleteNeverApplied:
         assert "state.db: WAL journal mode" not in out
         assert ("To clear the exposure:" in out) is exposed
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="holder scan has no Windows backend")
     def test_wal_db_under_configured_delete_names_its_holders(self, tmp_path, capsys, monkeypatch):
         # The offline conversion needs the file quiet, so doctor must say WHICH process to stop — a
         # subprocess holding a real connection is named by PID; the doctor process itself is not a holder.

@@ -26,8 +26,6 @@ def _wal_store(path):
 
 
 def _args(mode, db=None, force=True):
-    # --force only waives the Windows "no holder scan" refusal; on POSIX the scan still gates the flip,
-    # so passing it keeps the happy path exercised on every lane including windows-latest.
     return argparse.Namespace(sessions_action="set-journal-mode", mode=mode, db=db, force=force)
 
 
@@ -47,8 +45,6 @@ def test_set_journal_mode_converts_wal_store_offline(tmp_path, monkeypatch, caps
     assert "wal → delete" in capsys.readouterr().out
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="foreign_state_db_holders has no Windows scan; the --force refusal covers that lane")
 def test_set_journal_mode_refuses_while_another_process_holds_the_store(tmp_path, monkeypatch, capsys):
     db = tmp_path / "state.db"
     _wal_store(db)
@@ -72,22 +68,17 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(tmp_path
     assert db.read_bytes()[18:20] == b"\x02\x02", "a refused switch must leave the file untouched"
 
 
-@pytest.mark.parametrize("target,current,platform,cross_vm,force,expected", [
-    # Windows has no holder scan (foreign_state_db_holders returns []): an empty list must never read
-    # as "nobody holds it", so the gate refuses instead of issuing a silent all-clear.
-    ("delete", "wal", "win32", False, False, "no holder scan"),
-    ("delete", "wal", "win32", False, True, None),
-    ("delete", "wal", "linux", False, False, None),
-    # WAL shared memory corrupts on virtiofs/9p, so ENABLING it there is refused, --force or not.
-    ("wal", "delete", "linux", True, False, "cross-VM filesystems"),
-    ("wal", "delete", "win32", True, True, "cross-VM filesystems"),
-    ("delete", "wal", "linux", True, False, None),
+@pytest.mark.parametrize("target,current,cross_vm,expected", [
+    ("delete", "wal", False, None),
+    # WAL shared memory corrupts on virtiofs/9p, so ENABLING it there is refused.
+    ("wal", "delete", True, "cross-VM filesystems"),
+    ("delete", "wal", True, None),
     # A garbage or unrecognised header is reported, never handed to sqlite3 for a raw traceback.
-    ("delete", "not-a-database", "linux", False, False, "not a Hermes SQLite store"),
-    ("delete", "unknown(3/3)", "linux", False, True, "not a Hermes SQLite store"),
+    ("delete", "not-a-database", False, "not a Hermes SQLite store"),
+    ("delete", "unknown(3/3)", False, "not a Hermes SQLite store"),
 ])
-def test_refusal_admission_invariants(target, current, platform, cross_vm, force, expected):
-    reason = _refusal(target, current, platform, on_cross_vm_fs=cross_vm, force=force)
+def test_refusal_admission_invariants(target, current, cross_vm, expected):
+    reason = _refusal(target, current, on_cross_vm_fs=cross_vm)
     if expected is None:
         assert reason is None
     else:

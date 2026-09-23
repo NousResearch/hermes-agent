@@ -321,6 +321,92 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     return other_home_seen
 
 
+def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
+    """Return foreign processes using state.db or a WAL sidecar via Windows Restart Manager."""
+    import ctypes
+    from ctypes import wintypes
+
+    error_more_data = 234
+    max_app_name, max_svc_name = 255, 63
+
+    class _UniqueProcess(ctypes.Structure):
+        _fields_ = [("pid", wintypes.DWORD), ("started", wintypes.FILETIME)]
+
+    class _ProcessInfo(ctypes.Structure):
+        _fields_ = [
+            ("process", _UniqueProcess),
+            ("app_name", wintypes.WCHAR * (max_app_name + 1)),
+            ("service_name", wintypes.WCHAR * (max_svc_name + 1)),
+            ("app_type", wintypes.DWORD),
+            ("app_status", wintypes.ULONG),
+            ("ts_session_id", wintypes.DWORD),
+            ("restartable", wintypes.BOOL),
+        ]
+
+    api = ctypes.WinDLL("rstrtmgr", use_last_error=True)
+    start, register, get_list, end = (
+        api.RmStartSession, api.RmRegisterResources, api.RmGetList, api.RmEndSession
+    )
+    start.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR]
+    register.argtypes = [
+        wintypes.DWORD, wintypes.UINT, ctypes.POINTER(wintypes.LPCWSTR),
+        wintypes.UINT, ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p,
+    ]
+    get_list.argtypes = [
+        wintypes.DWORD, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
+        ctypes.POINTER(_ProcessInfo), ctypes.POINTER(wintypes.DWORD),
+    ]
+    end.argtypes = [wintypes.DWORD]
+    for fn in (start, register, get_list, end):
+        fn.restype = wintypes.DWORD
+
+    resources = [
+        os.path.abspath(path)
+        for path in (os.fspath(db_path), os.fspath(db_path) + "-wal", os.fspath(db_path) + "-shm")
+        if os.path.exists(path)
+    ]
+    if not resources:
+        return []
+
+    session = wintypes.DWORD()
+    key = ctypes.create_unicode_buffer(33)
+    rc = start(ctypes.byref(session), 0, key)
+    if rc:
+        raise OSError(rc, "RmStartSession failed")
+    try:
+        filenames = (wintypes.LPCWSTR * len(resources))(*resources)
+        rc = register(session, len(resources), filenames, 0, None, 0, None)
+        if rc:
+            raise OSError(rc, "RmRegisterResources failed")
+
+        needed, count, reasons = wintypes.UINT(), wintypes.UINT(), wintypes.DWORD()
+        rc = get_list(session, ctypes.byref(needed), ctypes.byref(count), None, ctypes.byref(reasons))
+        if rc == 0:
+            return []
+        if rc != error_more_data:
+            raise OSError(rc, "RmGetList failed")
+
+        # The process set can change between the sizing and data calls. Retry the bounded race.
+        for _ in range(3):
+            apps = (_ProcessInfo * needed.value)()
+            count = wintypes.UINT(needed.value)
+            rc = get_list(
+                session, ctypes.byref(needed), ctypes.byref(count), apps, ctypes.byref(reasons)
+            )
+            if rc == 0:
+                own_pid = os.getpid()
+                return [
+                    (int(apps[index].process.pid), os.path.abspath(os.fspath(db_path)))
+                    for index in range(count.value)
+                    if int(apps[index].process.pid) != own_pid
+                ]
+            if rc != error_more_data:
+                raise OSError(rc, "RmGetList failed")
+        raise RuntimeError("Restart Manager holder set kept changing")
+    finally:
+        end(session)
+
+
 def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     """Return foreign holders of the DB or one of its WAL sidecars.
 
@@ -329,7 +415,14 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     still be open by another process.
     """
     if _IS_WINDOWS:
-        return []
+        try:
+            return _windows_restart_manager_holders(db_path)
+        except Exception as exc:
+            logger.warning(
+                "Could not prove state.db has no Windows holders; deferring structural maintenance: %s",
+                exc,
+            )
+            return [(-1, f"Windows Restart Manager scan failed: {exc}")]
 
     # realpath, not abspath: psutil/libproc report the kernel-resolved pathname, so a symlinked
     # HERMES_HOME would otherwise make every holder invisible and let maintenance proceed.

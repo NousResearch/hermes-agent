@@ -15,7 +15,9 @@ computed for.
 
 from __future__ import annotations
 
+import secrets
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -113,3 +115,111 @@ def test_genuine_crash_still_reclaims(conn):
     assert tid in crashed
     final = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
     assert final["status"] in ("ready", "blocked", "todo")
+
+
+def _stamp_running_claim_with_run(conn, *, title, assignee, worker_pid, claim_lock=None):
+    """Create a running task + open task_runs row and stamp current_run_id."""
+    task_id = kb.create_task(conn, title=title, assignee=assignee)
+    lock = claim_lock or f"{kb._host_prefix()}{secrets.token_hex(8)}"
+    future = int(time.time()) + 3600
+    conn.execute(
+        "UPDATE tasks SET status='running', claim_lock=?, "
+        "claim_expires=?, worker_pid=? WHERE id=?",
+        (lock, future, worker_pid, task_id),
+    )
+    cur = conn.execute(
+        "INSERT INTO task_runs "
+        "(task_id, status, claim_lock, claim_expires, worker_pid, started_at) "
+        "VALUES (?, 'running', ?, ?, ?, ?)",
+        (task_id, lock, future, worker_pid, int(time.time())),
+    )
+    run_id = cur.lastrowid
+    conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, task_id))
+    conn.commit()
+    return task_id, run_id, lock
+
+
+def _install_successor_claim(conn, task_id, *, worker_pid, claim_lock=None):
+    """Install successor B without closing run A (ended_at stays NULL)."""
+    lock = claim_lock or f"{kb._host_prefix()}{secrets.token_hex(8)}"
+    future = int(time.time()) + 3600
+    cur = conn.execute(
+        "INSERT INTO task_runs "
+        "(task_id, status, claim_lock, claim_expires, worker_pid, started_at) "
+        "VALUES (?, 'running', ?, ?, ?, ?)",
+        (task_id, lock, future, worker_pid, int(time.time())),
+    )
+    run_b = cur.lastrowid
+    conn.execute(
+        "UPDATE tasks SET claim_lock=?, claim_expires=?, worker_pid=?, "
+        "current_run_id=? WHERE id=?",
+        (lock, future, worker_pid, run_b, task_id),
+    )
+    conn.commit()
+    return run_b, lock
+
+
+def _task_claim_row(conn, task_id):
+    return conn.execute(
+        "SELECT status, claim_lock, worker_pid, current_run_id FROM tasks WHERE id=?",
+        (task_id,),
+    ).fetchone()
+
+
+def test_reclaim_task_expected_run_id_refuses_successor(conn):
+    """reclaim_task(..., expected_run_id=A) after B is current must no-op."""
+    signaled = []
+
+    def signal_fn(pid, _sig):
+        signaled.append(pid)
+
+    tid, run_a, _lock_a = _stamp_running_claim_with_run(
+        conn, title="cas-mismatch", assignee="w", worker_pid=991011,
+    )
+    run_b, lock_b = _install_successor_claim(conn, tid, worker_pid=991012)
+
+    assert kb.reclaim_task(
+        conn, tid, expected_run_id=run_a, signal_fn=signal_fn,
+    ) is False
+
+    row = _task_claim_row(conn, tid)
+    assert row["status"] == "running"
+    assert row["claim_lock"] == lock_b
+    assert row["worker_pid"] == 991012
+    assert int(row["current_run_id"]) == int(run_b)
+    assert signaled == []
+
+
+def test_reclaim_task_fail_open_omitted_expected_run_id_and_matching_id(conn):
+    """Operator reclaim (no expected_run_id) still reclaims B; matching id works."""
+    signaled = []
+
+    def signal_fn(pid, _sig):
+        signaled.append(pid)
+
+    tid, _run_a, _lock_a = _stamp_running_claim_with_run(
+        conn, title="fail-open-omit", assignee="w", worker_pid=991021,
+    )
+    _run_b, _lock_b = _install_successor_claim(conn, tid, worker_pid=991022)
+
+    assert kb.reclaim_task(conn, tid, signal_fn=signal_fn) is True
+    row = _task_claim_row(conn, tid)
+    assert row["status"] in ("ready", "blocked", "todo")
+    assert row["claim_lock"] is None
+    assert row["worker_pid"] is None
+    assert 991022 in signaled
+
+    signaled.clear()
+    tid2, _run_a2, _lock_a2 = _stamp_running_claim_with_run(
+        conn, title="fail-open-match", assignee="w", worker_pid=991023,
+    )
+    run_b2, _lock_b2 = _install_successor_claim(conn, tid2, worker_pid=991024)
+
+    assert kb.reclaim_task(
+        conn, tid2, expected_run_id=run_b2, signal_fn=signal_fn,
+    ) is True
+    row2 = _task_claim_row(conn, tid2)
+    assert row2["status"] in ("ready", "blocked", "todo")
+    assert row2["claim_lock"] is None
+    assert row2["worker_pid"] is None
+    assert 991024 in signaled

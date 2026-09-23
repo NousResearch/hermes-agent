@@ -208,6 +208,7 @@ def build_keepalive_http_client(
             new_body = _maybe_fix_json_body(request)
             if new_body is not None:
                 request.stream = httpx.ByteStream(new_body)
+                request._content = new_body
                 request.headers["Content-Length"] = str(len(new_body))
             return request
 
@@ -222,6 +223,7 @@ def build_keepalive_http_client(
                     async def aclose(self) -> None:
                         pass
                 request.stream = _BodyStream(new_body)
+                request._content = new_body
                 request.headers["Content-Length"] = str(len(new_body))
             return request
 

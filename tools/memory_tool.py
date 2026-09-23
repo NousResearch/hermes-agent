@@ -73,7 +73,14 @@ def _gate_or_stage(summary: str, detail: str, payload: Dict[str, Any]) -> Option
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
-    record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+    except TimeoutError:
+        logger.warning("Timed out staging memory write; denying", exc_info=True)
+        return tool_error(
+            "Could not stage the memory write because the pending approval store is busy. "
+            "No change was saved.", success=False)
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
 
@@ -133,6 +140,7 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
 
 
 _BG_DELETE_ACTIONS = ("replace", "remove")
+_MAX_BACKGROUND_MEMORY_PROPOSALS = 20
 
 
 def _background_delete_gate(action, operations, target="memory", content=None, old_text=None) -> Optional[str]:
@@ -161,12 +169,33 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
             wa.MEMORY, payload,
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
-            origin=wa.current_origin())
+            origin=wa.current_origin(), deduplicate=True,
+            max_pending=_MAX_BACKGROUND_MEMORY_PROPOSALS)
+        pending_count = record.get("pending_count", wa.pending_count(wa.MEMORY))
+        if record.get("queue_full"):
+            message = (
+                "Background review may not delete memory entries unattended. Its proposal was not "
+                f"queued because {pending_count} memory write(s) already await review — review them "
+                "with /memory pending (approve to apply, reject to drop)."
+            )
+        else:
+            mixed_adds = sum(
+                isinstance(op, dict) and op.get("action") == "add" for op in (operations or []))
+            held = (f" The atomic batch also holds {mixed_adds} add operation(s) until review."
+                    if mixed_adds else "")
+            reused = " matched an existing pending proposal" if record.get("deduplicated") else " was staged"
+            message = (
+                f"Background review may not delete memory entries unattended. The proposed "
+                f"{'batch' if operations is not None else action}{reused} for your approval; "
+                f"{pending_count} memory write(s) now await review.{held} Review with /memory pending "
+                "(approve to apply, reject to drop)."
+            )
         return json.dumps({
-            "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
+            "success": True, "staged": not record.get("queue_full", False),
+            "proposal_staged": not record.get("queue_full", False),
+            "proposal_blocked": bool(record.get("queue_full")), "pending_id": record["id"],
+            "pending_count": pending_count, "deduplicated": bool(record.get("deduplicated")),
+            "message": message,
         }, ensure_ascii=False)
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)

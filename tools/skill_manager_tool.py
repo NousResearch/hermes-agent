@@ -624,7 +624,13 @@ def _run_write_gate(build_staging):
     if decision.blocked:
         return tool_error(decision.message, success=False)
     payload, gist = build_staging(wa)
-    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    try:
+        record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    except TimeoutError:
+        logger.warning("Timed out staging skill write; denying", exc_info=True)
+        return tool_error(
+            "Could not stage the skill write because the pending approval store is busy. "
+            "No change was saved.", success=False)
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
                        "gist": gist, "message": decision.message}, ensure_ascii=False)
 

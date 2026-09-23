@@ -334,12 +334,13 @@ display:
 
 | Value | Behaviour |
 |-------|-----------|
-| `off` | No chat notification. The review still runs and still writes — you just don't see a line for it. |
+| `off` | Hides ordinary update notifications. Safety notices for staged or queue-full memory proposals still appear so approval-required writes cannot become invisible. |
 | `on` (default) | Generic line, e.g. `💾 Memory updated`, `💾 Skill 'foo' patched`. |
 | `verbose` | Includes a compact preview of what changed, e.g. `💾 Memory ➕ User prefers terse replies` or a `"old" → "new"` skill diff snippet. |
 
 > This only governs the **gateway** chat notification. The review itself, and
-> writes to your memory/skill stores, are unaffected by this setting. Set it
+> writes to your memory/skill stores, are unaffected by this setting. Approval-required
+> memory proposal notices override `off`; all other memory and skill updates remain hidden. Set it
 > per-platform via `display.platforms.<platform>.memory_notifications`.
 
 Successful skill batches name each applied operation in both `on` and `verbose`

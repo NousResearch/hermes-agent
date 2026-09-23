@@ -156,6 +156,31 @@ class TestConsolidationProposalSurfaces:
         actions = bg.summarize_background_review_actions(review_messages, [])
         assert any("staged for your approval" in a for a in actions)
 
+    def test_staged_proposal_surfaces_when_update_notifications_are_off(self, tmp_path, monkeypatch):
+        import json
+
+        from tools.memory_tool import memory_tool
+        from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
+
+        store = self._store(tmp_path, monkeypatch)
+        assert store.add("memory", "standing rule entry")["success"] is True
+        token = set_current_write_origin("background_review")
+        try:
+            raw = memory_tool(
+                action="replace", old_text="standing rule", content="consolidated entry", store=store)
+        finally:
+            reset_current_write_origin(token)
+        review_messages = [
+            {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "memory", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": raw},
+        ]
+
+        actions = bg.summarize_background_review_actions(
+            review_messages, [], notification_mode="off")
+
+        assert len(actions) == 1
+        assert "await review" in actions[0]
+
     def test_near_limit_denial_end_to_end(self, tmp_path, monkeypatch):
         """add rejected by the budget -> fork follows the 'consolidate now' hint with a
         replace -> the delete gate stages it -> the proposal surfaces; the store never

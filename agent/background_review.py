@@ -662,10 +662,12 @@ def _prior_tool_keys(prior_snapshot: List[Dict]) -> Tuple[set, set]:
 
 def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     """Summary line(s) for one successful notify-tool result (``[]`` when nothing to report)."""
-    if data.get("staged"):
+    if data.get("proposal_staged") or data.get("proposal_blocked"):
         # The fork's own review summary is never published back, so an unattended-review
         # consolidation proposal must surface here or it is silently lost (#105921).
-        return [data["message"]] if data.get("proposal_staged") and data.get("message") else []
+        return [data["message"]] if data.get("message") else []
+    if data.get("staged"):
+        return []
     message = data.get("message", "")
     target = data.get("target", "") or detail.get("target", "")
     is_skill = detail.get("tool") == "skill_manage"
@@ -711,8 +713,6 @@ def summarize_background_review_actions(
     See #14944.
     """
     mode = str(notification_mode or "on").lower()
-    if mode == "off":
-        return []
     verbose = mode == "verbose"
     existing_tool_call_ids, existing_tool_contents = _prior_tool_keys(prior_snapshot)
     all_tool_call_ids, call_details = _collect_review_call_details(review_messages)
@@ -731,6 +731,10 @@ def summarize_background_review_actions(
         # Wrapper MCP servers may return a top-level list/scalar; only dict payloads carry
         # ``success``/``_change``.
         if not isinstance(data, dict) or not data.get("success"):
+            continue
+        # Approval-required proposals are safety notices, not ordinary update notifications:
+        # hiding them behind display.memory_notifications recreates an invisible pending queue.
+        if mode == "off" and not (data.get("proposal_staged") or data.get("proposal_blocked")):
             continue
         actions.extend(_action_lines(data, call_details.get(tcid) or {}, verbose))
     return actions

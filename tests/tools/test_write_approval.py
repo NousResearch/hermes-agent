@@ -8,11 +8,60 @@ subcommand dispatch.
 """
 
 import json
+import multiprocessing
 import os
+import queue
 import tempfile
 import shutil
+import time
 
 import pytest
+
+
+def _stage_pending_worker(home, payload, barrier, results):
+    """Spawn-safe writer that widens the pre-fix read/write race after all workers start."""
+    os.environ["HERMES_HOME"] = home
+    from tools import write_approval as wa
+
+    original_list_pending = wa.list_pending
+
+    def delayed_list_pending(subsystem):
+        records = original_list_pending(subsystem)
+        time.sleep(0.25)
+        return records
+
+    wa.list_pending = delayed_list_pending
+    barrier.wait(timeout=10)
+    results.put(wa.stage_write(
+        wa.MEMORY,
+        payload,
+        summary="concurrent proposal",
+        origin="background_review",
+        deduplicate=True,
+        max_pending=20,
+    ))
+
+
+def _concurrent_stage_results(home, payloads):
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(len(payloads))
+    results = context.Queue()
+    workers = [
+        context.Process(
+            target=_stage_pending_worker,
+            args=(home, payload, barrier, results),
+        )
+        for payload in payloads
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=15)
+        assert worker.exitcode == 0
+    try:
+        return [results.get(timeout=2) for _ in workers]
+    except queue.Empty as exc:
+        raise AssertionError("concurrent pending writer returned no result") from exc
 
 
 @pytest.fixture
@@ -88,6 +137,37 @@ def test_memory_gate_off_allows_write(hermes_home):
     assert r["success"] is True
     assert r["entry_count"] == 1
     assert wa.pending_count("memory") == 0
+
+
+def test_memory_gate_lock_timeout_returns_clean_denial(hermes_home, monkeypatch):
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    monkeypatch.setattr(wa, "_prompt_inline_memory_approval", lambda *_: None)
+    monkeypatch.setattr(wa, "stage_write", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()))
+    store = MemoryStore(); store.load_from_disk()
+
+    result = json.loads(memory_tool("add", "memory", "remember me", store=store))
+
+    assert result["success"] is False
+    assert "pending approval store is busy" in result["error"]
+    assert store.memory_entries == []
+
+
+def test_skill_gate_lock_timeout_returns_clean_denial(hermes_home, monkeypatch):
+    from tools import skill_manager_tool as sm
+    from tools import write_approval as wa
+
+    _set_approval("skills", True)
+    monkeypatch.setattr(wa, "stage_write", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()))
+
+    result = json.loads(sm._run_write_gate(
+        lambda _wa: ({"action": "create", "name": "demo"}, "create demo")))
+
+    assert result["success"] is False
+    assert "pending approval store is busy" in result["error"]
+    assert wa.pending_count("skills") == 0
 
 
 def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, capsys):
@@ -167,6 +247,35 @@ _SKILL = (
 # ---------------------------------------------------------------------------
 # Pending store CRUD
 # ---------------------------------------------------------------------------
+
+
+def test_pending_store_deduplication_and_bound_are_cross_process_atomic(hermes_home):
+    from tools import write_approval as wa
+
+    identical = {"action": "replace", "old_text": "rule", "content": "replacement"}
+    identical_results = _concurrent_stage_results(hermes_home, [identical, identical])
+
+    assert wa.pending_count(wa.MEMORY) == 1
+    assert {result["id"] for result in identical_results} == {identical_results[0]["id"]}
+    assert sum(bool(result.get("deduplicated")) for result in identical_results) == 1
+
+    for record in wa.list_pending(wa.MEMORY):
+        assert wa.discard_pending(wa.MEMORY, record["id"])
+    for index in range(19):
+        wa.stage_write(
+            wa.MEMORY,
+            {"action": "replace", "old_text": "rule", "content": f"seed {index}"},
+            summary="seed",
+            origin="background_review",
+        )
+
+    boundary_results = _concurrent_stage_results(hermes_home, [
+        {"action": "replace", "old_text": "rule", "content": "boundary a"},
+        {"action": "replace", "old_text": "rule", "content": "boundary b"},
+    ])
+
+    assert wa.pending_count(wa.MEMORY) == 20
+    assert sum(bool(result.get("queue_full")) for result in boundary_results) == 1
 
 
 # ---------------------------------------------------------------------------

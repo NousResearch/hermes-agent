@@ -4023,6 +4023,8 @@ export const ja = defineLocale({
   ui: {
     search: {
       clear: '検索をクリア'
+      logs: 'ログを検索…',
+      matches: count => `${count} 件一致`,
     },
     pagination: {
       label: 'ページング',

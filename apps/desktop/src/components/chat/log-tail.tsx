@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 
 import { CodeCardBody } from '@/components/chat/code-card'
 import { CopyButton } from '@/components/ui/copy-button'
+import { HighlightedLogText } from '@/components/ui/log-search'
+import { countLogSearchMatches, firstLogSearchMatchLine } from '@/lib/log-search'
 import { cn } from '@/lib/utils'
 
 interface LogTailProps {
@@ -10,23 +12,42 @@ interface LogTailProps {
   lines: null | string[]
   emptyLabel: string
   className?: string
+  onMatchCountChange?: (count: number) => void
+  query?: string
 }
 
 /** The shared terminal-log surface: CodeCardBody typography, a hover-reveal copy
  *  button, and follow-the-tail scrolling (releases when the user scrolls up).
  *  One component behind every log pane — MCP stdio/agent, hub action logs, etc.
  *  — so they all read, copy, and scroll identically. */
-export function LogTail({ className, emptyLabel, lines }: LogTailProps) {
+export function LogTail({ className, emptyLabel, lines, onMatchCountChange, query = '' }: LogTailProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const firstMatchRef = useRef<HTMLSpanElement | null>(null)
   const stickRef = useRef(true)
+  const safeLines = lines ?? []
+  const matchCount = countLogSearchMatches(safeLines, query)
+  const firstMatchLine = firstLogSearchMatchLine(safeLines, query)
+
+  useEffect(() => {
+    onMatchCountChange?.(matchCount)
+  }, [matchCount, onMatchCountChange])
 
   useEffect(() => {
     const el = scrollRef.current
 
-    if (el && stickRef.current) {
+    if (el && stickRef.current && !query.trim()) {
       el.scrollTop = el.scrollHeight
     }
-  }, [lines])
+  }, [lines, query])
+
+  useEffect(() => {
+    if (!query.trim() || firstMatchLine < 0) {
+      return
+    }
+
+    firstMatchRef.current?.scrollIntoView({ block: 'center' })
+    stickRef.current = false
+  }, [firstMatchLine, query])
 
   return (
     <div className={cn('group/logs relative h-full min-h-0', className)}>
@@ -54,8 +75,12 @@ export function LogTail({ className, emptyLabel, lines }: LogTailProps) {
           <CodeCardBody>
             <pre className="whitespace-pre-wrap break-words">
               {lines.map((line, index) => (
-                <span className={cn('block', line.startsWith('=====') && 'mt-1 text-(--ui-text-tertiary)')} key={index}>
-                  {line}
+                <span
+                  className={cn('block', line.startsWith('=====') && 'mt-1 text-(--ui-text-tertiary)')}
+                  key={index}
+                  ref={index === firstMatchLine ? firstMatchRef : undefined}
+                >
+                  <HighlightedLogText query={query} text={line} />
                 </span>
               ))}
             </pre>

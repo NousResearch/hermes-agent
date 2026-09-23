@@ -4966,6 +4966,8 @@ export const zh = defineLocale({
   ui: {
     search: {
       clear: '清除搜索'
+      logs: '搜索日志…',
+      matches: count => `${count} 个匹配项`,
     },
     pagination: {
       label: '分页',

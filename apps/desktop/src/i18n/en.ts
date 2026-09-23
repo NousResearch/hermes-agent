@@ -5364,6 +5364,8 @@ export const en: Translations = {
   ui: {
     search: {
       clear: 'Clear search'
+      logs: 'Search logs…',
+      matches: count => `${count} ${count === 1 ? 'match' : 'matches'}`,
     },
     pagination: {
       label: 'pagination',

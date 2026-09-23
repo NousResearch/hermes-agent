@@ -4108,6 +4108,8 @@ export const ru = defineLocale({
   ui: {
     search: {
       clear: 'Очистить поиск'
+      logs: 'Поиск в журналах…',
+      matches: count => `${count} совпад.`,
     },
     pagination: {
       label: 'пагинация',

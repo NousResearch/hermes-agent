@@ -3508,6 +3508,8 @@ export const ar = defineLocale({
   ui: {
     search: {
       clear: 'مسح البحث'
+      logs: 'البحث في السجلات…',
+      matches: count => `${count} ${count === 1 ? 'تطابق' : 'تطابقات'}`,
     },
     pagination: {
       label: 'ترقيم الصفحات',

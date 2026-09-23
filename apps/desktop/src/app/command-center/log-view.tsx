@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
+import { HighlightedLogText } from '@/components/ui/log-search'
 import { LogView } from '@/components/ui/log-view'
 import { Tip } from '@/components/ui/tooltip'
 import {
@@ -12,9 +13,10 @@ import {
   CircleIcon,
   Info
 } from '@/lib/icons'
+import { firstLogSearchMatchLine } from '@/lib/log-search'
 import { cn } from '@/lib/utils'
 
-import { commandCenterLogSeverity, highlightLogSegments, type CommandCenterLogSeverity } from './log-lines'
+import { commandCenterLogSeverity, type CommandCenterLogSeverity } from './log-lines'
 
 interface CommandCenterLogViewProps {
   bottomLabel: string
@@ -33,18 +35,6 @@ const SEVERITY_PRESENTATION: Record<
   ERROR: { icon: AlertCircle, iconClassName: 'text-destructive', label: 'ERROR' },
   INFO: { icon: Info, iconClassName: 'text-[color:var(--ui-blue)]', label: 'INFO' },
   WARNING: { icon: AlertTriangle, iconClassName: 'text-[color:var(--ui-yellow)]', label: 'WARNING' }
-}
-
-function HighlightedLine({ line, query }: { line: string; query: string }) {
-  return highlightLogSegments(line, query).map((segment, index) =>
-    segment.match ? (
-      <mark className="rounded-[2px] bg-[color:var(--ui-yellow)]/35 text-foreground" key={index}>
-        {segment.text}
-      </mark>
-    ) : (
-      <span key={index}>{segment.text}</span>
-    )
-  )
 }
 
 function NavigationButton({
@@ -73,7 +63,10 @@ export function CommandCenterLogView({
   topLabel
 }: CommandCenterLogViewProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const firstMatchRef = useRef<HTMLSpanElement | null>(null)
   const stickRef = useRef(true)
+  const safeLines = lines ?? []
+  const firstMatchLine = firstLogSearchMatchLine(safeLines, query)
 
   useEffect(() => {
     const el = scrollRef.current
@@ -82,6 +75,15 @@ export function CommandCenterLogView({
       el.scrollTop = el.scrollHeight
     }
   }, [lines, query])
+
+  useEffect(() => {
+    if (!query.trim() || firstMatchLine < 0) {
+      return
+    }
+
+    firstMatchRef.current?.scrollIntoView({ block: 'center' })
+    stickRef.current = false
+  }, [firstMatchLine, query])
 
   const scrollToTop = () => {
     const el = scrollRef.current
@@ -107,7 +109,7 @@ export function CommandCenterLogView({
 
   return (
     <div className="group/logs relative h-full min-h-0">
-      <div className="absolute right-2 top-1 z-10 flex items-center gap-0.5">
+      <div className="absolute right-2 top-1 z-10 flex items-center gap-1">
         <NavigationButton label={topLabel} onClick={scrollToTop}>
           <ArrowBarToUp />
         </NavigationButton>
@@ -145,6 +147,7 @@ export function CommandCenterLogView({
                   line.startsWith('=====') && 'mt-1'
                 )}
                 key={index}
+                ref={index === firstMatchLine ? firstMatchRef : undefined}
               >
                 <span
                   aria-label={presentation?.label}
@@ -153,7 +156,7 @@ export function CommandCenterLogView({
                   {SeverityIcon && <SeverityIcon className="size-3.5" />}
                 </span>
                 <span className="whitespace-pre-wrap break-words pr-16">
-                  <HighlightedLine line={line.replace(/[\r\n]+$/, '')} query={query} />
+                  <HighlightedLogText query={query} text={line.replace(/[\r\n]+$/, '')} />
                 </span>
               </span>
             )

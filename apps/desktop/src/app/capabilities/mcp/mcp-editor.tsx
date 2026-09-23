@@ -2,6 +2,8 @@ import { useState } from 'react'
 
 import { JsonDocumentEditor } from '@/components/chat/json-document-editor'
 import { Button } from '@/components/ui/button'
+import { LogSearchMatchCount } from '@/components/ui/log-search'
+import { SearchField } from '@/components/ui/search-field'
 import { TextTab } from '@/components/ui/text-tab'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
@@ -60,12 +62,22 @@ export function McpLogPane({ server }: McpLogPaneProps) {
   const { t } = useI18n()
   const m = t.settings.mcp
   const [source, setSource] = useState<McpLogSource>('stdio')
+  const [query, setQuery] = useState('')
+  const [matchCount, setMatchCount] = useState(0)
 
   return (
     <DetailPane
       actions={
-        <span className="flex items-center gap-1.5">
-          {(['stdio', 'agent'] as const).map(kind => (
+        <span className="flex items-center gap-2">
+          <SearchField
+            containerClassName="w-40"
+            onChange={setQuery}
+            placeholder={t.ui.search.logs}
+            value={query}
+          />
+          <LogSearchMatchCount label={t.ui.search.matches(matchCount)} visible={Boolean(query.trim())} />
+          <span className="flex items-center gap-1.5">
+            {(['stdio', 'agent'] as const).map(kind => (
             <TextTab
               active={source === kind}
               className="h-5 px-0.5 text-[0.65rem]"
@@ -74,14 +86,21 @@ export function McpLogPane({ server }: McpLogPaneProps) {
             >
               {kind}
             </TextTab>
-          ))}
+            ))}
+          </span>
         </span>
       }
       defaultHeight={176}
       id="mcp-logs"
       title={<span className="text-[0.68rem] font-normal text-muted-foreground/60">{server ?? m.allServers}</span>}
     >
-      <McpLogs emptyLabel={m.noOutput} server={server} source={source} />
+      <McpLogs
+        emptyLabel={m.noOutput}
+        onMatchCountChange={setMatchCount}
+        query={query}
+        server={server}
+        source={source}
+      />
     </DetailPane>
   )
 }

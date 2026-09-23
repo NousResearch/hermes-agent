@@ -4169,6 +4169,8 @@ export const zhHant = defineLocale({
   ui: {
     search: {
       clear: '清除搜尋'
+      logs: '搜尋記錄…',
+      matches: count => `${count} 個相符項目`,
     },
     pagination: {
       label: '分頁',

@@ -4,6 +4,7 @@ import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRe
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { LogSearchMatchCount } from '@/components/ui/log-search'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
@@ -24,6 +25,7 @@ import {
   Wrench
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
+import { countLogSearchMatches } from '@/lib/log-search'
 import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -255,6 +257,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   })
 
   const sessionListHasResults = filteredSessions.length > 0
+  const logMatchCount = countLogSearchMatches(logs, logQuery)
 
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
@@ -350,12 +353,18 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     />
                   )}
                   {section === 'system' && (
-                    <SearchField
-                      containerClassName="max-w-[40vw]"
-                      onChange={next => setLogQuery(next)}
-                      placeholder={cc.logSearchPlaceholder}
-                      value={logQuery}
-                    />
+                    <span className="flex items-center gap-2">
+                      <SearchField
+                        containerClassName="max-w-[40vw]"
+                        onChange={next => setLogQuery(next)}
+                        placeholder={cc.logSearchPlaceholder}
+                        value={logQuery}
+                      />
+                      <LogSearchMatchCount
+                        label={t.ui.search.matches(logMatchCount)}
+                        visible={Boolean(logQuery.trim())}
+                      />
+                    </span>
                   )}
                   {section === 'usage' && (
                     <SegmentedControl

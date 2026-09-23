@@ -4415,6 +4415,8 @@ export interface Translations {
   ui: {
     search: {
       clear: string
+      logs: string
+      matches: (count: number) => string
     }
     pagination: {
       label: string

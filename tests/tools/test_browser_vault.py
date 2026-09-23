@@ -866,3 +866,28 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field" and "device" in out["error"]
+
+
+class TestSuppliedLogin:
+    def test_supplied_login_uses_existing_origin_bound_vault(self, store, monkeypatch):
+        from tools import browser_vault_tool as tool
+        monkeypatch.setattr(tool, '_focus_bound_origin', lambda *a: None)
+        monkeypatch.setattr(tool, '_current_page_origin', lambda *a: 'https://acme.test')
+        monkeypatch.setattr(tool, 'browser_vault_fill', lambda *a, **kw: json.dumps({'success': True}))
+        with patch('agent.vault_store.get_vault_store', return_value=store):
+            assert json.loads(tool.registry.dispatch('browser_vault_save_login', {'identifier': 'qa'}))['error_type'] == 'credentials_incomplete'
+            raw = tool.registry.dispatch('browser_vault_save_login', {'identifier': 'qa', 'password': 'test-only-secret'})
+        assert json.loads(raw)['success'] is True
+        assert 'test-only-secret' not in raw
+        [item] = store.list_items()
+        assert item.origin == 'https://acme.test' and item.identifier == 'qa'
+
+    def test_save_error_never_echoes_secret(self, monkeypatch):
+        from tools import browser_vault_tool as tool
+        monkeypatch.setattr(tool, '_focus_bound_origin', lambda *a: None)
+        monkeypatch.setattr(tool, '_current_page_origin', lambda *a: 'https://acme.test')
+        with patch('agent.vault_store.get_vault_store') as get_store:
+            get_store.return_value.add_item.side_effect = ValueError('test-only-secret')
+            raw = tool.registry.dispatch('browser_vault_save_login', {'identifier': 'qa', 'password': 'test-only-secret'})
+        assert json.loads(raw)['error_type'] == 'save_failed'
+        assert 'test-only-secret' not in raw

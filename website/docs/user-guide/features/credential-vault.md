@@ -120,3 +120,17 @@ site, that site (and any script it runs) has it, exactly as when you type it
 yourself. On a cloud browser backend the vendor's browser sees the page like any
 other. The origin binding is the guard against filling on the wrong site, not
 against a compromised right one.
+
+
+### User-supplied credentials
+
+`browser_vault_save_login` also accepts optional `identifier` and `password`
+together, using the existing origin-bound vault and fill operation. This follows
+the agent's ordinary conversation authorization; there is no separate
+transport or private/group permission. Without supplied values, the existing
+masked Desktop/CLI prompt remains unchanged.
+
+Unlike masked input, supplied credentials pass through conversation/model/tool
+inputs. Vault encryption does not erase those copies. Do not repeat passwords
+in responses or memory notes. The model-blind protection described above applies
+to the masked input and saved-handle paths, not to supplied credentials.

@@ -456,7 +456,7 @@ def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
 
 
 _CONTEXT_LENGTH_KEYS = (
-    "context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
+    "context_length", "context_window", "contextwindow", "context_size", "max_context_length", "max_position_embeddings",
     "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size",
 )
 _MAX_COMPLETION_KEYS = ("max_completion_tokens", "max_output_tokens", "max_tokens")

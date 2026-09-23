@@ -307,10 +307,14 @@ class _CaptureMixin:
         app_name = target["app_name"]
         # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
         # to the frontmost window.
-        if app or not self._last_app:
-            self._last_app = app_name or app or ""
+        resolved_app = (app_name or app or "") if app or not self._last_app else self._last_app
         png_b64, image_mime_type, elements, window_title = (
             self._capture_vision() if mode == "vision" else self._capture_window_state())
+        # A read may reconnect a dead post-restart transport. Its reset hook correctly disarms the provisional
+        # target, but a successful replay just minted fresh state/tokens for this exact window. Publish that target
+        # again without discarding those tokens; failures raise through _disarming() and remain fail-closed.
+        self._set_active_target(target, preserve_snapshot=True)
+        self._last_app = resolved_app
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
         return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
                              window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type,

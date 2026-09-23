@@ -360,10 +360,11 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # context.
         self._snapshot_tokens: Dict[int, str] = {}
 
-    def _set_active_target(self, target: Dict[str, Any]) -> None:
+    def _set_active_target(self, target: Dict[str, Any], *, preserve_snapshot: bool = False) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
-        self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        if not preserve_snapshot:
+            self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,

@@ -6013,7 +6013,10 @@ function canonicalTitleCacheKey(rawUrl) {
 
   try {
     const url = new URL(value)
-    const host = url.hostname.replace(/^www\./i, '').toLowerCase()
+    // Key on url.host (hostname + port), never hostname alone: two services on
+    // one machine at different ports are different pages, and a hostname-only
+    // key let one page's <title> be painted over another's link.
+    const host = url.host.replace(/^www\./i, '').toLowerCase()
     const pathname = url.pathname === '/' ? '/' : url.pathname.replace(/\/+$/, '') || '/'
 
     return `${host}${pathname}${url.search || ''}`

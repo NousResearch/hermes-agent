@@ -108,6 +108,25 @@ describe('external link helpers', () => {
     expect(bridge).toHaveBeenCalledTimes(1)
   })
 
+  it('does not share cache between different ports on the same host', async () => {
+    // Regression: the cache key used url.hostname and dropped the port, so two
+    // private services on one machine (e.g. host:8793 and host:8801) shared a
+    // slot and one page's <title> was painted onto the other page's link.
+    const bridge = vi
+      .fn()
+      .mockResolvedValueOnce('Site A Title')
+      .mockResolvedValueOnce('Site B Title')
+
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const a = await fetchLinkTitle('http://hermes-prod.example.net:8793/')
+    const b = await fetchLinkTitle('http://hermes-prod.example.net:8801/')
+
+    expect(a).toBe('Site A Title')
+    expect(b).toBe('Site B Title')
+    expect(bridge).toHaveBeenCalledTimes(2)
+  })
+
   // A web link belongs in the in-app browser now; the OS browser is the
   // ⌘/Ctrl-click escape hatch.
   it('opens a web link in the in-app browser', async () => {

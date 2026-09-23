@@ -9,6 +9,13 @@
  * and respawns it resuming that conversation (see ChatPage.tsx). The
  * "New session" action clears the resume param, which spawns a fresh PTY.
  *
+ * The same component now powers the new structured Chat UI (the /chat-ui
+ * route) by accepting an optional `path` and `newChatPath` — when the new
+ * UI mounts the list, the resume param is set on the UI's path instead of
+ * the CLI's, and the optional `searchTerm` hook lets the page drive the
+ * list with its own search box. The CLI surface never opts in, so its
+ * behaviour is unchanged.
+ *
  * Best-effort, like ChatSidebar: a failed fetch surfaces a small inline
  * error with a retry affordance and the terminal pane keeps working.
  *
@@ -22,8 +29,14 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { AlertCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useSearchParams, useLocation, useNavigate } from "react-router";
 
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
@@ -45,6 +58,21 @@ interface ChatSessionListProps {
    * omitted, we fall back to clearing the resume param ourselves.
    */
   onNewChat?: () => void;
+  /**
+   * Route prefix the list should switch on. Defaults to `/chat` (CLI). The
+   * new structured UI passes `/chat-ui` so the resume param lands on the
+   * right page.
+   */
+  path?: string;
+  /**
+   * Client-side search term — when provided, the list hides sessions whose
+   * visible label does not contain the substring (case-insensitive).
+   *
+   * The brief: the dashboard doesn't expose a server-side search for the
+   * sidebar (the Sessions page does its own filtering); v1 of the Chat UI
+   * filters locally so we don't depend on a new backend endpoint.
+   */
+  searchTerm?: string;
 }
 
 function rowLabel(session: SessionInfo, untitled: string): string {
@@ -61,9 +89,13 @@ export function ChatSessionList({
   className,
   onPicked,
   onNewChat,
+  path = "/chat",
+  searchTerm,
 }: ChatSessionListProps) {
   const { t } = useI18n();
   const [, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,12 +142,20 @@ export function ChatSessionList({
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  // Picking a row sets `/chat?resume=<id>`. Re-picking the row already in
-  // the terminal is a no-op (avoids a needless PTY teardown).
+  // Picking a row sets `?resume=<id>` on the active path. When the
+  // configured `path` differs from the current URL path, we navigate the
+  // user to the new path with the resume param so cross-surface switches
+  // (CLI → Chat UI) land in the right place. When the path matches the
+  // current location, we keep the legacy `setSearchParams` behaviour so
+  // the CLI surface is bit-for-bit unchanged.
   const pick = useCallback(
     (id: string) => {
       onPicked?.();
       if (id === activeSessionId) return;
+      if (location.pathname !== path) {
+        navigate(`${path}?resume=${encodeURIComponent(id)}`);
+        return;
+      }
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
@@ -125,18 +165,22 @@ export function ChatSessionList({
         { replace: false },
       );
     },
-    [activeSessionId, onPicked, setSearchParams],
+    [activeSessionId, onPicked, location.pathname, navigate, path, setSearchParams],
   );
 
-  // "New chat" prefers ChatPage's robust handler (clears resume + forces a
-  // PTY respawn even from an already-fresh session). Fallback: clear the
-  // resume param ourselves, which spawns a fresh PTY whenever one was being
-  // resumed. Session management (delete/rename/export) lives on the Sessions
-  // page; this panel only switches and starts conversations.
+  // "New chat" prefers the caller-provided handler (clears resume + forces
+  // a respawn even from an already-fresh session). Fallback: clear the
+  // resume param ourselves, which spawns a fresh session whenever one was
+  // being resumed. Session management (delete/rename/export) lives on the
+  // Sessions page; this panel only switches and starts conversations.
   const startNew = useCallback(() => {
     onPicked?.();
     if (onNewChat) {
       onNewChat();
+      return;
+    }
+    if (location.pathname !== path) {
+      navigate(path);
       return;
     }
     setSearchParams(
@@ -147,7 +191,17 @@ export function ChatSessionList({
       },
       { replace: false },
     );
-  }, [onNewChat, onPicked, setSearchParams]);
+  }, [location.pathname, navigate, onNewChat, onPicked, path, setSearchParams]);
+
+  const filteredSessions = useMemo(() => {
+    if (!sessions) return sessions;
+    const term = searchTerm?.trim().toLowerCase();
+    if (!term) return sessions;
+    return sessions.filter((s) => {
+      const label = rowLabel(s, "").toLowerCase();
+      return label.includes(term);
+    });
+  }, [sessions, searchTerm]);
 
   const content = useMemo(() => {
     if (loading && sessions === null) {
@@ -170,16 +224,18 @@ export function ChatSessionList({
         </div>
       );
     }
-    if (!sessions || sessions.length === 0) {
+    if (!filteredSessions || filteredSessions.length === 0) {
       return (
         <div className="px-2 py-6 text-center text-xs text-text-secondary">
-          {t.sessions.noSessions}
+          {searchTerm
+            ? t.sessions.noMatch
+            : t.sessions.noSessions}
         </div>
       );
     }
     return (
       <div className="flex flex-col gap-0.5">
-        {sessions.map((s) => {
+        {filteredSessions.map((s) => {
           const isActive = s.id === activeSessionId;
           return (
             <ListItem
@@ -217,7 +273,17 @@ export function ChatSessionList({
         })}
       </div>
     );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t]);
+  }, [
+    activeSessionId,
+    error,
+    filteredSessions,
+    loading,
+    pick,
+    reload,
+    searchTerm,
+    sessions,
+    t,
+  ]);
 
   return (
     <aside

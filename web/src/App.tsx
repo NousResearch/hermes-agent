@@ -85,6 +85,7 @@ const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
 const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
+const ApiKeysPage = lazy(() => import("@/pages/ApiKeysPage"));
 const CronPage = lazy(() => import("@/pages/CronPage"));
 const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
 const ProfileBuilderPage = lazy(() => import("@/pages/ProfileBuilderPage"));
@@ -136,13 +137,6 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   return <Navigate to="/sessions" replace />;
 }
 
-const CHAT_NAV_ITEM: NavItem = {
-  path: "/chat",
-  labelKey: "chat",
-  label: "Chat",
-  icon: Terminal,
-};
-
 /**
  * Built-in routes except /chat.  Chat is rendered persistently (outside
  * <Routes>) when embedded — see the persistent chat host block rendered
@@ -153,13 +147,20 @@ const CHAT_NAV_ITEM: NavItem = {
  * xterm chunk is not downloaded on unrelated pages.  Routing still owns
  * the URL so /chat deep-links, browser back/forward, and nav highlight
  * keep working.
+ *
+ * The new /chat-ui route is registered here as a normal lazy page (no
+ * persistent host) — it owns its own GatewayClient and uses the React
+ * renderer exclusively. See ChatUIPage.tsx.
  */
+const ChatUIPage = lazy(() => import("@/pages/ChatUIPage"));
+
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
+  "/api-keys": ApiKeysPage,
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
@@ -174,6 +175,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/chat-ui": ChatUIPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -215,6 +217,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
+  { path: "/api-keys", labelKey: "apiKeys", label: "API Keys", icon: KeyRound },
   { path: "/system", label: "System", icon: Wrench },
   {
     path: "/docs",
@@ -459,12 +462,40 @@ export default function App() {
 
   const builtinNav = useMemo(() => {
     const base = embeddedChat
-      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
+      ? BUILTIN_NAV_REST
       : BUILTIN_NAV_REST;
     return showTokenAnalytics
       ? base
       : base.filter((n) => n.path !== "/analytics");
   }, [embeddedChat, showTokenAnalytics]);
+
+  /**
+   * The new Chat section's two children live outside the flat nav array
+   * so we can render them with a dedicated section heading (matches the
+   * PLUGINS group above). The list still flows through `SidebarNavLink`
+   * so the highlight / tooltip machinery is shared with the rest of the
+   * nav.
+   */
+  const chatNavItems: NavItem[] = useMemo(
+    () =>
+      embeddedChat
+        ? [
+            {
+              path: "/chat",
+              labelKey: "chatCli",
+              label: "CLI",
+              icon: Terminal,
+            },
+            {
+              path: "/chat-ui",
+              labelKey: "chatUi",
+              label: "Chat UI",
+              icon: MessageSquare,
+            },
+          ]
+        : [],
+    [embeddedChat],
+  );
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),
@@ -686,6 +717,39 @@ export default function App() {
 
                   <ul className="flex flex-col">
                     {sidebarNav.pluginItems.map((item) => (
+                      <SidebarNavLink
+                        closeMobile={closeMobile}
+                        collapsed={isDesktopCollapsed}
+                        item={item}
+                        key={item.path}
+                        t={t}
+                        tooltipWarmRef={tooltipWarmRef}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {chatNavItems.length > 0 && (
+                <div
+                  aria-labelledby="hermes-sidebar-chat-nav-heading"
+                  className="flex flex-col border-t border-current/10 pb-2"
+                  role="group"
+                  data-testid="chat-sidebar-section"
+                >
+                  <span
+                    className={cn(
+                      "px-5 pt-2.5 pb-1",
+                      "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
+                      isDesktopCollapsed && "lg:hidden",
+                    )}
+                    id="hermes-sidebar-chat-nav-heading"
+                  >
+                    {t.app.nav.chat}
+                  </span>
+
+                  <ul className="flex flex-col">
+                    {chatNavItems.map((item) => (
                       <SidebarNavLink
                         closeMobile={closeMobile}
                         collapsed={isDesktopCollapsed}

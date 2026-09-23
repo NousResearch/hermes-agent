@@ -1418,6 +1418,27 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
+  // ── Managed Hermes API keys (Dashboard → external apps) ─────────────
+  // These are the credentials external desktop apps send as
+  // ``Authorization: Bearer hm_live_***…`` to the OpenAI-compatible API.
+  // The Dashboard is the only place these are managed in this iteration.
+  getApiServerInfo: () =>
+    fetchJSON<ApiServerInfo>("/api/api-server/info"),
+  listApiServerKeys: (include_revoked = false) =>
+    fetchJSON<{ keys: ApiServerKey[] }>(
+      `/api/api-server/keys?include_revoked=${include_revoked ? "true" : "false"}`,
+    ),
+  createApiServerKey: (body: { name: string; description?: string }) =>
+    fetchJSON<ApiServerKey & { plaintext: string }>("/api/api-server/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  revokeApiServerKey: (id: string) =>
+    fetchJSON<{ ok: boolean; id: string }>(
+      `/api/api-server/keys/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -2807,4 +2828,23 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+// ── Managed Hermes API keys (Dashboard → external apps) ─────────────────
+
+export interface ApiServerInfo {
+  base_url: string;
+  legacy_configured: boolean;
+  managed_active: boolean;
+}
+
+export interface ApiServerKey {
+  id: string;
+  name: string;
+  description: string;
+  prefix: string;
+  created_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  active: boolean;
 }

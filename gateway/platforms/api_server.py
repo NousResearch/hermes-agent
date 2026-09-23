@@ -109,6 +109,23 @@ def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_pe
     return ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
 
+def _active_auth_modes(legacy_configured: bool, managed_configured: bool) -> List[str]:
+    """Return the auth modes actually in use, for ``/v1/capabilities``.
+
+    * ``legacy``  → legacy ``API_SERVER_KEY`` is configured
+    * ``managed`` → one or more active Dashboard-issued managed keys exist
+    * ``none``    → neither is configured (loopback-only / test wiring)
+    """
+    modes: List[str] = []
+    if legacy_configured:
+        modes.append("legacy")
+    if managed_configured:
+        modes.append("managed")
+    if not modes:
+        modes.append("none")
+    return modes
+
+
 try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
@@ -1418,24 +1435,100 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """Validate the Bearer token; None when OK, else a 401. The no-key branch (connect()
         refuses to start without API_SERVER_KEY) exists for tests/manual wiring on the default
-        listener only; named profiles fail closed rather than inherit the owner's key."""
+        listener only; named profiles fail closed rather than inherit the owner's key.
+
+        Two-tier authentication (added for managed Dashboard-issued keys):
+
+        * Tier 1: legacy ``API_SERVER_KEY`` — the same constant-time check we have always
+          done, byte-for-byte identical to keep every existing client working.
+        * Tier 2: managed ``hm_live_`` keys issued via the Dashboard and persisted in
+          ``~/.hermes/api_keys.json`` (see ``hermes_cli.api_server_keys``). Only consulted
+          when Tier 1 misses; only non-revoked rows match; on a successful match the
+          request identity is recorded under ``request["api_key_identity"]`` for downstream
+          log/idempotency use and the row's ``last_used_at`` is refreshed.
+
+        The "no-key configured AND no managed keys" path still allows loopback pass-through
+        for tests/manual wiring — exactly the behaviour the existing ``test_no_key_configured
+        _allows_all`` test exercises. As soon as any *managed* key exists, that pass-through
+        is closed: an unauthenticated request is a 401, because a public-facing deployment
+        that has chosen to issue managed keys clearly wants auth enforced.
+        """
         profile = _api_request_profile.get()
         expected_key = self._expected_api_key()
-        if not expected_key:
-            if not (profile and profile != "default"):
-                return None
-            logger.warning(
-                "API server rejected request for profile %r: no profile-scoped "
-                "API_SERVER_KEY is configured; %s",
-                profile, self._request_audit_log_suffix(request))
-            return self._auth_failed_response()
+        # Tier 1 only relevant when the legacy key is configured; check below.
+        bearer_token = ""
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
+            bearer_token = auth_header[7:].strip()
+
+        # Tier 1: legacy API_SERVER_KEY — must behave identically to before.
+        if expected_key and bearer_token:
             # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the
             # token is raw client input — a stray byte must 401, not 500.
-            if hmac.compare_digest(token.encode(), expected_key.encode()):
+            try:
+                if hmac.compare_digest(bearer_token.encode(), expected_key.encode()):
+                    setattr(request, "api_key_identity", {"kind": "legacy"})
+                    return None
+            except (UnicodeEncodeError,):
+                pass
+
+        # Tier 2: managed keys issued from the Dashboard. Look up only on a bearer that
+        # actually carries our ``hm_live_`` prefix — every other request short-circuits,
+        # so we don't pay a JSON read per unrelated 401.
+        if bearer_token:
+            try:
+                from hermes_cli.api_server_keys import verify_api_key
+                identity = verify_api_key(bearer_token)
+            except Exception as exc:
+                # Never block requests on a broken key store; fall through to 401.
+                logger.warning(
+                    "Managed API key lookup failed (%s); treating as no-match",
+                    type(exc).__name__)
+                identity = None
+            if identity is not None:
+                setattr(request, "api_key_identity", {
+                    "kind": "managed",
+                    "id": identity.get("id", ""),
+                    "name": identity.get("name", ""),
+                })
                 return None
+
+        # No legacy match, no managed match → gate behavior as before.
+        if not expected_key:
+            # The historical loopback pass-through (no legacy key, no managed
+            # keys, no ``Authorization`` header) is preserved verbatim so the
+            # existing ``test_no_key_configured_allows_all`` test keeps passing.
+            # Crucially, a managed key lookup *miss* does NOT re-open the
+            # pass-through — if the operator has issued managed keys, every
+            # authenticated request must match one of them (or the legacy key).
+            if not bearer_token:
+                # Managed keys may still exist on disk; closing the pass-through
+                # when they do is the whole point of the Tier 2 gate.
+                try:
+                    from hermes_cli.api_server_keys import has_active_keys
+                    managed_present = has_active_keys()
+                except Exception:
+                    managed_present = False
+                if not managed_present:
+                    if not (profile and profile != "default"):
+                        return None
+                    logger.warning(
+                        "API server rejected request for profile %r: no profile-scoped "
+                        "API_SERVER_KEY is configured; %s",
+                        profile, self._request_audit_log_suffix(request))
+                    return self._auth_failed_response()
+                # Managed keys exist; an empty-Authorization request is a 401.
+                logger.warning(
+                    "API server rejected request with no valid managed key: %s",
+                    self._request_audit_log_suffix(request))
+                return self._auth_failed_response()
+            # Bearer present but didn't match any tier → 401, regardless of
+            # whether the loopback passthrough would otherwise apply.
+            logger.warning(
+                "API server rejected invalid bearer token: %s",
+                self._request_audit_log_suffix(request))
+            return self._auth_failed_response()
+
         logger.warning("API server rejected invalid API key: %s", self._request_audit_log_suffix(request))
         return self._auth_failed_response()
 
@@ -2323,10 +2416,27 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_require_auth
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
+        # ``auth.required`` is true whenever *any* authentication is in force: the
+        # legacy ``API_SERVER_KEY`` env value OR any active managed Dashboard key.
+        # The Dashboard's per-row "auth.required" probe goes through the same field.
+        managed_required = False
+        try:
+            from hermes_cli.api_server_keys import has_active_keys
+            managed_required = has_active_keys()
+        except Exception:
+            managed_required = False
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,
-            "auth": {"type": "bearer", "required": bool(self._api_key)},
+            "auth": {
+                "type": "bearer",
+                "required": bool(self._api_key) or managed_required,
+                # Surfaced for clients that want to detect which auth scheme is in use;
+                # ``managed`` means the host has issued Dashboard-managed keys (and the
+                # legacy key may or may not also be set). ``legacy`` means only the env var
+                # is configured. ``none`` is the loopback-test-only state.
+                "modes": _active_auth_modes(bool(self._api_key), managed_required),
+            },
             "runtime": {
                 "mode": "server_agent", "tool_execution": "server", "split_runtime": False,
                 "description": (

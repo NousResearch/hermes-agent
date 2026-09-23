@@ -68,7 +68,10 @@ export const ar = defineLocale({
     },
     nav: {
       analytics: "التحليلات",
+      apiKeys: "مفاتيح API",
       chat: "المحادثة",
+      chatCli: "CLI",
+      chatUi: "واجهة الدردشة",
       config: "الإعدادات",
       cron: "المهام المجدولة",
       documentation: "التوثيق",

@@ -94,7 +94,10 @@ export interface Translations {
     };
     nav: {
       analytics: string;
+      apiKeys: string;
       chat: string;
+      chatCli: string;
+      chatUi: string;
       config: string;
       cron: string;
       documentation: string;

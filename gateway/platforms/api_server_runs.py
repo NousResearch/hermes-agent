@@ -310,7 +310,15 @@ def _room_permission_for(request: "web.Request") -> str:
 
 
 def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
-    """Opaque auth/profile namespace; never persist bearer credentials."""
+    """Opaque auth/profile namespace; never persist bearer credentials.
+
+    For non-room requests we identify the principal by **managed key ID**
+    when one is available (stamped on the request by ``_check_auth`` as
+    ``request["api_key_identity"]["id"]``). Otherwise we fall back to the
+    legacy ``_expected_api_key()`` value. This guarantees two different
+    managed keys — even with different plaintexts — never share an
+    idempotency bucket just because they happen to hash to the same scope.
+    """
     if self._room_grant_token(request):
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
@@ -318,8 +326,25 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
             "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
             "member_id", "target_install_id", "target_profile"))
     else:
-        parts = (_api_server._api_request_profile.get() or "default",
-                 self._expected_api_key() or "unauthenticated-test-listener")
+        profile = _api_server._api_request_profile.get() or "default"
+        # Prefer the managed-key ID stamped by ``_check_auth``; fall back to
+        # the legacy key for backward compatibility with the unauthenticated
+        # loopback test listener. ``setattr`` (not ``request[...] = ...``)
+        # so the identity rides on any aiohttp Request without subclass
+        # support — MagicMock-style tests rely on plain attribute set too.
+        identity = getattr(request, "api_key_identity", None)
+        principal = "unauthenticated-test-listener"
+        if isinstance(identity, dict):
+            kind = identity.get("kind")
+            if kind == "managed" and identity.get("id"):
+                principal = f"managed:{identity['id']}"
+            elif kind == "legacy":
+                principal = "legacy"
+        else:
+            legacy = self._expected_api_key()
+            if legacy:
+                principal = "legacy"
+        parts = (profile, principal)
     return hashlib.sha256("\0".join(map(str, parts)).encode()).hexdigest()
 
 

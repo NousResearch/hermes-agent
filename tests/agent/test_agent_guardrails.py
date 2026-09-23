@@ -148,6 +148,72 @@ class TestSanitizeApiMessages:
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
 
+    def test_cross_turn_duplicate_tool_call_ids_uniquified(self):
+        msgs = [
+            {"role": "user", "content": "turn 1"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_123", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_123", "content": "res1"},
+            {"role": "user", "content": "turn 2"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_123", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_123", "content": "res2"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        # Turn 1 keeps call_123
+        assert out[1]["tool_calls"][0]["id"] == "call_123"
+        assert out[2]["tool_call_id"] == "call_123"
+        # Turn 2 gets renamed to call_123_d2 for both call and response
+        assert out[4]["tool_calls"][0]["id"] == "call_123_d2"
+        assert out[5]["tool_call_id"] == "call_123_d2"
+
+    def test_cross_turn_responses_alias_stays_paired(self):
+        """A repeated Responses call whose result is keyed by response_item_id
+        (fc_…), not the primary call id, must still project as one pair after
+        the cross-turn rename. Stored history is not this sanitizer's output.
+        """
+        def turn(content):
+            return {
+                "id": "call_x",
+                "call_id": "call_x",
+                "response_item_id": "fc_x",
+                "type": "function",
+                "function": {"name": "f", "arguments": "{}"},
+            }, content
+
+        call1, res1 = turn("a")
+        call2, res2 = turn("b")
+        stored = [
+            {"role": "user", "content": "1"},
+            {"role": "assistant", "content": "", "tool_calls": [call1]},
+            {"role": "tool", "tool_call_id": "fc_x", "content": res1},
+            {"role": "user", "content": "2"},
+            {"role": "assistant", "content": "", "tool_calls": [call2]},
+            {"role": "tool", "tool_call_id": "fc_x", "content": res2},
+        ]
+        snapshot = [dict(m) for m in stored]
+        out = AIAgent._sanitize_api_messages(stored)
+        assert out[1]["tool_calls"][0]["id"] == "call_x"
+        assert out[1]["tool_calls"][0]["response_item_id"] == "fc_x"
+        assert out[2]["tool_call_id"] == "fc_x"
+        assert out[4]["tool_calls"][0]["id"] == "call_x_d2"
+        assert out[4]["tool_calls"][0]["call_id"] == "call_x_d2"
+        assert out[4]["tool_calls"][0]["response_item_id"] == "fc_x_d2"
+        assert out[5]["tool_call_id"] == "fc_x_d2"
+        assert stored[1]["tool_calls"][0]["id"] == snapshot[1]["tool_calls"][0]["id"]
+        assert stored[5]["tool_call_id"] == snapshot[5]["tool_call_id"]
+
+        from agent.codex_responses_adapter import _WireCallIds, _replay_tool_call_items, _tool_output_items
+        wire = _WireCallIds()
+        pairs = []
+        for msg in out:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                pairs.extend(_replay_tool_call_items(msg, start_index=0, wire_ids=wire))
+            elif msg.get("role") == "tool":
+                pairs.extend(_tool_output_items(msg, wire_ids=wire))
+        calls = [i["call_id"] for i in pairs if i["type"] == "function_call"]
+        outs = [i["call_id"] for i in pairs if i["type"] == "function_call_output"]
+        assert calls == outs == ["call_x", "call_x_d2"]
+
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls

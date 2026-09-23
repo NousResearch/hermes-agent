@@ -69,10 +69,9 @@ Integration seams:
     ``terminal.local_exec_broker.socket`` and ``terminal.local_exec_broker.uid`` are configured.
     Its argv, cwd, scrubbed environment, stdin, and merged stdout/stderr cross explicitly;
     broker failure is fatal rather than a same-uid fallback.
-  * ``tools/code_kernel.py:_spawn`` remains future work: it becomes a ``request_launch`` call —
-    ``child_env`` is the ``env`` payload, ``death_r`` and the runner staging dir are what this
-    already transports, and the returned connection replaces ``kernel.death_pipe_w`` as the
-    liveness handle held by ``SessionKernel``.
+  * ``tools/code_kernel.py:_spawn`` sends the open runner, selected project interpreter and cwd,
+    scrubbed child environment, and explicit stdio. The returned connection replaces
+    ``kernel.death_pipe_w`` as the liveness handle held by ``SessionKernel``.
   * Per-command systemd scopes are created on the broker side, where the trusted uid still has
     a user bus. The scope launcher gets trusted broker bus locators; an ``env`` wrapper restores
     the peer-approved locator values for the command, or removes only values the peer omitted.
@@ -99,6 +98,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -132,8 +132,19 @@ _KILL_GRACE_SECONDS = 2.0
 _SYSTEMCTL_TIMEOUT_SECONDS = 5.0
 _PUBLISH_SUFFIXES = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _RUNNER_BOOTSTRAP = """\
-import os
 import sys
+
+# ``python -c`` prepends the process cwd (as "") to sys.path, but the direct spawn runs the
+# runner as a script, so there sys.path[0] is the staging dir and the caller's project
+# directory is never importable. Left in place, the injected entry lets a project file named
+# for a stdlib module (json.py, os.py) shadow the real one for every cell the kernel runs.
+# Drop it before importing anything but sys — which is builtin and cannot be shadowed. The
+# staging dir reaches the child on PYTHONPATH, and the child's cwd is untouched, so user code
+# still resolves relative paths against the project.
+if sys.path and sys.path[0] == "":
+    del sys.path[0]
+
+import os
 
 _runner_fd = int(sys.argv.pop())
 _runner_path = sys.argv.pop()
@@ -164,15 +175,18 @@ import sys
 
 _env_fd = int(sys.argv.pop(1))
 _status_fd = int(sys.argv.pop(1))
+_stderr_fd = int(sys.argv.pop(1))
 with os.fdopen(_env_fd, encoding="utf-8") as _env_file:
     _child_env = json.load(_env_file)
 _child_argv = sys.argv[1:]
 os.write(_status_fd, b"ready\\n")
 os.set_inheritable(_status_fd, False)
 try:
-    # The launcher's diagnostics have a private pipe. Restore the requested merged
-    # stdout/stderr stream only for the requested program.
-    os.dup2(1, 2)
+    # The launcher's diagnostics have a private pipe. Restore the requested stderr stream only
+    # for the requested program; fd 1 preserves the historical merged default.
+    os.dup2(_stderr_fd, 2)
+    if _stderr_fd not in (1, 2):
+        os.close(_stderr_fd)
     os.execvpe(_child_argv[0], _child_argv, _child_env)
 except OSError as _exc:
     _message = str(_exc).encode("utf-8", "replace").replace(b"\\n", b" ")
@@ -359,12 +373,15 @@ def request_launch(
     expected_peer_uid: int,
     runner: str | None = None,
     runner_fd: int | None = None,
+    runner_python: str | None = None,
     argv: list[str] | None = None,
     cwd: str | None = None,
     env: dict,
     fds: list,
     stdin_fd: int | None = None,
     stdout_fd: int | None = None,
+    stderr_fd: int | None = None,
+    scratch: bool = False,
     timeout: float = 30.0,
     detached: bool = False,
 ):
@@ -394,8 +411,16 @@ def request_launch(
         if launch_kinds != 1:
             raise ValueError("exactly one of runner, runner_fd, or argv is required")
         request = {"op": "launch", "env": env}
+        if not isinstance(scratch, bool):
+            raise ValueError("scratch must be a boolean")
+        if scratch:
+            if runner_fd is None:
+                raise ValueError("scratch is valid only for runner fd launches")
+            request["scratch"] = True
         if detached:
-            if argv is None or fds or stdin_fd is not None or stdout_fd is not None:
+            if argv is None or fds or any(
+                fd is not None for fd in (stdin_fd, stdout_fd, stderr_fd)
+            ):
                 raise ValueError(
                     "detached launches require argv and cannot carry descriptors"
                 )
@@ -403,13 +428,21 @@ def request_launch(
         rights = list(fds)
         if runner_fd is not None:
             request["runner_fd"] = True
+            if runner_python is not None:
+                request["runner_python"] = runner_python
+            if cwd is not None:
+                request["cwd"] = cwd
             rights.insert(0, runner_fd)
         elif argv is not None:
             request["argv"] = argv
             request["cwd"] = cwd
         else:
             request["runner"] = runner
-        for name, fd in (("stdin_fd", stdin_fd), ("stdout_fd", stdout_fd)):
+        for name, fd in (
+            ("stdin_fd", stdin_fd),
+            ("stdout_fd", stdout_fd),
+            ("stderr_fd", stderr_fd),
+        ):
             if fd is not None:
                 request[name] = len(rights)
                 rights.append(fd)
@@ -656,8 +689,13 @@ def _validated(request):
             "bad_request",
             "request must carry exactly one of 'runner', 'runner_fd', or 'argv'",
         )
-    cwd = None
+    cwd = request.get("cwd")
+    runner_python = request.get("runner_python")
     if argv is not None:
+        if "runner_python" in request:
+            raise BrokerError(
+                "bad_request", "'runner_python' is valid only for runner fd launches"
+            )
         if (
             not isinstance(argv, list)
             or not argv
@@ -675,7 +713,6 @@ def _validated(request):
             raise BrokerError(
                 "bad_request", "'argv' entries must be OS-encodable"
             ) from exc
-        cwd = request.get("cwd")
         if not isinstance(cwd, str) or not cwd or "\0" in cwd:
             raise BrokerError(
                 "bad_request", "argv launches require a non-empty 'cwd' without NUL"
@@ -690,8 +727,37 @@ def _validated(request):
             raise BrokerError(
                 "bad_request", "argv launch 'cwd' is not filesystem-encodable"
             ) from exc
-    elif "cwd" in request:
-        raise BrokerError("bad_request", "'cwd' is valid only for argv launches")
+    elif uses_runner_fd:
+        if runner_python is not None and (
+            not isinstance(runner_python, str)
+            or not runner_python
+            or "\0" in runner_python
+        ):
+            raise BrokerError(
+                "bad_request", "'runner_python' must be a non-empty string without NUL"
+            )
+        if runner_python is not None and not os.path.isabs(runner_python):
+            raise BrokerError("bad_request", "'runner_python' must be an absolute path")
+        if cwd is not None and (
+            not isinstance(cwd, str) or not cwd or "\0" in cwd or not os.path.isabs(cwd)
+        ):
+            raise BrokerError(
+                "bad_request", "'cwd' must be an absolute non-empty string without NUL"
+            )
+        try:
+            if runner_python is not None:
+                os.fsencode(runner_python)
+            if cwd is not None:
+                os.fsencode(cwd)
+        except UnicodeEncodeError as exc:
+            raise BrokerError(
+                "bad_request", "runner fd launch paths must be OS-encodable"
+            ) from exc
+    elif "cwd" in request or "runner_python" in request:
+        raise BrokerError(
+            "bad_request",
+            "'cwd' and 'runner_python' are valid only for argv or runner fd launches",
+        )
     elif not uses_runner_fd:
         if not isinstance(runner, str) or not runner:
             raise BrokerError("bad_request", "'runner' must be a non-empty string")
@@ -705,6 +771,17 @@ def _validated(request):
             ) from exc
     if detached and argv is None:
         raise BrokerError("bad_request", "'detached' is valid only for argv launches")
+    scratch = request.get("scratch", False)
+    if not isinstance(scratch, bool):
+        raise BrokerError("bad_request", "'scratch' must be a boolean")
+    if scratch and not uses_runner_fd:
+        raise BrokerError(
+            "bad_request", "'scratch' is valid only for runner fd launches"
+        )
+    if "cleanup_dirs" in request or "cleanup_fds" in request:
+        raise BrokerError(
+            "bad_request", "peer-named cleanup targets are not accepted"
+        )
     if "env" not in request:
         env = {}
     else:
@@ -728,7 +805,7 @@ def _validated(request):
             "bad_request", "environment entries must be OS-encodable"
         ) from exc
     stdio = {}
-    for name in ("stdin_fd", "stdout_fd"):
+    for name in ("stdin_fd", "stdout_fd", "stderr_fd"):
         if name not in request:
             continue
         index = request[name]
@@ -739,7 +816,17 @@ def _validated(request):
         raise BrokerError(
             "bad_request", "detached launches cannot carry stdio descriptors"
         )
-    return runner, uses_runner_fd, argv, cwd, env, stdio, detached
+    return (
+        runner,
+        uses_runner_fd,
+        runner_python,
+        argv,
+        cwd,
+        env,
+        stdio,
+        detached,
+        scratch,
+    )
 
 
 def _resolve_runner(staging_root: str, runner: str) -> str:
@@ -843,6 +930,7 @@ def _launch(
     env: dict,
     fds: list,
     *,
+    runner_python=None,
     argv=None,
     cwd=None,
     stdio_fds=None,
@@ -860,7 +948,7 @@ def _launch(
     if argv is None:
         runner_path = f"/proc/self/fd/{runner_fd}"
         child_argv = [
-            sys.executable,
+            runner_python or sys.executable,
             "-c",
             _RUNNER_BOOTSTRAP,
             runner_path,
@@ -869,6 +957,11 @@ def _launch(
     else:
         child_argv = argv
     _validate_execve_payload(child_argv, child_env)
+    stdio_fds = stdio_fds or {}
+    child_stdin = stdio_fds.get("stdin_fd", subprocess.DEVNULL)
+    child_stdout = stdio_fds.get("stdout_fd", subprocess.DEVNULL)
+    requested_stderr = stdio_fds.get("stderr_fd")
+    child_stderr = requested_stderr if requested_stderr is not None else child_stdout
     unit = None
     env_fd = None
     status_r = status_w = diagnostics_r = diagnostics_w = None
@@ -911,16 +1004,24 @@ def _launch(
             _ENV_EXEC_BOOTSTRAP,
             str(env_fd),
             str(status_w),
+            str(requested_stderr if requested_stderr is not None else 1),
             *child_argv,
         ]
         # No peer value reaches either trusted launcher's argv or envp. The bootstrap reads
         # the complete approved child environment from an inherited anonymous descriptor only
         # after systemd has placed it in the command scope, then execs the requested program.
         popen_env = systemd_containment.broker_env
-    stdio_fds = stdio_fds or {}
-    child_stdin = stdio_fds.get("stdin_fd", subprocess.DEVNULL)
-    child_stdout = stdio_fds.get("stdout_fd", subprocess.DEVNULL)
-    pass_fds = tuple(fd for fd in (runner_fd, *fds, env_fd, status_w) if fd is not None)
+    pass_fds = tuple(
+        fd
+        for fd in (
+            runner_fd,
+            *fds,
+            env_fd,
+            status_w,
+            requested_stderr if systemd_containment is not None else None,
+        )
+        if fd is not None
+    )
     try:
         proc = subprocess.Popen(
             child_argv,
@@ -929,10 +1030,10 @@ def _launch(
             close_fds=True,
             stdin=child_stdin,
             stdout=child_stdout,
-            # Explicit, like stdin and stdout. An inherited stderr is a channel the client never
-            # asked for: a write handle into the trusted side's log stream, and an undrained pipe
-            # the child can wedge itself on.
-            stderr=diagnostics_w if diagnostics_w is not None else child_stdout,
+            # The scope launcher keeps private diagnostics until its bootstrap reports a clean
+            # exec. The bootstrap then dup2s the separately requested stderr descriptor; direct
+            # launches can wire it here without sharing the sentinel-framed stdout pipe.
+            stderr=diagnostics_w if diagnostics_w is not None else child_stderr,
             start_new_session=True,
             cwd=cwd,
         )
@@ -1194,15 +1295,16 @@ class _Leases:
         with self._condition:
             if self._shutting_down:
                 return False
-            self._workers[conn] = [worker, None]
+            self._workers[conn] = [worker, None, []]
             return True
 
-    def add(self, conn, proc) -> bool:
+    def add(self, conn, proc, cleanup_dirs=()) -> bool:
         with self._condition:
             entry = self._workers.get(conn)
             if self._shutting_down or entry is None:
                 return False
             entry[1] = proc
+            entry[2] = list(cleanup_dirs)
             return True
 
     def claim(self, conn, proc) -> bool:
@@ -1211,6 +1313,7 @@ class _Leases:
             if entry is None or entry[1] is not proc:
                 return False
             entry[1] = None
+            entry[2] = []
             return True
 
     def finished(self, conn) -> None:
@@ -1222,15 +1325,19 @@ class _Leases:
         with self._condition:
             self._shutting_down = True
             entries = list(self._workers.items())
-            procs = []
+            owned = []
             for _conn, entry in entries:
                 if entry[1] is not None:
-                    procs.append(entry[1])
+                    owned.append((entry[1], entry[2]))
                     entry[1] = None
+                    entry[2] = []
         for conn, _entry in entries:
             with contextlib.suppress(OSError):
                 conn.shutdown(socket.SHUT_RDWR)
-        _terminate_many(procs)
+        _terminate_many([proc for proc, _cleanup_dirs in owned])
+        for _proc, cleanup_dirs in owned:
+            with contextlib.suppress(BrokerError):
+                _cleanup_scratch_directories(cleanup_dirs)
         with self._condition:
             while self._workers:
                 self._condition.wait()
@@ -1289,6 +1396,45 @@ def _await_lease_end(conn, proc) -> None:
         os.close(pidfd)
 
 
+def _cleanup_scratch_directories(paths: list[str]) -> None:
+    """Clear and remove broker-created per-lease scratch directories.
+
+    Every path originates from ``mkdtemp`` below the validated broker staging root; peers cannot
+    name a cleanup target. Descriptor-relative deletion and no-follow opens keep traversal pinned
+    to the directory created for this lease even if worker code leaves symlinks behind.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    for path in paths:
+        try:
+            directory_fd = os.open(path, flags)
+        except OSError as exc:
+            raise BrokerError(
+                "cleanup_failed", f"could not open cleanup directory: {exc}"
+            ) from exc
+        try:
+            for name in os.listdir(directory_fd):
+                try:
+                    info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if stat.S_ISDIR(info.st_mode):
+                        shutil.rmtree(name, dir_fd=directory_fd)
+                    else:
+                        os.unlink(name, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise BrokerError(
+                        "cleanup_failed", f"could not clear cleanup directory: {exc}"
+                    ) from exc
+        finally:
+            os.close(directory_fd)
+        try:
+            os.rmdir(path)
+        except OSError as exc:
+            raise BrokerError(
+                "cleanup_failed", f"could not remove scratch directory: {exc}"
+            ) from exc
+
+
 def _serve_connection(
     conn,
     staging_root: str,
@@ -1298,7 +1444,12 @@ def _serve_connection(
     systemd_containment: _SystemdContainment | None = None,
 ) -> None:
     proc, runner_fd = None, None
-    detached_start_time = None
+    process_start_time = None
+    cleanup_dirs: list[str] = []
+    scratch = False
+    cleanup_armed = False
+    registered = False
+    exit_reply: int | None = None
     # Descriptors the kernel installed on our behalf. One owner, one close, every path out.
     fds: list = []
     stdio_fds: dict[str, int] = {}
@@ -1314,9 +1465,17 @@ def _serve_connection(
                     "peer_uid_not_allowed",
                     f"peer uid {peer_uid} is not allowed",
                 )
-            runner, uses_runner_fd, argv, cwd, env, stdio, detached = _recv_request(
-                conn, fds, handshake_timeout
-            )
+            (
+                runner,
+                uses_runner_fd,
+                runner_python,
+                argv,
+                cwd,
+                env,
+                stdio,
+                detached,
+                scratch,
+            ) = _recv_request(conn, fds, handshake_timeout)
             indexes = list(stdio.values())
             if (
                 len(set(indexes)) != len(indexes)
@@ -1352,25 +1511,37 @@ def _serve_connection(
                     "too_many_fds",
                     f"at most {MAX_FDS} descriptors may be passed per request",
                 )
+            if scratch:
+                scratch_dir = tempfile.mkdtemp(
+                    prefix="hermes-kernel-", dir=staging_root
+                )
+                cleanup_dirs = [scratch_dir]
+                cleanup_armed = True
+                os.chmod(scratch_dir, 0o700)
+                env = dict(env)
+                env["TMPDIR"] = scratch_dir
+                if cwd is None:
+                    cwd = scratch_dir
             proc = _launch(
                 runner_fd,
                 env,
                 fds,
+                runner_python=runner_python,
                 argv=argv,
                 cwd=cwd,
                 stdio_fds=stdio_fds,
                 systemd_containment=systemd_containment,
                 exec_timeout=DEFAULT_EXEC_TIMEOUT,
             )
-            if detached:
-                try:
-                    detached_start_time = _process_start_time(proc.pid)
-                except BaseException:
-                    # The child exists but has not entered the lease table yet. Do not let an
-                    # identity-read failure turn a refused launch into an unowned process.
-                    _terminate(proc)
-                    proc = None
-                    raise
+            cleanup_armed = True
+            try:
+                process_start_time = _process_start_time(proc.pid)
+            except BaseException:
+                # The child exists but has not entered the lease table yet. Do not let an
+                # identity-read failure turn a refused launch into an unowned process.
+                _terminate(proc)
+                proc = None
+                raise
         except BrokerError as exc:
             _reply(conn, {"ok": False, "error": exc.code, "message": exc.message})
             return
@@ -1387,15 +1558,18 @@ def _serve_connection(
                 os.close(runner_fd)
         # Registered BEFORE the reply: a SIGTERM racing the handshake must still find this
         # child, or it is orphaned in the one window where nobody is watching it.
-        registered = leases.add(conn, proc)
+        registered = leases.add(conn, proc, cleanup_dirs)
         if not registered:
             _terminate(proc)
             return
-        reply = {"ok": True, "pid": proc.pid}
+        reply = {
+            "ok": True,
+            "pid": proc.pid,
+            "start_time": process_start_time,
+        }
         if detached:
             reply.update(
                 detached=True,
-                start_time=detached_start_time,
                 systemd_unit=getattr(proc, "_hermes_systemd_unit", ""),
             )
         reply_delivered = _reply(conn, reply)
@@ -1415,19 +1589,38 @@ def _serve_connection(
         # parent-death pipe gave us before sudo started closing it.
         with contextlib.suppress(OSError):
             _await_lease_end(conn, proc)
-        # Legacy runner clients use EOF as their completion signal. Only argv clients opt in
-        # to the status frame required by the ProcessHandle contract. Observe without reaping:
-        # the finalizer still needs the leader pid pinned while it sweeps the whole group.
-        returncode = _unreaped_returncode(proc.pid) if argv is not None else None
-        if returncode is not None:
-            _reply(conn, {"exit": returncode})
+        # Clients that need a completion frame opt in either through argv execution or broker-side
+        # cleanup. Observe without reaping: the finalizer must first sweep the whole process tree,
+        # then clear worker-owned files, and only then acknowledge completion to the controller.
+        if argv is not None or cleanup_dirs:
+            exit_reply = _unreaped_returncode(proc.pid)
     finally:
-        with contextlib.suppress(OSError):
-            conn.close()
+        cleanup_error = None
+        cleanup_owned_here = cleanup_armed and not registered
         try:
-            if proc is not None and leases.claim(conn, proc):
-                _terminate(proc)
+            if proc is not None and registered:
+                cleanup_owned_here = leases.claim(conn, proc)
+                if cleanup_owned_here:
+                    _terminate(proc)
+            if cleanup_owned_here and cleanup_dirs:
+                try:
+                    _cleanup_scratch_directories(cleanup_dirs)
+                except BrokerError as exc:
+                    cleanup_error = exc
+            if exit_reply is not None:
+                if cleanup_error is None:
+                    _reply(conn, {"exit": exit_reply})
+                else:
+                    _reply(
+                        conn,
+                        {
+                            "error": cleanup_error.code,
+                            "message": cleanup_error.message,
+                        },
+                    )
         finally:
+            with contextlib.suppress(OSError):
+                conn.close()
             leases.finished(conn)
 
 

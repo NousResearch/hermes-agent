@@ -582,6 +582,51 @@ def test_systemd_contained_launch_and_teardown_target_the_whole_scope(monkeypatc
 
 
 @pytest.mark.linux_only
+def test_systemd_bootstrap_closes_requested_stderr_source_fd():
+    broker = _load_broker()
+    env_fd = broker._child_env_memfd({})
+    status_r, status_w = os.pipe2(os.O_CLOEXEC)
+    stderr_r, stderr_w = os.pipe2(os.O_CLOEXEC)
+    probe = """
+import json
+import os
+
+target = os.readlink('/proc/self/fd/2')
+duplicates = []
+for name in os.listdir('/proc/self/fd'):
+    try:
+        if os.readlink(f'/proc/self/fd/{name}') == target:
+            duplicates.append(int(name))
+    except OSError:
+        pass
+print(json.dumps(sorted(duplicates)))
+"""
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                broker._ENV_EXEC_BOOTSTRAP,
+                str(env_fd),
+                str(status_w),
+                str(stderr_w),
+                sys.executable,
+                "-c",
+                probe,
+            ],
+            pass_fds=(env_fd, status_w, stderr_w),
+            stdout=subprocess.PIPE,
+            check=True,
+            text=True,
+        )
+        assert json.loads(result.stdout) == [2]
+    finally:
+        for fd in (env_fd, status_r, status_w, stderr_r, stderr_w):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+@pytest.mark.linux_only
 def test_systemd_launcher_never_receives_peer_loader_environment(monkeypatch):
     broker = _load_broker()
     captured = {}
@@ -711,7 +756,17 @@ def test_contained_launcher_failure_is_a_structured_refusal(tmp_path, monkeypatc
     monkeypatch.setattr(
         broker,
         "_recv_request",
-        lambda *_args: (None, False, ["/bin/true"], str(tmp_path), {}, {}, False),
+        lambda *_args: (
+            None,
+            False,
+            None,
+            ["/bin/true"],
+            str(tmp_path),
+            {},
+            {},
+            False,
+            [],
+        ),
     )
     monkeypatch.setattr(broker, "_await_lease_end", lambda *_args: None)
     monkeypatch.setattr(broker, "_unreaped_returncode", lambda _pid: 1)
@@ -1036,6 +1091,98 @@ def test_local_environment_opt_in_executes_through_broker(tmp_path, monkeypatch)
         if env is not None:
             env.cleanup()
         _stop_broker(proc)
+
+
+@pytest.mark.linux_only
+@pytest.mark.live_system_guard_bypass
+def test_execute_code_session_kernel_uses_broker_lease_and_project_runtime(
+    tmp_path, monkeypatch
+):
+    """The persistent project kernel crosses the real broker boundary without semantic drift."""
+    from tools.code_execution_tool import execute_code
+    from tools.code_kernel import _KERNELS, shutdown_all_kernels
+
+    root = _staging_root(tmp_path)
+    proc, sock_path = _start_broker(
+        "broker-only-secret", root, allowed_uids=[os.getuid()]
+    )
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "code_execution:\n"
+        "  mode: project\n"
+        "  timeout: 30\n"
+        "terminal:\n"
+        "  local_exec_broker:\n"
+        f"    socket: {sock_path}\n"
+        f"    uid: {os.geteuid()}\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    venv = tmp_path / "project-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv))
+    monkeypatch.chdir(project)
+
+    kernel_pid = None
+    try:
+        first = json.loads(
+            execute_code(
+                "import os, sys\n"
+                "value = 41\n"
+                "print(os.getpid(), os.getppid(), os.getcwd(), sys.prefix)",
+                task_id="broker-kernel",
+            )
+        )
+        assert first["status"] == "success", first
+        report = first["output"].strip().split()
+        kernel_pid = int(report[0])
+        assert int(report[1]) == proc.pid
+        assert report[2] == str(project)
+        assert os.path.realpath(report[3]) == os.path.realpath(venv)
+
+        second = json.loads(execute_code("print(value + 1)", task_id="broker-kernel"))
+        assert second["status"] == "success", second
+        assert second["output"].strip() == "42"
+        assert second["kernel"]["reused"] is True
+
+        shutdown_all_kernels()
+        assert _wait_until_gone(kernel_pid)
+        assert not _KERNELS
+        kernel_pid = None
+
+        live = json.loads(
+            execute_code("import os; print(os.getpid())", task_id="broker-loss")
+        )
+        assert live["status"] == "success", live
+        lost_pid = int(live["output"].strip())
+        lost_kernel = next(iter(_KERNELS.values()))
+        _stop_broker(proc)
+        proc = None
+        assert _wait_until_gone(lost_pid)
+        assert lost_kernel.alive() is False
+        shutdown_all_kernels()
+        assert not _KERNELS
+
+        forbidden = tmp_path / "direct-fallback-ran"
+        failed = json.loads(
+            execute_code(
+                f"from pathlib import Path; Path({str(forbidden)!r}).touch()",
+                task_id="broker-refusal",
+            )
+        )
+        assert failed["status"] == "error", failed
+        assert not forbidden.exists(), "configured broker failure launched directly"
+    finally:
+        shutdown_all_kernels()
+        if proc is not None:
+            _stop_broker(proc)
+        if kernel_pid is not None:
+            assert _wait_until_gone(kernel_pid)
 
 
 @pytest.mark.linux_only
@@ -1654,6 +1801,45 @@ def test_request_launch_preserves_coalesced_exit_frame(monkeypatch):
 
 
 @pytest.mark.linux_only
+def test_broker_process_poll_normalizes_connection_reset():
+    """A reset lease is the same typed broker failure as a clean unexpected EOF."""
+    from tools.environments.base import EnvironmentConnectionError
+    from tools.environments.local import _BrokerProcessHandle
+
+    class ResetConnection:
+        closed = False
+
+        def setblocking(self, _blocking):
+            pass
+
+        def recv(self, _size):
+            raise ConnectionResetError(errno.ECONNRESET, "reset by broker")
+
+        def close(self):
+            self.closed = True
+
+    conn = ResetConnection()
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    stdin_r, stdin_w = os.pipe()
+    handle = _BrokerProcessHandle(conn, 123, read_fd, stdin_w)
+    try:
+        with pytest.raises(
+            EnvironmentConnectionError,
+            match="configured local execution broker failed during command execution",
+        ):
+            handle.poll()
+        assert conn.closed
+        assert handle.stdin is not None and handle.stdin.closed
+    finally:
+        os.close(stdin_r)
+        if not handle.stdout.closed:
+            handle.stdout.close()
+        if handle.stdin is not None and not handle.stdin.closed:
+            handle.stdin.close()
+
+
+@pytest.mark.linux_only
 def test_local_environment_does_not_reclose_transferred_pipe_fd_when_handle_init_fails(
     tmp_path, monkeypatch
 ):
@@ -2109,7 +2295,17 @@ def test_departed_peer_during_exit_frame_does_not_escape_connection_worker(
     monkeypatch.setattr(
         broker,
         "_recv_request",
-        lambda *_args: (None, False, ["/bin/true"], str(tmp_path), {}, {}, False),
+        lambda *_args: (
+            None,
+            False,
+            None,
+            ["/bin/true"],
+            str(tmp_path),
+            {},
+            {},
+            False,
+            [],
+        ),
     )
     monkeypatch.setattr(broker, "_launch", lambda *_args, **_kwargs: exited)
     monkeypatch.setattr(broker, "_await_lease_end", lambda *_args: None)
@@ -2155,7 +2351,17 @@ def test_detached_launch_is_terminated_when_client_misses_acknowledgement(
     monkeypatch.setattr(
         broker,
         "_recv_request",
-        lambda *_args: (None, False, ["/bin/true"], str(tmp_path), {}, {}, True),
+        lambda *_args: (
+            None,
+            False,
+            None,
+            ["/bin/true"],
+            str(tmp_path),
+            {},
+            {},
+            True,
+            [],
+        ),
     )
     monkeypatch.setattr(broker, "_launch", lambda *_args, **_kwargs: process)
     monkeypatch.setattr(broker, "_process_start_time", lambda _pid: 9876)
@@ -2202,7 +2408,17 @@ def test_detached_launch_start_time_failure_terminates_child(monkeypatch, tmp_pa
     monkeypatch.setattr(
         broker,
         "_recv_request",
-        lambda *_args: (None, False, ["/bin/true"], str(tmp_path), {}, {}, True),
+        lambda *_args: (
+            None,
+            False,
+            None,
+            ["/bin/true"],
+            str(tmp_path),
+            {},
+            {},
+            True,
+            [],
+        ),
     )
     monkeypatch.setattr(broker, "_launch", lambda *_args, **_kwargs: process)
     monkeypatch.setattr(
@@ -2263,7 +2479,17 @@ def test_detached_launch_reply_acknowledges_protocol_and_process_identity(
     monkeypatch.setattr(
         broker,
         "_recv_request",
-        lambda *_args: (None, False, ["/bin/true"], str(tmp_path), {}, {}, True),
+        lambda *_args: (
+            None,
+            False,
+            None,
+            ["/bin/true"],
+            str(tmp_path),
+            {},
+            {},
+            True,
+            [],
+        ),
     )
     launched = {}
 
@@ -2352,6 +2578,187 @@ def test_argv_launch_rejects_text_the_os_cannot_encode():
     assert excinfo.value.code == "bad_request"
     assert "argv" in excinfo.value.message
     assert "encodable" in excinfo.value.message
+
+
+@pytest.mark.linux_only
+def test_runner_fd_scratch_finishes_cleanup_before_exit_reply(tmp_path):
+    broker = _load_broker()
+    root = _staging_root(tmp_path)
+    report = tmp_path / "scratch-path"
+    runner = _stage_runner(
+        root,
+        "scratch_runner.py",
+        """
+        import os
+        from pathlib import Path
+
+        scratch = Path(os.environ["TMPDIR"])
+        nested = scratch / "worker-owned" / "nested"
+        nested.mkdir(parents=True, mode=0o700)
+        (nested / "payload").write_text("worker-owned", encoding="utf-8")
+        Path(os.environ["REPORT"]).write_text(str(scratch), encoding="utf-8")
+        """,
+    )
+    proc, sock_path = _start_broker(
+        "secret",
+        root,
+        allowed_uids=[os.geteuid()],
+    )
+    runner_fd = os.open(runner, os.O_RDONLY | os.O_CLOEXEC)
+
+    try:
+        conn, reply, remainder = broker.request_launch(
+            sock_path,
+            expected_peer_uid=os.geteuid(),
+            runner_fd=runner_fd,
+            runner_python=sys.executable,
+            cwd=None,
+            env={"REPORT": str(report)},
+            fds=[],
+            scratch=True,
+        )
+        try:
+            assert reply["ok"] is True
+            exit_frame = remainder or _read_with_deadline(
+                conn.fileno(), until_eof=False
+            )
+            assert json.loads(exit_frame.split(b"\n", 1)[0]) == {"exit": 0}
+        finally:
+            conn.close()
+        scratch = Path(report.read_text(encoding="utf-8"))
+        assert scratch.parent == root
+        assert not scratch.exists()
+    finally:
+        os.close(runner_fd)
+        _stop_broker(proc)
+
+
+@pytest.mark.linux_only
+def test_runner_fd_does_not_prepend_project_cwd_to_python_imports(tmp_path):
+    broker = _load_broker()
+    root = _staging_root(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    marker = tmp_path / "cwd-imported"
+    report = tmp_path / "json-module"
+    (project / "json.py").write_text(
+        "import os\nopen(os.environ['MARKER'], 'w').write('ran')\n",
+        encoding="utf-8",
+    )
+    runner = _stage_runner(
+        root,
+        "import_runner.py",
+        """
+        import json
+        import os
+        from pathlib import Path
+
+        Path(os.environ["REPORT"]).write_text(json.__file__, encoding="utf-8")
+        """,
+    )
+    proc, sock_path = _start_broker(
+        "secret",
+        root,
+        allowed_uids=[os.geteuid()],
+    )
+    runner_fd = os.open(runner, os.O_RDONLY | os.O_CLOEXEC)
+
+    try:
+        conn, reply, remainder = broker.request_launch(
+            sock_path,
+            expected_peer_uid=os.geteuid(),
+            runner_fd=runner_fd,
+            runner_python=sys.executable,
+            cwd=str(project),
+            env={"MARKER": str(marker), "REPORT": str(report)},
+            fds=[],
+            scratch=True,
+        )
+        try:
+            assert reply["ok"] is True
+            exit_frame = remainder or _read_with_deadline(
+                conn.fileno(), until_eof=False
+            )
+            assert json.loads(exit_frame.split(b"\n", 1)[0]) == {"exit": 0}
+        finally:
+            conn.close()
+        assert not marker.exists()
+        assert Path(report.read_text(encoding="utf-8")).resolve() != (
+            project / "json.py"
+        ).resolve()
+    finally:
+        os.close(runner_fd)
+        _stop_broker(proc)
+
+
+@pytest.mark.linux_only
+def test_runner_fd_keeps_stderr_out_of_stdout_protocol_pipe(tmp_path):
+    broker = _load_broker()
+    root = _staging_root(tmp_path)
+    report = tmp_path / "stderr-fds.json"
+    runner = _stage_runner(
+        root,
+        "stdio_runner.py",
+        """
+        import json
+        import os
+
+        stderr_target = os.readlink("/proc/self/fd/2")
+        duplicates = []
+        for name in os.listdir("/proc/self/fd"):
+            try:
+                if os.readlink(f"/proc/self/fd/{name}") == stderr_target:
+                    duplicates.append(int(name))
+            except OSError:
+                pass
+        with open(os.environ["REPORT"], "w", encoding="utf-8") as stream:
+            json.dump(sorted(duplicates), stream)
+        os.write(1, b"stdout-only")
+        os.write(2, b"stderr-only")
+        """,
+    )
+    proc, sock_path = _start_broker(
+        "secret",
+        root,
+        allowed_uids=[os.geteuid()],
+    )
+    runner_fd = os.open(runner, os.O_RDONLY | os.O_CLOEXEC)
+    stdout_r, stdout_w = os.pipe()
+    stderr_r, stderr_w = os.pipe()
+
+    try:
+        conn, reply, remainder = broker.request_launch(
+            sock_path,
+            expected_peer_uid=os.geteuid(),
+            runner_fd=runner_fd,
+            runner_python=sys.executable,
+            cwd=None,
+            env={"REPORT": str(report)},
+            fds=[],
+            stdout_fd=stdout_w,
+            stderr_fd=stderr_w,
+            scratch=True,
+        )
+        os.close(stdout_w)
+        stdout_w = -1
+        os.close(stderr_w)
+        stderr_w = -1
+        try:
+            assert reply["ok"] is True
+            exit_frame = remainder or _read_with_deadline(
+                conn.fileno(), until_eof=False
+            )
+            assert json.loads(exit_frame.split(b"\n", 1)[0]) == {"exit": 0}
+        finally:
+            conn.close()
+        assert _read_with_deadline(stdout_r, until_eof=True) == b"stdout-only"
+        assert _read_with_deadline(stderr_r, until_eof=True) == b"stderr-only"
+        assert json.loads(report.read_text(encoding="utf-8")) == [2]
+    finally:
+        for fd in (runner_fd, stdout_r, stdout_w, stderr_r, stderr_w):
+            if fd >= 0:
+                os.close(fd)
+        _stop_broker(proc)
 
 
 @pytest.mark.linux_only
@@ -3076,6 +3483,19 @@ def test_broker_transports_approved_resources_and_refuses_invalid_requests_witho
                     "op": "launch",
                     "argv": ["/bin/true"],
                     "cwd": "relative",
+                    "env": {},
+                }).encode()
+                + b"\n",
+                1,
+                "bad_request",
+            ),
+            (
+                "argv launch carrying runner_python",
+                json.dumps({
+                    "op": "launch",
+                    "argv": ["/bin/true"],
+                    "cwd": str(tmp_path),
+                    "runner_python": "/usr/bin/python3",
                     "env": {},
                 }).encode()
                 + b"\n",

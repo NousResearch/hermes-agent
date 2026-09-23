@@ -823,6 +823,26 @@ def _run_agent_tool_execution_middleware(
         request_args = request_result.payload if isinstance(request_result.payload, dict) else relay_args
         trace.clear()
         trace.extend(request_result.trace)
+
+        # Execution middleware may legally short-circuit without calling next_call().
+        # Enforce the provenance boundary BEFORE it can observe/forward synthetic
+        # compressor content; the inner authorized-dispatch check remains necessary
+        # for execution-middleware and pre_tool_call rewrites that do call downstream.
+        early_block = _pruned_tool_arguments_block(function_name, request_args)
+        if early_block is not None:
+            state.args = request_args
+            state.blocked = True
+            if begin_execution is not None:
+                begin_execution()
+            return _blocked_tool_result(
+                agent,
+                _ToolCallRef(function_name, request_args, effective_task_id, tool_call_id, trace),
+                block_message=early_block["message"],
+                block_error_type=_PRUNED_TOOL_ARGUMENTS_ERROR,
+                guardrail_decision=None,
+                block_payload=early_block,
+            )
+
         return run_tool_execution_middleware(
             function_name,
             request_args,

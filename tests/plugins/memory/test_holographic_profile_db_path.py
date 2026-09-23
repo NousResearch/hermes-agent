@@ -74,23 +74,20 @@ def test_default_db_path_follows_the_profile_that_opens_it(root, monkeypatch, li
     assert answers["db_path"] == "$HERMES_HOME/memory_store.db"
 
 
-@pytest.mark.parametrize("spelling", ["display", "absolute"])
-def test_save_config_stores_this_profiles_default_path_as_the_placeholder(root, monkeypatch, spelling):
-    # The concrete value an older setup wrote, and the dashboard form re-submits on its next save.
+@pytest.mark.parametrize("spelling", ["display", "absolute", "elsewhere"])
+def test_save_config_stores_only_this_profiles_default_path_as_the_placeholder(root, monkeypatch, spelling):
+    # "display"/"absolute": the concrete value an older setup wrote, and the dashboard form re-submits on
+    # its next save. "elsewhere": a deliberately shared store (#4726) is kept as given.
     profile = create_profile("work", no_alias=True)
     monkeypatch.setenv("HERMES_HOME", str(profile))
-    concrete = "~/.hermes/profiles/work/memory_store.db" if spelling == "display" else str(profile / "memory_store.db")
+    given = {
+        "display": "~/.hermes/profiles/work/memory_store.db",
+        "absolute": str(profile / "memory_store.db"),
+        "elsewhere": str(root / "shared" / "facts.db"),
+    }[spelling]
+    expected = given if spelling == "elsewhere" else "$HERMES_HOME/memory_store.db"
 
-    HolographicMemoryProvider(config={"hrr_dim": 64}).save_config({"db_path": concrete, "hrr_dim": "64"}, str(profile))
+    HolographicMemoryProvider(config={"hrr_dim": 64}).save_config({"db_path": given, "hrr_dim": "64"}, str(profile))
 
     stored = yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))["plugins"]["hermes-memory-store"]
-    assert stored == {"db_path": "$HERMES_HOME/memory_store.db", "hrr_dim": "64"}
-
-
-def test_save_config_keeps_an_explicit_path(root, monkeypatch):
-    elsewhere = str(root / "shared" / "facts.db")
-
-    HolographicMemoryProvider(config={"hrr_dim": 64}).save_config({"db_path": elsewhere}, str(root))
-
-    stored = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))["plugins"]["hermes-memory-store"]
-    assert stored["db_path"] == elsewhere
+    assert stored == {"db_path": expected, "hrr_dim": "64"}

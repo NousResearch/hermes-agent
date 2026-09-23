@@ -60,3 +60,33 @@ def test_gateway_flag_is_conditional_not_inline() -> None:
         "The update argv must be assembled from $gatewayArg so -NoGateway "
         "actually removes --gateway from the invocation."
     )
+
+
+def test_successful_local_update_restarts_all_gateways_after_verification() -> None:
+    """Desktop stops every profile before hand-off, outside update's inventory.
+
+    A successful local hand-off must consequently restore the same all-profile
+    set itself. The restart belongs after runtime verification, and a
+    remote-served Desktop must retain its ``-NoGateway`` opt-out.
+    """
+    source = _handoff_source()
+    verify = 'Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"'
+    restart = (
+        'Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", '
+        '"gateway", "start", "--all") "gateway restart"'
+    )
+
+    assert verify in source
+    assert restart in source, (
+        "a verified successful Desktop update must restore every gateway "
+        "that Desktop stopped before the hand-off"
+    )
+    assert source.index(verify) < source.index(restart), (
+        "gateway restoration must not run before the update runtime verifies"
+    )
+
+    restart_block = source[source.index(restart) - 240:source.index(restart) + len(restart)]
+    assert "-not $NoGateway" in restart_block, (
+        "-NoGateway must keep remote-served Desktop from starting a local "
+        "messaging gateway"
+    )

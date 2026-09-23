@@ -1679,6 +1679,22 @@ try {
         }
     }
 
+    # Desktop stopped every locally running profile gateway before handing off
+    # so their venv launchers could not hold the update lock. That happens
+    # before `hermes update` captures its Windows pause inventory, leaving the
+    # updater nothing to resume on its normal success path. Restore the same
+    # all-profile fleet only after the updated runtime verifies. A remote-served
+    # Desktop must stay passive: its -NoGateway hand-off owns no local poller.
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed -and -not $NoGateway) {
+        $gatewayRestart = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "gateway", "start", "--all") "gateway restart"
+        if ($gatewayRestart.Code -ne 0) {
+            $finalCode = 9
+            $finalMsg = "Update completed, but Hermes could not restart every messaging gateway. Reopen Hermes and run `hermes gateway start --all` in a terminal."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
+        }
+    }
+
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $finalCode = 0
         $finalMsg = "Update complete."

@@ -32,7 +32,8 @@ _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malform
 
 @dataclass
 class _DispatcherSettings:
-    """``kanban.*`` dispatch settings, read once at boot (restart to apply)."""
+    """``kanban.*`` dispatch settings; the gateway watcher re-resolves them
+    when the config changes so edits apply without a restart (#117734)."""
 
     interval: float
     max_spawn: Any

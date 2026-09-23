@@ -81,7 +81,7 @@ def test_boot_replaces_incumbent_with_stale_presets(hermes_home, monkeypatch):
         "hermes_cli.local_runtime.endpoint._state_endpoint",
         lambda: {"base_url": "http://127.0.0.1:18434/v1", "pid": 12345})
     monkeypatch.setattr(boot, "_stop_state_server",
-                        lambda state: stopped.setdefault("pid", state["pid"]))
+                        lambda state: bool(stopped.setdefault("pid", state["pid"])))
 
     sentinel = object()
 
@@ -117,7 +117,7 @@ def test_refresh_bounces_an_adopted_server(hermes_home, monkeypatch):
         "hermes_cli.local_runtime.endpoint._state_endpoint",
         lambda: {"base_url": "http://127.0.0.1:18434/v1", "pid": 4242})
     monkeypatch.setattr(boot, "_stop_state_server",
-                        lambda state: stopped.setdefault("pid", state["pid"]))
+                        lambda state: bool(stopped.setdefault("pid", state["pid"])))
     booted = {}
     monkeypatch.setattr(boot, "ensure_local_runtime",
                         lambda cfg, force=False: booted.setdefault("force", force) or object())
@@ -134,3 +134,42 @@ def test_refresh_no_server_anywhere_is_a_noop(hermes_home, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
     assert boot.refresh_local_runtime() is False
+
+
+def test_adopted_stop_uses_verified_record_not_endpoint_pid(hermes_home, monkeypatch):
+    """The public endpoint deliberately omits pid; the old stop silently did nothing."""
+    import hermes_cli.local_runtime.bootstrap as boot
+    import hermes_cli.local_runtime.recovery as recovery
+    import hermes_cli.local_runtime.supervisor as supervisor
+
+    endpoint = {"base_url": "http://127.0.0.1:18434/v1", "api_key": "key"}
+    record = {**endpoint, "pid": 12345}
+    class Process:
+        pid = 12345
+        def wait(self, timeout):
+            assert timeout == 5
+
+    proc = Process()
+    stopped = []
+    monkeypatch.setattr(recovery, "read_state", lambda: record)
+    monkeypatch.setattr(recovery, "recorded_process", lambda state: proc if state is record else None)
+    monkeypatch.setattr(supervisor.LlamaServerSupervisor, "_terminate_tree",
+                        lambda target, **kw: stopped.append((target, kw)))
+    assert boot._stop_state_server(endpoint)
+    assert stopped == [(proc, {"verified_root": True})]
+    assert not boot._stop_state_server({**endpoint, "api_key": "different"})
+    assert len(stopped) == 1
+
+
+def test_stale_incumbent_failed_stop_never_spawns_second_manager(hermes_home, monkeypatch):
+    import hermes_cli.local_runtime.bootstrap as boot
+
+    _stage(hermes_home, "model-a")
+    monkeypatch.setattr(boot, "_SUPERVISOR", None)
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint",
+                        lambda: {"base_url": "http://127.0.0.1:18434/v1", "api_key": "key"})
+    monkeypatch.setattr(boot, "_presets_stale", lambda: True)
+    monkeypatch.setattr(boot, "_stop_state_server", lambda state: False)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+                        lambda *args: pytest.fail("second manager boot attempted"))
+    assert boot.ensure_local_runtime({"local_runtime": {"enabled": True}}) is None

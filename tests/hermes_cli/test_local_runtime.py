@@ -418,7 +418,7 @@ def test_llamacpp_dead_server_raises_friendly_error(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {"local_runtime": {"enabled": True}})
-    with pytest.raises(ValueError, match="isn't running"):
+    with pytest.raises(ValueError, match="No usable local model server endpoint"):
         rp._resolve_named_custom_runtime(requested_provider="llamacpp")
 
     # An explicit base_url is the user pointing at a specific server —

@@ -444,9 +444,10 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     except Exception:  # noqa: BLE001
         enabled = False
     if enabled:
-        raise ValueError("The local model server isn't running. It may still be "
-                         "starting — try again in a moment, or check Settings → "
-                         "Providers → Local models.")
+        raise ValueError("No usable local model server endpoint was found. The server may "
+                         "still be starting, its saved process record may be stale, or "
+                         "an existing server may require different credentials. Try again "
+                         "in a moment or check Settings → Providers → Local models.")
     raise ValueError("The local model server is turned off. Turn it back on in "
                      "Settings → Providers → Local models, or switch to another "
                      "model.")

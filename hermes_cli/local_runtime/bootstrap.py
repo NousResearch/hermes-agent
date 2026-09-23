@@ -10,7 +10,6 @@ from __future__ import annotations
 from contextlib import contextmanager, suppress
 import logging
 import os
-import signal
 import subprocess
 import time
 from pathlib import Path
@@ -97,25 +96,29 @@ def _presets_stale() -> bool:
     return False
 
 
-def _stop_state_server(state: dict) -> None:
-    """Best-effort stop of the server the state file points at (an incumbent this process doesn't
-    supervise). The state pid is ours by contract — the file only ever describes the managed
-    server."""
-    from hermes_cli.local_runtime.endpoint import _pid_alive
+def _stop_state_server(state: dict) -> bool:
+    """Stop the verified incumbent and its model children, or refuse replacement.
 
+    ``_state_endpoint`` exposes URL/key, not a PID. Re-read the record and prove the
+    process incarnation before touching it; a failed stop must not spawn a second router.
+    """
+    from hermes_cli.local_runtime.recovery import read_state, recorded_process
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    record = read_state()
+    if (record.get("base_url") != state.get("base_url")
+            or record.get("api_key") != state.get("api_key")):
+        return False
+    proc = recorded_process(record)
+    if proc is None:
+        return False
     try:
-        pid = int(state.get("pid"))
-        if pid <= 0:
-            return
-        os.kill(pid, signal.SIGTERM)
-    except (TypeError, ValueError, OSError):
-        return
-    # Give it a moment to release the port and the GPU. Liveness via psutil — on Windows
-    # os.kill(pid, 0) TERMINATES the process, it is not a probe.
-    for _ in range(50):
-        if not _pid_alive(pid):
-            return
-        time.sleep(0.1)
+        LlamaServerSupervisor._terminate_tree(proc, verified_root=True)
+        proc.wait(timeout=5)
+        return True
+    except Exception as exc:  # noqa: BLE001 — never boot another manager on a failed stop
+        logger.warning("could not stop managed llama-server pid=%s: %s", proc.pid, exc)
+        return False
 
 
 def refresh_local_runtime() -> bool:
@@ -128,15 +131,21 @@ def refresh_local_runtime() -> bool:
 
         if _SUPERVISOR is None:
             from hermes_cli.local_runtime.endpoint import _state_endpoint
+            from urllib.parse import urlsplit
 
             state = _state_endpoint()
             if state is None:
                 return False
-            logger.info("bouncing adopted llama-server (pid=%s) to rescan models", state.get("pid"))
-            _stop_state_server(state)
+            logger.info("bouncing adopted llama-server at %s to rescan models", state["base_url"])
+            if not _stop_state_server(state):
+                return False
+            config = load_config()
+            config["local_runtime"] = {**(config.get("local_runtime") or {}),
+                                       "port": urlsplit(state["base_url"]).port}
         else:
             shutdown_local_runtime()
-        return ensure_local_runtime(load_config(), force=True) is not None
+            config = load_config()
+        return ensure_local_runtime(config, force=True) is not None
     except Exception as exc:  # noqa: BLE001
         logger.warning("local runtime refresh failed: %s", exc)
         return False
@@ -294,13 +303,18 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
     with _cross_process_boot_lock():
         state = _state_endpoint()
+        replacement_port = None
         if state is not None:
             if not _presets_stale():
                 logger.info("managed llama-server already running (another process)")
                 return None
             logger.info("running server's presets predate the staged models; "
                         "replacing it so every model launches with a policy")
-            _stop_state_server(state)
+            from urllib.parse import urlsplit
+            replacement_port = urlsplit(state["base_url"]).port
+            if not _stop_state_server(state):
+                logger.warning("could not stop the incumbent; refusing a second manager")
+                return None
 
         try:
             from hermes_cli.local_runtime.binaries import (
@@ -334,7 +348,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                         models_max=_admitted_models_max(
                                             mdir, int(section.get("models_max", 4))),
-                                        port=int(section.get("port", 0)) or None)
+                                        port=replacement_port or int(section.get("port", 0)) or None)
             try:
                 sup.start()
             except Exception:

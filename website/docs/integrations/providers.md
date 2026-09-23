@@ -1395,6 +1395,18 @@ Older configs used a top-level `custom_providers:` list instead. It still works 
 
 **Reasoning effort on custom endpoints.** The configured `reasoning_effort` (`/reasoning max`, `agent.reasoning_effort`) reaches a custom endpoint unchanged on both the `chat_completions` and the `codex_responses` transport — up to `max`; only the Hermes-internal `ultra` is clamped to `max`. Two exceptions follow the host rather than the entry: a custom entry pointed at `api.openai.com` keeps OpenAI's per-model ladder (`max` is a gpt-5.6-only level there), and an entry pointed at a provider whose profile publishes a per-model vocabulary (Ramp Router) is clamped to that catalog. An endpoint that rejects the level answers with an HTTP 400 instead of Hermes silently downgrading it. When no effort is configured at all, `chat_completions` requests carry `reasoning_effort: medium` — the same default the Nous Portal and OpenRouter routes apply — rather than leaving the endpoint's own default in charge (kimi-k3's is `max`, about 3x the reasoning tokens of `medium`); models marked `supports_reasoning: false` in the catalog or `model_overrides`, and Ollama models without the `thinking` capability, keep the field off.
 
+**Signed thinking through trusted Anthropic proxies.** Hermes strips signed thinking blocks for third-party Anthropic Messages endpoints by default, because proxies may rewrite them and cause a 400 on replay. If you operate a proxy that forwards Anthropic blocks unchanged and have verified that upstream accepts a replay, opt in on that exact provider route:
+
+```yaml
+providers:
+  my-trusted-router:
+    base_url: http://127.0.0.1:20128/v1
+    api_mode: anthropic_messages
+    preserve_thinking: true
+```
+
+This keeps valid signed thinking blocks from the latest assistant turn. Do not enable it for a proxy you do not control; Hermes keeps the default stripping behavior for every provider without this explicit boolean setting.
+
 Some OpenAI-compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into each chat-completions request for that endpoint:
 
 ```yaml

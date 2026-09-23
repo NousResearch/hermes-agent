@@ -35,6 +35,22 @@ from hermes_cli import __version__ as _HERMES_VERSION
 _anthropic_sdk: Any = ...
 
 
+def _custom_provider_preserves_thinking(base_url: str | None) -> bool:
+    """Whether the configured proxy explicitly permits signed-thinking replay.
+
+    A missing, unreadable, or malformed configuration is deliberately fail-closed: third-party
+    endpoints continue stripping proprietary signatures unless the matched provider says true.
+    """
+    if not base_url:
+        return False
+    try:
+        from hermes_cli.config import get_custom_provider_preserve_thinking
+        return get_custom_provider_preserve_thinking(base_url)
+    except Exception:
+        logger.debug("custom-provider preserve_thinking lookup failed", exc_info=True)
+        return False
+
+
 def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
     global _anthropic_sdk
@@ -615,7 +631,9 @@ def build_anthropic_kwargs(
     ``is_oauth`` applies Claude Code compatibility transforms; ``preserve_dots`` keeps model-name
     dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures;
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
-    system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
+    system, anthropic_messages = convert_messages_to_anthropic(
+        messages, base_url=base_url, model=model, preserve_thinking=_custom_provider_preserves_thinking(base_url),
+    )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would
     # make the model unresolvable there (prefix AND dots kept).

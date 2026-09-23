@@ -119,7 +119,7 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
-    "catalog_provider", "session_affinity_header"}
+    "catalog_provider", "session_affinity_header", "preserve_thinking"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -264,6 +264,8 @@ def _normalize_custom_provider_entry(
             normalized[field] = entry[field]
     if isinstance(entry.get("extra_body"), dict):
         normalized["extra_body"] = dict(entry["extra_body"])
+    if isinstance(entry.get("preserve_thinking"), bool):
+        normalized["preserve_thinking"] = entry["preserve_thinking"]
 
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
@@ -290,7 +292,7 @@ def _custom_provider_entry_to_provider_config(
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
+        "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider", "preserve_thinking"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:
@@ -406,6 +408,15 @@ def get_custom_provider_api_mode(
             if isinstance(value, str) and value.strip():
                 return _canonical_api_mode(value)
     return ""
+
+
+def get_custom_provider_preserve_thinking(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Whether the custom provider matched by *base_url* explicitly trusts thinking signatures."""
+    return any(entry.get("preserve_thinking") is True for entry in _entries_for_route(base_url, custom_providers, config))
 
 
 def _route_model_cfg(entry: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:

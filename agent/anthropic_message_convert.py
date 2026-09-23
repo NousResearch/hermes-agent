@@ -564,7 +564,9 @@ def _keep_valid_latest_thinking(content: List[Any], signature_dead: bool) -> Lis
     return new_content
 
 
-def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None) -> None:
+def _manage_thinking_signatures(
+    result: List[Dict[str, Any]], base_url: str | None, model: str | None, *, preserve_thinking: bool = False,
+) -> None:
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
@@ -572,9 +574,11 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     turn keeps signed blocks. Signatures are proprietary: third-party endpoints strip all thinking.
     Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous
     Portal proxies Claude with sticky sessions and validates the same signatures, so it takes the
-    native path despite not being anthropic.com.
+    native path despite not being anthropic.com. A custom proxy can explicitly opt into the same
+    latest-turn policy only after its operator has verified that it forwards signatures unchanged.
     """
     is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
+    trusted_proxy = is_third_party and preserve_thinking
     is_kimi = _is_kimi_family_endpoint(base_url, model)
     is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
         is_third_party and _model_name_is_deepseek_thinking(model)
@@ -590,7 +594,7 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
             m["content"] = new_content or [_text_block("(empty)")]
-        elif is_third_party or idx != last_assistant_idx:
+        elif (is_third_party and not trusted_proxy) or idx != last_assistant_idx:
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:
             new_content = _keep_valid_latest_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
@@ -708,12 +712,12 @@ def _convert_system_content(content: Any) -> Any:
 
 
 def convert_messages_to_anthropic(
-    messages: List[Dict], base_url: str | None = None, model: str | None = None
+    messages: List[Dict], base_url: str | None = None, model: str | None = None, *, preserve_thinking: bool = False,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format -> ``(system, messages)``. System is
     extracted into its own param (a string, or a block list when cache_control is present).
     ``base_url``/``model`` drive thinking-signature policy — third-party endpoints strip signatures
-    (proprietary, they 400 on them); Kimi-family endpoints/models keep unsigned
+    unless their configured operator explicitly trusts signature replay; Kimi-family endpoints/models keep unsigned
     reasoning_content-derived blocks, which Kimi requires even when empty."""
     system = None
     result: List[Dict[str, Any]] = []
@@ -730,7 +734,7 @@ def convert_messages_to_anthropic(
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
     _ensure_leading_user_turn(result)
-    _manage_thinking_signatures(result, base_url, model)
+    _manage_thinking_signatures(result, base_url, model, preserve_thinking=preserve_thinking)
     _evict_old_screenshots(result)
     _scrub_blank_text_blocks(result)
     return system, result

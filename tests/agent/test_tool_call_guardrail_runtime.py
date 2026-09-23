@@ -380,9 +380,9 @@ def _compressed_args(field: str) -> dict:
 
 
 def test_context_pruned_effectful_call_blocks_before_plugins_and_dispatch():
-    agent = _make_agent("mcp_write")
+    agent = _make_agent("test_effectful_write")
     args = _compressed_args("body")
-    tc = _mock_tool_call("mcp_write", json.dumps(args, ensure_ascii=False), "c-pruned-current")
+    tc = _mock_tool_call("test_effectful_write", json.dumps(args, ensure_ascii=False), "c-pruned-current")
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
@@ -400,10 +400,34 @@ def test_context_pruned_effectful_call_blocks_before_plugins_and_dispatch():
     assert "Recover the exact content from its durable source" in payload["message"]
 
 
-def test_plugin_modified_args_are_rechecked_for_context_prune_markers():
-    agent = _make_agent("mcp_write")
+def test_request_middleware_pruned_args_block_before_short_circuit_execution_middleware():
+    agent = _make_agent("test_effectful_write")
     pruned = _compressed_args("body")
-    tc = _mock_tool_call("mcp_write", json.dumps({"body": "complete"}), "c-pruned-plugin")
+    tc = _mock_tool_call(
+        "test_effectful_write", json.dumps({"body": "complete"}), "c-pruned-request-middleware"
+    )
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    request_result = SimpleNamespace(payload=pruned, trace=[{"source": "test_request_middleware"}])
+    with (
+        patch("hermes_cli.middleware.apply_tool_request_middleware", return_value=request_result),
+        patch("hermes_cli.middleware.run_tool_execution_middleware", return_value="SHORT_CIRCUIT") as execution_middleware,
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    execution_middleware.assert_not_called()
+    dispatch.assert_not_called()
+    payload = json.loads(messages[0]["content"])
+    assert payload["error"] == "suspected_pruned_tool_arguments"
+    assert payload["argument_paths"] == ["$.body"]
+
+
+def test_plugin_modified_args_are_rechecked_for_context_prune_markers():
+    agent = _make_agent("test_effectful_write")
+    pruned = _compressed_args("body")
+    tc = _mock_tool_call("test_effectful_write", json.dumps({"body": "complete"}), "c-pruned-plugin")
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
@@ -440,7 +464,7 @@ def test_legacy_pruned_tail_blocks_observed_short_effectful_writes():
         suffix = "...[truncated]"
         value = "x" * (total_len - len(suffix)) + suffix
         assert len(value) == total_len
-        assert _context_pruned_argument_paths("mcp_write", {"body": value}) == ["$.body"]
+        assert _context_pruned_argument_paths("test_effectful_write", {"body": value}) == ["$.body"]
 
     # The incident signature is a poison TAIL. Ordinary prose may discuss the marker.
     assert _context_pruned_argument_paths(
@@ -452,9 +476,9 @@ def test_legacy_pruned_tail_blocks_observed_short_effectful_writes():
 
 
 def test_context_pruned_effectful_call_blocks_in_concurrent_path():
-    agent = _make_agent("mcp_write")
+    agent = _make_agent("test_effectful_write")
     args = _compressed_args("body")
-    tc = _mock_tool_call("mcp_write", json.dumps(args, ensure_ascii=False), "c-pruned-concurrent")
+    tc = _mock_tool_call("test_effectful_write", json.dumps(args, ensure_ascii=False), "c-pruned-concurrent")
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 

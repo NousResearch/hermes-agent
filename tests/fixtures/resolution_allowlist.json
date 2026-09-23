@@ -385,11 +385,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/tools_config_post_setup.py",
-    "symbol": "_ensure_browser_use_cli",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/update_abort_recovery.py",
     "symbol": "_run_fresh_recovery_process",
     "kind": "bare_which"
@@ -531,6 +526,11 @@
   },
   {
     "path": "tools/environments/local.py",
+    "symbol": "_pin_managed_uv_state_when_managed_uv_would_run",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/environments/local.py",
     "symbol": "_resolve_hermes_bin_dir",
     "kind": "bare_which"
   },
@@ -552,11 +552,6 @@
   {
     "path": "tools/environments/ssh.py",
     "symbol": "_ensure_ssh_available",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/lazy_deps.py",
-    "symbol": "_uv_binary",
     "kind": "bare_which"
   },
   {
@@ -692,11 +687,6 @@
   {
     "path": "agent/anthropic_adapter.py",
     "symbol": "<module>",
-    "kind": "known_path_table"
-  },
-  {
-    "path": "hermes_cli/_early_recovery.py",
-    "symbol": "_find_uv_binary",
     "kind": "known_path_table"
   },
   {

@@ -130,6 +130,46 @@ def _warn_config_parse_failure(
         pass
 
 
+class ConfigRootNotMappingError(TypeError):
+    """A ``config.yaml`` that parses, but whose top-level value is not a mapping (a list, a scalar).
+
+    As unusable as broken YAML — every consumer reads the root as a mapping — so it belongs in the
+    parse-failure path (loud warning, ``corrupt`` copy) rather than surfacing as whatever
+    ``TypeError`` the first consumer trips over.
+    """
+
+
+def _is_config_parse_failure(exc: BaseException) -> bool:
+    """Whether *exc* means the file's CONTENT is unusable, as opposed to a load-time fault.
+
+    Only these may be reported as a "formatting error" and quarantined: a PyYAML failure or a
+    non-mapping root. Anything else (permissions, a full disk, a ``RecursionError`` raised by a
+    handler that re-entered the load under ``_CONFIG_LOCK``) says nothing about the file, and
+    reporting it as broken YAML is how a valid ``config.yaml`` got quarantined."""
+    return isinstance(exc, (yaml.YAMLError, ConfigRootNotMappingError))
+
+
+def _require_mapping_root(loaded: Any) -> Dict[str, Any]:
+    """The parsed ``config.yaml`` root as a mapping; ``None`` (empty file / bare document) is ``{}``."""
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ConfigRootNotMappingError(
+            f"top-level YAML value must be a mapping, got {type(loaded).__name__}")
+    return loaded
+
+
+def _report_config_load_failure(config_path: Path, exc: Exception, *, fallback: str = "defaults") -> None:
+    """The single funnel for an exception raised while loading ``config.yaml``.
+
+    A real parse failure keeps the loud, quarantine-the-file treatment; any other load fault is
+    logged with its true type and leaves the file — and the parse-failure record — alone."""
+    if _is_config_parse_failure(exc):
+        _warn_config_parse_failure(config_path, exc, fallback=fallback)
+        return
+    logger.warning("Could not load %s (%s): %s", config_path, type(exc).__name__, exc)
+
+
 def get_active_config_parse_failure() -> Optional[str]:
     """Return the recorded parse error while the ACTIVE config.yaml is still byte-identical
     (mtime_ns + size + ino + ctime_ns) to the file that failed to parse; else None."""
@@ -229,6 +269,17 @@ def validate_env_var_name_for_write(key: str) -> None:
 # read_user_config_raw() + save_config()). save_config itself no longer re-enters via
 # read_raw_config; it takes its raw mapping from require_readable_config_before_write.
 _CONFIG_LOCK = threading.RLock()
+# Re-entrancy guard for the load critical section, thread-local: ``.depth`` counts nested loads on
+# this thread and ``.in_flight`` is the mapping the outermost one has built so far. A load emits log
+# records from INSIDE ``_CONFIG_LOCK`` (e.g. a failed backup), and the redacting formatter reads
+# config to render them (``agent/redact.py::_redact_enabled`` -> ``load_config_readonly``).
+# ``_CONFIG_LOCK`` is an RLock, so that same-thread re-entry recurses instead of blocking — one
+# config file parse per emitted record, ~14 stack frames each. With a slightly deep starting stack
+# the load raised ``RecursionError``, which the load's ``except Exception`` reported as a YAML
+# "formatting error" and quarantined a perfectly valid config.yaml. One load per thread: a
+# re-entrant read is served the in-flight mapping (else last-known-good, else defaults) and never
+# re-parses. Shared with ``config_effective``, whose load holds the same lock and can emit the same.
+_LOAD_STATE = threading.local()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
@@ -521,7 +572,8 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
     else:
         if data is None or isinstance(data, dict):
             return
-        parse_error = TypeError(f"top-level YAML value must be a mapping, got {type(data).__name__}")
+        parse_error = ConfigRootNotMappingError(
+            f"top-level YAML value must be a mapping, got {type(data).__name__}")
 
     from hermes_cli.config_backups import backup_config
     backup_path = backup_config(config_path, "corrupt")
@@ -1007,7 +1059,7 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
         with open(config_path, encoding="utf-8") as f:
             config = fast_safe_load(f)
     except Exception as e:
-        _warn_config_parse_failure(config_path, e)
+        _report_config_load_failure(config_path, e)
         if raise_on_parse_error:
             raise InvalidUserConfigError(
                 f"Cannot inspect {config_path}: config.yaml is not valid YAML ({e})"
@@ -2003,7 +2055,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             with open(config_path, encoding="utf-8") as f:
                 data = fast_safe_load(f) or {}
         except Exception as e:
-            _warn_config_parse_failure(config_path, e)
+            _report_config_load_failure(config_path, e)
             return {}
 
         if not isinstance(data, dict):
@@ -2083,14 +2135,16 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be read", exc, _FIX_PERMS) from exc
     except Exception as exc:
-        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
+        parse_failure = _is_config_parse_failure(exc)
+        _report_config_load_failure(config_path, exc, fallback="refuse-write")
         raise _refuse_overwrite(
-            config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
+            config_path, "has a formatting error" if parse_failure else "cannot be read", exc,
+            (_FIX_YAML if parse_failure else _FIX_PERMS).format(backups=_backups_dir_display())) from exc
     if loaded is None:
         return {}
     if not isinstance(loaded, dict):
-        exc = TypeError(f"top-level YAML must be a mapping, got {type(loaded).__name__}")
-        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
+        exc = ConfigRootNotMappingError(f"top-level YAML value must be a mapping, got {type(loaded).__name__}")
+        _report_config_load_failure(config_path, exc, fallback="refuse-write")
         raise _refuse_overwrite(
             config_path, f"must start with settings names, but its top level is a {type(loaded).__name__}",
             exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
@@ -2253,6 +2307,28 @@ def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, 
     return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
 
 
+def _last_known_good_config(config_path: Path, path_key: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """The last config that loaded successfully, and a label naming where it came from.
+
+    This process's expanded copy first; then, for a fresh process (CLI restart, ``hermes config
+    get``), the newest byte-exact copy the last successful parse left in ``backups/config/``. That
+    copy holds the raw file (``${VAR}`` templates intact), so it goes through the same
+    canonicalize -> expand -> managed-overlay pipeline as a normal load. ``(None, …)`` when neither
+    exists — the caller decides what the label means then.
+    """
+    lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+    if lkg is not None:
+        return lkg, "last-known-good"
+    from hermes_cli.config_backups import load_newest_good_backup
+    raw_good = load_newest_good_backup(config_path)
+    if raw_good is None:
+        return None, "last-known-good-backup"
+    normalized = _canonicalize_config(_deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good))
+    expanded_good: Dict[str, Any] = _expand_env_vars(normalized)  # type: ignore[assignment]
+    lkg, _ = _merge_managed_overlay(expanded_good)
+    return lkg, "last-known-good-backup"
+
+
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[Dict[str, Any]]:
     """Warn about a parse failure and return the last-known-good config, or None (-> defaults).
     A parse failure must not silently replace the effective config with defaults — that drops
@@ -2262,32 +2338,36 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
     # ``approvals.deny`` rules, which are supposed to block commands even under yolo. Within a running
     # process we still have the last successfully loaded config — keep serving it until the file is fixed.
     # See #31188.
-    lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
-    fallback = "last-known-good"
-    if lkg is None:
-        # Fresh process (CLI restart, `hermes config get`): nothing loaded yet in this process, so
-        # fall back to the newest byte-exact copy the last successful parse left in backups/config/.
-        # It holds the raw file (``${VAR}`` templates intact), so it goes through the same
-        # canonicalize -> expand -> managed-overlay pipeline as a normal load.
-        from hermes_cli.config_backups import load_newest_good_backup
-        raw_good = load_newest_good_backup(config_path)
-        if raw_good is not None:
-            normalized = _canonicalize_config(_deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good))
-            expanded_good: Dict[str, Any] = _expand_env_vars(normalized)  # type: ignore[assignment]
-            lkg, _ = _merge_managed_overlay(expanded_good)
-            fallback = "last-known-good-backup"
+    lkg, fallback = _last_known_good_config(config_path, path_key)
     _warn_config_parse_failure(
         config_path, exc, fallback=fallback if lkg is not None else "defaults")
     if lkg is None:
         return None
     # save_config() stores the pre-expansion dict (templates preserved); the load path stores the
     # expanded one. Expand defensively — idempotent when already expanded.
-    lkg_copy: Dict[str, Any] = _expand_env_vars(copy.deepcopy(lkg))
+    lkg_copy: Dict[str, Any] = _expand_env_vars(copy.deepcopy(lkg))  # type: ignore[assignment]
     if cache_sig is not None:
         # Cache under the corrupt file's signature (empty env snapshot: always valid) so repeated
         # loads don't re-parse; fixing the file changes the signature and reloads normally.
         _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, lkg_copy, {})
     return lkg_copy
+
+
+def _load_fault_fallback(config_path: Path, path_key: str, exc: Exception) -> Optional[Dict[str, Any]]:
+    """Return the last-known-good config for a load failure that is NOT a parse failure, else None.
+
+    A permissions error, a full disk, a fault raised inside the load itself: nothing about the file's
+    CONTENT is known to be wrong, so it is reported with its true type and left alone — no
+    ``corrupt`` copy, no parse-failure record (which would make provider auto-resolution refuse to
+    work), and no cache entry under the file's signature, so a transient fault retries on the next
+    load instead of serving a stale answer until the file changes.
+    """
+    lkg, _ = _last_known_good_config(config_path, path_key)
+    logger.warning("Could not load %s (%s): %s — continuing with the last known good configuration.",
+                   config_path, type(exc).__name__, exc)
+    if lkg is None:
+        return None
+    return _expand_env_vars(copy.deepcopy(lkg))  # type: ignore[return-value]
 
 
 def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
@@ -2323,7 +2403,53 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, 
     return None
 
 
+def _begin_config_load() -> None:
+    """Mark this thread as being inside a config load (see ``_LOAD_STATE``)."""
+    _LOAD_STATE.depth = getattr(_LOAD_STATE, "depth", 0) + 1
+
+
+def _end_config_load() -> None:
+    """Drop this thread's in-flight mapping once its outermost load finishes."""
+    _LOAD_STATE.depth = max(0, getattr(_LOAD_STATE, "depth", 0) - 1)
+    if not _LOAD_STATE.depth:
+        _LOAD_STATE.in_flight = None
+
+
+def _publish_in_flight_config(config: Dict[str, Any]) -> None:
+    """Offer later re-entrant reads on this thread the mapping the load has built so far."""
+    _LOAD_STATE.in_flight = config
+
+
+def _config_load_in_progress() -> bool:
+    """Whether THIS thread is inside a config load — the condition under which a warning emitted
+    from the load critical section would re-enter it (``config_backups`` asks before logging)."""
+    return getattr(_LOAD_STATE, "depth", 0) > 0
+
+
+def _reentrant_config(path_key: str) -> Optional[Dict[str, Any]]:
+    """The config to serve a load that is re-entering on this thread, else ``None``.
+
+    A re-entrant reader (the redacting formatter, an ``ensure_hermes_home`` probe) only needs a
+    usable mapping; re-parsing is what recursed. Returns a copy — the outer load keeps building
+    its own. With the load too young to have published anything, the last successfully expanded
+    config stands in, and the built-in defaults are the floor.
+    """
+    if not _config_load_in_progress():
+        return None
+    in_flight = getattr(_LOAD_STATE, "in_flight", None)
+    if in_flight is None:
+        in_flight = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key) or DEFAULT_CONFIG
+    return copy.deepcopy(in_flight)
+
+
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    try:
+        reentrant = _reentrant_config(str(get_config_path()))
+    except Exception:
+        reentrant = None
+    if reentrant is not None:
+        return reentrant
+
     # Lock-free fast path for cache hits — same publication contract as `_read_raw_config_impl`
     # above (whole-tuple replace, `_CONFIG_LOCK` only serializes rebuilds and writers). A hit costs
     # ~0.024ms; behind a lock held by `save_config()` the same read measured 10010ms, and on a
@@ -2342,60 +2468,73 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         pass
 
     with _CONFIG_LOCK:
-        ensure_hermes_home()
-        config_path = get_config_path()
-        path_key = str(config_path)
+        _begin_config_load()
+        try:
+            ensure_hermes_home()
+            config_path = get_config_path()
+            path_key = str(config_path)
 
-        user_sig, cache_sig = _load_config_cache_sig(config_path)
+            user_sig, cache_sig = _load_config_cache_sig(config_path)
 
-        hit = _load_config_cache_hit(path_key, cache_sig)
-        if hit is not None:
-            return copy.deepcopy(hit) if want_deepcopy else hit
+            hit = _load_config_cache_hit(path_key, cache_sig)
+            if hit is not None:
+                return copy.deepcopy(hit) if want_deepcopy else hit
 
-        config = copy.deepcopy(DEFAULT_CONFIG)
+            config = copy.deepcopy(DEFAULT_CONFIG)
+            _publish_in_flight_config(config)
 
-        if user_sig is not None:
-            try:
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = fast_safe_load(f) or {}
+            if user_sig is not None:
+                try:
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = _require_mapping_root(fast_safe_load(f))
 
-                if "max_turns" in user_config:
-                    agent_user_config = dict(user_config.get("agent") or {})
-                    if agent_user_config.get("max_turns") is None:
-                        agent_user_config["max_turns"] = user_config["max_turns"]
-                    user_config["agent"] = agent_user_config
-                    user_config.pop("max_turns", None)
+                    if "max_turns" in user_config:
+                        agent_user_config = dict(user_config.get("agent") or {})
+                        if agent_user_config.get("max_turns") is None:
+                            agent_user_config["max_turns"] = user_config["max_turns"]
+                        user_config["agent"] = agent_user_config
+                        user_config.pop("max_turns", None)
 
-                config = _deep_merge(config, user_config)
-                # A copy of the file that just parsed is what a FRESH process falls back to when the
-                # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
-                # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
-                from hermes_cli.config_backups import backup_config
-                backup_config(config_path, "good")
-            except Exception as e:
-                lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
-                if lkg_copy is not None:
-                    return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
+                    config = _deep_merge(config, user_config)
+                    # The merged result is what a re-entrant read (log formatting inside the backup
+                    # below) may serve itself; publish before anything can log.
+                    _publish_in_flight_config(config)
+                    # A copy of the file that just parsed is what a FRESH process falls back to when the
+                    # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
+                    # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
+                    from hermes_cli.config_backups import backup_config
+                    backup_config(config_path, "good")
+                except Exception as e:
+                    # Only a genuine parse failure may be reported as broken YAML and quarantined;
+                    # any other load fault keeps serving the last-known-good config but leaves the
+                    # file alone (and is not cached under its signature, so it can retry).
+                    lkg_copy = (_last_known_good_fallback(config_path, path_key, cache_sig, e)
+                                if _is_config_parse_failure(e)
+                                else _load_fault_fallback(config_path, path_key, e))
+                    if lkg_copy is not None:
+                        return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
-        normalized = _canonicalize_config(config)
-        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
-        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
-        if cache_sig is not None:
-            # The cache stores its own deepcopy so load_config() callers can mutate freely while
-            # load_config_readonly() callers all see the same stable object. The env snapshot
-            # records the values this expansion was made against so later loads detect drift.
-            cached_copy = copy.deepcopy(expanded)
-            env_snapshot = _env_ref_snapshot(normalized)
-            if managed_config:
-                _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
-            # Readonly path returns the same object later calls will see (identity invariant).
-            if not want_deepcopy:
-                return cached_copy
-        else:
-            _LOAD_CONFIG_CACHE.pop(path_key, None)
-        # First-load result is a fresh dict (not aliased to the cache); safe to return directly.
-        return expanded
+            normalized = _canonicalize_config(config)
+            expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+            _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+            if cache_sig is not None:
+                # The cache stores its own deepcopy so load_config() callers can mutate freely while
+                # load_config_readonly() callers all see the same stable object. The env snapshot
+                # records the values this expansion was made against so later loads detect drift.
+                cached_copy = copy.deepcopy(expanded)
+                env_snapshot = _env_ref_snapshot(normalized)
+                if managed_config:
+                    _env_ref_snapshot(managed_config, env_snapshot)
+                _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
+                # Readonly path returns the same object later calls will see (identity invariant).
+                if not want_deepcopy:
+                    return cached_copy
+            else:
+                _LOAD_CONFIG_CACHE.pop(path_key, None)
+            # First-load result is a fresh dict (not aliased to the cache); safe to return directly.
+            return expanded
+        finally:
+            _end_config_load()
 
 
 _SECURITY_COMMENT = """

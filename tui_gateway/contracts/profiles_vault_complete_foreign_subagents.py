@@ -357,6 +357,7 @@ class OnboardingAnswers(Params):
     layout: str | None = None
     focus: list[str] | None = None
     connectors: list[str] | None = None
+    plugins: list[str] | None = None
     # The onboarding store may carry extra UI-only keys; the writer ignores unknown ones.
     model_config = Params.model_config | {"extra": "allow"}
 

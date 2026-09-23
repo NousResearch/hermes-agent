@@ -13,10 +13,13 @@ config or tree change.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_GO_LIVE_LOCK = threading.Lock()
 
 # Hooks the gateway consults per inbound/outbound message: live as soon as the registry holds them.
 _GATEWAY_TRANSFORM_HOOKS = frozenset({
@@ -126,18 +129,34 @@ def load_and_go_live(name: str) -> Optional[Dict[str, Any]]:
     MCP servers and hand them (and its skills) to this profile's open chats with a turn note. Returns
     the activation summary with ``live_now: {mcp_servers, skills}``; ``deferred`` then keeps only what
     waits for the next session (Python ``tools``, ``prompt``). None when the plugin did not load."""
+    # A forced rediscovery unloads every plugin before it loads them again, which drops their server
+    # configs, skills and liveness declarations for the length of the pass. Two installs finishing
+    # together (one card, two rows) each go live; the second one's pass must not run while the first
+    # reads or connects, or the first plugin comes up with no tools. One go-live at a time.
+    with _GO_LIVE_LOCK:
+        return _go_live(name)
+
+
+def _go_live(name: str) -> Optional[Dict[str, Any]]:
+    from hermes_cli.plugins_activation_live import connect_plugin_mcp, live_notice, plugin_skills
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        discover_plugins(force=True)
-        activation = find_activation(activation_summaries(get_plugin_manager()), name)
+        from hermes_cli.plugins import _join_background_discovery, get_plugin_manager
+        _join_background_discovery()
+        manager = get_plugin_manager()
+        # Other forced passes (a reload-plugins verb, the dashboard) do not take the go-live lock, so the
+        # reads share the discovery lock with the pass that produced them.
+        with manager._discovery_lock:
+            manager.discover_and_load(force=True)
+            activation = find_activation(activation_summaries(manager), name)
+            portable = manager.get_portable_mcp_servers()
+            skills = plugin_skills(activation["key"]) if activation else []
     except Exception:
         logger.debug("in-process plugin reload after change to %r failed", name, exc_info=True)
         return None
     if activation is None:
         return None
-    from hermes_cli.plugins_activation_live import connect_plugin_mcp, live_notice, plugin_skills
-    servers = connect_plugin_mcp(activation)
-    activation["live_now"] = {"mcp_servers": servers, "skills": plugin_skills(activation["key"])}
+    servers = connect_plugin_mcp(activation, portable)
+    activation["live_now"] = {"mcp_servers": servers, "skills": skills}
     activation["deferred"] = {k: v for k, v in (activation.get("deferred") or {}).items() if k != "mcp_servers"}
     import sys
     server = sys.modules.get("tui_gateway.server")  # loaded == this process hosts chats

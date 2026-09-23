@@ -138,6 +138,71 @@ class TestTailCountArchivesAsRewindSemantics:
             f"{[h.get('snippet') for h in _recall(db, 'turn 1')]}"
         )
 
+    def test_explicit_carried_messages_leave_summarized_tool_results_discoverable(self, db: SessionDB) -> None:
+        """A non-contiguous carried set must not classify a summarized tool block as rewind-only.
+
+        Micro-compaction rewrites a prefix plus assistant/tool exchange plus suffix into
+        a prefix plus summary marker plus suffix. The carried rows therefore live on BOTH
+        sides of the removed exchange; using a positional tail count hid the removed
+        tool result as active=0, compacted=0 (#118481).
+        """
+        db.append_message("sess1", role="user", content="question 0")
+        db.append_message(
+            "sess1",
+            role="assistant",
+            content="",
+            tool_calls=[{
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        )
+        db.append_message(
+            "sess1",
+            role="tool",
+            content="tool result that was summarized",
+            tool_call_id="call-1",
+            tool_name="read_file",
+        )
+        db.append_message("sess1", role="user", content="question 1")
+        db.append_message("sess1", role="assistant", content="answer 1")
+
+        carried = [
+            message for message in db.get_messages_as_conversation("sess1")
+            if message.get("content") in {"question 0", "question 1", "answer 1"}
+        ]
+        assert carried and all("_row_id" not in message for message in carried), (
+            "this regression must exercise the row-id-less resume fallback"
+        )
+
+        db.archive_and_compact(
+            "sess1",
+            [
+                {"role": "user", "content": "question 0"},
+                {"role": "assistant", "content": "[CONTEXT COMPACTION] summarized tool exchange"},
+                {"role": "user", "content": "question 1"},
+                {"role": "assistant", "content": "answer 1"},
+            ],
+            carried_messages=carried,
+        )
+
+        rows = _rows(db)
+        summarized_tool = [r for r in rows if r["content"] == "tool result that was summarized"]
+        assert len(summarized_tool) == 1
+        assert summarized_tool[0]["active"] == 0
+        assert summarized_tool[0]["compacted"] == 1, (
+            "summarized tool results must stay discoverable as compacted history"
+        )
+
+        carried_original = [
+            r for r in rows
+            if r["content"] == "question 1" and r["active"] == 0
+        ]
+        assert len(carried_original) == 1
+        assert carried_original[0]["compacted"] == 0, (
+            "only exact carried-forward originals should be hidden as superseded duplicates"
+        )
+
     def test_default_zero_keeps_archive_everything(self, db: SessionDB) -> None:
         """Without tail_count the historical behavior is untouched."""
         _seed(db)

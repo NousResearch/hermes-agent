@@ -3,11 +3,70 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent.action_mutations import MutationSpec, record_tool_mutation
+import pytest
+
+from agent.action_mutations import MutationSpec, record_tool_mutation, reviewed_mutation_spec
 from gateway.action_journal import ActionJournal
 from tools.registry import ToolRegistry
 
 NOW = datetime(2026, 9, 22, 18, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "mcp__google_calendar__create_event",
+        "mcp__todoist__add_tasks",
+        "mcp__obsidian__create_note",
+        "mcp__homeassistant__ha_call_service",
+        "mcp__homeassistant__ha_config_set_automation",
+        "mcp__homeassistant__ha_remove_entity",
+        "mcp__homeassistant__ha_set_todo_item",
+        "mcp__homeassistant__ha_restart",
+        "mcp__opnsense__apply_firewall_rule",
+    ],
+)
+def test_reviewed_mcp_registry_names_match_runtime_prefix(name: str) -> None:
+    assert reviewed_mutation_spec(name) is not None
+
+
+@pytest.mark.parametrize(
+    ("name", "action", "expected"),
+    [
+        ("mcp__homeassistant__ha_manage_pipeline", "list", False),
+        ("mcp__homeassistant__ha_manage_pipeline", "update", True),
+        ("mcp__homeassistant__ha_manage_blueprints", "get", False),
+        ("mcp__homeassistant__ha_manage_blueprints", "substitute", False),
+        ("mcp__homeassistant__ha_manage_blueprints", "import", True),
+        ("mcp__homeassistant__ha_manage_updates", "list", False),
+        ("mcp__homeassistant__ha_manage_updates", "install", True),
+        ("mcp__homeassistant__ha_manage_backup", "view", False),
+        ("mcp__homeassistant__ha_manage_backup", "restore", True),
+        ("mcp__homeassistant__ha_manage_theme", "get_engine_theme", False),
+        ("mcp__homeassistant__ha_manage_theme", "get_engine_theme", False),
+        ("mcp__homeassistant__ha_manage_theme", "set_engine_theme", True),
+        ("mcp__homeassistant__ha_manage_energy_prefs", "get", False),
+        ("mcp__homeassistant__ha_manage_energy_prefs", "add_source", True),
+        ("mcp__homeassistant__ha_manage_hacs", "download", True),
+        ("mcp__homeassistant__ha_manage_app", "list", False),
+    ],
+)
+def test_mixed_home_assistant_tools_only_record_write_actions(
+    tmp_path: Path, name: str, action: str, expected: bool
+) -> None:
+    journal = ActionJournal(tmp_path / f"{action}.sqlite3", profile_key="becky")
+    event = record_tool_mutation(
+        function_name=name,
+        function_args={"mode" if "energy_prefs" in name else "action": action},
+        result={"success": True},
+        status="ok",
+        session_id="session",
+        turn_id="turn",
+        tool_call_id=f"call-{action}",
+        journal=journal,
+        now=lambda: NOW,
+    )
+    assert (event is not None) is expected
 
 
 def test_explicit_mutation_metadata_is_validated_and_not_added_to_schema() -> None:
@@ -176,4 +235,34 @@ def test_common_post_tool_boundary_records_normal_workflow_mutation(
         profile_key=hermes_home_key(tmp_path / "profile"),
     )
     assert len(journal.list(after_cursor=None, limit=10).events) == 1
+    close_action_journals()
+
+
+def test_common_post_tool_boundary_records_failed_normal_mutation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    from agent.action_mutations import close_action_journals
+    from model_tools import _emit_post_tool_call_hook
+
+    close_action_journals()
+    _emit_post_tool_call_hook(
+        function_name="mcp__todoist__complete_tasks",
+        function_args={"tasks": [{"id": "private"}]},
+        result={"error": "provider response must not be stored"},
+        session_id="telegram-session",
+        turn_id="turn-normal-failed",
+        tool_call_id="call-normal-failed",
+        status="error",
+    )
+    from hermes_constants import hermes_home_key
+
+    journal = ActionJournal(
+        tmp_path / "profile" / "gateway" / "becky-actions.sqlite3",
+        profile_key=hermes_home_key(tmp_path / "profile"),
+    )
+    events = journal.list(after_cursor=None, limit=10).events
+    assert len(events) == 1
+    assert events[0].status.value == "failed"
+    assert "provider response" not in events[0].model_dump_json()
     close_action_journals()

@@ -27,6 +27,7 @@ from gateway.action_journal import (
     ActionJournal,
     MutationConflict,
     MutationCursorInvalid,
+    OneShotInProgress,
 )
 from gateway.becky_actions import (
     OneShotResult,
@@ -338,6 +339,18 @@ ActionExecutor = Callable[..., Awaitable[OneShotResult | dict[str, Any]]]
 ActionLoopStarter = Callable[..., Awaitable[StartLoopResult | dict[str, Any]]]
 
 
+async def _default_one_shot_executor(**kwargs: Any) -> OneShotResult:
+    """Fail closed when the gateway has no typed provider executor wired.
+
+    The dashboard can still create the normal Telegram loop from this
+    disposition.  Crucially, the fallback never guesses tool arguments or
+    claims that a mutation happened; deployments with a reviewed executor can
+    inject it through ``start_becky_loops_bridge``.
+    """
+    del kwargs
+    return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+
+
 class TopicController(Protocol):
     @property
     def is_connected(self) -> bool: ...
@@ -426,6 +439,22 @@ class TelegramTopicSender:
         ):
             raise _TopicSendFailure()
         return TopicSendReceipt(message_id=message_id)
+
+    async def create_topic(self, *, chat_id: str, title: str) -> str:
+        """Create one private Telegram topic for an Action follow-up."""
+        creator = getattr(self._adapter, "_create_dm_topic", None)
+        if not callable(creator):
+            raise _TopicSendFailure()
+        try:
+            thread_id = await creator(int(chat_id), title)
+        except (asyncio.CancelledError, _TopicSendFailure):
+            raise
+        except Exception:
+            raise _TopicSendFailure() from None
+        value = str(thread_id or "").strip()
+        if not _POSITIVE_TELEGRAM_ID_RE.fullmatch(value):
+            raise _TopicSendFailure()
+        return value
 
 
 class TelegramTopicController:
@@ -1345,21 +1374,46 @@ class BeckyLoopsBridgeServer:
             raise _RemoteFailure("one_shot_not_configured")
         if self.action_journal is None:
             raise _RemoteFailure("actions_unavailable")
-        existing = self.action_journal.get(request.idempotency_key)
-        if existing is not None:
-            return OneShotResult(
-                schema_version="1",
-                disposition=existing.status.value,
-                event=existing,
-            ).model_dump(mode="json")
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                request.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         try:
-            result = await self.one_shot_executor(
-                title=request.title,
-                text=request.text,
-                idempotency_key=request.idempotency_key,
-                note_default=request.note_default,
-                policy_version=request.policy_version,
+            replay = self.action_journal.claim_one_shot(
+                request.idempotency_key, fingerprint
             )
+        except MutationConflict:
+            raise _RemoteFailure("idempotency_conflict") from None
+        except OneShotInProgress:
+            # Keep the closed dashboard error vocabulary. A pending durable
+            # claim is intentionally not retried remotely; callers must
+            # reconcile via the idempotent request key rather than create a
+            # second mutation.
+            raise _RemoteFailure("one_shot_not_configured") from None
+        if replay is not None:
+            try:
+                return OneShotResult.model_validate(json.loads(replay)).model_dump(
+                    mode="json"
+                )
+            except Exception:
+                raise _RemoteFailure("one_shot_not_configured") from None
+        try:
+            # The normal tool observer runs inside the executor. Bind the
+            # authenticated request key around that call so its journal event
+            # and this bridge result share one durable identity.
+            from agent.action_mutations import action_event_key_override
+
+            with action_event_key_override(request.idempotency_key):
+                result = await self.one_shot_executor(
+                    title=request.title,
+                    text=request.text,
+                    idempotency_key=request.idempotency_key,
+                    note_default=request.note_default,
+                    policy_version=request.policy_version,
+                )
             result = OneShotResult.model_validate(result)
         except asyncio.CancelledError:
             raise
@@ -1367,13 +1421,38 @@ class BeckyLoopsBridgeServer:
             # The executor is required to return a structured result.  A
             # malformed result is a protocol failure, never a mutation claim.
             return _PROTOCOL_FAILURE
-        if result.event is not None and result.event.source_event_key != request.idempotency_key:
-            return _PROTOCOL_FAILURE
         if result.event is not None:
+            # A one-shot executor may have gone through the common tool
+            # observer, whose stable source key is derived from tool-call
+            # identity.  The authenticated Shortcut key is the stronger
+            # idempotency boundary for this request, so bind the safe event to
+            # it before appending and always require a receipt projection.
+            event = result.event.model_copy(
+                update={
+                    "source_event_key": request.idempotency_key,
+                    "requires_receipt": True,
+                }
+            )
+            result = result.model_copy(update={"event": event})
             try:
-                self.action_journal.append(result.event)
+                existing = self.action_journal.get(request.idempotency_key)
+                if existing is not None:
+                    if existing.status.value != result.disposition:
+                        raise MutationConflict(
+                            "one-shot observer result disagrees with executor"
+                        )
+                    result = result.model_copy(update={"event": existing})
+                else:
+                    self.action_journal.append(event)
             except MutationConflict:
                 raise _RemoteFailure("idempotency_conflict") from None
+        try:
+            self.action_journal.complete_one_shot(
+                request.idempotency_key,
+                json.dumps(result.model_dump(mode="json"), separators=(",", ":")),
+            )
+        except OneShotInProgress:
+            raise _RemoteFailure("one_shot_not_configured") from None
         return result.model_dump(mode="json")
 
     async def _start_loop_from_action(self, params: dict[str, Any]) -> object:
@@ -1382,15 +1461,28 @@ class BeckyLoopsBridgeServer:
             return _PROTOCOL_FAILURE
         if self.action_loop_starter is None:
             raise _RemoteFailure("start_loop_unavailable")
+        if self.action_journal is None:
+            raise _RemoteFailure("actions_unavailable")
         fingerprint = json.dumps(
             request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
         )
+        fingerprint_hash = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
         async with self._action_loop_results_lock:
-            existing = self._action_loop_results.get(request.idempotency_key)
-            if existing is not None:
-                if existing[0] != fingerprint:
-                    raise _RemoteFailure("idempotency_conflict")
-                return existing[1]
+            try:
+                replay = self.action_journal.claim_start_loop(
+                    request.idempotency_key, fingerprint_hash
+                )
+            except MutationConflict:
+                raise _RemoteFailure("idempotency_conflict") from None
+            except OneShotInProgress:
+                raise _RemoteFailure("start_loop_incomplete") from None
+            if replay is not None:
+                try:
+                    return StartLoopResult.model_validate(json.loads(replay)).model_dump(
+                        mode="json"
+                    )
+                except Exception:
+                    raise _RemoteFailure("start_loop_incomplete") from None
             try:
                 result = await self.action_loop_starter(
                     title=request.title,
@@ -1406,7 +1498,13 @@ class BeckyLoopsBridgeServer:
             if validated.title != request.title:
                 raise _RemoteFailure("start_loop_incomplete")
             payload = validated.model_dump(mode="json")
-            self._action_loop_results[request.idempotency_key] = (fingerprint, payload)
+            try:
+                self.action_journal.complete_start_loop(
+                    request.idempotency_key,
+                    json.dumps(payload, separators=(",", ":")),
+                )
+            except OneShotInProgress:
+                raise _RemoteFailure("start_loop_incomplete") from None
             return payload
 
     async def _answer_new_topic(
@@ -2544,12 +2642,61 @@ async def start_becky_loops_bridge(
             from agent.action_mutations import get_action_journal
 
             action_journal = get_action_journal()
+        if one_shot_executor is None:
+            one_shot_executor = _default_one_shot_executor
         store = SessionDBBeckyLoopsStore(
             db,
             session_store=session_store,
             managed_topic_ids=config.managed_topic_ids,
         )
         store._chat_id = config.chat_id
+        if action_loop_starter is None and topic_sender is not None:
+            create_topic = getattr(topic_sender, "create_topic", None)
+            record_topic = getattr(store, "record_shortcut_topic", None)
+            if callable(create_topic) and callable(record_topic):
+                async def _start_action_loop(
+                    *,
+                    title: str,
+                    context: str,
+                    prior_status: str,
+                    idempotency_key: UUID,
+                ) -> dict[str, Any]:
+                    del prior_status, idempotency_key
+                    thread_id = await create_topic(
+                        chat_id=config.chat_id,
+                        title=title,
+                    )
+                    receipt = await topic_sender.send_topic(
+                        chat_id=config.chat_id,
+                        thread_id=thread_id,
+                        text=context,
+                        reply_to_message_id=None,
+                    )
+                    session_id = record_topic(
+                        title=title,
+                        text=context,
+                        topic_id=thread_id,
+                        message_id=receipt.message_id,
+                    )
+                    if not isinstance(session_id, str) or not session_id:
+                        raise RuntimeError("action loop session unavailable")
+                    chat_id = config.chat_id
+                    if chat_id.startswith("-100"):
+                        deep_link_chat = chat_id[4:]
+                    else:
+                        deep_link_chat = chat_id.lstrip("-")
+                    if not _POSITIVE_TELEGRAM_ID_RE.fullmatch(deep_link_chat):
+                        raise RuntimeError("action loop deep link unavailable")
+                    return {
+                        "schema_version": "1",
+                        "state": "completed",
+                        "title": title,
+                        "telegram_url": (
+                            f"https://t.me/c/{deep_link_chat}/{thread_id}"
+                        ),
+                    }
+
+                action_loop_starter = _start_action_loop
         server = BeckyLoopsBridgeServer(
             config=config,
             store=store,

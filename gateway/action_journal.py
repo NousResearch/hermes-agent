@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from datetime import datetime
 from enum import StrEnum
@@ -87,6 +88,10 @@ class MutationConflict(ValueError):
     """The same idempotency key was used for a different safe event."""
 
 
+class OneShotInProgress(ValueError):
+    """A one-shot key is claimed by an unfinished execution."""
+
+
 class ActionJournal:
     """SQLite-backed append-only journal scoped to one Hermes profile."""
 
@@ -101,10 +106,15 @@ class ActionJournal:
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.path = str(path)
-        self.profile_key = str(profile_key).strip()
-        if not self.profile_key:
+        raw_profile_key = str(profile_key).strip()
+        if not raw_profile_key:
             raise ValueError("profile_key is required")
+        # The profile selector is only an isolation input.  Store a stable
+        # digest so absolute home paths, usernames, or deployment labels never
+        # land in the SQLite file or cursor payload.
+        self.profile_key = hashlib.sha256(raw_profile_key.encode("utf-8")).hexdigest()
         self._now = now or datetime.now
+        self._lock = threading.RLock()
         if self.path != ":memory:":
             Path(self.path).expanduser().parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(
@@ -156,11 +166,28 @@ class ActionJournal:
             );
             CREATE INDEX IF NOT EXISTS mutation_journal_profile_sequence
                 ON mutation_journal (profile_key, sequence);
+            CREATE TABLE IF NOT EXISTS one_shot_requests (
+                profile_key TEXT NOT NULL,
+                request_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('pending', 'complete')),
+                result_json TEXT,
+                PRIMARY KEY (profile_key, request_key)
+            );
+            CREATE TABLE IF NOT EXISTS start_loop_requests (
+                profile_key TEXT NOT NULL,
+                request_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('pending', 'complete')),
+                result_json TEXT,
+                PRIMARY KEY (profile_key, request_key)
+            );
             """
         )
 
     def close(self) -> None:
-        self._connection.close()
+        with self._lock:
+            self._connection.close()
 
     def __enter__(self) -> Self:
         return self
@@ -171,87 +198,214 @@ class ActionJournal:
     def append(self, event: MutationEvent) -> tuple[MutationEvent, bool]:
         if not isinstance(event, MutationEvent):
             event = MutationEvent.model_validate(event)
-        key = str(event.source_event_key)
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
+        with self._lock:
+            key = str(event.source_event_key)
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    """
+                    SELECT * FROM mutation_journal
+                    WHERE profile_key = ? AND source_event_key = ?
+                    """,
+                    (self.profile_key, key),
+                ).fetchone()
+                if row is not None:
+                    existing = self._event_from_row(row)
+                    if existing != event:
+                        raise MutationConflict("source_event_key already has another event")
+                    self._connection.execute("COMMIT")
+                    return existing, False
+                self._connection.execute(
+                    """
+                    INSERT INTO mutation_journal (
+                        profile_key, source_event_key, status, action_type, title,
+                        description, provider, operation, destination, occurred_at,
+                        context, requires_receipt
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.profile_key,
+                        key,
+                        event.status.value,
+                        event.action_type.value,
+                        event.title,
+                        event.description,
+                        event.provider,
+                        event.operation,
+                        event.destination,
+                        event.occurred_at.isoformat(),
+                        event.context,
+                        int(event.requires_receipt),
+                    ),
+                )
+                self._connection.execute("COMMIT")
+                return event, True
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+
+    def list(self, *, after_cursor: str | None, limit: int = 100) -> MutationPage:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        with self._lock:
+            sequence = 0 if after_cursor is None else self._decode_cursor(after_cursor)
+            rows = self._connection.execute(
+                """
+                SELECT * FROM mutation_journal
+                WHERE profile_key = ? AND sequence > ?
+                ORDER BY sequence ASC
+                LIMIT ?
+                """,
+                (self.profile_key, sequence, limit + 1),
+            ).fetchall()
+            visible = rows[:limit]
+            # The dashboard persists this value after every poll. Keep a
+            # high-water cursor even on a terminal page; otherwise a normal
+            # empty poll would reset the dashboard to sequence zero and replay
+            # the complete journal on its next request. An empty first poll
+            # has no high-water mark, while an empty continuation echoes the
+            # caller's already-validated cursor.
+            next_cursor = (
+                self._encode_cursor(int(visible[-1]["sequence"]))
+                if visible
+                else after_cursor
+            )
+            return MutationPage(
+                schema_version="1",
+                events=[self._event_from_row(row) for row in visible],
+                next_cursor=next_cursor,
+            )
+
+    def get(self, source_event_key: UUID | str) -> MutationEvent | None:
+        """Return one event for observer replay/idempotency checks."""
+        with self._lock:
             row = self._connection.execute(
                 """
                 SELECT * FROM mutation_journal
                 WHERE profile_key = ? AND source_event_key = ?
                 """,
-                (self.profile_key, key),
+                (self.profile_key, str(source_event_key)),
             ).fetchone()
-            if row is not None:
-                existing = self._event_from_row(row)
-                if existing != event:
-                    raise MutationConflict("source_event_key already has another event")
+            return None if row is None else self._event_from_row(row)
+
+    def claim_one_shot(self, request_key: UUID | str, fingerprint: str) -> str | None:
+        """Claim a one-shot request, returning a stored safe result on replay."""
+        if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+            raise ValueError("invalid one-shot fingerprint")
+        with self._lock:
+            key = str(request_key)
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    """
+                    SELECT fingerprint, state, result_json FROM one_shot_requests
+                    WHERE profile_key = ? AND request_key = ?
+                    """,
+                    (self.profile_key, key),
+                ).fetchone()
+                if row is None:
+                    self._connection.execute(
+                        """
+                        INSERT INTO one_shot_requests
+                            (profile_key, request_key, fingerprint, state)
+                        VALUES (?, ?, ?, 'pending')
+                        """,
+                        (self.profile_key, key, fingerprint),
+                    )
+                    self._connection.execute("COMMIT")
+                    return None
+                if row["fingerprint"] != fingerprint:
+                    raise MutationConflict("one-shot request key has another payload")
+                if row["state"] == "pending":
+                    raise OneShotInProgress("one-shot request is still pending")
+                result_json = row["result_json"]
+                if not isinstance(result_json, str):
+                    raise OneShotInProgress("one-shot request result is incomplete")
                 self._connection.execute("COMMIT")
-                return existing, False
-            self._connection.execute(
+                return result_json
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+
+    def complete_one_shot(self, request_key: UUID | str, result_json: str) -> None:
+        """Store a validated, safe one-shot result for durable replay."""
+        if not isinstance(result_json, str) or not result_json:
+            raise ValueError("invalid one-shot result")
+        with self._lock:
+            cursor = self._connection.execute(
                 """
-                INSERT INTO mutation_journal (
-                    profile_key, source_event_key, status, action_type, title,
-                    description, provider, operation, destination, occurred_at,
-                    context, requires_receipt
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE one_shot_requests
+                SET state = 'complete', result_json = ?
+                WHERE profile_key = ? AND request_key = ? AND state = 'pending'
                 """,
-                (
-                    self.profile_key,
-                    key,
-                    event.status.value,
-                    event.action_type.value,
-                    event.title,
-                    event.description,
-                    event.provider,
-                    event.operation,
-                    event.destination,
-                    event.occurred_at.isoformat(),
-                    event.context,
-                    int(event.requires_receipt),
-                ),
+                (result_json, self.profile_key, str(request_key)),
             )
-            self._connection.execute("COMMIT")
-            return event, True
-        except Exception:
-            self._connection.execute("ROLLBACK")
-            raise
+            if cursor.rowcount != 1:
+                raise OneShotInProgress("one-shot request is not pending")
 
-    def list(self, *, after_cursor: str | None, limit: int = 100) -> MutationPage:
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-            raise ValueError("limit must be between 1 and 100")
-        sequence = 0 if after_cursor is None else self._decode_cursor(after_cursor)
-        rows = self._connection.execute(
-            """
-            SELECT * FROM mutation_journal
-            WHERE profile_key = ? AND sequence > ?
-            ORDER BY sequence ASC
-            LIMIT ?
-            """,
-            (self.profile_key, sequence, limit + 1),
-        ).fetchall()
-        has_more = len(rows) > limit
-        visible = rows[:limit]
-        next_cursor = (
-            self._encode_cursor(int(visible[-1]["sequence"]))
-            if has_more and visible
-            else None
-        )
-        return MutationPage(
-            schema_version="1",
-            events=[self._event_from_row(row) for row in visible],
-            next_cursor=next_cursor,
+    def claim_start_loop(self, request_key: UUID | str, fingerprint: str) -> str | None:
+        return self._claim_operation(
+            "start_loop_requests", request_key=request_key, fingerprint=fingerprint
         )
 
-    def get(self, source_event_key: UUID | str) -> MutationEvent | None:
-        """Return one event for observer replay/idempotency checks."""
-        row = self._connection.execute(
-            """
-            SELECT * FROM mutation_journal
-            WHERE profile_key = ? AND source_event_key = ?
-            """,
-            (self.profile_key, str(source_event_key)),
-        ).fetchone()
-        return None if row is None else self._event_from_row(row)
+    def complete_start_loop(self, request_key: UUID | str, result_json: str) -> None:
+        self._complete_operation(
+            "start_loop_requests", request_key=request_key, result_json=result_json
+        )
+
+    def _claim_operation(
+        self, table: str, *, request_key: UUID | str, fingerprint: str
+    ) -> str | None:
+        if table not in {"start_loop_requests"}:
+            raise ValueError("invalid operation table")
+        if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+            raise ValueError("invalid operation fingerprint")
+        with self._lock:
+            key = str(request_key)
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    f"SELECT fingerprint, state, result_json FROM {table} "
+                    "WHERE profile_key = ? AND request_key = ?",
+                    (self.profile_key, key),
+                ).fetchone()
+                if row is None:
+                    self._connection.execute(
+                        f"INSERT INTO {table} "
+                        "(profile_key, request_key, fingerprint, state) "
+                        "VALUES (?, ?, ?, 'pending')",
+                        (self.profile_key, key, fingerprint),
+                    )
+                    self._connection.execute("COMMIT")
+                    return None
+                if row["fingerprint"] != fingerprint:
+                    raise MutationConflict("operation key has another payload")
+                if row["state"] == "pending":
+                    raise OneShotInProgress("operation is still pending")
+                result_json = row["result_json"]
+                if not isinstance(result_json, str):
+                    raise OneShotInProgress("operation result is incomplete")
+                self._connection.execute("COMMIT")
+                return result_json
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+
+    def _complete_operation(
+        self, table: str, *, request_key: UUID | str, result_json: str
+    ) -> None:
+        if table not in {"start_loop_requests"}:
+            raise ValueError("invalid operation table")
+        if not isinstance(result_json, str) or not result_json:
+            raise ValueError("invalid operation result")
+        with self._lock:
+            cursor = self._connection.execute(
+                f"UPDATE {table} SET state = 'complete', result_json = ? "
+                "WHERE profile_key = ? AND request_key = ? AND state = 'pending'",
+                (result_json, self.profile_key, str(request_key)),
+            )
+            if cursor.rowcount != 1:
+                raise OneShotInProgress("operation is not pending")
 
     def _encode_cursor(self, sequence: int) -> str:
         profile_digest = hashlib.sha256(self.profile_key.encode("utf-8")).hexdigest()[:16]
@@ -317,4 +471,5 @@ __all__ = [
     "MutationPage",
     "MutationStatus",
     "MutationType",
+    "OneShotInProgress",
 ]

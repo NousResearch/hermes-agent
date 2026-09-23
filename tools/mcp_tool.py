@@ -4372,9 +4372,11 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     if annotations is None:
         return False
     if isinstance(annotations, dict):
-        hint = annotations.get("readOnlyHint")
+        hint = annotations.get("readOnlyHint", annotations.get("read_only_hint"))
     else:
         hint = getattr(annotations, "readOnlyHint", None)
+        if hint is None:
+            hint = getattr(annotations, "read_only_hint", None)
     return hint is True
 
 
@@ -4386,11 +4388,20 @@ def _annotation_mutation_spec(mcp_tool: Any) -> Any:
     ``hermesMutation`` annotation; malformed or read-only declarations fail
     closed and are not registered as mutation metadata.
     """
-    annotations = getattr(mcp_tool, "annotations", None)
-    if isinstance(annotations, dict):
-        raw = annotations.get("hermesMutation")
-    else:
-        raw = getattr(annotations, "hermesMutation", None) if annotations is not None else None
+    metadata = getattr(mcp_tool, "meta", None)
+    if metadata is None:
+        metadata = getattr(mcp_tool, "_meta", None)
+    raw = metadata.get("hermesMutation") if isinstance(metadata, dict) else None
+    if raw is None:
+        annotations = getattr(mcp_tool, "annotations", None)
+        if isinstance(annotations, dict):
+            raw = annotations.get("hermesMutation")
+        else:
+            raw = (
+                getattr(annotations, "hermesMutation", None)
+                if annotations is not None
+                else None
+            )
     if not isinstance(raw, dict) or _annotation_read_only_hint(mcp_tool) is True:
         return None
     try:
@@ -4400,8 +4411,11 @@ def _annotation_mutation_spec(mcp_tool: Any) -> Any:
             action_type=raw["action_type"],
             provider=raw["provider"],
             operation=raw["operation"],
-            one_shot=raw.get("one_shot", False),
-            requires_receipt=raw.get("requires_receipt", False),
+            # Connected-server metadata opts into journaling only. Immediate
+            # one-shot execution is a separate hard-coded reviewed allowlist
+            # and cannot be enabled by an MCP server's self-description.
+            one_shot=False,
+            requires_receipt=False,
             destination_arg=raw.get("destination_arg"),
         )
     except (KeyError, TypeError, ValueError):
@@ -7042,6 +7056,13 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                             else {}
                         ),
                     },
+                    "_meta": {
+                        **(
+                            {"hermesMutation": _annotation_mutation_payload(mcp_tool)}
+                            if _annotation_mutation_payload(mcp_tool) is not None
+                            else {}
+                        ),
+                    },
                 })
             utility_payload = [
                 {"schema": entry["schema"], "handler_key": entry["handler_key"]}
@@ -7064,13 +7085,21 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 class _CachedMCPTool:
     """Minimal stand-in for MCP Tool objects loaded from the schema cache."""
 
-    __slots__ = ("name", "description", "inputSchema", "annotations")
+    __slots__ = ("name", "description", "inputSchema", "annotations", "meta")
 
-    def __init__(self, name: str, description: str, inputSchema: dict, annotations: dict | None = None):
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        inputSchema: dict,
+        annotations: dict | None = None,
+        meta: dict | None = None,
+    ):
         self.name = name
         self.description = description
         self.inputSchema = inputSchema or {}
         self.annotations = annotations
+        self.meta = meta
 
 
 def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]:
@@ -7118,6 +7147,8 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             name=raw.get("name"),
             annotations=raw.get("annotations")
             if isinstance(raw.get("annotations"), dict) else None,
+            meta=(raw.get("_meta") or raw.get("meta"))
+            if isinstance(raw.get("_meta") or raw.get("meta"), dict) else None,
         )
         for raw in tools_from_cache_entry(entry)
         if isinstance(raw, dict) and raw.get("name")
@@ -7135,6 +7166,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             raw.get("description") or "",
             raw_schema if isinstance(raw_schema, dict) else {},
             raw.get("annotations") if isinstance(raw.get("annotations"), dict) else None,
+            raw.get("_meta") if isinstance(raw.get("_meta"), dict) else None,
         )
         # Defense-in-depth: the cache file is user-writable JSON, so run the
         # same injection scan the eager discovery path applies.

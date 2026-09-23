@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -107,7 +108,7 @@ async def test_list_mutations_is_cursor_paginated_and_profile_scoped(tmp_path: P
     assert first["result"]["schema_version"] == "1"
     assert len(first["result"]["events"]) == 1
     assert first["result"]["events"][0]["source_event_key"] == str(KEY)
-    assert first["result"]["next_cursor"] is None
+    assert first["result"]["next_cursor"]
 
     invalid = await server._dispatch(
         request("becky.actions.list_mutations", {"after_cursor": "bad", "limit": 1})
@@ -148,6 +149,65 @@ async def test_one_shot_journals_result_and_replays_without_repeating(tmp_path: 
     assert first["result"]["disposition"] == "succeeded"
     assert replay["result"] == first["result"]
     assert len(calls) == 1
+    assert len(journal.list(after_cursor=None).events) == 1
+    journal.close()
+    reopened = ActionJournal(tmp_path / "actions.sqlite3", profile_key="becky")
+    restarted = BeckyLoopsBridgeServer(
+        config=config(),
+        store=Store(),
+        summarizer=Summarizer(),
+        action_journal=reopened,
+        one_shot_executor=executor,
+    )
+    after_restart = await restarted._dispatch(
+        request("becky.actions.execute_one_shot", params, 3)
+    )
+    assert after_restart["result"] == first["result"]
+    assert len(calls) == 1
+    reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_one_shot_observer_and_bridge_share_one_event_key(tmp_path: Path) -> None:
+    journal = ActionJournal(tmp_path / "actions.sqlite3", profile_key="becky")
+
+    async def executor(**kwargs: Any) -> OneShotResult:
+        from agent.action_mutations import record_tool_mutation
+
+        observed = record_tool_mutation(
+            function_name="mcp__todoist__add_tasks",
+            function_args={"tasks": [{"content": "private"}]},
+            result={"success": True},
+            status="ok",
+            session_id="normal-session",
+            turn_id="normal-turn",
+            tool_call_id="normal-call",
+            journal=journal,
+        )
+        assert observed is not None
+        assert observed.source_event_key == kwargs["idempotency_key"]
+        return OneShotResult(
+            schema_version="1", disposition="succeeded", event=observed
+        )
+
+    server = BeckyLoopsBridgeServer(
+        config=config(),
+        store=Store(),
+        summarizer=Summarizer(),
+        action_journal=journal,
+        one_shot_executor=executor,
+    )
+    params = {
+        "title": "Todoist task",
+        "text": "Add a task",
+        "idempotency_key": str(KEY),
+        "note_default": "obsidian",
+        "policy_version": "1",
+    }
+    response = await server._dispatch(
+        request("becky.actions.execute_one_shot", params)
+    )
+    assert response["result"]["disposition"] == "succeeded"
     assert len(journal.list(after_cursor=None).events) == 1
 
 
@@ -225,6 +285,47 @@ async def test_one_shot_rejects_executor_event_with_private_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_concurrent_one_shot_key_is_claimed_before_executor() -> None:
+    journal = ActionJournal(":memory:", profile_key="becky")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def executor(**kwargs: Any) -> OneShotResult:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return OneShotResult(schema_version="1", disposition="succeeded", event=event())
+
+    server = BeckyLoopsBridgeServer(
+        config=config(),
+        store=Store(),
+        summarizer=Summarizer(),
+        action_journal=journal,
+        one_shot_executor=executor,
+    )
+    params = {
+        "title": "Dentist appointment",
+        "text": "Add a dentist appointment tomorrow at 2 PM",
+        "idempotency_key": str(KEY),
+        "note_default": "obsidian",
+        "policy_version": "1",
+    }
+    first_task = asyncio.create_task(
+        server._dispatch(request("becky.actions.execute_one_shot", params))
+    )
+    await started.wait()
+    replay = await server._dispatch(
+        request("becky.actions.execute_one_shot", params, request_id=2)
+    )
+    assert replay["error"]["message"] == "one_shot_not_configured"
+    release.set()
+    assert (await first_task)["result"]["disposition"] == "succeeded"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_one_shot_without_executor_is_safe_remote_failure() -> None:
     server = BeckyLoopsBridgeServer(
         config=config(), store=Store(), summarizer=Summarizer()
@@ -277,3 +378,19 @@ async def test_start_loop_calls_starter_once_and_never_mutates(tmp_path: Path) -
     assert replay["result"] == first["result"]
     assert len(calls) == 1
     assert journal.list(after_cursor=None).events == []
+
+    journal.close()
+    reopened = ActionJournal(tmp_path / "actions.sqlite3", profile_key="becky")
+    restarted = BeckyLoopsBridgeServer(
+        config=config(),
+        store=Store(),
+        summarizer=Summarizer(),
+        action_journal=reopened,
+        action_loop_starter=starter,
+    )
+    after_restart = await restarted._dispatch(
+        request("becky.actions.start_loop", params, 3)
+    )
+    assert after_restart["result"] == first["result"]
+    assert len(calls) == 1
+    reopened.close()

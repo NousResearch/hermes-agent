@@ -76,7 +76,7 @@ def test_profile_isolation_rejects_cursor_from_another_profile(tmp_path: Path) -
     becky = ActionJournal(path, profile_key="becky")
     _, _ = becky.append(event())
     cursor = becky.list(after_cursor=None, limit=1).next_cursor
-    assert cursor is None
+    assert cursor is not None
 
     # A cursor from a populated profile cannot be accepted by another profile.
     _, _ = becky.append(event())
@@ -100,8 +100,14 @@ def test_cursor_is_opaque_bounded_and_pages_are_stable(tmp_path: Path) -> None:
     assert set(decoded) == {"v", "s", "p"}
     second = journal.list(after_cursor=first.next_cursor, limit=2)
     assert [item.source_event_key for item in second.events] == keys[2:]
-    assert second.next_cursor is None
+    assert second.next_cursor == journal.list(
+        after_cursor=first.next_cursor, limit=2
+    ).next_cursor
     assert journal.list(after_cursor=first.next_cursor, limit=2) == second
+
+    empty = journal.list(after_cursor=second.next_cursor, limit=2)
+    assert empty.events == []
+    assert empty.next_cursor == second.next_cursor
 
 
 def test_invalid_cursor_and_limit_fail_without_database_write(tmp_path: Path) -> None:
@@ -144,3 +150,11 @@ def test_concurrent_duplicate_append_creates_one_event(tmp_path: Path) -> None:
     journal = ActionJournal(path, profile_key="becky")
     assert len(journal.list(after_cursor=None, limit=100).events) == 1
 
+
+def test_concurrent_unique_append_on_shared_connection_is_safe() -> None:
+    journal = ActionJournal(":memory:", profile_key="becky")
+    events = [event() for _ in range(100)]
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(journal.append, events))
+    assert all(created for _, created in results)
+    assert len(journal.list(after_cursor=None, limit=100).events) == 100

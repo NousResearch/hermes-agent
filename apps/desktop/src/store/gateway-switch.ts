@@ -12,6 +12,8 @@ import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
   setCronSessions,
+  setCurrentBranch,
+  setCurrentCwdTransient,
   setFreshDraftReady,
   setMessages,
   setMessagingPlatformTotals,
@@ -26,7 +28,7 @@ import {
 import { clearAllSessionControl } from '@/store/session-control'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
-import { clearAllTranscriptTails } from '@/store/transcript-tail'
+import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
 // True while a connection switch is mid-flight — a Settings → Gateway apply
@@ -222,6 +224,15 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessages([])
   setFreshDraftReady(true)
 
+  // The draft workspace belongs to the outgoing backend. Nothing downstream
+  // clears it: ensureDefaultWorkspaceCwd only seeds a NON-empty remembered
+  // path and seedDefaultCwd only applies the new gateway's default when the
+  // cwd is EMPTY, so a gateway with nothing remembered kept painting (and
+  // sending on session.create) the previous gateway's folder (#114306).
+  // Transient on purpose: the per-backend memory of the old gateway stays.
+  setCurrentCwdTransient('')
+  setCurrentBranch('')
+
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.
   clearArtifactRegistry()
@@ -233,7 +244,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // owner, so a survivor from the old backend would sit beside the new one and
   // fail the unique-match lookup that shows "Show earlier".
   clearTranscriptTails()
-  clearAllTranscriptTails()
+  clearTranscriptTailPaging()
 
   // Narrowed: account/marketplace/onboarding caches are global, not gateway-
   // scoped, so a mode swap must not refetch them.

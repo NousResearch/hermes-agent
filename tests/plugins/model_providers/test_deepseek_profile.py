@@ -141,7 +141,7 @@ class TestDeepSeekModelGating:
 class TestDeepSeekFullKwargsIntegration:
     """End-to-end: the transport's full kwargs match DeepSeek's live wire format.
 
-    The live test harness in ``tests/run_agent/test_deepseek_v4_thinking_live.py``
+    The live test harness in ``tests/agent/test_deepseek_v4_thinking_live.py``
     sends ``{"reasoning_effort": "high", "extra_body": {"thinking": {"type":
     "enabled"}}}``.  Confirm the transport produces that exact shape when wired
     through the registered DeepSeek profile.

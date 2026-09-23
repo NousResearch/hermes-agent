@@ -611,3 +611,30 @@ def _patch_httpx_post(monkeypatch, responses):
 
 
 
+
+
+def test_pool_only_force_refresh_rotates_the_pool_entry(tmp_path, monkeypatch):
+    """Pool-only setup (empty singleton): ``force_refresh`` must refresh the pool credential
+    instead of handing back the same token the caller just got a 401 for."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+        "credential_pool": {"openai-codex": [{
+            "source": "device_code", "access_token": "pool-revoked", "refresh_token": "pool-refresh",
+            "last_status": "ok", "auth_type": "oauth"}]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    hints = []
+
+    class Pool:
+        def try_refresh_matching(self, api_key_hint=None, credential_id=None):
+            hints.append(api_key_hint)
+            return SimpleNamespace(runtime_api_key="pool-fresh")
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+
+    resolved = resolve_codex_runtime_credentials(force_refresh=True)
+    assert resolved["api_key"] == "pool-fresh"
+    assert resolved["source"] == "credential_pool"
+    assert hints == ["pool-revoked"]

@@ -22,8 +22,8 @@ Lifecycle rules:
   generation is published while the previous generation is still tearing down.
 - A path can have SEVERAL closes admitted at once (the current generation's final release
   plus a retired generation's drain). The path barrier COUNTS them and is lifted only by
-  the last one to settle, so neither ``acquire`` nor ``close_all`` can escape while any
-  handle for that path is still inside checkpoint/WAL-unlink.
+  the last one to settle, so neither ``acquire`` nor ``close_all`` / ``close_all_under``
+  can escape while any handle for that path is still inside checkpoint/WAL-unlink.
 - Maintenance callers borrow handles with a temporary registry reference instead of
   iterating an unpinned snapshot.
 """
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
@@ -308,6 +309,40 @@ def release(db: "SessionDB") -> bool:
     return True
 
 
+def _path_is_under(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or a file inside it (normcase, resolved)."""
+    try:
+        path_key = os.path.normcase(str(path.resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(str(path))
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)
+
+
+def _teardown_swept_generations(
+    generations: List[_Generation],
+    teardown_barriers: Dict[Path, _TeardownBarrier],
+    active_teardowns: List[_TeardownBarrier],
+) -> int:
+    """Close *generations* outside the registry lock; wait for already-admitted teardowns."""
+    by_path: Dict[Path, List[_Generation]] = {}
+    for generation in generations:
+        by_path.setdefault(generation.path, []).append(generation)
+    for path, path_generations in by_path.items():
+        with _lock:
+            lifecycle_lock = _path_lifecycle_lock_locked(path)
+        try:
+            with lifecycle_lock:
+                for generation in path_generations:
+                    _teardown(generation.db)
+        finally:
+            _finish_teardown(path, teardown_barriers[path])
+    for barrier in active_teardowns:
+        barrier.event.wait()
+    return len(generations)
+
+
 def close_all() -> int:
     """Close every shared SessionDB regardless of refcount; returns the count. For gateway
     shutdown, after all agents and cron jobs finished. Idempotent."""
@@ -321,26 +356,78 @@ def close_all() -> int:
         _retired.clear()
         for generation in generations:
             generation.retired = True
-    # Teardown outside the lock, one path at a time. Holding the lifecycle
-    # mutex across all generations for a path prevents an old retired handle
-    # and the current handle from checkpointing the same sidecars concurrently.
-    by_path: Dict[Path, List[_Generation]] = {}
-    for generation in generations:
-        by_path.setdefault(generation.path, []).append(generation)
-    for path, path_generations in by_path.items():
-        with _lock:
-            lifecycle_lock = _path_lifecycle_lock_locked(path)
-        try:
-            with lifecycle_lock:
-                for generation in path_generations:
-                    _teardown(generation.db)
-        finally:
-            _finish_teardown(path, teardown_barriers[path])
-    # A final release that removed its generation before this sweep took _lock still owns
-    # its physical close; wait for it rather than return over a running teardown.
-    for barrier in active_teardowns:
-        barrier.event.wait()
-    return len(generations)
+    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+
+
+def close_all_under(directory: str | Path) -> int:
+    """Force-close every shared SessionDB whose file lives under *directory*; returns the count.
+
+    Profile delete rmtree (and a same-name recreate) fails while this process still holds
+    ``state.db``. Same contract as ``MemoryStore.release_all_under``: a live holder is
+    expected to fail afterward; a process that holds none is a no-op returning 0.
+
+    A final ``release()`` can drop the generation and admit teardown before the physical
+    close finishes. Wait for those directory-matching barriers even when no generation
+    remains, otherwise rmtree still sees the open handle.
+    """
+    try:
+        root = Path(directory).expanduser().resolve()
+    except OSError:
+        root = Path(directory).expanduser()
+    teardown_barriers: Dict[Path, _TeardownBarrier] = {}
+    with _lock:
+        generations = [
+            generation
+            for generation in list(_generations.values()) + list(_retired.values())
+            if _path_is_under(generation.path, root)
+        ]
+        # Collect by directory, not by remaining generations: a last release already
+        # popped the generation and left only ``_tearing_down``.
+        active_teardowns = [
+            barrier for path, barrier in _tearing_down.items()
+            if _path_is_under(path, root)
+        ]
+        selected_paths = {generation.path for generation in generations}
+        for path in selected_paths:
+            teardown_barriers[path] = _admit_teardown_locked(path)
+        for generation in generations:
+            generation.retired = True
+            if _generations.get(generation.path) is generation:
+                _generations.pop(generation.path, None)
+            _retired.pop(id(generation.db), None)
+    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+
+
+def other_generations_for_path(
+    db_path: Path, *, exclude: Optional["SessionDB"] = None
+) -> List[str]:
+    """Describe every other LIVE SessionDB generation THIS process holds for *db_path*.
+
+    The registry is path-keyed, so it can answer the in-process half of "is this store quiet?"
+    that a ``/proc`` descriptor scan structurally cannot: that scan skips our own pid, so it only
+    ever proves other PROCESSES are away.
+
+    RETIRED generations are deliberately not holders here. A generation is retired only after its
+    file was replaced, which is exactly when ``SessionDB`` fences it: every write raises
+    ``StateDbReplacedError`` and the close-time checkpoint is disabled, so it is not the live writer
+    this gate protects. It also leaves ``_retired`` only when its last holder releases, and a
+    gateway handle does not release before shutdown — counting it made ONE inode replacement
+    (recovery swap, backup restore, snapshot) skip auto-VACUUM for that path for the rest of the
+    process lifetime, turning the unbounded growth this maintenance exists to bound into a
+    permanent condition.
+    """
+    try:
+        path = Path(db_path).resolve()
+    except OSError:
+        path = Path(db_path)
+    with _lock:
+        return [
+            f"in-process live SessionDB generation (refcount {generation.refcount})"
+            for generation in _generations.values()
+            if generation.db is not exclude
+            and generation.path == path
+            and not generation.retired
+        ]
 
 
 def live_shared_session_dbs() -> List["SessionDB"]:

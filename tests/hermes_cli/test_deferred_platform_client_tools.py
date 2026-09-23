@@ -188,7 +188,7 @@ class TestA2AClientToolsInCliProcess:
         mgr = PluginManager()
         mgr.discover_and_load()
 
-        a2a = mgr._plugins.get("a2a-platform")
+        a2a = mgr._plugins.get("platforms/a2a")  # bundled platforms key by category path (#27548)
         assert a2a is not None, "bundled a2a platform plugin was not discovered"
 
         # The whole point of the deferral is preserved: the inbound adapter is

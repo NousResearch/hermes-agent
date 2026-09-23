@@ -15,6 +15,10 @@ logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the 
 _spawn_pause_lock = threading.Lock()
 _spawn_paused: bool = False
 _active_subagents_lock = threading.Lock()
+# Serializes the one-shot spawn-budget read-modify-write (charge in _oneshot_spawn_budget,
+# refund in _refund_oneshot_spawn_budget) so a refunding caller cannot overwrite a
+# concurrent caller's charge and vice versa.
+_oneshot_budget_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}

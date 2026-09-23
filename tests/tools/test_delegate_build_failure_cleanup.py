@@ -50,6 +50,21 @@ class TestBuildFailureClosesPartialChildren(unittest.TestCase):
         self.assertEqual((children, err), ([], "boom"))
 
 
+    def test_partial_children_closed_on_midway_baseexception(self):
+        """A KeyboardInterrupt mid-build must close the already-built siblings too, then propagate:
+        cleanup scope matches the session-db release inside _build_child_agent."""
+        built = MagicMock(name="child-0")
+        with patch.object(
+            delegate_tool, "_build_child_preserving_parent_tools", side_effect=[built, KeyboardInterrupt("^C")]
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                _build_children(
+                    [{"goal": GOAL_A}, {"goal": GOAL_B}], [], _CREDS, top_role="leaf", max_iterations=10,
+                    parent_agent=MagicMock(), routing_cfg={}, live_deleg_id=None, live_writers=[],
+                )
+        built.close.assert_called_once()
+
+
 class TestBuildFailureRefundsOneshotBudget(unittest.TestCase):
     """The one-shot budget charged up front is rolled back when construction fails; the retry still spawns."""
 
@@ -77,6 +92,60 @@ class TestBuildFailureRefundsOneshotBudget(unittest.TestCase):
         # build had charged the cap away with children that never ran.
         self.assertEqual(second.get("error"), "pinned command missing")
         self.assertNotIn("budget", second.get("error", ""))
+
+
+class TestBudgetRMWSerialized(unittest.TestCase):
+    """Charge and refund are read-modify-write on ``_oneshot_children_spawned``; both must run
+    under ``_oneshot_budget_lock`` or a refunding caller can overwrite a concurrent caller's
+    later charge (and two charges can double-spend the cap)."""
+
+    def _budget_env(self):
+        return patch.dict("os.environ", {"HERMES_SINGLE_QUERY_SESSION": "1"}), \
+               patch.object(delegate_tool, "_get_oneshot_max_children", lambda: 1_000_000)
+
+    def test_refund_cannot_overwrite_a_later_charge(self):
+        """The interleaving called out in review: A charges, B charges, A refunds — B's charge survives."""
+        import types
+
+        parent = types.SimpleNamespace(_oneshot_children_spawned=0)
+        with self._budget_env()[0], self._budget_env()[1]:
+            self.assertIsNone(delegate_tool._oneshot_spawn_budget(parent, 3))
+            self.assertIsNone(delegate_tool._oneshot_spawn_budget(parent, 2))  # B's later charge
+            delegate_tool._refund_oneshot_spawn_budget(parent, 3)  # A's failure refund
+        self.assertEqual(parent._oneshot_children_spawned, 2)
+
+    def test_concurrent_charges_and_refunds_conserve(self):
+        """Refunding threads (net zero) race pure charging threads; lost updates make the
+        final count drift either way, so it must land exactly on the pure-charge total."""
+        import sys
+        import threading
+        import types
+
+        parent = types.SimpleNamespace(_oneshot_children_spawned=0)
+        rounds, refunders, chargers = 300, 6, 2
+
+        def churn():
+            for _ in range(rounds):
+                delegate_tool._oneshot_spawn_budget(parent, 2)
+                delegate_tool._refund_oneshot_spawn_budget(parent, 2)
+
+        def spend():
+            for _ in range(rounds):
+                delegate_tool._oneshot_spawn_budget(parent, 2)
+
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)  # maximize RMW interleaving without relying on wall-clock timing
+        try:
+            with self._budget_env()[0], self._budget_env()[1]:
+                threads = [threading.Thread(target=churn) for _ in range(refunders)] + \
+                          [threading.Thread(target=spend) for _ in range(chargers)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+        finally:
+            sys.setswitchinterval(old_interval)
+        self.assertEqual(parent._oneshot_children_spawned, chargers * rounds * 2)
 
 
 if __name__ == "__main__":

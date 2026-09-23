@@ -1225,15 +1225,18 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     """Point ``TMPDIR``/``TMP``/``TEMP`` in *env* at the scratch dir of ``env["HERMES_HOME"]``.
 
     A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
-    respected and nothing changes. A value Hermes itself exported earlier — recognisable
+    respected and nothing changes, except Git Bash's ambient ``/tmp`` triple on Windows.
+    A value Hermes itself exported earlier — recognisable
     because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
     profile's home gets that home's scratch dir rather than its parent's. Returns True when
     the vars were (re)written.
     """
     ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
+    git_bash_default = (sys.platform == "win32" and bool(env.get("MSYSTEM"))
+                        and all(env.get(key) == "/tmp" for key in SCRATCH_TMP_ENV_VARS))
     for key in SCRATCH_TMP_ENV_VARS:
         value = env.get(key, "").strip()
-        if value and value != ours:
+        if value and value != ours and not git_bash_default:
             return False
     home = env.get("HERMES_HOME", "").strip()
     try:

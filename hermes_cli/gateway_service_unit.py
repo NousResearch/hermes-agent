@@ -283,8 +283,6 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     unit_path = _gw().get_systemd_unit_path(system=system)
     if not unit_path.exists():
         return False
-    if _is_hermes_replace_dropin(_systemd_replace_dropin_path(system=system)):
-        return False
 
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _gw()._read_systemd_user_from_unit(unit_path) if system else None
@@ -328,30 +326,23 @@ def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
     return True
 
 
-def _systemd_replace_dropin_path(system: bool = False) -> Path:
-    unit_path = _gw().get_systemd_unit_path(system=system)
-    return unit_path.parent / f"{unit_path.name}.d" / "20-replace.conf"
-
-
-def _is_hermes_replace_dropin(dropin: Path) -> bool:
-    if not dropin.is_file():
-        return False
-    text = dropin.read_text(encoding="utf-8")
-    return all(token in text for token in ("Added to end the gateway respawn storm", "--replace", "ExecStart="))
-
-
 def _retire_hermes_replace_dropin(system: bool = False) -> bool:
-    dropin = _systemd_replace_dropin_path(system=system)
-    if not _is_hermes_replace_dropin(dropin):
+    """Unlink the ``20-replace.conf`` drop-in an older Hermes wrote to end a respawn storm; True if removed.
+
+    It appends ``--replace`` to a supervised ExecStart the generator no longer emits, and since the
+    cross-profile ownership guard that override turns a per-profile fleet into a unit that can never
+    start (#119467). Only the Hermes-authored file (recognised by its own comment) is touched.
+    """
+    unit_path = _gw().get_systemd_unit_path(system=system)
+    dropin = unit_path.parent / f"{unit_path.name}.d" / "20-replace.conf"
+    try:
+        text = dropin.read_text(encoding="utf-8")
+    except OSError:
         return False
-    # Retire only the old Hermes-authored takeover override.
+    if not all(token in text for token in ("Added to end the gateway respawn storm", "--replace", "ExecStart=")):
+        return False
     dropin.unlink()
     return True
-
-
-def _report_retired_hermes_replace_dropin(system: bool = False) -> None:
-    _gw()._run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
-    print("↻ Removed stale Hermes --replace drop-in from the gateway service")
 
 
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
@@ -361,13 +352,14 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     # _gw().systemd_unit_is_current is the HERMES_HOME-sync chokepoint; its env mutation persists for the regenerate below.
-    was_current = _gw().systemd_unit_is_current(system=system)
-    dropin_removed = _retire_hermes_replace_dropin(system=system)
-    if was_current and not dropin_removed:
+    current = _gw().systemd_unit_is_current(system=system)
+    if _retire_hermes_replace_dropin(system=system):
+        _gw()._run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+        print(f"↻ Removed the stale Hermes --replace drop-in from the gateway {_gw()._service_scope_label(system)} service")
+        if current:
+            return True
+    elif current:
         return False
-    if dropin_removed and _gw().systemd_unit_is_current(system=system):
-        _report_retired_hermes_replace_dropin(system=system)
-        return True
 
     expected_user = _gw()._read_systemd_user_from_unit(unit_path) if system else None
     new_unit = _gw().generate_systemd_unit(system=system, run_as_user=expected_user)
@@ -375,14 +367,10 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     # Test safety belt: the user unit path is under Path.home(), which conftest does NOT sandbox, and a
     # pytest-tmp HERMES_HOME baked into the developer's real unit breaks their gateway on next reboot.
     if not system and any(m in new_unit for m in ("/pytest-of-", '/hermes_test"', "/hermes_test/")):
-        if dropin_removed:
-            _report_retired_hermes_replace_dropin(system=system)
         return False
 
     # Structural variant: refuse ANY temp-dir HERMES_HOME (manual E2E homes lack the pytest markers).
     if _gw()._refuse_temp_home_service_write(new_unit, "systemd unit"):
-        if dropin_removed:
-            _report_retired_hermes_replace_dropin(system=system)
         return False
 
     unit_path.write_text(new_unit, encoding="utf-8")

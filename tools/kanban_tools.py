@@ -994,10 +994,8 @@ def _handle_attachments(args: dict, **kw) -> str:
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
         _existing_task(kb, conn, tid)
-        return json.dumps({
-            "ok": True, "task_id": tid,
-            "attachments": [
-                _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]}, ensure_ascii=False)
+        return _ok(task_id=tid, attachments=[
+            _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)])
 
 
 def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:

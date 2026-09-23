@@ -305,8 +305,15 @@ def _for_each_served_profile(runner, body) -> None:
             body("default")
         return
     for profile_name, profile_home in _multiplex_profile_homes(config):
-        with _profile_runtime_scope(Path(profile_home)):
-            body(str(profile_name))
+        # One boundary per profile: callers (``_housekeeping_chore``) catch only at the tick level,
+        # so one profile's unreadable store or broken .env abandoned every profile after it, on
+        # every tick. The launch store failing is reachable (``_init_session_db`` tolerates it and
+        # keeps running), and serve defers every served profile's sweep to this loop.
+        try:
+            with _profile_runtime_scope(Path(profile_home)):
+                body(str(profile_name))
+        except Exception as exc:
+            logger.debug("Housekeeping for profile %s skipped: %s", profile_name, exc)
 
 
 def profile_scoped_chore(runner, chore):

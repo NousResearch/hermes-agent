@@ -1,15 +1,23 @@
-"""Model-specific auto-correction for a JSON-double-escaping wire artifact on ``patch`` calls.
+"""Auto-correction for a JSON-double-escaping wire artifact on ``patch`` calls.
 
 ``tools/fuzzy_match.py::_detect_backslash_doubling`` already diagnoses, with certainty, the
 case where every backslash run in a ``patch`` call's ``old_string`` is exactly twice as long
 as in the matched region of the file (the tool-call arguments were JSON-escaped one extra
 time) -- but it only rejects the call and asks the model to resend, costing a full round trip.
 
-This is a known, model-specific wire artifact (observed heavily on one model family,
-essentially absent on others), so the correction is gated to that model family rather than
-applied to every model's calls: a blanket auto-correct could silently mangle a model's
-deliberately-doubled backslash (e.g. a correctly escaped ``\\`` in a regex or shell string)
-for a model that doesn't actually have this artifact.
+Applied unconditionally, not gated to any particular model: the correction is safe by
+construction rather than by knowing which model is talking. It only ever fires when the
+halved ``old_string`` is verified to appear verbatim in the file's actual content -- a model
+that deliberately sent a genuinely-doubled backslash (e.g. a correctly escaped ``\\`` in a
+regex or shell string) would need that halved form to coincidentally already exist at the
+same spot in the file, which the check below rules out; a wrong guess simply fails
+verification and falls through to the existing reject-and-ask guard unchanged. An earlier
+version of this module gated the correction to a model-name substring match; that gate was
+removed because the substring check turned out to be unreliable in practice (the resolved
+"model" value at the check site did not reliably match the serving model's real name), and
+because the verification-against-file-content step already provides the safety property the
+gate was meant to add. Per-model gating can be reintroduced later if a model is found where
+the verified correction itself proves unsafe -- nothing observed so far suggests that.
 
 Called once from ``tools/file_operations.py::patch_replace``, before fuzzy matching runs, so
 a verified correction produces a clean exact match instead of ever reaching the guard.
@@ -17,39 +25,10 @@ a verified correction produces a clean exact match instead of ever reaching the 
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Tuple
 
-logger = logging.getLogger(__name__)
-
-# Same substring-match convention used elsewhere in this codebase for model-family gating
-# (tools/tool_search.py's _DEFAULT_DEFERRED_TOOLS, agent/prompt_builder.py's
-# EXECUTION_GUIDANCE_MODELS/TOOL_USE_ENFORCEMENT_MODELS).
-_AFFECTED_MODEL_SUBSTRINGS = ("nemotron",)
-
 _BACKSLASH_RUN_RE = re.compile(r"\\+")
-
-
-def _current_model_name() -> str:
-    """Best-effort current model name, empty string on any failure.
-
-    Reads the same ``model`` key from config.yaml that tools/tool_search.py's
-    model-gating reads via hermes_cli.config.
-    """
-    try:
-        import hermes_cli.config as _cfg_mod
-
-        config = _cfg_mod.load_config_readonly() or {}
-        return str(config.get("model") or "")
-    except Exception as exc:
-        logger.debug("escape_drift_autocorrect: could not resolve model name: %s", exc)
-        return ""
-
-
-def _is_affected_model() -> bool:
-    name = _current_model_name().lower()
-    return any(substr in name for substr in _AFFECTED_MODEL_SUBSTRINGS)
 
 
 def _halve_backslash_runs(s: str) -> str:
@@ -71,8 +50,6 @@ def maybe_correct_backslash_doubling(old_string: str, new_string: str, content: 
     fails verification and falls through to the existing reject-and-ask guard unchanged.
     """
     if "\\" not in old_string or old_string in content:
-        return old_string, new_string
-    if not _is_affected_model():
         return old_string, new_string
 
     halved_old = _halve_backslash_runs(old_string)

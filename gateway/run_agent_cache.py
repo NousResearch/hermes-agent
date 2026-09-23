@@ -224,6 +224,11 @@ class GatewayAgentCacheMixin:
         override = self._session_model_override(session_key)
         return {"had_override": override is not None, "override": dict(override) if override is not None else None}
 
+    def _one_turn_restore_armed(self, session_key: str) -> bool:
+        """True while a ``/model --once`` or ``/moa`` snapshot waits for its turn to settle it."""
+        state = self._peek_session_state(session_key)
+        return state is not None and bool(state.conversation.one_turn_restore)
+
     def _claim_one_turn_restore(self, session_key: str, snapshot: Optional[dict] = None) -> None:
         """Arm the one-shot restore snapshot for ``/model --once`` / ``/moa``. A repeated one-shot
         command before the turn runs keeps the EARLIEST snapshot: the later command's snapshot is

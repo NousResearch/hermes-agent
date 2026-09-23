@@ -1238,6 +1238,19 @@ class GatewayInboundMixin:
             _handled = _result is not None
         return _handled, _result
 
+    def _hm_refuse_new_turn(
+        self, session_key: str, settle_one_shot: bool, override_before: Optional[dict], reply: Any
+    ) -> Any:
+        """Refuse a turn before its claim. No turn will run to settle this message's ``/moa``, so
+        ``settle_one_shot`` restores the snapshot it armed. When ``/moa`` ran over an earlier
+        ``/model --once``, ``override_before`` puts that override back instead, and the earlier
+        snapshot stays armed for its own turn."""
+        if settle_one_shot:
+            self._restore_pending_one_turn_model_override(session_key)
+        elif override_before is not None:
+            self._restore_session_model_override(session_key, override_before)
+        return reply
+
     def _hm_rescue_orphaned_fifo(
         self, event: "MessageEvent", source: SessionSource, is_internal: bool, _quick_key: str
     ) -> Tuple["MessageEvent", SessionSource, bool]:
@@ -1304,9 +1317,19 @@ class GatewayInboundMixin:
         if self._is_session_running(_quick_key):
             return await self._hm_handle_running_session_message(event, source, _quick_key)
 
+        _one_shot_armed_before = self._one_turn_restore_armed(_quick_key)
+        _override_before = self._snapshot_session_model_override(_quick_key)
         _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
         if _handled:
             return _result
+        # `/moa <prompt>` arms its one-shot override during dispatch and falls through as this turn.
+        # If a gate below refuses the turn, that snapshot has no turn to settle it, and the next
+        # ordinary message would silently run through MoA.
+        _settle_refused_one_shot = not _one_shot_armed_before and self._one_turn_restore_armed(_quick_key)
+        # Over an earlier `/model --once`, `/moa` keeps that snapshot but still swaps the override.
+        _refused_override = (
+            _override_before if self._snapshot_session_model_override(_quick_key) != _override_before else None
+        )
 
         # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
         # conversational "yes" would execute a dangerous command.
@@ -1314,17 +1337,21 @@ class GatewayInboundMixin:
             if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
                 # Debounced so a user who forgets about topic mode doesn't get ten reminders.
                 if self._should_send_telegram_lobby_reminder(source):
-                    return self._telegram_topic_root_lobby_message()
-                return None
+                    return self._hm_refuse_new_turn(
+                        _quick_key, _settle_refused_one_shot, _refused_override,
+                        self._telegram_topic_root_lobby_message(),
+                    )
+                return self._hm_refuse_new_turn(_quick_key, _settle_refused_one_shot, _refused_override, None)
             # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
             # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
             # only fall to zero. Reversible.
             if self._external_drain_active:
                 logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
-                return (
+                return self._hm_refuse_new_turn(
+                    _quick_key, _settle_refused_one_shot, _refused_override,
                     "⏳ This agent is draining for a maintenance action and isn't "
                     "accepting new turns right now. It'll be back in a moment — "
-                    "please resend shortly."
+                    "please resend shortly.",
                 )
 
         # Claim this session before any await: many awaits sit between here and _run_agent
@@ -1333,7 +1360,9 @@ class GatewayInboundMixin:
         _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
         if _limit_message is not None:
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
-            return _limit_message
+            return self._hm_refuse_new_turn(
+                _quick_key, _settle_refused_one_shot, _refused_override, _limit_message,
+            )
 
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 

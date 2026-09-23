@@ -1758,6 +1758,7 @@ class TestKillProcess:
         session.pid = 4321
         session.host_start_time = 9876
         session.pid_scope = "sandbox"
+        monkeypatch.setattr("tools.process_registry._IS_LINUX", True)
         monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: True)
 
         assert registry._signal_kill(session, session.id, False) is None
@@ -1791,6 +1792,8 @@ class TestKillProcess:
     def test_kill_broker_session_stops_scope_through_broker_owner(
         self, registry, monkeypatch
     ):
+        monkeypatch.setattr("tools.process_registry._IS_LINUX", True)
+
         class FakeEnv:
             _local_exec_broker_socket = "/run/test-broker.sock"
             _local_exec_broker_uid = 1003
@@ -1834,6 +1837,8 @@ class TestKillProcess:
     def test_kill_broker_session_reports_scope_stop_failure(
         self, registry, monkeypatch
     ):
+        monkeypatch.setattr("tools.process_registry._IS_LINUX", True)
+
         class FakeEnv:
             _local_exec_broker_socket = "/run/test-broker.sock"
             _local_exec_broker_uid = 1003

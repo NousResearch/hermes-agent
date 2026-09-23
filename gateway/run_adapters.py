@@ -1709,8 +1709,12 @@ class GatewayAdapterLifecycleMixin:
         Without this an inline-button caller approved only in the routed profile's pairing store was denied
         (#86296), because the adapter's callback source was never route-stamped.
         """
-        from gateway.run import get_hermes_home
+        from gateway.run import get_hermes_home, _profile_runtime_scope
         transport_home = Path(get_hermes_home()) if self._multiplex_on() and profile_name is None else None
+        # A secondary's callback authorization reads ITS .env, which lives only in its secret
+        # scope. Callback sources never pass through a profile-scoped handler, so bind the
+        # owning profile's scope around the check the same way the message/busy handlers do.
+        profile_home = self._routed_profile_home(profile_name) if profile_name else None
 
         def check(
             user_id: str, chat_type: Optional[str] = None, chat_id: Optional[str] = None, *,
@@ -1731,7 +1735,12 @@ class GatewayAdapterLifecycleMixin:
             if adapter is not None:
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
-                return self._is_user_authorized(source)
+                # Scoped to the adapter's owning profile: the transport ref pins whose
+                # allowlist/pairing store admits the caller, and env allowlist reads stay inside
+                # that profile's scope instead of falling through to the default profile's
+                # os.environ (#120639). Fails closed on its own when the profile is gone.
+                with self._scope_or_null(_profile_runtime_scope, profile_home):
+                    return self._is_user_authorized(source)
             # Canonicalize FIRST (callback sources never went through ``build_source``): the routed
             # profile's pairing store is consulted, allowlists read under the transport home.
             if self._canonicalize(source, primary_home=transport_home) is None:

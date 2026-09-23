@@ -323,8 +323,16 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
 def refresh_plugin_sessions(home, note: str) -> None:
     """A plugin just went live in ``home``: append its MCP tools to that profile's open chats (deferred
     behind tool_search, so the model-facing tool array is unchanged) and queue ``note`` for their next
-    turn. Called by ``hermes_cli.plugins_activation_live``."""
-    _refresh_live_sessions(home, preserve_prefix=True, note=note)
+    turn. Called by ``hermes_cli.plugins_activation_live``.
+
+    Under ``_mcp_reload_lock`` for the reason ``reload.mcp``'s own refresh states: the MCP registry is
+    process-global, so a rebuild that reads it while a concurrent reload has torn it down snapshots
+    the empty registry onto every live session of this profile — and the per-session failure is only
+    logged, so the chats simply lose their tools until the next reload. Installing a plugin is a
+    common way to reach a reload, which makes the two easy to overlap.
+    """
+    with _mcp_reload_lock:
+        _refresh_live_sessions(home, preserve_prefix=True, note=note)
 
 
 @_rpc("reload.mcp", 5015)

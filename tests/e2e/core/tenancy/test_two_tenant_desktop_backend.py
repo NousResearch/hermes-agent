@@ -28,6 +28,8 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pending_fixes import Gap, expect_gaps
+
 from . import _helpers as H
 
 NAMES = ("default", "alpha", "beta")
@@ -69,6 +71,11 @@ def _changed(before: dict[str, bytes], after: dict[str, bytes]) -> set[str]:
     return {k for k in after if before.get(k) != after[k]}
 
 
+def _expect_only(before: dict[str, bytes], after: dict[str, bytes], expected: set[str], what: str) -> None:
+    if (changed := _changed(before, after)) != expected:
+        raise H.LaunchProfileBleed(f"{what} changed {sorted(changed)}, expected only {sorted(expected)}")
+
+
 def _rpc_leaks(b: H.ServeBackend, owners: dict[str, str], tenants: dict[str, H.Tenant]) -> list[str]:
     """Replies/events bound to a session must carry no other tenant's canary."""
     out: list[str] = []
@@ -93,13 +100,18 @@ def _await_cron(tenants: dict[str, H.Tenant], fires: int) -> None:
            f"cron fire #{fires} in every profile")
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="session.create / the first state.db row use the launch profile's model and "
-           "model.save_key writes the launch profile's .env (fix: #120319); "
-           "gateway.run's import-time config bridge writes a secondary session's terminal.* into the "
-           "process env, red ~6/7 runs (fix: #120307). Flips once all land.")
-def test_desktop_backend_never_crosses_tenants(fleet) -> None:
+# Live gaps, applied only while their probe reproduces them (see _pending_fixes).
+GAPS = (
+    Gap(120319, "#120319: session.create / the first state.db row use the launch profile's model and "
+                "model.save_key writes the launch profile's .env", raises=H.LaunchProfileBleed),
+    # A race in this cell (which session first imports gateway.run), red in ~6 of 7 runs: not strict.
+    Gap(120307, "#120307: gateway.run's import-time config bridge writes a secondary session's .env / "
+                "terminal.* into the process env", raises=H.TenantLeak, strict=False),
+)
+
+
+def test_desktop_backend_never_crosses_tenants(fleet, request: pytest.FixtureRequest) -> None:
+    expect_gaps(request, *GAPS)
     root, tenants, backends = fleet
 
     # Phase 1: one backend, three profile sessions, interleaved turns, one cron fire per profile.
@@ -110,8 +122,8 @@ def test_desktop_backend_never_crosses_tenants(fleet) -> None:
     for name in ("alpha", "default", "beta"):
         res = b.ok("session.create", _profile_param(name))
         sids[name], stored[name] = res["session_id"], res["stored_session_id"]
-        assert res["info"]["model"] == tenants[name].model, (
-            f"session.create for {name} reports model {res['info']['model']!r}")
+        if res["info"]["model"] != tenants[name].model:
+            raise H.LaunchProfileBleed(f"session.create for {name} reports model {res['info']['model']!r}")
     owners = {sid: name for name, sid in sids.items()}
     for name in ("alpha", "default", "beta", "alpha", "beta"):
         b.turn(sids[name], f"turn for {name}")
@@ -125,17 +137,17 @@ def test_desktop_backend_never_crosses_tenants(fleet) -> None:
         t.extra["workdir2"] = str(new_cwd)  # the live session may keep its cwd; both dirs are t's own
         before = _files(tenants)
         b.ok("config.set", {"session_id": sids[name], "key": "cwd", "value": str(new_cwd)})
-        assert _changed(before, _files(tenants)) == {f"{name}/config.yaml"}, f"cwd write for {name}"
+        _expect_only(before, _files(tenants), {f"{name}/config.yaml"}, f"cwd write for {name}")
     beta = tenants["beta"]
     beta.extra["custom_prompt"] = f"prompt-canary-beta-{beta.tag}"
     before = _files(tenants)
     b.ok("config.set", {"profile": "beta", "key": "prompt", "value": beta.extra["custom_prompt"]})
-    assert _changed(before, _files(tenants)) == {"beta/config.yaml"}, "profile-bound prompt write"
+    _expect_only(before, _files(tenants), {"beta/config.yaml"}, "profile-bound prompt write")
     alpha = tenants["alpha"]
     alpha.extra["saved_key"] = f"sk-savekey-alpha-{alpha.tag}"
     before = _files(tenants)
     b.ok("model.save_key", {"session_id": sids["alpha"], "slug": "deepseek", "api_key": alpha.extra["saved_key"]})
-    assert _changed(before, _files(tenants)) == {"alpha/.env"}, "session-bound model.save_key write"
+    _expect_only(before, _files(tenants), {"alpha/.env"}, "session-bound model.save_key write")
     for name in ("default", "beta", "alpha"):
         b.turn(sids[name], f"after settings for {name}")
     H.check_isolation(tenants, min_snapshots=3, extra=_rpc_leaks(b, owners, tenants))
@@ -163,5 +175,4 @@ def test_desktop_backend_never_crosses_tenants(fleet) -> None:
 
     b.close()
     log = (root / "serve.log").read_text(encoding="utf-8", errors="replace")
-    leaks = H.text_leaks("serve output", log, tenants)
-    assert not leaks, "\n".join(leaks)
+    H.assert_no_text_leaks("serve output", log, tenants)

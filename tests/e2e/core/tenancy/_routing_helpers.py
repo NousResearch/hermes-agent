@@ -33,6 +33,18 @@ from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
+class RoutingLeak(AssertionError):
+    """A prompt or credential reached a host it must not: an unselected fleet host, a selected host
+    with another identity's key, or a real inference API (egress trap)."""
+
+
+def assert_routing(problems: list[str], ctx: str) -> None:
+    """Leaks raise ``RoutingLeak``; a host that was merely not reached is a plain failure."""
+    if any(p.startswith("LEAK") for p in problems):
+        raise RoutingLeak("\n".join(problems) + "\n" + ctx)
+    assert not problems, "\n".join(problems) + "\n" + ctx
+
+
 # Env that could route or authenticate a child Hermes outside the fake fleet.
 _STRIP_SUFFIXES = ("_API_KEY", "_TOKEN", "_BASE_URL", "_SECRET", "_ACCESS_KEY", "_KEY_ID")
 _STRIP_PREFIXES = ("HERMES_", "OPENAI", "ANTHROPIC", "OPENROUTER", "AWS_", "AZURE_", "GOOGLE_",

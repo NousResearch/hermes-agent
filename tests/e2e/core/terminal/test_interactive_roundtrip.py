@@ -29,6 +29,7 @@ import threading
 
 import pytest
 
+from tests.e2e.core._pending_fixes import Gap, expect_gaps
 from tests.e2e.core.terminal._gateway_client import Backend, WSClient, etype, poll_until
 from tests.fakes.fake_llm_provider import Text, ToolCall
 
@@ -38,6 +39,10 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-g
 
 TAG_RE = re.compile(r"\b(CLARIFY|RMRF)-([a-z0-9_]+)\b")
 PROMPT_TIMEOUT = 90.0
+
+
+class PromptLeftPending(AssertionError):
+    """The turn finished but a clarify/approval request is still in ``open_requests``."""
 
 
 class Script:
@@ -184,7 +189,8 @@ def _drive(backend: Backend, script: Script, kind: str, how: str, tag: str) -> N
 
     # Nothing left waiting on a human, from any surface.
     final = poll_until(lambda: _resume_ok(responder, key), timeout=PROMPT_TIMEOUT, what="final resume")
-    assert not final.get("open_requests"), f"prompt left pending after the turn: {final.get('open_requests')}"
+    if final.get("open_requests"):
+        raise PromptLeftPending(f"prompt left pending after the turn: {final.get('open_requests')}")
     assert not final.get("pending_approval"), final.get("pending_approval")
     assert _pending(responder, sid) == []
     for conn in (a, responder):
@@ -208,19 +214,22 @@ CASES = [
 ]
 
 
-# A race, so it cannot be strict: the RPC answer can end the approval wait before the gateway attaches the
-# hook that withdraws the sent request, which then stays in ``open_requests`` (red in about 1 in 4 loaded runs;
-# deterministic with the gap widened). Drop the mark when #120374 lands.
-_RACY = {("approval_deny", "rpc"): pytest.mark.xfail(
-    strict=False, raises=AssertionError,
-    reason="#120374: an approval answered by RPC before the settle hook attaches stays in open_requests")}
+# Applied only while the probe reproduces it (see _pending_fixes). A race in this cell, so not strict: the RPC
+# answer can end the approval wait before the gateway attaches the hook that withdraws the sent request, which
+# then stays in ``open_requests`` (red in about 1 in 4 loaded runs). Only ``PromptLeftPending`` is excused.
+GAPS = {("approval_deny", "rpc"): Gap(
+    120374, "#120374: an approval answered by RPC before the settle hook attaches stays in open_requests",
+    raises=PromptLeftPending, strict=False)}
 
 
-@pytest.mark.parametrize(("kind", "how"), [pytest.param(k, h, id=f"{k}-{h}", marks=_RACY.get((k, h), ()))
-                                           for k, h in CASES])
-def test_interactive_roundtrip(backend: Backend, script: Script, kind: str, how: str) -> None:
+@pytest.mark.parametrize(("kind", "how"), [pytest.param(k, h, id=f"{k}-{h}") for k, h in CASES])
+def test_interactive_roundtrip(backend: Backend, script: Script, kind: str, how: str,
+                               request: pytest.FixtureRequest) -> None:
+    if gap := GAPS.get((kind, how)):
+        expect_gaps(request, gap)
     tag = f"{kind}_{how}".lower()
     try:
         _drive(backend, script, kind, how, tag)
     except AssertionError as exc:
-        raise AssertionError(f"{kind}/{how}: {exc}\n{backend.logs(25)}") from None
+        # Keep the class: the gap's xfail excuses only PromptLeftPending.
+        raise type(exc)(f"{kind}/{how}: {exc}\n{backend.logs(25)}") from None

@@ -36,6 +36,8 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pending_fixes import Gap, expect_gaps
+
 from . import _helpers as H
 
 # The gateway child is spawned and reaped by this module (fake HOME, no systemd bus in its env).
@@ -151,12 +153,14 @@ def _await_cron(tenants: dict[str, H.Tenant], at_least: int) -> None:
            f"cron fire #{at_least} in every profile")
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="phase 1: session-less work (cron) for a routed profile keys the shared 'default' "
-           "terminal env, so alpha/beta cron tool calls inherit default's .env, cwd and shell "
-           "state (fix: #120307)")
-def test_multiplexed_gateway_never_crosses_tenants(fleet) -> None:
+# Applied only while the probe reproduces it (see _pending_fixes).
+GAP_120307 = Gap(120307, "#120307: session-less work (cron) for a routed profile keys the shared 'default' "
+                         "terminal env, so alpha/beta cron tool calls inherit default's .env, cwd and shell state",
+                 raises=H.TenantLeak)
+
+
+def test_multiplexed_gateway_never_crosses_tenants(fleet, request: pytest.FixtureRequest) -> None:
+    expect_gaps(request, GAP_120307)
     root, tenants, gw = fleet
     home = root / "home"
 
@@ -202,5 +206,4 @@ def test_multiplexed_gateway_never_crosses_tenants(fleet) -> None:
     H.check_isolation(tenants, min_snapshots=5)
 
     gw.stop()
-    leaks = H.text_leaks("gateway output", gw.tail(10**9), tenants)
-    assert not leaks, "\n".join(leaks)
+    H.assert_no_text_leaks("gateway output", gw.tail(10**9), tenants)

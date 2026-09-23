@@ -33,6 +33,15 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 ENV_PROBE = "echo SNAPSHOT-BEGIN; env | sort; echo CWD=$(pwd); echo SNAPSHOT-END"
 PROVIDER_KEY_ENV = "TENANT_PROVIDER_KEY"  # same NAME in every profile's .env, distinct VALUE
 
+class TenantLeak(AssertionError):
+    """A provider request, tool subprocess, file, RPC frame or log carried another tenant's canary."""
+
+
+class LaunchProfileBleed(AssertionError):
+    """A secondary profile's session reported the launch profile's model, or a settings write
+    addressed to one profile changed another profile's files."""
+
+
 _STRIP_SUFFIXES = ("_API_KEY", "_TOKEN", "_BASE_URL", "_SECRET", "_ACCESS_KEY", "_KEY_ID", "_KEY")
 _STRIP_PREFIXES = ("HERMES_", "OPENAI", "ANTHROPIC", "OPENROUTER", "AWS_", "AZURE_", "GOOGLE_", "GEMINI",
                    "PYTEST_", "NOUS_", "XAI_", "LLM_", "CUSTOM_", "TERMINAL_", "TENANT_", "API_SERVER_")
@@ -251,14 +260,18 @@ def env_snapshots(t: Tenant) -> list[tuple[str, str]]:
     return list(seen.values())
 
 
-def snapshot_problems(tenants: dict[str, Tenant], min_per_tenant: int = 1) -> list[str]:
+def snapshot_shortfall(tenants: dict[str, Tenant], min_per_tenant: int = 1) -> list[str]:
+    """Tenants whose provider received fewer env snapshots than the scenario drove (a harness or
+    liveness failure, not a leak)."""
+    return [f"{t.name}: {n} env snapshot(s) reached its provider, expected >= {min_per_tenant}"
+            for t in tenants.values() if (n := len(env_snapshots(t))) < min_per_tenant]
+
+
+def snapshot_problems(tenants: dict[str, Tenant]) -> list[str]:
     """Inside a tool subprocess: cwd is the tenant's own, and no other tenant's canary is visible."""
     problems: list[str] = []
     for t in tenants.values():
-        snaps = env_snapshots(t)
-        if len(snaps) < min_per_tenant:
-            problems.append(f"{t.name}: {len(snaps)} env snapshot(s) reached its provider, expected >= {min_per_tenant}")
-        for origin, s in snaps:
+        for origin, s in env_snapshots(t):
             text = s.encode().decode("unicode_escape", errors="ignore") if "\\n" in s else s
             own_dirs = [str(t.workdir), *(v for k, v in t.extra.items() if k.startswith("workdir"))]
             if not any(f"CWD={d}\n" in text + "\n" for d in own_dirs):
@@ -293,9 +306,16 @@ def file_leaks(tenants: dict[str, Tenant], launch: str = "default") -> list[str]
 
 def check_isolation(tenants: dict[str, Tenant], *, launch: str = "default", min_snapshots: int = 1,
                     extra: Iterable[str] = ()) -> None:
-    problems = [*request_leaks(tenants), *snapshot_problems(tenants, min_snapshots), *file_leaks(tenants, launch),
-                *extra]
-    assert not problems, "cross-tenant leak(s):\n  " + "\n  ".join(dict.fromkeys(problems))
+    problems = [*request_leaks(tenants), *snapshot_problems(tenants), *file_leaks(tenants, launch), *extra]
+    if problems:
+        raise TenantLeak("cross-tenant leak(s):\n  " + "\n  ".join(dict.fromkeys(problems)))
+    shortfall = snapshot_shortfall(tenants, min_snapshots)
+    assert not shortfall, "\n".join(shortfall)
+
+
+def assert_no_text_leaks(label: str, text: str, tenants: dict[str, Tenant], owner: str | None = None) -> None:
+    if leaks := text_leaks(label, text, tenants, owner):
+        raise TenantLeak("\n".join(leaks))
 
 
 def text_leaks(label: str, text: str, tenants: dict[str, Tenant], owner: str | None = None) -> list[str]:

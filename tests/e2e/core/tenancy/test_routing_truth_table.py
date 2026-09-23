@@ -32,14 +32,17 @@ from urllib.parse import urlparse
 
 import pytest
 
+from tests.e2e.core._pending_fixes import Gap, expect_gaps
 from tests.fakes.fake_llm_provider import MODEL_ID, Error, ToolCall
 
 from ._routing_helpers import (
     EgressTrap,
     Fleet,
+    RoutingLeak,
     RunResult,
     TuiGateway,
     always,
+    assert_routing,
     check_routing,
     describe,
     inference_hosts,
@@ -102,6 +105,8 @@ class Leg:
     answer_from: str | None = None             # host whose answer the user must see (rc 0)
     rc: str = "ok"                              # ok | fail | any
     profile: str | None = None                 # run with HERMES_HOME = profiles/<name>
+    fail_text: str | None = None               # rc="fail": the error the user must see
+    timeout: float = 240.0
 
 
 @dataclass
@@ -216,7 +221,9 @@ def _profile_work(f: Fleet) -> dict[str, tuple[dict[str, Any], dict[str, str]]]:
 CASES: list[Case] = [
     Case("custom_base_url_key_env", [Leg(Q, ("main",), {"main": 1}, "main")]),
     Case("custom_base_url_api_key_literal", [Leg(Q, ("main",), {"main": 1}, "main")], _main_api_key_literal),
-    Case("bare_custom_without_base_url_fails_fast", [Leg(Q, (), rc="fail")], _bare_custom),
+    # Fails fast with the no-key error: a hang to the harness kill (rc -9) is not a fail-fast.
+    Case("bare_custom_without_base_url_fails_fast",
+         [Leg(Q, (), rc="fail", fail_text="No LLM provider configured", timeout=90)], _bare_custom),
     Case("named_providers_entry_key_env",
          [Leg(Q, ("named",), {"named": 1}, "named")], _model(provider="named-host", default="model-named")),
     Case("legacy_custom_providers_entry_api_key",
@@ -275,7 +282,7 @@ def _run_case(case: Case, root: Path) -> tuple[Fleet, list[LegOutcome]]:
         for leg in case.legs:
             marks, egress_mark = fleet.marks(), len(trap.attempts)
             hermes_home = home / ".hermes" / "profiles" / leg.profile if leg.profile else None
-            run = run_hermes(leg.argv, home, hermes_home=hermes_home, proxy=trap.url)
+            run = run_hermes(leg.argv, home, hermes_home=hermes_home, proxy=trap.url, timeout=leg.timeout)
             outcomes.append(LegOutcome(leg, run, fleet.since(marks), trap.attempts[egress_mark:]))
         return fleet, outcomes
     finally:
@@ -292,35 +299,34 @@ def cli_outcomes(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         return {cid: fut for cid, fut in futures.items()}
 
 
-# Real production bugs on base, fixed on test/core-tenancy and landing as their own PRs.
-# strict: each cell flips red (XPASS) once its fix is in, so the mark comes off with it.
-KNOWN_BUGS = {
-    "bare_custom_without_base_url_fails_fast": pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="bare `provider: custom` with no endpoint falls through to OpenRouter and ships the "
-               "OPENAI_BASE_URL-bound OPENAI_API_KEY there (fix: #120299)"),
-}
+# Live gaps, applied only while their probe reproduces them (see _pending_fixes).
+GAP_120299 = Gap(120299, "#120299: bare `provider: custom` with no endpoint falls through to OpenRouter and ships the "
+                         "OPENAI_BASE_URL-bound OPENAI_API_KEY there; the pre-request Anthropic credential refresh "
+                         "puts ANTHROPIC_API_KEY on an alias's foreign host", raises=RoutingLeak)
+GAP_120295 = Gap(120295, "#120295: `/model <id> --provider X` adopts another provider's alias (endpoint + key) "
+                         "for the same model id", raises=RoutingLeak)
+KNOWN_GAPS = {"bare_custom_without_base_url_fails_fast": (GAP_120299,)}
 
 
-@pytest.mark.parametrize("case", [
-    pytest.param(c, id=c.id, marks=[KNOWN_BUGS[c.id]] if c.id in KNOWN_BUGS else [])
-    for c in CASES])
-def test_cli_routing_truth_table(case: Case, cli_outcomes: dict[str, Any]) -> None:
+@pytest.mark.parametrize("case", [pytest.param(c, id=c.id) for c in CASES])
+def test_cli_routing_truth_table(case: Case, cli_outcomes: dict[str, Any], request: pytest.FixtureRequest) -> None:
+    expect_gaps(request, *KNOWN_GAPS.get(case.id, ()))
     fleet, outcomes = cli_outcomes[case.id].result(timeout=900)
     for i, out in enumerate(outcomes):
         leg, run = out.leg, out.run
         ctx = (f"[{case.id} leg {i}: hermes {' '.join(leg.argv)}] rc={run.rc} ({run.seconds:.1f}s)\n"
                f"requests:\n{describe(out.log)}\nstdout tail:\n{run.stdout[-1500:]}\nstderr tail:\n{run.stderr[-1500:]}")
-        problems = check_routing(fleet, out.log, {h: fleet.keys[h] for h in leg.hosts}, leg.must_hit)
-        assert not problems, "\n".join(problems) + "\n" + ctx
+        assert_routing(check_routing(fleet, out.log, {h: fleet.keys[h] for h in leg.hosts}, leg.must_hit), ctx)
+        leaked = [t for _m, t in out.egress if urlparse(t).hostname in inference_hosts()]
+        if leaked:
+            raise RoutingLeak(f"prompt egress to a real inference API: {leaked}\n{ctx}")
         if leg.rc == "ok":
             assert run.rc == 0, ctx
         elif leg.rc == "fail":
-            assert run.rc != 0, "expected a fail-fast exit\n" + ctx
+            assert run.rc not in (0, None, -9), "expected a fail-fast exit, not success or the harness kill\n" + ctx
+            assert leg.fail_text in run.stdout + run.stderr, f"expected {leg.fail_text!r}\n" + ctx
         if leg.answer_from:
             assert f"answer-from-{leg.answer_from}" in run.stdout, ctx
-        leaked = [t for _m, t in out.egress if urlparse(t).hostname in inference_hosts()]
-        assert not leaked, f"prompt egress to a real inference API: {leaked}\n{ctx}"
     if case.key_order:
         host, order = case.key_order
         seen: list[str] = []
@@ -342,15 +348,11 @@ class Switch:
     keyless: bool = False  # the host may also see NO credential (withholding a key is not a leak)
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="leg 5: `/model <id> --provider X` adopts an alias's endpoint+key for the same model "
-           "(fix: #120295); leg 6: the pre-request Anthropic "
-           "credential refresh puts ANTHROPIC_API_KEY on an alias's foreign host "
-           "(fix: #120299). Flips once both land.")
-def test_tui_gateway_model_switch_routing(tmp_path: Path) -> None:
+def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     """One live session walks the switch matrix; after every switch the next turn lands on
-    exactly the selected host with exactly its key, and nothing reaches any other host."""
+    exactly the selected host with exactly its key, and nothing reaches any other host.
+    Leg 5 is #120295's cell, leg 6 #120299's."""
+    expect_gaps(request, GAP_120295, GAP_120299)
     fleet = Fleet(ROLES).start()
     trap = EgressTrap()
     home = tmp_path / "home"
@@ -392,8 +394,7 @@ def test_tui_gateway_model_switch_routing(tmp_path: Path) -> None:
             ctx = f"leg {i} ({leg.value!r} -> {leg.host}): {done.get('params', {}).get('type')} {str(payload)[:300]}\n{describe(log)}"
             print(ctx)
             allowed = {*fleet.keys[leg.host], *(("", "no-key-required") if leg.keyless else ())}
-            problems = check_routing(fleet, log, {leg.host: allowed}, {leg.host: 1})
-            assert not problems, "\n".join(problems) + "\n" + ctx
+            assert_routing(check_routing(fleet, log, {leg.host: allowed}, {leg.host: 1}), ctx)
             if leg.ok:
                 assert payload.get("text") == f"answer-from-{leg.host}", ctx
     finally:

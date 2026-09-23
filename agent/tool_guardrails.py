@@ -14,7 +14,11 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from agent.tool_result_classification import (
+    file_mutation_result_landed,
+    is_guardrail_refusal,
+    is_skill_view_dedup_result,
+)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -217,6 +221,8 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     """Fallback classifier used only when callers don't pass ``failed``; mirrors
     ``agent.display._detect_tool_failure`` so the guardrail never disagrees with the CLI's ``[error]`` tag."""
     if result is None or file_mutation_result_landed(tool_name, result):
+        return False, ""
+    if is_skill_view_dedup_result(tool_name, result):
         return False, ""
 
     # A harness REFUSAL of a redundant call (repeated identical read/search) carries

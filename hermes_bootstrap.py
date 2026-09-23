@@ -280,6 +280,62 @@ def suppress_platform_ver_console() -> None:
         pass  # hardening only — never break an entry point
 
 
+def _glibc_frees_environ() -> bool:
+    """True on glibc < 2.41, whose ``setenv`` of a NEW name reallocs the ``environ`` array
+    and frees the old one (2.41+ never frees it, so a concurrent ``getenv`` stays safe)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc, _, version = (os.confstr("CS_GNU_LIBC_VERSION") or "").partition(" ")
+        return libc == "glibc" and tuple(int(p) for p in version.split(".")[:2]) < (2, 41)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
+def install_never_free_environ() -> None:
+    """Make ``os.environ[new_name] = ...`` safe against native ``getenv`` in other threads.
+
+    On glibc < 2.41 adding a name reallocs ``environ`` and frees the old array while a
+    thread that dropped the GIL (``getaddrinfo``, OpenSSL's ``SSL_CERT_FILE`` lookup) may
+    still be walking it; the freed slots hold tcache pointers, so the walk segfaults the
+    whole process. Hermes writes new names at runtime from many places (``session.create``
+    turns on gateway prompts, the agent build sets ``HERMES_SESSION_ID``) while background
+    threads fetch catalogs, so the tui_gateway died with SIGSEGV. New names go into a
+    fresh array published with one pointer store, and no array is ever freed — glibc
+    2.41's own fix. Replacing or removing an existing name is already in place in glibc.
+    """
+    if getattr(os.putenv, "_hermes_never_free_environ", False) or not _glibc_frees_environ():
+        return
+    import ctypes
+
+    try:
+        environ = ctypes.c_void_p.in_dll(ctypes.CDLL(None), "environ")
+    except (AttributeError, OSError, ValueError):
+        return
+    real_putenv = os.putenv
+    retained: list = []  # every array/entry handed to libc lives as long as the process
+
+    def _putenv(key, value) -> None:
+        name, val = os.fsencode(key), os.fsencode(value)
+        entries: list[int] = []  # raw pointers: libc owns (or we retain) what they point at
+        if environ.value:
+            array = ctypes.cast(environ.value, ctypes.POINTER(ctypes.c_void_p))
+            while entry := array[len(entries)]:
+                entries.append(entry)
+        prefix = name + b"="
+        if (not name or b"=" in name or b"\0" in name + val
+                or any(ctypes.string_at(e).startswith(prefix) for e in entries)):
+            real_putenv(key, value)  # in-place replace, or the usual ValueError
+            return
+        line = ctypes.create_string_buffer(prefix + val)
+        fresh = (ctypes.c_void_p * (len(entries) + 2))(*entries, ctypes.addressof(line), None)
+        retained.extend((line, fresh))
+        environ.value = ctypes.addressof(fresh)
+
+    _putenv._hermes_never_free_environ = True  # type: ignore[attr-defined]
+    os.putenv = _putenv
+
+
 def harden_import_path(src_root: str | None = None) -> None:
     """Stop a package in the current directory from shadowing Hermes modules.
 
@@ -337,6 +393,7 @@ def export_scratch_tmp_env() -> None:
 # Apply on import — entry points only need ``import hermes_bootstrap`` first.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
+install_never_free_environ()
 activate_durable_lazy_target()
 install_happy_eyeballs_socket_connect()
 export_scratch_tmp_env()

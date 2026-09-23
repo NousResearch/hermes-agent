@@ -469,3 +469,35 @@ class TestHappyEyeballsSocketConnect:
             monkeypatch.setitem(racer.__globals__, "_happy_eyeballs_create_connection", boom)
             with pytest.raises(RuntimeError, match="racer bug"):
                 racer(("127.0.0.1", 1), 1.0)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or not (os.confstr("CS_GNU_LIBC_VERSION") or "").startswith("glibc"),
+    reason="environ array lifetime is a glibc property")
+class TestNeverFreeEnviron:
+    """A new ``os.environ`` name must never free the ``environ`` array another thread may be
+    walking in C ``getenv`` (getaddrinfo, OpenSSL) — glibc < 2.41 did, and the tui_gateway
+    segfaulted when ``session.create`` added names during the picker-prewarm fetch."""
+
+    def test_arrays_superseded_by_new_names_stay_intact(self):
+        # Fresh interpreter: the test process's own environ history must not matter.
+        subprocess.run([sys.executable, "-c", textwrap.dedent("""
+            import ctypes, os, hermes_bootstrap
+            environ = ctypes.c_void_p.in_dll(ctypes.CDLL(None), "environ")
+            def snapshot(addr):
+                array, out = ctypes.cast(addr, ctypes.POINTER(ctypes.c_void_p)), []
+                while array[len(out)]:
+                    out.append(array[len(out)])
+                return out
+            seen, junk = {}, []
+            for i in range(80):
+                seen.setdefault(environ.value, snapshot(environ.value))
+                os.environ[f"HERMES_ENVIRON_PROBE_{i}"] = "1"
+                junk.append(os.urandom(40))  # interleave heap chunks so a realloc must move
+            assert len(seen) > 1, "environ never moved; the probe proves nothing"
+            # Compare raw words only: dereferencing a freed slot would crash the probe itself.
+            for addr, entries in seen.items():
+                words = ctypes.cast(addr, ctypes.POINTER(ctypes.c_void_p))
+                assert [words[i] for i in range(len(entries))] == entries, "a superseded environ array was freed"
+            assert os.environ["HERMES_ENVIRON_PROBE_79"] == "1"
+        """)], check=True, cwd=str(Path(__file__).resolve().parents[1]), timeout=60)

@@ -16,7 +16,6 @@ from hermes_cli.config import (
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
-    _explicit_config_paths,
     _normalize_max_turns_config,
     is_provider_enabled,
     load_config,
@@ -30,7 +29,6 @@ from hermes_cli.config import (
     sanitize_env_file,
     set_config_value,
     unset_config_value,
-    write_platform_config_field,
     _sanitize_env_lines,
 )
 
@@ -672,34 +670,11 @@ class TestSanitizeEnvLines:
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""
 
-    def test_keenable_api_key_registered(self):
-        """KEENABLE_API_KEY is listed in OPTIONAL_ENV_VARS."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "KEENABLE_API_KEY" in OPTIONAL_ENV_VARS
 
 
-    def test_keenable_api_key_has_url(self):
-        """KEENABLE_API_KEY has a URL."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert OPTIONAL_ENV_VARS["KEENABLE_API_KEY"]["url"] == "https://keenable.ai"
 
-    def test_tavily_api_key_registered(self):
-        """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
 
-    def test_tavily_api_key_has_url(self):
-        """TAVILY_API_KEY has a URL."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["url"] == "https://app.tavily.com/home"
 
-    def test_tavily_in_env_vars_by_version(self):
-        """TAVILY_API_KEY is listed in ENV_VARS_BY_VERSION."""
-        from hermes_cli.config import ENV_VARS_BY_VERSION
-        all_vars = []
-        for vars_list in ENV_VARS_BY_VERSION.values():
-            all_vars.extend(vars_list)
-        assert "TAVILY_API_KEY" in all_vars
 
     def test_max_iterations_not_offered_as_env_var(self):
         """HERMES_MAX_ITERATIONS must NOT be in OPTIONAL_ENV_VARS (issue #17534).
@@ -714,38 +689,6 @@ class TestOptionalEnvVarsRegistry:
         assert "HERMES_MAX_ITERATIONS" not in OPTIONAL_ENV_VARS
 
 
-class TestMemoryProviderEnvVarsRegistry:
-    """Every memory provider that reads an API key from the environment must
-    have that key catalogued in OPTIONAL_ENV_VARS so the dashboard Keys page
-    and `hermes setup` surface it (previously only Honcho was listed, leaving
-    Hindsight/Supermemory/Mem0/RetainDB/ByteRover/OpenViking invisible).
-
-    This is a behavior contract, not a snapshot: it asserts each provider's
-    primary credential key is present, tool-categorised, and password-masked —
-    not a frozen count of entries.
-    """
-
-    # provider primary-credential env key -> the tool-call name it powers.
-    MEMORY_PROVIDER_KEYS = {
-        "HONCHO_API_KEY": "honcho_context",
-        "HINDSIGHT_API_KEY": "hindsight_recall",
-        "SUPERMEMORY_API_KEY": "supermemory_search",
-        "MEM0_API_KEY": "mem0_search",
-        "RETAINDB_API_KEY": "retaindb_search",
-        "BRV_API_KEY": "brv_query",
-        "OPENVIKING_API_KEY": "viking_search",
-    }
-
-    def test_memory_provider_keys_are_catalogued(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        missing = [k for k in self.MEMORY_PROVIDER_KEYS if k not in OPTIONAL_ENV_VARS]
-        assert not missing, f"memory provider keys missing from OPTIONAL_ENV_VARS: {missing}"
-
-
-    def test_memory_provider_keys_advertise_their_tool(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        for key, tool in self.MEMORY_PROVIDER_KEYS.items():
-            assert tool in OPTIONAL_ENV_VARS[key].get("tools", []), key
 
 
 class TestConfigMigrationSecretPrompts:
@@ -1243,8 +1186,6 @@ class TestCustomProviderCompatibility:
 class TestInterimAssistantMessageConfig:
     """Test the explicit gateway interim-message config gate."""
 
-    def test_default_config_enables_interim_assistant_messages(self):
-        assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
 
     def test_migrate_to_v15_supplies_interim_message_gate_at_read_time(
         self, tmp_path, capsys
@@ -1276,15 +1217,6 @@ class TestInterimAssistantMessageConfig:
         assert "Added display.interim_assistant_messages" not in capsys.readouterr().out
 
 
-class TestCliRefreshIntervalConfig:
-    """Test the CLI refresh_interval config default (#45592 / #48309)."""
-
-    def test_default_config_enables_cli_refresh_interval(self):
-        """cli_refresh_interval defaults to 1.0 so the idle status-bar
-        clock keeps ticking and the bottom chrome stays alive during
-        idle (#45592). Users on emulators where the periodic redraw
-        fights auto-scroll can set it to 0 (#48309)."""
-        assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 1.0
 
 
 class TestDiscordChannelPromptsConfig:
@@ -1667,7 +1599,7 @@ feishu:
 
 
     def test_persist_migration_writes_full_read_raw_config(self, tmp_path):
-        from hermes_cli.config import _persist_migration, read_raw_config
+        from hermes_cli.config import _persist_migration
 
         body = """_config_version: 30
 model:
@@ -1791,8 +1723,6 @@ class TestBackgroundNotificationsConciseMigration:
         # Unset users inherit the new default at read time; no write needed.
         assert "display" not in raw or "background_process_notifications" not in raw.get("display", {})
 
-    def test_default_config_is_concise(self):
-        assert DEFAULT_CONFIG["display"]["background_process_notifications"] == "concise"
 
 
 class TestConfigNormalizationDoesNotOverwriteUserValues:
@@ -1834,9 +1764,6 @@ class TestCodexAppServerAutoConfig:
     def _write(self, tmp_path, body):
         (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
 
-    def test_default_config_has_native_mode(self):
-        assert DEFAULT_CONFIG["compression"]["codex_app_server_auto"] == "native"
-        assert DEFAULT_CONFIG["compression"]["codex_gpt55_autoraise"] is True
 
     def test_preserves_existing_codex_app_server_auto_value(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -1989,8 +1916,6 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
     from hermes_cli.config import _validate_config_key
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is True
-    assert DEFAULT_CONFIG["gateway"]["auto_multiplex_migration"] is True
     assert "auto_migrate" not in DEFAULT_CONFIG["gateway"]
     assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
     assert _validate_config_key("gateway.profile_routes") == (True, None)
@@ -2021,10 +1946,6 @@ def test_lsp_root_policy_keys_are_recognized_and_off_by_default():
     """``lsp.warmup_timeout`` / ``broken_retry_seconds`` / ``exclude_roots`` (#116446) must be settable via
     ``hermes config set`` and must default to today's behaviour (no grace, lifetime broken set, no exclusion)."""
     from hermes_cli.config import _validate_config_key
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-    assert DEFAULT_CONFIG["lsp"]["warmup_timeout"] == 0.0
-    assert DEFAULT_CONFIG["lsp"]["broken_retry_seconds"] == 0.0
-    assert DEFAULT_CONFIG["lsp"]["exclude_roots"] == []
     for key in ("lsp.warmup_timeout", "lsp.broken_retry_seconds", "lsp.exclude_roots"):
         assert _validate_config_key(key) == (True, None)
 

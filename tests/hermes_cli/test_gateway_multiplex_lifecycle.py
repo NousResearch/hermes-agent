@@ -78,6 +78,12 @@ def test_cli_lifecycle_orders_marker_before_socket(homes, monkeypatch, capsys, v
     monkeypatch.setattr(control_socket, 'request_serve_profile_hot', serve, raising=False)
     if verb == 'start':
         marker.touch()
+    # Precedence: a standalone profile is never parked, even while a stale host record lists it.
+    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    (secondary / 'config.yaml').write_text('gateway: {standalone: true}\n')
+    assert profile_lifecycle(verb, SimpleNamespace()) is False and calls == []
+    assert marker.exists() is (verb == 'start')
+    (secondary / 'config.yaml').write_text('model: {default: worker-model}\n')
     getattr(gw, '_cmd_' + verb)(SimpleNamespace())
     assert calls == {'stop': ['unserve'], 'start': ['serve'], 'restart': ['unserve', 'serve']}[verb]
     assert marker.exists() is (verb == 'stop')
@@ -115,16 +121,25 @@ def test_parked_profile_keeps_implicit_host_multiplexed(homes, monkeypatch):
     assert resolve_multiplex_mode(config).enabled
 
 
-def test_dashboard_exposes_parked_profile(homes, monkeypatch):
+def test_dashboard_exposes_parked_profile_and_start_unparks_it(homes, monkeypatch):
+    from types import SimpleNamespace
     from fastapi.testclient import TestClient
+    from gateway import host_attach
     from hermes_cli import web_server, profiles
-    _, secondary = homes
+    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+    root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setattr(profiles, '_check_gateway_running', lambda home: False)
     with TestClient(web_server.app) as client:
         response = client.get('/api/status')
     assert response.status_code == 200
     assert response.json()['parked_profiles'] == ['worker']
+    # The Start button: refused while no host can unpark it, allowed (spawns `-p worker gateway start`)
+    # once the host multiplexer is live; a parked profile is not served, so this is not the served path.
+    monkeypatch.setattr(host_attach, 'host_gateway', lambda: None)
+    assert multiplexed_profile_refusal('worker', 'start')
+    monkeypatch.setattr(host_attach, 'host_gateway', lambda: SimpleNamespace(home=root, pid=1))
+    assert multiplexed_profile_refusal('worker', 'start') is None
 
 
 @pytest.mark.parametrize('host_running', [False, True])

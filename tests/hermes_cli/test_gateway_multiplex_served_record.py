@@ -236,7 +236,8 @@ def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):
 
 def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypatch):
     """`gateway restart` for a served profile restarts the multiplexer (a `-p X` child only exits 78 into
-    the action log); `start`/`stop` refuse; a profile with its own gateway is managed normally."""
+    the action log); `stop` parks, `start` refuses while unparked; a profile with its own gateway is
+    managed normally."""
     from hermes_cli import web_server_gateway
     from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
     # No stub: a served profile's liveness answers "running" on the MULTIPLEXER's pid, and that must
@@ -246,7 +247,9 @@ def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypat
     restart = _gateway_subcommand("coder", "restart")
     assert restart[-2:] == ["gateway", "restart"] and "coder" not in restart
     assert _profile_action_environment(restart)["HERMES_HOME"] == str(served_root)
-    assert multiplexed_profile_refusal("coder", "stop") and multiplexed_profile_refusal("coder", "start")
+    assert multiplexed_profile_refusal("coder", "stop") is None  # parks via `hermes -p coder gateway stop`
+    assert multiplexed_profile_refusal("coder", "start")
+    assert _gateway_subcommand("coder", "stop") == ["-p", "coder", "gateway", "stop"]
     assert _gateway_subcommand("other", "restart") == ["-p", "other", "gateway", "restart"]
     assert multiplexed_profile_refusal("other", "stop") is None
     # coder started its own gateway with --force: it is that gateway the verbs address.

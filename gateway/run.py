@@ -5507,7 +5507,7 @@ def _log_standalone_profiles_at_boot(runner) -> None:
         from hermes_cli.profiles import profiles_to_serve, profile_is_standalone
         from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
         served = set(runner.served_profile_names())
-        for name, home in profiles_to_serve(True, include_standalone=True):
+        for name, home in profiles_to_serve(True, include_standalone=True, include_parked=True):
             if name != "default" and name not in served and profile_is_standalone(home):
                 logger.warning("profile '%s' is standalone (gateway.standalone: true); not served by "
                                "this gateway. %s", name, STANDALONE_DEPRECATION_NOTICE)

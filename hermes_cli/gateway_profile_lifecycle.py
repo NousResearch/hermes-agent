@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from hermes_constants import get_hermes_home, get_default_hermes_root
-from hermes_cli.profiles import parked_marker_path, profile_is_parked, profiles_to_serve
+from hermes_cli.profiles import parked_marker_path, profile_is_parked, profile_is_standalone, profiles_to_serve
 
 
 def _confirmed(answer, key, name):
@@ -24,6 +24,10 @@ def profile_lifecycle(command: str, args) -> bool:
     if not name or name == "default" or getattr(args, "all", False) or getattr(args, "force", False):
         return False
     home = get_hermes_home()
+    if profile_is_standalone(home):
+        # gateway.standalone wins: the host never serves (or parks) an opted-out profile, so its
+        # verbs keep addressing its own gateway process even while a stale host record lists it.
+        return False
     marker = parked_marker_path(home)
     if command == "start":
         if not profile_is_parked(home):

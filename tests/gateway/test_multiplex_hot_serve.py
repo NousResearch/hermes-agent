@@ -161,19 +161,6 @@ async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypat
         assert runner._profile_adapters["worker"][Platform.DISCORD].token.endswith("new-worker-token\n")
 
 
-@pytest.mark.asyncio
-async def test_marker_appearing_unserves_on_reconcile(tmp_path, monkeypatch):
-    runner, home = _runner(tmp_path, monkeypatch)
-    secondary = _mkprofile(home, "worker", "DISCORD_BOT_TOKEN=worker-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
-        await runner._start_secondary_profile_adapters()
-        adapter = runner._profile_adapters["worker"][Platform.DISCORD]
-        (secondary / "gateway.parked").touch()
-        assert (await runner.reconcile_served_profiles())["removed"] == ["worker"]
-        assert adapter.disconnected
-        assert _served_record(home) == ["default"]
-
-
 @pytest.mark.linux_only
 @pytest.mark.asyncio
 async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch):

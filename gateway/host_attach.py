@@ -292,7 +292,7 @@ def _coexisting_gateways(owner: Optional[HostGateway]):
     if owner is not None:
         seen.add(owner.pid)
         yield owner
-    for _name, home in profiles_to_serve(True, include_standalone=True):
+    for _name, home in profiles_to_serve(True, include_standalone=True, include_parked=True):
         pid = live_gateway_pid_for_home(home)
         if pid is None or pid in seen:
             continue

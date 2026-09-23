@@ -1428,25 +1428,37 @@ def restore_cron_jobs_if_emptied(snapshot_id: str, hermes_home: Optional[Path] =
     return {"restored": True, "job_count": snap_count, "snapshot_id": snapshot_id}
 
 
-def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
+def _sibling_profile_homes(
+    invoking_home: Path, *, require_complete: bool = False,
+) -> list[tuple[str, Path]]:
     """(name, home) for every OTHER profile on this install (the invoking one is snapshotted
     separately). The update's code swap touches every profile, so its snapshot must too (#66140).
-    Never raises."""
+    Legacy callers get a best-effort list; required callers raise on enumeration failure."""
     homes: list[tuple[str, Path]] = []
     try:
         from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root, _PROFILE_ID_RE
+        def is_directory(path: Path) -> bool:
+            if not require_complete:
+                return path.is_dir()
+            try:
+                return stat.S_ISDIR(path.stat().st_mode)
+            except FileNotFoundError:
+                return False
+
         invoking = invoking_home.resolve()
         default_home = _get_default_hermes_home()
-        if default_home.is_dir() and default_home.resolve() != invoking:
+        if is_directory(default_home) and default_home.resolve() != invoking:
             homes.append(("default", default_home))
         root = _get_profiles_root()
-        if root.is_dir():
+        if is_directory(root):
             for entry in sorted(root.iterdir()):
-                if (entry.is_dir() and entry.name != "default" and _PROFILE_ID_RE.match(entry.name)
+                if (is_directory(entry) and entry.name != "default" and _PROFILE_ID_RE.match(entry.name)
                         and entry.resolve() != invoking):
                     homes.append((entry.name, entry))
     except Exception as exc:
         logger.debug("Sibling profile enumeration failed: %s", exc)
+        if require_complete:
+            raise
     return homes
 
 

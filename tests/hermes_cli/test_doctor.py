@@ -1373,12 +1373,82 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert doctor_config.collect_deprecated_env_vars(None) == []
 
 
+@pytest.mark.linux_only
+def test_macos_tcc_grant_check_is_silent_off_macos(monkeypatch, capsys, tmp_path):
+    """Off macOS the TCC check prints nothing, even with a bundle present."""
+    monkeypatch.setattr(doctor_platform, "_desktop_app_bundle", lambda: tmp_path / "Hermes.app")
+    doctor_platform.check_macos_tcc_grants()
+    assert capsys.readouterr().out == ""
 
 
+@pytest.mark.macos_only
+class TestMacOSTCCGrants:
+    """macOS TCC grant persistence check (#86385): a cdhash-pinned DR (pre-#73681
+    local builds) silently resets Screen Recording/Accessibility grants on every
+    rebuild while the Settings toggle stays ON."""
 
+    @staticmethod
+    def _darwin_bundle(monkeypatch, tmp_path, dr):
+        monkeypatch.setattr(doctor_platform, "_desktop_app_bundle", lambda: tmp_path / "Hermes.app")
+        if dr is not ...:
+            monkeypatch.setattr(doctor_platform, "_macos_desktop_dr", lambda app: dr)
 
+    def test_silent_without_desktop_bundle(self, monkeypatch, capsys):
+        monkeypatch.setattr(doctor_platform, "_desktop_app_bundle", lambda: None)
+        doctor_platform.check_macos_tcc_grants()
+        assert capsys.readouterr().out == ""
 
+    def test_warns_on_cdhash_pinned_dr(self, monkeypatch, capsys, tmp_path):
+        self._darwin_bundle(
+            monkeypatch, tmp_path,
+            'designated => identifier "com.nousresearch.hermes" and cdhash H"97e692f3890f781fa0ad5ad6cb9d769cfaf42628"',
+        )
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC grants will reset after every update" in out
+        assert "hermes update" in out
+        assert "signing identity is stable" not in out
 
+    def test_identifier_dr_is_stable_with_upgrade_hint_and_repair_info(self, monkeypatch, capsys, tmp_path):
+        self._darwin_bundle(monkeypatch, tmp_path, 'designated => identifier "com.nousresearch.hermes"')
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC signing identity is stable" in out
+        assert "--setup-tcc-identity" in out
+        assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
+
+    def test_certificate_anchored_dr_is_stable_without_upgrade_hint(self, monkeypatch, capsys, tmp_path):
+        self._darwin_bundle(
+            monkeypatch, tmp_path,
+            'designated => identifier "com.nousresearch.hermes" and certificate root = H"aabbcc"',
+        )
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC signing identity is stable" in out
+        assert "--setup-tcc-identity" not in out
+        assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
+
+    @pytest.mark.parametrize("failure", ["none", "empty", "timeout", "no_codesign"])
+    def test_unreadable_dr_warns_and_never_claims_stable(self, monkeypatch, capsys, tmp_path, failure):
+        """codesign failing, hanging, missing or printing nothing degrades to a
+        warning; an empty DR must not false-positive as a stable identity."""
+        if failure in ("none", "empty"):
+            self._darwin_bundle(monkeypatch, tmp_path, None if failure == "none" else "")
+        else:
+            self._darwin_bundle(monkeypatch, tmp_path, ...)
+            if failure == "timeout":
+                monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/codesign")
+
+                def _timeout(*args, **kwargs):
+                    raise subprocess.TimeoutExpired(cmd=["codesign"], timeout=15)
+
+                monkeypatch.setattr(subprocess, "run", _timeout)
+            else:
+                monkeypatch.setattr(shutil, "which", lambda _name: None)
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out
 
 
 def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):

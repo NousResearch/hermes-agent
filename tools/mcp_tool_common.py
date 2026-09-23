@@ -42,9 +42,13 @@ _DEFAULT_TOOL_TIMEOUT = 300      # seconds for tool calls
 
 
 def _resolve_tool_timeout(config: dict) -> float:
-    """Per-server tool-call timeout. Precedence: ``mcp_servers.<name>.timeout`` >
+    """Resolve the MCP tool-call idle timeout.
+
+    Progress notifications refresh this timeout, while total execution remains
+    capped at four times its value. Precedence: ``mcp_servers.<name>.timeout`` >
     ``timeouts.mcp.tool_call`` > the 300s default; values are platform-clamped by
-    ``resolve_timeout``."""
+    ``resolve_timeout``.
+    """
     per_server = config.get("timeout")
     if per_server is not None:
         return per_server

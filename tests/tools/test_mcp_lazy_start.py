@@ -140,7 +140,7 @@ class TestLazyFirstUseConnect:
         return connected
 
     @staticmethod
-    def _run_on_loop(coro_or_factory, timeout=120):
+    def _run_on_loop(coro_or_factory, timeout=120, **_kwargs):
         import asyncio
 
         coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory

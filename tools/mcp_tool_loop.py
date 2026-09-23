@@ -13,7 +13,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Coroutine, Optional
+from typing import Any, Callable, Coroutine, Optional
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_lifecycle as _lifecycle
 
@@ -145,9 +145,54 @@ def _running_loop() -> Optional[asyncio.AbstractEventLoop]:
     return loop if loop is not None and loop.is_running() else None
 
 
-def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
-    """Schedule a coroutine (or zero-arg factory — avoids leaking a never-awaited coroutine when the
-    loop is down) on the MCP loop and block until done, polling so user interrupts are honored."""
+class _McpProgressState:
+    """Track one MCP call's idle deadline and absolute execution cap."""
+
+    def __init__(self, idle_timeout: float, max_timeout: float):
+        self._lock = threading.Lock()
+        self._idle_timeout = float(idle_timeout)
+        self._max_timeout = float(max_timeout)
+        self._last_progress_at: Optional[float] = None
+        self._absolute_deadline: Optional[float] = None
+
+    def _start_locked(self, now: float) -> None:
+        if self._last_progress_at is None:
+            self._last_progress_at = now
+            self._absolute_deadline = now + self._max_timeout
+
+    def touch(self) -> None:
+        """Refresh the idle deadline when the server reports progress."""
+        now = time.monotonic()
+        with self._lock:
+            self._start_locked(now)
+            self._last_progress_at = now
+
+    def deadline(self) -> float:
+        """Return the idle deadline, bounded by the absolute execution cap."""
+        now = time.monotonic()
+        with self._lock:
+            # Start after the call has been submitted to the MCP loop so queue
+            # backpressure does not consume the configured execution window.
+            self._start_locked(now)
+            assert self._last_progress_at is not None
+            assert self._absolute_deadline is not None
+            return min(
+                self._last_progress_at + self._idle_timeout,
+                self._absolute_deadline,
+            )
+
+
+def _run_on_mcp_loop(
+    coro_or_factory,
+    timeout: float = 30,
+    deadline_provider: Optional[Callable[[], float]] = None,
+    absolute_timeout: Optional[float] = None,
+):
+    """Schedule a coroutine (or zero-arg factory) on the MCP loop and block until done.
+
+    ``deadline_provider`` may refresh the monotonic deadline while the call is
+    running. Polling keeps user interrupts responsive.
+    """
     from tools.interrupt import is_interrupted
     from agent.async_utils import safe_schedule_threadsafe
 
@@ -169,11 +214,20 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
         if is_interrupted():
             future.cancel()
             raise InterruptedError("User sent a new message")
+        if deadline_provider is not None:
+            deadline = deadline_provider()
         remaining = 0.1 if deadline is None else deadline - time.monotonic()
         if remaining <= 0:
             future.cancel()
-            raise TimeoutError(f"MCP call timed out after {time.monotonic() - start_time:.1f}s "
-                               f"(configured timeout: {float(timeout):.1f}s)")
+            elapsed = time.monotonic() - start_time
+            if deadline_provider is not None and absolute_timeout is not None:
+                detail = (
+                    f"idle timeout: {float(timeout):.1f}s, "
+                    f"absolute cap: {float(absolute_timeout):.1f}s"
+                )
+            else:
+                detail = f"configured timeout: {float(timeout):.1f}s"
+            raise TimeoutError(f"MCP call timed out after {elapsed:.1f}s ({detail})")
         try:
             return future.result(timeout=min(0.1, remaining))
         except concurrent.futures.TimeoutError:

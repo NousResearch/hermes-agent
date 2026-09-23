@@ -136,7 +136,7 @@ class TestMaintainPackHealth:
 
         cli._maintain_pack_health(str(repo))
 
-        assert self._pack_count(repo) == made, "below threshold must be a no-op"  # noqa: same-count contract
+        assert self._pack_count(repo) == made, "below threshold must be a no-op"  # same-count contract
 
     def test_fail_soft_on_missing_pack_dir(self, tmp_path):
         from cli import _maintain_pack_health

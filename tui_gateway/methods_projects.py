@@ -70,7 +70,7 @@ def _register_project_mutator(suffix: str, fn_name: str, takes_path: bool, kwarg
 
 _register_project_mutator(
     "update", "update_project", False,
-    lambda p: _pick(p, "name", "description", "icon", "color", "board_slug"))
+    lambda p: _pick(p, "name", "description", "icon", "color", "board_slug", "auto_pull"))
 _register_project_mutator(
     "add_folder", "add_folder", True,
     lambda p: {"label": p.get("label"), "is_primary": bool(p.get("is_primary"))})

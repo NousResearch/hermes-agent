@@ -307,6 +307,7 @@ class RuntimeMode:
     config_mode: str = "auto"
     model: Optional[str] = None
     instructions: str = ""
+    auto_pull: bool = False
 
     @property
     def kind(self) -> str:
@@ -343,7 +344,15 @@ class RuntimeMode:
             if family is not None:
                 brief = f"{brief}\n{_EDIT_FORMAT_GUIDANCE[family][1]}"
             prefix.append(brief)
-        workspace = build_coding_workspace_block(self.cwd) if workspace_block is None else workspace_block
+        if workspace_block is None:
+            from agent.auto_pull import maybe_auto_pull
+
+            pulled = maybe_auto_pull(self.cwd, enabled=self.auto_pull).snapshot_line()
+            workspace = build_coding_workspace_block(self.cwd)
+            if pulled and workspace:
+                workspace = f"{workspace}\n{pulled}"
+        else:
+            workspace = workspace_block
         trailing = [f"Operator instructions (from config):\n{self.instructions}"] if self.instructions else []
         return prefix, [workspace] if workspace else [], trailing
 
@@ -374,8 +383,12 @@ def resolve_runtime_mode(
     raw = _agent_config_value(config, "coding_instructions", "", readonly=False)
     items = raw if isinstance(raw, (list, tuple)) else [raw or ""]
     instructions = "\n".join(str(item).strip() for item in items if str(item).strip())
+    from agent.auto_pull import auto_pull_is_enabled
+
+    profile = _detect_profile(mode, (platform or "").strip().lower(), resolved_cwd)
     return RuntimeMode(
-        profile=_detect_profile(mode, (platform or "").strip().lower(), resolved_cwd),
+        profile=profile,
+        auto_pull=profile.name == CODING_PROFILE.name and auto_pull_is_enabled(resolved_cwd, config),
         surface=platform or "",
         cwd=resolved_cwd,
         config_mode=mode,

@@ -38,16 +38,29 @@ def test_discovery_policy_change_clears_only_discovered_rows(conn):
 
 
 
-def test_create_get_list(conn):
-    pid = pdb.create_project(conn, name="Hermes Agent", folders=["/tmp/hermes"])
+def test_auto_pull_defaults_off_and_updates(conn):
+    pid = pdb.create_project(conn, name="App", folders=["/tmp/app"])
+    proj = pdb.get_project(conn, pid)
+    assert proj.auto_pull is False
+    assert proj.to_dict()["auto_pull"] is False
+
+    assert pdb.update_project(conn, pid, auto_pull=True) is True
+    assert pdb.get_project(conn, pid).auto_pull is True
+    assert pdb.update_project(conn, pid, auto_pull=False) is True
+    assert pdb.get_project(conn, pid).auto_pull is False
+
+
+def test_create_get_list(conn, tmp_path):
+    folder = str(tmp_path / "hermes")
+    pid = pdb.create_project(conn, name="Hermes Agent", folders=[folder])
     proj = pdb.get_project(conn, pid)
 
     assert proj is not None
     assert proj.slug == "hermes-agent"
     assert proj.name == "Hermes Agent"
     # First folder becomes primary.
-    assert proj.primary_path == "/tmp/hermes"
-    assert [f.path for f in proj.folders] == ["/tmp/hermes"]
+    assert proj.primary_path == folder
+    assert [f.path for f in proj.folders] == [folder]
     assert proj.folders[0].is_primary is True
 
     # Lookup by slug too.
@@ -131,12 +144,13 @@ def test_per_profile_isolation(tmp_path):
     b = pdb.connect(db_path=tmp_path / "b" / "projects.db")
     try:
         pdb.create_project(a, name="Only In A", folders=["/a"])
-        pdb.record_discovered_repos(a, [("/a/scanned", "scanned")])
+        scanned = str(tmp_path / "a" / "scanned")
+        pdb.record_discovered_repos(a, [(scanned, "scanned")])
 
         assert [p.slug for p in pdb.list_projects(a)] == ["only-in-a"]
         assert pdb.list_projects(b) == []
         assert [row["root"] for row in pdb.list_discovered_repos(a)] == [
-            "/a/scanned"
+            scanned
         ]
         assert pdb.list_discovered_repos(b) == []
     finally:

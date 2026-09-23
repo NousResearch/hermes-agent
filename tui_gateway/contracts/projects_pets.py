@@ -38,6 +38,7 @@ class ProjectInfo(Result):
     color: str | None = None
     board_slug: str | None = None
     primary_path: str | None = None
+    auto_pull: bool = False
     archived: bool = False
     created_at: int
     folders: list[ProjectFolder] = Field(default_factory=list)
@@ -96,6 +97,8 @@ class ProjectsUpdateParams(ProjectIdParams):
     icon: str | None = None
     color: str | None = None
     board_slug: str | None = None
+
+    auto_pull: bool | None = None
 
 
 method("projects.update", params=ProjectsUpdateParams, result=ProjectResult,
@@ -265,6 +268,7 @@ class ProjectTreeNode(Result):
     path: str | None = None
     color: str | None = None
     icon: str | None = None
+    auto_pull: bool = False
     isAuto: bool = False
     isNoProject: bool = False
     sessionCount: int = 0

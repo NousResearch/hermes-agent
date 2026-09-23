@@ -41,6 +41,21 @@ def test_create_list_show(capsys, tmp_path):
 
 
 
+def test_auto_pull_toggle(tmp_path, capsys):
+    _run(["create", "App", str(tmp_path)])
+    assert _run(["auto-pull", "app", "on"]) == 0
+    assert "auto-pull on" in capsys.readouterr().out
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, "app").auto_pull is True
+
+    assert _run(["show", "app"]) == 0
+    assert "auto-pull: on" in capsys.readouterr().out
+
+    assert _run(["auto-pull", "app", "off"]) == 0
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, "app").auto_pull is False
+
+
 def test_rename_and_archive(tmp_path):
     _run(["create", "Old Name", str(tmp_path)])
     assert _run(["rename", "old-name", "New Name"]) == 0

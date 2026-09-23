@@ -3467,6 +3467,7 @@ export const en: Translations = {
       menu: 'Actions',
       menuRename: 'Rename…',
       menuAppearance: 'Appearance',
+      menuAutoPull: 'Automatically pull',
       noColor: 'No color',
       menuAddFolder: 'Add folder',
       menuSetActive: 'Set active',

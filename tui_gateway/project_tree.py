@@ -337,7 +337,7 @@ def _project_node(
     rows = sessions or []
     node = {
         "id": pid, "label": label, "path": path, "color": None, "icon": None,
-        "isAuto": False, "isNoProject": False,
+        "isAuto": False, "isNoProject": False, "auto_pull": False,
         "sessionCount": session_count, "lastActive": last_active,
         # Totals over the same sessions `sessionCount` counts (billed cost, else estimated).
         "totalTokens": sum(
@@ -436,7 +436,7 @@ def build_tree(
         result.append(_project_node(
             project["id"], project.get("name") or project["id"], project.get("primary_path"), repos,
             len(psessions), _last_active(psessions), _previews(psessions), psessions,
-            color=project.get("color"), icon=project.get("icon")))
+            color=project.get("color"), icon=project.get("icon"), auto_pull=bool(project.get("auto_pull"))))
 
     # Tier 2: auto projects from leftover sessions.
     by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists)

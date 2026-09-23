@@ -35,7 +35,8 @@ def fleet(monkeypatch, tmp_path):
     # A runtime is a VERIFIED gateway identity: live PID whose command line is a gateway's for that home.
     monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: {
         100: "hermes gateway run", 200: "hermes --profile work gateway run"}.get(pid))
-    monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda all_profiles=False: {100})
+    monkeypatch.setattr("hermes_cli.gateway._get_service_pids",
+                        lambda all_profiles=False, require_complete=False: {100})
     monkeypatch.setattr("hermes_cli.gateway.find_windows_gateway_services", lambda: [])
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
     monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes",
@@ -153,6 +154,36 @@ class TestCollectInventory:
         monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", pid_probe)
         assert ui.collect_runtime_inventory().probe_failures == []
         with pytest.raises(ui.InventoryIncompleteError, match="PID-file gateway inventory"):
+            ui.collect_runtime_inventory(require_complete=True)
+
+    def test_required_inventory_refuses_service_probe_error(self, fleet, monkeypatch):
+        def service_pids(*, all_profiles=False, require_complete=False):
+            if require_complete:
+                raise RuntimeError("service manager unavailable")
+            return {100}
+
+        monkeypatch.setattr("hermes_cli.gateway._get_service_pids", service_pids)
+        with pytest.raises(ui.InventoryIncompleteError, match="Service-PID probe"):
+            ui.collect_runtime_inventory(require_complete=True)
+
+    def test_required_inventory_refuses_ledger_probe_error(self, fleet, monkeypatch):
+        def ledger_entries(*, require_complete=False):
+            if require_complete:
+                raise RuntimeError("ledger unreadable")
+            return []
+
+        monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", ledger_entries)
+        with pytest.raises(ui.InventoryIncompleteError, match="Serve/dashboard ledger inventory"):
+            ui.collect_runtime_inventory(require_complete=True)
+
+    def test_required_inventory_refuses_socket_probe_error(self, fleet, monkeypatch):
+        def socket_identity(_home, *, require_complete=False):
+            if require_complete:
+                raise RuntimeError("socket response invalid")
+            return None
+
+        monkeypatch.setattr("hermes_cli.update_receipt._socket_identity", socket_identity)
+        with pytest.raises(ui.InventoryIncompleteError, match="Gateway-state inventory"):
             ui.collect_runtime_inventory(require_complete=True)
 
     def test_required_inventory_refuses_unreadable_profile_root(self, fleet, monkeypatch):

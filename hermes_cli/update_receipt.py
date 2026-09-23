@@ -532,12 +532,14 @@ def _profile_homes() -> list[tuple[str, Path]]:
     return homes
 
 
-def _socket_identity(home: Path) -> Optional[tuple[int, dict]]:
+def _socket_identity(
+    home: Path, *, require_complete: bool = False,
+) -> Optional[tuple[int, dict]]:
     """``(pid, identity)`` declared by the gateway owning ``home``'s control socket, else None.
 
     A live ``identify`` answer is authoritative — no PID-reuse or stale-file heuristics. Callers
     fall back to ``gateway_state.json`` for gateways that predate the socket or whose socket
-    didn't bind.
+    didn't bind. Required probes raise on observation errors so inventory cannot claim completion.
     """
     try:
         # Prefer the gateway-owned control socket (#92091): identity declared by the process itself,
@@ -546,9 +548,12 @@ def _socket_identity(home: Path) -> Optional[tuple[int, dict]]:
         # PID-reuse or stale-file heuristics.
         from gateway.control_socket import identify_gateway
 
-        identity = identify_gateway(home)
+        identity = (identify_gateway(home, require_complete=True)
+                    if require_complete else identify_gateway(home))
         return (int(identity.get("pid")), identity) if identity else None
-    except Exception:  # probe failure, no gateway, or an unparseable pid
+    except Exception:  # legacy callers fall back to the state-file/scan layer
+        if require_complete:
+            raise
         return None
 
 

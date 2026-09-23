@@ -351,7 +351,9 @@ def _parse_launchd_pid_from_print_output(output: str) -> int | None:
     return None
 
 
-def _launchd_print_service_pid(domain: str, label: str) -> tuple[bool, int | None]:
+def _launchd_print_service_pid(
+    domain: str, label: str, *, require_complete: bool = False,
+) -> tuple[bool, int | None]:
     """``(loaded, pid)`` for ``domain/label`` via ``launchctl print`` (domain-explicit; ``launchctl list``
     infers it from caller context). ``TimeoutExpired`` propagates: a wedged launchctl is not "unloaded".
 
@@ -363,9 +365,14 @@ def _launchd_print_service_pid(domain: str, label: str) -> tuple[bool, int | Non
     from hermes_cli.gateway import _CAPTURE_TEXT, _parse_launchd_pid_from_print_output, subprocess
     try:
         result = subprocess.run(["launchctl", "print", f"{domain}/{label}"], timeout=5, **_CAPTURE_TEXT)
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        if require_complete:
+            raise RuntimeError("launchctl unavailable") from exc
         return (False, None)
     if result.returncode != 0:
+        # launchctl's not-found status proves the label is absent; other failures do not.
+        if require_complete and result.returncode != 113:
+            raise RuntimeError("launchd gateway service inspection failed")
         return (False, None)
     return (True, _parse_launchd_pid_from_print_output(result.stdout))
 
@@ -378,13 +385,16 @@ def _launchd_service_registered(label: str, *, timeout: int = 5) -> bool:
     return result.returncode == 0
 
 
-def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]:
+def _locate_launchd_gateway_service(
+    label: str, *, require_complete: bool = False,
+) -> tuple[str | None, int | None]:
     """``(domain, pid)`` for ``label``, probing ``gui/<uid>`` then ``user/<uid>``. Never uses the current
     profile's cached ``_launchd_domain()`` — a fleet can mix domains. ``TimeoutExpired`` propagates."""
     from hermes_cli.gateway import _launchd_print_service_pid, os
     uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
     for domain in (f"gui/{uid}", f"user/{uid}"):
-        loaded, pid = _launchd_print_service_pid(domain, label)
+        loaded, pid = (_launchd_print_service_pid(domain, label, require_complete=True)
+                       if require_complete else _launchd_print_service_pid(domain, label))
         if loaded:
             return (domain, pid)
     return (None, None)

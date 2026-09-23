@@ -171,13 +171,16 @@ def _collect_install_shape(plan: UpdatePlan) -> None:
         plan.update_mechanism = recommended_update_command_for_method(method)
 
 
-def _supervisor_classifier(probe_failures: list[str] | None = None) -> Callable[[int], str]:
-    """``pid -> supervisor`` over the service-PID sets; each probe degrades to an empty set."""
+def _supervisor_classifier(
+    probe_failures: list[str] | None = None, *, require_complete: bool = False,
+) -> Callable[[int], str]:
+    """``pid -> supervisor`` over service-PID sets; failed probes enter the plan's failure list."""
     service_pids: set = set()
     with _probe("Service-PID probe", probe_failures):
         from hermes_cli.gateway import _get_service_pids
 
-        service_pids = _get_service_pids(all_profiles=True) or set()
+        service_pids = (_get_service_pids(all_profiles=True, require_complete=True)
+                        if require_complete else _get_service_pids(all_profiles=True)) or set()
     # Windows SCM services (no-op off Windows): the update's pause phase stops these via `sc.exe
     # stop` / restarts via `sc.exe start`, so the plan must carry the matching mechanism id.
     # --- SCM-supervised gateway PIDs (Windows) ------------------------------
@@ -197,13 +200,14 @@ def _collect_gateway_runtimes(
     """Per-profile gateways: control-socket identity first (declared by the process itself, including
     supervisor provenance — no argv/PID inference), ``gateway_state.json`` fallback, then PID-file
     mapped gateways no status record covers."""
-    supervisor = _supervisor_classifier(plan.probe_failures)
+    supervisor = _supervisor_classifier(plan.probe_failures, require_complete=require_complete)
     with _probe("Gateway-state inventory", plan.probe_failures):
         from gateway.status import live_gateway_pid_for_home, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
 
         for profile, home in profile_homes:
-            sock = _socket_identity(home)
+            sock = (_socket_identity(home, require_complete=True)
+                    if require_complete else _socket_identity(home))
             if sock is not None:
                 pid, record = sock
                 if pid in seen:
@@ -267,7 +271,9 @@ def _launchd_owner_for_ledger_entry(
     return None
 
 
-def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
+def _collect_ledger_runtimes(
+    plan: UpdatePlan, seen: set[int], *, require_complete: bool = False,
+) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
@@ -278,7 +284,8 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
         launchd_jobs = _loaded_backend_launchd_jobs(plan.probe_failures)
-        for entry in ledger_entries():
+        entries = ledger_entries(require_complete=True) if require_complete else ledger_entries()
+        for entry in entries:
             purpose, pid = entry.get("purpose"), entry.get("pid")
             if purpose not in _SERVE_KINDS or not isinstance(pid, int) or pid in seen:
                 continue
@@ -345,7 +352,7 @@ def collect_runtime_inventory(*, require_complete: bool = False) -> UpdatePlan:
         plan.profiles = [name for name, _ in profile_homes]
     seen: set[int] = set()
     _collect_gateway_runtimes(plan, profile_homes, seen, require_complete=require_complete)
-    _collect_ledger_runtimes(plan, seen)
+    _collect_ledger_runtimes(plan, seen, require_complete=require_complete)
     if require_complete and plan.probe_failures:
         raise InventoryIncompleteError(", ".join(plan.probe_failures))
     return plan

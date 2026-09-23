@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def _get_service_pids(all_profiles: bool = False) -> set:
+def _get_service_pids(all_profiles: bool = False, *, require_complete: bool = False) -> set:
     """PIDs managed by systemd/launchd gateway services (excluded from stale-process sweeps).
 
     Relies on the service manager committing the new PID before the restart command returns.
@@ -51,6 +51,8 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                     timeout=5,
                     **_CAPTURE_TEXT,
                 )
+                if require_complete and result.returncode != 0:
+                    raise RuntimeError("systemd gateway inventory failed")
                 for line in result.stdout.strip().splitlines():
                     parts = line.split()
                     if not parts or not parts[0].endswith(".service"):
@@ -62,12 +64,18 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                             timeout=5,
                             **_CAPTURE_TEXT,
                         )
+                        if require_complete and show.returncode != 0:
+                            raise RuntimeError("systemd gateway PID inspection failed")
                         pid = int(show.stdout.strip())
                         if pid > 0:
                             pids.add(pid)
-                    except (ValueError, subprocess.TimeoutExpired):
+                    except (ValueError, subprocess.TimeoutExpired) as exc:
+                        if require_complete:
+                            raise RuntimeError("systemd gateway PID inspection failed") from exc
                         pass
-            except (FileNotFoundError, subprocess.TimeoutExpired):
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                if require_complete:
+                    raise RuntimeError("systemd gateway inventory failed") from exc
                 pass
 
     # --- launchd (macOS) ---
@@ -82,8 +90,11 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             labels.update(launchd_gateway_labels_for_install())
         for label in sorted(labels):
             try:
-                _domain, pid = _locate_launchd_gateway_service(label)
+                _domain, pid = (_locate_launchd_gateway_service(label, require_complete=True)
+                                if require_complete else _locate_launchd_gateway_service(label))
             except subprocess.TimeoutExpired:
+                if require_complete:
+                    raise RuntimeError("launchd gateway inventory timed out")
                 continue
             if pid is not None and pid > 0:
                 pids.add(pid)
@@ -92,6 +103,8 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             # (renamed profiles, other installs). Over-inclusion is safe: PIDs are only protected.
             try:
                 result = subprocess.run(["launchctl", "list"], timeout=5, **_CAPTURE_TEXT)
+                if require_complete and result.returncode != 0:
+                    raise RuntimeError("launchd gateway inventory failed")
                 if result.returncode == 0:
                     for line in result.stdout.strip().splitlines():
                         parts = line.split()
@@ -102,7 +115,9 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                                     pids.add(pid)
                             except ValueError:
                                 pass
-            except (FileNotFoundError, subprocess.TimeoutExpired):
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                if require_complete:
+                    raise RuntimeError("launchd gateway inventory failed") from exc
                 pass
 
     return pids

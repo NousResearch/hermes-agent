@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import socket
+import stat
 import sys
 import tempfile
 import time
@@ -64,15 +65,37 @@ def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:
     return (direct, None) if _fits_sun_path(direct) else (_fallback_socket_path(home), Path(home) / _POINTER_FILENAME)
 
 
-def resolve_client_socket_path(home: Path) -> Optional[Path]:
-    """Where a client should connect for ``home``, or None when nothing exists."""
+def resolve_client_socket_path(home: Path, *, require_complete: bool = False) -> Optional[Path]:
+    """Where a client should connect for ``home``, or None when nothing exists.
+
+    Required probes propagate pointer inspection errors instead of treating them as absence.
+    """
     direct = Path(home) / _SOCKET_FILENAME
-    if direct.exists():
+    if not require_complete:
+        if direct.exists():
+            return direct
+        with contextlib.suppress(OSError):
+            pointer = Path(home) / _POINTER_FILENAME
+            target = pointer.read_text(encoding="utf-8").strip() if pointer.is_file() else ""
+            if target and Path(target).exists():
+                return Path(target)
+        return None
+
+    def exists(path: Path) -> bool:
+        try:
+            path.stat()
+            return True
+        except FileNotFoundError:
+            return False
+
+    if exists(direct):
         return direct
-    with contextlib.suppress(OSError):
-        pointer = Path(home) / _POINTER_FILENAME
-        target = pointer.read_text(encoding="utf-8").strip() if pointer.is_file() else ""
-        if target and Path(target).exists():
+    pointer = Path(home) / _POINTER_FILENAME
+    if exists(pointer):
+        if not stat.S_ISREG(pointer.stat().st_mode):
+            raise RuntimeError("gateway control pointer is not a regular file")
+        target = pointer.read_text(encoding="utf-8").strip()
+        if target and exists(Path(target)):
             return Path(target)
     return None
 
@@ -271,21 +294,32 @@ class _PipeControlProtocol(asyncio.Protocol):
 
 
 def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,
-                          timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
-    """Ask the gateway serving ``home`` a control verb; returns its ``result`` payload. Any failure (no/stale
-    socket, timeout, malformed answer, ``ok: false``) returns None so callers fall back to the scan layer.
-    ``params`` carries verb arguments (e.g. ``{"old": ..., "new": ...}``). Never raises."""
+                          timeout: float = _DEFAULT_CLIENT_TIMEOUT,
+                          require_complete: bool = False) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` a control verb; return its ``result`` payload.
+
+    Legacy callers receive None on any failure so they can scan for the gateway. Required probes
+    return None only when no socket or pipe exists; connection, timeout, and response errors raise.
+    ``params`` carries verb arguments (e.g. ``{"old": ..., "new": ...}``).
+    """
     payload: dict[str, Any] = {"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION}
     if params:
         payload["params"] = params
     request = json.dumps(payload).encode("utf-8") + b"\n"
     query = _query_windows_pipe if _IS_WINDOWS else _query_unix_socket
     try:
-        raw = query(Path(home), request, timeout)
-        response = json.loads(raw.decode("utf-8")) if raw else None
+        raw = (query(Path(home), request, timeout, require_complete=True)
+               if require_complete else query(Path(home), request, timeout))
+        if raw is None:
+            return None  # the transport verified no socket or pipe exists
+        response = json.loads(raw.decode("utf-8"))
     except Exception:
+        if require_complete:
+            raise
         return None
     result = response.get("result") if isinstance(response, dict) and response.get("ok") is True else None
+    if require_complete and not isinstance(result, dict):
+        raise ValueError("gateway control response invalid")
     return result if isinstance(result, dict) else None
 
 
@@ -302,20 +336,32 @@ def _read_response_line(read: Callable[[], bytes], deadline: float) -> Optional[
     return b"".join(chunks).partition(b"\n")[0] or None
 
 
-def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[bytes]:
-    path = resolve_client_socket_path(home)
+def _query_unix_socket(
+    home: Path, request: bytes, timeout: float, *, require_complete: bool = False,
+) -> Optional[bytes]:
+    path = (resolve_client_socket_path(home, require_complete=True)
+            if require_complete else resolve_client_socket_path(home))
     if path is None:
         return None
     # OSError covers ConnectionRefusedError / FileNotFoundError on connect and socket.timeout on read.
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock, contextlib.suppress(OSError):
-        sock.settimeout(timeout)
-        sock.connect(str(path))
-        sock.sendall(request)
-        return _read_response_line(lambda: sock.recv(65536), time.monotonic() + timeout)
-    return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(str(path))
+            sock.sendall(request)
+            raw = _read_response_line(lambda: sock.recv(65536), time.monotonic() + timeout)
+    except OSError:
+        if require_complete:
+            raise
+        return None
+    if raw is None and require_complete:
+        raise RuntimeError("gateway control response missing")
+    return raw
 
 
-def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
+def _query_windows_pipe(
+    home: Path, request: bytes, timeout: float, *, require_complete: bool = False,
+) -> Optional[bytes]:  # pragma: no cover - wine2e lane
     pipe_name = windows_pipe_name(home)
     deadline = time.monotonic() + timeout
     handle = None
@@ -327,19 +373,27 @@ def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[
         except OSError:
             # Pipe busy (another client mid-handshake) — brief retry window.
             if time.monotonic() >= deadline:
+                if require_complete:
+                    raise
                 return None
             time.sleep(0.05)
     try:
         handle.write(request)
-        return _read_response_line(lambda: handle.read(65536), deadline)
+        raw = _read_response_line(lambda: handle.read(65536), deadline)
+        if raw is None and require_complete:
+            raise RuntimeError("gateway control response missing")
+        return raw
     finally:
         with contextlib.suppress(Exception):
             handle.close()
 
 
-def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
+def identify_gateway(
+    home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT, require_complete: bool = False,
+) -> Optional[dict[str, Any]]:
     """Convenience wrapper: ``identify`` the gateway serving ``home``."""
-    return query_gateway_control(home, "identify", timeout=timeout)
+    return query_gateway_control(home, "identify", timeout=timeout,
+                                 require_complete=require_complete)
 
 
 def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:

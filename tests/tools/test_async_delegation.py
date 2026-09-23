@@ -580,6 +580,87 @@ assert ad.mark_completion_delivered({delegation_id!r})
     assert probe.stdout.strip().splitlines()[-1] == "0"
 
 
+def test_recover_abandoned_hints_do_not_hold_ledger_lock(tmp_path, monkeypatch):
+    """Forensic hints run OUTSIDE the ledger transaction, not under its lock.
+
+    transcript_tails/git_state_hint are bounded subprocess/file I/O (up to
+    three git calls x 5s timeout per abandoned row). While they are slow, an
+    unrelated ledger write in this process must still proceed: before the
+    two-phase split every hint ran under _DB_LOCK + the SQLite write
+    transaction, stalling dispatch/finalize/delivery — and cross-process
+    state.db writers — for the whole forensic window.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # owner_pid of a spawned-and-reaped process: recovery must classify the
+    # row as abandoned instead of skipping it as still owned.
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+
+    conn = ad._connect()
+    try:
+        conn.execute(
+            """INSERT INTO async_delegations
+               (delegation_id, origin_session, origin_ui_session_id, parent_session_id,
+                state, dispatched_at, updated_at, delivery_state, delivery_attempts,
+                owner_pid, owner_started_at, task_json, origin_session_id)
+               VALUES ('deleg_stalled_hints', 's', '', NULL, 'running', 1, 1,
+                       'pending', 0, ?, NULL, ?, '')""",
+            (dead.pid, json.dumps({"goal": "g", "owner_cwd": str(tmp_path),
+                                   "task_transcripts": {"0": str(tmp_path / "t0")}})),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import async_delegation_recovery_hints as hints
+
+    gate, hints_entered = threading.Event(), threading.Event()
+
+    def _blocked_hint(*_args, **_kwargs):
+        hints_entered.set()
+        gate.wait(timeout=10.0)
+        return None
+
+    monkeypatch.setattr(hints, "transcript_tails", _blocked_hint)
+    monkeypatch.setattr(hints, "git_state_hint", _blocked_hint)
+
+    outcome = {}
+
+    def _recover():
+        outcome["recovered"] = ad.recover_abandoned_delegations()
+
+    recover_thread = threading.Thread(target=_recover, daemon=True)
+    recover_thread.start()
+    assert hints_entered.wait(timeout=5.0), "recovery never reached the hint phase"
+
+    probe_done = threading.Event()
+
+    def _probe():
+        ad.mark_completion_delivered("deleg_never_existed")
+        probe_done.set()
+
+    threading.Thread(target=_probe, daemon=True).start()
+    # Hints are still blocked here and the probe needs _DB_LOCK: this bound
+    # fails exactly when recovery runs its forensic I/O under the lock.
+    assert probe_done.wait(timeout=3.0), "ledger writes stalled behind recovery forensic hints"
+
+    gate.set()
+    recover_thread.join(timeout=10.0)
+    assert not recover_thread.is_alive()
+    assert outcome["recovered"] == 1
+
+    conn = ad._connect()
+    try:
+        state, event_json = conn.execute(
+            "SELECT state, event_json FROM async_delegations "
+            "WHERE delegation_id='deleg_stalled_hints'").fetchone()
+    finally:
+        conn.close()
+    assert state == "unknown"
+    assert json.loads(event_json)["status"] == "unknown"
+
+
 # ---------------------------------------------------------------------------
 # Integration: delegate_task(background=True) routing
 # ---------------------------------------------------------------------------

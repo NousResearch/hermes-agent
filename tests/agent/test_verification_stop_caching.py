@@ -95,6 +95,13 @@ def test_db_flush_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
     Only the nudge (flagged synthetic) is dropped from the DB flush."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     ra = _fresh_run_agent(tmp_path)
+    # The constructor resolves the fixture model's context window, which probes the base URL
+    # for real (catalog /models, local-server discovery, POST /api/show). The fixture URL is a
+    # placeholder, and on a host that really serves :8000 (vLLM's default port) that probe
+    # becomes live traffic at that unrelated service. Stub the two init probes that would
+    # reach it: the compressor's context window resolution and the Ollama num_ctx lookup.
+    monkeypatch.setattr("agent.context_compressor.get_model_context_length", lambda *_a, **_k: 256_000)
+    monkeypatch.setattr("agent.agent_init.query_ollama_num_ctx", lambda *_a, **_k: None)
     agent = _make_agent(ra, "sess_db", tmp_path)
 
     messages = [

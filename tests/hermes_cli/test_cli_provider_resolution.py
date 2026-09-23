@@ -693,6 +693,11 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
             "used_fallback": True,
         },
     )
+    # The flow reports the endpoint's context length by probing it for real. Stub that
+    # probe with the probe-down default: the fixture base URL is a placeholder, and on any
+    # host that really serves :8000 (vLLM's default port, or an unrelated app) the unit test
+    # would emit live HTTP there.
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *_a, **_k: 256_000)
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {"model": {"default": "", "provider": "custom", "base_url": ""}},

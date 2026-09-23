@@ -106,10 +106,12 @@ interface BotRowProps {
   onGroup: (bot: RosterRow) => void
   /** Opens the New section dialog; the bot is filed into it on create. */
   onNewSection: (bot: RosterRow) => void
+  /** Opens the bot-to-bot thread for a row whose preview is a DM. */
+  onOpenThread?: (bot: RosterRow, peer: string) => void
   showHandle?: boolean
 }
 
-export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
+export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, onOpenThread, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
@@ -308,7 +310,33 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             ) : null}
             {showHandle && displayPreview ? <span className="shrink-0 text-(--ui-text-quaternary)">·</span> : null}
             {displayPreview ? (
-              <span className={cn('min-w-0 truncate', fromBot && 'italic')}>{displayPreview}</span>
+              fromBot && onOpenThread ? (
+                // The DM preview is the doorway to the thread: one click shows
+                // the whole exchange instead of making the user reconstruct it
+                // from two unrelated bot chats. Stops the row's own open.
+                <span
+                  className="min-w-0 cursor-pointer truncate italic underline decoration-dotted underline-offset-2 hover:text-(--ui-text-secondary)"
+                  onClick={event => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    onOpenThread(bot, fromBot)
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      onOpenThread(bot, fromBot)
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  title={b.a2a.open}
+                >
+                  {displayPreview}
+                </span>
+              ) : (
+                <span className={cn('min-w-0 truncate', fromBot && 'italic')}>{displayPreview}</span>
+              )
             ) : null}
           </div>
         ) : null}
@@ -321,6 +349,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
+        {fromBot && onOpenThread ? (
+          <ContextMenuItem onSelect={() => onOpenThread(bot, fromBot)}>{b.a2a.open}</ContextMenuItem>
+        ) : null}
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {

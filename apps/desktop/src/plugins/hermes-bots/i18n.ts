@@ -75,6 +75,24 @@ type BotsMessages = {
     rosterUnavailable: (reason: string) => string
     waitingForGateway: string
   }
+  /** The bot-to-bot thread: what two bots said to each other, in one view. */
+  a2a: {
+    active: string
+    awaiting: (handle: string) => string
+    description: (bot: string, peer: string) => string
+    empty: string
+    lastAt: (age: string) => string
+    loadFailed: string
+    open: string
+    openChat: (handle: string) => string
+    received: string
+    refresh: string
+    replied: string
+    sent: string
+    settled: string
+    title: string
+    unsupported: string
+  }
   /** User-made roster sections (folders the user files bots into). */
   sections: {
     newSection: string
@@ -349,6 +367,23 @@ const en: BotsMessages = {
     waitingForGateway:
       'Waiting for the gateway connection… (remote gateways can take a few seconds; retries automatically)'
   },
+  a2a: {
+    active: 'Active now',
+    awaiting: handle => `Waiting on @${handle} to reply`,
+    description: (bot, peer) => `${bot} and ${peer} are messaging each other.`,
+    empty: 'Nothing between these two bots yet.',
+    lastAt: age => `Last message ${age}`,
+    loadFailed: 'Could not read the thread.',
+    open: 'View bot-to-bot thread',
+    openChat: handle => `Open @${handle}'s chat`,
+    received: 'received',
+    refresh: 'Refresh',
+    replied: 'replied',
+    sent: 'sent',
+    settled: 'Settled',
+    title: 'Bot-to-bot thread',
+    unsupported: 'This Desktop build cannot read bot chats. Update Hermes to view the thread.'
+  },
   sections: {
     newSection: 'New section',
     newTitle: 'New section',
@@ -608,6 +643,23 @@ const ja: BotsMessages = {
       `名簿を取得できません: ${reason}。ゲートウェイが profiles.list より前の場合は、Hermes を更新してゲートウェイを再起動してください。`,
     waitingForGateway: 'ゲートウェイ接続を待っています…（リモートは数秒かかることがあります。自動で再試行します）'
   },
+  a2a: {
+    active: '実行中',
+    awaiting: handle => `@${handle} の返信待ち`,
+    description: (bot, peer) => `${bot} と ${peer} がメッセージをやり取りしています。`,
+    empty: 'この2体のボットのやり取りはまだありません。',
+    lastAt: age => `最終メッセージ ${age}`,
+    loadFailed: 'スレッドを読み取れませんでした。',
+    open: 'ボット間スレッドを表示',
+    openChat: handle => `@${handle} のチャットを開く`,
+    received: '受信',
+    refresh: '更新',
+    replied: '返信',
+    sent: '送信',
+    settled: '完了',
+    title: 'ボット間スレッド',
+    unsupported: 'この Desktop ビルドはボットチャットを読み取れません。Hermes を更新してください。'
+  },
   sections: {
     newSection: '新しいセクション',
     newTitle: '新しいセクション',
@@ -866,6 +918,23 @@ const zh: BotsMessages = {
     rosterUnavailable: reason => `无法获取名单：${reason}。如果网关早于 profiles.list，请更新 Hermes 并重启网关。`,
     waitingForGateway: '正在等待网关连接…（远程网关可能需要几秒；会自动重试）'
   },
+  a2a: {
+    active: '进行中',
+    awaiting: handle => `等待 @${handle} 回复`,
+    description: (bot, peer) => `${bot} 和 ${peer} 正在互相发送消息。`,
+    empty: '这两个机器人之间还没有对话。',
+    lastAt: age => `最后一条消息 ${age}`,
+    loadFailed: '无法读取对话。',
+    open: '查看机器人之间的对话',
+    openChat: handle => `打开 @${handle} 的聊天`,
+    received: '收到',
+    refresh: '刷新',
+    replied: '回复',
+    sent: '发送',
+    settled: '已结束',
+    title: '机器人之间的对话',
+    unsupported: '此 Desktop 版本无法读取机器人聊天。请更新 Hermes。'
+  },
   sections: {
     newSection: '新建分区',
     newTitle: '新建分区',
@@ -1117,6 +1186,23 @@ const zhHant: BotsMessages = {
     retryNow: '立即重試',
     rosterUnavailable: reason => `無法取得名單：${reason}。如果閘道早於 profiles.list，請更新 Hermes 並重新啟動閘道。`,
     waitingForGateway: '正在等待閘道連線…（遠端閘道可能需要幾秒；會自動重試）'
+  },
+  a2a: {
+    active: '進行中',
+    awaiting: handle => `等待 @${handle} 回覆`,
+    description: (bot, peer) => `${bot} 與 ${peer} 正在互相傳送訊息。`,
+    empty: '這兩個機器人之間還沒有對話。',
+    lastAt: age => `最後一則訊息 ${age}`,
+    loadFailed: '無法讀取對話。',
+    open: '檢視機器人之間的對話',
+    openChat: handle => `開啟 @${handle} 的聊天`,
+    received: '收到',
+    refresh: '重新整理',
+    replied: '回覆',
+    sent: '傳送',
+    settled: '已結束',
+    title: '機器人之間的對話',
+    unsupported: '此 Desktop 版本無法讀取機器人聊天。請更新 Hermes。'
   },
   sections: {
     newSection: '新增分區',

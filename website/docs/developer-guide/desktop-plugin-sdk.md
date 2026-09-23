@@ -542,7 +542,19 @@ host.profileRoutes()                       // [{ profile, targetProfile, connect
 host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
+host.sessionMessages(route, options)       // durable transcript of ONE session, by id
+                                           //   ({ sessionId, profile?, limit?≤500, order? })
+                                           //   → { messages, sessionId }; read-only
 ```
+
+`host.sessionMessages` is the read door for a conversation the user is **not**
+sitting in: pass a route from `host.profileRoutes()` (or `null` for the ambient
+source) and pin `profile`, and a hidden Bot Chat on another profile reads
+exactly like the one on screen. Rows are the same projected shape the app's own
+history window uses; the page is bounded like every other history read, so ask
+for the page you need (`order: 'latest'` is the default and returns the newest
+page, oldest-first inside it). It is read-only by construction — plugins still
+never get the live session store.
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
 cron, kanban, …). `host.requestProfile` accepts a descriptor from

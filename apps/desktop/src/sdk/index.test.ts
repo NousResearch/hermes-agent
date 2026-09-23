@@ -293,3 +293,51 @@ describe('host workspace scope', () => {
     expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
   })
 })
+
+describe('host.sessionMessages', () => {
+  let api: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    api = vi.fn().mockResolvedValue({ messages: [{ content: 'hi', role: 'user' }], session_id: 'sess-1' })
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('reads one session by id, pinned to its owner profile', async () => {
+    const result = await host.sessionMessages(
+      { connectionId: 'local', mode: 'local', profile: 'platform-engineer', targetProfile: 'platform-engineer' },
+      { limit: 120, order: 'latest', profile: 'platform-engineer', sessionId: 'sess-1' }
+    )
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'local',
+        method: 'GET',
+        path: '/api/sessions/sess-1/messages?limit=120&order=latest&profile=platform-engineer'
+      })
+    )
+    expect(result).toEqual({ messages: [{ content: 'hi', role: 'user' }], sessionId: 'sess-1' })
+  })
+
+  it('refuses an incomplete profile route before it dials', async () => {
+    await expect(
+      host.sessionMessages({ connectionId: '', mode: 'local', profile: 'x', targetProfile: 'x' }, { sessionId: 's' })
+    ).rejects.toThrow('Profile route must include connectionId, profile, and targetProfile')
+
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('clamps the page size and refuses a session-less read', async () => {
+    await host.sessionMessages(null, { limit: 9000, sessionId: 'sess-1' })
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/sessions/sess-1/messages?limit=500' }))
+
+    await expect(host.sessionMessages(null, { sessionId: '   ' })).rejects.toThrow('Session messages require a session id')
+  })
+})

@@ -1,6 +1,7 @@
 import { host, useI18n, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
+import { A2aThreadDialog } from './a2a-thread-dialog'
 import { BotRow } from './bot-row'
 import {
   $botChatFocused,
@@ -254,6 +255,9 @@ export function BotsPane() {
   const [sectionDialog, setSectionDialog] = useState<SectionDialogState>(null)
 
   const [grouping, setGrouping] = useState<null | RosterRow>(null)
+  // A bot-to-bot thread opened from a row's DM preview (or its context menu):
+  // the receiving row plus the peer handle the preview named.
+  const [a2aThread, setA2aThread] = useState<null | { bot: RosterRow; peer: string }>(null)
   const [query, setQuery] = useState('')
   const [rowKindFilter, setRowKindFilter] = useState<RosterKindFilter>('all')
   const [activityFilter, setActivityFilter] = useState<RosterActivityFilter>('all')
@@ -431,6 +435,7 @@ export function BotsPane() {
       onEdit={setEditing}
       onGroup={setGrouping}
       onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
+      onOpenThread={(target, peer) => setA2aThread({ bot: target, peer })}
       showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
     />
   )
@@ -522,6 +527,15 @@ export function BotsPane() {
         renderUserSections,
         renderHiddenGatewaySection
       })}
+      {a2aThread ? (
+        <A2aThreadDialog
+          bot={a2aThread.bot}
+          onClose={() => setA2aThread(null)}
+          open
+          peerHandle={a2aThread.peer}
+          roster={roster}
+        />
+      ) : null}
       {renderRosterDialogs({
         b,
         t,

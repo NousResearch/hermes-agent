@@ -104,7 +104,7 @@ import {
   sessionTileDelegate
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
-import type { PaginatedSessions, UsageStats } from '@/types/hermes'
+import type { PaginatedSessions, SessionMessage, UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
 
@@ -1534,6 +1534,55 @@ export const host = {
     })
   },
 
+  /** The durable display transcript of ONE session, by id — a hidden Bot Chat
+   *  or a side-chat the user is not sitting in, on another profile when
+   *  `profile` pins one. Read-only: plugins never get the live session store,
+   *  so this is the door for views that show a conversation happening
+   *  elsewhere (bot-to-bot threads, digests, audits). Pages like every other
+   *  history read: `limit` ≤ 500, `order: 'latest'` (default) returns the
+   *  newest page — oldest-first inside the page, like the app's own window. */
+  sessionMessages: async (
+    route: PluginProfileRoute | null,
+    options: { limit?: number; order?: 'latest' | 'oldest'; profile?: null | string; sessionId: string }
+  ): Promise<{ messages: SessionMessage[]; sessionId: string }> => {
+    if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
+      throw new Error('Profile route must include connectionId, profile, and targetProfile')
+    }
+
+    const sessionId = options.sessionId.trim()
+
+    if (!sessionId) {
+      throw new Error('Session messages require a session id')
+    }
+
+    const query = new URLSearchParams()
+
+    if (typeof options.limit === 'number' && Number.isFinite(options.limit) && options.limit > 0) {
+      query.set('limit', String(Math.min(Math.floor(options.limit), 500)))
+    }
+
+    if (options.order) {
+      query.set('order', options.order)
+    }
+
+    const profile = (options.profile || '').trim()
+
+    if (profile) {
+      query.set('profile', profile)
+    }
+
+    const response = await hermesApi<{ messages: SessionMessage[]; session_id: string }>({
+      ...(route ? { connectionId: route.connectionId } : {}),
+      path: `/api/sessions/${encodeURIComponent(sessionId)}/messages?${query.toString()}`,
+      method: 'GET'
+    })
+
+    return {
+      messages: Array.isArray(response.messages) ? response.messages : [],
+      sessionId: response.session_id || sessionId
+    }
+  },
+
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`
    *  overrides the socket's 30 s default for RPCs that legitimately run longer
@@ -1914,7 +1963,7 @@ export { requestTheme } from '@/themes/request'
 export { retintTheme, themeHue } from '@/themes/retint'
 export type { DesktopTheme, DesktopThemeColors } from '@/themes/types'
 export { THEMES_AREA } from '@/themes/user-themes'
-export type { StatusResponse } from '@/types/hermes'
+export type { SessionMessage, StatusResponse } from '@/types/hermes'
 /** Public SDK name for the shared gateway wire event; kept stable for plugins. */
 export type { GatewayEvent as RpcEvent } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes

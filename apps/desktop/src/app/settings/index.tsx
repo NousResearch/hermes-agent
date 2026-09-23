@@ -31,11 +31,10 @@ import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-palette'
 import { confirm } from '@/store/confirm'
-import { $activeConnectionId } from '@/store/connections'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
-import { $settingsOwner, $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsOwner } from '@/store/settings-scope'
 
 import { invalidateHermesConfig } from '../hooks/use-config-record'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -60,7 +59,7 @@ import { SessionsSettings } from './sessions-settings'
 import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
-import { vaultOwnerKey, VaultSettings } from './vault-settings'
+import { VaultSettings } from './vault-settings'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
@@ -89,13 +88,9 @@ export function notifySettingsOwnerError(
 }
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
-  const scopeProfile = useStore($settingsScopeProfile)
-  const activeConnectionId = useStore($activeConnectionId)
   const settingsOwner = useStore($settingsOwner)
 
-  const settingsOwnerKey = settingsOwner
-    ? profileScopeKey(settingsOwner)
-    : vaultOwnerKey(activeConnectionId, scopeProfile)
+  const settingsOwnerKey = settingsOwner ? profileScopeKey(settingsOwner) : 'unavailable'
 
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -597,7 +592,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     ) : activeView === 'billing' ? (
       <BillingSettings />
     ) : activeView === 'vault' ? (
-      <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
+      <VaultSettings key={settingsOwnerKey} settingsOwner={settingsOwner ?? undefined} subpage={subpage} />
     ) : (
       <SessionsSettings key={settingsOwnerKey} settingsOwner={settingsOwner} subpage={subpage} />
     )

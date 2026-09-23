@@ -18,14 +18,14 @@ import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
-import { $activeConnectionId } from '@/store/connections'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsOwner } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
@@ -151,10 +151,22 @@ function buildSecret(form: VaultForm): Record<string, string> {
 }
 
 interface VaultSettingsProps {
+  settingsOwner?: NonNullable<ReturnType<typeof $settingsOwner.get>>
   subpage?: string
 }
 
-export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
+export function VaultSettings({ settingsOwner, subpage }: VaultSettingsProps = {}) {
+  if (!settingsOwner) {
+    return <SettingsContent>{null}</SettingsContent>
+  }
+
+  return <VaultSettingsInner key={profileScopeKey(settingsOwner)} settingsOwner={settingsOwner} subpage={subpage} />
+}
+
+function VaultSettingsInner({
+  settingsOwner,
+  subpage
+}: Required<Pick<VaultSettingsProps, 'settingsOwner'>> & Pick<VaultSettingsProps, 'subpage'>) {
   const { t } = useI18n()
   const v = t.settings.vault
   const gatewayState = useStore($gatewayState)
@@ -166,16 +178,37 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   // The mount site keys the panel by this same owner, so a profile switch / connection swap
   // remounts it: dialogs close and drafts (including a typed master password) are gone by
   // construction rather than by cleanup code.
-  const scopeProfile = useStore($settingsScopeProfile)
-  const connectionId = useStore($activeConnectionId)
-  const owner = vaultOwnerKey(connectionId, scopeProfile)
+  const owner = profileScopeKey(settingsOwner)
+  const isCurrentOwner = useCallback(() => $settingsOwner.get() === settingsOwner, [settingsOwner])
+  const ownerAbort = useMemo(() => new AbortController(), [])
+
+  useEffect(() => () => ownerAbort.abort(), [ownerAbort])
 
   const requestGateway = useCallback(
-    <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForAgent<T>(connectionId, scopeProfile, method, params, undefined, undefined, {
+    async <T,>(method: string, params: Record<string, unknown> = {}) => {
+      if (!isCurrentOwner()) {
+        throw new Error('Settings owner changed')
+      }
+
+      const result = await requestGatewayForAgent<T>(
+        settingsOwner.connectionId,
+        settingsOwner.profile,
+        method,
+        params,
+        undefined,
+        ownerAbort.signal,
+        {
         spawnPriority: 'foreground'
-      }),
-    [connectionId, scopeProfile]
+        }
+      )
+
+      if (!isCurrentOwner()) {
+        throw new Error('Settings owner changed')
+      }
+
+      return result
+    },
+    [isCurrentOwner, ownerAbort.signal, settingsOwner]
   )
 
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
@@ -211,15 +244,23 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const externalSources = useMemo(() => (sourcesData ?? []).filter(s => s.needs_unlock), [sourcesData])
 
   const invalidateVault = useCallback(() => {
+    if (!isCurrentOwner()) {
+      return
+    }
+
     void queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY })
     void queryClient.invalidateQueries({ queryKey: VAULT_SOURCES_QUERY_KEY })
-  }, [queryClient])
+  }, [isCurrentOwner, queryClient, VAULT_QUERY_KEY, VAULT_SOURCES_QUERY_KEY])
 
   const setSourceEnabled = useMutation({
     mutationFn: ({ name, enabled }: { name: VaultSourceName; enabled: boolean }) =>
       requestGateway<{ enabled: boolean }>('vault.source.set', { name, enabled }),
     onSuccess: invalidateVault,
-    onError: err => notifyError(err, v.sources.toggleFailed)
+    onError: err => {
+      if (isCurrentOwner()) {
+        notifyError(err, v.sources.toggleFailed)
+      }
+    }
   })
 
   const lockSource = useMutation({
@@ -243,6 +284,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       return requestGateway<{ unlocked: boolean }>('vault.unlock', { name, password })
     },
     onSuccess: (_result, { name }) => {
+      if (!isCurrentOwner()) {
+        return
+      }
+
       triggerHaptic('submit')
       const source = externalSources.find(s => s.name === name)
       notify({ kind: 'success', message: v.sources.unlocked(source?.display_name ?? name) })
@@ -250,6 +295,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       invalidateVault()
     },
     onError: err => {
+      if (!isCurrentOwner()) {
+        return
+      }
+
       setMasterPassword('')
       setUnlockError(err instanceof Error ? err.message : String(err))
     }
@@ -266,10 +315,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   })
 
   useEffect(() => {
-    if (error) {
+    if (error && isCurrentOwner()) {
       notifyError(error, v.loadFailed)
     }
-  }, [error, v.loadFailed])
+  }, [error, isCurrentOwner, v.loadFailed])
 
   const items = useMemo(() => data ?? [], [data])
 
@@ -313,7 +362,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
     setSearchParams(next, { replace: true })
   }, [openAdd, searchParams, setSearchParams])
 
-  const invalidate = useCallback(() => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }), [queryClient])
+  const invalidate = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }),
+    [queryClient, VAULT_QUERY_KEY]
+  )
 
   const addMutation = useMutation({
     mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string }) => {
@@ -323,12 +375,20 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       return requestGateway<{ id: string }>('vault.add', { ...payload, secret: secret ?? {} })
     },
     onSuccess: () => {
+      if (!isCurrentOwner()) {
+        return
+      }
+
       triggerHaptic('success')
       notify({ kind: 'info', message: v.added })
       closeAdd()
       void invalidate()
     },
     onError: err => {
+      if (!isCurrentOwner()) {
+        return
+      }
+
       setFormError(String(err instanceof Error ? err.message : err))
     }
   })

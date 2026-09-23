@@ -40,10 +40,10 @@ import { useStore } from '@nanostores/react'
 
 import { queryClient } from '@/lib/query-client'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $gatewayState } from '@/store/session'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $connection, $gatewayState } from '@/store/session'
+import { $settingsOwner } from '@/store/settings-scope'
 
-import { vaultOwnerKey, VaultSettings } from './vault-settings'
+import { VaultSettings } from './vault-settings'
 
 stubResizeObserver()
 
@@ -51,12 +51,20 @@ const sources = [
   { name: 'bitwarden', display_name: 'Bitwarden', enabled: true, needs_unlock: true, unlocked: false, installed: true }
 ]
 
+const gatewayA = {
+  baseUrl: 'https://gateway-a.example',
+  connectionId: 'gateway',
+  mode: 'remote',
+  profile: 'default',
+  token: 'synthetic-a'
+} as const
+
 // Mirrors the production mount site (settings/index.tsx): the panel is keyed by its owner, so an
 // owner change remounts it and every dialog/draft is gone by construction.
 function KeyedVault() {
-  const profile = useStore($settingsScopeProfile)
+  const owner = useStore($settingsOwner)
 
-  return <VaultSettings key={vaultOwnerKey(null, profile)} />
+  return <VaultSettings settingsOwner={owner ?? undefined} />
 }
 
 function mount() {
@@ -73,6 +81,7 @@ beforeEach(() => {
   calls.length = 0
   queryClient.clear()
   $activeGatewayProfile.set('default')
+  $connection.set(gatewayA as never)
   $gatewayState.set('open')
   respond = async (_profile, method) =>
     method === 'vault.sources' ? { sources } : method === 'vault.list' ? { items: [] } : { ok: true }
@@ -80,6 +89,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $connection.set(null)
   queryClient.clear()
 })
 
@@ -88,7 +98,10 @@ it('a master-password draft is wiped on a profile switch and never submitted to 
   fireEvent.click(await screen.findByRole('button', { name: 'Unlock' }))
   fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'password-for-A' } })
 
-  act(() => $activeGatewayProfile.set('other-profile'))
+  act(() => {
+    $activeGatewayProfile.set('other-profile')
+    $connection.set({ ...gatewayA, profile: 'other-profile' } as never)
+  })
 
   await waitFor(() => expect(screen.queryByPlaceholderText('Master password')).toBeNull())
   expect(calls.filter(c => c.method === 'vault.unlock')).toHaveLength(0)
@@ -115,7 +128,10 @@ it('a late list response from profile A never paints under profile B', async () 
   mount()
   await waitFor(() => expect(calls.some(c => c.profile === 'default' && c.method === 'vault.list')).toBe(true))
 
-  act(() => $activeGatewayProfile.set('other-profile'))
+  act(() => {
+    $activeGatewayProfile.set('other-profile')
+    $connection.set({ ...gatewayA, profile: 'other-profile' } as never)
+  })
   await waitFor(() => expect(calls.some(c => c.profile === 'other-profile' && c.method === 'vault.list')).toBe(true))
 
   await act(async () => {
@@ -134,6 +150,19 @@ it('a late list response from profile A never paints under profile B', async () 
     await held
   })
   expect(screen.queryByText('A-only private account')).toBeNull()
+})
+
+it('drops credential drafts and blocks their RPC after a same-id owner replacement', async () => {
+  mount()
+  fireEvent.click(await screen.findByRole('button', { name: 'Unlock' }))
+  fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'password-for-A' } })
+  const staleForm = screen.getByPlaceholderText('Master password').closest('form')!
+
+  act(() => $connection.set({ ...gatewayA, token: 'synthetic-b' } as never))
+
+  await waitFor(() => expect(screen.queryByPlaceholderText('Master password')).toBeNull())
+  fireEvent.submit(staleForm)
+  expect(calls.filter(c => c.method === 'vault.unlock')).toHaveLength(0)
 })
 
 it('vault.add secrets never enter the mutation cache', async () => {

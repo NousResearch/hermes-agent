@@ -308,10 +308,13 @@ def _fmt_completed(ev, n) -> tuple:
     wake_handoff = None
     payload_summary = _payload(ev, "summary")
     if payload_summary:
-        wake_handoff = _first_line(str(payload_summary), 200)
+        # The summary IS the human-facing briefing — deliver it whole (the
+        # first-line-only clip re-created the useless one-line Slack pings).
+        payload_summary = str(payload_summary)
+        wake_handoff = _first_line(payload_summary, 200)
     elif n.task and n.task.result:
         wake_handoff = _first_line(n.task.result, 160)
-    handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
+    handoff = f"\n{payload_summary[:1500]}" if payload_summary else (f"\n{wake_handoff}" if wake_handoff is not None else "")
     return f"✔ {n.head} done — {n.title}{handoff}", wake_handoff, None
 
 

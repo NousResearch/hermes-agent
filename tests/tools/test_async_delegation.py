@@ -1250,3 +1250,51 @@ def test_prune_never_evicts_live_records():
 
     assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
     assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED
+
+
+def _pending_completion(delegation_id):
+    evt = {"type": "async_delegation", "session_key": "s", "delegation_id": delegation_id,
+           "summary": delegation_id, "status": "completed", "dispatched_at": time.time()}
+    ad._persist_dispatch(evt)
+    ad._persist_completion(evt, {"status": "completed", "summary": delegation_id})
+    return evt
+
+
+def test_retryable_release_refunds_the_attempt_and_never_exhausts_the_budget():
+    """A consumer whose target refused transiently (busy/paused/restarting) releases with
+    ``retryable=True``: the claim is freed without spending the delivery budget, so any
+    number of transient refusals cannot terminally drop a completion."""
+    evt = _pending_completion("deleg_retryable")
+    for _ in range(ad._MAX_DELIVERY_ATTEMPTS + 2):
+        claim = ad.claim_event_delivery(evt, "webui")
+        assert claim
+        ad.release_event_delivery(evt, claim, retryable=True)
+        row = ad.get_durable_delegation("deleg_retryable")
+        assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
+
+    claim = ad.claim_event_delivery(evt, "webui")
+    ad.complete_event_delivery(evt, claim)
+    assert ad.get_durable_delegation("deleg_retryable")["delivery_state"] == "delivered"
+
+
+def test_default_release_still_counts_attempts_until_dropped():
+    evt = _pending_completion("deleg_plain")
+    for attempt in range(1, ad._MAX_DELIVERY_ATTEMPTS + 1):
+        claim = ad.claim_event_delivery(evt, "webui")
+        assert claim
+        ad.release_event_delivery(evt, claim)
+        row = ad.get_durable_delegation("deleg_plain")
+        assert row["delivery_attempts"] == attempt
+    assert row["delivery_state"] == "dropped"
+    assert ad.claim_event_delivery(evt, "webui") is None
+
+
+def test_retryable_release_with_a_stale_claim_changes_nothing():
+    evt = _pending_completion("deleg_stale")
+    claim = ad.claim_event_delivery(evt, "webui")
+    ad.release_event_delivery(evt, "someone-else", retryable=True)
+    row = ad.get_durable_delegation("deleg_stale")
+    assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 1)
+    # The genuine holder still owns the claim and can acknowledge it.
+    ad.complete_event_delivery(evt, claim)
+    assert ad.get_durable_delegation("deleg_stale")["delivery_state"] == "delivered"

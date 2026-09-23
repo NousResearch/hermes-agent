@@ -133,6 +133,7 @@ describe('mergeOlderTranscriptPage', () => {
       chat('five', 5),
       chat('six', 6)
     ]
+
     const fetched = [
       chat('four-refetched', 4),
       chat('five-refetched', 5),

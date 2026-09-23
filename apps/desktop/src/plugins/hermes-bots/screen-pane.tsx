@@ -330,6 +330,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', {
         viewer_id: viewer.id
       })
+
       setScreenLease(bot, result.lease)
 
       if (conn !== 'live') {

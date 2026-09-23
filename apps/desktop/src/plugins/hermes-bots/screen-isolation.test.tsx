@@ -87,6 +87,7 @@ afterEach(() => {
 it('applies lease events only from the owning host even when profile paths match', () => {
   setScreenStatus(botA, status)
   const view = renderHook(() => useScreenPortalState(botA))
+
   const human = {
     ...status.lease,
     holder: 'human' as const,

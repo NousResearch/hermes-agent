@@ -33,7 +33,9 @@ function fixture() {
     effectiveSshConfigFingerprint: async () => 'effective-fingerprint',
     evictLruPoolBackends: async () => events.push('evict'),
     fetchJsonForBackend: async () => {
-      if (probeFailures-- > 0) throw new Error('connect ECONNREFUSED')
+      if (probeFailures-- > 0) {
+        throw new Error('connect ECONNREFUSED')
+      }
       return { ok: true }
     },
     getWindowState: () => ({ windowReady: true }),

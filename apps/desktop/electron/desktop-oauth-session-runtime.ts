@@ -6,6 +6,7 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { oauthLoginLoadUrlOptions } from './remote-ws-headers'
+import type { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 
 type Session = electron.Session
 
@@ -19,7 +20,7 @@ export interface DesktopOauthSessionDeps {
   installRemoteHeaderRulesOnSession: (session: Session) => void
   headersForRemoteRequest: (url: string) => Record<string, string>
   rememberLog: (message: string) => void
-  installWindowRendererLifecycle: typeof import('./window-renderer-lifecycle').installWindowRendererLifecycle
+  installWindowRendererLifecycle: typeof installWindowRendererLifecycle
 }
 
 // The legacy cookie jar remains shared by the primary v1 gateway and portal.

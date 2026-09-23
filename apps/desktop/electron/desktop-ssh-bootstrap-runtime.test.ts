@@ -65,7 +65,9 @@ function fixture(options: { platform?: 'Linux' | 'Windows'; failRollback?: boole
     assert.equal(input.ownershipId, 'owner-work')
     assert.equal(input.guestOnboarding, true)
     assert.equal(input.ssh, sshInstance)
-    if (blockAfterConnect) gateBlocked = true
+    if (blockAfterConnect) {
+      gateBlocked = true
+    }
     return result
   }
 
@@ -91,7 +93,9 @@ function fixture(options: { platform?: 'Linux' | 'Windows'; failRollback?: boole
       assertCanDial: (id: string) => {
         assert.equal(id, 'connection-work')
         events.push('gate')
-        if (gateBlocked) throw new Error('managed update paused this connection')
+        if (gateBlocked) {
+          throw new Error('managed update paused this connection')
+        }
       }
     },
     persistSshConnectionToken: (_profile: string, _source: string, token: string, id: string) => {
@@ -105,7 +109,9 @@ function fixture(options: { platform?: 'Linux' | 'Windows'; failRollback?: boole
       terminateOwnedDashboardForUpdate: async (_ssh: any, expected: any) => {
         events.push('terminate-posix')
         terminationExpected = expected
-        if (options.failRollback) throw new Error('exact termination failed')
+        if (options.failRollback) {
+          throw new Error('exact termination failed')
+        }
       }
     },
     resolveRemoteSshDashboardProfile: (remoteProfile: string, profile: string) => remoteProfile || profile,
@@ -127,7 +133,9 @@ function fixture(options: { platform?: 'Linux' | 'Windows'; failRollback?: boole
     terminateOwnedWindowsDashboardForUpdate: async (_ssh: any, _install: any, expected: any) => {
       events.push('terminate-windows')
       terminationExpected = expected
-      if (options.failRollback) throw new Error('exact termination failed')
+      if (options.failRollback) {
+        throw new Error('exact termination failed')
+      }
     },
     waitForHermes: async () => true
   } as any)

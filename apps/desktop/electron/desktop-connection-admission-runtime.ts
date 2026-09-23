@@ -1,6 +1,6 @@
 import {
-  normAuthMode,
   normalizeSshConfig,
+  normAuthMode,
   resolveProfileBackendRoute,
   unscopableMutatingRequest
 } from './connection-config'

@@ -3,11 +3,11 @@ import path from 'node:path'
 
 import {
   type BackendOutputTail,
-  type StartMarkerProbe,
   claimDecision,
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
-  REAP_PROBE_TIMEOUT_MS
+  REAP_PROBE_TIMEOUT_MS,
+  type StartMarkerProbe
 } from './backend-claim'
 import { backendCommandMatches, createBackendOwnership } from './backend-ownership'
 import { createParentStartMarkerResolver } from './parent-process-identity'

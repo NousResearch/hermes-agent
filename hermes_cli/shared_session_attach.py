@@ -2,11 +2,20 @@
 
 The owner's handshake supplies the existing authenticated WebSocket URL. A
 registry entry is discovery information, not authority to mint a credential.
+The handshake is a mutual proof of the registry's lease id, which never travels
+in the request: the client sends ``nonce`` plus
+``client_proof = hex(HMAC_SHA256(lease_id, "hermes-session-attach-request:<session_id>:<nonce>"))``
+and the reply must echo the request fields and return
+``attach_proof = hex(HMAC_SHA256(lease_id, "hermes-session-attach:<session_id>:<nonce>"))``.
+A listener that only echoes request parameters cannot produce either proof.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import ipaddress
 import json
+import secrets
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -54,8 +63,16 @@ def discover_attach_url(session_id: str, *, registry_home: str | Path | None = N
     parts = urlsplit(endpoint)
     if parts.path not in ("", "/") or parts.query:
         raise ValueError("Shared runtime endpoint must be an origin without a path or query.")
-    query = urlencode({"session_id": session_id, "lease_id": owner["lease_id"],
-                       "profile_home": str(home)})
+    nonce = secrets.token_urlsafe(24)
+    # Proof the requester read the registry, without disclosing the lease id it keys on; the
+    # responder checks this instead of a lease_id parameter so the secret is never transmitted.
+    client_proof = hmac.new(
+        str(owner["lease_id"]).encode("utf-8"),
+        f"hermes-session-attach-request:{session_id}:{nonce}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    query = urlencode({"session_id": session_id, "nonce": nonce,
+                       "profile_home": str(home), "client_proof": client_proof})
     try:
         # Ignore proxy env and redirects: local discovery must stay on the
         # advertised endpoint, including on machines with corporate proxies.
@@ -74,9 +91,20 @@ def discover_attach_url(session_id: str, *, registry_home: str | Path | None = N
                          "this terminal to it just failed. Use the chat where it is open, or "
                          "close it there and run hermes --resume " + session_id + " here.\n"
                          + session_owner_details(session_id, owner)) from exc
-    if not isinstance(reply, dict) or any(reply.get(key) != value for key, value in {
-        "session_id": session_id, "lease_id": owner["lease_id"], "profile_home": str(home),
-    }.items()):
+    # Echoed fields only prove the listener heard the request; the proof is what ties the
+    # reply to the registry's lease id, which a rogue listener never sees.
+    expected_proof = hmac.new(
+        str(owner["lease_id"]).encode("utf-8"),
+        f"hermes-session-attach:{session_id}:{nonce}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if (not isinstance(reply, dict)
+            or any(reply.get(key) != value for key, value in {
+                "session_id": session_id, "nonce": nonce, "profile_home": str(home),
+            }.items())
+            or not hmac.compare_digest(
+                str(reply.get("attach_proof") or "").encode("utf-8", "replace"),
+                expected_proof.encode("ascii"))):
         raise ValueError("Shared runtime handshake identity does not match the requested owner.")
     websocket_url = reply.get("websocket_url")
     if (not isinstance(websocket_url, str) or _local_origin(websocket_url, "ws") != origin

@@ -145,7 +145,28 @@ Replies are sent via SMTP with proper email threading:
 - **In-Reply-To** and **References** headers maintain the thread
 - **Subject line** preserved with `Re:` prefix (no double `Re: Re:`)
 - **Message-ID** generated with the agent's domain
-- Responses are sent as plain text (UTF-8)
+- **Markdown is rendered to HTML** and sent as a `multipart/alternative` message: the rendered
+  `text/html` part plus the original Markdown as the `text/plain` fallback, so code blocks and
+  tables survive in mail clients without raw Markdown leaking into text-only readers.
+
+#### HTML rendering (`html_format`)
+
+Enabled by default; turn it off to send plain text only:
+
+```yaml
+platforms:
+  email:
+    extra:
+      html_format: false
+```
+
+- Applies to **every** send path — live replies, scheduled cron deliveries, and the standalone
+  sender used by `hermes cron run` and out-of-process triggers.
+- Needs the optional `markdown` dependency (`pip install markdown`). Without it the adapter logs
+  at DEBUG and sends the plain-text part only — a missing package never breaks a send.
+- A body that is **already HTML** (externally generated reports) keeps its markup with any cron
+  preamble/postamble trimmed; its `text/plain` alternative is tag-stripped and trimmed the same
+  way, so both alternatives carry the same content.
 
 ### File Attachments
 

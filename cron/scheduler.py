@@ -121,7 +121,8 @@ def _failure_streak_nudge(job: dict) -> str:
     """Review nudge when a recurring job keeps failing, else "". The failure message is delivered
     BEFORE mark_job_run records this run, hence stored ``failure_streak`` + 1. Threshold:
     ``cron.failure_nudge_threshold`` (default 3, 0 disables)."""
-    schedule_kind = (job.get("schedule") or {}).get("kind")
+    schedule = job.get("schedule")
+    schedule_kind = schedule.get("kind") if isinstance(schedule, dict) else None
     if schedule_kind not in {"cron", "interval"}:
         return ""
     try:
@@ -135,7 +136,12 @@ def _failure_streak_nudge(job: dict) -> str:
         threshold = 3
     if threshold <= 0:
         return ""
-    streak = int(job.get("failure_streak") or 0) + 1  # +1 = this run
+    try:
+        streak = int(job.get("failure_streak") or 0) + 1  # +1 = this run
+    except (TypeError, ValueError):
+        # Hand-edited jobs.json with a non-numeric streak must not kill the
+        # failure delivery; treat it as a fresh streak.
+        streak = 1
     if streak < threshold:
         return ""
     job_ref = job.get("name") or job.get("id") or "this job"
@@ -1447,7 +1453,12 @@ def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
 
 def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
     """Configured job workdir, or None when unset / no longer a directory (logged)."""
-    workdir = (job.get("workdir") or "").strip() or None
+    raw_workdir = job.get("workdir")
+    if raw_workdir is not None and not isinstance(raw_workdir, str):
+        # Hand-edited jobs.json: a non-string workdir is meaningless, not fatal.
+        logger.warning("Job '%s': ignoring non-string workdir %r", job_id, raw_workdir)
+        raw_workdir = None
+    workdir = (raw_workdir or "").strip() or None
     if workdir and not Path(workdir).is_dir():
         logger.warning(
             "Job '%s': configured workdir %r no longer exists — running without it",

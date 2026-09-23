@@ -17,10 +17,10 @@ transport:
 auth:
   type: none
 
-# The server ships 13 tools. The eight below are the read-only search surface
-# and are enabled by default; the five booking/payment/cancellation tools are
-# left off so nothing that spends money or cancels a reservation is reachable
-# until the user turns it on with `hermes mcp configure pricewin`.
+# The server ships 12 tools. The eight below are the read-only search surface
+# and are enabled by default; the four booking/cancellation tools are left off
+# so nothing that places a request or cancels a reservation is reachable until
+# the user turns it on with `hermes mcp configure pricewin`.
 tools:
   default_enabled:
     - search_hotels_live
@@ -45,13 +45,13 @@ post_install: |
   No account or credentials needed — tools are available as soon as the
   session restarts.
 
-  Search is enabled by default. Booking, payment and cancellation
-  (create_booking, check_booking_status, recreate_payment_link,
-  request_cancel_token, cancel_booking) are opt-in — add them with:
+  Search is enabled by default. Booking and cancellation
+  (request_booking, check_booking_status, request_cancel_token,
+  cancel_booking) are opt-in — add them with:
     hermes mcp configure pricewin
 
-  Even with those enabled, payment always completes on a PriceWin link in
-  the browser, never in-conversation.
+  Nothing is ever charged: a booking is a request the hotel confirms, and
+  the guest pays at the property on arrival.
 
   Results arrive progressively: search_hotels_live / search_flights_live
   start a session, then poll_search_results / poll_flight_results return

@@ -23,7 +23,7 @@ from hermes_cli.stale_modules import drop_stale_root_modules
 
 drop_stale_root_modules()
 
-from utils import file_signature
+from utils import fast_safe_load, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,6 @@ def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
 
 def load_managed_config() -> dict:
     """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-    from utils import fast_safe_load
 
     return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8")) or {})
 

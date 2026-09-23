@@ -1295,17 +1295,27 @@ def register(ctx):
 | `event_type` | `str` | Event-local contract id (see the table below). |
 | `payload` | `dict` | Event-type-specific fields, documented per event type below. |
 
-Every payload is additive and event-specific; there is no monolithic gateway payload version. All ids are strings; missing/unavailable fields are `None`, never guessed. Malformed events and events whose source cannot be authorized are dropped (fail closed). A transient Telegram Application rebuild re-registers the observer together with the core handlers.
+Every payload is additive and event-specific; there is no monolithic gateway payload version. All ids are strings; optional unavailable metadata is `None` where specified below. Normalization guards check only properties still observable after SDK decoding, not raw wire JSON validity. Source authorization remains fail closed: events whose source cannot be authorized are dropped. A transient Telegram Application rebuild re-registers the observer together with the core handlers.
 
 **Per-event payload contracts (v1, additive):**
 
 | `event_type` | Platforms | Payload fields |
 |--------------|-----------|----------------|
-| `reaction` | telegram | `emojis: list[str]`, `custom_emoji_ids: list[str]`, `chat_id: str`, `message_id: str`, `thread_id: str \| None` (Telegram reaction updates carry no topic id, so currently always `None`). |
+| `reaction` | telegram | `update_id: str`, `actor_id: str`, `actor_name: str \| None`, `occurred_at: str \| None` (ISO 8601), `old_emojis: list[str]`, `old_custom_emoji_ids: list[str]`, `emojis: list[str]`, `custom_emoji_ids: list[str]`, `chat_id: str`, `chat_type: str` (`dm`, `group`, `forum`, or `channel`), `message_id: str`, `thread_id: None` (topic unknown). |
 | `message_edited` | telegram, discord | `chat_id: str`, `message_id: str`, `thread_id: str \| None`, `text: str \| None` (edited text or caption, bounded; `None` for media-only edits or when uncached), `edited_at: str \| None` (ISO 8601). |
 | `message_deleted` | discord | `chat_id: str`, `message_id: str`, `thread_id: str \| None`, `author_id: str \| None`. Discord's delete event does not identify the deleter; the authorized source is the deleted message's author, and uncached deletions never fire. |
 | `thread_created` | discord | `thread_id: str`, `parent_chat_id: str \| None`, `name: str \| None`, `owner_id: str \| None`. |
 | `thread_renamed` | discord | `thread_id: str`, `parent_chat_id: str \| None`, `old_name: str \| None`, `new_name: str`. Fired only when the name actually changed; other thread updates (archive, slowmode, tags) are dropped. Discord's thread-update event carries no actor, so the thread owner is the authorized source. |
+
+**Telegram reaction details:** this envelope is a bounded projection of **decoded SDK values for well-formed Bot API events**, trusting Telegram's required-fields contract. `emojis` / `custom_emoji_ids` are the decoded new snapshot; the `old_` fields are the decoded previous snapshot. For such well-formed events, an empty new snapshot represents removal. It is **not raw-ingress validation or a durable, trustworthy reaction ledger**.
+
+In PTB 22.8, a missing snapshot, JSON `null`, `{}`, or `""` can decode to the same empty tuple as valid `[]`, for either `old_reaction` or `new_reaction`. These inputs therefore produce the same empty lists in an authorized hook payload. **Decoded emptiness is not proof that the raw field was present or valid.** Unknown reaction state cannot be inferred or recovered from this envelope (or by reserializing the SDK object). Consumers requiring that distinction need independent ingress validation/provenance; this hook does not provide it.
+
+`actor_id` comes from the supplied `user`, or from `actor_chat` when Telegram reports a reaction on behalf of a chat; a chat actor is not a human identity. No actor is invented for anonymous updates. Paid reaction types and aggregate `message_reaction_count` updates are unsupported. `update_id` belongs to the receiving bot's update stream, not a globally unique namespace.
+
+Update, actor, chat, and message identities must be canonical decimal strings or integers and fit in 128 characters after conversion. Booleans, whitespace, leading zeros, and oversized identities are rejected rather than trimmed or truncated; update id `0` is valid, and chat identities may be negative. Optional `actor_name` uses username, full name, then chat title (up to 256 characters); `occurred_at` is ISO 8601 (up to 64 characters), with naive datetimes treated as UTC. Missing names or non-datetime timestamps become `None`.
+
+Each decoded snapshot examines at most 64 reactions; Unicode emoji strings are capped at 64 characters and custom-emoji id strings at 128. A snapshot that is still missing or non-sequence **after decoding**, or an inspected entry with malformed or unsupported decoded values (including paid or unknown reaction types), drops the event. Those checks cannot detect malformed wire snapshots already collapsed to empty by the SDK. `chat_type` uses the gateway's existing `dm` / `group` / `forum` / `channel` classification. **`thread_id=None` means unknown, not the root or General topic:** Telegram reaction updates supply no topic id. This envelope adds no topic cache or message-to-topic lookup; topic-sensitive consumers need independent, trustworthy provenance and must not guess it from chat type.
 
 The bot's own progressive message edits (streaming) never fire `message_edited` on Discord — bot-authored events are dropped at the fire-site.
 

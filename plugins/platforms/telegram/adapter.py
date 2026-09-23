@@ -2833,34 +2833,94 @@ class TelegramAdapter(BasePlatformAdapter):
         return not isinstance(value, bool) and isinstance(value, (str, int))
 
     def _normalize_reaction_event(self, update) -> Optional[Dict[str, Any]]:
-        """``message_reaction`` → ``reaction`` event: emojis (unicode), custom_emoji_ids, chat_id,
-        message_id, thread_id (always None — reactions carry none)."""
+        """Project bounded decoded SDK values, trusting Telegram's required fields.
+
+        Guards check only properties still observable after decoding, not raw JSON
+        validity. PTB can collapse missing/malformed snapshots to empty tuples;
+        an empty decoded snapshot cannot prove wire presence or reveal unknown state.
+        This observer envelope is not a durable, trustworthy reaction ledger.
+        """
         mr = getattr(update, "message_reaction", None)
         if mr is None:
             return None
         chat = getattr(mr, "chat", None)
-        new_reaction = getattr(mr, "new_reaction", None) or []
-        if not isinstance(new_reaction, (list, tuple)):
+        actor = getattr(mr, "user", None) or getattr(mr, "actor_chat", None)
+        chat_type = getattr(chat, "type", None)
+        if not isinstance(chat_type, str) or chat_type not in ("private", "group", "supergroup", "channel"):
             return None
-        chat_id = getattr(chat, "id", None) if chat is not None else None
-        message_id = getattr(mr, "message_id", None)
-        if not self._is_id_like(chat_id) or not self._is_id_like(message_id):
+        chat_type = self._normalize_chat_type(chat_type, is_forum=getattr(chat, "is_forum", False) is True)
+        old_reaction = getattr(mr, "old_reaction", None)
+        new_reaction = getattr(mr, "new_reaction", None)
+        # This is a decoded-container check, not validation of raw field presence.
+        if not isinstance(old_reaction, (list, tuple)) or not isinstance(new_reaction, (list, tuple)):
             return None
-        emojis: List[str] = []
-        custom_emoji_ids: List[str] = []
-        for r in new_reaction[:64]:
-            emoji = getattr(r, "emoji", None)
-            if isinstance(emoji, str) and emoji:
-                emojis.append(emoji[:64])
-            custom_id = getattr(r, "custom_emoji_id", None)
-            if self._is_id_like(custom_id):
-                custom_emoji_ids.append(str(custom_id)[:128])
+
+        def _bounded_identifier(value: Any, *, signed=False, zero=False) -> Optional[str]:
+            if type(value) not in (str, int):
+                return None
+            if isinstance(value, int) and abs(value) >= 10 ** 128:
+                return None
+            normalized = str(value)
+            pattern = r"-?[1-9][0-9]*" if signed else r"[1-9][0-9]*"
+            # Never truncate or strip identities: that aliases distinct update/actor keys.
+            if len(normalized) <= 128 and (re.fullmatch(pattern, normalized) or (zero and normalized == "0")):
+                return normalized
+            return None
+
+        update_id = _bounded_identifier(getattr(update, "update_id", None), zero=True)
+        actor_id = _bounded_identifier(getattr(actor, "id", None), signed=getattr(mr, "user", None) is None)
+        chat_id = _bounded_identifier(getattr(chat, "id", None), signed=True)
+        message_id = _bounded_identifier(getattr(mr, "message_id", None))
+        if None in (update_id, actor_id, chat_id, message_id):
+            return None
+
+        actor_name = None
+        for attribute in ("username", "full_name", "title"):
+            candidate = getattr(actor, attribute, None)
+            if isinstance(candidate, str) and candidate.strip():
+                actor_name = candidate.strip()[:256]
+                break
+        occurred_at = None
+        event_date = getattr(mr, "date", None)
+        if isinstance(event_date, datetime):
+            if event_date.tzinfo is None:
+                event_date = event_date.replace(tzinfo=timezone.utc)
+            occurred_at = event_date.isoformat()[:64]
+
+        def _reaction_parts(reactions: list | tuple) -> Optional[tuple[List[str], List[str]]]:
+            emojis: List[str] = []
+            custom_ids: List[str] = []
+            for reaction in reactions[:64]:
+                emoji = getattr(reaction, "emoji", None)
+                custom_id = getattr(reaction, "custom_emoji_id", None)
+                if emoji is None and custom_id is None:
+                    return None
+                if emoji is not None:
+                    if not isinstance(emoji, str) or not emoji:
+                        return None
+                    emojis.append(emoji[:64])
+                if custom_id is not None:
+                    if not self._is_id_like(custom_id) or not str(custom_id):
+                        return None
+                    custom_ids.append(str(custom_id)[:128])
+            return emojis, custom_ids
+
+        old_parts, new_parts = _reaction_parts(old_reaction), _reaction_parts(new_reaction)
+        if old_parts is None or new_parts is None:
+            return None
+        old_emojis, old_custom_emoji_ids = old_parts
+        emojis, custom_emoji_ids = new_parts
         return {
             "platform": "telegram",
             "event_type": "reaction",
             "payload": {
-                "emojis": emojis, "custom_emoji_ids": custom_emoji_ids, "chat_id": str(chat_id)[:128],
-                "message_id": str(message_id)[:128], "thread_id": None},
+                "update_id": update_id, "actor_id": actor_id,
+                "actor_name": actor_name, "occurred_at": occurred_at,
+                "old_emojis": old_emojis, "old_custom_emoji_ids": old_custom_emoji_ids,
+                "emojis": emojis, "custom_emoji_ids": custom_emoji_ids,
+                "chat_id": chat_id, "chat_type": chat_type, "message_id": message_id,
+                # Telegram supplies no reaction topic: None means unknown, not the root topic.
+                "thread_id": None},
         }
 
     def _normalize_message_edited_event(self, update) -> Optional[Dict[str, Any]]:

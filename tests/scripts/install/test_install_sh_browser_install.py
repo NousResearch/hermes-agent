@@ -5,6 +5,8 @@ half-installed just because Playwright's managed Chromium download hangs on an
 unsupported distribution.
 """
 
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -33,7 +35,7 @@ def test_playwright_installs_are_timeout_guarded() -> None:
     assert "run_browser_install_with_timeout()" in text
     # Playwright installs now go through run_playwright_install(), which wraps
     # run_browser_install_with_timeout (timeout-guarded) and adds an
-    # unrecognized-platform fallback retry.
+    # bounded IPv4 retry plus the unrecognized-platform fallback.
     assert "run_playwright_install 600 npx playwright install chromium" in text
     # --with-deps is still invoked on apt-based systems, but only when sudo
     # is available non-interactively (root or passwordless sudo). Non-sudo
@@ -80,20 +82,26 @@ def test_browser_install_timeout_stays_interruptible() -> None:
 
 # ---------------------------------------------------------------------------
 # Behavioral tests: source the install.sh helpers in a stubbed shell and assert
-# the override retry fires ONLY on a too-new apt release (#35166), and not on a
-# host Playwright already supports.
+# every failed download gets one IPv4-only retry, while the platform override
+# remains limited to too-new apt releases (#35166).
 # ---------------------------------------------------------------------------
 
-import subprocess
-
-
-def _run_install_fn(distro: str, version: str, *, native_fails: bool,
-                    arch: str = "x86_64", operator_override: str = "") -> dict:
+def _run_install_fn(
+    distro: str,
+    version: str,
+    *,
+    native_fails: bool,
+    fallback_fails: bool = False,
+    arch: str = "x86_64",
+    operator_override: str = "",
+    operator_proxy: str = "",
+    operator_all_proxy: str = "",
+) -> dict:
     """Source the relevant functions from install.sh and drive run_playwright_install.
 
     Stubs `npx` (the install command) to fail/succeed, `uname -m` for arch, and
     `log_warn`/`log_info` to no-ops. Returns parsed observations: how many times
-    the install command ran, and the override value seen on each run.
+    the install command ran, the override value, and whether IPv4 was forced.
     """
     # Extract the functions we need so we don't execute the whole installer.
     # run_browser_install_with_timeout delegates to run_with_timeout (#39219),
@@ -103,6 +111,7 @@ def _run_install_fn(distro: str, version: str, *, native_fails: bool,
         "run_with_timeout",
         "playwright_host_unrecognized",
         "playwright_fallback_platform",
+        "run_playwright_install_ipv4",
         "run_playwright_install",
     ]
     src = INSTALL_SH.read_text()
@@ -116,12 +125,20 @@ def _run_install_fn(distro: str, version: str, *, native_fails: bool,
     body = "\n\n".join(extracted)
 
     native_rc = 1 if native_fails else 0
+    fallback_rc = 1 if fallback_fails else 0
     harness = f"""
 set -u
 DISTRO={distro!r}
 DISTRO_VERSION={version!r}
+INSTALL_DIR={str(REPO_ROOT)!r}
 export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE={operator_override!r}
 [ -z "$PLAYWRIGHT_HOST_PLATFORM_OVERRIDE" ] && unset PLAYWRIGHT_HOST_PLATFORM_OVERRIDE
+export HTTPS_PROXY={operator_proxy!r}
+[ -z "$HTTPS_PROXY" ] && unset HTTPS_PROXY
+unset https_proxy
+export ALL_PROXY={operator_all_proxy!r}
+[ -z "$ALL_PROXY" ] && unset ALL_PROXY
+unset all_proxy
 
 log_warn() {{ :; }}
 log_info() {{ :; }}
@@ -138,11 +155,16 @@ timeout() {{
     "$@"
 }}
 
-# Stub the install command. Record each invocation + the override in effect.
+# Stub the install command. Record each invocation, the platform override, and
+# whether the retry routed through the temporary IPv4-only CONNECT proxy.
 npx() {{
-    echo "RUN override=${{PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-<none>}}" >>"$RUNLOG"
-    # First run reflects native_fails; the override retry (if any) succeeds.
-    if [ -n "${{PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-}}" ]; then return 0; fi
+    case "${{HTTPS_PROXY:-}}" in
+        http://hermes:*@127.0.0.1:*) ipv4=yes ;;
+        *) ipv4=no ;;
+    esac
+    echo "RUN override=${{PLAYWRIGHT_HOST_PLATFORM_OVERRIDE:-<none>}} ipv4=$ipv4 proxy=${{HTTPS_PROXY:-<none>}}" >>"$RUNLOG"
+    # The normal and fallback outcomes are controlled independently.
+    if [ "$ipv4" = yes ]; then return {fallback_rc}; fi
     return {native_rc}
 }}
 
@@ -151,13 +173,14 @@ npx() {{
 run_playwright_install 600 npx playwright install --with-deps chromium
 echo "FINAL_RC=$?"
 """
-    import tempfile, os
+    import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as lf:
         runlog = lf.name
     try:
         env = dict(os.environ, RUNLOG=runlog)
-        proc = subprocess.run(["bash", "-c", harness], capture_output=True,
-                              text=True, env=env)
+        proc = subprocess.run(
+            ["bash", "-c", harness], capture_output=True, text=True, env=env
+        )
         runs = Path(runlog).read_text().strip().splitlines()
         final_rc = None
         for line in proc.stdout.splitlines():
@@ -194,6 +217,87 @@ def test_no_retry_when_native_succeeds_on_ubuntu_26() -> None:
     r = _run_install_fn("ubuntu", "26.04", native_fails=False)
     assert len(r["runs"]) == 1, r["runs"]
     assert "override=<none>" in r["runs"][0]
+    assert r["final_rc"] == 0
+
+
+def test_failed_supported_host_retries_once_with_forced_ipv4() -> None:
+    """A download failure on a supported host gets one real IPv4-only retry."""
+    r = _run_install_fn("arch", "rolling", native_fails=True)
+
+    assert len(r["runs"]) == 2, r["runs"]
+    assert "ipv4=no" in r["runs"][0]
+    assert "override=<none>" in r["runs"][1]
+    assert "ipv4=yes" in r["runs"][1]
+    assert "proxy=http://hermes:" in r["runs"][1]
+    assert "@127.0.0.1:" in r["runs"][1]
+    assert r["final_rc"] == 0
+
+
+def test_platform_fallback_retry_is_also_forced_to_ipv4() -> None:
+    """Too-new apt hosts combine the existing platform and network fallbacks."""
+    r = _run_install_fn("ubuntu", "26.04", native_fails=True)
+
+    assert len(r["runs"]) == 2, r["runs"]
+    assert "override=ubuntu24.04-x64" in r["runs"][1]
+    assert "ipv4=yes" in r["runs"][1]
+    assert r["final_rc"] == 0
+
+
+def test_operator_proxy_failure_is_not_bypassed() -> None:
+    """A failed operator proxy is authoritative and disables the local relay."""
+    r = _run_install_fn(
+        "arch",
+        "rolling",
+        native_fails=True,
+        operator_proxy="https://operator-proxy.invalid:8443",
+    )
+
+    assert len(r["runs"]) == 1, r["runs"]
+    assert "proxy=https://operator-proxy.invalid:8443" in r["runs"][0]
+    assert r["final_rc"] == 1
+
+
+def test_operator_all_proxy_failure_is_not_bypassed() -> None:
+    """ALL_PROXY is also an authoritative operator egress policy."""
+    r = _run_install_fn(
+        "arch",
+        "rolling",
+        native_fails=True,
+        operator_all_proxy="socks5://operator-proxy.invalid:1080",
+    )
+
+    assert len(r["runs"]) == 1, r["runs"]
+    assert "ipv4=no" in r["runs"][0]
+    assert r["final_rc"] == 1
+
+
+def test_ipv4_retry_runs_once_then_surfaces_failure() -> None:
+    """If both attempts fail, stop after the single retry and return failure."""
+    r = _run_install_fn(
+        "arch", "rolling", native_fails=True, fallback_fails=True
+    )
+
+    assert len(r["runs"]) == 2, r["runs"]
+    assert "ipv4=no" in r["runs"][0]
+    assert "ipv4=yes" in r["runs"][1]
+    assert r["final_rc"] == 1
+
+
+def test_operator_platform_override_is_preserved_for_both_attempts() -> None:
+    """An explicit platform pin remains intact during the IPv4 retry."""
+    override = "debian13-x64"
+    r = _run_install_fn(
+        "debian",
+        "13",
+        native_fails=True,
+        operator_override=override,
+    )
+
+    assert len(r["runs"]) == 2, r["runs"]
+    assert f"override={override}" in r["runs"][0]
+    assert f"override={override}" in r["runs"][1]
+    assert "ipv4=no" in r["runs"][0]
+    assert "ipv4=yes" in r["runs"][1]
     assert r["final_rc"] == 0
 
 

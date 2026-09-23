@@ -131,3 +131,84 @@ class TestProfileScopedHubActions:
             json={"identifier": "official/demo", "profile": "ghost"},
         )
         assert resp.status_code == 404
+
+
+    def test_hub_install_scoped_to_default_still_carries_the_selector(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """``default`` is a real named profile, not an alias for "the dashboard's own".
+        A pooled ``hermes -p worker_alpha serve`` dashboard answering a hub action with
+        ``profile=default`` must still emit ``-p default``: without it the child's env
+        carries this process's home verbatim and the install lands on worker_alpha."""
+        calls = []
+
+        class _FakeProc:
+            pid = 4242
+
+        def _fake_spawn(subcommand, name):
+            calls.append(list(subcommand))
+            return _FakeProc()
+
+        # Ambient home of a dashboard serving under the named profile.
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["worker_alpha"]))
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", _fake_spawn)
+        resp = client.post(
+            "/api/skills/hub/install",
+            json={"identifier": "official/demo", "profile": "default"},
+        )
+        assert resp.status_code == 200
+        assert calls == [
+            ["-p", "default", "skills", "install", "official/demo", "--yes"]
+        ]
+        # The spawn-path env pin must land the child on the default home, not the
+        # ambient one it would inherit from a selector-less argv.
+        env = _web_server_gateway._profile_action_environment(calls[0])
+        assert env["HERMES_HOME"] == str(isolated_profiles["default"])
+
+
+    @pytest.mark.parametrize("profile", ["Default", "DEFAULT"])
+    def test_hub_install_mixed_case_default_is_rejected_not_ambient(
+        self, client, isolated_profiles, monkeypatch, profile
+    ):
+        """A non-canonical casing is not a valid profile id: the request 400s like any
+        mixed-case name instead of silently falling back to the ambient home."""
+        calls = []
+
+        class _FakeProc:
+            pid = 4242
+
+        def _fake_spawn(subcommand, name):
+            calls.append(list(subcommand))
+            return _FakeProc()
+
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", _fake_spawn)
+        resp = client.post(
+            "/api/skills/hub/install",
+            json={"identifier": "official/demo", "profile": profile},
+        )
+        assert resp.status_code == 400
+        assert calls == []
+
+
+    @pytest.mark.parametrize("profile", [None, "", "  ", "current", "CURRENT"])
+    def test_hub_install_without_a_named_profile_keeps_ambient_argv(
+        self, client, isolated_profiles, monkeypatch, profile
+    ):
+        """Only a real profile name earns ``-p``: unnamed/``current`` requests keep
+        the selector-less argv so the child resolves the dashboard's own home."""
+        calls = []
+
+        class _FakeProc:
+            pid = 4242
+
+        def _fake_spawn(subcommand, name):
+            calls.append(list(subcommand))
+            return _FakeProc()
+
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", _fake_spawn)
+        resp = client.post(
+            "/api/skills/hub/install",
+            json={"identifier": "official/demo", "profile": profile},
+        )
+        assert resp.status_code == 200
+        assert calls == [["skills", "install", "official/demo", "--yes"]]

@@ -11,6 +11,8 @@ outside the (now-dead) group with SIGKILL afterwards.
 
 import os
 import signal
+import subprocess
+import sys
 import textwrap
 import time
 from types import SimpleNamespace
@@ -172,3 +174,86 @@ def test_kill_process_never_killpgs_the_callers_own_group(monkeypatch):
 
     assert killpg_calls == []
     assert killed == [12345]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+class TestReapUntrackedGroupGuard:
+    """ProcessRegistry._reap_untracked terminates through _terminate_host_pid,
+    which revalidates the kernel start time captured at spawn before signalling.
+    pgid == pid only proves group leadership, not identity: a reaped child can
+    be recycled onto an unrelated process that leads its own group, and the old
+    raw killpg arm would have tree-killed the stranger."""
+
+    def test_termination_delegates_with_recorded_identity(self, monkeypatch):
+        """The shared terminate path receives the pid AND the start time
+        recorded at spawn; no group primitive is consulted or signalled."""
+        from unittest.mock import MagicMock
+
+        from tools.process_registry import ProcessRegistry
+
+        reg = ProcessRegistry()
+        proc = MagicMock()
+        proc.pid = 999
+        session = SimpleNamespace(systemd_unit="", host_start_time=4242)
+        calls, forbidden = [], []
+        monkeypatch.setattr(
+            ProcessRegistry, "_terminate_host_pid",
+            classmethod(
+                lambda cls, pid, expected_start=None: calls.append((pid, expected_start))))
+        monkeypatch.setattr(os, "getpgid", lambda pid: forbidden.append(("getpgid", pid)))
+        monkeypatch.setattr(os, "killpg", lambda pgid, sig: forbidden.append(("killpg", pgid)))
+
+        reg._reap_untracked(session, proc)
+
+        assert calls == [(999, 4242)]
+        assert forbidden == []
+
+    def test_group_leader_child_is_reaped(self, monkeypatch):
+        """Control: a real start_new_session child whose recorded start time
+        still matches is terminated."""
+        from tools.process_registry import ProcessRegistry
+
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 0.5))
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True)
+        try:
+            real_start = ProcessRegistry._safe_host_start_time(proc.pid)
+            assert real_start is not None, "no /proc start time on this platform?"
+            session = SimpleNamespace(systemd_unit="", host_start_time=real_start)
+
+            ProcessRegistry()._reap_untracked(session, proc)
+
+            assert proc.poll() is not None, "matching-identity child must be reaped"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+
+    def test_same_pid_new_start_time_group_leader_survives(self, monkeypatch):
+        """Regression: a group leader whose recorded start time does not match
+        (the recycled-PID shape: same numeric pid, different process) must NOT
+        be signalled, even though getpgid(pid) == pid authorized the old arm."""
+        from tools.process_registry import ProcessRegistry
+
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 0.5))
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True)
+        try:
+            real_start = ProcessRegistry._safe_host_start_time(proc.pid)
+            assert real_start is not None, "no /proc start time on this platform?"
+            assert os.getpgid(proc.pid) == proc.pid  # leads its group: old arm fired here
+            session = SimpleNamespace(systemd_unit="", host_start_time=real_start + 1)
+            # A stub Popen keeps the wait tail from parking 5s on the still-live child.
+            stub = SimpleNamespace(pid=proc.pid, wait=lambda timeout=None: None)
+
+            ProcessRegistry()._reap_untracked(session, stub)
+
+            assert not _wait_for_pid_exit(proc.pid, timeout=0.5)
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()

@@ -15,12 +15,17 @@ npx PID — on timeout.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
+import time
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
 from tools.browser_tool_install import warm_agent_browser_npx_cache
-from tools.browser_tool_lifecycle import _legacy_kill_process_tree
+from tools.browser_tool_lifecycle import _kill_process_tree, _legacy_kill_process_tree
 
 
 def _mock_proc(returncode=0, communicate_side_effect=None, pid=4242):
@@ -298,6 +303,121 @@ class TestLegacyKillProcessTree:
         _legacy_kill_process_tree(proc)  # must not raise
 
         assert killpg_calls == [(999, signal.SIGTERM)]
+
+    def test_posix_shared_group_is_never_killpgd(self, monkeypatch):
+        """A child spawned without start_new_session shares OUR process group, so
+        os.getpgid returns the caller's own pgid — killpg would signal the whole
+        Hermes/test-runner tree. Only a group leader may be killpg'd; the direct
+        child still gets proc.kill()."""
+        proc = MagicMock()
+        proc.pid = 999
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.setattr("os.getpgid", lambda pid: 555)  # child's group != its pid
+        killpg_calls = []
+        monkeypatch.setattr(
+            "os.killpg", lambda pgid, sig: killpg_calls.append((pgid, sig))
+        )
+
+        _legacy_kill_process_tree(proc)
+
+        assert killpg_calls == []
+        proc.kill.assert_called_once()
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+    def test_real_shared_group_child_does_not_signal_us(self, monkeypatch):
+        """End-to-end through _kill_process_tree with the deadline helper forced
+        to fail: a real child in our own process group must be proc.kill()ed
+        without any killpg — if the group signal fired, this test process would
+        be dead before the assertion."""
+        proc = subprocess.Popen(
+            ["sleep", "60"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert os.getpgid(proc.pid) == os.getpgid(0)  # shared group precondition
+            monkeypatch.setattr(
+                "agent.deadline.kill_process_tree",
+                lambda *a, **k: (_ for _ in ()).throw(RuntimeError("deadline unavailable")),
+            )
+            _kill_process_tree(proc)
+            proc.wait(timeout=5)
+            assert proc.returncode is not None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+    def test_real_shared_group_child_descendants_are_killed(self, tmp_path):
+        """A shared-group child's descendants can hold the capture pipe's write
+        end open past proc.kill() (the #68915 communicate() hang), so the
+        non-leader path must kill them individually. The grandchild is in OUR
+        process group: if the implementation regressed to killpg this test
+        process would die before the assertion."""
+        pid_file = tmp_path / "grandchild.pid"
+        proc = subprocess.Popen(
+            ["sh", "-c", f"sleep 60 & echo $! > {pid_file}; wait"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        gcpid = None
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                text = pid_file.read_text().strip() if pid_file.exists() else ""
+                if text:
+                    gcpid = int(text)
+                    break
+                time.sleep(0.05)
+            assert gcpid is not None, "grandchild never wrote its pid file"
+            assert os.getpgid(proc.pid) == os.getpgid(0)  # shared group precondition
+
+            _legacy_kill_process_tree(proc)
+            proc.wait(timeout=5)
+
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(gcpid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail(f"grandchild pid {gcpid} survived the non-leader tree kill")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            if gcpid is not None:
+                try:
+                    os.kill(gcpid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+    def test_real_group_leader_child_is_tree_killed(self, monkeypatch):
+        """Control: a child leading its own group (process_group=0) still gets the
+        group signal through the same fallback path."""
+        proc = subprocess.Popen(
+            ["sleep", "60"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            process_group=0,
+        )
+        try:
+            assert os.getpgid(proc.pid) == proc.pid  # leader precondition
+            monkeypatch.setattr(
+                "agent.deadline.kill_process_tree",
+                lambda *a, **k: (_ for _ in ()).throw(RuntimeError("deadline unavailable")),
+            )
+            _kill_process_tree(proc)
+            proc.wait(timeout=5)
+            assert proc.returncode is not None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
 
     def test_windows_uses_taskkill_with_tree_and_force_flags(self, monkeypatch):
         proc = MagicMock()

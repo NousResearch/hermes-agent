@@ -491,8 +491,11 @@ def _kill_process_tree(proc: "subprocess.Popen") -> None:
 
 
 def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Local tree-kill (SIGTERM then SIGKILL to the process group) — fallback when
-    agent.deadline is unavailable; tests pin this signal sequence."""
+    """Local tree-kill (fallback when agent.deadline is unavailable; tests pin
+    the signal sequence). A child leading its own group gets SIGTERM then
+    SIGKILL via killpg; a shared-group child can never be killpg'd (that is OUR
+    group), so it and its psutil-snapshotted descendants are killed
+    individually."""
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
@@ -512,12 +515,38 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
     try:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, OSError):
-        return
-    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+        pgid = None
+    # Signal the group only when the child leads it (start_new_session / process_group=0):
+    # a child spawned into our group resolves pgid to OUR process group and killpg would
+    # take the whole Hermes tree down with it, and a recycled PID can resolve to a foreign
+    # group. The direct child still gets proc.kill() either way. Same ownership check as
+    # hermes_cli/_subprocess_compat._legacy_kill_process_tree.
+    descendants = []
+    if pgid is not None and pgid == proc.pid:
+        for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+            try:
+                killpg(pgid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                break
+    else:
+        # No group signal is safe, so descendants are killed individually;
+        # a bare proc.kill() would leave them holding the capture pipe's write
+        # end open (the #68915 communicate() hang). The snapshot must precede
+        # the parent kill: once the parent exits, children reparent and psutil
+        # can no longer find them (process_registry._terminate_host_pid).
         try:
-            killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            return
+            import psutil
+
+            descendants = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:
+            descendants = []
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    for child in descendants:
+        with contextlib.suppress(Exception):
+            child.kill()
 
 
 def _pid_exists(pid: int) -> bool:

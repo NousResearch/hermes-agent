@@ -1240,21 +1240,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         descendants) so nothing leaks untracked."""
         with suppress(Exception):
             if session.systemd_unit:
-                # Scope teardown is the authoritative cleanup for the worker cgroup
-                # (never killpg here); the wrapper PID is terminated as fallback.
+                # Scope teardown is the authoritative cleanup for the worker cgroup;
+                # the systemd-run wrapper PID is terminated below as fallback.
                 _stop_systemd_unit(session.systemd_unit)
-                # The worker runs in its own systemd scope and, since the #70716 session-isolation fix, its
-                # own session. Stop the scope (kills every process in the worker cgroup), then terminate the
-                # systemd-run wrapper PID as fallback.
-                self._terminate_host_pid(proc.pid, session.host_start_time)
-            elif not _IS_WINDOWS:
-                try:
-                    kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
-                except (ProcessLookupError, PermissionError, OSError):
-                    proc.kill()
-            else:
-                proc.kill()
+            # _terminate_host_pid revalidates the kernel start time captured at
+            # spawn before signalling: pgid == pid would only prove the pid leads a
+            # group, and a reaped child can be recycled onto an unrelated leader.
+            self._terminate_host_pid(proc.pid, session.host_start_time)
         with suppress(Exception):
             proc.wait(timeout=5)
 

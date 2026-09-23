@@ -2448,9 +2448,10 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
     ``target_model`` is the model the override will actually send: the ladder's model-keyed rungs
     (Zen/Go relay + api_mode) must see it rather than config's ``default``, or a Go-only override
     resolves an api_mode/base_url the sent model cannot use (#112600)."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
+    from hermes_cli.runtime_provider import resolve_runtime_with_fallback, format_runtime_provider_error
     try:
-        runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None)
+        runtime, _fallback_entry = resolve_runtime_with_fallback(
+            _load_gateway_config(), requested=provider, target_model=target_model or None)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {

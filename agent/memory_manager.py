@@ -29,7 +29,12 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 # shutdown_all() drain bound; workers are daemon threads so a wedged provider never
 # blocks interpreter exit.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
-_EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+# External-provider prefetch bound. Real external recalls measured 18-27s on
+# 2026-08-29 and were dropped by the old 8.0s bound (~53 prefetches skipped
+# that day); after a reranker fix, recall measured 4.39-6.24s (n=10) with the
+# worst sample still at 78% of that bound. 12.0s keeps roughly 2x the measured
+# worst case while still bounding a wedged provider.
+_EXTERNAL_PREFETCH_TIMEOUT_S = 12.0
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----

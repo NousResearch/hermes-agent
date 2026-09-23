@@ -116,6 +116,19 @@ class BlockingPrefetchProvider(FakeMemoryProvider):
         return self._prefetch_result
 
 
+class SlowPrefetchProvider(FakeMemoryProvider):
+    """External provider whose prefetch uses a synthetic threshold-probe delay."""
+
+    def __init__(self, name="external", delay=9.0):
+        super().__init__(name=name)
+        self.delay = delay
+
+    def prefetch(self, query, *, session_id=""):
+        self.prefetch_queries.append(query)
+        time.sleep(self.delay)
+        return self._prefetch_result
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider ABC tests
 # ---------------------------------------------------------------------------
@@ -391,6 +404,24 @@ class TestMemoryManager:
         assert result == "builtin memory\n\nlate external memory"
         assert external.prefetch_queries == ["query", "query 3"]
         assert external.name not in mgr._external_prefetch_threads
+
+    def test_default_external_prefetch_timeout_keeps_slow_but_real_recalls(self):
+        # Contract: the shipped default budget must keep a slow external recall
+        # instead of dropping it. The 9.0s delay is a synthetic threshold probe
+        # (between the old 8s bound and the new 12s one), not a measured
+        # production latency; production recalls measured 18-27s on 2026-08-29
+        # (dropped by the old bound) and 4.39-6.24s (n=10) on 2026-09-23.
+        mgr = MemoryManager()
+        slow = SlowPrefetchProvider("hy-memory", delay=9.0)
+        slow._prefetch_result = "slow external memory"
+        mgr.add_provider(slow)
+
+        started = time.monotonic()
+        result = mgr.prefetch_all("query")
+        elapsed = time.monotonic() - started
+
+        assert result == "slow external memory"
+        assert elapsed < 11.5
 
 
 class TestPluginMemoryDiscovery:

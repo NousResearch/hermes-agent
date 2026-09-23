@@ -3,6 +3,8 @@ turn tracking and turn-failure detail. Bodies are rebound onto server.py's globa
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 
 from .method_ctx import bind_module
@@ -120,6 +122,67 @@ def _coerce_message_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+_IMAGE_HINT_RE = re.compile(r"\[Image attached at: ([^\n\]]+)\]")
+_IMAGE_DATA_RE = re.compile(r"data:image/[^;,]+;base64,([A-Za-z0-9+/=]+)\Z")
+_IMAGE_REF_RE = re.compile(r"@image:(`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+'|\S+)\Z")
+
+
+def _user_image_display_text(content: Any) -> str | None:
+    """Project verified native-vision images as refs without changing stored/model content."""
+    if not isinstance(content, list) or len(content) < 2 or not isinstance(content[0], dict):
+        return None
+    text_part = content[0]
+    if text_part.get("type") != "text" or not isinstance(text_part.get("text"), str):
+        return None
+    text = text_part["text"]
+    from agent.context_references import format_reference_value
+    if "\n\n[Image attached at: " in text:
+        caption, hints = text.split("\n\n[Image attached at: ", 1)
+        if not caption or caption == "What do you see in this image?":
+            return None
+        matches = [_IMAGE_HINT_RE.fullmatch(line) for line in ("[Image attached at: " + hints).split("\n")]
+        if not all(matches):
+            return None
+        paths = [match[1] for match in matches]
+        projected = caption + "\n\n" + "\n".join(f"@image:{format_reference_value(p)}" for p in paths)
+    else:
+        lines = text.splitlines()
+        ref_lines = [line for line in lines if line.startswith("@image:")]
+        matches = [_IMAGE_REF_RE.fullmatch(line) for line in ref_lines]
+        if not matches or not all(matches) or lines[-len(matches):] != ref_lines:
+            return None
+        paths = [match[1][1:-1] if match[1][0] in ('`', '"', "'") else match[1] for match in matches]
+        if any(format_reference_value(p) != match[1] for p, match in zip(paths, matches)):
+            return None
+        projected = text
+
+    from pathlib import Path
+    from fastapi import HTTPException
+    from hermes_cli.web_routers.files import _fs_regular_file
+    from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
+    image_parts = content[1:1 + len(paths)]
+    if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
+        return None
+    if len(content) > 1 + len(paths):
+        from agent.memory_manager import sanitize_context
+        memory = content[-1]
+        if not isinstance(memory, dict) or memory.get("type") != "text" or not isinstance(memory.get("text"), str) or sanitize_context(memory["text"]).strip():
+            return None
+    for path, part in zip(paths, image_parts):
+        if not Path(path).is_absolute() or not isinstance(part, dict) or part.get("type") != "image_url":
+            return None
+        match = _IMAGE_DATA_RE.fullmatch(_history_part_image_url(part))
+        if not match or len(match[1]) > ((_FS_DATA_URL_MAX_BYTES + 2) // 3) * 4:
+            return None
+        try:
+            target, st = _fs_regular_file(Path(path))
+            if st.st_size > _FS_DATA_URL_MAX_BYTES or target.read_bytes() != base64.b64decode(match[1], validate=True):
+                return None
+        except (OSError, ValueError, binascii.Error, HTTPException):
+            return None
+    return projected
+
+
 def _history_text_only_part(part: dict) -> bool:
     kind = part.get("type")
     return kind in _HISTORY_TEXT_KINDS or (kind is None and isinstance(part.get("text"), str))
@@ -199,7 +262,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
         if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
             continue
-        content_text = _coerce_message_text(m.get("content"))
+        content_text = _user_image_display_text(m.get("content")) if role == "user" else None
+        if content_text is None:
+            content_text = _coerce_message_text(m.get("content"))
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":

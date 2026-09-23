@@ -1,13 +1,13 @@
 name: jev-effort-router
 repo: https://github.com/AlphaPerseii3000/jev-effort-router
-sha: 31bec0077cbff94c69c9d68aa9e55addd51fb47a
+sha: e16f2162c7a9947e9606888a0f507eb856f4e62e
 description: Per-turn model AND reasoning-effort routing, decided by TypeSafe Jev, which rewrites the outgoing Ollama:Cloud provider request itself via the llm_request middleware. Every other catalog router picks a model and stops, and the two entries that touch reasoning effort move it by hand; this one decides both per turn. Ollama:Cloud only — no other provider is routed, and every failure path leaves the request byte-identical to a plugin-disabled run.
 maintainer: AlphaPerseii3000
 tier: community
 category: models
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/AlphaPerseii3000/jev-effort-router
-version: "0.2.0"
+version: "0.2.1"
 platforms: []
 capabilities:
   provides_tools:

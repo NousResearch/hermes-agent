@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed
 from tools.connectors.gateway.config import operation_session_key
@@ -226,6 +227,33 @@ def _no_card_result(client: Any, action: str, names: List[str], force: bool, ses
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _compact_slug(name: str) -> str:
+    return name.replace("-", "").replace("_", "").replace(" ", "")
+
+
+def _slug_suggestions(wanted: Set[str], slugs: Set[str]) -> Tuple[Set[str], List[Dict[str, str]]]:
+    """Resolve requested slugs against the real ones. An exact match, or one that ignores
+    ``-``/``_``/space spellings (``google-calendar`` is ``googlecalendar``), is a hit; the rest
+    come back with the closest real slug under ``did_you_mean`` so the caller can retry once
+    instead of staring at an empty list."""
+    by_compact: Dict[str, str] = {}
+    for slug in slugs:
+        by_compact.setdefault(_compact_slug(slug), slug)
+    hits: Set[str] = set()
+    unknown: List[Dict[str, str]] = []
+    for name in sorted(wanted):
+        if name in slugs:
+            hits.add(name)
+            continue
+        hit = by_compact.get(_compact_slug(name))
+        if hit is not None:
+            hits.add(hit)
+            continue
+        close = difflib.get_close_matches(_compact_slug(name), list(by_compact), n=1)
+        unknown.append({"name": name, "did_you_mean": by_compact[close[0]]} if close else {"name": name})
+    return hits, unknown
+
+
 def run_managed_action(
     action: str,
     connectors: List[str],
@@ -243,12 +271,21 @@ def run_managed_action(
         client = (client_factory or managed_client)()
         if action == "status":
             items = client.list_connectors()
-            if connectors:
-                wanted = set(connectors)
-                items = [i for i in items if str(i.get("connector", "")).lower() in wanted]
-            return json.dumps({"connectors": items, "hint": (
+            hint = (
                 "connected=false means calls to that connector will return CONNECTION_REQUIRED. "
-                "Use action 'connect' to start an authorization.")}, ensure_ascii=False)
+                "Use action 'connect' to start an authorization."
+            )
+            if connectors:
+                hits, unknown = _slug_suggestions(
+                    {str(c).lower() for c in connectors},
+                    {str(i.get("connector", "")).lower() for i in items if isinstance(i, dict)},
+                )
+                items = [i for i in items if str(i.get("connector", "")).lower() in hits]
+                if unknown:
+                    return json.dumps({"connectors": items, "unknown": unknown, "hint": hint + (
+                        " 'unknown' holds requested slugs that do not exist; retry each one as its"
+                        " 'did_you_mean' when present.")}, ensure_ascii=False)
+            return json.dumps({"connectors": items, "hint": hint}, ensure_ascii=False)
         if not connectors:
             return tool_error(
                 f"'{action}' requires 'connectors': the connector slugs to authorize (e.g. [\"gmail\"]). "

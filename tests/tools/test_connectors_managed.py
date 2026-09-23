@@ -36,8 +36,17 @@ class GatewayFake:
     entry may be ``None`` for a 404 or an exception to raise). ``list_connectors`` is the reconnect
     repair check only; the watcher reads accounts."""
 
-    def __init__(self, connected=(), flips=None, rows=None, mint_status="initiated", status_reason=None,
-                 mint_connection_id=True, mint_overrides=None):
+    def __init__(
+        self,
+        connected=(),
+        flips=None,
+        rows=None,
+        mint_status="initiated",
+        status_reason=None,
+        mint_connection_id=True,
+        mint_overrides=None,
+        slugs=("gmail", "notion"),
+    ):
         self.connected = set(connected)
         self.flips = dict(flips or {})
         self.rows = dict(rows or {})
@@ -45,6 +54,7 @@ class GatewayFake:
         self.mint_overrides = dict(mint_overrides or {})
         self.status_reason = status_reason
         self.mint_connection_id = mint_connection_id
+        self.slugs = tuple(slugs)
         self.lists = 0
         self.mints = []
         self.reads = []  # (connection_id, timeout) in call order
@@ -52,7 +62,10 @@ class GatewayFake:
 
     def list_connectors(self, *, timeout=None):
         self.lists += 1
-        return [{"connector": s, "enabled": True, "connected": s in self.connected} for s in ("gmail", "notion")]
+        return [
+            {"connector": s, "enabled": True, "connected": s in self.connected}
+            for s in self.slugs
+        ]
 
     def connections(self, connectors, *, reinitiate=False, return_to=None, op=None):
         self.mints.append({"connectors": tuple(connectors), "reinitiate": reinitiate, "return_to": return_to, "op": op})
@@ -132,6 +145,44 @@ def test_wait_is_gone_and_force_exists():
     assert props["force"]["type"] == "boolean"
     out = json.loads(manage_connections({"action": "wait", "connectors": ["gmail"]}))
     assert "action must be one of" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# status: unknown slugs are named, not silently dropped
+# ---------------------------------------------------------------------------
+
+
+def test_status_without_connectors_lists_everything_and_names_nothing_unknown():
+    out = _run({"action": "status"}, GatewayFake())
+    assert [i["connector"] for i in out["connectors"]] == ["gmail", "notion"]
+    assert "unknown" not in out
+
+
+def test_status_exact_slug_still_filters_without_unknown_key():
+    out = _run({"action": "status", "connectors": ["gmail"]}, GatewayFake())
+    assert [i["connector"] for i in out["connectors"]] == ["gmail"]
+    assert "unknown" not in out
+
+
+def test_status_matches_through_dash_underscore_and_space_spellings():
+    gw = GatewayFake(slugs=("gmail", "googlecalendar", "notion"))
+    out = _run({"action": "status", "connectors": ["google-calendar"]}, gw)
+    assert [i["connector"] for i in out["connectors"]] == ["googlecalendar"]
+    assert "unknown" not in out
+
+
+def test_status_names_each_unknown_slug_with_its_closest_real_one():
+    out = _run({"action": "status", "connectors": ["gmal", "calendar"]}, GatewayFake())
+    assert out["connectors"] == []
+    assert {"name": "gmal", "did_you_mean": "gmail"} in out["unknown"]
+    assert {"name": "calendar"} in out["unknown"]  # nothing close enough: name only, no false lead
+    assert "did_you_mean" in out["hint"]
+
+
+def test_status_keeps_known_slugs_alongside_named_unknowns():
+    out = _run({"action": "status", "connectors": ["gmail", "calendar"]}, GatewayFake())
+    assert [i["connector"] for i in out["connectors"]] == ["gmail"]
+    assert out["unknown"] == [{"name": "calendar"}]
 
 
 # ---------------------------------------------------------------------------

@@ -173,7 +173,11 @@ test('consolidates multiple configured connections to one installation with dete
   const adapters = createManagedRolloutProductionAdapters({
     nowMono: () => 1000,
     listSources: () => sources,
-    inspectSource: async current => inspection(current, INSTALL_A, SOURCE_A),
+    inspectSource: async current => {
+      const observed = inspection(current, INSTALL_A, SOURCE_A)
+
+      return { ...observed, source: { ...observed.source, verifiedHostKeyFingerprint: 'host:shared' } }
+    },
     git: async () => '',
     reviewManifestPath: 'unused',
     assuranceRoot: 'unused'
@@ -185,6 +189,23 @@ test('consolidates multiple configured connections to one installation with dete
   assert.equal(snapshot!.observations[0].connectionId, CONNECTION_A)
   assert.deepEqual(snapshot!.observations[0].aliasConnectionIds, [CONNECTION_B])
   assert.equal(await adapters.sourceReader.git(['status', '--short'], ROOT, CONNECTION_A), '')
+})
+
+test('refuses a copied installation identity across different SSH host keys', async () => {
+  const sources = [source(CONNECTION_A, INSTALL_A), source(CONNECTION_B, INSTALL_A)]
+  const git = async () => {throw new Error('ambiguous-source-mutated')}
+  const adapters = createManagedRolloutProductionAdapters({
+    nowMono: () => 1000,
+    listSources: () => sources,
+    inspectSource: async current => inspection(current, INSTALL_A, SOURCE_A),
+    git,
+    reviewManifestPath: 'unused',
+    assuranceRoot: 'unused'
+  })
+
+  assert.equal(await adapters.inventoryReader.capture(), null)
+  await assert.rejects(adapters.sourceReader.git(['status', '--short'], ROOT, CONNECTION_A), /reviewed-repository-source-unavailable/)
+  await assert.rejects(adapters.sourceReader.git(['status', '--short'], ROOT, CONNECTION_B), /reviewed-repository-source-unavailable/)
 })
 
 test('routes identical repository paths on distinct SSH sources to their selected installations', async () => {

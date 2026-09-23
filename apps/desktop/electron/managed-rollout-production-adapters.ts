@@ -265,6 +265,12 @@ export function createManagedRolloutProductionAdapters(
         groups.set(key, entries)
       }
 
+      // A copied install ID and checkout cannot make two SSH host keys aliases.
+      // Refuse the inventory before granting either connection Git authority.
+      if ([...groups.values()].some(entries => new Set(
+        entries.map(entry => entry.observation.source.verifiedHostKeyFingerprint)
+      ).size > 1)) {return null}
+
       const consolidated = [...groups.values()].map(entries => {
         entries.sort((left, right) => left.source.id.localeCompare(right.source.id))
         const primary = entries[0]

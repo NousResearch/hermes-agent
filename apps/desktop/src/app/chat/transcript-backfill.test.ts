@@ -177,6 +177,60 @@ describe('graftRefreshedTailOntoBackfill', () => {
     const refreshed = [chat('p', 200), chat('q', 201)]
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([200, 201])
+  })
+
+  it('puts earlier stored ids in front and later ones at the tail', () => {
+    const previous = [chat('tail-a', 700), chat('tail-b', 701), chat('tail-c', 746)]
+
+    const refreshed = [
+      chat('kcsie', 662),
+      chat('tail-a', 700),
+      chat('tail-b', 701),
+      chat('tail-c', 746),
+      chat('next', 747)
+    ]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([
+      662, 700, 701, 746, 747
+    ])
+  })
+
+  it('moves an older row that was glued on after the tail back to stored order', () => {
+    const previous = [chat('tail-a', 700), chat('tail-b', 701), chat('tail-c', 746), chat('kcsie', 662)]
+    const refreshed = [chat('kcsie', 662), chat('tail-a', 700), chat('tail-b', 701), chat('tail-c', 746)]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([
+      662, 700, 701, 746
+    ])
+  })
+
+  it('replaces the window when the page covers every on-screen row', () => {
+    const previous = [chat('tail-a', 700), chat('tail-b', 701)]
+    const refreshed = [chat('kcsie', 662), chat('tail-a', 700), chat('tail-b', 701)]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+  })
+
+  it('keeps a live row the page does not cover at the end of the stored order', () => {
+    const previous = [chat('tail-c', 746), chat('live'), chat('kcsie', 662)]
+    const refreshed = [chat('kcsie', 662), chat('tail-c', 746)]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.id)).toEqual([
+      'kcsie',
+      'tail-c',
+      'live'
+    ])
+  })
+
+  it('keeps the fresh page copy when the same stored id is on both sides', () => {
+    const previous = [chat('tail-a', 700), chat('stale-b', 701), chat('tail-c', 746)]
+    const refreshed = [chat('kcsie', 662), chat('fresh-b', 701), chat('tail-c', 746)]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshed, previous)
+
+    expect(merged.map(message => message.rowId)).toEqual([662, 700, 701, 746])
+    expect(merged.find(message => message.rowId === 701)).toBe(refreshed[1])
   })
 
   it('keeps the earlier transcript when a page-local fold precedes a shared durable row', () => {

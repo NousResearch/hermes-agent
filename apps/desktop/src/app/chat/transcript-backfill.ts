@@ -112,10 +112,68 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
  * pages. Background refreshes and post-turn rehydrates re-read only the
  * newest page; replacing the store with that page outright would silently
  * drop everything "Show earlier" already loaded. Find where the refreshed
- * tail begins inside the previous transcript and keep the older prefix.
- * When no anchor is found (compaction rewrite, different session), the
- * refreshed tail is authoritative — same behavior as before backfill existed.
+ * tail begins inside the previous transcript and keep the older prefix when
+ * that prefix is actually earlier. An anchor on the first on-screen row is a
+ * real match: the page replaces the window from there. A page that already
+ * contains every on-screen row replaces the window. When the page overlaps
+ * the screen but that splice would put an older stored id after a newer one,
+ * merge by stored id. The fresh page wins where both sides share an id, and
+ * a row with no stored id stays at the end. A page that shares no stored id
+ * is the transcript now on screen — a compaction rewrite or a different
+ * session — and replaces the window.
  */
+function pageCoversWindow(previous: ChatMessage[], refreshedIds: Set<string>, refreshedRowIds: Set<number>): boolean {
+  return previous.every(
+    message => (message.rowId !== undefined && refreshedRowIds.has(message.rowId)) || refreshedIds.has(message.id)
+  )
+}
+
+/** Stored-id merge for a page that overlaps the window but does not anchor in front of it. */
+function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessage[]): ChatMessage[] {
+  const windowRowIds = new Set<number>()
+
+  for (const message of previous) {
+    if (message.rowId !== undefined) {
+      windowRowIds.add(message.rowId)
+    }
+  }
+
+  let sharesStoredId = false
+
+  for (const message of refreshedTail) {
+    if (message.rowId !== undefined && windowRowIds.has(message.rowId)) {
+      sharesStoredId = true
+
+      break
+    }
+  }
+
+  // Compaction, rewind, or a different session arrives as new stored ids.
+  // This function is the path that puts that page on screen.
+  if (!sharesStoredId) {
+    return refreshedTail
+  }
+
+  const byRowId = new Map<number, ChatMessage>()
+
+  for (const message of previous) {
+    if (message.rowId !== undefined && !byRowId.has(message.rowId)) {
+      byRowId.set(message.rowId, message)
+    }
+  }
+
+  for (const message of refreshedTail) {
+    if (message.rowId !== undefined) {
+      byRowId.set(message.rowId, message)
+    }
+  }
+
+  const stored = [...byRowId.entries()].sort((left, right) => left[0] - right[0]).map(([, message]) => message)
+  const unstored = previous.filter(message => message.rowId === undefined)
+
+  return unstored.length === 0 ? stored : [...stored, ...unstored]
+}
+
 export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
   if (refreshedTail.length === 0 || previous.length === 0) {
     return refreshedTail
@@ -127,13 +185,39 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     refreshedTail.flatMap(message => (message.rowId === undefined ? [] : [message.rowId]))
   )
 
-  const anchor = previous.findIndex(message => message.rowId !== undefined && refreshedRowIds.has(message.rowId))
+  const firstDurable = refreshedTail.find(message => message.rowId !== undefined)
 
-  if (anchor <= 0) {
+  const anchor =
+    firstDurable === undefined ? -1 : previous.findIndex(message => message.rowId === firstDurable.rowId)
+
+  const anchorRowId = firstDurable?.rowId
+
+  // A hit on the first row, or a hit after a prefix whose stored ids are all
+  // earlier, is the backfill anchor. A hit further down on a row that was
+  // glued on late is not: the prefix is newer than the match.
+  const prefixIsEarlier =
+    anchor > 0 &&
+    anchorRowId !== undefined &&
+    previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
+
+  if (anchor === 0) {
     return refreshedTail
   }
 
-  return [...previous.slice(0, anchor), ...refreshedTail]
+  if (prefixIsEarlier) {
+    return [...previous.slice(0, anchor), ...refreshedTail]
+  }
+
+  const refreshedIds = new Set(refreshedTail.map(message => message.id))
+
+  // The page already contains everything on screen, including a live row the
+  // tail really did cover. Take the page. This is what keeps a finished reply
+  // through a long tool turn.
+  if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
+    return refreshedTail
+  }
+
+  return mergeOverlappingTail(previous, refreshedTail)
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4

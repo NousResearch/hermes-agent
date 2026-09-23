@@ -554,10 +554,16 @@ def _with_tool_call_labels(message: dict) -> dict:
 def _project_for_display(messages: list) -> list:
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
+    from agent.turn_failure_copy import untyped_failed_turn_display_kind
 
     projected_messages = []
     for message in messages:
         message = _with_tool_call_labels(message)
+        # Same read-side typing as session.resume (tui_gateway/session_history.py).
+        failed_turn = not message.get("display_kind") and untyped_failed_turn_display_kind(
+            message.get("role"), message.get("content"))
+        if failed_turn:
+            message = {**message, "display_kind": failed_turn}
         if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue

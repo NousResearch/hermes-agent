@@ -207,6 +207,19 @@ _COMPRESSION_TIMEOUT_FINAL_RESPONSE = (
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def is_interrupt_waiting_sentinel(text, *, pre_transform=None) -> bool:
+    """Return whether either delivery form is cancellation metadata, not prose.
+
+    ``transform_llm_output`` may rewrite the sentinel, so callers retain the
+    pre-transform response alongside the rendered response for this check.
+    """
+    return any(
+        isinstance(candidate, str)
+        and candidate.strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+        for candidate in (text, pre_transform)
+    )
+
+
 def _should_rearm_compression_budget(
     compression_attempts: int, *, completed_compaction_pending: bool, prompt_tokens: int, threshold_tokens: int
 ) -> bool:

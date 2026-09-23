@@ -599,13 +599,37 @@ class SubagentIdParams(SessionParams):
     subagent_id: str
 
 
+class SubagentInterruptParams(SubagentIdParams):
+    expected_generation: str | None = None
+
+
 class SubagentInterruptResult(Result):
     found: bool
     subagent_id: str
 
 
-method("subagent.interrupt", params=SubagentIdParams, result=SubagentInterruptResult,
+method("subagent.interrupt", params=SubagentInterruptParams, result=SubagentInterruptResult,
        doc="Hard-interrupt one owned child; ``found`` is false when it already finished.")
+
+
+class SubagentStatusParams(SubagentIdParams):
+    pass
+
+
+class SubagentStatusEntry(OpenModel):
+    generation: str
+    subagent_id: str
+    parent_id: str | None = None
+    status: str
+
+
+class SubagentStatusResult(Result):
+    found: bool
+    subagent: SubagentStatusEntry | None = None
+
+
+method("subagent.status", params=SubagentStatusParams, result=SubagentStatusResult,
+       doc="Return the authority receipt for one owned child; ``found`` is false when not owned by this session.")
 
 
 class SubagentTailResult(Result):

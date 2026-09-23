@@ -400,6 +400,7 @@ method("delegation.pause", params=DelegationPauseParams, result=DelegationPauseR
 class SubagentSteerParams(SessionParams):
     subagent_id: str
     text: str
+    expected_generation: str | None = None
 
 
 class SteerStatus(WireEnum):

@@ -311,6 +311,7 @@ export interface SubagentSteerParams {
   profile?: string | null
   subagent_id: string
   text: string
+  expected_generation?: string | null
 }
 /** ``queued`` is not ``delivered``: a child past its final tool batch surfaces ``missed_steer``. */
 export interface SubagentSteerResult {
@@ -1798,13 +1799,35 @@ export interface SubagentSnapshot {
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
-export interface SubagentIdParams {
+export interface SubagentInterruptParams {
+  session_id: string
+  profile?: string | null
+  subagent_id: string
+  expected_generation?: string | null
+}
+export interface SubagentInterruptResult {
+  found: boolean
+  subagent_id: string
+}
+export interface SubagentStatusParams {
   session_id: string
   profile?: string | null
   subagent_id: string
 }
-export interface SubagentInterruptResult {
+export interface SubagentStatusResult {
   found: boolean
+  subagent?: SubagentStatusEntry | null
+}
+export interface SubagentStatusEntry {
+  generation: string
+  subagent_id: string
+  parent_id?: string | null
+  status: string
+  [key: string]: unknown
+}
+export interface SubagentIdParams {
+  session_id: string
+  profile?: string | null
   subagent_id: string
 }
 /** ``available`` is false while the child has no live transcript yet (or it was cleaned up). */
@@ -4607,9 +4630,11 @@ export interface RpcMethods {
   /** Persist a finished delegation tree snapshot under the session's spawn-trees dir. */
   'spawn_tree.save': { params: SpawnTreeSaveParams; result: SpawnTreeSaveResult }
   /** Hard-interrupt one owned child; ``found`` is false when it already finished. */
-  'subagent.interrupt': { params: SubagentIdParams; result: SubagentInterruptResult }
+  'subagent.interrupt': { params: SubagentInterruptParams; result: SubagentInterruptResult }
   /** Live children owned by this session (other sessions' children never leak). */
   'subagent.list': { params: SessionParams; result: SubagentListResult }
+  /** Return the authority receipt for one owned child; ``found`` is false when not owned by this session. */
+  'subagent.status': { params: SubagentStatusParams; result: SubagentStatusResult }
   /** Queue steering text into a live delegated child owned by this session. */
   'subagent.steer': { params: SubagentSteerParams; result: SubagentSteerResult }
   /** Last 16KB of an owned child's live transcript. */
@@ -4875,6 +4900,7 @@ export const RPC_METHODS = [
   'spawn_tree.save',
   'subagent.interrupt',
   'subagent.list',
+  'subagent.status',
   'subagent.steer',
   'subagent.tail',
   'subscription.change',

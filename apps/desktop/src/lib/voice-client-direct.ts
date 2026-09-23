@@ -123,11 +123,12 @@ export async function fetchVoiceClientConfig(scope?: VoiceClientScope): Promise<
 
   const promise = (async () => {
     try {
-      // hermesApi carries connectionScoped(); profileScoped() adds the
-      // profile — the same routing every relay audio call uses, so the
-      // config comes from the backend the user is actually talking to.
+      // Voice config is a background fetch; it must not carry priority:'foreground',
+      // which would consume the pool's foreground dial slot on every refresh (#111651).
+      // When pinned to an explicit owner: spread connectionId+profile directly.
+      // When ambient: ownerScoped(undefined) resolves the ambient profile without priority.
       const response = await hermesApi<{ ok: boolean } & VoiceClientConfig>({
-        ...ownerScoped(owner),
+        ...(owner ? { connectionId: owner.connectionId, profile: owner.profile } : ownerScoped(undefined)),
         path: '/api/audio/voice-config'
       })
 

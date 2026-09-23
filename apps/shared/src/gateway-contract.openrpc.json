@@ -3433,7 +3433,7 @@
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/SubagentIdParams"
+            "$ref": "#/components/schemas/SubagentInterruptParams"
           }
         }
       ],
@@ -3459,6 +3459,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SubagentListResult"
+        }
+      }
+    },
+    {
+      "name": "subagent.status",
+      "summary": "Return the authority receipt for one owned child; ``found`` is false when not owned by this session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SubagentStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SubagentStatusResult"
         }
       }
     },
@@ -29560,6 +29578,49 @@
         "title": "SubagentIdParams",
         "type": "object"
       },
+      "SubagentInterruptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          }
+        },
+        "required": [
+          "session_id",
+          "subagent_id"
+        ],
+        "title": "SubagentInterruptParams",
+        "type": "object"
+      },
       "SubagentInterruptResult": {
         "additionalProperties": false,
         "properties": {
@@ -29775,6 +29836,98 @@
         "title": "SubagentStatus",
         "type": "string"
       },
+      "SubagentStatusEntry": {
+        "additionalProperties": true,
+        "properties": {
+          "generation": {
+            "title": "Generation",
+            "type": "string"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parent Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "generation",
+          "subagent_id",
+          "status"
+        ],
+        "title": "SubagentStatusEntry",
+        "type": "object"
+      },
+      "SubagentStatusParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "subagent_id"
+        ],
+        "title": "SubagentStatusParams",
+        "type": "object"
+      },
+      "SubagentStatusResult": {
+        "additionalProperties": false,
+        "properties": {
+          "found": {
+            "title": "Found",
+            "type": "boolean"
+          },
+          "subagent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubagentStatusEntry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "found"
+        ],
+        "title": "SubagentStatusResult",
+        "type": "object"
+      },
       "SubagentSteerParams": {
         "additionalProperties": false,
         "properties": {
@@ -29801,6 +29954,18 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
           }
         },
         "required": [

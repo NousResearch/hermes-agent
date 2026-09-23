@@ -20,8 +20,22 @@ def runtime(monkeypatch):
     monkeypatch.setattr(async_delegation, "_records", {})
 
     def call(method, *, via=transport, **params):
-        return server.dispatch({"id": 1, "method": method,
-                                "params": {"session_id": "ui-owner", **params}}, transport=via)
+        merged = {"session_id": "ui-owner", **params}
+        if method in {"subagent.steer", "subagent.interrupt"} and "expected_generation" not in merged:
+            from tools.delegate_tool import owned_subagent_status
+            sid = str(merged.get("session_id") or "")
+            subagent_id = str(merged.get("subagent_id") or "")
+            session_rec = server._sessions.get(sid)
+            if session_rec is not None:
+                status = owned_subagent_status(
+                    subagent_id,
+                    owner_session_id=sid,
+                    owner_transport=via,
+                    owner_session_record=session_rec,
+                )
+                if status:
+                    merged["expected_generation"] = status["generation"]
+        return server.dispatch({"id": 1, "method": method, "params": merged}, transport=via)
 
     return server, owner, transport, call
 

@@ -27,6 +27,12 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({} as never)
   $setupReadyTick.set(0)
+  // The hook guards against Vite/Safari preview environments (no Electron bridge).
+  // Provide a stub so the guard passes in tests.
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: { api: vi.fn() },
+  })
 })
 
 afterEach(() => {

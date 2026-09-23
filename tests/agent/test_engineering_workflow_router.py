@@ -170,6 +170,35 @@ def test_picker_change_after_admission_blocks_before_worker_inference():
     assert receipts == []
 
 
+def test_effort_only_assignment_change_after_admission_blocks_before_next_inference():
+    assignments = {
+        stage: {**route, "reasoning_effort": "medium"}
+        for stage, route in ROUTES.items()
+    }
+    stages = []
+
+    def infer(stage, route, payload):
+        stages.append(stage)
+        if stage == "planner":
+            assignments["worker"]["reasoning_effort"] = "high"
+            return PLAN
+        pytest.fail("Changed worker assignment reached inference")
+
+    result = run_engineering_workflow(
+        objective="Repair parser",
+        assignments=assignments,
+        catalogue_reader=lambda: CATALOGUE,
+        infer=infer,
+        execute_worker=lambda *args: pytest.fail("Worker must not execute"),
+        verify=lambda *args: pytest.fail("Host checks must not run"),
+        snapshot_digest=lambda: "snapshot-1",
+        workspace_id="ws-1",
+        check_ids=("unit",),
+    )
+    assert result.status == "BLOCKED"
+    assert result.reason == "model_route_changed"
+    assert stages == ["planner"]
+
 def test_worker_round_trip_cannot_bypass_total_stage_budget():
     result, stages, receipts = harness(
         [0],
@@ -225,6 +254,75 @@ def test_unreasonably_large_budget_is_rejected(limits):
     with pytest.raises(ValueError):
         harness([0], limits=limits)
 
+
+@pytest.mark.parametrize(
+    "failed_boundary, expected_reason, expected_stages, expected_writers, expected_checks",
+    [
+        ("planner", "provider_request_failed", ["planner"], 0, 0),
+        ("worker_inference", "provider_request_failed", ["planner", "worker"], 0, 0),
+        ("worker_execution", "execution_boundary_failed", ["planner", "worker"], 1, 0),
+        ("verification", "verification_boundary_failed", ["planner", "worker"], 1, 1),
+    ],
+)
+def test_stage_failures_return_distinct_safe_codes_without_replay(
+    failed_boundary, expected_reason, expected_stages, expected_writers, expected_checks
+):
+    secret = "synthetic-API-KEY-123456"
+    stages = []
+    writers = []
+    checks = []
+
+    def infer(stage, route, payload):
+        stages.append(stage)
+        if failed_boundary == "planner" or (
+            failed_boundary == "worker_inference" and stage == "worker"
+        ):
+            raise RuntimeError(f"provider failed with {secret}")
+        return PLAN if stage == "planner" else '{"status":"READY"}'
+
+    def execute_worker(*args):
+        writers.append("writer")
+        if failed_boundary == "worker_execution":
+            raise OSError(f"execution failed with {secret}")
+        return WorkerOutcome(status="READY", summary="ready")
+
+    def verify(*args):
+        checks.append("check")
+        raise RuntimeError(f"verification failed with {secret}")
+
+    result = run_engineering_workflow(
+        objective="Repair parser",
+        assignments=ROUTES,
+        catalogue_reader=lambda: CATALOGUE,
+        infer=infer,
+        execute_worker=execute_worker,
+        verify=verify,
+        snapshot_digest=lambda: "snapshot-1",
+        workspace_id="ws-1",
+        check_ids=("unit",),
+    )
+    assert result.status == "BLOCKED"
+    assert len(writers) == expected_writers
+    assert len(checks) == expected_checks
+    assert secret not in json.dumps(result.__dict__)
+    assert result.reason == expected_reason
+    assert stages == expected_stages
+
+
+def test_invalid_planner_handoff_is_actor_protocol_error():
+    result = run_engineering_workflow(
+        objective="Repair parser",
+        assignments=ROUTES,
+        catalogue_reader=lambda: CATALOGUE,
+        infer=lambda *args: "{malformed",
+        execute_worker=lambda *args: pytest.fail("Worker must not execute"),
+        verify=lambda *args: pytest.fail("Host checks must not run"),
+        snapshot_digest=lambda: "snapshot-1",
+        workspace_id="ws-1",
+        check_ids=("unit",),
+    )
+    assert result.status == "BLOCKED"
+    assert result.reason == "actor_protocol_error"
 
 def test_interrupt_after_worker_stops_before_host_check():
     result, stages, receipts = harness([0], stop_after_worker=True)

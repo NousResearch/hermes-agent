@@ -476,3 +476,4 @@ engineering:
   checks_help: "사용자가 지정한 검사 항목의 JSON 파일"
   backend_help: "실행 환경"
   image_help: "미리 설치된 Docker 이미지"
+  reasoning_help: "{stage} 추론 수준 (생략하면 제공업체 기본값 사용)"

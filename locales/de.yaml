@@ -476,3 +476,4 @@ engineering:
   checks_help: "JSON-Datei mit vorgegebenen Prüfungen"
   backend_help: "Ausführungsumgebung"
   image_help: "Vorinstalliertes Docker-Image"
+  reasoning_help: "Denkaufwand für {stage} (weglassen für Anbieterstandard)"

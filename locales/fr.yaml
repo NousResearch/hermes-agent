@@ -476,3 +476,4 @@ engineering:
   checks_help: "Fichier JSON des contrôles définis par l’opérateur"
   backend_help: "Environnement d’exécution"
   image_help: "Image Docker déjà installée"
+  reasoning_help: "Niveau de raisonnement pour {stage} (omettre pour garder le défaut du fournisseur)"

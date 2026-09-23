@@ -165,11 +165,29 @@ class ModelRouteError(ValueError):
     """An operator-selected stage route is no longer in the live picker."""
 
 
+class StageBoundaryError(RuntimeError):
+    """Only a fixed host-owned diagnostic code may cross a failed stage boundary."""
+
+    _CODES = frozenset({
+        "provider_unavailable",
+        "provider_request_failed",
+        "execution_boundary_failed",
+        "verification_boundary_failed",
+    })
+
+    def __init__(self, code: str) -> None:
+        if code not in self._CODES:
+            raise ValueError("invalid stage failure code")
+        self.code = code
+        super().__init__(code)
+
+
 @dataclass(frozen=True)
 class StageRoute:
     stage: str
     provider: str
     model: str
+    reasoning_effort: str | None = None
 
 
 _STAGES = frozenset({"planner", "worker", "reviewer"})
@@ -206,12 +224,27 @@ def admit_stage_routes(assignments: dict, catalogue: dict) -> dict[str, StageRou
     routes = {}
     for stage in ("planner", "worker", "reviewer"):
         row = assignments[stage]
-        if not isinstance(row, dict) or row.keys() != {"provider", "model"}:
+        if (
+            not isinstance(row, dict)
+            or not {"provider", "model"} <= row.keys()
+            or row.keys() - {"provider", "model"} - {"reasoning_effort"}
+        ):
             raise ModelRouteError("stage route schema mismatch")
         provider, model = row["provider"], row["model"]
         if not isinstance(provider, str) or not isinstance(model, str):
             raise ModelRouteError("stage route must use picker strings")
-        route = StageRoute(stage=stage, provider=provider, model=model)
+        effort = None
+        if "reasoning_effort" in row:
+            from hermes_constants import parse_reasoning_effort
+
+            selected = row["reasoning_effort"]
+            if not isinstance(selected, str):
+                raise ModelRouteError("reasoning effort must be an operator-selected string")
+            parsed = parse_reasoning_effort(selected)
+            if parsed is None:
+                raise ModelRouteError("invalid reasoning effort")
+            effort = parsed["effort"] if parsed["enabled"] else "none"
+        route = StageRoute(stage=stage, provider=provider, model=model, reasoning_effort=effort)
         revalidate_route(route, catalogue)
         routes[stage] = route
     return routes
@@ -314,27 +347,45 @@ def run_engineering_workflow(
     class _Stopped(Exception):
         pass
 
+    def read_catalogue() -> dict:
+        try:
+            return catalogue_reader()
+        except Exception:
+            raise StageBoundaryError("provider_unavailable") from None
+
     def call_stage(stage: str, payload: str) -> str:
         nonlocal calls
         if stopped() or calls >= limits.max_stage_calls:
             raise _Stopped
         if len(payload.encode("utf-8")) > MAX_HANDOFF_BYTES:
             raise HandoffError("stage input exceeds handoff limit")
-        revalidate_route(routes[stage], catalogue_reader())
+        if assignments != admitted_assignments:
+            raise ModelRouteError("operator route changed after admission")
+        revalidate_route(routes[stage], read_catalogue())
         calls += 1
-        return infer(stage, routes[stage], payload)
+        try:
+            return infer(stage, routes[stage], payload)
+        except (ModelRouteError, HandoffError, StageBoundaryError, _Stopped):
+            raise
+        except Exception:
+            raise StageBoundaryError("provider_request_failed") from None
 
     try:
-        routes = admit_stage_routes(assignments, catalogue_reader())
+        routes = admit_stage_routes(assignments, read_catalogue())
+        admitted_assignments = {stage: dict(row) for stage, row in assignments.items()}
         plan = parse_handoff(call_stage("planner", objective))
         if plan.objective != objective:
             return finish("BLOCKED", "objective_changed")
     except _Stopped:
         return finish("STOP", "stage_budget_or_interrupt")
-    except (HandoffError, ModelRouteError):
-        return finish("BLOCKED", "invalid_plan_or_model")
+    except ModelRouteError:
+        return finish("BLOCKED", "model_route_changed")
+    except StageBoundaryError as error:
+        return finish("BLOCKED", error.code)
+    except HandoffError:
+        return finish("BLOCKED", "actor_protocol_error")
     except Exception:
-        return finish("BLOCKED", "stage_unavailable")
+        return finish("BLOCKED", "host_stage_failure")
 
     while attempts < limits.max_attempts:
         if stopped():
@@ -351,12 +402,17 @@ def run_engineering_workflow(
                 snapshot_digest="",
                 check_ids=check_ids,
             )
-            outcome = execute_worker(
-                worker_text,
-                precheck,
-                lambda payload: call_stage("worker", payload),
-                plan,
-            )
+            try:
+                outcome = execute_worker(
+                    worker_text,
+                    precheck,
+                    lambda payload: call_stage("worker", payload),
+                    plan,
+                )
+            except (ModelRouteError, HandoffError, StageBoundaryError, _Stopped):
+                raise
+            except Exception:
+                raise StageBoundaryError("execution_boundary_failed") from None
             if stopped():
                 return finish("STOP", "interrupt")
             if not isinstance(outcome, WorkerOutcome) or outcome.status not in {
@@ -368,7 +424,10 @@ def run_engineering_workflow(
                 if not outcome.decision_required.strip():
                     return finish("BLOCKED", "missing_worker_decision")
                 return finish("BLOCKED", "worker_blocked", outcome.decision_required)
-            digest = snapshot_digest()
+            try:
+                digest = snapshot_digest()
+            except Exception:
+                raise StageBoundaryError("verification_boundary_failed") from None
             if not isinstance(digest, str) or not digest:
                 return finish("BLOCKED", "workspace_snapshot_unavailable")
             context = VerificationContext(
@@ -379,14 +438,17 @@ def run_engineering_workflow(
                 snapshot_digest=digest,
                 check_ids=check_ids,
             )
-            receipts = list(verify(context))
-            if stopped():
-                return finish("STOP", "interrupt")
-            passed = verify_receipts(context, receipts)
-            if passed:
-                if snapshot_digest() != digest:
-                    raise ReceiptError("workspace changed after verification")
-                return finish("DONE", "verified")
+            try:
+                receipts = list(verify(context))
+                if stopped():
+                    return finish("STOP", "interrupt")
+                passed = verify_receipts(context, receipts)
+                if passed:
+                    if snapshot_digest() != digest:
+                        raise ReceiptError("workspace changed after verification")
+                    return finish("DONE", "verified")
+            except Exception:
+                raise StageBoundaryError("verification_boundary_failed") from None
             if attempts >= limits.max_attempts or replans >= limits.max_replans:
                 return finish("STOP", "retry_or_replan_limit")
             reviewer_input = json.dumps(
@@ -412,16 +474,14 @@ def run_engineering_workflow(
             revision += 1
         except _Stopped:
             return finish("STOP", "stage_budget_or_interrupt")
-        except (HandoffError, ModelRouteError, ReceiptError):
-            return (
-                finish("STOP", "interrupt")
-                if stopped()
-                else finish("BLOCKED", "invalid_handoff_model_or_receipt")
-            )
+        except ModelRouteError:
+            return finish("STOP", "interrupt") if stopped() else finish("BLOCKED", "model_route_changed")
+        except StageBoundaryError as error:
+            return finish("STOP", "interrupt") if stopped() else finish("BLOCKED", error.code)
+        except HandoffError:
+            return finish("STOP", "interrupt") if stopped() else finish("BLOCKED", "actor_protocol_error")
+        except ReceiptError:
+            return finish("STOP", "interrupt") if stopped() else finish("BLOCKED", "verification_boundary_failed")
         except Exception:
-            return (
-                finish("STOP", "interrupt")
-                if stopped()
-                else finish("BLOCKED", "stage_unavailable")
-            )
+            return finish("STOP", "interrupt") if stopped() else finish("BLOCKED", "host_stage_failure")
     return finish("STOP", "retry_limit")

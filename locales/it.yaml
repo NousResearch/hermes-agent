@@ -476,3 +476,4 @@ engineering:
   checks_help: "File JSON dei controlli scelti dall’operatore"
   backend_help: "Ambiente di esecuzione"
   image_help: "Immagine Docker già installata"
+  reasoning_help: "Livello di ragionamento per {stage} (omettere per usare il valore del provider)"

@@ -476,3 +476,4 @@ engineering:
   checks_help: "İşletici tarafından belirlenen denetimlerin JSON dosyası"
   backend_help: "Yürütme ortamı"
   image_help: "Önceden yüklenmiş Docker imajı"
+  reasoning_help: "{stage} için akıl yürütme düzeyi (sağlayıcı varsayılanı için boş bırakın)"

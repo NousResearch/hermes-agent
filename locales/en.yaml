@@ -489,3 +489,4 @@ engineering:
   checks_help: "JSON file of operator-owned checks"
   backend_help: "Execution backend"
   image_help: "Preinstalled Docker image"
+  reasoning_help: "Reasoning effort for {stage} (omit for provider default)"

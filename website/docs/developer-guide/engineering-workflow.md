@@ -24,15 +24,23 @@ image that contains the project dependencies:
 hermes engineering --objective 'Repair the specified defect' \
   --workspace /absolute/path/to/worktree \
   --checks-file /absolute/path/to/checks.json \
+  --planner-reasoning medium --worker-reasoning medium \
+  --reviewer-reasoning high \
   --backend docker --image local-engineering:1
 ```
 
 The CLI asks for planner, worker and reviewer routes through the same
-provider/model catalogue used by Hermes's existing model picker. It refuses
-noninteractive input rather than silently selecting its first item. The
+provider/model catalogue used by Hermes's existing model picker. The optional
+per-stage reasoning flags accept `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`, or `ultra`. Omitting a flag preserves the provider's current
+default; an explicit choice is frozen with that stage's provider/model route.
+It refuses noninteractive input rather than silently selecting its first item. The
 `--backend native` option is explicit and has weaker isolation. A missing
 Docker daemon or image does not switch to native execution. The CLI returns
-machine-readable status and reason codes; a non-DONE result exits nonzero.
+machine-readable status and fixed reason codes; a non-DONE result exits nonzero.
+Provider request, worker execution, verification, route drift, and malformed
+actor output have distinct codes. Raw provider or host exceptions are never
+included in the result. A failed or uncertain stage is not replayed automatically.
 The current default is three attempts, two reviewer replans and 24 model
 calls in total. A worker can return `BLOCKED` with a required decision.
 

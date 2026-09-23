@@ -476,3 +476,4 @@ engineering:
   checks_help: "Ficheiro JSON de verificações definidas pelo operador"
   backend_help: "Ambiente de execução"
   image_help: "Imagem Docker já instalada"
+  reasoning_help: "Nível de raciocínio para {stage} (omita para usar o padrão do provedor)"

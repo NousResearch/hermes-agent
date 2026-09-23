@@ -480,3 +480,4 @@ engineering:
   checks_help: "Comhad JSON de sheiceálacha arna roghnú ag an oibreoir"
   backend_help: "Timpeallacht rite"
   image_help: "Íomhá Docker réamhshuiteáilte"
+  reasoning_help: "Leibhéal réasúnaíochta do {stage} (fág ar lár do réamhshocrú an tsoláthraí)"

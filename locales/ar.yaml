@@ -478,3 +478,4 @@ engineering:
   checks_help: "ملف JSON للفحوص التي يحددها المشغّل"
   backend_help: "بيئة التنفيذ"
   image_help: "صورة Docker مثبتة مسبقًا"
+  reasoning_help: "مستوى الاستدلال لـ {stage} (اتركه لاستخدام إعداد المزوّد الافتراضي)"

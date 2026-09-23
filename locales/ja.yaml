@@ -476,3 +476,4 @@ engineering:
   checks_help: "利用者が指定する検証項目のJSONファイル"
   backend_help: "実行環境"
   image_help: "導入済みのDockerイメージ"
+  reasoning_help: "{stage}の推論レベル（省略するとプロバイダーの既定値）"

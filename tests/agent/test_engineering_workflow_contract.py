@@ -1,6 +1,7 @@
 """Contracts for the sequential engineering workflow's handoffs and host receipts."""
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -130,6 +131,38 @@ def test_stage_routes_only_admit_exact_available_picker_pairs():
     assert routes["reviewer"].provider == "provider-b"
     for stage in routes:
         revalidate_route(routes[stage], CATALOGUE)
+
+def test_stage_reasoning_is_normalized_and_frozen_with_each_operator_route():
+    selections = {
+        stage: {**route, "reasoning_effort": effort}
+        for stage, route, effort in (
+            ("planner", ROUTES["planner"], "MEDIUM"),
+            ("worker", ROUTES["worker"], "medium"),
+            ("reviewer", ROUTES["reviewer"], "high"),
+        )
+    }
+    routes = admit_stage_routes(selections, CATALOGUE)
+    assert [routes[stage].reasoning_effort for stage in ("planner", "worker", "reviewer")] == [
+        "medium", "medium", "high",
+    ]
+    selections["reviewer"]["reasoning_effort"] = "low"
+    assert routes["reviewer"].reasoning_effort == "high"
+    assert routes["reviewer"] != replace(routes["reviewer"], reasoning_effort="low")
+
+
+def test_omitted_reasoning_preserves_provider_default():
+    routes = admit_stage_routes(ROUTES, CATALOGUE)
+    assert all(route.reasoning_effort is None for route in routes.values())
+
+
+@pytest.mark.parametrize("invalid_effort", ["", "hgih", 12, True, False, {}, ["high"]])
+def test_stage_reasoning_rejects_malformed_or_non_string_settings(invalid_effort):
+    assignments = {
+        **ROUTES,
+        "planner": {**ROUTES["planner"], "reasoning_effort": invalid_effort},
+    }
+    with pytest.raises(ModelRouteError):
+        admit_stage_routes(assignments, CATALOGUE)
 
 
 @pytest.mark.parametrize(

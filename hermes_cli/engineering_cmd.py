@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from agent.i18n import t
+from hermes_constants import VALID_REASONING_EFFORTS
 
 
 def _read_checks(path: Path) -> tuple:
@@ -110,6 +111,10 @@ def run_cli(args: argparse.Namespace) -> int:
                 })
             )
             return 2
+        for stage in ("planner", "worker", "reviewer"):
+            selected_effort = getattr(args, f"{stage}_reasoning", None)
+            if selected_effort is not None:
+                assignments[stage] = {**assignments[stage], "reasoning_effort": selected_effort}
         result = _run_workflow(
             objective=args.objective,
             assignments=assignments,
@@ -148,4 +153,10 @@ def build_parser(subparsers) -> None:
         help=t("engineering.backend_help"),
     )
     parser.add_argument("--image", help=t("engineering.image_help"))
+    for stage in ("planner", "worker", "reviewer"):
+        parser.add_argument(
+            f"--{stage}-reasoning",
+            choices=("none", *VALID_REASONING_EFFORTS),
+            help=t("engineering.reasoning_help", stage=t(f"engineering.{stage}")),
+        )
     parser.set_defaults(func=run_cli)

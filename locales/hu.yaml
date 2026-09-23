@@ -476,3 +476,4 @@ engineering:
   checks_help: "Az üzemeltető által meghatározott ellenőrzések JSON-fájlja"
   backend_help: "Futtatási környezet"
   image_help: "Előre telepített Docker-kép"
+  reasoning_help: "Érvelési szint a(z) {stage} számára (elhagyva a szolgáltató alapértéke marad)"

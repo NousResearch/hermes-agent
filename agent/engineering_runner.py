@@ -8,6 +8,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from hermes_constants import parse_reasoning_effort
+
 from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 from agent.engineering_execution import (
     CheckSpec,
@@ -20,6 +22,7 @@ from agent.engineering_workflow import (
     HandoffError,
     MAX_HANDOFF_BYTES,
     ModelRouteError,
+    StageBoundaryError,
     VerificationContext,
     WorkerOutcome,
     WorkflowLimits,
@@ -186,6 +189,10 @@ def run_project_workflow(
             timeout=120.0,
             strict_route=True,
             route_info=route_info,
+            **(
+                {"reasoning_config": parse_reasoning_effort(route.reasoning_effort)}
+                if route.reasoning_effort is not None else {}
+            ),
         )
         if route_info != {"provider": route.provider, "model": route.model}:
             raise ModelRouteError("provider changed the operator-selected model")
@@ -198,7 +205,10 @@ def run_project_workflow(
         plan: EngineeringPlan,
     ) -> WorkerOutcome:
         while True:
-            action = parse_worker_action(text)
+            try:
+                action = parse_worker_action(text)
+            except WorkerActionError:
+                raise HandoffError("invalid worker action") from None
             if action.status == "BLOCKED":
                 return WorkerOutcome(
                     status="BLOCKED",
@@ -216,11 +226,7 @@ def run_project_workflow(
                 stop_requested=stop_requested,
             )
             if not result.complete or result.timed_out:
-                return WorkerOutcome(
-                    status="BLOCKED",
-                    summary="worker process did not complete",
-                    decision_required="Inspect the failed execution backend before continuing.",
-                )
+                raise StageBoundaryError("execution_boundary_failed")
             feedback = json.dumps(
                 {
                     "plan": {

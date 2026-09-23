@@ -476,3 +476,4 @@ engineering:
   checks_help: "操作员指定检查项的JSON文件"
   backend_help: "执行后端"
   image_help: "已安装的Docker镜像"
+  reasoning_help: "{stage} 的推理级别（省略则使用提供商默认值）"

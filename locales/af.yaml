@@ -476,3 +476,4 @@ engineering:
   checks_help: "JSON-lêer met kontroles deur die operateur bepaal"
   backend_help: "Uitvoeromgewing"
   image_help: "Vooraf geïnstalleerde Docker-beeld"
+  reasoning_help: "Redeneervlak vir {stage} (laat weg vir die verskaffer se verstek)"

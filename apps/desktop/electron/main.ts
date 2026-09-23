@@ -141,9 +141,9 @@ import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installati
 import { createDesktopLocalRuntime } from './desktop-local-runtime'
 import { createDesktopLogRuntime, rotateLogIfNeededSync } from './desktop-log-runtime'
 import { createDesktopNativeChromeRuntime } from './desktop-native-chrome-runtime'
-import { createDesktopPrimaryWindowRuntime } from './desktop-primary-window-runtime'
 import { createDesktopOauthSessionRuntime } from './desktop-oauth-session-runtime'
 import { createDesktopPrimaryBackendRuntime } from './desktop-primary-backend-runtime'
+import { createDesktopPrimaryWindowRuntime } from './desktop-primary-window-runtime'
 import {
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
@@ -252,7 +252,6 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { registerNativeNotifications } from './notification-ipc'
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
-import { wireOauthSessionResponse } from './oauth-session-response'
 import { parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {

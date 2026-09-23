@@ -5037,6 +5037,59 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         Set True when multiple bots share a thread to avoid bot-to-bot loops."""
         return self._extra_or_env_flag("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION", "false", truthy=True)
 
+    def _discord_ignore_other_user_mentions(self) -> bool:
+        """Whether a message addressed to someone else is skipped in free-response channels.
+
+        Slack parity (``slack.ignore_other_user_mentions``). When enabled, a channel message
+        that @-mentions another user/bot without also mentioning us is dropped, so a
+        free-response channel does not turn into the bot answering other people's
+        conversations. Default False: free-response channels stay fully free-response.
+
+        Config: ``discord.ignore_other_user_mentions`` (or env
+        ``DISCORD_IGNORE_OTHER_USER_MENTIONS``).
+        """
+        return self._extra_or_env_flag(
+            "ignore_other_user_mentions", "DISCORD_IGNORE_OTHER_USER_MENTIONS", "false", truthy=True
+        )
+
+    def _discord_message_addressed_to_other_user(
+        self, message: Any, self_uid: str, *, self_mentioned: Optional[bool] = None
+    ) -> bool:
+        """True when the message @-mentions a human/bot other than us and does not mention us.
+
+        Unlike Slack (leading-token only), Discord tags people anywhere in the line
+        ("can you take this @alex"), so any non-self mention counts. ``@everyone`` /
+        ``@here`` are room broadcasts, not people, and never trigger this.
+
+        ``self_mentioned`` must be the pre-strip answer from the caller: ``_handle_message``
+        removes the bot's own ``<@bot>`` token from ``message.content`` before channel gates
+        run (so ``/command`` detection sees clean text), which would otherwise make a message
+        that mentions *both* us and a third party look addressed to the third party alone.
+        """
+        if self_mentioned is None:
+            self_mentioned = self._self_is_explicitly_mentioned(message)
+        if self_mentioned:
+            return False
+        raw_ids = self._raw_mentioned_user_ids(message)
+        if raw_ids:
+            return bool(raw_ids - {self_uid})
+        return any(
+            getattr(mentioned, "id", None) is not None and str(mentioned.id) != self_uid
+            for mentioned in (getattr(message, "mentions", None) or [])
+        )
+
+    def _discord_in_own_thread(self, message: Any) -> bool:
+        """True when the message is inside a thread this bot is already an active participant of.
+
+        A third-party mention in our own thread is mid-conversation traffic, not someone
+        else's conversation, so the ``ignore_other_user_mentions`` gate must not mute us
+        there. Mirrors the ``_in_bot_thread`` exemption used by the no-mention gate.
+        """
+        channel = getattr(message, "channel", None)
+        if not getattr(channel, "parent_id", None):
+            return False
+        return bool(self._in_bot_thread(message))
+
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
         return self._extra_or_env_flag("history_backfill", "DISCORD_HISTORY_BACKFILL", "true", truthy=True)
@@ -5941,6 +5994,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+        # Pre-strip answer: the block below rewrites message.content to drop our own <@bot>
+        # token, so any later mention analysis must use this captured value (see
+        # _discord_message_addressed_to_other_user).
+        self_mentioned_before_strip = self._self_is_explicitly_mentioned(message)
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
             snapshot_text_parts = []
@@ -5990,6 +6047,27 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     and not self._is_bot_tag_debounce_continuation(message)
                 ):
                     return False
+            # Addressed-to-someone-else gate: in a free-response channel, a message that
+            # @mentions another person without mentioning us belongs to that conversation,
+            # not to us. Slack parity (slack.ignore_other_user_mentions), opt-in so existing
+            # free-response channels keep answering everything.
+            if (
+                is_free_channel
+                and not in_bot_thread
+                and self._discord_ignore_other_user_mentions()
+                and not self._is_bot_tag_debounce_continuation(message)
+                and not mention_prefix
+                and self._discord_message_addressed_to_other_user(
+                    message,
+                    str(self._client.user.id) if self._client and self._client.user else "",
+                    self_mentioned=self_mentioned_before_strip,
+                )
+            ):
+                logger.debug(
+                    "[%s] Ignoring message addressed to another user in free-response channel: %s",
+                    self.name, channel_keys,
+                )
+                return False
         # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
@@ -7218,6 +7296,7 @@ _YAML_BOOL_ENV_KEYS = (
     ("require_mention", "DISCORD_REQUIRE_MENTION"),
     ("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION"),
     ("bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION"),
+    ("ignore_other_user_mentions", "DISCORD_IGNORE_OTHER_USER_MENTIONS"),
 )
 # (public websocket_* key, legacy liveness_* alias, env bridge var)
 _YAML_WEBSOCKET_LIVENESS_KEYS = (

@@ -351,6 +351,18 @@ discord:
 
 The existing `DISCORD_BOTS_REQUIRE_INLINE_MENTION=false` environment override is also supported when the YAML option is unset. With this opt-out, `mentions` accepts Discord's resolved mentions, including reply pings, and `all` removes the bot-specific mention requirement; other channel mention rules still apply. An admitted reply ping can also open the continuation window in this compatibility mode. Use it only for trusted relays because it restores the accidental reply-loop risk.
 
+#### Staying out of other people's conversations
+
+A free-response channel answers every message, including ones addressed to somebody else (`@alex can you take this?`). Set `ignore_other_user_mentions: true` to stay silent on those while keeping the channel mention-free:
+
+```yaml
+discord:
+  free_response_channels: ["1234567890"]
+  ignore_other_user_mentions: true
+```
+
+A message is skipped when it @mentions another user or bot and does **not** mention the bot; a message that mentions both still reaches it. Because Discord tags people anywhere in the line rather than only at the start, any non-self mention counts. `@everyone` and `@here` address the room, not a person, and never trigger the skip. Threads the bot has already joined are exempt, so a third-party mention mid-conversation does not mute it. Default `false`: free-response channels stay fully free-response. Slack's `slack.ignore_other_user_mentions` behaves the same way.
+
 ### Config File (`config.yaml`)
 
 The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Config.yaml settings are applied as defaults — if the equivalent env var is already set, the env var wins.
@@ -361,6 +373,7 @@ discord:
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
+  ignore_other_user_mentions: false  # In free-response channels, skip messages that @mention someone else (default: false)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)

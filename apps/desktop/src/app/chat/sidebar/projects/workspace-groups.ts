@@ -140,6 +140,23 @@ export const branchLaneId = (repoRoot: string, branch?: string): string =>
 /** A session's recency stamp (last activity, falling back to creation). */
 export const sessionRecency = (session: SessionInfo): number => session.last_active || session.started_at || 0
 
+const RECENCY_WINDOW_SECONDS = { '1d': 24 * 60 * 60, '2d': 2 * 24 * 60 * 60 } as const
+
+/** True when any selected window contains the session's latest activity. */
+export function sessionMatchesRecencyFilter(
+  session: SessionInfo,
+  filters: readonly (keyof typeof RECENCY_WINDOW_SECONDS)[],
+  nowSeconds = Date.now() / 1000
+): boolean {
+  if (!filters.length) {
+    return true
+  }
+
+  const activity = sessionRecency(session)
+
+  return filters.some(filter => activity >= nowSeconds - RECENCY_WINDOW_SECONDS[filter])
+}
+
 /** Default-branch names that pin to the top and read as the repo's trunk. */
 const TRUNK_BRANCHES = new Set(['main', 'master', 'trunk', 'develop'])
 

@@ -31,6 +31,7 @@ import {
   $sidebarPrFilter,
   $sidebarProfileFilter,
   $sidebarProjectFilter,
+  $sidebarRecencyFilter,
   $sidebarRowMeta,
   $sidebarShowAllSessions,
   $sidebarShowArchived,
@@ -47,10 +48,12 @@ import {
   SIDEBAR_GROUPING_ORDER,
   type SidebarGrouping,
   type SidebarOrdering,
+  type SidebarRecencyFilter,
   type SidebarRowMeta,
   toggleSidebarPrFilter,
   toggleSidebarProfileFilter,
   toggleSidebarProjectFilter,
+  toggleSidebarRecencyFilter,
   toggleSidebarRowMeta,
   toggleSidebarStatusFilter
 } from '@/store/layout'
@@ -120,6 +123,11 @@ const STATUS_FILTERS: Option<SessionStatusBucket>[] = [
   { dot: cn(sessionDotClassName('idle'), 'bg-(--ui-text-quaternary)'), id: 'idle', label: 'Idle' }
 ]
 
+const RECENCY_FILTERS: Option<SidebarRecencyFilter>[] = [
+  { icon: 'calendar', id: '1d', label: '1 day' },
+  { icon: 'calendar', id: '2d', label: '2 day' }
+]
+
 function OptionGlyph({ option }: { option: Option }) {
   if (option.dot) {
     return <span aria-hidden="true" className={cn('shrink-0', option.dot)} />
@@ -171,6 +179,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const profileNames = useStore($profiles).map(profile => normalizeProfileKey(profile.name))
   const narrowsByProfile = showAllProfiles && profileNames.length > 1
   const prFilter = useStore($sidebarPrFilter)
+  const recencyFilter = useStore($sidebarRecencyFilter)
   const showArchived = useStore($sidebarShowArchived)
   const filtersActive = useStore($sidebarFiltersActive)
   const viewCustomized = useStore($sidebarViewCustomized)
@@ -343,6 +352,20 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
                   checked={statusFilter.includes(option.id)}
                   key={option.id}
                   onCheck={() => toggleSidebarStatusFilter(option.id)}
+                  option={option}
+                />
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>Recency</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              {RECENCY_FILTERS.map(option => (
+                <OptionCheckbox
+                  checked={recencyFilter.includes(option.id)}
+                  key={option.id}
+                  onCheck={() => toggleSidebarRecencyFilter(option.id)}
                   option={option}
                 />
               ))}

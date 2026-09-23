@@ -7,6 +7,7 @@ override), and the shared dispatch-note formatter.
 """
 
 import json
+import subprocess
 import threading
 import time
 from unittest.mock import MagicMock
@@ -36,6 +37,175 @@ def _clean_state():
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
+
+
+# ---------------------------------------------------------------------------
+# git review targets
+# ---------------------------------------------------------------------------
+
+def _git(repo, *args):
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout
+
+
+@pytest.fixture
+def git_repo(tmp_path):
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "review@example.com")
+    _git(tmp_path, "config", "user.name", "Review Test")
+    (tmp_path / "tracked.txt").write_text("one\n")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, "commit", "-qm", "initial")
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    ("text", "kind", "value", "instructions"),
+    [
+        ("uncommitted", "uncommitted", "", ""),
+        ("uncommitted focus on tests", "uncommitted", "", "focus on tests"),
+        ("base main focus on tests", "base", "main", "focus on tests"),
+        ("commit deadbeef", "commit", "deadbeef", ""),
+        ("uncommittedness", None, "", "uncommittedness"),
+        ("review base behavior", None, "", "review base behavior"),
+        ("Base main", None, "", "Base main"),
+    ],
+)
+def test_parse_review_request_detects_only_exact_leading_selectors(
+    text, kind, value, instructions,
+):
+    target, parsed_instructions = re_mod.parse_review_request(text)
+    assert (target.kind if target else None) == kind
+    assert (target.value if target else "") == value
+    assert parsed_instructions == instructions
+
+
+@pytest.mark.parametrize("text", ["base", "base   ", "commit", "commit   "])
+def test_parse_review_request_rejects_incomplete_selector(text):
+    with pytest.raises(ValueError, match="Usage: /review"):
+        re_mod.parse_review_request(text)
+
+
+def test_review_depth_flag_beats_configured_effort(monkeypatch):
+    """--quick/--deep set the reviewer's reasoning effort per invocation and never leak into the instructions."""
+    monkeypatch.setattr(re_mod, "_load_review_config", lambda: {"reasoning_effort": "medium"})
+    monkeypatch.setattr(re_mod, "collect_parent_loaded_skills", lambda *_a, **_k: [])
+    seen = {}
+
+    def fake_delegate_task(**kwargs):
+        seen.update(kwargs)
+        return '{"status": "dispatched", "delegation_id": "d1"}'
+
+    monkeypatch.setattr("tools.delegate_tool.delegate_task", fake_delegate_task)
+    messages = [{"role": "user", "content": "please check the parser"}]
+
+    re_mod.start_review(object(), messages, "--deep focus on error paths")
+    assert seen["override_reasoning_effort"] == "high"
+    assert "--deep" not in seen["context"] and "focus on error paths" in seen["context"]
+
+    re_mod.start_review(object(), messages, "")
+    assert seen["override_reasoning_effort"] == "medium"
+
+    assert re_mod.parse_review_depth("--quick uncommitted") == ("low", "uncommitted")
+
+
+def test_uncommitted_context_contains_staged_and_unstaged_diff(git_repo):
+    (git_repo / "tracked.txt").write_text("one\nstaged\n")
+    _git(git_repo, "add", "tracked.txt")
+    (git_repo / "tracked.txt").write_text("one\nstaged\nunstaged\n")
+
+    target, _ = re_mod.parse_review_request("uncommitted")
+    context = re_mod.collect_git_review_context(target, git_repo)
+
+    assert "Git diff target: uncommitted" in context
+    assert "Diff stat:" in context
+    assert "+staged" in context
+    assert "+unstaged" in context
+
+
+def test_git_diff_context_is_bounded_with_explicit_marker(monkeypatch, git_repo):
+    monkeypatch.setattr(re_mod, "GIT_DIFF_CHAR_CAP", 120)
+    (git_repo / "tracked.txt").write_text("one\n" + ("large line\n" * 80))
+
+    target, _ = re_mod.parse_review_request("uncommitted")
+    context = re_mod.collect_git_review_context(target, git_repo)
+
+    assert "[... git diff truncated at 120 characters ...]" in context
+    full_diff = context.split("Full diff (bounded to 120 characters):\n", 1)[1]
+    assert len(full_diff) <= 120
+
+
+def test_base_and_commit_targets_have_expected_scope(git_repo):
+    base_sha = _git(git_repo, "rev-parse", "HEAD").strip()
+    _git(git_repo, "branch", "baseline", base_sha)
+    (git_repo / "tracked.txt").write_text("one\ntwo\n")
+    _git(git_repo, "commit", "-qam", "second")
+    second_sha = _git(git_repo, "rev-parse", "HEAD").strip()
+    (git_repo / "tracked.txt").write_text("one\ntwo\nthree\n")
+    _git(git_repo, "commit", "-qam", "third")
+
+    base_target, _ = re_mod.parse_review_request("base baseline")
+    base_context = re_mod.collect_git_review_context(base_target, git_repo)
+    assert "+two" in base_context and "+three" in base_context
+
+    commit_target, _ = re_mod.parse_review_request(f"commit {second_sha}")
+    commit_context = re_mod.collect_git_review_context(commit_target, git_repo)
+    assert "+two" in commit_context
+    assert "+three" not in commit_context
+
+
+@pytest.mark.parametrize("review_request", ["base missing-branch", "commit not-a-sha"])
+def test_invalid_git_target_fails_open(review_request, git_repo):
+    target, _ = re_mod.parse_review_request(review_request)
+    with pytest.raises(ValueError, match="Unable to prepare git review"):
+        re_mod.collect_git_review_context(target, git_repo)
+
+
+def test_non_repository_fails_open(tmp_path):
+    target, _ = re_mod.parse_review_request("uncommitted")
+    with pytest.raises(ValueError, match="Unable to prepare git review"):
+        re_mod.collect_git_review_context(target, tmp_path)
+
+
+def test_clean_target_spawns_no_reviewer(monkeypatch, git_repo):
+    parent = _fake_parent()
+    monkeypatch.setattr("agent.runtime_cwd.resolve_agent_cwd", lambda: git_repo)
+    called = False
+
+    def should_not_dispatch(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("reviewer should not be spawned")
+
+    monkeypatch.setattr("tools.delegate_tool.delegate_task", should_not_dispatch)
+    with pytest.raises(ValueError, match="Nothing to review"):
+        start_review(parent, [{"role": "user", "content": "review it"}], "uncommitted")
+    assert called is False
+
+
+def test_targeted_review_keeps_conversation_and_adds_diff(monkeypatch, git_repo):
+    (git_repo / "tracked.txt").write_text("one\nchanged\n")
+    parent = _fake_parent()
+    monkeypatch.setattr("agent.runtime_cwd.resolve_agent_cwd", lambda: git_repo)
+    captured = {}
+
+    def fake_dispatch(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"status": "dispatched"})
+
+    monkeypatch.setattr("tools.delegate_tool.delegate_task", fake_dispatch)
+    monkeypatch.setattr(re_mod, "_load_review_config", lambda: {})
+    result = start_review(
+        parent,
+        [{"role": "user", "content": "please fix the parser"}],
+        "uncommitted focus on correctness",
+    )
+
+    assert result["status"] == "dispatched"
+    assert "please fix the parser" in captured["context"]
+    assert "+changed" in captured["context"]
+    assert "focus on correctness" in captured["context"]
 
 
 # ---------------------------------------------------------------------------
@@ -119,16 +289,18 @@ def test_build_review_task_without_prompt_has_no_instruction_block():
 # auxiliary.review credential resolution
 # ---------------------------------------------------------------------------
 
-def test_load_review_credentials_cfg_reads_config(monkeypatch):
+def test_load_review_config_keeps_reasoning_separate_from_credentials(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly",
         lambda: {"auxiliary": {"review": {
             "provider": "openrouter",
             "model": "anthropic/claude-opus-4.6",
+            "reasoning_effort": "medium",
         }}},
     )
-    cfg = re_mod._load_review_credentials_cfg()
-    assert cfg == {
+    review = re_mod._load_review_config()
+    assert review["reasoning_effort"] == "medium"
+    assert re_mod._review_credentials_cfg(review) == {
         "provider": "openrouter",
         "model": "anthropic/claude-opus-4.6",
         "base_url": "",
@@ -137,19 +309,36 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
     }
 
 
-def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
+def test_review_credentials_cfg_auto_means_inherit(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly",
         lambda: {"auxiliary": {"review": {"provider": "auto", "model": ""}}},
     )
-    assert re_mod._load_review_credentials_cfg() is None
+    assert re_mod._review_credentials_cfg(re_mod._load_review_config()) is None
 
 
-def test_load_review_credentials_cfg_missing_section(monkeypatch):
+def test_load_review_config_missing_section(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly", lambda: {"auxiliary": {}}
     )
-    assert re_mod._load_review_credentials_cfg() is None
+    assert re_mod._load_review_config() == {}
+    assert re_mod._review_credentials_cfg({}) is None
+
+
+def test_load_review_config_from_profile_home(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "auxiliary:\n  review:\n    provider: openai-codex\n"
+        "    model: gpt-review\n    reasoning_effort: medium\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    review = re_mod._load_review_config()
+
+    assert review["model"] == "gpt-review"
+    assert review["reasoning_effort"] == "medium"
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +426,10 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     monkeypatch.setattr(dt, "_build_child_agent", fake_build)
     monkeypatch.setattr(dt, "_run_single_child", fake_run_single_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(
+        re_mod, "_load_review_config",
+        lambda: {"provider": "auto", "model": "", "reasoning_effort": "medium"},
+    )
 
     msgs = [
         {"role": "user", "content": "open a PR for the fix"},
@@ -251,6 +443,7 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     assert "check the tests" in built["context"]
     assert built["goal"].startswith("Review: ")
     assert re_mod._REVIEW_GOAL in built["context"]
+    assert built["override_reasoning_effort"] == "medium"
 
     # The completion re-enters via the shared queue like any subagent.
     deadline = time.monotonic() + 5.0
@@ -373,7 +566,7 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
             "exit_reason": "completed",
         },
     )
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(re_mod, "_load_review_config", lambda: {})
 
     parent = _fake_parent()
     parent.ephemeral_system_prompt = (
@@ -467,7 +660,7 @@ def test_review_child_gets_workspace_context_via_dispatch(monkeypatch, tmp_path)
             "exit_reason": "completed",
         },
     )
-    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(re_mod, "_load_review_config", lambda: {})
 
     result = start_review(_fake_parent(), [
         {"role": "user", "content": "open a PR"},

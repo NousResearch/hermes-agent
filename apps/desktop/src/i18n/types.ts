@@ -1068,6 +1068,11 @@ export interface Translations {
       attachmentSizeUnit: string
       attachmentSizeLabel: string
       showOptions: string
+      hudOrientationTitle: string
+      hudOrientationDesc: string
+      hudOrientationAuto: string
+      hudOrientationTop: string
+      hudOrientationBottom: string
     }
     hudModifier: {
       title: string

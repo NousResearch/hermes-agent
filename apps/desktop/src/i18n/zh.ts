@@ -1243,7 +1243,12 @@ export const zh = defineLocale({
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
-      showOptions: '显示选项'
+      showOptions: '显示选项',
+      hudOrientationTitle: 'HUD 方向',
+      hudOrientationDesc: 'HUD 模式下输入栏相对于对话记录的位置。选择“跟随屏幕边缘”时，HUD 停靠到屏幕顶部会自动翻转布局。',
+      hudOrientationAuto: '跟随屏幕边缘',
+      hudOrientationTop: '输入栏在顶部',
+      hudOrientationBottom: '输入栏在底部'
     },
     hudModifier: {
       title: '轻按唤出 HUD',

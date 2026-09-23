@@ -269,7 +269,7 @@ def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}), \
-         patch("yaml.dump", side_effect=fail_dump):
+         patch("ruamel.yaml.YAML.dump", side_effect=fail_dump):
         adapter._persist_dm_topic_thread_id(111, "General", 999)
 
     assert config_file.read_text(encoding="utf-8") == original_text

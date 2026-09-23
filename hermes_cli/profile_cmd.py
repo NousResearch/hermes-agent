@@ -221,14 +221,15 @@ def _profile_create(args):
         _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
         # Auto-clone Honcho config for the new profile (only with clone operations)
         try:
-            from plugins.memory.honcho.cli import ConfigWriteRefused, clone_honcho_for_profile
+            from plugins.memory import import_provider_module
+            honcho_cli = import_provider_module("honcho", "cli")
         except Exception:
-            clone_honcho_for_profile = None  # Honcho plugin not installed
-        if clone_honcho_for_profile is not None:
+            honcho_cli = None  # Honcho plugin not installed
+        if honcho_cli is not None:
             try:
-                if clone_honcho_for_profile(name):
+                if honcho_cli.clone_honcho_for_profile(name):
                     print(f"Honcho config cloned (peer: {name})")
-            except ConfigWriteRefused as e:
+            except honcho_cli.ConfigWriteRefused as e:
                 print(f"Honcho config not cloned: {e}")
             except Exception:
                 pass  # Honcho not configured

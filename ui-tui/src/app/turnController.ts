@@ -1,4 +1,4 @@
-import type { MessageCompletePayload, SubagentEventPayload } from '@hermes/shared/gateway-events'
+import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@hermes/shared/gateway-events'
 
 import {
   REASONING_PULSE_MS,
@@ -12,12 +12,14 @@ import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   boundedLiveRenderText,
-  buildToolTrailLine,
-  buildVerboseToolTrailLine,
   estimateTokensRough,
+  formatToolCall,
+  formatToolLabel,
   isTransientTrailLine,
   sameToolTrailGroup,
-  toolTrailLabel
+  toolTrailLabel,
+  toolTrailLine,
+  verboseToolTrailLine
 } from '../lib/text.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
@@ -26,6 +28,28 @@ import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+
+function toolTrailLines(
+  done: ActiveTool | undefined,
+  name: string,
+  labels: readonly ToolLabel[],
+  summary: string,
+  resultText: string,
+  took?: number
+): string[] {
+  const heads = labels.length ? labels.map(formatToolLabel) : [formatToolCall(name, done?.context || '')]
+  const verbose = Boolean(done?.verboseArgs || resultText)
+
+  return heads.map((head, index) => {
+    if (index < heads.length - 1) {
+      return toolTrailLine(head)
+    }
+
+    return verbose
+      ? verboseToolTrailLine(head, false, took, done?.verboseArgs, resultText || summary)
+      : toolTrailLine(head, false, summary, took)
+  })
+}
 
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
@@ -801,16 +825,17 @@ class TurnController {
     summary?: string,
     duration?: number,
     todos?: unknown,
-    resultText?: string
+    resultText?: string,
+    labels?: ToolLabel[]
   ) {
     if (this.interrupted) {
       return
     }
 
     this.recordTodos(todos)
-    const line = this.completeTool(toolId, fallbackName, summary, duration, resultText)
+    const lines = this.completeTool(toolId, fallbackName, summary, duration, resultText, labels)
 
-    this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+    this.pendingSegmentTools = [...this.pendingSegmentTools, ...lines]
     this.flushPendingToolsIntoLastSegment()
     this.publishToolState()
   }
@@ -820,14 +845,15 @@ class TurnController {
     toolId: string,
     fallbackName?: string,
     duration?: number,
-    resultText?: string
+    resultText?: string,
+    labels?: ToolLabel[]
   ) {
     if (this.interrupted) {
       return
     }
 
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, '', duration, resultText)])
+    this.pushInlineDiffSegment(diffText, this.completeTool(toolId, fallbackName, '', duration, resultText, labels))
     this.publishToolState()
   }
 
@@ -838,24 +864,17 @@ class TurnController {
     fallbackName?: string,
     summary?: string,
     duration?: number,
-    resultText?: string
+    resultText?: string,
+    eventLabels?: ToolLabel[]
   ) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
     const label = toolTrailLabel(name)
+    const labels = eventLabels?.length ? eventLabels : (done?.labels ?? [])
     const fallbackDuration = done?.startedAt ? (Date.now() - done.startedAt) / 1000 : undefined
+    const took = duration ?? fallbackDuration
 
-    const line =
-      done?.verboseArgs || resultText
-        ? buildVerboseToolTrailLine(
-            name,
-            done?.context || '',
-            false,
-            duration ?? fallbackDuration,
-            done?.verboseArgs,
-            resultText || summary || ''
-          )
-        : buildToolTrailLine(name, done?.context || '', false, summary || '', duration ?? fallbackDuration)
+    const lines = toolTrailLines(done, name, labels, summary || '', resultText || '', took)
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -867,7 +886,7 @@ class TurnController {
 
     this.turnTools = next.slice(-TRAIL_LIMIT)
 
-    return line
+    return lines
   }
 
   private publishToolState() {
@@ -878,7 +897,7 @@ class TurnController {
     })
   }
 
-  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
+  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string, labels?: ToolLabel[]) {
     if (this.interrupted) {
       return
     }
@@ -891,7 +910,7 @@ class TurnController {
     const sample = `${name} ${context}`.trim()
 
     this.toolTokenAcc += sample ? estimateTokensRough(sample) : 0
-    this.activeTools = [...this.activeTools, { context, id: toolId, name, startedAt: Date.now(), verboseArgs }]
+    this.activeTools = [...this.activeTools, { context, id: toolId, labels, name, startedAt: Date.now(), verboseArgs }]
 
     patchTurnState({ toolTokens: this.toolTokenAcc, tools: this.activeTools })
   }

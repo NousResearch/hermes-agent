@@ -83,6 +83,13 @@ plugin guide with code examples and hook documentation.
 
 ---
 
+Plugin-registered native handlers (`ctx.register_platform_handler(<platform>, factory)`): call
+`self._wire_plugin_handlers(native_client)` once in `connect()` before your own catch-all handlers. The base
+class then handles plugins that load mid-run — the runner calls `rewire_plugin_handlers()` on every
+plugin-loaded event and only factories not yet wired on that native client run. Override it only when your
+adapter keeps a second plugin registry (Slack action handlers) or dispatches by registration order with a
+catch-all last (Telegram hoists late handlers ahead of core); see `gateway/run_plugin_rewire.py`.
+
 ## Built-in Path (Core Contributors Only)
 
 Checklist for integrating a platform directly into the Hermes core.

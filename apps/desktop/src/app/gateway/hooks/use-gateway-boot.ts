@@ -5,8 +5,7 @@ import {
   isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
-  reconnectBackoffDelayMs,
-  resolveGatewayWsUrl
+  reconnectBackoffDelayMs
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
@@ -20,6 +19,7 @@ import {
   LIVENESS_PROBE_TIMEOUT_MS,
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
+import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -103,6 +103,7 @@ import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warni
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+import { useConnectionsRegistry } from './use-connections-registry'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
@@ -185,6 +186,7 @@ export function useGatewayBoot({
   refreshSessions
 }: GatewayBootOptions) {
   useDefaultProfilePreference()
+  useConnectionsRegistry()
 
   const callbacksRef = useRef({
     beforeConnectionSwitch,
@@ -432,7 +434,7 @@ export function useGatewayBoot({
         // this reconnect loop. For local/token gateways the URL carries a
         // long-lived token and the re-mint is a cheap no-op.
         const wsUrl = await withTimeout(
-          resolveGatewayWsUrl(desktop, conn),
+          resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out re-minting the gateway WebSocket URL'
         )
@@ -756,7 +758,7 @@ export function useGatewayBoot({
         // Bounded for the same reason as attemptReconnect() (#93454): a wedged
         // ticket mint would otherwise hang the gateway switch forever.
         const wsUrl = await withTimeout(
-          resolveGatewayWsUrl(desktop, conn),
+          resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out re-minting the gateway WebSocket URL'
         )
@@ -1128,8 +1130,7 @@ export function useGatewayBoot({
 
       // 'saved' is a pure registry-refresh push (new connection or label
       // rename — #95393): no endpoint moved, so there is nothing to dispose,
-      // redial, or forget. The switcher's own onChanged listener re-pulls the
-      // registry snapshot for it.
+      // redial, or forget. useConnectionsRegistry re-pulls the snapshot.
       if (payload.reason === 'saved') {
         return
       }
@@ -1338,7 +1339,7 @@ export function useGatewayBoot({
         // await is bounded like the reconnect path (#93454) so a wedged mint
         // reaches the recovery affordance instead of hanging "Starting Hermes…".
         const wsUrl = await withTimeout(
-          resolveGatewayWsUrl(desktop, conn),
+          resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out minting the gateway WebSocket URL'
         )

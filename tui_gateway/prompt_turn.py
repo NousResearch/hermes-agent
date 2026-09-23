@@ -487,6 +487,7 @@ class _TurnRun:
     thinking_started: bool = False
     history: list = dataclasses.field(default_factory=list)
     history_version: int = 0
+    compression_count: int | None = None
     run_kwargs: Any = None
     error_retained: bool = False
     error_detail: str = ""
@@ -623,6 +624,7 @@ def _invoke_agent(
     """Wire the streaming callbacks and run the conversation into ``st.result``.
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
+    st.compression_count = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
     # shown and then retracted (the client keeps streamed text when message.complete is "").
@@ -754,6 +756,53 @@ def _absorb_turn_result(
     return status_note
 
 
+def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
+    """Report committed row addresses, never a text/timestamp search for a matching turn.
+
+    The agent's persistence cursor is re-anchored during compaction. A partial receipt can
+    address its surviving rows, but cannot retire a client's entire streamed turn. Full coverage
+    additionally requires the unchanged pre-turn prefix and no redirected user boundary.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    messages = st.result.get("messages")
+    start = getattr(st.agent, "_persist_user_message_idx", None)
+    if (not isinstance(messages, list) or type(start) is not int or not 0 <= start < len(messages)
+            or messages[start].get("role") != "user"):
+        return None
+
+    def committed_id(message):
+        row_id = message.get("_row_id")
+        return row_id if message.get(_DB_PERSISTED_MARKER) and type(row_id) is int and row_id > 0 else None
+
+    tail = messages[start:]
+    anchor_id = committed_id(tail[0])
+    if any(before is tail[0] or (anchor_id is not None and anchor_id == committed_id(before))
+           for before in st.history):
+        return None  # preflight returned the old transcript, not a new turn
+    row_ids = [rid for message in tail if (rid := committed_id(message)) is not None]
+    if not row_ids:
+        return None
+    receipt = {"row_ids": row_ids, "complete": False}
+    if (user_row_id := committed_id(tail[0])) is not None:
+        receipt["user_row_id"] = user_row_id
+    last = tail[-1]
+    # Equality only verifies the structurally selected final row's body: it never selects an identity.
+    if (status == "complete" and last.get("role") == "assistant" and not last.get("tool_calls")
+            and last.get("content") == raw and (final_id := committed_id(last)) is not None):
+        receipt["final_assistant_row_id"] = final_id
+    prefix_unchanged = start == len(st.history) and all(
+        committed_id(before) is not None and committed_id(before) == committed_id(after)
+        for before, after in zip(st.history, messages[:start]))
+    receipt["complete"] = bool(
+        prefix_unchanged and type(st.compression_count) is int
+        and st.compression_count == getattr(getattr(st.agent, "context_compressor", None), "compression_count", None)
+        and len(row_ids) == len(tail)
+        and sum(message.get("role") == "user" for message in tail) == 1
+        and "final_assistant_row_id" in receipt)
+    return receipt
+
+
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
@@ -773,6 +822,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    if receipt := _persisted_turn_receipt(st, raw, status):
+        payload["persisted_turn"] = receipt
     if last_reasoning:
         payload["reasoning"] = last_reasoning
     if status_note:

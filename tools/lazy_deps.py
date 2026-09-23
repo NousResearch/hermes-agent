@@ -107,11 +107,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.2.0",),
-    "memory.hindsight": ("hindsight-client==0.6.1",),
     # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
     # install on the sealed Docker image (durable-target only).
     "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai==2.0.10",),
+    # Plugin-owned SDKs mirror the range their plugin.yaml declares instead of an exact pin: an exact pin
+    # made _is_satisfied() reject every newer compatible release, so `hermes update` kept downgrading a
+    # working newer client and broke daemons whose DB it had migrated (#86992, #39424, #98407).
+    "memory.mem0": ("mem0ai>=2.0.10,<3",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
@@ -202,15 +204,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "httpx2==2.7.0",  # mcp 2.x HTTP stack — sync with pyproject [computer-use]
         "starlette==1.3.1",
     ),
-    # huggingface-hub is SHARED with transformers (>=1.5.0,<2 via Hindsight) and marked active
-    # on mere presence, so `hermes update` re-asserts this pin everywhere hub exists. MUST stay
-    # inside transformers' window and match uv.lock (tests/test_project_metadata.py enforces).
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace). huggingface-hub is a SHARED
-    # dependency: transformers (pulled by sentence-transformers for local Hindsight embeddings) requires
-    # >=1.5.0,<2, and faster-whisper/tokenizers depend on it transitively. Because active_features() marks a
-    # feature active from mere package presence, the `hermes update` lazy-refresh pass re-asserts THIS pin
-    # on every install where hub is present — so an exact pin below 1.5.0 force-downgrades the shared
-    # package and breaks Hindsight startup (#60783). Policy: keep the exact pin (no ranges — security
+    # dependency: transformers (pulled by sentence-transformers when a memory plugin runs local embeddings,
+    # e.g. the catalog hindsight plugin's local_embedded mode) requires >=1.5.0,<2, and
+    # faster-whisper/tokenizers depend on it transitively. Because active_features() marks a feature active
+    # from mere package presence, the `hermes update` lazy-refresh pass re-asserts THIS pin on every install
+    # where hub is present — so an exact pin below 1.5.0 force-downgrades the shared package and breaks
+    # those embedding daemons on startup (#60783). Policy: keep the exact pin (no ranges — security
     # posture), but it MUST stay inside transformers' accepted window and MUST match uv.lock so the whole
     # tree converges on ONE hub version (tests/test_project_metadata.py enforces both). When bumping: update
     # here AND `uv lock --upgrade-package huggingface-hub` in lockstep.
@@ -528,6 +528,15 @@ def _run_installer(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, **_SUBPROCESS_KW, creationflags=windows_hide_flags(), **kw)
 
 
+def _uv_policy_cwd() -> Optional[str]:
+    """Directory uv must run from so the checkout's ``[tool.uv]`` policy (``exclude-newer`` quarantine and its
+    per-package exceptions) applies: uv reads it from the *current directory's* project only, so a lazy or
+    plugin install launched from ``$HOME``, a gateway service or the Desktop backend was never quarantined.
+    ``None`` (inherit cwd) when this is not a source checkout."""
+    root = Path(__file__).resolve().parent.parent
+    return str(root) if (root / "pyproject.toml").is_file() else None
+
+
 def _uv_binary() -> Optional[str]:
     """Managed uv first ($HERMES_HOME/bin is never on PATH), then PATH. A lookup, not ensure_uv():
     downloading uv mid-turn is more than the caller asked for; pip covers no-uv."""
@@ -599,7 +608,8 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
                 if pip_index_url:
                     uv_env["UV_INDEX_URL"] = pip_index_url
             try:
-                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs], timeout=timeout, env=uv_env)
+                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs],
+                                   timeout=timeout, env=uv_env, cwd=_uv_policy_cwd())
                 if r.returncode != 0:
                     logger.debug("uv pip install failed: %s", r.stderr)
                 # A uv resolver failure is authoritative: falling through to pip would discard uv

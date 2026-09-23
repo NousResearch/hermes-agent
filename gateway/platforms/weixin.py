@@ -491,6 +491,19 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
     return greedy_pack_blocks(_split_markdown_blocks(content), max_length, overflow=overflow)
 
 
+def _strip_markdown_for_weixin(content: str) -> str:
+    """WeChat/iLink renders no markdown: raw ``**``, backticks, ``##`` and ``---`` reach the user as
+    literal characters and make multi-section reports look garbled. Flatten them for delivery."""
+    from gateway.platforms.helpers import strip_markdown
+
+    text = strip_markdown(content)
+    # helpers.strip_markdown keeps horizontal rules and table pipes; both read as noise in chat.
+    text = re.sub(r"^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+
 def _split_text_for_weixin_delivery(content: str, max_length: int, split_per_line: bool = False) -> List[str]:
     """Compact (default): one message when it fits, unless it reads as a short chatty exchange (separate
     bubbles). Per-line (legacy ``extra.split_multiline_messages`` / ``WEIXIN_SPLIT_MULTILINE_MESSAGES``):
@@ -724,6 +737,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._allow_from = self._coerce_list(_wx_secret("WEIXIN_ALLOWED_USERS", "") if allow_from is None else allow_from)
         self._group_allow_from = self._coerce_list(_wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "") if group_allow_from is None else group_allow_from)
         self._split_multiline_messages = _coerce_bool(_extra_or_secret(extra, "split_multiline_messages", ""), default=False)
+        # WeChat/iLink clients render no markdown, so delivery flattens it by default.
+        # Opt out with platforms.weixin.extra.plain_text: false or WEIXIN_PLAIN_TEXT=0.
+        self._plain_text_output = _coerce_bool(
+            _extra_or_secret(extra, "plain_text", ""), default=True)
         # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
         # trigger a separate agent run. Telegram cadence and ceilings (#44883); ``0`` dispatches immediately.
         self._configure_text_batch_delays()
@@ -946,7 +963,14 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return None
 
     def _split_text(self, content: str) -> List[str]:
-        return _split_text_for_weixin_delivery(content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages)
+        chunks = _split_text_for_weixin_delivery(content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages)
+        if self._plain_text_output:
+            # Flatten each delivered chunk, not the input: the short-chat / block heuristics above read the
+            # markdown structure to pick bubble boundaries, so only the outgoing text is stripped.
+            chunks = [
+                stripped for stripped in (_strip_markdown_for_weixin(chunk) for chunk in chunks) if stripped
+            ]
+        return chunks
 
     def _rate_limit_cooldown_remaining(self) -> float:
         return max(0.0, self._rate_limit_circuit_until - time.monotonic())

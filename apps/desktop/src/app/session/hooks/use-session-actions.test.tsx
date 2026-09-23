@@ -93,6 +93,8 @@ import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
+import { suppressTranscriptForView, transcriptRowContentKey } from './use-session-actions/transcript-provenance'
+import type { TranscriptViewCutoff } from './use-session-actions/transcript-provenance'
 import { useSessionStateCache } from './use-session-state-cache'
 
 vi.mock('@/hermes', async importOriginal => ({
@@ -1019,6 +1021,10 @@ function ResumeHarness({
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
   const runtimeMapRef = runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>())
   const stateMapRef = sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>())
+  // Stand in for the real hook's gate: without it this stub would publish the
+  // unproven warm cache before REST authority lands. Kept here (not per-test)
+  // so every resume through this harness sees one shared suppression policy.
+  const heldCutoffsByRuntimeIdRef = ref(new Map<string, TranscriptViewCutoff>())
 
   const actions = useSessionActions({
     activeSessionId: null,
@@ -1035,7 +1041,25 @@ function ResumeHarness({
     selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: stateMapRef,
-    syncSessionStateToView: (sessionId, state) => onViewSync?.(sessionId, state),
+    holdSessionTranscriptView: runtimeId => {
+      const rows = stateMapRef.current.get(runtimeId)?.messages ?? []
+
+      const cutoff: TranscriptViewCutoff = {
+        cutoffIds: new Set(rows.map(message => message.id)),
+        cutoffKeys: new Set(rows.map(transcriptRowContentKey))
+      }
+
+      heldCutoffsByRuntimeIdRef.current.set(runtimeId, cutoff)
+
+      return () => {
+        heldCutoffsByRuntimeIdRef.current.delete(runtimeId)
+      }
+    },
+    syncSessionStateToView: (sessionId, state) => {
+      const cutoff = heldCutoffsByRuntimeIdRef.current.get(sessionId) ?? null
+
+      onViewSync?.(sessionId, suppressTranscriptForView(state, cutoff))
+    },
     updateSessionState: (sessionId, updater, storedSessionId) => {
       // Full default shape (not a bare {} cast) so seeded/derived fields like
       // turnStartedAt behave as in production state updates.

@@ -255,7 +255,62 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
+    def test_platforms_env_refs_expanded_for_adapters(self, tmp_path, monkeypatch):
+        """``${VAR}`` refs under ``platforms:`` reach the adapter config expanded — the gateway
+        YAML layer expands them the same way the CLI loader does (webhook secret used as the
+        HMAC key; api_server caller-auth key)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    port: 8089\n"
+            "    secret: ${WEBHOOK_SECRET}\n"
+            "    path_prefix: ${HOOK_PREFIX_FOR_TEST}\n"
+            "  api_server:\n"
+            "    enabled: true\n"
+            "    key: ${env:API_SERVER_KEY}\n",
+            encoding="utf-8",
+        )
 
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("WEBHOOK_SECRET", "whsec-expanded")
+        monkeypatch.setenv("API_SERVER_KEY", "server-key-expanded")
+        # A key NO env bridge reads: only the YAML-layer expansion can satisfy it, so this
+        # assertion goes red when the loader hunk is reverted while the bridges stay.
+        monkeypatch.setenv("HOOK_PREFIX_FOR_TEST", "/hooks/expanded")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WEBHOOK].extra["secret"] == "whsec-expanded"
+        assert config.platforms[Platform.WEBHOOK].extra["path_prefix"] == "/hooks/expanded"
+        assert (
+            config.platforms[Platform.API_SERVER].extra["key"] == "server-key-expanded"
+        )
+
+    def test_platforms_env_ref_unresolved_stays_literal(self, tmp_path, monkeypatch):
+        """An unset env var keeps the literal placeholder (loader is fail-open; the adapter's
+        startup validation is what reports a bad secret)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    secret: ${WEBHOOK_SECRET_UNSET_FOR_TEST}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_SECRET_UNSET_FOR_TEST", raising=False)
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.WEBHOOK].extra["secret"]
+            == "${WEBHOOK_SECRET_UNSET_FOR_TEST}"
+        )
 
     def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -1407,6 +1462,50 @@ class TestApiServerEnvOverride:
 
 
 class TestWebhookEnvOverride:
+    def test_config_enabled_webhook_reads_env_port_and_secret(self, tmp_path, monkeypatch):
+        """A config.yaml-enabled webhook still receives its .env listener settings."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.setenv("WEBHOOK_PORT", "9012")
+        monkeypatch.setenv("WEBHOOK_SECRET", "webhook-env-secret")
+
+        webhook = load_gateway_config().platforms[Platform.WEBHOOK]
+
+        assert webhook.enabled is True
+        assert webhook.extra["port"] == 9012
+        assert webhook.extra["secret"] == "webhook-env-secret"
+
+    def test_empty_env_secret_does_not_clobber_yaml_secret(self, tmp_path, monkeypatch):
+        """``WEBHOOK_SECRET=`` (present but empty) must not erase a config.yaml secret: the
+        widened bridge now runs for yaml-enabled webhooks, so an empty env value has to stay a
+        no-op rather than turning a working HMAC key into an empty one."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    secret: yaml-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.delenv("WEBHOOK_PORT", raising=False)
+        monkeypatch.setenv("WEBHOOK_SECRET", "")
+
+        webhook = load_gateway_config().platforms[Platform.WEBHOOK]
+
+        assert webhook.enabled is True
+        assert webhook.extra["secret"] == "yaml-secret"
+
     def test_env_key_does_not_reenable_explicitly_disabled_webhook(self):
         """An explicit ``platforms.webhook.enabled: false`` must survive
         _apply_env_overrides() even when WEBHOOK_ENABLED is truthy in the env.

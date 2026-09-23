@@ -408,6 +408,19 @@ def test_reader_loop_reassembles_multibyte_char_split_across_chunks(registry, mo
     assert "\ufffd" not in session.output_buffer
 
 
+def test_reader_loop_strips_shell_noise_split_across_reads(registry, monkeypatch):
+    """``bash -lic`` without a tty writes its two startup warnings in two separate write() calls.
+    A reader that wakes between them (loaded CI) must still drop the second line: it leaked as the
+    process's only "output", so the dock painted ``last: bash: no job control...`` instead of
+    ``starting`` and probes waiting on any output woke before the real writer had printed."""
+    session = _run_reader(registry, monkeypatch, [
+        b"bash: cannot set terminal process group (7): Inappropriate ioctl for device\n",
+        b"bash: no job control in this shell\n",
+        b"real output\n",
+        b"bash: no job control in this shell\n",  # after real output it is the process's own text
+    ])
+    assert session.output_buffer == "real output\nbash: no job control in this shell\n"
+
 
 
 def test_reader_loop_flushes_truncated_multibyte_tail_at_eof(registry, monkeypatch):

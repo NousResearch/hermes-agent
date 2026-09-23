@@ -6,6 +6,13 @@ import pytest
 from hermes_cli import update_cmd_fleet as fleet
 
 
+@pytest.fixture(autouse=True)
+def _units_belong_to_this_update(monkeypatch):
+    """Fake units on an invented MainPID (42) have no readable home; ownership (#93349,
+    ``test_update_fleet_home_scope.py``) is pinned so these tests keep proving budgets and health."""
+    monkeypatch.setattr(fleet, "_systemd_unit_owned_by_update", lambda scope_cmd, svc_name: True)
+
+
 @pytest.mark.parametrize("graceful,retry", [(False, False), (False, True), (True, False), ("catchup", False)])
 def test_unit_transaction_budget_preserves_scope_and_health(monkeypatch, graceful, retry):
     catchup = graceful == "catchup"

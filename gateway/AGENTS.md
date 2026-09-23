@@ -210,6 +210,13 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
   from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
   wrote a secondary profile's memories into the default profile's store, silently.
+- **`api_server` rebuilds the agent per request but not the memory provider.** The adapter bypasses
+  `TurnRunner` and the agent cache (per-request callbacks, model route, ephemeral prompt), so
+  `platforms/api_server_memory_sessions.py` parks each session's initialised `MemoryManager` between
+  requests (exclusive check-out in `_create_agent`, check-in in the turn's `finally`, keyed by profile
+  home + `agent.session_id`; idle/LRU eviction shuts down under the owning home) and
+  `AIAgent(memory_manager=...)` adopts it without a second provider init. Without it the previous
+  turn's queued recall never reaches the next request (#120116).
 - **`multiplex_profiles: false` is not "no scope ever".** A native hosted room serving a second
   profile flips the process-wide guard (`tui_gateway/launch_profile_policy.py::
   activate_multi_profile_hosting`) inside the gateway process, after the adapters were wired; every

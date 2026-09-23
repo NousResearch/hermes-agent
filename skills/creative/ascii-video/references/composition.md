@@ -67,28 +67,28 @@ BLEND_MODES = {
 ### Blend Mode Selection Guide
 
 **Modes that brighten** (safe for dark inputs):
-- `screen` — always brightens. Two 50% gray layers screen to 75%. The go-to safe blend.
-- `add` — simple addition, clips at white. Good for sparkles, glows, particle overlays.
-- `colordodge` — extreme brightening at overlap zones. Can blow out. Use low opacity (0.3-0.5).
-- `linearlight` — aggressive brightening. Similar to add but with offset.
+- `screen`: always brightens. Two 50% gray layers screen to 75%. The go-to safe blend.
+- `add`: simple addition, clips at white. Good for sparkles, glows, particle overlays.
+- `colordodge`: extreme brightening at overlap zones. Can blow out. Use low opacity (0.3-0.5).
+- `linearlight`: aggressive brightening. Similar to add but with offset.
 
 **Modes that darken** (avoid with dark inputs):
-- `multiply` — darkens everything. Only use when both layers are already bright.
-- `overlay` — darkens when base < 0.5, brightens when base > 0.5. Crushes dark inputs: `2 * 0.12 * 0.12 = 0.03`. Use `screen` instead for dark material.
-- `colorburn` — extreme darkening at overlap zones.
+- `multiply`: darkens everything. Only use when both layers are already bright.
+- `overlay`: darkens when base < 0.5, brightens when base > 0.5. Crushes dark inputs: `2 * 0.12 * 0.12 = 0.03`. Use `screen` instead for dark material.
+- `colorburn`: extreme darkening at overlap zones.
 
 **Modes that create contrast**:
-- `softlight` — gentle contrast. Good for subtle texture overlay.
-- `hardlight` — strong contrast. Like overlay but keyed on the top layer.
-- `vividlight` — very aggressive contrast. Use sparingly.
+- `softlight`: gentle contrast. Good for subtle texture overlay.
+- `hardlight`: strong contrast. Like overlay but keyed on the top layer.
+- `vividlight`: very aggressive contrast. Use sparingly.
 
 **Modes that create color effects**:
-- `difference` — XOR-like patterns. Two identical layers difference to black; offset layers create wild colors. Great for psychedelic looks.
-- `exclusion` — softer version of difference. Creates complementary color patterns.
-- `hard_mix` — posterizes to pure black/white/saturated color at intersections.
+- `difference`: XOR-like patterns. Two identical layers difference to black; offset layers create wild colors. Great for psychedelic looks.
+- `exclusion`: softer version of difference. Creates complementary color patterns.
+- `hard_mix`: posterizes to pure black/white/saturated color at intersections.
 
 **Modes for texture blending**:
-- `grain_extract` / `grain_merge` — extract a texture from one layer, apply it to another.
+- `grain_extract` / `grain_merge`: extract a texture from one layer, apply it to another.
 
 ### Multi-Layer Chaining
 
@@ -106,7 +106,7 @@ Order matters: `screen(A, B)` is commutative, but `difference(screen(A,B), C)` d
 
 ### Linear-Light Blend Modes
 
-Standard `blend_canvas()` operates in sRGB space — the raw byte values. This is fine for most uses, but sRGB is perceptually non-linear: blending in sRGB darkens midtones and shifts hues slightly. For physically accurate blending (matching how light actually combines), convert to linear light first.
+Standard `blend_canvas()` operates in sRGB space: the raw byte values. This is fine for most uses, but sRGB is perceptually non-linear: blending in sRGB darkens midtones and shifts hues slightly. For physically accurate blending (matching how light actually combines), convert to linear light first.
 
 Uses `srgb_to_linear()` / `linear_to_srgb()` from `architecture.md` § OKLAB Color System.
 
@@ -202,7 +202,7 @@ def _render_vf(r, grid_key, val_fn, hue_fn, pal, f, t, S, sat=0.8, threshold=0.0
         threshold: minimum value to render (below = space)
 
     Returns:
-        uint8 array (VH, VW, 3) — full pixel canvas
+        uint8 array (VH, VW, 3): full pixel canvas
     """
     g = r.get_grid(grid_key)
     val = np.clip(val_fn(g, f, t, S), 0, 1)
@@ -564,7 +564,7 @@ def mask_gradient_v(g, start=0.0, end=1.0):
     return np.clip((g.rr / g.rows - start) / (end - start + 1e-10), 0, 1).astype(np.float32)
 
 def mask_gradient_radial(g, cx_frac=0.5, cy_frac=0.5, inner=0.0, outer=0.5):
-    """Radial gradient mask — bright at center, dark at edges."""
+    """Radial gradient mask: bright at center, dark at edges."""
     d = np.sqrt((g.cc / g.cols - cx_frac)**2 + (g.rr / g.rows - cy_frac)**2)
     return np.clip(1.0 - (d - inner) / (outer - inner + 1e-10), 0, 1)
 ```
@@ -667,7 +667,7 @@ def mask_wipe_v(g, t, t_start, t_end, direction="down"):
     return mask_gradient_v(g, start=progress - 0.05, end=progress + 0.05)
 
 def mask_dissolve(g, t, t_start, t_end, seed=42):
-    """Random pixel dissolve — noise threshold sweeps from 0 to 1."""
+    """Random pixel dissolve: noise threshold sweeps from 0 to 1."""
     progress = np.clip((t - t_start) / (t_end - t_start), 0, 1)
     rng = np.random.RandomState(seed)
     noise = rng.random((g.rows, g.cols)).astype(np.float32)
@@ -678,19 +678,19 @@ def mask_dissolve(g, t, t_start, t_end, seed=42):
 
 ```python
 def mask_union(a, b):
-    """OR — visible where either mask is active."""
+    """OR: visible where either mask is active."""
     return np.maximum(a, b)
 
 def mask_intersect(a, b):
-    """AND — visible only where both masks are active."""
+    """AND: visible only where both masks are active."""
     return np.minimum(a, b)
 
 def mask_subtract(a, b):
-    """A minus B — visible where A is active but B is not."""
+    """A minus B: visible where A is active but B is not."""
     return np.clip(a - b, 0, 1)
 
 def mask_invert(m):
-    """NOT — flip mask."""
+    """NOT: flip mask."""
     return 1.0 - m
 ```
 
@@ -716,7 +716,7 @@ def apply_mask_canvas(canvas, mask, bg_canvas=None):
     return np.clip(canvas * mask_px[:, :, None], 0, 255).astype(np.uint8)
 
 def apply_mask_vf(vf_a, vf_b, mask):
-    """Apply mask at value-field level — blend two value fields spatially.
+    """Apply mask at value-field level: blend two value fields spatially.
     All arrays are (rows, cols) float32."""
     return vf_a * mask + vf_b * (1 - mask)
 ```
@@ -800,7 +800,7 @@ bg = apply_text_backdrop(bg, frame_glyphs, padding=80, darkness=0.75)
 bg = text_renderer.render(bg, frame_glyphs, color=(255, 255, 255))
 ```
 
-Combine with **reverse vignette** (see shaders.md) for scenes where text is always centered — the reverse vignette provides a persistent center-dark zone, while the backdrop handles per-frame glyph positions.
+Combine with **reverse vignette** (see shaders.md) for scenes where text is always centered: the reverse vignette provides a persistent center-dark zone, while the backdrop handles per-frame glyph positions.
 
 ## External Layout Oracle Pattern
 

@@ -1,7 +1,7 @@
 # Design System: Cohere
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `JetBrains Mono`
@@ -15,15 +15,15 @@
 
 ## 1. Visual Theme & Atmosphere
 
-Cohere's interface is a polished enterprise command deck — confident, clean, and designed to make AI feel like serious infrastructure rather than a consumer toy. The experience lives on a bright white canvas where content is organized into generously rounded cards (22px radius) that create an organic, cloud-like containment language. This is a site that speaks to CTOs and enterprise architects: professional without being cold, sophisticated without being intimidating.
+Cohere's interface is a polished enterprise command deck: confident, clean, and designed to make AI feel like serious infrastructure rather than a consumer toy. The experience lives on a bright white canvas where content is organized into generously rounded cards (22px radius) that create an organic, cloud-like containment language. This is a site that speaks to CTOs and enterprise architects: professional without being cold, sophisticated without being intimidating.
 
 The design language bridges two worlds with a dual-typeface system: CohereText, a custom display serif with tight tracking, gives headlines the gravitas of a technology manifesto, while Unica77 Cohere Web handles all body and UI text with geometric Swiss precision. This serif/sans pairing creates a "confident authority meets engineering clarity" personality that perfectly reflects an enterprise AI platform.
 
-Color is used with extreme restraint — the interface is almost entirely black-and-white with cool gray borders (`#d9d9dd`, `#e5e7eb`). Purple-violet appears only in photographic hero bands, gradient sections, and the interactive blue (`#1863dc`) that signals hover and focus states. This chromatic restraint means that when color DOES appear — in product screenshots, enterprise photography, and the deep purple section — it carries maximum visual weight.
+Color is used with extreme restraint: the interface is almost entirely black-and-white with cool gray borders (`#d9d9dd`, `#e5e7eb`). Purple-violet appears only in photographic hero bands, gradient sections, and the interactive blue (`#1863dc`) that signals hover and focus states. This chromatic restraint means that when color DOES appear, in product screenshots, enterprise photography, and the deep purple section, it carries maximum visual weight.
 
 **Key Characteristics:**
 - Bright white canvas with cool gray containment borders
-- 22px signature border-radius — the distinctive "Cohere card" roundness
+- 22px signature border-radius: the distinctive "Cohere card" roundness
 - Dual custom typeface: CohereText (display serif) + Unica77 (body sans)
 - Enterprise-grade chromatic restraint: black, white, cool grays, minimal purple-blue accent
 - Deep purple/violet hero sections providing dramatic contrast
@@ -35,13 +35,13 @@ Color is used with extreme restraint — the interface is almost entirely black-
 
 ### Primary
 - **Cohere Black** (`#000000`): Primary headline text and maximum-emphasis elements.
-- **Near Black** (`#212121`): Standard body link color — slightly softer than pure black.
+- **Near Black** (`#212121`): Standard body link color, slightly softer than pure black.
 - **Deep Dark** (`#17171c`): A blue-tinted near-black for navigation and dark-section text.
 
 ### Secondary & Accent
-- **Interaction Blue** (`#1863dc`): The primary interactive accent — appears on button hover, focus states, and active links. The sole chromatic action color.
+- **Interaction Blue** (`#1863dc`): The primary interactive accent. Appears on button hover, focus states, and active links. The sole chromatic action color.
 - **Ring Blue** (`#4c6ee6` at 50%): Tailwind ring color for keyboard focus indicators.
-- **Focus Purple** (`#9b60aa`): Input focus border color — a muted violet.
+- **Focus Purple** (`#9b60aa`): Input focus border color, a muted violet.
 
 ### Surface & Background
 - **Pure White** (`#ffffff`): The primary page background and card surface.
@@ -49,9 +49,9 @@ Color is used with extreme restraint — the interface is almost entirely black-
 - **Lightest Gray** (`#f2f2f2`): Card borders and the softest containment lines.
 
 ### Neutrals & Text
-- **Muted Slate** (`#93939f`): De-emphasized footer links and tertiary text — a cool-toned gray with a slight blue-violet tint.
-- **Border Cool** (`#d9d9dd`): Standard section and list-item borders — a cool, slightly purple-tinted gray.
-- **Border Light** (`#e5e7eb`): Lighter border variant — Tailwind's standard gray-200.
+- **Muted Slate** (`#93939f`): De-emphasized footer links and tertiary text, a cool-toned gray with a slight blue-violet tint.
+- **Border Cool** (`#d9d9dd`): Standard section and list-item borders, a cool, slightly purple-tinted gray.
+- **Border Light** (`#e5e7eb`): Lighter border variant, Tailwind's standard gray-200.
 
 ### Gradient System
 - **Purple-Violet Hero Band**: Deep purple gradient sections that create dramatic contrast against the white canvas. These appear as full-width bands housing product screenshots and key messaging.
@@ -83,7 +83,7 @@ Color is used with extreme restraint — the interface is almost entirely black-
 | Code Micro | CohereMono | 8px (0.5rem) | 400 | 1.40 | 0.16px | Tiny uppercase code labels |
 
 ### Principles
-- **Serif for declaration, sans for utility**: CohereText carries the brand voice at display scale — its serif terminals give headlines the authority of published research. Unica77 handles everything functional with Swiss-geometric neutrality.
+- **Serif for declaration, sans for utility**: CohereText carries the brand voice at display scale, its serif terminals give headlines the authority of published research. Unica77 handles everything functional with Swiss-geometric neutrality.
 - **Negative tracking at scale**: CohereText uses -1.2px to -1.44px letter-spacing at 60–72px, creating dense, impactful text blocks.
 - **Single body weight**: Nearly all Unica77 usage is weight 400. Weight 500 appears only for small button emphasis. The system relies on size and spacing, not weight contrast.
 - **Uppercase code labels**: CohereMono uses uppercase with positive letter-spacing (0.16–0.28px) for technical tags and section markers.
@@ -98,7 +98,7 @@ Color is used with extreme restraint — the interface is almost entirely black-
 - No border visible
 - Hover: text shifts to Interaction Blue (`#1863dc`), opacity 0.8
 - Focus: solid 2px outline in Interaction Blue
-- The primary button style — invisible until interacted with
+- The primary button style: invisible until interacted with
 
 **Dark Solid**
 - Background: dark/black
@@ -113,15 +113,15 @@ Color is used with extreme restraint — the interface is almost entirely black-
 ### Cards & Containers
 - Background: Pure White (`#ffffff`)
 - Border: thin solid Lightest Gray (`1px solid #f2f2f2`) for subtle cards; Cool Border (`#d9d9dd`) for emphasized
-- Radius: **22px** — the signature Cohere radius for primary cards, images, and dialog containers. Also 4px, 8px, 16px, 20px for smaller elements
-- Shadow: minimal — Cohere relies on background color and borders rather than shadows
+- Radius: **22px**, the signature Cohere radius for primary cards, images, and dialog containers. Also 4px, 8px, 16px, 20px for smaller elements
+- Shadow: minimal, Cohere relies on background color and borders rather than shadows
 - Special: `0px 0px 22px 22px` radius (bottom-only rounding) for section containers
 - Dialog: 8px radius for modal/dialog boxes
 
 ### Inputs & Forms
 - Text: white on dark input, black on light
 - Focus border: Focus Purple (`#9b60aa`) with `1px solid`
-- Focus shadow: red ring (`rgb(179, 0, 0) 0px 0px 0px 2px`) — likely for error state indication
+- Focus shadow: red ring (`rgb(179, 0, 0) 0px 0px 0px 2px`), likely for error state indication
 - Focus outline: Interaction Blue solid 2px
 
 ### Navigation
@@ -174,7 +174,7 @@ Color is used with extreme restraint — the interface is almost entirely black-
 - Hero: centered with dramatic typography
 - Feature sections: multi-column card grids
 - Enterprise sections: full-width purple bands
-- 26 breakpoints detected — extremely granular responsive system
+- 26 breakpoints detected: extremely granular responsive system
 
 ### Whitespace Philosophy
 - **Enterprise clarity**: Each section presents one clear proposition with breathing room between.
@@ -186,7 +186,7 @@ Color is used with extreme restraint — the interface is almost entirely black-
 - Comfortable (8px): Dialog boxes, secondary containers, small cards
 - Generous (16px): Featured containers, medium cards
 - Large (20px): Large feature cards
-- Signature (22px): Primary cards, hero images, main containers — THE Cohere radius
+- Signature (22px): Primary cards, hero images, main containers, THE Cohere radius
 - Pill (9999px): Buttons, tags, status indicators
 
 ## 6. Depth & Elevation
@@ -202,7 +202,7 @@ Color is used with extreme restraint — the interface is almost entirely black-
 ## 7. Do's and Don'ts
 
 ### Do
-- Use 22px border-radius on all primary cards and containers — it's the visual signature
+- Use 22px border-radius on all primary cards and containers: it's the visual signature
 - Use CohereText for display headings (72px, 60px) with negative letter-spacing
 - Use Unica77 for all body and UI text at weight 400
 - Keep the palette black-and-white with cool gray borders
@@ -212,14 +212,14 @@ Color is used with extreme restraint — the interface is almost entirely black-
 - Maintain enterprise-appropriate photography with diverse subjects
 
 ### Don't
-- Don't use border-radius other than 22px on primary cards — the signature radius matters
-- Don't introduce warm colors — the palette is strictly cool-toned
-- Don't use heavy shadows — depth comes from color contrast and borders
-- Don't use bold (700+) weight on body text — 400–500 is the range
-- Don't skip the serif/sans hierarchy — CohereText for headlines, Unica77 for body
-- Don't use purple as a surface color for cards — purple is reserved for full-width sections
-- Don't reduce section spacing below 40px — enterprise layouts need breathing room
-- Don't use decoration on buttons by default — ghost/transparent is the base state
+- Don't use border-radius other than 22px on primary cards: the signature radius matters
+- Don't introduce warm colors: the palette is strictly cool-toned
+- Don't use heavy shadows: depth comes from color contrast and borders
+- Don't use bold (700+) weight on body text: 400–500 is the range
+- Don't skip the serif/sans hierarchy: CohereText for headlines, Unica77 for body
+- Don't use purple as a surface color for cards: purple is reserved for full-width sections
+- Don't reduce section spacing below 40px: enterprise layouts need breathing room
+- Don't use decoration on buttons by default: ghost/transparent is the base state
 
 ## 8. Responsive Behavior
 
@@ -233,7 +233,7 @@ Color is used with extreme restraint — the interface is almost entirely black-
 | Desktop | 1024–1440px | Full multi-column layout |
 | Large Desktop | 1440–2560px | Maximum container width |
 
-*26 breakpoints detected — one of the most granularly responsive sites in the dataset.*
+*26 breakpoints detected: one of the most granularly responsive sites in the dataset.*
 
 ### Touch Targets
 - Buttons adequately sized for touch interaction
@@ -272,8 +272,8 @@ Color is used with extreme restraint — the interface is almost entirely black-
 
 ### Iteration Guide
 1. Focus on ONE component at a time
-2. Always use 22px radius for primary cards — "the Cohere card roundness"
-3. Specify the typeface — CohereText for headlines, Unica77 for body, CohereMono for labels
+2. Always use 22px radius for primary cards: "the Cohere card roundness"
+3. Specify the typeface: CohereText for headlines, Unica77 for body, CohereMono for labels
 4. Interactive elements use Interaction Blue (#1863dc) on hover only
-5. Keep surfaces white with cool gray borders — no warm tones
+5. Keep surfaces white with cool gray borders: no warm tones
 6. Purple is for full-width sections, never card backgrounds

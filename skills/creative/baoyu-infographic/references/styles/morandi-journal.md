@@ -41,7 +41,7 @@ Hand-drawn doodle illustration with warm Morandi color tones and cozy bullet jou
 
 ## Style Enforcement
 
-- All imagery must maintain hand-drawn/doodle aesthetic—no digital precision
+- All imagery must maintain hand-drawn/doodle aesthetic: no digital precision
 - Organic, slightly imperfect shapes throughout
 - Sketch-like quality with visible line weight variations
 - Warm and cozy journal feel, not clinical or corporate

@@ -173,7 +173,7 @@ Portrait (1080x1920) has the same pixel count as landscape 1080p, so performance
 | Quote layout | 2-3 wide lines | 5-6 short lines |
 
 **Portrait-optimized patterns:**
-- Vertical rain/matrix effects are naturally enhanced — longer column travel
+- Vertical rain/matrix effects are naturally enhanced: longer column travel
 - Fire columns rise through more screen space
 - Rising embers/particles have more vertical runway
 - Text can be stacked more aggressively with more lines
@@ -285,16 +285,16 @@ def render_bg(self, color_field, palette=PAL_CIRCUIT):
 ### Usage in a Scene
 
 ```python
-# Build per-cell color from effect fields (cheap — rows*cols, not VH*VW)
+# Build per-cell color from effect fields (cheap: rows*cols, not VH*VW)
 hue = ((t * 0.05 + val * 0.2) % 1.0).astype(np.float32)
 R, G, B = hsv2rgb(hue, np.full_like(val, 0.5), val)
 color_field = mkc(R, G, B, g.rows, g.cols)  # (rows, cols, 3) uint8
 
-# Render background — single matrix multiply, no per-cell loop
+# Render background: single matrix multiply, no per-cell loop
 canvas_bg = g.render_bg(color_field, PAL_DENSE)
 ```
 
-The texture init loop runs once and is cached per palette. Per-frame cost is one fancy-index lookup + one broadcast multiply — orders of magnitude faster than the per-cell bitmap blit loop in `render()` for dense backgrounds.
+The texture init loop runs once and is cached per palette. Per-frame cost is one fancy-index lookup + one broadcast multiply: orders of magnitude faster than the per-cell bitmap blit loop in `render()` for dense backgrounds.
 
 ## Coordinate Array Caching
 
@@ -393,11 +393,11 @@ def render_text_layer(grid, rows_data, font):
 
     Args:
         grid: GridLayer instance (for oy, ch, ox, font metrics)
-        rows_data: list of (row_index, text_string, rgb_tuple) — one per row
+        rows_data: list of (row_index, text_string, rgb_tuple): one per row
         font: PIL ImageFont instance (grid.font)
 
     Returns:
-        uint8 array (VH, VW, 3) — canvas with rendered text
+        uint8 array (VH, VW, 3): canvas with rendered text
     """
     img = Image.new("RGB", (VW, VH), (0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -426,7 +426,7 @@ canvas_tickers = render_text_layer(g_md, rows_data, g_md.font)
 result = blend_canvas(canvas_bg, canvas_tickers, "screen", 0.9)
 ```
 
-This is purely a rendering optimization — same visual output, fewer draw calls. The grid's `render()` method is still needed for sparse character fields where characters are placed individually based on value fields.
+This is purely a rendering optimization: same visual output, fewer draw calls. The grid's `render()` method is still needed for sparse character fields where characters are placed individually based on value fields.
 
 ## Bloom Optimization
 
@@ -658,7 +658,7 @@ def cleanup_render_artifacts(segments_dir="segments", keep_final=True):
         os.remove(log)
         removed.append(log)
     
-    # 4. Feature cache (optional — useful to keep for re-renders)
+    # 4. Feature cache (optional: useful to keep for re-renders)
     # for cache in glob.glob("features_*.npz"):
     #     os.remove(cache)
     #     removed.append(cache)
@@ -677,12 +677,12 @@ if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
     cleanup_render_artifacts(segments_dir="segments")
     print(f"Done. Output: {output_path}")
 else:
-    print("WARNING: final output missing or empty — skipping cleanup")
+    print("WARNING: final output missing or empty: skipping cleanup")
 ```
 
 ### Temp File Best Practices
 
-- Use `tempfile.mkdtemp()` for segment directories — avoids polluting the project dir
+- Use `tempfile.mkdtemp()` for segment directories: avoids polluting the project dir
 - Name WAV extracts with `tempfile.mktemp(suffix=".wav")` so they're in the OS temp dir
 - For debugging, set `KEEP_INTERMEDIATES=1` env var to skip cleanup
-- Feature caches (`.npz`) are cheap to store and expensive to recompute — default to keeping them
+- Feature caches (`.npz`) are cheap to store and expensive to recompute: default to keeping them

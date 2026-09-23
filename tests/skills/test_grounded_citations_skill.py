@@ -104,7 +104,7 @@ def _seed(sources_mod, ledger: Path) -> list[dict]:
 def test_render_markdown_lists_ids_and_urls(sources_mod, ledger: Path) -> None:
     block = sources_mod.render_sources(_seed(sources_mod, ledger))
     assert block.startswith("## Sources")
-    assert "[1] https://a.example — Alpha" in block
+    assert "[1] https://a.example: Alpha" in block
     assert "[2] https://b.example" in block
 
 

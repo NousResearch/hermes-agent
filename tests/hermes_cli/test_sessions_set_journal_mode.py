@@ -45,7 +45,10 @@ def test_set_journal_mode_converts_wal_store_offline(tmp_path, monkeypatch, caps
     assert "wal → delete" in capsys.readouterr().out
 
 
-def test_set_journal_mode_refuses_while_another_process_holds_the_store(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("force", [False, True], ids=["normal", "deprecated-force"])
+def test_set_journal_mode_refuses_while_another_process_holds_the_store(
+    force, tmp_path, monkeypatch, capsys
+):
     db = tmp_path / "state.db"
     _wal_store(db)
     monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", db)
@@ -58,7 +61,8 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(tmp_path
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and not (tmp_path / "state.db-shm").exists():
             time.sleep(0.05)
-        assert cmd_sessions(_args("delete", force=False)) == 1
+        # --force is compatibility syntax, never a holder-verification bypass.
+        assert cmd_sessions(_args("delete", force=force)) == 1
     finally:
         holder.kill()
         holder.wait()

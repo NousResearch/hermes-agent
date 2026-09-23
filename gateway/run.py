@@ -7488,8 +7488,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         dashboard as ``needs_loop``; assistant prose is never treated as a
         receipt.
         """
-        from agent.action_mutations import get_action_journal, reviewed_mutation_spec
+        from agent.action_mutations import (
+            REVIEWED_MUTATIONS,
+            get_action_journal,
+            reviewed_mutation_spec,
+        )
         from gateway.becky_actions import OneShotResult
+        from model_tools import becky_one_shot_dispatch_scope
 
         del title, policy_version
         normalized = " ".join(
@@ -7501,7 +7506,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "message: the complete plain-text request"
         )
         if normalized == boilerplate or re.fullmatch(
-            rf"[A-Za-z][A-Za-z0-9 _-]{{0,64}} via Becky: {re.escape(boilerplate)}",
+            rf"[^:]{1,128} via [^:]{1,128}: {re.escape(boilerplate)}",
             normalized,
         ):
             return OneShotResult(schema_version="1", disposition="ignored", event=None)
@@ -7510,10 +7515,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         chat_id = str(getattr(config, "chat_id", "") or "")
         if not chat_id:
             return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+        # Proxy mode executes remotely and cannot carry the local hard
+        # dispatch gate or the profile-local mutation observer. Never allow a
+        # Shortcut request to become an unverified remote mutation.
+        try:
+            if self._get_proxy_url():
+                return OneShotResult(
+                    schema_version="1", disposition="needs_loop", event=None
+                )
+        except Exception:
+            return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
 
         source = SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id=chat_id,
+            # WEBHOOK has no platform adapter and disables progress delivery;
+            # the configured Telegram chat is used only for profile scoping.
+            platform=Platform.WEBHOOK,
+            chat_id="becky-shortcut",
             chat_type="dm",
             user_id="becky-shortcut",
             user_name="Becky Shortcut",
@@ -7531,15 +7548,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             f"default note destination is {note_default}."
         )
         try:
-            result = await self._run_agent(
-                message=str(text),
-                context_prompt=policy,
-                history=[],
-                source=source,
-                session_id=f"becky-one-shot-{idempotency_key}",
-                session_key=f"becky-one-shot:{idempotency_key}",
-                message_type="text",
-            )
+            allowed_tools = {
+                name for name, spec in REVIEWED_MUTATIONS.items() if spec.one_shot
+            }
+            with becky_one_shot_dispatch_scope(allowed_tools):
+                result = await self._run_agent(
+                    message=str(text),
+                    context_prompt=policy,
+                    history=[],
+                    source=source,
+                    session_id=f"becky-one-shot-{idempotency_key}",
+                    session_key=f"becky-one-shot:{idempotency_key}",
+                    message_type="text",
+                )
         except asyncio.CancelledError:
             raise
         except Exception:

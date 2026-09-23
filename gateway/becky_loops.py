@@ -1388,10 +1388,18 @@ class BeckyLoopsBridgeServer:
         except MutationConflict:
             raise _RemoteFailure("idempotency_conflict") from None
         except OneShotInProgress:
-            # Keep the closed dashboard error vocabulary. A pending durable
-            # claim is intentionally not retried remotely; callers must
-            # reconcile via the idempotent request key rather than create a
-            # second mutation.
+            # A crash can leave the request ledger pending after the common
+            # observer has already committed the mutation. Reconstruct the
+            # safe terminal result from that durable event instead of making a
+            # completed action look unavailable forever. If no event exists,
+            # keep the closed dashboard vocabulary and never execute twice.
+            existing = self.action_journal.get(request.idempotency_key)
+            if existing is not None:
+                return OneShotResult(
+                    schema_version="1",
+                    disposition=existing.status.value,
+                    event=existing.model_copy(update={"requires_receipt": True}),
+                ).model_dump(mode="json")
             raise _RemoteFailure("one_shot_not_configured") from None
         if replay is not None:
             try:
@@ -2667,6 +2675,11 @@ async def start_becky_loops_bridge(
                     thread_id = progress.get("thread_id")
                     message_id = progress.get("message_id")
                     session_id = progress.get("session_id")
+                    if stage == "message_sending" and not message_id:
+                        # The Bot API may have accepted a message before the
+                        # gateway lost its response. Do not post a duplicate;
+                        # surface an incomplete operation for reconciliation.
+                        raise RuntimeError("action loop message delivery is ambiguous")
                     if not isinstance(thread_id, str) or not _POSITIVE_TELEGRAM_ID_RE.fullmatch(thread_id):
                         thread_id = await create_topic(
                             chat_id=config.chat_id,
@@ -2682,6 +2695,10 @@ async def start_becky_loops_bridge(
                         or not isinstance(message_id, str)
                         or not message_id
                     ):
+                        action_journal.update_start_loop_progress(
+                            idempotency_key,
+                            {"stage": "message_sending", "thread_id": thread_id},
+                        )
                         receipt = await topic_sender.send_topic(
                             chat_id=config.chat_id,
                             thread_id=thread_id,

@@ -47,6 +47,71 @@ _post_tool_call_hook_suppressed: ContextVar[bool] = ContextVar(
 )
 
 
+class _BeckyOneShotDispatchState:
+    """Context-local hard gate for the private one-shot execution path."""
+
+    __slots__ = ("allowed", "used", "claimed_for_handler", "lock")
+
+    def __init__(self, allowed: frozenset[str]) -> None:
+        self.allowed = allowed
+        self.used = False
+        self.claimed_for_handler: dict[str, int] = {}
+        self.lock = threading.Lock()
+
+
+_becky_one_shot_dispatch: ContextVar[_BeckyOneShotDispatchState | None] = ContextVar(
+    "becky_one_shot_dispatch", default=None
+)
+
+
+@contextmanager
+def becky_one_shot_dispatch_scope(allowed_tools: set[str] | frozenset[str]):
+    """Permit at most one exact reviewed tool dispatch in one-shot mode.
+
+    This guard is intentionally below model/tool selection and above every
+    registered handler.  Prompt instructions are advisory; this context gate
+    is the authorization boundary that prevents terminal, search, read-only,
+    unsupported, or second mutation calls from reaching a handler.
+    """
+    state = _BeckyOneShotDispatchState(frozenset(allowed_tools))
+    token = _becky_one_shot_dispatch.set(state)
+    try:
+        yield
+    finally:
+        _becky_one_shot_dispatch.reset(token)
+
+
+def becky_one_shot_dispatch_claim(
+    function_name: str, *, outer: bool = False
+) -> bool | None:
+    """Claim one one-shot dispatch, or return ``None`` outside that mode.
+
+    The outer agent executor calls this before its inline runtime branches.
+    Registry-backed calls then pass through :func:`handle_function_call`; the
+    short-lived per-name handoff lets that inner path consume the same claim
+    without spending the one-call budget a second time.
+    """
+    state = _becky_one_shot_dispatch.get()
+    if state is None:
+        return None
+    name = str(function_name)
+    with state.lock:
+        pending = state.claimed_for_handler.get(name, 0)
+        if pending and not outer:
+            if pending == 1:
+                state.claimed_for_handler.pop(name, None)
+            else:
+                state.claimed_for_handler[name] = pending - 1
+            return True
+        if name not in state.allowed or state.used:
+            state.used = True
+            return False
+        state.used = True
+        if outer:
+            state.claimed_for_handler[name] = pending + 1
+        return True
+
+
 @contextmanager
 def suppress_post_tool_call_hook():
     """Let an outer executor own the terminal post-tool event."""
@@ -1261,6 +1326,14 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+    one_shot_claim = becky_one_shot_dispatch_claim(function_name)
+    if one_shot_claim is False:
+        # Do not invoke post-tool observers for a call that never reached a
+        # handler; in particular, a blocked reviewed tool must not be mistaken
+        # for a failed external mutation.
+        return tool_error(
+            "This private one-shot permits exactly one reviewed create tool call."
+        )
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────

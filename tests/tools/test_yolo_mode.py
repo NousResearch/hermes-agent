@@ -1,6 +1,10 @@
 """Tests for --yolo (HERMES_YOLO_MODE) approval bypass."""
 
 import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 import tools.approval as approval_module
@@ -101,10 +105,18 @@ class TestYoloMode:
         assert called["value"] is False
 
     def test_yolo_mode_not_set_by_default(self):
-        """HERMES_YOLO_MODE should not be set by default."""
-        # Clean env check — if it happens to be set in test env, that's fine,
-        # we just verify the mechanism exists
-        assert os.getenv("HERMES_YOLO_MODE") is None or True  # no-op, documents intent
+        """A clean environment must not enable YOLO; the flag is frozen at import time."""
+        code = "import tools.approval as a; raise SystemExit(0 if not a._YOLO_MODE_FROZEN else 1)"
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parents[2]),
+            env={k: v for k, v in os.environ.items() if k != "HERMES_YOLO_MODE"},
+        )
+        assert result.returncode == 0, (
+            f"YOLO bypass enabled without HERMES_YOLO_MODE:\n{result.stderr}"
+        )
 
 
     @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])

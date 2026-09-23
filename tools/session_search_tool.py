@@ -288,7 +288,9 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
                           "get_session failed for title match %s", session_id) or {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
         return None
-    messages = _quiet(lambda: db.get_messages(session_id), [], "get_messages failed for title match %s", session_id)
+    messages = [m for m in _quiet(lambda: db.get_messages(session_id), [],
+                                 "get_messages failed for title match %s", session_id)
+                if m.get("display_kind") != "hidden"]
     anchor_id = messages[0].get("id") if messages else None
     view = {} if anchor_id is None else _quiet(
         lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
@@ -543,7 +545,8 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     session_meta = _get_session_meta(db, session_id)
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
-    view, err = _loud(lambda: db.get_messages_around(session_id, around_message_id, window=window),
+    view, err = _loud(lambda: db.get_messages_around(session_id, around_message_id, window=window,
+                                                     search_visible=True),
                       "get_messages_around failed: %s", "failed to load messages")
     if err:
         return err
@@ -553,7 +556,7 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
         # Lineage rebind: the caller paired a parent session_id with a message id
         # living in a descendant — serve the owner's window transparently.
         rebind_view = _same_lineage(db, session_id, owning) and _quiet(
-            lambda: db.get_messages_around(owning, around_message_id, window=window),
+            lambda: db.get_messages_around(owning, around_message_id, window=window, search_visible=True),
             None, "rebind get_messages_around failed: %s", with_exc=True)
         if rebind_view and rebind_view.get("window"):
             extra["warning"] = (f"around_message_id {around_message_id} lives in {owning} "

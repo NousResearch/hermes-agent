@@ -1100,19 +1100,23 @@ class SessionMessagesMixin:
                     ORDER BY id ASC""",
                 chunk)]
 
-    def get_messages_around(self, session_id: str, around_message_id: int, window: int = 5) -> Dict[str, Any]:
+    def get_messages_around(self, session_id: str, around_message_id: int, window: int = 5,
+                            search_visible: bool = False) -> Dict[str, Any]:
         """Up to *window* messages either side of an anchor id (ascending). ``messages_before``/``_after`` count
-        strictly around the anchor (fewer than *window* = session boundary). Empty for a foreign anchor."""
+        strictly around the anchor (fewer than *window* = session boundary). Empty for a foreign anchor.
+        ``search_visible`` skips hidden and rewound rows while retaining compaction archives."""
         window = max(window, 0)
+        visible = (" AND (active = 1 OR compacted = 1) AND COALESCE(display_kind, '') <> 'hidden'"
+                   if search_visible else "")
         with self._read_ctx() as conn:
-            if not conn.execute("SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+            if not conn.execute(f"SELECT 1 FROM messages WHERE id = ? AND session_id = ?{visible} LIMIT 1",
                                 (around_message_id, session_id)).fetchone():
                 return {"window": [], "messages_before": 0, "messages_after": 0}
             before_rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? AND id <= ? ORDER BY id DESC LIMIT ?",
+                f"SELECT * FROM messages WHERE session_id = ? AND id <= ?{visible} ORDER BY id DESC LIMIT ?",
                 (session_id, around_message_id, window + 1)).fetchall()
             after_rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+                f"SELECT * FROM messages WHERE session_id = ? AND id > ?{visible} ORDER BY id ASC LIMIT ?",
                 (session_id, around_message_id, window)).fetchall()
         window_msgs = [self._row_to_message_dict(r, warn_context="get_messages_around", summary_flag=False)
                        for r in (*reversed(before_rows), *after_rows)]

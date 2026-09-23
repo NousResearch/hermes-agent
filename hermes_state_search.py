@@ -56,6 +56,7 @@ _LIKE_COALESCED_COLUMN_SQL = (
 # ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
 # Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
+# Context follows the hit visibility rule, including the include_inactive opt-in.
 _CONTEXT_WINDOW_SQL = """WITH target AS (
     SELECT session_id, timestamp, id FROM messages WHERE id IN ({ids})
 )
@@ -64,11 +65,17 @@ FROM target t JOIN messages m ON m.id IN (
     t.id,
     (SELECT p.id FROM messages p
      WHERE p.session_id = t.session_id AND (p.timestamp, p.id) < (t.timestamp, t.id)
+       AND (? OR p.active = 1 OR p.compacted = 1)
+       AND COALESCE(p.display_kind, '') <> 'hidden'
      ORDER BY p.timestamp DESC, p.id DESC LIMIT 1),
     (SELECT n.id FROM messages n
      WHERE n.session_id = t.session_id AND (n.timestamp, n.id) > (t.timestamp, t.id)
+       AND (? OR n.active = 1 OR n.compacted = 1)
+       AND COALESCE(n.display_kind, '') <> 'hidden'
      ORDER BY n.timestamp, n.id LIMIT 1)
 )
+WHERE (? OR m.active = 1 OR m.compacted = 1)
+  AND COALESCE(m.display_kind, '') <> 'hidden'
 ORDER BY t.id, m.timestamp, m.id"""
 # Unified Ideographs, Extension A, Extension B, CJK Symbols, Hiragana, Katakana, Hangul Syllables.
 _CJK_RANGES = (
@@ -711,10 +718,10 @@ class SessionSearchMixin:
         goal and the resolution of a long session. ``window`` is filtered to ``keep_roles``
         (None disables) EXCEPT the anchor; ``bookend_start`` / ``bookend_end`` are the
         first/last ``bookend`` non-empty-content messages with ids strictly outside the
-        window (empty when it overlaps the head/tail). Empty result when the anchor isn't
-        in the session."""
+        window (empty when it overlaps the head/tail). Hidden and rewound rows are omitted;
+        compaction archives remain visible. Empty result when the anchor isn't in the session."""
         bookend = max(bookend, 0)
-        primitive = self.get_messages_around(session_id, around_message_id, window=window)
+        primitive = self.get_messages_around(session_id, around_message_id, window=window, search_visible=True)
         window_rows = primitive["window"]
         if not window_rows:
             return {"window": [], "messages_before": 0, "messages_after": 0, "bookend_start": [], "bookend_end": []}
@@ -733,6 +740,7 @@ class SessionSearchMixin:
                     return conn.execute(
                         f"SELECT * FROM messages "
                         f"WHERE session_id = ? AND id {op} ?{role_clause} "
+                        "AND (active = 1 OR compacted = 1) AND COALESCE(display_kind, '') <> 'hidden' "
                         f"AND length(content) > 0 "
                         f"ORDER BY id {order} LIMIT ?",
                         (session_id, boundary_id, *role_params, bookend),
@@ -1005,7 +1013,8 @@ class SessionSearchMixin:
             self._fts_enabled = self._trigram_available = self._fts_cjk_available = False
 
     def _finalize_search_matches(
-        self, matches: List[Dict[str, Any]], result_fields: Optional[Collection[str]] = None) -> List[Dict[str, Any]]:
+        self, matches: List[Dict[str, Any]], result_fields: Optional[Collection[str]] = None,
+        include_inactive: bool = False) -> List[Dict[str, Any]]:
         """Attach neighboring messages in bounded batches, only when context is requested."""
         if result_fields is None or "context" in result_fields:
             for start in range(0, len(matches), 500):
@@ -1014,7 +1023,8 @@ class SessionSearchMixin:
                 try:
                     sql = _CONTEXT_WINDOW_SQL.format(ids=",".join("?" for _ in contexts))
                     with self._read_ctx() as conn:
-                        rows = conn.execute(sql, list(contexts)).fetchall()
+                        rows = conn.execute(
+                            sql, [*contexts, include_inactive, include_inactive, include_inactive]).fetchall()
                     for row in rows:
                         contexts[row["match_id"]].append(row)
                 except Exception:
@@ -1084,11 +1094,13 @@ class SessionSearchMixin:
         # opt-in full-body path and scans canonical rows via LIKE.
         if role_filter and "tool" in role_filter:
             matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
-            return self._finalize_search_matches(matches, result_fields=result_fields)
+            return self._finalize_search_matches(
+                matches, result_fields=result_fields, include_inactive=include_inactive)
         self._refresh_fts_stale_state()
         if self._fts_stale:
             matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
-            return self._finalize_search_matches(matches, result_fields=result_fields)
+            return self._finalize_search_matches(
+                matches, result_fields=result_fields, include_inactive=include_inactive)
         if not self._fts_enabled:
             return []
 
@@ -1162,7 +1174,8 @@ class SessionSearchMixin:
                 matches = self._match_rows("messages_fts", relaxed, fail_open="OR-relaxed",
                                            operational_debug="OR-relaxed FTS retry failed; keeping empty result",
                                            **route) or matches
-        return self._finalize_search_matches(matches, result_fields=result_fields)
+        return self._finalize_search_matches(
+            matches, result_fields=result_fields, include_inactive=include_inactive)
 
     def _search_cjk(self, query: str, wants_unindexed_rows: bool, route: Dict[str, Any]) -> List[Dict[str, Any]]:
         """CJK routing: the unicode61 table splits CJK into single characters (false positives,

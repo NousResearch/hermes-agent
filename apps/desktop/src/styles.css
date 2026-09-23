@@ -1697,6 +1697,14 @@ body.guest-pointer-lock :is(webview, iframe) {
   top: var(--sticky-human-offset);
 }
 
+/* useStickyPromptClip writes this value on each frame during a scroll. It is
+   not inherited. A write recalculates the style of only this element. */
+@property --sticky-prompt-clip {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
 /* The sticky prompt owns no field paint. Clip only the scrolling siblings
    behind it, including the top gap, so bubble transparency still works. */
 [data-sticky-prompt-clip] {

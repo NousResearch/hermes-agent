@@ -255,7 +255,7 @@ function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () 
             title={`${diag.title}${diag.count > 1 ? ` ×${diag.count}` : ''}`}
             tone={tone}
           >
-            <p className="whitespace-pre-wrap text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">
+            <p className="whitespace-pre-wrap text-[0.6875rem] leading-relaxed text-(--ui-text-secondary)">
               {diag.detail}
             </p>
             {actions.length > 0 && (
@@ -671,7 +671,7 @@ function FeedTabs({
       {tab === 'comments' && (
         <>
           {detail.comments.length > 0 && (
-            <ul className="flex flex-col gap-2">
+            <ul className="flex flex-col gap-3">
               {detail.comments.map(comment => (
                 <li className="flex flex-col gap-0.5" key={comment.id}>
                   <div className="flex items-baseline gap-2 text-[0.75rem]">
@@ -714,7 +714,7 @@ function FeedTabs({
               const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
 
               return (
-                <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
+                <li className="flex flex-col gap-0.5 text-[0.6875rem]" key={run.id}>
                   <div className="flex items-center gap-2">
                     <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
                       {run.outcome ?? run.status}
@@ -989,10 +989,10 @@ export function TaskDrawer({
           ) : (
             <div className="flex min-h-0 flex-1">
               <div className="min-w-0 flex-1 overflow-y-auto px-5 pb-5">
-                <div className="flex flex-col gap-4 text-sm">
+                <div className="flex flex-col gap-5">
                   {task.status === 'ready' && !task.assignee && !defaultAssignee && (
                     <Callout title={k.readyUnassignedTitle} tone={SEVERITY_TONE.warning}>
-                      <p className="text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">
+                      <p className="text-[0.6875rem] leading-relaxed text-(--ui-text-secondary)">
                         {k.readyUnassignedBody}
                       </p>
                     </Callout>

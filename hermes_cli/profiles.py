@@ -1919,6 +1919,27 @@ def get_active_profile_name() -> str:
     return "custom"
 
 
+def current_profile_name(default: str | None = None) -> str | None:
+    """Identity of the profile the current task runs FOR: the ``HERMES_HOME`` override when one is
+    bound (a multiplexed cron tick, a routed gateway turn), else a launcher-pinned
+    ``HERMES_PROFILE_NAME``/``HERMES_PROFILE`` (the kanban dispatcher pins it on its workers), else
+    the name derived from the process's ``HERMES_HOME``; *default* when nothing names a profile.
+
+    The env pin is read only outside an override: ``os.environ`` is the LAUNCH profile's, so under
+    an override it would re-label a served profile's board writes with the host's identity.
+    """
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is None:
+        for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+            value = (os.environ.get(env_name) or "").strip()
+            if value:
+                return value
+    try:
+        return get_active_profile_name() or default
+    except Exception:
+        return default
+
+
 # Export / Import
 
 def _inside_git_checkout(path: Path) -> bool:

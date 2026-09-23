@@ -139,28 +139,15 @@ _UNDECLARED_ARGS: dict[str, frozenset[str]] = {
 def _persisted_identity() -> str:
     """Profile name persisted into board records (comment author, task creator).
 
-    Resolution mirrors ``hermes_cli.kanban._profile_author`` and
-    ``cron.lifecycle_guard._current_profile_name``: environment first (the
-    dispatcher pins ``HERMES_PROFILE``; some launchers set
-    ``HERMES_PROFILE_NAME``), else the active profile derived from
-    ``HERMES_HOME`` via ``hermes_cli.profiles.get_active_profile_name``, else
-    the generic ``"worker"`` fallback. Never taken from tool args: board
-    records are injected into future workers' prompts, so a caller-supplied
+    ``hermes_cli.profiles.current_profile_name`` resolves the profile this call runs FOR — the bound
+    home override under a multiplexed tick or turn, else the dispatcher's ``HERMES_PROFILE`` pin,
+    else the process home; the generic ``"worker"`` only when nothing names a profile. Never taken
+    from tool args: board records are injected into future workers' prompts, so a caller-supplied
     identity could forge an authoritative-looking author (see #19713).
     """
-    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
-        value = (os.environ.get(env_name) or "").strip()
-        if value:
-            return value
-    try:
-        from hermes_cli.profiles import get_active_profile_name
+    from hermes_cli.profiles import current_profile_name
 
-        active = (get_active_profile_name() or "").strip()
-        if active:
-            return active
-    except Exception:
-        logger.debug("kanban identity: active-profile lookup failed", exc_info=True)
-    return "worker"
+    return current_profile_name("worker") or "worker"
 
 
 def _kanban_handler(tool_name: str) -> Callable:
@@ -1103,13 +1090,10 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     chat_type = env("HERMES_SESSION_CHAT_TYPE", "") or None
     thread_id = env("HERMES_SESSION_THREAD_ID", "") or None
     message_id = env("HERMES_SESSION_MESSAGE_ID", "") or ""
-    notifier_profile = env("HERMES_SESSION_PROFILE", "") or os.environ.get("HERMES_PROFILE")
+    notifier_profile = env("HERMES_SESSION_PROFILE", "")
     if not notifier_profile:
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-            notifier_profile = get_active_profile_name() or "default"
-        except Exception:
-            notifier_profile = "default"
+        from hermes_cli.profiles import current_profile_name
+        notifier_profile = current_profile_name("default")
     delivery_metadata: dict[str, Any] = {
         k: v for k, v in (
             ("thread_id", thread_id), ("chat_type", chat_type),

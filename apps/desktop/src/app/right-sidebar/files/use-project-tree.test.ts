@@ -63,6 +63,25 @@ describe('useProjectTree', () => {
     expect(result.current.data.find(n => n.name === 'README.md')?.isDirectory).toBe(false)
   })
 
+  it('keeps concurrent roots isolated', async () => {
+    readDir.mockImplementation(async path =>
+      path === '/first'
+        ? ok([{ name: 'first.txt', path: '/first/first.txt', isDirectory: false }])
+        : ok([{ name: 'second.txt', path: '/second/second.txt', isDirectory: false }])
+    )
+
+    const { result } = renderHook(() => ({ first: useProjectTree('/first'), second: useProjectTree('/second') }))
+
+    await waitFor(() => {
+      expect(result.current.first.data.map(node => node.name)).toEqual(['first.txt'])
+      expect(result.current.second.data.map(node => node.name)).toEqual(['second.txt'])
+    })
+
+    act(() => result.current.first.setNodeOpen('/first', true))
+    expect(result.current.first.openState).toEqual({ '/first': true })
+    expect(result.current.second.openState).toEqual({})
+  })
+
   it('records rootError when readDir returns an error', async () => {
     readDir.mockResolvedValueOnce({ entries: [], error: 'EACCES' })
 

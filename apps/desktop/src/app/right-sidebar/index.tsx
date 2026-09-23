@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
+import { $activeProjectId, $projects } from '@/store/projects'
 import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
@@ -32,11 +33,54 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const currentCwd = useStore($currentCwd).trim()
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const workspaceCwdOwner = useStore($workspaceCwdOwner)
+  const activeProjectId = useStore($activeProjectId)
+  const projects = useStore($projects)
 
   // A transition intentionally retains the old CWD until the new session
   // confirms its workspace. Do not issue a filesystem read against that path:
   // under a gateway switch it may belong to a different remote machine.
   const hasWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
+  const activeProject = projects.find(project => project.id === activeProjectId)
+  const projectRoots = activeProject?.folders.map(folder => folder.path.trim()).filter(Boolean) ?? []
+  const roots = hasWorkspace && projectRoots.length > 1 ? [...new Set(projectRoots)] : [currentCwd]
+
+  return (
+    <aside
+      aria-label={r.aria}
+      className={cn(
+        'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)',
+        panesFlipped
+          ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+          : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+      )}
+    >
+      {roots.length > 1 ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {roots.map(root => (
+            <FilesystemRoot
+              cwd={root}
+              hasWorkspace={hasWorkspace}
+              key={root}
+              onActivateFile={onActivateFile}
+              onActivateFolder={onActivateFolder}
+            />
+          ))}
+        </div>
+      ) : (
+        <FilesystemRoot
+          cwd={roots[0]}
+          hasWorkspace={hasWorkspace}
+          onActivateFile={onActivateFile}
+          onActivateFolder={onActivateFolder}
+        />
+      )}
+    </aside>
+  )
+}
+
+function FilesystemRoot({ cwd, hasWorkspace, onActivateFile, onActivateFolder }: RightSidebarPaneProps & { cwd: string; hasWorkspace: boolean }) {
+  const { t } = useI18n()
+  const r = t.rightSidebar
 
   const {
     collapseAll,
@@ -51,15 +95,9 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     setNodeOpen,
     setShowIgnored,
     showIgnored
-  } = useProjectTree(hasWorkspace ? currentCwd : '')
+  } = useProjectTree(hasWorkspace ? cwd : '')
 
-  const cwdName =
-    effectiveCwd
-      .split(/[\\/]+/)
-      .filter(Boolean)
-      .pop() ?? effectiveCwd
-
-  const canCollapse = Object.values(openState).some(Boolean)
+  const cwdName = effectiveCwd.split(/[\\/]+/).filter(Boolean).pop() ?? effectiveCwd
 
   const previewFile = async (path: string) => {
     try {
@@ -76,36 +114,26 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   }
 
   return (
-    <aside
-      aria-label={r.aria}
-      className={cn(
-        'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)',
-        panesFlipped
-          ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
-          : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
-      )}
-    >
-      <FilesystemTab
-        canCollapse={canCollapse}
-        collapseNonce={collapseNonce}
-        cwd={effectiveCwd}
-        cwdName={cwdName}
-        data={data}
-        error={rootError}
-        hasWorkspace={hasWorkspace}
-        loading={rootLoading}
-        onActivateFile={onActivateFile}
-        onActivateFolder={onActivateFolder}
-        onCollapseAll={collapseAll}
-        onLoadChildren={loadChildren}
-        onNodeOpenChange={setNodeOpen}
-        onPreviewFile={previewFile}
-        onRefresh={() => void refreshRoot()}
-        onToggleShowIgnored={() => setShowIgnored(!showIgnored)}
-        openState={openState}
-        showIgnored={showIgnored}
-      />
-    </aside>
+    <FilesystemTab
+      canCollapse={Object.values(openState).some(Boolean)}
+      collapseNonce={collapseNonce}
+      cwd={effectiveCwd}
+      cwdName={cwdName}
+      data={data}
+      error={rootError}
+      hasWorkspace={hasWorkspace}
+      loading={rootLoading}
+      onActivateFile={onActivateFile}
+      onActivateFolder={onActivateFolder}
+      onCollapseAll={collapseAll}
+      onLoadChildren={loadChildren}
+      onNodeOpenChange={setNodeOpen}
+      onPreviewFile={previewFile}
+      onRefresh={() => void refreshRoot()}
+      onToggleShowIgnored={() => setShowIgnored(!showIgnored)}
+      openState={openState}
+      showIgnored={showIgnored}
+    />
   )
 }
 

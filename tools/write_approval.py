@@ -61,12 +61,24 @@ def _normalize_enabled(value: Any) -> bool:
 
 # --- Pending store (file-backed) ---
 
+# The id is a record key typed back by the operator (``/memory reject <id>``), not a path: without
+# this, ``../../auth`` resolved to ``<HERMES_HOME>/auth.json`` for get_pending and discard_pending.
+_PENDING_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def _pending_dir(subsystem: str) -> Path:
+    return get_hermes_home() / "pending" / subsystem
+
+
 def _pending_path(subsystem: str, pending_id: str) -> Path:
-    return get_hermes_home() / "pending" / subsystem / f"{pending_id}.json"
+    """Raises ValueError for an id that is not a plain record key (no separator, dot or leading dash)."""
+    if not isinstance(pending_id, str) or not _PENDING_ID_RE.fullmatch(pending_id):
+        raise ValueError(f"invalid pending id: {pending_id!r}")
+    return _pending_dir(subsystem) / f"{pending_id}.json"
 
 
 def _pending_files(subsystem: str) -> list:
-    d = _pending_path(subsystem, "").parent
+    d = _pending_dir(subsystem)
     return list(d.glob("*.json")) if d.exists() else []
 
 
@@ -105,7 +117,10 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
     """Return a single pending record by id, or None."""
-    path = _pending_path(subsystem, pending_id)
+    try:
+        path = _pending_path(subsystem, pending_id)
+    except ValueError:
+        return None
     if not path.exists():
         return None
     try:
@@ -119,6 +134,9 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     """Delete a pending record. Returns True if it existed."""
     try:
         path = _pending_path(subsystem, pending_id)
+    except ValueError:
+        return False
+    try:
         if path.exists():
             path.unlink()
             return True
@@ -129,7 +147,7 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
 
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
-    d = _pending_path(subsystem, "").parent
+    d = _pending_dir(subsystem)
     if not d.exists():
         return 0
     with suppress(Exception):

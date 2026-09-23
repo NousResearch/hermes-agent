@@ -250,6 +250,41 @@ class TestMemoryEndpoints:
             "/api/memory/reset", json={"target": "bogus"}
         ).status_code == 400
 
+    def test_plugins_hub_provider_options_under_multiplex_fail_closed(self):
+        """The plugins hub must not mark memory providers 'unavailable' once the
+        dashboard hosts multiple profiles.
+
+        Regression: ``_merged_plugins_hub`` calls ``_discover_memory_provider_statuses``
+        without a secret scope. On a multiplexed host the provider schema probe
+        (mem0's ``get_config_schema`` -> ``get_secret``) raises
+        ``UnscopedSecretError``; ``probe_availability`` swallows it and every
+        provider renders 'unavailable' in the dashboard's plugins page with no
+        user-visible error. The hub is built for the dashboard's own (launch)
+        profile, so it must bind that scope explicitly.
+        """
+        import agent.secret_scope as _ss
+        from tui_gateway.launch_profile_policy import capture_launch_env
+
+        # Emulate the dashboard boot: freeze the launch env, then flip to
+        # fail-closed multi-profile hosting.
+        capture_launch_env()
+        _ss.set_multiplex_active(True)
+        try:
+            hub = self.client.get("/api/dashboard/plugins/hub")
+            assert hub.status_code == 200, hub.text
+            providers = hub.json().get("providers", {}).get("memory_options", [])
+            assert providers, "expected the hub to list memory provider options"
+            # Without the fix, the mem0 schema probe runs unscoped, get_secret
+            # fail-closes, probe_availability swallows it, and mem0 renders
+            # 'unavailable'. With the launch scope bound, mem0 resolves to at
+            # least needs_config — never silently unavailable.
+            mem0 = next((p for p in providers if p["name"] == "mem0"), None)
+            if mem0 is not None:
+                assert mem0["status"] != "unavailable", \
+                    f"mem0 unavailable under multiplex: {mem0}"
+        finally:
+            _ss.set_multiplex_active(False)
+
 
 class TestPairingEndpoints:
     @pytest.fixture(autouse=True)

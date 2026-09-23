@@ -119,6 +119,19 @@ def _status_model_route(
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider")), {}))
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")), {})
+    if not row_route[1]:
+        # No billed route on the row yet (the turn fell over to a fallback provider and no API call
+        # has been accounted): the route that actually served it is persisted in
+        # ``model_config.gateway_runtime`` by ``_sync_session_model_from_agent``. Read it through the
+        # canonical reader so the displayed provider and the endpoint the context lookup queries come
+        # from ONE source, never a mixed provider/base_url pair.
+        from hermes_state import SessionDB
+        runtime = SessionDB.session_gateway_runtime(session_row) or {}
+        runtime_provider = _clean_str(runtime.get("provider"))
+        if runtime_provider:
+            runtime_base_url = _clean_str(runtime.get("base_url"))
+            row_route = (row_route[0], runtime_provider,
+                         {"base_url": runtime_base_url} if runtime_base_url else {})
     # First fully-resolved (model AND provider) route wins; the SessionDB row is used even if partial.
     model_name, provider_name, route = next((r for r in routes if r[0] and r[1]), row_route)
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
@@ -654,7 +667,16 @@ class GatewayStatusCommandsMixin:
             return persisted, route if isinstance(route, dict) else {}
         persisted, recent = await _quiet(_rows, ({}, {}))
         row = recent if recent.get("billing_provider") else persisted
-        return row.get("billing_provider"), row.get("billing_base_url")
+        provider = row.get("billing_provider")
+        base_url = row.get("billing_base_url")
+        if not provider:
+            # Same gap as /status: with nothing accounted yet the served route exists only in the
+            # persisted runtime snapshot. provider AND base_url must come from that one source.
+            from hermes_state import SessionDB
+            runtime = SessionDB.session_gateway_runtime(persisted) or {}
+            provider = _clean_str(runtime.get("provider")) or provider
+            base_url = _clean_str(runtime.get("base_url")) or base_url
+        return provider, base_url
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights [N | --days N] [--source S] -- usage insights and analytics."""

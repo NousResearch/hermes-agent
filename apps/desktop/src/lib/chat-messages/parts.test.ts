@@ -8,6 +8,23 @@ const SPACED = '/home/hermes/Morten - Nobly Kickoff - Opening and cue cards EN.d
 const CARD = `[File: Morten - Nobly Kickoff - Opening and cue cards EN.docx](#media:${encodeURIComponent(SPACED)})`
 
 describe('renderMediaTags with interior spaces', () => {
+  it('preserves an authored Markdown link label around MEDIA destinations', () => {
+    expect(renderMediaTags('[Editable memo (Word)](MEDIA:/tmp/report.docx)')).toBe(
+      '[Editable memo (Word)](#media:%2Ftmp%2Freport.docx)'
+    )
+    expect(renderMediaTags('[memo](MEDIA:`/tmp/AI Brain/report.docx`)')).toBe(
+      '[memo](#media:%2Ftmp%2FAI%20Brain%2Freport.docx)'
+    )
+  })
+
+  it('handles whitespace and angle-bracket Markdown link destinations', () => {
+    const href = '#media:%2Ftmp%2Freport.docx'
+
+    expect(renderMediaTags('[Memo]( MEDIA:/tmp/report.docx )')).toBe(`[Memo]( ${href} )`)
+    expect(renderMediaTags('[Memo](<MEDIA:/tmp/report.docx>)')).toBe(`[Memo](<${href}>)`)
+    expect(renderMediaTags('[Memo](<MEDIA:/tmp/My Report.docx>)')).toBe('[Memo](<#media:%2Ftmp%2FMy%20Report.docx>)')
+  })
+
   it('keeps the whole spaced path in one card on every surface that reads MEDIA tags', () => {
     expect(renderMediaTags(`MEDIA:${SPACED}`)).toBe(CARD)
     expect(renderMediaTags(`Here you go: MEDIA:${SPACED} — enjoy`)).toBe(`Here you go: ${CARD} — enjoy`)

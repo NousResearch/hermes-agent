@@ -87,7 +87,7 @@ const _MEDIA_EXT_ALTERNATION = [...MEDIA_DELIVERY_EXTS].sort((a, b) => b.length 
  * extension. Matches the Python-side `MEDIA_TAG_CLEANUP_RE` behavior where
  * `(?:[^\S\n]+\S+?)*?\.(?:EXT)` permits spaces inside filenames (#96657).
  */
-const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'*_,;:)\\]}]|MEDIA:|$)`
+const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'*_,;:)\\]}]|>|MEDIA:|$)`
 
 const MEDIA_LINE_RE = new RegExp(
   `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|\\S+)[\`"']?[\\t ]*(\\n|$)`,
@@ -118,7 +118,9 @@ export function renderMediaTags(text: string): string {
       MEDIA_LINE_RE,
       (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
     )
-    .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
+    .replace(MEDIA_TAG_RE, (_match, value: string, offset: number, source: string) =>
+      /\]\(\s*<?\s*$/.test(source.slice(0, offset)) ? mediaMarkdownHref(unquoteMediaPath(value)) : mediaLink(value)
+    )
 }
 
 /** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share. */

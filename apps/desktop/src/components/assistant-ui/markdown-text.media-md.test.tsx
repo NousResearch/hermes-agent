@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { isMarkdownDocumentPath, mediaMarkdownHref } from '@/lib/media'
 
-import { MarkdownTextContent } from './markdown-text'
+import { MarkdownTextContent, MessageTextContent } from './markdown-text'
 
 // Regression for #84951: a `.md` delivered via MEDIA has no entry in
 // MEDIA_BY_EXT, so it classified as a generic 'file' and rendered as a
@@ -11,6 +11,16 @@ import { MarkdownTextContent } from './markdown-text'
 // preview rail (which renders .md with a rendered/source toggle) instead.
 describe('markdown documents delivered via MEDIA', () => {
   afterEach(cleanup)
+
+  it('renders an authored file link without raw Markdown punctuation', async () => {
+    const { container } = render(
+      <MessageTextContent text="- [Editable memo (Word)](MEDIA:/home/user/out/report.docx)" />
+    )
+
+    expect(await screen.findByText('report.docx')).toBeTruthy()
+    expect(container.textContent).not.toContain('[Editable memo (Word)](')
+    expect(container.textContent).not.toContain('MEDIA:')
+  })
 
   it('classifies markdown extensions as markdown documents', () => {
     expect(isMarkdownDocumentPath('/tmp/report.md')).toBe(true)

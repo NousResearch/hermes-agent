@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $rightRailActiveTabId, selectRightRailTab } from './layout'
 import {
@@ -312,5 +312,19 @@ describe('preview store', () => {
     // Nothing persistable, so the profile's bucket is empty and the key is
     // removed rather than stored as an empty list (matching the tiles store).
     expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
+  })
+
+  it('restores persisted default-profile tabs after a restart', async () => {
+    window.localStorage.setItem(
+      'hermes.desktop.previewTabs.v2',
+      JSON.stringify({
+        default: [{ id: 'file:file:///work/restored.html', target: fileTarget('/work/restored.html') }]
+      })
+    )
+    vi.resetModules()
+
+    const restarted = await import('./preview')
+
+    expect(restarted.$previewTabs.get().map(tab => tab.target.path)).toEqual(['/work/restored.html'])
   })
 })

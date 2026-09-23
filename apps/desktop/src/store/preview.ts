@@ -206,7 +206,10 @@ function persistTabs() {
 // would resurrect the bucket the rename just deleted.
 let viewKey = 'default'
 
-export const $previewTabs = atom<PreviewTab[]>([])
+// `subscribe` immediately receives the atom's initial value. Start it from the
+// default bucket so that initial notification preserves restored tabs instead
+// of replacing them with an empty list during module startup.
+export const $previewTabs = atom<PreviewTab[]>(tabsByProfile[viewKey] ?? [])
 
 $previewTabs.subscribe(tabs => {
   // `subscribe` hands a readonly view; the bucket is a mutable store of its own.

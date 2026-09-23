@@ -3506,6 +3506,13 @@ export const zh = defineLocale({
     everythingSkipped: '已跳过',
     everythingRowFailed: '更新失败',
     everythingFanoutFailedTitle: '无法更新其他实例',
+    changeLogNew: '新增',
+    changeLogFixed: '修复',
+    changeLogFaster: '更快',
+    changeLogImproved: '改进',
+    changeLogOther: '其他改进',
+    changeLogFallbackLabel: '本次更新',
+    changeLogFallbackItem: '改进与修复',
     applyStatus: {
       preparing: '正在更新后端…',
       pulling: '后端更新中…',

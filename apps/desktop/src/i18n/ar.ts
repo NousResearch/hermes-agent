@@ -2463,6 +2463,13 @@ export const ar = defineLocale({
     everythingSkipped: 'تم التخطي',
     everythingRowFailed: 'فشل التحديث',
     everythingFanoutFailedTitle: 'تعذر تحديث المثيلات الأخرى',
+    changeLogNew: 'جديد',
+    changeLogFixed: 'إصلاحات',
+    changeLogFaster: 'أسرع',
+    changeLogImproved: 'تحسينات',
+    changeLogOther: 'تحسينات أخرى',
+    changeLogFallbackLabel: 'في هذا التحديث',
+    changeLogFallbackItem: 'تحسينات وإصلاحات',
     applyStatus: {
       preparing: 'جار تحديث الواجهة الخلفية...',
       pulling: 'جار تحديث الواجهة الخلفية...',

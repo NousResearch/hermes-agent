@@ -3390,6 +3390,19 @@ class GatewayRunner(
     GatewayAgentCacheMixin, GatewayProfileReconcileMixin, GatewayPluginRewireMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
+    async def _deliver_api_final_response(
+        self, *, session_source: SessionSource, content: str, surface: str,
+    ) -> None:
+        """Deliver a completed API turn through the exact native adapter owning its source."""
+        adapter = self._delivery_adapter_for(session_source)
+        if adapter is None:
+            logger.warning("API native delivery unavailable surface=%s platform=%s", surface, session_source.platform.value)
+            return
+        metadata = {"thread_id": session_source.thread_id} if session_source.thread_id else None
+        result = await adapter.send(session_source.chat_id, content, reply_to=None, metadata=metadata)
+        if getattr(result, "success", True) is not True:
+            logger.warning("API native delivery rejected surface=%s platform=%s", surface, session_source.platform.value)
+
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"

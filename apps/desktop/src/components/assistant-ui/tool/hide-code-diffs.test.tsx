@@ -96,7 +96,7 @@ it('still discloses failed edits when code diffs are hidden', async () => {
   expect(container.textContent).not.toContain('afterEdit')
 })
 
-it('hides activity runs but keeps edit cards when tool display is hidden', async () => {
+it('hides activity runs but keeps edit cards and failures when tool display is hidden', async () => {
   setToolViewMode('hidden')
 
   const edit = editMessage('patch')
@@ -112,6 +112,14 @@ it('hides activity runs but keeps edit cards when tool display is hidden', async
         argsText: '{}',
         result: { content: 'hello' }
       },
+      {
+        type: 'tool-call',
+        toolCallId: 'terminal-1',
+        toolName: 'terminal',
+        args: { command: 'deploy' },
+        argsText: '{}',
+        result: { success: false, error: 'Permission denied' }
+      },
       ...edit.content
     ]
   } as ThreadMessage
@@ -124,6 +132,7 @@ it('hides activity runs but keeps edit cards when tool display is hidden', async
 
   await waitFor(() => expect(container.querySelector('[data-tool-row][data-file-edit]')).not.toBeNull())
   expect(container.textContent).not.toContain('notes.md')
+  expect(container.textContent).toContain('Ran deploy')
 
   act(() => setToolViewMode('product'))
   await waitFor(() => expect(container.textContent).toContain('notes.md'))

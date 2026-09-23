@@ -78,6 +78,7 @@ import {
   toolCopyPayload,
   toolEntryDisclosureId,
   type ToolPart,
+  toolPreviewOutcome,
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
@@ -1047,11 +1048,13 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   // Joined rather than returned as an array: assistant-ui compares selector
   // results with `Object.is` and re-runs them on every store update, so a
   // fresh array would re-render the whole group on every text delta.
+  const hideRuns = useStore($toolViewMode) === 'hidden'
+
   const toolNameKey = useAuiState(state =>
     state.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
       .map(part =>
-        part.type === 'tool-call'
+        part.type === 'tool-call' && !(hideRuns && toolPreviewOutcome(part as ToolPart).status === 'error')
           ? (isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length) ||
             mcpTargets(part.toolName, part.args).length
             ? CONNECTION_CARD_KEY
@@ -1061,13 +1064,12 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
       .join('\u0000')
   )
 
-  const hideRuns = useStore($toolViewMode) === 'hidden'
   const items = useMemo(() => splitRunItems(toolNameKey.split('\u0000')), [toolNameKey])
   const rows = Children.toArray(children)
 
   return (
     <ToolEmbedContext.Provider value={false}>
-      {/* Cards survive Hide: diffs, questions and consent controls need the user. */}
+      {/* Cards survive Hide: diffs, questions, consent controls and failures need the user. */}
       {items
         .filter(item => item.kind === 'card' || !hideRuns)
         .map(item =>

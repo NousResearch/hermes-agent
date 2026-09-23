@@ -660,6 +660,40 @@ X-Hermes-Session-Key: agent:main:webui:dm:user-42
 
 Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
 
+### Configured native-session aliases
+
+For `POST /api/sessions/{session_id}/chat` and `/chat/stream`, an exact configured
+alias in `X-Hermes-Session-Key` resolves to the same canonical conversation key
+used by the native gateway:
+
+```yaml
+gateway:
+  session_key_aliases:
+    phone-thread:
+      platform: discord
+      chat_id: "channel-123"
+      chat_type: group
+      thread_id: "thread-456"
+      user_id: "member-789"
+```
+
+Use the existing native transcript's `session_id` in the URL. Its persisted
+`session_key` must match the resolved alias; otherwise the endpoint returns HTTP
+400 with `code: session_alias_mismatch`, without executing a turn. An alias does
+not redirect an unrelated or unkeyed transcript, create a native session, or send
+the response to the native platform. The resolved key is echoed in the response.
+Unconfigured keys retain their ordinary memory-scope behavior.
+
+Values accept `platform`, `chat_id`, `chat_type` (default `dm`), and optional
+string `thread_id`, `user_id`, and `parent_chat_id`. Copy the native source's
+identity fields exactly: group/user isolation follows `group_sessions_per_user`
+and `thread_sessions_per_user`, so include the native user ID for per-user
+conversations. Configuration and the key namespace use the request's profile;
+aliases cannot override `profile` or `scope_id`. API-server and webhook sources
+are not supported. Invalid alias mappings return HTTP 400 with
+`code: invalid_session_alias`. API-key authentication is required, as for any
+session-key header. Aliases are not resolved on the `/v1/*` endpoints.
+
 ## System Prompt Handling
 
 When a frontend sends a `system` message (Chat Completions) or `instructions` field (Responses API), hermes-agent **layers it on top** of its core system prompt. Your agent keeps all its tools, memory, and skills — the frontend's system prompt adds extra instructions.

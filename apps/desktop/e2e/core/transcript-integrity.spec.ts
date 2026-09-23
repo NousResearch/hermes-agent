@@ -43,6 +43,7 @@ const nonce = Math.random()
   .slice(2, 8)
   .replace(/[^a-z0-9]/g, 'x')
   .padEnd(4, 'q')
+
 const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
 const AI = (n: number) => `A${n}i-${nonce}`

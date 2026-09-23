@@ -35,6 +35,7 @@ const nonce = Math.random()
   .slice(2, 8)
   .replace(/[^a-z0-9]/g, 'x')
   .padEnd(4, 'q')
+
 const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
 
@@ -91,6 +92,7 @@ for (const order of ['complete-before-hydrate', 'hydrate-before-complete'] as co
           if (!original) {
             return false
           }
+
           ipcMain.removeHandler('hermes:api')
           ipcMain.handle('hermes:api', async (event: any, request: any) => {
             const p = String(request?.path ?? '')

@@ -237,6 +237,44 @@ class TestGenerate:
         assert (kwargs["model"], kwargs["billing_provider"]) == ("gemini-3.1-flash-image", "gemini")
         assert (kwargs["input_tokens"], kwargs["output_tokens"]) == (42, 1290)
 
+    def test_thinking_tokens_counted_as_output(self, provider):
+        """Nano Banana Pro reasons before it draws, and ``totalTokenCount`` bills those tokens, so
+        they belong in the output count — otherwise the row does not reconcile with the total."""
+        from agent import aux_accounting
+
+        recorded = []
+
+        class _DB:
+            def record_auxiliary_usage(self, *args, **kwargs):
+                recorded.append(kwargs)
+
+        payload = _gemini_payload(b64=_b64_png(), usage={
+            "promptTokenCount": 42, "candidatesTokenCount": 1290,
+            "thoughtsTokenCount": 668, "totalTokenCount": 2000,
+        })
+        token = aux_accounting.set_accounting_context(_DB(), "sess-gemini-2")
+        try:
+            with patch("requests.post", return_value=_fake_http_response(payload)):
+                assert provider.generate("a yellow banana")["success"] is True
+        finally:
+            aux_accounting.reset_accounting_context(token)
+
+        kwargs, = recorded
+        assert kwargs["output_tokens"] == 1290 + 668
+        assert kwargs["input_tokens"] + kwargs["output_tokens"] == 2000
+
+    @pytest.mark.parametrize(
+        "model_id,expected_upscale",
+        [("gemini-3.1-flash-image", True), ("gemini-3.1-flash-lite-image", False),
+         ("gemini-3-pro-image", True)],
+    )
+    def test_upscale_advertised_only_when_model_has_a_rung_above_1k(
+        self, provider, monkeypatch, model_id, expected_upscale
+    ):
+        """The lite model is 1K-only, so the tool should not offer it an upscale it cannot honour."""
+        monkeypatch.setenv("GEMINI_IMAGE_MODEL", model_id)
+        assert provider.capabilities()["supports_upscale"] is expected_upscale
+
     def test_env_and_config_exact_aspect_ratio_override_default_semantic(self, provider, monkeypatch, tmp_path):
         import yaml
 
@@ -273,14 +311,42 @@ class TestGenerate:
         assert parts[0]["inlineData"]["data"] == _b64_png()
         assert parts[1] == {"text": "make it cyberpunk"}
 
-    def test_explicit_custom_model_passthrough_in_generate(self, provider):
+    def test_caller_model_honoured_only_when_it_names_a_catalog_entry(self, provider):
+        """A catalog id from the caller wins; a foreign one falls back instead of reaching the wire.
+
+        ``image_generate`` forwards the shared, provider-agnostic ``image_gen.model`` down as this
+        kwarg, so it can legitimately name some other backend's model.
+        """
         with patch("requests.post", return_value=_fake_http_response(_gemini_payload(b64=_b64_png()))) as mock_post:
-            result = provider.generate("a yellow banana", model="gemini-2.5-flash-image")
+            result = provider.generate("a yellow banana", model="gemini-3-pro-image")
+        assert result["model"] == "gemini-3-pro-image"
+        assert mock_post.call_args.args[0].endswith("/models/gemini-3-pro-image:generateContent")
+
+        with patch("requests.post", return_value=_fake_http_response(_gemini_payload(b64=_b64_png()))) as mock_post:
+            result = provider.generate("a yellow banana", model="gpt-image-2-medium")
+        assert result["success"] is True
+        assert result["model"] == gemini_plugin.DEFAULT_MODEL
+        assert mock_post.call_args.args[0].endswith(
+            f"/models/{gemini_plugin.DEFAULT_MODEL}:generateContent")
+
+    def test_provider_scoped_custom_model_passes_through_conservatively(self, provider, tmp_path):
+        """An id under ``image_gen.gemini.model`` is a deliberate opt-in, so a model this catalog
+        predates still reaches the wire — but without ``imageSize`` or search, which it may reject.
+        """
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "image_gen": {"gemini": {
+                "model": "gemini-unlisted-test-image", "image_size": "4K", "google_search": True}}}))
+        with patch("requests.post", return_value=_fake_http_response(_gemini_payload(b64=_b64_png()))) as mock_post:
+            result = provider.generate("a yellow banana")
 
         assert result["success"] is True
-        assert result["model"] == "gemini-2.5-flash-image"
-        called_url = mock_post.call_args.args[0]
-        assert called_url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent"
+        assert result["model"] == "gemini-unlisted-test-image"
+        assert mock_post.call_args.args[0].endswith("/models/gemini-unlisted-test-image:generateContent")
+        sent = mock_post.call_args.kwargs["json"]
+        assert "imageSize" not in sent["generationConfig"]["imageConfig"]
+        assert "tools" not in sent
 
     @pytest.mark.parametrize(
         "model_id,expected_wire_ratio,expected_search",
@@ -291,15 +357,13 @@ class TestGenerate:
         ],
     )
     def test_per_model_gating_for_extreme_aspect_ratios_and_google_search(
-        self, provider, model_id, expected_wire_ratio, expected_search
+        self, provider, monkeypatch, model_id, expected_wire_ratio, expected_search
     ):
+        # Grounding is configured rather than passed per call — the shared image_generate schema
+        # carries no argument for it, so env/config is the only path a user actually has.
+        monkeypatch.setenv("GEMINI_IMAGE_GOOGLE_SEARCH", "1")
         with patch("requests.post", return_value=_fake_http_response(_gemini_payload(b64=_b64_png()))) as mock_post:
-            result = provider.generate(
-                "panoramic poster",
-                aspect_ratio="1:4",
-                model=model_id,
-                google_search=True,
-            )
+            result = provider.generate("panoramic poster", aspect_ratio="1:4", model=model_id)
 
         assert result["success"] is True
         assert result["exact_aspect_ratio"] == expected_wire_ratio
@@ -307,6 +371,31 @@ class TestGenerate:
         sent = mock_post.call_args.kwargs["json"]
         assert sent["generationConfig"]["imageConfig"]["aspectRatio"] == expected_wire_ratio
         assert ("tools" in sent) is expected_search
+
+    def test_reference_images_over_total_request_limit_rejected(self, provider, monkeypatch, tmp_path):
+        """Each image can be under the per-image cap while the assembled request is not."""
+        monkeypatch.setattr(gemini_plugin, "_MAX_INLINE_REQUEST_BYTES", 1024)
+        big = tmp_path / "big.png"
+        big.write_bytes(bytes.fromhex(_PNG_HEX) + b"\x00" * 4096)
+
+        with patch("requests.post") as mock_post:
+            result = provider.generate("combine these", reference_image_urls=[str(big), str(big)])
+
+        assert result["success"] is False
+        assert "total request limit" in result["error"]
+        mock_post.assert_not_called()
+
+    def test_non_image_local_file_rejected_before_upload(self, provider, tmp_path):
+        """A text file named .png fails locally rather than as an opaque remote 400."""
+        decoy = tmp_path / "notes.png"
+        decoy.write_text("this is not an image")
+
+        with patch("requests.post") as mock_post:
+            result = provider.generate("edit this", image_url=str(decoy))
+
+        assert result["success"] is False
+        assert "not a recognised image" in result["error"]
+        mock_post.assert_not_called()
 
     def test_http_error_surfaces_api_message(self, provider):
         err_resp = _fake_http_response({"error": {"message": "API key not valid"}}, status_code=403)

@@ -322,7 +322,7 @@ Two inputs drive the edit:
 | **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`) |
 | **OpenAI (Codex auth)** | ✓ | up to 16 | `POST /backend-api/codex/images/edits` with inline `images[]` data URLs (remote URLs are fetched client-side) |
 | **OpenRouter** (Image API models) | ✓ | up to 14–16 (per model) | `input_references` on `POST /images/generations`; chat-served models use `image_url` content parts (up to 3) |
-| **Google AI Studio** (Gemini image models) | ✓ | up to 14 (up to 3 on Gemini 2.5) | Native Gemini `generateContent` with `inlineData` image parts |
+| **Google AI Studio** (Gemini image models) | ✓ | up to 14 | Native Gemini `generateContent` with `inlineData` image parts |
 
 FAL models with an editing endpoint: `flux-2/klein/9b`, `flux-2-pro`,
 `nano-banana-pro`, `gpt-image-1.5`, `gpt-image-2`, `ideogram/v3`, and

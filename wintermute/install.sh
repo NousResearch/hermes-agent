@@ -105,6 +105,9 @@ hermes config set display.platforms.telegram.show_reasoning false
 # No background "self-improvement review": a second model call after conversations that
 # writes skills on its own (Hermes' mechanism, not Wintermute's decision; ~30k tokens each).
 hermes config set auxiliary.background_review.enabled false
+# Drop Hermes' "Finishing the job" block ("... then report what real execution returned"):
+# an assistant's duty to account for its work, not Wintermute's.
+hermes config set agent.task_completion_guidance false
 
 echo "==> Cron job"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$REPO_DIR/setup_cron.py" "$TARGET"

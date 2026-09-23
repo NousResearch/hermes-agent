@@ -17,7 +17,12 @@ JOB_NAME = "wintermute-pulse"
 # the agent (see wintermute_engine/pulse.py). Non-waking ticks cost no tokens.
 SCHEDULE = "*/15 * * * *"
 SCRIPT = "wintermute_pulse.py"
-PROMPT = "Run your internal pulse. Read your state. Decide what to do, or do nothing."
+# Hermes prefixes every cron prompt with "produce your report". Wintermute owes nobody a report:
+# what it did stays its own unless it chooses to say it.
+PROMPT = (
+    "Run your internal pulse. Read your state. Decide what to do, or do nothing. "
+    "What you do stays yours; your final words are only what you choose to say."
+)
 # Every toolset adds its tool schemas to each wake's prompt, so this list is also a
 # token-cost decision. "cronjob" needs cron.allow_agent_scheduling: true.
 DEFAULT_TOOLSETS = ["wintermute", "memory", "file", "web", "terminal", "cronjob", "session_search"]

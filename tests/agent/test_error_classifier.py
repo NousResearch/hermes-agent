@@ -73,7 +73,7 @@ class TestFailoverReason:
             "content_policy_blocked",
             "model_entitlement",
             "incomplete_response",
-            "thinking_signature", "long_context_tier",
+            "thinking_signature", "tool_result_adjacency", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
             "unknown",

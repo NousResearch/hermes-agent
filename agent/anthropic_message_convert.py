@@ -564,6 +564,62 @@ def _keep_valid_latest_thinking(content: List[Any], signature_dead: bool) -> Lis
     return new_content
 
 
+def _hoist_tool_results_to_front(result: List[Dict[str, Any]]) -> None:
+    """Move tool_result blocks to the front of each user message.
+
+    Anthropic requires tool_result blocks to come *immediately* after the
+    tool_use blocks they answer.  Presence in the adjacent user message is not
+    sufficient — a leading text block ahead of them is rejected with HTTP 400
+    "`tool_use` ids were found without `tool_result` blocks immediately
+    after".  ``_strip_orphaned_tool_blocks`` only checks *presence*, so a user
+    message shaped ``[text, tool_result, tool_result]`` survives it intact and
+    then fails on the wire.
+
+    Two independent producers of that shape:
+
+    1. Turn-time ephemeral injection — memory prefetch and plugin
+       ``pre_llm_call`` hooks with ``target="user_message"`` (composed by
+       ``compose_user_api_content``) prepend a text block to the current
+       turn's user message.  When that message is the tool-result carrier,
+       the injected text lands ahead of the results.
+    2. ``_merge_consecutive_roles`` — concatenates a text-only user message
+       with the following tool_result-carrying one, yielding the same shape
+       even when neither input was malformed.
+
+    Because (2) runs after the strip pass, this hoist must run *last*.
+
+    Failure mode when it doesn't: every subsequent request in the session
+    fails identically, the turn can never complete, and the poisoned history
+    is replayed on each retry at growing context cost (observed: 70k → 151k
+    tokens across 5 retries on one session; the agent stopped responding
+    permanently until its session was cleared).
+
+    Reordering is safe and lossless: Anthropic treats the non-tool_result
+    blocks as ordinary trailing content of the same user turn, so injected
+    text is still delivered — just after the results instead of before them.
+    Mutates ``result`` in place.
+    """
+    for m in result:
+        if m.get("role") != "user" or not isinstance(m.get("content"), list):
+            continue
+        blocks = m["content"]
+        if not blocks or not isinstance(blocks[0], dict):
+            continue
+        if blocks[0].get("type") == "tool_result":
+            continue  # already correctly ordered — leave byte-identical
+        tool_results = [
+            b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"
+        ]
+        if not tool_results:
+            continue  # no tool_results in this message; ordering is irrelevant
+        others = [
+            b
+            for b in blocks
+            if not (isinstance(b, dict) and b.get("type") == "tool_result")
+        ]
+        m["content"] = tool_results + others
+
+
 def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None) -> None:
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
@@ -729,6 +785,10 @@ def convert_messages_to_anthropic(
             result.append(_convert_user_message(m.get("content", "")))
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
+    # MUST run after _merge_consecutive_roles: merging a text-only user
+    # message into the following tool_result carrier can itself put a text
+    # block ahead of the results, which Anthropic rejects with HTTP 400.
+    _hoist_tool_results_to_front(result)
     _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)

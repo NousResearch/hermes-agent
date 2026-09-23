@@ -72,6 +72,10 @@ class TestFormatTimestamp:
         assert _format_timestamp(None) == "unknown"
         assert _format_timestamp("not-a-number-string") == "not-a-number-string"
 
+    def test_formats_iso_timestamp_like_equivalent_unix_timestamp(self):
+        unix_timestamp = 1700000000
+        assert _format_timestamp("2023-11-14T22:13:20+00:00") == _format_timestamp(unix_timestamp)
+
 
 # =========================================================================
 # Browse shape (no args)

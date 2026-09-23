@@ -75,11 +75,14 @@ def _loud(fn, log_msg, error_prefix, *log_args):
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
-    """Unix timestamp -> readable date; ISO strings pass through; "unknown" for None."""
+    """Unix or ISO timestamp -> readable date; legacy text passes through; "unknown" for None."""
     if ts is None:
         return "unknown"
-    if isinstance(ts, str) and not ts.replace(".", "").replace("-", "").isdigit():
-        return ts
+    if isinstance(ts, str):
+        parsed_ts = _coerce_started_ts(ts)
+        if parsed_ts is None:
+            return ts
+        ts = parsed_ts
     return _quiet(lambda: datetime.fromtimestamp(float(ts)).strftime("%B %d, %Y at %I:%M %p"), str(ts),
                   "Failed to format timestamp %s: %s", ts, with_exc=True)
 

@@ -1,5 +1,10 @@
-import { detectBundleSkew, type BundleSkewStamp, type RunGit } from './bundle-skew'
-import { detectBundleSwap, type BundleSwapStamp } from './bundle-swap'
+import type * as childProcess from 'node:child_process'
+import type * as nodeFs from 'node:fs'
+import type * as nodeOs from 'node:os'
+import type * as nodePath from 'node:path'
+
+import { type BundleSkewStamp, detectBundleSkew, type RunGit } from './bundle-skew'
+import { type BundleSwapStamp, detectBundleSwap } from './bundle-swap'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -26,20 +31,20 @@ export interface DesktopShellRuntimeDependencies {
   exitAfterBackendShutdown: (code: number) => Promise<unknown>
   fileExists: (filename: string) => boolean
   findSystemPython: () => Promise<string | null>
-  fs: typeof import('node:fs')
+  fs: typeof nodeFs
   getVenvPython: (root: string) => string
   hiddenWindowsChildOptions: (options: any) => any
   isHermesSourceRoot: (root: string) => boolean
   loadInstallStamp: () => BundleSwapStamp | null
-  os: typeof import('node:os')
-  path: typeof import('node:path')
+  os: typeof nodeOs
+  path: typeof nodePath
   process: NodeJS.Process
   releaseBackendLock: (root: string, tag: string) => Promise<unknown>
   rememberLog: (message: string) => void
   resolveUpdateRoot: () => string
   runGit: RunGit
   setQuittingForHandoff: () => void
-  spawn: typeof import('node:child_process').spawn
+  spawn: typeof childProcess.spawn
 }
 
 export function createDesktopShellRuntime(deps: DesktopShellRuntimeDependencies) {

@@ -1,3 +1,5 @@
+import type { LinuxCrashDiagnostics } from './linux-crash-diagnostics'
+
 // The main process owns window and readiness state. Accessors keep callbacks
 // bound to their live values after registration with Electron.
 interface DesktopAppLifecycleDeps {
@@ -11,7 +13,7 @@ interface DesktopAppLifecycleDeps {
   tls: any
   pathToFileURL: (...args: any[]) => any
   CHROMIUM_LOG_PATH: string
-  CRASH_DIAGNOSTICS: ReturnType<typeof import('./linux-crash-diagnostics').linuxCrashDiagnostics>
+  CRASH_DIAGNOSTICS: LinuxCrashDiagnostics | null
   DEV_SERVER: string | undefined
   HERMES_PROTOCOL: string
   IS_MAC: boolean

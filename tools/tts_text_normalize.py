@@ -31,6 +31,14 @@ _MD_HR_RE = re.compile(r"^\s*[-*_]{3,}\s*$", flags=re.MULTILINE)
 _MD_TABLE_PIPE_RE = re.compile(r"\s*\|\s*")
 _URL_RE = re.compile(r"https?://\S+")
 
+# Inline TTS control tags (e.g. Boson/Higgs `<|emotion:sadness|>`, `<|prosody:long_pause|>`,
+# `<|sfx:laughter|>`) must survive Markdown cleanup intact - the table-pipe rule below would
+# otherwise mangle their `|` into `; `. Held as placeholders, then restored on return.
+_TTS_TAG_RE = re.compile(r"<\|[a-z_]+:[a-z0-9_]+(?:\|[a-z0-9_]+)?\|>", re.IGNORECASE)
+# Letter-only placeholder: underscores trip the bold/italic regexes, NUL is stripped by
+# str.strip(), pipes/colons get rewritten - plain [A-Z] digits match no pipeline rule.
+_TTS_TAG_HOLD = "ZZHERMESTTSTAGHOLD{}ZZ"
+
 _DEGREE_UNITS = (("C", "Celsius"), ("F", "Fahrenheit"))
 # Unit suffix (regex, after a digit) -> spoken word; km/h variants before the bare "m".
 _UNIT_WORDS = (
@@ -205,12 +213,18 @@ def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     """Return a TTS-friendly script from assistant text (deterministic cleanup, not a rewrite).
     Pipeline: non-spoken blocks > Markdown > symbols/units > line formatting into sentence
     pauses > single line (for newline-sensitive providers), then ``max_chars``."""
-    spoken = text
+    held: list[str] = []
+    def _hold_tag(match: re.Match) -> str:
+        held.append(match.group(0))
+        return _TTS_TAG_HOLD.format(len(held) - 1)
+    spoken = _TTS_TAG_RE.sub(_hold_tag, text)
     for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
                  smooth_whitespace_for_tts, flatten_newlines_for_payload):
         spoken = step(spoken)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:
         spoken = spoken[:max_chars].rstrip()
+    for index, tag in enumerate(held):
+        spoken = spoken.replace(_TTS_TAG_HOLD.format(index), tag)
     return spoken
 
 

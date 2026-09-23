@@ -47,3 +47,24 @@ def test_prepare_spoken_text_polish_edge_cases():
     assert "and/or" in prepare_spoken_text("choose and/or option")
     assert "N/A" in prepare_spoken_text("status N/A here")
     assert "2026/06/02" in prepare_spoken_text("due 2026/06/02 ok")
+
+
+def test_prepare_spoken_text_preserves_inline_tts_control_tags():
+    # Inline TTS tags (Boson/Higgs style `<|emotion:sadness|>`, `<|prosody:pause|>` etc.)
+    # are engine control tokens, not spoken text: they must survive cleanup byte-for-byte
+    # so the speech backend can parse them (regression: pipe/colon rewriting mangled them).
+    raw = (
+        "<|emotion:sadness|><|prosody:speed_slow|>寒蝉凄切，"
+        "<|prosody:long_pause|>对长亭晚。<|sfx:laughter|>Haha"
+    )
+    spoken = prepare_spoken_text(raw)
+    assert "<|emotion:sadness|>" in spoken
+    assert "<|prosody:speed_slow|>" in spoken
+    assert "<|prosody:long_pause|>" in spoken
+    assert "<|sfx:laughter|>" in spoken
+    assert "寒蝉凄切" in spoken
+
+
+def test_prepare_spoken_text_tag_protection_keeps_table_pipe_rewrite():
+    # Markdown table pipes still become pauses; only tag pipes are protected.
+    assert prepare_spoken_text("a | b | c") == "a; b; c"

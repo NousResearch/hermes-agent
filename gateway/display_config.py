@@ -24,6 +24,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "suppress_warning_notifications": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    "busy_ack_enabled": True,  # SMS defaults off; other platforms still send the busy-ack bubble
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
     # supported (Telegram); failed runs keep them as breadcrumbs.
@@ -69,7 +70,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "wecom_callback": _TIER_LOW,
     "dingtalk": _TIER_LOW,
     "email": _TIER_MINIMAL,
-    "sms": _TIER_MINIMAL,
+    "sms": {**_TIER_MINIMAL, "busy_ack_enabled": False},
     "webhook": _TIER_MINIMAL,
     "homeassistant": _TIER_MINIMAL,
     "api_server": {**_TIER_HIGH, "tool_preview_length": 0},
@@ -190,6 +191,7 @@ _NORMALISERS: dict[str, Any] = {
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
+    "busy_ack_enabled": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,

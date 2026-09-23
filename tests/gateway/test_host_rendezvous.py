@@ -148,6 +148,20 @@ def test_unopenable_lock_dir_is_not_reported_as_another_owner(host_dir, monkeypa
     assert isinstance(error, OSError)
 
 
+def test_lock_io_error_is_unavailable_not_an_owner(host_dir, monkeypatch):
+    import gateway.status as status
+
+    monkeypatch.setattr(
+        status, "_try_acquire_file_lock",
+        lambda _handle: (_ for _ in ()).throw(OSError("lock I/O failed")),
+    )
+
+    outcome, error = hr.claim_host_lock(hr.ROLE_SERVE)
+
+    assert outcome is hr.HostLockOutcome.COULD_NOT_OPEN
+    assert isinstance(error, OSError)
+
+
 def test_lock_cache_follows_the_lock_directory(host_dir, monkeypatch, tmp_path):
     """The handle cache is keyed by (role, resolved path): keyed by role alone it reported
     "already held" for a directory it had never created, so ``owns_host_lock()`` lied."""

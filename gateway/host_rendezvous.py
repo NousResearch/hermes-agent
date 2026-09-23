@@ -406,7 +406,14 @@ def claim_host_lock(role: str) -> tuple[HostLockOutcome, Optional[OSError]]:
     except OSError as exc:
         logger.debug("host %s lock could not be opened at %s", role, path, exc_info=True)
         return (HostLockOutcome.COULD_NOT_OPEN, exc)
-    if not _try_acquire_file_lock(handle):
+    try:
+        acquired = _try_acquire_file_lock(handle)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            handle.close()
+        logger.debug("host %s lock could not be acquired at %s", role, path, exc_info=True)
+        return (HostLockOutcome.COULD_NOT_OPEN, exc)
+    if not acquired:
         with contextlib.suppress(OSError):
             handle.close()
         return (HostLockOutcome.HELD_BY_OTHER, None)

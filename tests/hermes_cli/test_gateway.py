@@ -563,6 +563,48 @@ class TestStopProfileGateway:
         assert killed_pid in reap_extra_excludes[0]
 
 
+class TestUnsupervisedGatewayOrphanReaper:
+    def test_signals_use_scan_time_process_identity(self, monkeypatch):
+        pid, started = 4242, 123456
+        calls = []
+
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway, "_reaper_exclusion_pids", lambda _extra: set())
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None: [pid])
+        monkeypatch.setattr(gateway, "_reaper_candidate_is_supervisor_owned", lambda _pid: False)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: started)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda _pid: None)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+        monkeypatch.setattr(gateway, "_await_gateway_exit", lambda _pids, pid_exists: [pid])
+        monkeypatch.setattr(
+            gateway, "terminate_pid",
+            lambda target, force=False, expected_start_time=None:
+                calls.append((target, force, expected_start_time)),
+        )
+
+        assert gateway._reap_unsupervised_gateway_orphans() is True
+        assert calls == [(pid, False, started), (pid, True, started)]
+
+    def test_missing_process_identity_fails_closed(self, monkeypatch):
+        pid = 4242
+        calls = []
+
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway, "_reaper_exclusion_pids", lambda _extra: set())
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None: [pid])
+        monkeypatch.setattr(gateway, "_reaper_candidate_is_supervisor_owned", lambda _pid: False)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: None)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda _pid: None)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: False)
+        monkeypatch.setattr(gateway, "_await_gateway_exit", lambda _pids, pid_exists: [])
+        monkeypatch.setattr(gateway, "terminate_pid", lambda *a, **k: calls.append((a, k)))
+
+        assert gateway._reap_unsupervised_gateway_orphans() is False
+        assert calls == []
+
+
 class TestReaperCandidateIsSupervisorOwned:
     """Regression for the Windows pidfile-less supervisor-owned case (#83683).
 

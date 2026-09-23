@@ -49,6 +49,31 @@ class TestGatewayPidState:
         assert payload["pid"] == os.getpid()
 
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock semantics")
+    def test_file_lock_retries_eintr_and_propagates_real_os_errors(self, tmp_path, monkeypatch):
+        handle = open(tmp_path / "gateway.lock", "a+", encoding="utf-8")
+        calls = []
+
+        def interrupted_then_acquired(_fd, _flags):
+            calls.append(1)
+            if len(calls) == 1:
+                raise InterruptedError(errno.EINTR, "interrupted")
+
+        import errno
+        monkeypatch.setattr(status.fcntl, "flock", interrupted_then_acquired)
+        try:
+            assert status._try_acquire_file_lock(handle) is True
+            assert len(calls) == 2
+
+            monkeypatch.setattr(
+                status.fcntl, "flock",
+                lambda *_: (_ for _ in ()).throw(OSError(errno.EIO, "I/O error")),
+            )
+            with pytest.raises(OSError, match="I/O error"):
+                status._try_acquire_file_lock(handle)
+        finally:
+            handle.close()
+
     def test_runtime_lock_claims_and_releases_liveness(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -608,6 +633,16 @@ class TestTerminatePid:
         assert calls == [
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
+
+    def test_graceful_terminate_refuses_recycled_pid_when_identity_is_supplied(self, monkeypatch):
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
+        calls = []
+        monkeypatch.setattr(status.os, "kill", lambda *args: calls.append(args))
+
+        with pytest.raises(OSError, match="process identity changed"):
+            status.terminate_pid(123, expected_start_time=456)
+
+        assert calls == []
 
     @pytest.mark.windows_only
     def test_windows_force_refuses_pid_without_start_time_guard(self, monkeypatch):

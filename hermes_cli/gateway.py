@@ -1748,12 +1748,8 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     if not orphans:
         return False
 
-    # Pin each orphan's start time now: the delayed SIGKILL must never hit a recycled PID.
-    # Pin each orphan's identity NOW: the cmdline scan above matched at scan-time only, and the SIGKILL
-    # escalation below fires seconds later. A PID recycled inside that window must never be force-killed
-    # (#89614 class). Fingerprint capture is best-effort — SIGTERM below proceeds regardless (it targets the
-    # process verified by the scan an instant ago), but the delayed SIGKILL requires a still-matching
-    # fingerprint.
+    # Pin each orphan's identity now. Both graceful and forced signals re-check this fingerprint
+    # immediately before signalling, so a PID recycled after the argv scan is never targeted.
     orphan_identity: dict[int, int] = {}
     for pid in orphans:
         start = get_process_start_time(pid)
@@ -1770,21 +1766,32 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         if is_windows():
             reaped = True
             continue
+        expected_start_time = orphan_identity.get(pid)
+        if expected_start_time is None:
+            logger.warning("Refusing to SIGTERM orphaned gateway PID %s without a process identity", pid)
+            continue
         try:
-            os.kill(pid, signal.SIGTERM)
+            terminate_pid(pid, force=False, expected_start_time=expected_start_time)
         except ProcessLookupError:
             continue
         except PermissionError:
             print(f"⚠ Permission denied to kill orphaned gateway PID {pid}")
             continue
+        except OSError as exc:
+            logger.warning("Refusing to SIGTERM orphaned gateway PID %s: %s", pid, exc)
+            continue
         reaped = True
 
-    # Wait, then force-kill survivors so the replacement can bind the port cleanly.
-    # Fail-closed: SIGKILL only a PID that still names the process fingerprinted at scan time.
-    _force_kill_survivors([
+    # Wait, then force-kill only survivors that still match the scan-time identity.
+    survivors = [
         pid for pid in _await_gateway_exit(orphans, pid_exists=_pid_exists)
-        if pid in orphan_identity and get_process_start_time(pid) == orphan_identity[pid]
-    ])
+        if pid in orphan_identity
+    ]
+    _force_kill_survivors(
+        survivors,
+        kill=lambda pid, _sig: terminate_pid(
+            pid, force=True, expected_start_time=orphan_identity[pid]),
+    )
     return reaped
 
 

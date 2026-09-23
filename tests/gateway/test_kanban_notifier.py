@@ -82,6 +82,20 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+def test_singleton_lock_io_error_is_unavailable(tmp_path, monkeypatch):
+    import gateway.status as status
+
+    monkeypatch.setattr(
+        status, "_try_acquire_file_lock",
+        lambda _handle: (_ for _ in ()).throw(OSError("lock I/O failed")),
+    )
+
+    handle, state = _acquire_singleton_lock(tmp_path / ".dispatcher.lock")
+
+    assert handle is None
+    assert state == "unavailable"
+
+
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
     db_path = tmp_path / "dm-topic-metadata.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

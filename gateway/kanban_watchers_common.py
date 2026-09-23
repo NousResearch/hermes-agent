@@ -132,7 +132,12 @@ def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
         handle = open(str(lock_path), "a+", encoding="utf-8")
     except OSError:
         return None, "unavailable"
-    if not _try_acquire_file_lock(handle):
+    try:
+        acquired = _try_acquire_file_lock(handle)
+    except OSError:
+        handle.close()
+        return None, "unavailable"
+    if not acquired:
         handle.close()
         return None, "contended"
     return handle, "held"

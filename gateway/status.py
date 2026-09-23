@@ -4,6 +4,7 @@ home/profile) that tell whether the gateway daemon is running."""
 import asyncio
 import contextlib
 import copy
+import errno
 import hashlib
 import json
 import logging
@@ -397,7 +398,7 @@ def terminate_pid(
     process, the kill is refused on every platform — a mismatched fingerprint always means the PID was
     recycled. See #89614.
     """
-    if force and (_IS_WINDOWS or expected_start_time is not None):
+    if expected_start_time is not None or (force and _IS_WINDOWS):
         if expected_start_time is None:
             raise OSError(f"refusing to force-kill PID {pid} without a process start-time guard")
         current_start_time = _get_process_start_time(pid)
@@ -803,19 +804,29 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
 
 
 def _try_acquire_file_lock(handle) -> bool:
-    try:
-        if _IS_WINDOWS:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write("\n")
-                handle.flush()
-            handle.seek(_WINDOWS_LOCK_OFFSET)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
-    except (BlockingIOError, OSError):
-        return False
+    if _IS_WINDOWS:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write("\n")
+            handle.flush()
+        handle.seek(_WINDOWS_LOCK_OFFSET)
+    while True:
+        try:
+            if _IS_WINDOWS:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except InterruptedError:
+            continue
+        except BlockingIOError:
+            return False
+        except OSError as exc:
+            # msvcrt reports an occupied byte range as EACCES; on POSIX a generic
+            # EACCES/EIO/EBADF is not proof that another process owns the lock.
+            if _IS_WINDOWS and exc.errno == errno.EACCES:
+                return False
+            raise
 
 
 def _pid_exists(pid: int) -> bool:
@@ -937,7 +948,13 @@ def acquire_gateway_runtime_lock() -> bool:
             handle = open(path, "a+", encoding="utf-8")
         except OSError:
             return False
-    if not _try_acquire_file_lock(handle):
+    try:
+        acquired = _try_acquire_file_lock(handle)
+    except OSError:
+        with contextlib.suppress(OSError):
+            handle.close()
+        raise
+    if not acquired:
         handle.close()
         return False
     handle.seek(0)

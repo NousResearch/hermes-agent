@@ -604,7 +604,9 @@ export class JsonRpcGatewayClient {
   }
 
   private dispatchEvent(event: GatewayEvent): void {
-    this.events.dispatch(event)
+    // The client instance owns the adopted epoch, but renderer fan-in needs it
+    // on each frame to identify duplicates received through sibling sockets.
+    this.events.dispatch(this.replayEpoch ? { ...event, replayEpoch: this.replayEpoch } : event)
   }
 
   private setState(state: ConnectionState): void {

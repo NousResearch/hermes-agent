@@ -37,6 +37,7 @@ import {
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  dispatchGatewayEvent,
   dispatchPrimaryServerRequest,
   disposeSecondariesForConnection,
   ensureActiveGatewayOpen,
@@ -1042,8 +1043,7 @@ export function useGatewayBoot({
       const ownedEvent =
         $connection.get()?.sharedPrimary === true ? stampSecondaryProfileOwner(scopedEvent, sourceProfile) : scopedEvent
 
-      recordSessionEventScope(ownedEvent)
-      callbacksRef.current.handleGatewayEvent(ownedEvent)
+      dispatchGatewayEvent(ownedEvent)
     })
 
     // Secondary sockets reach the same handler through the registry's onServerRequest.

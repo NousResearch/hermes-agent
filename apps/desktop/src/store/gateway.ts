@@ -25,6 +25,8 @@ import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 
+import { GatewayEventDeduper } from './gateway-event-dedupe'
+
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
 // event handler is already session-keyed, so the only thing stopping two
@@ -225,6 +227,8 @@ interface GatewayRegistryState {
   activeKey: string
   activationEpoch: number
   secondaries: Map<string, Secondary>
+  /** Renderer-wide sequenced-event gate shared by every socket fan-in. */
+  eventDeduper: GatewayEventDeduper
   // Auth rejection outlives the disposable socket, including background request leases.
   reauthFailures: Map<string, { connectionId: string | null; error: Error }>
   /** Scopes that opened in this renderer generation, even if later pruned. */
@@ -251,6 +255,7 @@ function createRegistryState(): GatewayRegistryState {
     activeKey: 'default',
     activationEpoch: 0,
     secondaries: new Map<string, Secondary>(),
+    eventDeduper: new GatewayEventDeduper(),
     reauthFailures: new Map(),
     openedSecondaryScopes: new Set<string>(),
     reactivatingScopes: new Set<string>(),
@@ -282,7 +287,8 @@ function gatewayState(): GatewayRegistryState {
     const store = globalThis as unknown as { [STATE_KEY]?: GatewayRegistryState }
     store[STATE_KEY] ??= createRegistryState()
 
-    // Existing dev-HMR containers predate whole-turn leases.
+    // Existing dev-HMR containers predate whole-turn leases and cross-socket event dedupe.
+    store[STATE_KEY].eventDeduper ??= new GatewayEventDeduper()
     store[STATE_KEY].reauthFailures ??= new Map()
     store[STATE_KEY].turnLeases ??= new Map()
     store[STATE_KEY].turnLeaseReleaseTimers ??= new Map()
@@ -324,6 +330,19 @@ export function configureGatewayRegistry(cfg: RegistryConfig): void {
 }
 
 /**
+ * Send one gateway event through the renderer-wide fan-in exactly once.
+ *
+ * Individual JsonRpcGateway instances can only deduplicate their own socket.
+ * This gate sits after socket-specific profile/connection tagging and before
+ * every renderer store and plugin listener.
+ */
+export function dispatchGatewayEvent(event: GatewayEvent): void {
+  if (g.eventDeduper.accept(event)) {
+    g.config?.onEvent(event)
+  }
+}
+
+/**
  * Feed a synthetic event through the exact same fan-out a real socket frame
  * takes (`config.onEvent` → the desktop's `handleGatewayEvent`). Used by
  * dev-only tooling to exercise the real event branches (e.g. the credit-notice
@@ -331,7 +350,7 @@ export function configureGatewayRegistry(cfg: RegistryConfig): void {
  * registry is configured.
  */
 export function emitLocalGatewayEvent(event: GatewayEvent): void {
-  g.config?.onEvent(event)
+  dispatchGatewayEvent(event)
 }
 
 /** A server→client request tagged with the registry source it arrived from (like `GatewayEvent.profile`). */
@@ -976,7 +995,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
   entry.offEvent = gateway.onEvent(event => {
     const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, profile)
 
-    g.config?.onEvent(scopedEvent)
+    dispatchGatewayEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)
   })
   entry.offRequest = gateway.onRequest?.(request => dispatchServerRequest(request, profile, connectionId)) ?? (() => {})

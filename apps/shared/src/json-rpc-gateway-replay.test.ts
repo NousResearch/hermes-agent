@@ -80,6 +80,26 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 
+  it('stamps dispatched frames with the adopted backend replay epoch', async () => {
+    const client = makeClient()
+    const seen: string[] = []
+    client.on('message.delta', event => seen.push(event.replayEpoch ?? ''))
+
+    const connected = client.connect('ws://x')
+    sockets[0].open()
+    await connected
+
+    sockets[0].serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'gateway.ready', payload: { replay_epoch: 'backend-a' } }
+    })
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 1 } })
+
+    expect(seen).toEqual(['backend-a'])
+    client.close()
+  })
+
   it('fetches replay on reconnect for sessions it has watermarks for', async () => {
     const client = makeClient()
 

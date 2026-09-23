@@ -74,6 +74,7 @@ const {
   activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  dispatchGatewayEvent,
   dispatchPrimaryServerRequest,
   ensureGatewayForProfile,
   openGatewayForAgent,
@@ -97,6 +98,20 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+})
+
+describe('renderer gateway event fan-in (#120007)', () => {
+  it('dispatches a sequenced frame from primary and secondary sockets once', () => {
+    const onEvent = vi.fn()
+    configureGatewayRegistry({ onEvent } as never)
+    const event = { replayEpoch: 'backend-120007', seq: 1, session_id: 'stream-120007', type: 'message.delta' as const }
+
+    dispatchGatewayEvent(event) // primary fan-in
+    dispatchGatewayEvent({ ...event, connectionId: 'secondary' }) // registry secondary fan-in
+
+    expect(onEvent).toHaveBeenCalledTimes(1)
+    expect(onEvent).toHaveBeenCalledWith(event)
+  })
 })
 
 describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094)', () => {

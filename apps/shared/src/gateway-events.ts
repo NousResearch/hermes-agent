@@ -34,6 +34,8 @@ export type GatewayEventName = keyof GatewayEventMap
 
 /** One `event` notification's `params`. */
 export interface GatewayEvent<K extends GatewayEventName = GatewayEventName> {
+  /** Client-local: backend process identity adopted from `gateway.ready`. */
+  replayEpoch?: string
   /** Client-local: recovered/held during reconnect, not fresh user-facing work. */
   replayed?: boolean
   /** Registry connection whose socket delivered the event (renderer-side tag;

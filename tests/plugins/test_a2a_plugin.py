@@ -1090,6 +1090,54 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
+    def test_rejected_inline_attachment_does_not_shift_next_attachment_identity(self, monkeypatch):
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+
+        from plugins.platforms.a2a import adapter as a2a_adapter
+
+        received = {}
+        original_cache = a2a_adapter._cache_inline_attachment
+
+        def fake_cache_inline_attachment(media):
+            if str(media.get("filename") or "") == "bad.png":
+                return None
+            return original_cache(media)
+
+        monkeypatch.setattr(a2a_adapter, "_cache_inline_attachment", fake_cache_inline_attachment)
+
+        def reply_fn(event):
+            received["text"] = event.text
+            received["media_urls"] = list(event.media_urls)
+            received["media_types"] = list(event.media_types)
+            return "got it"
+
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=reply_fn)
+
+        async def run():
+            assert await adapter.connect() is True
+            msg = {
+                "role": protocol.ROLE_USER, "messageId": "m-inline-shift", "contextId": "ctx-inline-shift",
+                "parts": [
+                    {"kind": "file", "file": {"name": "bad.png", "mimeType": "image/png", "bytes": "aGVsbG8="}},
+                    {"kind": "file", "file": {"name": "report.xlsx", "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "bytes": "aGVsbG8="}},
+                ],
+            }
+            resp = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "1", "method": "message/send",
+                "params": {"message": msg},
+            })
+            assert resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            assert len(received["media_urls"]) == 1
+            assert received["media_types"] == ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+            assert "report.xlsx" in received["text"]
+            assert "bad.png'" not in received["text"]
+            assert received["media_urls"][0] in received["text"]
+            assert "report.xlsx'. It is saved at:" in received["text"]
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
     def test_push_config_crud_over_http(self, monkeypatch):
         """Full push notification config CRUD over real HTTP."""
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)

@@ -559,17 +559,24 @@ class A2AAdapter(BasePlatformAdapter):
         inline_media = protocol.extract_inline_media(params)
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
         task_id = protocol.new_task_id()
-        media_urls: list[str] = []
-        media_types: list[str] = []
+        surviving_media: list[dict[str, Any]] = []
         for media in inline_media:
             if media.get("source") == "url":
-                media_urls.append(str(media.get("url") or ""))
-                media_types.append(str(media.get("media_type") or "application/octet-stream"))
+                surviving_media.append({
+                    "path": str(media.get("url") or ""),
+                    "media_type": str(media.get("media_type") or "application/octet-stream"),
+                    "media": media,
+                })
                 continue
             cached = _cache_inline_attachment(media)
             if cached:
-                media_urls.append(cached["path"])
-                media_types.append(cached["media_type"])
+                surviving_media.append({
+                    "path": cached["path"],
+                    "media_type": cached["media_type"],
+                    "media": media,
+                })
+        media_urls = [item["path"] for item in surviving_media]
+        media_types = [item["media_type"] for item in surviving_media]
         turn = self._turns.track(context_id)
         max_turns = protocol.max_pingpong_turns()
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
@@ -581,9 +588,10 @@ class A2AAdapter(BasePlatformAdapter):
         if not text and not media_urls:
             return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
         if media_urls:
-            for path, media_type, media in zip(media_urls, media_types, inline_media):
+            for item in surviving_media:
+                media = item["media"]
                 if media.get("source") == "inline":
-                    note = _a2a_document_note(path, media_type, str(media.get("filename") or ""))
+                    note = _a2a_document_note(item["path"], item["media_type"], str(media.get("filename") or ""))
                     text = f"{note}\n\n{text}" if text else note
         framed = security.wrap_inbound(peer, text)
         security.audit("inbound", peer, task_id, text)

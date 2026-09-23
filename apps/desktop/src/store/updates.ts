@@ -382,11 +382,20 @@ function isRemoteMode(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
-function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
+export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
   const behind = res.behind ?? 0
+
+  // `behind: null` from a supported (git) backend is the endpoint's "the check could not run"
+  // answer (GitHub unreachable, rate limited, offline) and carries the explanation in
+  // `message`. Folding it to 0 made the overlay report "the backend is on the latest version"
+  // whenever the check failed, and hid that message. Surface the failure state the local check
+  // path already uses so the overlay shows the reason and a retry; only a check that actually
+  // ran may claim there is nothing to update.
+  const checkFailed = res.can_apply && res.behind === null
 
   return {
     supported: res.can_apply,
+    error: checkFailed ? 'check-failed' : undefined,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
     behind: behind > 0 ? behind : 0,

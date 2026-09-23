@@ -18,6 +18,8 @@ import re
 import os
 import stat
 import sys
+import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -255,6 +257,50 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 
 class TestBrowserVaultTools:
+    def test_supervisor_focuses_only_an_oopif_owned_by_the_selected_page(self, monkeypatch):
+        """The OOPIF probe must use the selected page's frame tree, not every
+        attached iframe session in the browser."""
+        from tools import browser_supervisor
+        from tools.browser_supervisor_frames import FrameInfo
+
+        supervisor = object.__new__(browser_supervisor.CDPSupervisor)
+        supervisor._loop = type("Loop", (), {"is_running": lambda self: True})()
+        supervisor._state_lock = threading.Lock()
+        supervisor._page_session_id = None
+        supervisor._frames = {
+            "child-frame": FrameInfo("child-frame", "https://login.example/form",
+                                      "https://login.example", "top-frame", True, "child-session"),
+            # This session has a password too, but is not in the selected
+            # page's frame tree and therefore must never be probed.
+            "other-frame": FrameInfo("other-frame", "https://evil.example/form",
+                                      "https://evil.example", "other-top", True, "other-session"),
+        }
+
+        async def fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+            if method == "Target.getTargets":
+                return {"result": {"targetInfos": [{"type": "page", "targetId": "page", "url": "https://www.espn.com/login"}]}}
+            if method == "Target.attachToTarget":
+                return {"result": {"sessionId": "top-session"}}
+            if method == "Page.getFrameTree":
+                return {"result": {"frameTree": {"frame": {"id": "top-frame"}, "childFrames": [
+                    {"frame": {"id": "child-frame"}},
+                ]}}}
+            if method == "Runtime.evaluate" and session_id == "top-session":
+                return {"result": {"result": {"value": False}}}
+            if method == "Runtime.evaluate" and session_id == "child-session":
+                value = "https://login.example" if params["expression"] == "window.location.origin" else True
+                return {"result": {"result": {"value": value}}}
+            raise AssertionError((method, params, session_id))
+
+        supervisor._cdp = fake_cdp
+        supervisor._enable_page_domains = lambda *_args, **_kwargs: asyncio.sleep(0)
+        supervisor._install_dialog_bridge = lambda *_args, **_kwargs: asyncio.sleep(0)
+        monkeypatch.setattr(browser_supervisor, "_schedule", lambda coro, _loop, timeout: asyncio.run(coro))
+
+        result = supervisor.focus_page("https://www.espn.com", accept="hasPassword")
+        assert result == {"ok": True, "url": "https://www.espn.com/login", "frame_origin": "https://login.example"}
+        assert supervisor._page_session_id == "child-session"
+
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose
         browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""
@@ -351,6 +397,111 @@ class TestBrowserVaultTools:
         assert "https://www.amazon.co.uk" in secret_exprs[0]
         assert "s3cret-pw" not in raw
         assert out["filled_fields"] == 1
+
+    def test_fill_routes_a_bound_top_level_login_to_its_oopif(self, store):
+        """A password field in a cross-origin OOPIF is inspected and written
+        through that frame's CDP session, while the vault binding remains the
+        exact top-level site that embedded it."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://www.espn.com")
+        controls = [
+            {"autocomplete": "current-password", "formIndex": 0, "index": 0,
+             "label": "", "name": "pw", "type": "password"},
+        ]
+        secret_exprs = []
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept=None):
+                assert origin == "https://www.espn.com"
+                assert accept == browser_vault_tool._TAB_PROBES["login"]
+                return {"ok": True, "url": "https://www.espn.com/login/",
+                        "frame_origin": "https://cdn.registerdisney.go.com"}
+
+        def fake_eval(task_id, expression):
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert out["origin"] == "https://www.espn.com"
+        assert '"https://cdn.registerdisney.go.com"' in secret_exprs[0]
+        assert '"https://www.espn.com"' not in secret_exprs[0]
+        assert "s3cret-pw" not in raw
+
+    def test_fill_keeps_same_origin_login_on_the_bound_origin(self, store):
+        """The OOPIF path does not change the existing top-level write fence."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 0,
+                     "label": "", "name": "pw", "type": "password"}]
+        secret_exprs = []
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept=None):
+                return {"ok": True, "url": "https://example.com/login"}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_eval_js", return_value={"success": True, "result": json.dumps(controls)}), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=lambda _task, expr: (
+                 secret_exprs.append(expr) or {"success": True, "result": json.dumps({"filled": 1})}
+             )):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True
+        assert '"https://example.com"' in secret_exprs[0]
+
+    def test_save_login_binds_an_oopif_form_to_its_top_level_origin(self, store):
+        """Saving from a routed OOPIF must not create a Disney/IdP-bound item."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept=None):
+                assert origin == ""
+                return {"ok": True, "url": "https://www.espn.com/login/",
+                        "frame_origin": "https://cdn.registerdisney.go.com"}
+
+        unlock_mod.set_save_login_prompt_callback(lambda origin, _site: {
+            "identifier": "viewer@example.com", "password": "s3cret-pw",
+        })
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+                 patch.object(browser_vault_tool, "browser_vault_fill", return_value=json.dumps({"success": True})), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="oopif-save"))
+        finally:
+            unlock_mod.set_save_login_prompt_callback(None)
+        assert out["success"] is True
+        assert out["origin"] == "https://www.espn.com"
+        assert store.list_items()[0].origin == "https://www.espn.com"
+
+    def test_fill_rejects_an_unrelated_oopif_even_if_it_has_a_password(self, store):
+        """A child frame from another tab must not turn into a vault target."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://www.espn.com")
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=type("S", (), {
+                 "focus_page": lambda *_args, **_kwargs: {"ok": False, "error": "no matching frame"},
+             })()), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.example"), \
+             patch.object(browser_vault_tool, "_eval_js") as inspect, \
+             patch.object(browser_vault_tool, "_eval_js_secret") as fill:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["error_type"] == "origin_mismatch"
+        inspect.assert_not_called()
+        fill.assert_not_called()
 
     def test_fill_still_refused_on_origin_not_saved_on_the_item(self):
         """Multi-website items widen nothing: an unsaved origin — even a sibling

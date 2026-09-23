@@ -269,7 +269,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         that open their own tabs (browser_exec) put the login form somewhere else. With
         ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
         so a login and a checkout tab on one site resolve to the right one. Returns
-        ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
+        ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays.
+        If a matching control is in an OOPIF belonging to that page, the active
+        session is switched to the child and ``frame_origin`` identifies the
+        origin the caller must use for its synchronous write-time check."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
@@ -300,8 +303,49 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     probe = await self._cdp("Runtime.evaluate", {"expression": accept, "returnByValue": True},
                                             session_id=sid, timeout=timeout)
                     if not probe.get("result", {}).get("result", {}).get("value"):
-                        await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
-                        continue
+                        # A vault form may live in a cross-origin OOPIF. Only
+                        # inspect frame ids returned by THIS top-level page's
+                        # frame tree: arbitrary attached iframe targets must
+                        # never become a credential destination.
+                        tree = await self._cdp("Page.getFrameTree", session_id=sid, timeout=timeout)
+
+                        def _child_ids(node: Dict[str, Any]) -> list[str]:
+                            ids: list[str] = []
+                            for child in node.get("childFrames") or []:
+                                frame_id = str((child.get("frame") or {}).get("id") or "")
+                                if frame_id:
+                                    ids.append(frame_id)
+                                ids.extend(_child_ids(child))
+                            return ids
+
+                        frame_ids = _child_ids((tree.get("result") or {}).get("frameTree") or {})
+                        child_session = None
+                        child_origin = ""
+                        with self._state_lock:
+                            frames = {fid: self._frames.get(fid) for fid in frame_ids}
+                        for frame_id in frame_ids:
+                            frame = frames.get(frame_id)
+                            if frame is None or not frame.is_oopif or not frame.cdp_session_id:
+                                continue
+                            child_probe = await self._cdp(
+                                "Runtime.evaluate", {"expression": accept, "returnByValue": True},
+                                session_id=frame.cdp_session_id, timeout=timeout,
+                            )
+                            if child_probe.get("result", {}).get("result", {}).get("value"):
+                                origin_probe = await self._cdp(
+                                    "Runtime.evaluate", {"expression": "window.location.origin", "returnByValue": True},
+                                    session_id=frame.cdp_session_id, timeout=timeout,
+                                )
+                                child_origin = str(origin_probe.get("result", {}).get("result", {}).get("value") or "")
+                                if child_origin:
+                                    child_session = frame.cdp_session_id
+                                    break
+                        if child_session is None:
+                            await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
+                            continue
+                        with self._state_lock:
+                            self._page_session_id = child_session
+                        return {"ok": True, "url": url, "frame_origin": child_origin}
                 with self._state_lock:
                     self._page_session_id = sid
                 return {"ok": True, "url": url}

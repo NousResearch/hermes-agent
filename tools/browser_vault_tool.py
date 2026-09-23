@@ -199,10 +199,13 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[tuple[str, str]]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
-    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    login page). Returns ``(top_level_origin, evaluation_origin)`` when a tab
+    or one of its eligible OOPIFs was focused, else None (caller falls back to
+    the current page). The first element remains the vault binding; the second
+    is only the frame origin asserted synchronously before a write."""
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
@@ -210,7 +213,17 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     if supervisor is None:
         return None
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    if not focused.get("ok"):
+        return None
+    top_level_origin = origin
+    if not top_level_origin:
+        try:
+            from agent.vault_store import normalize_origin
+
+            top_level_origin = normalize_origin(str(focused.get("url") or ""))
+        except Exception:
+            return None
+    return top_level_origin, str(focused.get("frame_origin") or top_level_origin)
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +310,11 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     effective_task_id = task_id or "default"
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
-    _focus_bound_origin(effective_task_id, "", "login")
-    origin = _current_page_origin(effective_task_id)
+    focused = _focus_bound_origin(effective_task_id, "", "login")
+    # When the form is in an OOPIF, the active CDP session is the child so a
+    # location read would name the identity provider. A login saved from that
+    # form belongs to the selected top-level site instead.
+    origin = focused[0] if focused else _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
     prompt = get_save_login_prompt_callback()
@@ -456,11 +472,14 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # nothing wildcard/parent-domain is ever inferred.
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
     page_origin = None
+    fill_origin = None
     for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
+        focused = _focus_bound_origin(effective_task_id, candidate, meta.kind)
+        if focused:
+            page_origin, fill_origin = focused
             break
     page_origin = page_origin or _current_page_origin(effective_task_id)
+    fill_origin = fill_origin or page_origin
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
@@ -527,7 +546,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     try:
         fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
+            effective_task_id, build_fill_js(fills, expected_origin=fill_origin, nonce=nonce)
         )
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.

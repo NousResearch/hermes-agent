@@ -9,6 +9,8 @@ from fastapi import HTTPException, Request
 from pathlib import Path
 from typing import Any, Dict
 
+from hermes_cli.profiles import _junction_target
+
 
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
@@ -72,6 +74,12 @@ def _ensure_managed_root(raw_path: str | Path) -> Path:
 
 def _path_is_under(root: Path, target: Path) -> bool:
     return target == root or root in target.parents
+
+
+def _is_link(path: Path) -> bool:
+    """Symlink or NTFS junction (``is_symlink()`` is False for a junction, and
+    ``Path.is_junction`` needs 3.12); ``unlink()`` removes either AS the link."""
+    return path.is_symlink() or _junction_target(str(path)) is not None
 
 
 def _path_text(raw_path: str | None) -> str:
@@ -161,16 +169,20 @@ def _resolve_managed_path(
     if ".." in candidate.parts:
         raise HTTPException(status_code=400, detail="Path cannot contain '..'")
 
-    if for_write and not candidate.exists():
-        parent = _canonical_path(candidate.parent)
-        resolved = parent / candidate.name
+    if for_write:
+        # A mutation acts on the entry itself: the final component stays lexical,
+        # so a symlink/junction is replaced or removed AS the link, never chased
+        # to its referent. Containment judges both the entry and where it
+        # resolves, so a link that escapes the locked root is still refused.
+        target = _canonical_path(candidate.parent) / candidate.name
+        resolved = _canonical_path(candidate)
     else:
-        resolved = _canonical_path(candidate, require_exists=not for_write)
+        target = resolved = _canonical_path(candidate, require_exists=True)
 
-    if root is not None and not _path_is_under(root, resolved):
+    if root is not None and not (_path_is_under(root, target) and _path_is_under(root, resolved)):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
-    return policy, resolved, str(resolved)
+    return policy, target, str(target)
 
 
 def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
@@ -193,9 +205,11 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
 
     is_dir = resolved.is_dir()
     mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
+    # The entry's own path, not its referent's: the Files page mutates whatever
+    # path it is handed, and a link and its target must not share a row key.
     return {
         "name": target.name or resolved.name or str(resolved),
-        "path": str(resolved),
+        "path": str(target),
         "is_directory": is_dir,
         "size": None if is_dir else st.st_size,
         "mtime": st.st_mtime,

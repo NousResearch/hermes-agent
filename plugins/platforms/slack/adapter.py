@@ -2357,7 +2357,8 @@ class SlackAdapter(BasePlatformAdapter):
             result = await self.edit_message(
                 chat_id, cached_id, content, finalize=False, metadata=metadata)
             if result.success:
-                if result.message_id:
+                # Only write back if nobody evicted/replaced this key during the await.
+                if result.message_id and self._status_message_ids.get(key) == cached_id:
                     self._status_message_ids[key] = str(result.message_id)
                 return result
             # Edit failed: drop cached ts, fall through to a fresh send.

@@ -8,6 +8,20 @@ afterEach(() => {
 })
 
 describe('rollout controls', () => {
+  it('offers Resume for a paused rollout and waits for the running acknowledgement', () => {
+    const onCommand = vi.fn().mockResolvedValue(true)
+    const view = render(<RolloutControls onCommand={onCommand} onVerify={vi.fn()} phase="paused" />)
+
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    expect(onCommand).toHaveBeenCalledWith('resume')
+    expect(screen.getByRole('button', { name: 'Resume' })).toHaveProperty('disabled', true)
+
+    view.rerender(<RolloutControls onCommand={onCommand} onVerify={vi.fn()} phase="running" />)
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeTruthy()
+  })
+
   it('keeps pause/stop pending until acknowledgement and exposes fresh verification', () => {
     const onCommand = vi.fn()
     const onVerify = vi.fn()

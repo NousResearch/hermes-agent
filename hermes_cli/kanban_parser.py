@@ -217,6 +217,11 @@ _SPECS = [
              help="Initial card status. Use 'blocked' for cards "
                   "that require immediate human ops (R3 gate) "
                   "to skip the brief running-to-blocked transition."),
+        _arg("--hold", action="store_true",
+             help="Create the card in the non-dispatchable 'hold' status. Use it "
+                  "when the parents can only be attached AFTER the create "
+                  "(`hermes kanban link`), so no dispatcher tick can claim the "
+                  "card in between. Release it with `hermes kanban unhold <id>`."),
         _json_flag(help="Emit JSON output"),
     ], help="Create a new task"),
     _cmd("swarm", [
@@ -332,6 +337,11 @@ _SPECS = [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
+    _cmd("unhold", [
+        _reason("Optional reason/note — recorded as a comment before clearing the hold. Quote multi-word reasons."),
+        _TASK_IDS,
+    ], help="Clear a create-time hold (hold -> ready, or todo while a parent is open); "
+            "operator escape hatch for a hold whose creator never cleared it"),
     _cmd("request-review", [
         _TASK_ID,
         _arg("--summary", help="What was implemented and how it was verified — shown to the reviewer."),

@@ -12,7 +12,7 @@ from hermes_cli import kanban_db as kb
 
 _STATUS_ICONS = {
     "todo": "◻", "ready": "▶", "running": "●", "scheduled": "⏱",
-    "blocked": "⊘", "done": "✓", "archived": "—",
+    "blocked": "⊘", "done": "✓", "archived": "—", "hold": "⏏",
 }
 
 _TASK_DICT_FIELDS = (

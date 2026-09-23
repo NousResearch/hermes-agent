@@ -100,7 +100,11 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 
 # --- Constants ---
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+# ``hold`` is the create-time park: ``kanban_create(hold=True)`` writes it in the
+# same statement as the INSERT, so the card is never claimable -- not for one
+# tick -- while its filer is still adding the parents it needs. It is a real
+# status, so every lane query (``status = 'ready'``) excludes it by construction.
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived", "hold"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
@@ -1256,6 +1260,7 @@ def create_task(
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
+    hold: bool = False,
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
@@ -1265,6 +1270,9 @@ def create_task(
 
     Status: ``ready`` unless a parent is not ``done`` (``todo``); ``triage=True``
     forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
+    ``hold=True`` writes ``hold`` instead, in the same statement as the INSERT:
+    the card is not claimable, not for one tick, and only ``unhold_task`` moves
+    it out -- its creator, or the operator escape when the creator crashed.
     ``idempotency_key``: an existing non-archived task with the key is returned
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
@@ -1287,6 +1295,16 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+    if hold and initial_status != "running":
+        raise ValueError(
+            f"hold=True conflicts with initial_status={initial_status!r}: a hold "
+            "outranks every other park"
+        )
+    if hold and triage:
+        raise ValueError(
+            "hold=True conflicts with triage=True: a hold already keeps the card "
+            "out of dispatch"
+        )
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
@@ -1342,6 +1360,12 @@ def create_task(
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
+                if hold:
+                    # Create-time hold: written with the INSERT below, so no
+                    # dispatcher tick can ever see a claimable row between this
+                    # call and the filer's `kanban_link` calls (the
+                    # create-vs-link claim race).
+                    task_status = "hold"
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1394,6 +1418,13 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if task_status == "hold":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "hold",
+                        {"reason": "create_hold", "actor": created_by or "user"},
+                    )
                 if task_status == "blocked":
                     _append_event(
                         conn,
@@ -2187,6 +2218,58 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     return promoted
 
 
+# --- Create-time hold ---
+
+def hold_clear_status(conn: sqlite3.Connection, task_id: str) -> str:
+    """Where a cleared hold lands: ``ready`` once every parent is ``done``/
+    ``archived``, else ``todo``. A clear never promotes past an unmet parent --
+    which is the whole reason the filer holds the card while it adds them."""
+    return "ready" if _parents_satisfied(conn, task_id) else "todo"
+
+
+def unhold_task(
+    conn: sqlite3.Connection, task_id: str, *,
+    requester: Optional[str] = None, requester_session: Optional[str] = None,
+    operator: bool = False,
+) -> tuple[bool, str]:
+    """Clear a create-time hold: ``hold`` -> ``ready``/``todo`` per the graph.
+
+    Returns ``(ok, detail)``; ``detail`` is the landing status on success and the
+    refusal reason otherwise. Only the card's creator may clear it in-process:
+    ``created_by`` must match AND, when the row recorded a ``session_id``, so must
+    that. Both are read from the runtime by the caller rather than trusted from a
+    name in an argument, so a caller cannot release a hold by asserting someone
+    else's identity. A card that recorded no session has no second key to compare
+    and is keyed on the profile alone; ``operator=True`` (the CLI) clears any
+    hold -- the escape hatch for a hold whose creator died mid-filing.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, created_by, session_id FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return False, "not found"
+        if row["status"] != "hold":
+            return False, f"not held (status={row['status']})"
+        if not operator:
+            creator = (row["created_by"] or "").strip()
+            if not requester or creator != requester:
+                return False, f"held by {creator or 'an unknown creator'}"
+            owner_session = (row["session_id"] or "").strip()
+            if owner_session and owner_session != (requester_session or "").strip():
+                return False, "hold belongs to another session"
+        status = hold_clear_status(conn, task_id)
+        conn.execute(
+            "UPDATE tasks SET status = ? WHERE id = ? AND status = 'hold'",
+            (status, task_id),
+        )
+        _append_event(
+            conn, task_id, "unheld",
+            {"status": status, "actor": "operator" if operator else (requester or "creator")},
+        )
+    return True, status
+
+
 # --- Claim / complete / block ---
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -2273,6 +2356,13 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        # A hold is unclaimable in every mode -- a stale tick, a restart, or a
+        # direct caller. 'hold' is a real status, so the ready->running CAS
+        # below can never match it; this guard is what keeps the parent-demotion
+        # branch from rewriting a hold to 'todo' under a tick that arrived late.
+        if _task_status(conn, task_id) == "hold":
+            _append_event(conn, task_id, "claim_rejected", {"reason": "held"})
+            return None
         # Single enforcement point: never ready -> running with an undone
         # parent, whichever writer set 'ready'. Demote to 'todo';
         # recompute_ready re-promotes when the parents finish.

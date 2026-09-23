@@ -215,13 +215,20 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
 
 def is_browser_use_cli_mode() -> bool:
     """True when the Browser Use CLI replaces the built-in browser stack. Browser Use mode is the DEFAULT:
-    unset ``browser.backend`` ("") enables it whenever the CLI is runnable (installed binary or uvx);
-    ``browser.backend: off`` keeps the built-in browser_* tools. Camofox always falls back to the built-in
-    tools (Firefox, custom HTTP API, no CDP surface for the harness)."""
+    unset ``browser.backend`` ("") enables it whenever the CLI is *installed* (managed bin / PATH / user
+    tool dir — not the ``uvx`` zero-install fallback, which would fetch an unpinned package from PyPI at
+    tool-call time and silently drop the built-in ``browser_*`` surface even when ``browser.cdp_url`` is
+    configured, #120015); ``browser.backend: off`` keeps the built-in browser_* tools. Camofox always
+    falls back to the built-in tools (Firefox, custom HTTP API, no CDP surface for the harness)."""
     if _camofox_active():
         return False
     backend = get_browser_backend()
-    return backend == _BACKEND_KEY if backend else (is_legacy_browser_use_cloud_config(_read_browser_cfg()) or _find_cli() is not None)
+    if backend:
+        return backend == _BACKEND_KEY
+    # Default (unset) backend: an explicit legacy cloud config still selects Browser Use, but
+    # "the CLI is runnable" means an installed binary — the uvx fallback stays available for an
+    # explicit ``browser.backend: browser-use``.
+    return is_legacy_browser_use_cloud_config(_read_browser_cfg()) or _find_installed_cli() is not None
 
 
 def default_downgrade_notice() -> Optional[str]:
@@ -249,22 +256,42 @@ def _managed_bin_dir() -> str:
     return str(Path(get_hermes_home()) / "bin")
 
 
-def _find_cli() -> Optional[List[str]]:
-    """Locate the browser-use CLI, or None when it can't be run. MANAGED-FIRST: Hermes' own ``$HERMES_HOME/bin``
-    copy always wins so every session drives one Hermes-controlled binary; PATH and the user-level tool dir
-    (~/.local/bin, or uv's %APPDATA%/uv/bin on Windows — Desktop/TUI workers may start with a minimal PATH
-    that omits it) are fallbacks; uvx zero-install (same probe order) is last."""
+def _installed_cli_probe_paths() -> List[Optional[str]]:
+    """Managed ``$HERMES_HOME/bin`` first, then PATH (``None``), then the user tool dir
+    (~/.local/bin, or uv's %APPDATA%/uv/bin on Windows — Desktop/TUI workers may start with a
+    minimal PATH that omits it)."""
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         user_bin = str(Path(appdata) / "uv" / "bin") if appdata else None
     else:
         user_bin = str(Path(os.path.expanduser("~")) / ".local" / "bin")
-    probe_paths = [p for p in (_managed_bin_dir(), None, user_bin) if p is None or p]  # None = PATH
-    for name, argv in (("browser-use", lambda b: [b]), ("uvx", lambda b: [b, "browser-use"])):
-        for probe_path in probe_paths:
-            found = shutil.which(name, path=probe_path)
-            if found:
-                return argv(found)
+    return [p for p in (_managed_bin_dir(), None, user_bin) if p is None or p]
+
+
+def _find_installed_cli() -> Optional[List[str]]:
+    """Locate an *installed* browser-use binary: Hermes' own ``$HERMES_HOME/bin`` copy (MANAGED-FIRST,
+    so every session drives one Hermes-controlled binary), then PATH, then the user tool dir. Never
+    the ``uvx`` zero-install fallback: with ``browser.backend`` unset, an installed binary is the only
+    thing that may select Browser Use mode — uvx pulls whatever PyPI serves at tool-call time and the
+    selection silently drops the built-in ``browser_*`` surface (#120015)."""
+    for probe_path in _installed_cli_probe_paths():
+        found = shutil.which("browser-use", path=probe_path)
+        if found:
+            return [found]
+    return None
+
+
+def _find_cli() -> Optional[List[str]]:
+    """Locate the browser-use CLI, or None when it can't be run. Installed binaries first
+    (:func:`_find_installed_cli`); the ``uvx`` zero-install run is the last resort, probed in the
+    same managed/PATH/user-tool-dir order."""
+    installed = _find_installed_cli()
+    if installed:
+        return installed
+    for probe_path in _installed_cli_probe_paths():
+        found = shutil.which("uvx", path=probe_path)
+        if found:
+            return [found, "browser-use"]
     return None
 
 

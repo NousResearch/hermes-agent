@@ -74,15 +74,15 @@ def _fake_cli(tmp_path, body):
 
 class TestModeDetection:
     def test_default_on_when_cli_available(self, monkeypatch):
-        """Backend unset: Browser Use mode is the default when the CLI runs."""
+        """Backend unset: Browser Use mode is the default when the CLI is installed."""
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+        monkeypatch.setattr(bu_cli, "_find_installed_cli", lambda: ["/usr/bin/browser-use"])
         assert bu_cli.is_browser_use_cli_mode() is True
 
     def test_default_off_when_cli_unavailable(self, monkeypatch):
-        """Backend unset + no runnable CLI: keep the built-in browser tools."""
+        """Backend unset + no installed CLI: keep the built-in browser tools."""
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        monkeypatch.setattr(bu_cli, "_find_installed_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_explicit_off_wins_over_default(self, monkeypatch):
@@ -1510,3 +1510,37 @@ class TestTimeoutProcessGroupKill:
         monkeypatch.setattr(bu_cli, "_kill_cli_process_group", lambda proc: None)
         with pytest.raises(subprocess.TimeoutExpired):
             bu_cli._run_cli_killing_process_group(["x"], "code", {}, 5)
+
+
+class TestUvxFallbackSelection:
+    """With ``browser.backend`` unset, only an installed browser-use binary selects Browser
+    Use mode; the uvx zero-install fallback must not silently drop the built-in browser_*
+    surface (browser_vision included) on hosts that merely use uv for other tools (#120015)."""
+
+    def test_default_ignores_uvx_zero_install_fallback(self, monkeypatch):
+        """The exact report shape: no browser-use binary, uvx on PATH, cdp_url configured —
+        the built-in tools must stay active."""
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr(bu_cli, "_find_installed_cli", lambda: None)
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/uvx", "browser-use"])
+        assert bu_cli.is_browser_use_cli_mode() is False
+
+    def test_find_installed_cli_never_returns_uvx(self, monkeypatch):
+        """Only a real browser-use binary counts as installed."""
+        monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
+        monkeypatch.setattr(
+            bu_cli.shutil, "which",
+            lambda name, path=None: "/usr/bin/uvx" if name == "uvx" else None,
+        )
+        assert bu_cli._find_installed_cli() is None
+        # The full finder still hands back the uvx zero-install run.
+        assert bu_cli._find_cli() == ["/usr/bin/uvx", "browser-use"]
+
+    def test_find_cli_prefers_installed_binary_over_uvx(self, monkeypatch):
+        monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
+        monkeypatch.setattr(
+            bu_cli.shutil, "which",
+            lambda name, path=None: f"/usr/bin/{name}",
+        )
+        assert bu_cli._find_cli() == ["/usr/bin/browser-use"]
+        assert bu_cli._find_installed_cli() == ["/usr/bin/browser-use"]

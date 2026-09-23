@@ -188,10 +188,19 @@ _nb_try_fnm() {
     command -v fnm >/dev/null 2>&1 || return 1
     _nb_log "fnm detected — installing Node $HERMES_NODE_TARGET_MAJOR..."
     eval "$(fnm env 2>/dev/null)" || true
+    # Record the user's current fnm default BEFORE we touch anything so we
+    # can restore it afterward.  fnm install + fnm use previously overwrote
+    # the user's fish/shell default, breaking their configured Node version
+    # (e.g. Node 24 LTS via fnm reverted to 22.x, #38765).
+    _fnm_prior_default="$(fnm default 2>/dev/null || true)"
     fnm install "$HERMES_NODE_TARGET_MAJOR" >/dev/null 2>&1 || return 1
     fnm use     "$HERMES_NODE_TARGET_MAJOR" >/dev/null 2>&1 || return 1
     _nb_have_modern_node || return 1
     _nb_ok "Node $(node --version) activated via fnm"
+    # Restore the user's prior default so their shell config is unchanged.
+    if [ -n "$_fnm_prior_default" ] && [ "$_fnm_prior_default" != "$HERMES_NODE_TARGET_MAJOR" ]; then
+        fnm default "$_fnm_prior_default" >/dev/null 2>&1 || true
+    fi
     return 0
 }
 

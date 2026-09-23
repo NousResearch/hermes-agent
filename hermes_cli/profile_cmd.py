@@ -215,6 +215,10 @@ def _profile_create(args):
             print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
+            from hermes_cli.profile_memory_config import cloned_memory_provider
+            memory_provider = cloned_memory_provider(profile_dir)
+            if memory_provider:
+                print(f"Cloned memory provider config ({memory_provider}) too.")
         if sync_imports:
             print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
                   "keeps pulling the same Claude Code / Codex trees.")

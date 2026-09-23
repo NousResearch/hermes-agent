@@ -1196,6 +1196,9 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    from hermes_cli.profile_memory_config import active_memory_provider, clone_memory_provider_config
+    clone_memory_provider_config(source_dir, profile_dir,
+                                 active_memory_provider(_load_yaml_dict(source_dir / "config.yaml")))
     if sync_imports:
         from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME  # lazy: keeps yaml/utils off the hot startup path
         _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)

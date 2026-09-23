@@ -182,10 +182,12 @@ class HermesProviderMixin:
             metadata = OAuthMetadata.model_validate_json(await response.aread())
         except ValidationError:
             return response
-        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+        if not (metadata_issued_by_origin(metadata, self.context.auth_server_url, response)
+                or metadata_issuer_root_slash_equivalent(
+                    metadata, self.context.auth_server_url, response)):
             return response
         self._hermes_logger.info(
-            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
+            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is equivalent to the "
             "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
         self.context.oauth_metadata = metadata
         return type(response)(204, request=response.request)
@@ -548,6 +550,48 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
         return False
     origin = f"{parts.scheme}://{parts.netloc}"
     derived = f"{origin}/.well-known/oauth-authorization-server{path}"
+    return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
+
+
+def metadata_issuer_root_slash_equivalent(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
+    """Whether *metadata* may stand in for the exact-issuer match when the only difference is a root slash.
+
+    ``https://as.example`` and ``https://as.example/`` are the same origin under RFC 3986 §6.2.2
+    syntax-based normalization (for http/https an empty path is equivalent to ``/``), but the SDK's
+    ``validate_metadata_issuer`` compares them as simple strings per §6.2.1 and rejects the pair. A
+    server that advertises ``authorization_servers: ["https://as.example/"]`` while its own document
+    says ``"issuer": "https://as.example"`` therefore cannot complete the browser flow at all —
+    Semgrep's MCP connector publishes exactly this pair.
+
+    Hermes already accepts this equivalence on the device-flow path (``tools/mcp_oauth_device.py``
+    normalizes both sides with ``rstrip("/")``, documented there for Google's
+    ``https://accounts.google.com``); this makes the browser flow agree with it instead of rejecting
+    metadata the other flow accepts.
+
+    The boundary is unchanged from ``metadata_issued_by_origin``, and nothing wider is relaxed:
+
+    * the advertised identifier must be **root-scoped** (empty path or ``/``) — a path-scoped server
+      is covered by ``metadata_issued_by_origin`` on its own terms;
+    * *response* must be the document fetched directly (no redirect) from
+      ``<origin>/.well-known/oauth-authorization-server`` — the RFC 8414 §3.1 URL derived from the
+      advertised identifier, a location only that origin's operator controls. The OIDC fallback and
+      redirected documents are excluded;
+    * the issuer must equal that origin **modulo a trailing slash** — a different scheme, host, port
+      or path is still rejected.
+
+    Whoever can publish that document already controls the origin's well-known tree, so accepting it
+    grants no one anything the origin operator did not already have.
+    """
+    from urllib.parse import urlsplit
+    if not auth_server_url:
+        return False
+    parts = urlsplit(auth_server_url)
+    path = parts.path.rstrip("/")
+    if (path or parts.username is not None or parts.query or parts.fragment
+            or response.status_code != 200):
+        return False
+    origin = f"{parts.scheme}://{parts.netloc}"
+    derived = f"{origin}/.well-known/oauth-authorization-server"
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
 
 

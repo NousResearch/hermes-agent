@@ -1402,6 +1402,9 @@ class TurnRunner:
         clarify_mod.register(
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
             multi_select=bool(multi_select),
+            route_scope=clarify_mod.build_route_scope(
+                platform=ctx.source.platform, chat_id=ctx.source.chat_id, chat_type=ctx.source.chat_type,
+                thread_id=ctx.source.thread_id, message_id=getattr(ctx, "event_message_id", None)),
         )
         # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
         # below the question; if the re-seed fails the consumer degrades to send() automatically.

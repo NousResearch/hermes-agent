@@ -369,7 +369,13 @@ class GatewayInboundMixin:
         replies return "" so adapters don't double-post — the agent produces the next user-facing message."""
         try:
             from tools import clarify_gateway as _clarify_mod
-            _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key, include_choice_prompts=True)
+            # A Buzz channel prompt is bound to its thread: a reply from another thread (or a fresh
+            # top-level post) must not answer it.
+            _clarify_route_scope = _clarify_mod.build_route_scope(
+                platform=source.platform, chat_id=source.chat_id, chat_type=source.chat_type,
+                thread_id=source.thread_id, message_id=event.message_id)
+            _pending_clarify = _clarify_mod.get_pending_for_session(
+                _quick_key, include_choice_prompts=True, route_scope=_clarify_route_scope)
         except Exception:
             return None
         if _pending_clarify is None:
@@ -390,7 +396,8 @@ class GatewayInboundMixin:
         # they can retry; on timeout the agent unblocks with an empty response.
         if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
             return None
-        _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply)
+        _text_outcome = _clarify_mod.attempt_text_response_for_session(
+            _quick_key, _raw_clarify_reply, route_scope=_clarify_route_scope)
         if _text_outcome == _clarify_mod.TEXT_RESOLVED:
             logger.info(
                 "Gateway intercepted clarify text response (session=%s, id=%s)",

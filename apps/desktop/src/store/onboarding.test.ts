@@ -986,6 +986,49 @@ describe('OAuth owner lifetime', () => {
     )
   })
 
+  it('does not use the browser fallback after its owner changes', async () => {
+    const bridgeOpen = deferred<never>()
+    const requests: Array<{ method?: string; path: string }> = []
+    let current = true
+    installApiMock(async request => {
+      requests.push(request)
+
+      if (request.path.endsWith('/start')) {
+        return { auth_url: 'https://example.invalid/oauth', expires_in: 600, flow: 'pkce', session_id: 'stale-open' }
+      }
+
+      if (request.method === 'DELETE') {
+        return { ok: true }
+      }
+
+      throw new Error(`unexpected api path: ${request.path}`)
+    })
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { ...window.hermesDesktop, openExternal: vi.fn(() => bridgeOpen.promise) }
+    })
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const { startProviderOAuth } = await import('./onboarding')
+
+    const pending = startProviderOAuth(makeOAuthProvider('fixture'), {
+      isCurrent: () => current,
+      requestGateway: async () => undefined as never,
+      scope: { connectionId: 'owner-a', profile: 'research' }
+    })
+
+    await vi.waitFor(() => expect(window.hermesDesktop?.openExternal).toHaveBeenCalled())
+    current = false
+    bridgeOpen.reject(new Error('no browser handler'))
+    await pending
+
+    expect(open).not.toHaveBeenCalled()
+    await vi.waitFor(() =>
+      expect(requests).toContainEqual(
+        expect.objectContaining({ method: 'DELETE', path: '/api/providers/oauth/sessions/stale-open' })
+      )
+    )
+  })
+
   it('does not publish a delayed code-submit result after its owner changes', async () => {
     const submit = deferred<unknown>()
     const requests: Array<{ method?: string; path: string }> = []

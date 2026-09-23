@@ -810,7 +810,7 @@ export function clearFreeTierIntro() {
 // when the bridge isn't present (e.g. the web dashboard / dev preview) so
 // the flow never silently stalls in a waiting state. Mirrors the pattern in
 // apps/desktop/src/app/artifacts/index.tsx.
-async function openSignInUrl(url: string) {
+async function openSignInUrl(url: string, ctx: OnboardingContext, generation: number) {
   if (window.hermesDesktop?.openExternal) {
     try {
       await window.hermesDesktop.openExternal(url)
@@ -821,6 +821,10 @@ async function openSignInUrl(url: string) {
       // through to window.open so the sign-in URL still opens and the flow
       // doesn't strand a pending OAuth session in a waiting state.
     }
+  }
+
+  if (!onboardingOwnerCurrent(ctx, generation)) {
+    return
   }
 
   window.open(url, '_blank', 'noopener,noreferrer')
@@ -863,7 +867,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     }
 
     const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
-    await openSignInUrl(browserUrl)
+    await openSignInUrl(browserUrl, ctx, generation)
 
     if (!onboardingOwnerCurrent(ctx, generation)) {
       cancelStaleOAuthSession(start.session_id, ctx)

@@ -17,6 +17,17 @@ const GATEWAY_RESTART_ACTION = 'gateway-restart'
 // indicator (glyph spinner) so the restart shows up where users already look,
 // instead of a toast that vanishes or a generic "Agents running" counter.
 export const $gatewayRestarting = atom(false)
+let activeGatewayRestarts = 0
+
+function beginGatewayRestart() {
+  activeGatewayRestarts += 1
+  $gatewayRestarting.set(true)
+}
+
+function endGatewayRestart() {
+  activeGatewayRestarts = Math.max(0, activeGatewayRestarts - 1)
+  $gatewayRestarting.set(activeGatewayRestarts > 0)
+}
 
 // Poll a backend action to completion (or a bounded window), throwing on a
 // non-zero exit so the caller can surface the failure. In no-service installs
@@ -103,7 +114,7 @@ export async function runGatewayRestart(scope?: ProfileScope, isCurrent?: () => 
     return false
   }
 
-  $gatewayRestarting.set(true)
+  beginGatewayRestart()
 
   try {
     const started: ActionResponse = await restartGateway(scope)
@@ -124,7 +135,7 @@ export async function runGatewayRestart(scope?: ProfileScope, isCurrent?: () => 
 
     return false
   } finally {
-    $gatewayRestarting.set(false)
+    endGatewayRestart()
   }
 }
 
@@ -132,7 +143,7 @@ export async function runGatewayRestart(scope?: ProfileScope, isCurrent?: () => 
 // credentials) instead of one this app requested. Same indicator, same bounded
 // poll; resolves `false` on a non-zero exit so the caller can re-arm its banner.
 export async function watchGatewayRestartOutcome(scope?: ProfileScope): Promise<boolean> {
-  $gatewayRestarting.set(true)
+  beginGatewayRestart()
 
   try {
     await awaitAction(GATEWAY_RESTART_ACTION, scope)
@@ -141,6 +152,6 @@ export async function watchGatewayRestartOutcome(scope?: ProfileScope): Promise<
   } catch {
     return false
   } finally {
-    $gatewayRestarting.set(false)
+    endGatewayRestart()
   }
 }

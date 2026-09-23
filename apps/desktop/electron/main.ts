@@ -67,56 +67,30 @@ import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { installCommandScreenshot } from './command-screenshot'
-import { applyConnectionChange, teardownSshState } from './connection-apply'
+import { teardownSshState } from './connection-apply'
 import {
   connectionInstallIds,
-  evictConnectionCaches,
   sshInventoryAttemptedAt,
   sshRosterCache
 } from './connection-caches'
 import {
-  apiRequestRegistryConnectionId,
-  authModeFromStatus,
-  buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   gatewayWsUrlIpcResult,
-  hostLabelFromBaseUrl,
-  localProfileEntry,
-  modeIsRemoteLike,
-  normalizeRemoteBaseUrl,
-  normalizeRemoteHeaders,
   normalizeSshConfig,
-  normAuthMode,
-  pathForRegistryBackendRequest,
-  profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
-  resolveAuthMode,
-  resolveProfileApiRequest,
-  resolveRemoteSshDashboardProfile,
-  resolveTestWsUrl,
-  savedProfileSsh,
-  tokenPreview
+  resolveRemoteSshDashboardProfile
 } from './connection-config'
-import { applyConnectionConfigAtomically } from './connection-config-apply'
 import {
   backendScopeKey,
   backendScopePrefix,
   buildAgentRoster,
-  parseBackendScopeKey,
-  reconcileAppliedGlobalConnection,
   rememberSshEnumeration,
-  removeConnection,
-  resolvedConnectionId,
   resolveRegistryLocalRoute,
-  setConnectionLaunchMode,
-  setLastUsedConnection,
-  setPrimaryConnection,
   shouldDeferLocalEnumeration,
   shouldRetrySshInventory,
-  updateEligibility,
-  upsertConnection
+  updateEligibility
 } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { createContentFileRuntime } from './content-file-runtime'
@@ -125,7 +99,13 @@ import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashbo
 import { createDesktopAppLifecycleRuntime } from './desktop-app-lifecycle-runtime'
 import { createDesktopBackendOwnershipRuntime } from './desktop-backend-ownership-runtime'
 import { createDesktopConnectionAdmissionRuntime } from './desktop-connection-admission-runtime'
+import { registerDesktopConnectionApiIpc } from './desktop-connection-api-ipc'
+import { registerDesktopConnectionAuthIpc } from './desktop-connection-auth-ipc'
 import { createDesktopConnectionAuthRuntime } from './desktop-connection-auth-runtime'
+import { createDesktopConnectionDescriptorRuntime } from './desktop-connection-descriptor-runtime'
+import { registerDesktopConnectionDialIpc } from './desktop-connection-dial-ipc'
+import { createDesktopConnectionProbeRuntime } from './desktop-connection-probe-runtime'
+import { registerDesktopConnectionRegistryIpc } from './desktop-connection-registry-ipc'
 import { createDesktopConnectionStorageRuntime } from './desktop-connection-storage-runtime'
 import { createDesktopExternalOpenRuntime } from './desktop-external-open-runtime'
 import { registerDesktopFileIpc } from './desktop-file-ipc'
@@ -139,8 +119,7 @@ import { createDesktopPrimaryWindowRuntime } from './desktop-primary-window-runt
 import {
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
-  type DesktopProfileRoute,
-  resolveDesktopConnectionRequest
+  type DesktopProfileRoute
 } from './desktop-profile'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import { createDesktopSecondaryWindowRuntime } from './desktop-secondary-window-runtime'
@@ -176,13 +155,9 @@ import { registerGitIpc } from './git-ipc'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
-  DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
-  resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
-  resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
-  resolveTimeoutMs,
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
@@ -207,7 +182,6 @@ import {
   ManagedConnectionUpdateGate,
   managedSshRecoveryScopes,
   managedSshScopeRole,
-  managedSshTokenPersistencePlan,
   recoverManagedSshScopes,
   refusedManagedSshUpdate,
   type RemoteUpdateTarget,
@@ -220,13 +194,8 @@ import {
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
-import { NativeAuthChangedError } from './native-access-token'
 import { createNativeAppearanceController } from './native-appearance-controller'
-import { oauthSessionIsLive, resolveReadinessProbeAuth } from './native-auth-decisions'
-import {
-  resolveLoginStrategy
-} from './native-oauth'
-import { runNativeLogin } from './native-oauth-login'
+import { resolveReadinessProbeAuth } from './native-auth-decisions'
 import { registerNativeNotifications } from './notification-ipc'
 import { requestWithOauthFallback } from './oauth-rest-request'
 import { parentWatchdogEnv } from './parent-process-identity'
@@ -265,30 +234,16 @@ import {
   FirstRunSetupResetError,
   runPrimaryBackendStartup
 } from './primary-backend-startup'
-import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin } from './primary-profile-pin'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
-  dispatchConnectionScopedProfileDelete,
   localProfilePoolKeys,
   ProfileDeletionGate,
-  profileNameFromDeleteRequest,
-  resolveRouteProfile
+  profileNameFromDeleteRequest
 } from './profile-delete-routing'
 import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
-import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
-import {
-  buildSidebarSessionSliceParams,
-  fetchPrimaryProfileSessions,
-  fetchRegistrySessionRows,
-  fetchRemoteProfileSessions,
-  findRemoteOwnerProfileForSession,
-  mergeProfileSessionWindow,
-  type RegistrySessionSource,
-  spliceRegistrySessionRows,
-  tagRegistrySessionResponse
-} from './profile-session-routing'
+import { prepareProfileRenameLifecycle } from './profile-rename-routing'
 import { sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
@@ -297,12 +252,9 @@ import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
   RemoteLivenessTracker,
-  RemoteRevalidationCoordinator,
-  revalidatePooledRemoteBackends,
-  revalidateRemoteConnection,
-  revalidateSuspectPooledRemoteBackends
+  RemoteRevalidationCoordinator
 } from './remote-liveness'
-import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
+import { rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import {
   createRegistryGatewayWsUrlHandler
 } from './remote-ws-headers'
@@ -315,7 +267,6 @@ import { GIT_UNUSABLE } from './select-runnable-binary'
 import { chatWindowWebPreferences } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator } from './ssh-bootstrap-coordinator'
-import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
@@ -353,7 +304,6 @@ import { buildPathExtCandidates, getVenvSitePackagesEntries, resolveVenvHermesCo
 import {
   connectWindowsRemote,
   detectRemotePlatform,
-  helper,
   probeWindowsRemote,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
@@ -3094,339 +3044,18 @@ function migrateActiveProfileIfMissing() {
   })
 }
 
-// Sanitize a connection config into the renderer-facing shape. With no
-// `profile` this describes the global/default connection (the existing
-// behavior); with a `profile` it describes that profile's per-profile remote
-// override (or an empty "local/inherit" view when the profile has none).
-async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig(), profile = null) {
-  const key = connectionScopeKey(profile)
-  const scoped = key ? config.profiles?.[key] || null : null
-  const block = key ? scoped || {} : config.remote || {}
-
-  const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
-  const savedMode = key ? scoped?.mode : config.mode
-  const ssh = savedMode === 'ssh' ? normalizeSshConfig(block) : null
-
-  const savedSsh = savedMode === 'local' ? (key ? savedProfileSsh(config, key) : normalizeSshConfig(block)) : null
-
-  const remoteToken = decryptDesktopSecret(block.token)
-  const authMode = normAuthMode(block.authMode)
-  const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
-  const mode = envOverride ? 'remote' : savedMode === 'ssh' ? 'ssh' : modeIsRemoteLike(savedMode) ? savedMode : 'local'
-
-  // Whether the OS keyring (safeStorage) can encrypt the saved token. When
-  // false the renderer knows to offer the plain-text opt-in in Settings →
-  // Gateway. With keychain encryption opted out (the default) this reports
-  // true WITHOUT touching safeStorage — probing is itself a keychain touch
-  // that raises the macOS password dialog (see probeSecureTokenStorage).
-  const secureTokenStorage = probeSecureTokenStorage()
-
-  // Whether the renderer should warn that the saved token sits in plain text.
-  // resolveRemoteTokenPlainText keeps this silent while keychain encryption is
-  // opted out (the default) — plain text is the chosen mode there, not a
-  // degraded state — and fires only when the token is plain AND the machine
-  // cannot secure it (see probeSecureTokenStorage). The env override supplies
-  // its token from the environment, so it never reports as plain text here.
-  const remoteTokenPlainText = resolveRemoteTokenPlainText({ envOverride, secureTokenStorage, token: block.token })
-
-  let remoteOauthConnected = false
-
-  if (authMode === 'oauth' && remoteUrl) {
-    try {
-      // Display signal: treat a live RT cookie as "connected" even if the AT
-      // cookie has lapsed — the gateway refreshes the AT on the next request,
-      // so the session is still usable. A stored native bearer token (cookieless
-      // RFC 8252 flow) counts as connected too — otherwise a completed native
-      // sign-in shows "not connected" in Settings. The authoritative liveness
-      // check is the ws-ticket mint in resolveRemoteBackend at actual connect time.
-      remoteOauthConnected = oauthSessionIsLive(hasNativeSession(remoteUrl), await hasLiveOauthSession(remoteUrl))
-    } catch {
-      remoteOauthConnected = false
-    }
-  }
-
-  return {
-    mode,
-    // Echo the scope back so the UI knows which profile (if any) this reflects.
-    profile: key,
-    remoteAuthMode: authMode,
-    remoteOauthConnected,
-    remoteUrl,
-    // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for
-    // remote/local. Lets Settings → Gateway reopen into the same org.
-    cloudOrg: mode === 'cloud' ? String(block.org || '') : '',
-    remoteTokenPreview: tokenPreview(remoteToken),
-    remoteTokenSet: Boolean(remoteToken),
-    // Whether the OS keyring can encrypt a token; drives the plain-text opt-in
-    // affordance in Settings → Gateway on keyring-less Linux.
-    secureTokenStorage,
-    // Whether the saved token is persisted in plain text while this machine
-    // cannot secure it (drives the warning banner in Settings → Gateway).
-    remoteTokenPlainText,
-    sshHost: (ssh || savedSsh)?.host || '',
-    sshUser: (ssh || savedSsh)?.user || '',
-    sshPort: (ssh || savedSsh)?.port || null,
-    sshKeyPath: (ssh || savedSsh)?.keyPath || '',
-    sshRemoteHermesPath: (ssh || savedSsh)?.remoteHermesPath || '',
-    sshRemoteProfile: (ssh || savedSsh)?.remoteProfile || '',
-    // The env override only forces the global/primary connection; a per-profile
-    // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
-    envOverride
-  }
-}
-
-// Build + validate a `{ url, authMode, token }` remote block. OAuth gateways
-// authenticate via the login-window session cookie (verified at connect time in
-// resolveRemoteBackend), so only token-auth remotes require a saved token.
-// `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
-// under — persisted so Settings can reopen into the same org; omitted from the
-// block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: object, name?: string) {
-  if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
-    throw new Error('Remote gateway session token is required.')
-  }
-
-  const block: { url: string; authMode: string; token: object; headers?: object; org?: string; name?: string } = {
-    url: normalizeRemoteBaseUrl(remoteUrl),
-    authMode,
-    token
-  }
-
-  const remoteHeaders = normalizeRemoteHeaders(headers)
-
-  if (Object.keys(remoteHeaders).length > 0) {
-    block.headers = remoteHeaders
-  }
-
-  const nameValue = typeof name === 'string' ? name.trim() : ''
-
-  if (nameValue) {
-    block.name = nameValue
-  }
-
-  const orgValue = typeof org === 'string' ? org.trim() : ''
-
-  if (orgValue) {
-    block.org = orgValue
-  }
-
-  return block
-}
-
-function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopConnectionConfig(), options: any = {}) {
-  const persistToken = options.persistToken !== false
-  const key = connectionScopeKey(input.profile)
-  // 'cloud' and 'remote' both persist a remote-shaped block; 'cloud' is
-  // remembered as its own provenance (Q6) and resolves to remote downstream.
-  // Anything else collapses to local.
-  const mode = input.mode === 'ssh' ? 'ssh' : modeIsRemoteLike(input.mode) ? input.mode : 'local'
-  const remoteLike = modeIsRemoteLike(mode)
-
-  // The block being edited: a per-profile entry or the global remote block.
-  const rawExistingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
-  // Leaving a CLOUD connection unselects it: a cloud block's url/org/token
-  // describe a discovered Hermes Cloud instance, NOT a user-owned remote gateway,
-  // so switching to local or remote must NOT inherit them (otherwise the stale
-  // cloud URL lingers and re-selecting Cloud looks "already connected"). When the
-  // saved block was cloud and the new mode is not cloud, start from an empty
-  // block. (remote↔local toggles still preserve a real remote URL as before.)
-  const existingMode = key ? existing.profiles?.[key]?.mode : existing.mode
-  const leavingCloud = existingMode === 'cloud' && mode !== 'cloud'
-  const leavingSsh = rawExistingBlock.mode === 'ssh' && mode !== 'ssh' && mode !== 'local'
-  const existingBlock = leavingCloud || leavingSsh ? {} : rawExistingBlock
-  const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
-  // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
-  const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
-  // Cloud org: only meaningful for 'cloud' mode. Explicit input wins; otherwise
-  // inherit the saved org. A plain 'remote' connection never carries an org
-  // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
-  const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
-
-  // A saved name belongs to this exact gateway, not another instance in the same org.
-  const cloudName =
-    mode === 'cloud'
-      ? String(
-          input.cloudName ??
-            (existingBlock.url && normalizeRemoteBaseUrl(remoteUrl) === normalizeRemoteBaseUrl(existingBlock.url)
-              ? existingBlock.name
-              : '') ??
-            ''
-        ).trim()
-      : ''
-
-  const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
-
-  const remoteHeaders =
-    input.remoteHeaders && typeof input.remoteHeaders === 'object' ? input.remoteHeaders : existingBlock.headers
-
-  // Persist decision lives in hardening.resolvePersistedRemoteToken so the
-  // IPC-propagation seam (allowPlainTextToken → encryptDesktopSecret opt-in) is
-  // covered by a focused regression test. Pass allowPlainText through RAW — the
-  // helper coerces with `=== true`, so a truthy-non-true value never enables
-  // plain-text storage, and that strictness is asserted in exactly one place.
-  const nextToken = resolvePersistedRemoteToken({
-    incomingToken,
-    persistToken,
-    existingToken: existingBlock.token,
-    allowPlainText: input.allowPlainTextToken,
-    encryptSecret: encryptDesktopSecret
+const { sanitizeDesktopConnectionConfig, coerceDesktopConnectionConfig, buildRemoteConnection } =
+  createDesktopConnectionDescriptorRuntime({
+    readDesktopConnectionConfig,
+    decryptDesktopSecret,
+    decryptRemoteHeaders,
+    encryptDesktopSecret,
+    probeSecureTokenStorage,
+    hasNativeSession,
+    hasLiveOauthSession,
+    mintGatewayWsTicket,
+    rememberRemoteWsHeaders
   })
-
-  if (mode === 'ssh') {
-    const sshBlock = buildSshBlock(input, savedProfileSsh(existing, key) || rawExistingBlock)
-
-    if (key) {
-      const profiles = { ...(existing.profiles || {}), [key]: sshBlock }
-
-      return {
-        mode: existing.mode === 'ssh' || modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
-        remote: existing.remote || {},
-        profiles
-      }
-    }
-
-    return { mode: 'ssh', remote: sshBlock, profiles: existing.profiles || {} }
-  }
-
-  if (key) {
-    // Per-profile scope: a remote/cloud entry pins this profile to its own
-    // backend; a local entry clears the override so the profile inherits the
-    // default. The mode tag (remote vs cloud) is preserved on the entry.
-    const profiles = { ...(existing.profiles || {}) }
-
-    if (remoteLike) {
-      profiles[key] = {
-        mode,
-        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
-      }
-    } else {
-      const localEntry = localProfileEntry(rawExistingBlock)
-
-      if (localEntry) {
-        profiles[key] = localEntry
-      } else {
-        delete profiles[key]
-      }
-    }
-
-    return {
-      mode: existing.mode === 'ssh' || modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
-      remote: existing.remote || {},
-      profiles
-    }
-  }
-
-  const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
-    : existingMode === 'ssh'
-      ? rawExistingBlock
-      : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
-
-  // Preserve per-profile overrides when saving the global connection.
-  return { mode, remote: nextRemote, profiles: existing.profiles || {} }
-}
-
-// Build an SSH connection block from a save payload, preserving an
-// already-adopted dashboard token from the existing block (the token is minted
-// + reconciled at bootstrap, never user-entered). `mode: 'ssh'` is stamped so
-// normalizeSshConfig/profileSshOverride recognize it.
-function buildSshBlock(input: any, existingBlock: any = {}) {
-  // `??` (not `||`) so an explicit '' (user CLEARED the field) wins over the
-  // saved value; only a truly absent (undefined) field inherits.
-  const merged = normalizeSshConfig({
-    mode: 'ssh',
-    host: input.sshHost ?? existingBlock.host,
-    user: input.sshUser ?? existingBlock.user,
-    port: input.sshPort ?? existingBlock.port,
-    keyPath: input.sshKeyPath ?? existingBlock.keyPath,
-    remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath,
-    remoteProfile: input.sshRemoteProfile ?? existingBlock.remoteProfile
-  })
-
-  if (!merged) {
-    throw new Error('SSH host is required.')
-  }
-
-  // Carry forward an already-adopted dashboard token unless the host changed
-  // (a different host invalidates the old dashboard's token).
-  if (existingBlock.token && existingBlock.host === merged.host) {
-    merged.token = existingBlock.token
-  }
-
-  return merged
-}
-
-// Build a remote backend connection descriptor from an already-resolved remote
-// config. Handles both auth models (OAuth ws-ticket vs static session token)
-// and is shared by the per-profile, env, and global resolution paths. `token`
-// is the DECRYPTED static token (or null in OAuth mode). `source` is a label
-// for diagnostics ('profile' | 'env' | 'settings').
-async function buildRemoteConnection(
-  rawUrl,
-  authMode,
-  token,
-  source,
-  remoteHost?,
-  remoteKind = 'url',
-  remoteIdentity?,
-  headers?
-) {
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-  const remoteHeaders = decryptRemoteHeaders(headers)
-  // For token/oauth remotes the meaningful host is the real backend URL; for
-  // SSH remotes the caller passes the entered/resolved host explicitly (the
-  // baseUrl is a 127.0.0.1 tunnel and would be useless in the pill).
-  const host = remoteHost || hostLabelFromBaseUrl(baseUrl)
-
-  if (authMode === 'oauth') {
-    const ticket = await resolveRemoteOauthTicket(baseUrl, remoteHeaders, {
-      hasNativeSession,
-      mintGatewayWsTicket
-    })
-
-    const wsUrl = buildGatewayWsUrlWithTicket(baseUrl, ticket)
-
-    rememberRemoteWsHeaders(wsUrl, remoteHeaders)
-
-    return {
-      baseUrl,
-      mode: 'remote',
-      source,
-      authMode: 'oauth',
-      remoteHost: host || undefined,
-      remoteIdentity,
-      remoteKind,
-      headers: remoteHeaders,
-      // No static token in OAuth mode; REST is cookie-authed via the partition.
-      token: null,
-      wsUrl
-    }
-  }
-
-  if (!token) {
-    throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
-        'Open Settings → Gateway and save a token, or switch back to Local.'
-    )
-  }
-
-  const wsUrl = buildGatewayWsUrl(baseUrl, token)
-
-  rememberRemoteWsHeaders(wsUrl, remoteHeaders)
-
-  return {
-    baseUrl,
-    mode: 'remote',
-    source,
-    authMode: 'token',
-    remoteHost: host || undefined,
-    remoteIdentity,
-    remoteKind,
-    headers: remoteHeaders,
-    token,
-    wsUrl
-  }
-}
 
 const sshConnections = new Map<string, any>()
 
@@ -3851,458 +3480,49 @@ const { effectiveSshConfigFingerprint, bootstrapSshConnection } = createDesktopS
   waitForHermes
 })
 
+const {
+  persistSshConnectionToken: persistSshConnectionTokenImpl,
+  resolveRemoteBackend,
+  profileHasRemoteOverride,
+  configuredRemoteProfileNames,
+  globalRemoteActive: globalRemoteActiveImpl,
+  registryPrimaryIsRemote,
+  primaryBackendIsRemote,
+  fetchJsonForProfile,
+  requestJsonForProfile,
+  probeRemoteAuthMode,
+  testDesktopConnectionConfig,
+  fetchConnectionStatus
+} = createDesktopConnectionProbeRuntime({
+  bootstrapSshConnection,
+  buildRemoteConnection,
+  coerceDesktopConnectionConfig,
+  decryptDesktopSecret,
+  decryptRemoteHeaders,
+  encryptDesktopSecret,
+  ensureBackend: profile => ensureBackend(profile),
+  fetchJsonForBackend,
+  fetchPublicJson,
+  managedConnectionUpdateGate,
+  managedPrimaryRestoreOwners,
+  managedSshConfig,
+  mintGatewayWsTicket,
+  primaryProfileKey,
+  readDesktopConnectionConfig,
+  readDesktopConnectionsRegistry,
+  sshRememberLog,
+  startHermes,
+  writeDesktopConnectionConfig,
+  writeDesktopConnectionsRegistry
+})
+
+// Earlier runtimes receive these callbacks before the probe runtime is built.
 function persistSshConnectionToken(profile, source, token, registryConnectionId = '') {
-  try {
-    const persistence = managedSshTokenPersistencePlan(source, registryConnectionId)
-    const id = persistence.registryConnectionId
-    const encrypted = encryptDesktopSecret(token)
-
-    // A primary legacy route can also be qualified with a stable registry id.
-    // Mirror the adopted per-serve token to both stores so the next primary
-    // launch and a later registry-scoped launch reuse the same owned process.
-    if (id) {
-      const registry = readDesktopConnectionsRegistry()
-      const entry = registry.connections.find(c => c.id === id)
-
-      if (entry && entry.kind === 'ssh') {
-        writeDesktopConnectionsRegistry(upsertConnection(registry, { ...entry, token: encrypted }))
-      }
-    }
-
-    if (!persistence.legacySource) {
-      return
-    }
-
-    const config = readDesktopConnectionConfig()
-
-    if (persistence.legacySource === 'profile') {
-      const key = connectionScopeKey(profile)
-
-      if (key && config.profiles?.[key]?.mode === 'ssh') {
-        config.profiles[key].token = encrypted
-        writeDesktopConnectionConfig(config)
-      }
-    } else if (config.mode === 'ssh' && config.remote) {
-      config.remote.token = encrypted
-      writeDesktopConnectionConfig(config)
-    }
-  } catch (error: any) {
-    sshRememberLog(`[ssh] could not persist served token: ${error.message}`)
-  }
+  return persistSshConnectionTokenImpl(profile, source, token, registryConnectionId)
 }
 
-// Resolve the remote backend for a given profile, or null when that profile
-// should run a LOCAL backend. Precedence:
-//   1. explicit per-profile remote override (connection.json `profiles[name]`)
-//   2. env override (HERMES_DESKTOP_REMOTE_URL/_TOKEN) — applies app-wide
-//   3. global remote (connection.json `mode: 'remote'`)
-// A null/empty profile resolves the env/global remote, so legacy callers and
-// the connection test (which pass no profile) are unchanged.
-async function resolveRemoteBackend(profile, options: { poolKey?: string; primary?: boolean } = {}) {
-  const profileKey = String(profile || '').trim() || 'default'
-
-  const managedPrimary = options.primary
-    ? [...managedPrimaryRestoreOwners.values()].find(owner => owner.profile === profileKey)
-    : null
-
-  if (managedPrimary) {
-    // A managed update is restoring the primary: dial the exact connection
-    // snapshot the transaction captured, not whatever routing says now.
-    const source = managedPrimary.source
-    const sshConfig = managedSshConfig(source, profileKey)
-
-    if (!sshConfig) {
-      throw new Error(`SSH connection "${source.label}" has no host configured.`)
-    }
-
-    managedConnectionUpdateGate.assertCanDial(source.id, managedPrimary.correlationId)
-
-    const currentRoute = resolveDesktopRemoteRoute({
-      config: readDesktopConnectionConfig(),
-      env: {
-        token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
-        url: process.env.HERMES_DESKTOP_REMOTE_URL
-      },
-      profile: profileKey,
-      registry: readDesktopConnectionsRegistry()
-    })
-
-    const persistenceSource =
-      currentRoute?.kind === 'ssh' && currentRoute.connectionId === source.id
-        ? currentRoute.source
-        : `registry:${source.id}`
-
-    const connection = await bootstrapSshConnection(
-      persistenceSource === 'profile' ? profileKey : null,
-      sshConfig,
-      decryptDesktopSecret(source.token),
-      persistenceSource,
-      undefined,
-      {
-        managedScope: 'primary',
-        managedUpdateCorrelation: managedPrimary.correlationId,
-        primaryRegistryScope: true,
-        registryConnectionId: source.id
-      }
-    )
-
-    return { ...connection, connectionId: source.id }
-  }
-
-  const config = readDesktopConnectionConfig()
-
-  const route = resolveDesktopRemoteRoute({
-    config,
-    env: {
-      token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
-      url: process.env.HERMES_DESKTOP_REMOTE_URL
-    },
-    profile,
-    registry: readDesktopConnectionsRegistry()
-  })
-
-  if (!route) {
-    return null
-  }
-
-  let connection
-
-  if (route.kind === 'ssh') {
-    if (route.connectionId) {
-      managedConnectionUpdateGate.assertCanDial(route.connectionId)
-    }
-
-    connection = await bootstrapSshConnection(
-      route.source === 'profile' ? profile : null,
-      route.ssh,
-      decryptDesktopSecret(route.token),
-      route.source,
-      undefined,
-      {
-        managedScope: options.primary ? 'primary' : options.poolKey ? 'pool' : 'transient',
-        poolKey: options.poolKey || '',
-        primaryRegistryScope: options.primary === true && Boolean(route.connectionId),
-        registryConnectionId: route.connectionId || ''
-      }
-    )
-  } else {
-    const token =
-      route.authMode === 'oauth' ? null : route.source === 'env' ? route.token : decryptDesktopSecret(route.token)
-
-    connection = await buildRemoteConnection(
-      route.url,
-      route.authMode,
-      token,
-      route.source,
-      undefined,
-      route.kind === 'cloud' ? 'cloud' : 'url',
-      undefined,
-      route.headers
-    )
-  }
-
-  return route.connectionId ? { ...connection, connectionId: route.connectionId } : connection
-}
-
-// A remote profile's sessions live on its remote host's state.db, not on a local
-// file the primary can open — so reads for it must route to the remote backend,
-// not the local-disk fast path. These three helpers drive that (see
-// interceptSessionReadForRemote).
-function profileHasRemoteOverride(profile) {
-  return profileHasRemoteConnection(readDesktopConnectionConfig(), profile)
-}
-
-function configuredRemoteProfileNames() {
-  const config = readDesktopConnectionConfig()
-
-  return Object.keys(config.profiles || {}).filter(name => profileHasRemoteConnection(config, name))
-}
-
-// True when the app is in app-global remote mode (Settings → "All profiles" →
-// Remote/Cloud, or the env override): a SINGLE remote backend serves every
-// profile via ?profile=. Cloud counts — it resolves to a remote backend (Q6).
-// Distinct from per-profile overrides — here there's one host for all.
 function globalRemoteActive() {
-  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
-    return true
-  }
-
-  const mode = readDesktopConnectionConfig().mode
-
-  if (modeIsRemoteLike(mode) || mode === 'ssh') {
-    return true
-  }
-
-  // Registry-primary transport (#91564/#90316): a registered remote/cloud/ssh
-  // gateway promoted to primary via connections.json makes the primary
-  // backend remote even while the v1 config.mode still says 'local'. Every
-  // consumer of this flag ("one remote host serves every profile") must see
-  // that, or the local-entry routes delegate into a primary that now dials
-  // remote — respawning the exact loopback children the resolver rung in
-  // desktop-remote-route.ts eliminates.
-  return registryPrimaryIsRemote()
-}
-
-// True when the v2 registry PRIMARY names a non-local connection. Mirrors the
-// registry fallback rung in resolveDesktopRemoteRoute.
-function registryPrimaryIsRemote() {
-  try {
-    const registry = readDesktopConnectionsRegistry()
-    const entry = registry.connections.find(c => c.id === registry.primary)
-
-    return Boolean(entry && (entry.kind === 'remote' || entry.kind === 'cloud' || entry.kind === 'ssh'))
-  } catch {
-    return false
-  }
-}
-
-// True when the PRIMARY profile's backend resolves to a remote/cloud host —
-// i.e. resolveRemoteBackend(primaryProfileKey()) would return a descriptor
-// rather than null. Mirrors that function's precedence (per-profile override →
-// env → global) so a startHermes() failure can be classified as remote (never
-// latch — transient, must stay retryable) vs local (latch to break install
-// loops) BEFORE the throwing resolve/mint runs.
-function primaryBackendIsRemote() {
-  return Boolean(profileHasRemoteOverride(primaryProfileKey())) || globalRemoteActive()
-}
-
-// GET a profile's resolved backend (remote pool or local primary), parsed JSON.
-async function fetchJsonForProfile(profile, path) {
-  return requestJsonForProfile(profile, path, 'GET')
-}
-
-// Issue an arbitrary method against a profile's resolved backend, parsed JSON.
-async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
-  const conn = await ensureBackend(profile)
-
-  return fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
-}
-
-async function probeRemoteAuthMode(rawUrl) {
-  // Determine how a remote gateway expects callers to authenticate, WITHOUT
-  // sending any credentials. ``/api/status`` is public on every Hermes
-  // gateway (it backs the portal liveness probe) and reports:
-  //   auth_required: true  → OAuth gate is engaged (cookie + ws-ticket auth)
-  //   auth_required: false → loopback/--insecure: legacy session-token auth
-  // ``/api/auth/providers`` (also public, only meaningful when gated) gives
-  // the human-facing provider name(s) for the login button label.
-  //
-  // The settings UI calls this as the user types a URL so it can render an
-  // OAuth login button vs a session-token entry box. Network/parse failures
-  // surface as ``reachable: false`` rather than throwing, so a half-typed or
-  // unreachable URL degrades to "can't tell yet" instead of a hard error.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-
-  let status
-
-  try {
-    status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
-  } catch (error: any) {
-    return {
-      baseUrl,
-      reachable: false,
-      authMode: 'unknown',
-      providers: [],
-      version: null,
-      error: error instanceof Error ? error.message : String(error)
-    }
-  }
-
-  const authRequired = authModeFromStatus(status) === 'oauth'
-  let providers = []
-
-  if (authRequired) {
-    // Best-effort: a gated gateway exposes the registered providers so the
-    // button can read "Sign in with Nous Research" instead of a generic
-    // label, and so a username/password provider can be distinguished from
-    // an OAuth-redirect one (``supports_password``). A failure here doesn't
-    // change the auth mode, so swallow it.
-    try {
-      const body = (await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })) as any
-
-      if (Array.isArray(body?.providers)) {
-        providers = body.providers
-          .filter(p => p && typeof p === 'object')
-          .map(p => ({
-            name: String(p.name || ''),
-            displayName: String(p.display_name || p.name || ''),
-            supportsPassword: Boolean(p.supports_password)
-          }))
-          .filter(p => p.name)
-      }
-    } catch {
-      // Provider listing is optional metadata; the auth mode is already known.
-    }
-  }
-
-  return {
-    baseUrl,
-    reachable: true,
-    authMode: authRequired ? 'oauth' : 'token',
-    providers,
-    version: status?.version || null,
-    error: null
-  }
-}
-
-async function testDesktopConnectionConfig(input: any = {}) {
-  if (input.mode === 'ssh') {
-    const sshConfig = normalizeSshConfig({
-      mode: 'ssh',
-      host: input.sshHost,
-      user: input.sshUser,
-      port: input.sshPort,
-      keyPath: input.sshKeyPath,
-      remoteHermesPath: input.sshRemoteHermesPath
-    })
-
-    if (!sshConfig) {
-      return { reachable: false, sshError: 'unreachable', error: 'SSH host is required.' }
-    }
-
-    const ssh = createSshProbeConnection(
-      { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-      { rememberLog: sshRememberLog }
-    )
-
-    try {
-      // One bounded retry on TIMEOUT only: a cold Windows backend's first
-      // PowerShell exec can exceed the budget (observed live), and a timeout is
-      // indeterminate — unlike auth/host-key/unreachable, which are verdicts.
-      let attempt = 0
-
-      for (;;) {
-        try {
-          await ssh.open()
-          const platform: any = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
-          let hermesPath
-          let hermesVersion
-          let supported
-
-          if (platform.os === 'Windows') {
-            const runtime = platform
-            hermesPath = runtime.hermesPath
-            const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
-            hermesVersion = inspection.version
-            supported = inspection.supported
-          } else {
-            hermesPath = await remoteLifecycle.locateHermes(ssh, sshConfig.remoteHermesPath || '')
-            hermesVersion = await remoteLifecycle.probeHermesVersion(ssh, hermesPath)
-            supported = await remoteLifecycle.remoteSupportsSshOwnership(ssh, hermesPath)
-          }
-
-          if (!supported) {
-            return {
-              reachable: false,
-              sshError: 'update-required',
-              error: 'Update Hermes on the remote host before connecting with Desktop SSH.'
-            }
-          }
-
-          return {
-            reachable: true,
-            sshError: null,
-            error: null,
-            remotePlatform: `${platform.os}/${platform.arch}`,
-            remoteHermesPath: hermesPath,
-            remoteHermesVersion: hermesVersion,
-            host: sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
-          }
-        } catch (error: any) {
-          if (error?.kind === 'timeout' && attempt === 0) {
-            attempt += 1
-            sshRememberLog('[ssh] test probe timed out once; retrying')
-
-            continue
-          }
-
-          throw error
-        }
-      }
-    } catch (error: any) {
-      return { reachable: false, sshError: error.kind || 'unknown', error: error.message }
-    } finally {
-      try {
-        await ssh.close()
-      } catch {
-        void 0
-      }
-    }
-  }
-
-  const config = coerceDesktopConnectionConfig(input, readDesktopConnectionConfig(), { persistToken: false })
-  const key = connectionScopeKey(input.profile)
-  // The block under test: a per-profile entry or the global remote. Coerce has
-  // already normalized the URL and resolved token inheritance for the scope.
-  const block = key ? config.profiles?.[key] || null : config.remote
-
-  const wantRemote =
-    modeIsRemoteLike(block?.mode) || (!key && modeIsRemoteLike(config.mode)) || (modeIsRemoteLike(input.mode) && block)
-
-  // Test ``/api/status`` through the connection's real auth path. Self-hosted
-  // gateways may protect it, and an anonymous success/failure would not prove
-  // that the OAuth cookie/native bearer or configured token is reusable. For
-  // a remote config we normalize the URL from the input; for local we fall
-  // back to the resolved/started backend.
-  let baseUrl
-  let token = null
-  let authMode = 'token'
-  let testHeaders = {}
-
-  if (wantRemote && block?.url) {
-    baseUrl = normalizeRemoteBaseUrl(block.url)
-    authMode = normAuthMode(block.authMode)
-    testHeaders = decryptRemoteHeaders(block.headers)
-
-    if (authMode !== 'oauth') {
-      token = decryptDesktopSecret(block.token)
-    }
-  } else {
-    const remote = (await resolveRemoteBackend(key)) || (await startHermes())
-    baseUrl = remote.baseUrl
-    token = remote.token
-    authMode = normAuthMode(remote.authMode)
-    testHeaders = remote.headers || {}
-  }
-
-  const status = (await fetchConnectionStatus(baseUrl, authMode, token, testHeaders)) as any
-
-  // The HTTP status check above proves the backend is reachable, but the chat
-  // surface only works once the renderer's live WebSocket to ``/api/ws``
-  // connects — a separate transport with separate server-side guards (Host/
-  // Origin, ws-ticket/token auth). Validating only the HTTP side produced a
-  // false-positive "reachable" while the real boot still failed with "Could not
-  // connect to Hermes gateway". Mirror the renderer's connect here so the test
-  // reflects the full path the app actually uses.
-  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, {
-    mintTicket: url => mintGatewayWsTicket(url, testHeaders)
-  })
-
-  // Skip the WS leg only when the runtime genuinely lacks a WebSocket (so an
-  // older Electron/Node never fails the test spuriously); Electron's main
-  // process ships a global WebSocket on every supported version.
-  if (wsUrl && typeof globalThis.WebSocket === 'function') {
-    const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket, headers: testHeaders })
-
-    if (!probe.ok) {
-      throw new Error(
-        `Reached the gateway over HTTP, but the live WebSocket (/api/ws) connection failed: ${probe.reason} ` +
-          'The HTTP check can pass while the WebSocket is blocked by a proxy, firewall, or gateway auth/origin guard.'
-      )
-    }
-  }
-
-  return {
-    ok: true,
-    baseUrl,
-    version: status?.version || null
-  }
-}
-
-async function fetchConnectionStatus(baseUrl, authMode, token, headers = {}) {
-  // /api/status is public on newer gateways; the subsequent ticket/WS probe
-  // remains authoritative. Older gated status routes retain cookie fallback.
-  return fetchJsonForBackend({ baseUrl, authMode, token, headers }, '/api/status', { timeoutMs: 8_000 })
+  return globalRemoteActiveImpl()
 }
 
 function resetBootProgressForReconnect() {
@@ -6329,197 +5549,50 @@ function createWindow() {
   return primaryWindowRuntime.createWindow()
 }
 
-ipcMain.handle('hermes:connection', async (event, profile, extra) => {
-  const route = resolveDesktopConnectionRequest(
-    profile,
-    windowConnectionRoutes.get(event.sender.id),
-    primaryProfileKey()
-  )
+const windowConnectionRoutes = new WindowConnectionRouteRegistry()
 
-  return connectDesktopProfileRoute(route, spawnPriorityFrom(extra?.priority))
+const {
+  connectDesktopProfileRoute: connectDesktopProfileRouteImpl,
+  recordWindowConnectionRoute: recordWindowConnectionRouteImpl,
+  revalidateSuspectPoolAfterResume: revalidateSuspectPoolAfterResumeImpl
+} = registerDesktopConnectionDialIpc({
+  ipcMain,
+  windowConnectionRoutes,
+  applySpawnPriority,
+  backendConnectionState,
+  backendDialClaims,
+  backendPool,
+  ensureBackend,
+  ensureRegistryBackend,
+  fetchJsonForBackend,
+  primaryProfileKey,
+  readDesktopConnectionsRegistry,
+  rememberLog,
+  remoteLiveness,
+  remoteRevalidation,
+  resetHermesConnection,
+  resetPreviewReach,
+  spawnPriorityFrom,
+  sshBootstrapCoordinator,
+  sshScopeKey,
+  stopPoolBackend,
+  teardownSshConnection
 })
 
-async function connectDesktopProfileRoute(
+// These declarations are passed to earlier runtime factories before IPC setup.
+function connectDesktopProfileRoute(
   route: DesktopProfileRoute,
   spawnPriority: LocalBackendSpawnPriority = 'foreground'
 ) {
-  // Coalesce concurrent renderer dials for one profile scope (#90812): the
-  // renderer-side reconnect lock is per-window, so two windows waking at once
-  // both land here. The claim key mirrors ensureBackend()'s own profile
-  // normalization so every spelling of the primary coalesces onto one dial.
-  const scopeKey = backendScopeKey(route.connectionId, route.profile)
-  const clearSpawnPriority = applySpawnPriority(scopeKey, spawnPriority)
-
-  let connection
-
-  try {
-    connection = await backendDialClaims.run(scopeKey, () =>
-      route.connectionId
-        ? ensureRegistryBackend(route.connectionId, route.profile, '', { spawnPriority })
-        : ensureBackend(route.profile, { spawnPriority })
-    )
-  } finally {
-    clearSpawnPriority()
-  }
-
-  if (route.connectionId) {
-    return { ...connection, connectionId: route.connectionId, registryScoped: true }
-  }
-
-  const connectionId = resolvedConnectionId(readDesktopConnectionsRegistry(), connection)
-
-  return connectionId ? { ...connection, connectionId } : connection
+  return connectDesktopProfileRouteImpl(route, spawnPriority)
 }
-
-// Registry-scoped variant: resolve a backend for (connectionId, profile).
-// connectionId '' / 'local' / the registry primary all behave sensibly; the
-// local kind delegates to ensureBackend when the v1 route is local, and
-// forces a genuinely-local child when the v1 global mode is remote (the
-// registry 'local' entry always means this machine).
-ipcMain.handle('hermes:connection:for', async (_event, payload) => {
-  const { connectionId, profile, priority } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
-  const registry = readDesktopConnectionsRegistry()
-  const id = String(connectionId || '').trim() || registry.primary
-  const spawnPriority = spawnPriorityFrom(priority)
-
-  return connectDesktopProfileRoute(
-    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
-    spawnPriority
-  )
-})
-
-const windowConnectionRoutes = new WindowConnectionRouteRegistry()
-const windowConnectionRouteOwners = new Set<number>()
 
 function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknown) {
-  const id = sender.id
-  const previous = windowConnectionRoutes.get(id)
-  const next = windowConnectionRoutes.set(id, route)
-
-  if (
-    previous?.connectionId !== next?.connectionId ||
-    previous?.profile !== next?.profile ||
-    previous?.registryScoped !== next?.registryScoped
-  ) {
-    void resetPreviewReach(id)
-  }
-
-  if (!windowConnectionRouteOwners.has(id)) {
-    windowConnectionRouteOwners.add(id)
-    sender.once('destroyed', () => {
-      windowConnectionRoutes.delete(id)
-      windowConnectionRouteOwners.delete(id)
-      void resetPreviewReach(id)
-    })
-  }
+  return recordWindowConnectionRouteImpl(sender, route)
 }
 
-ipcMain.on('hermes:connection:active-route', (event, route) => recordWindowConnectionRoute(event.sender, route))
-// Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
-// so the 'exit'/'error' handlers that would clear a dead connection promise never
-// fire — once the remote becomes unreachable across a sleep/wake the renderer
-// re-dials the same dead descriptor forever and the composer stays stuck on
-// "Starting Hermes…". Before the renderer's backoff loop reconnects, it asks us
-// to confirm the cached PRIMARY backend is still reachable; if a remote one is
-// not, we drop the cache so the next getConnection() rebuilds it. Local backends
-// self-heal via their child 'exit' handler, so we never touch them here.
-ipcMain.handle('hermes:connection:revalidate', async () => {
-  const connectionPromise = backendConnectionState.getPromise()
-
-  if (!connectionPromise) {
-    await revalidatePool()
-
-    return { ok: true, rebuilt: false }
-  }
-
-  // Main and every session pop-out have their own renderer reconnect loop but
-  // share this primary connection. Coalesce simultaneous requests so one outage
-  // produces one failure observation rather than exhausting the whole streak.
-  return remoteRevalidation.run(connectionPromise, async () => {
-    const [result] = await Promise.all([
-      revalidateRemoteConnection({
-        connectionPromise,
-        currentConnectionPromise: () => backendConnectionState.getPromise(),
-        log: rememberLog,
-        probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
-        resetConnection: () => resetHermesConnection({ soft: true }),
-        tracker: remoteLiveness
-      }),
-      revalidatePool()
-    ])
-
-    // A rebuilt SSH connection must also tear down its tunnel/master before the
-    // renderer re-dials (which only happens after this handler resolves), so the
-    // fresh bootstrap can't reattach to a dying transport.
-    if (result.rebuilt) {
-      const conn = await connectionPromise.catch(() => null)
-
-      if (conn?.remoteKind === 'ssh') {
-        const profile = primaryProfileKey()
-        await sshBootstrapCoordinator.cancelAndWait(sshScopeKey(profile))
-        await teardownSshConnection(profile)
-      }
-    }
-
-    return result
-  })
-})
-
-// Pooled remote descriptors get the same treatment as the primary: they have no
-// child process to signal their host's death, and the renderer's keepalive touch
-// spares them from the idle reaper, so nothing else can retire a dead one.
-function revalidatePool() {
-  return revalidatePooledRemoteBackends({
-    entries: backendPool.entries(),
-    log: rememberLog,
-    probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
-    stopBackend: stopPoolBackend,
-    tracker: remoteLiveness
-  })
-}
-
-// Re-dial one retired pool key through the SAME claim-guarded ensure path a
-// renderer dial takes (#90812), so a resume-driven rebuild and a concurrent
-// renderer reconnect coalesce onto one spawn instead of racing.
-function redialPoolBackendAfterResume(poolKey: string) {
-  const { connectionId, profile } = parseBackendScopeKey(poolKey)
-
-  return backendDialClaims.run(poolKey, () =>
-    connectionId ? ensureRegistryBackend(connectionId, profile) : ensureBackend(profile)
-  )
-}
-
-// Identity for coalescing post-resume sweeps in the shared revalidation
-// coordinator: overlapping resume/unlock/network-restore kicks join the one
-// in-flight sweep instead of stacking probes.
-const suspectPoolSweepScope = {}
-
-// Sleep/wake recovery for POOLED remote/SSH backends (#93910). The primary
-// renderer socket already has wake-path probe/reconnect nudges, but pooled
-// descriptors (Bots pane, secondary connections) kept serving dead SSH
-// tunnels after macOS resume: no child 'exit' fires for a remote, and the
-// background failure-streak policy takes several rounds to drop one. On
-// resume every pooled remote is suspect — probe each once (bounded), tear
-// down the dead ones (pool entry + SSH bootstrap + tunnel/master) and rebuild
-// them through the claim-guarded dial path.
 function revalidateSuspectPoolAfterResume() {
-  return remoteRevalidation.run(suspectPoolSweepScope, () =>
-    revalidateSuspectPooledRemoteBackends({
-      entries: backendPool.entries(),
-      log: rememberLog,
-      probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
-      rebuild: poolKey => redialPoolBackendAfterResume(poolKey),
-      retire: async poolKey => {
-        await stopPoolBackend(poolKey)
-        // The pool key doubles as the SSH scope for registry SSH backends and
-        // resolves through sshScopeKey() for bare-profile remotes; both
-        // teardown calls no-op when the scope holds no SSH state.
-        await sshBootstrapCoordinator.cancelAndWait(poolKey)
-        await teardownSshConnection(poolKey)
-      },
-      tracker: remoteLiveness
-    })
-  )
+  return revalidateSuspectPoolAfterResumeImpl()
 }
 
 ipcMain.handle('hermes:backend:touch', async (_event, profile, options) => {
@@ -6853,191 +5926,27 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
 
   return buildRegistryProfileRoutes({ agents, sources: registry.connections })
 })
-ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
-ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
-  const value = String(host || '').trim()
-
-  if (!value) {
-    throw new Error('SSH host is required.')
-  }
-
-  const ssh =
-    process.platform === 'win32'
-      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-      : 'ssh'
-
-  return new Promise((resolve, reject) => {
-    const child = spawn(ssh, ['-G', '--', value], hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'pipe'] }))
-    let stdout = ''
-    let stderr = ''
-
-    const timer = setTimeout(() => {
-      child.kill()
-      reject(new Error('SSH config resolution timed out.'))
-    }, 10_000)
-
-    child.stdout.on('data', chunk => {
-      stdout += String(chunk)
-    })
-    child.stderr.on('data', chunk => {
-      stderr += String(chunk)
-    })
-    child.once('error', error => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.once('close', code => {
-      clearTimeout(timer)
-
-      if (code !== 0) {
-        reject(new Error(stderr.trim() || 'Could not resolve SSH host.'))
-      } else {
-        resolve(parseSshGOutput(stdout))
-      }
-    })
-  })
-})
-ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
-
-// ── Opt-in keychain encryption for stored secrets ───────────────────────────
-// get returns the current policy without touching safeStorage; set flips it
-// and re-encodes every stored secret (see applySecretStorageEncryption).
-ipcMain.handle('hermes:secret-storage:get', async () => ({ on: secretStoragePolicy().on }))
-ipcMain.handle('hermes:secret-storage:set', async (_event: any, on: any) => applySecretStorageEncryption(on === true))
-
-// ── v2 connection registry IPC (multi-source) ───────────────────────────────
-// Storage-level CRUD for named agent sources. Routing/pooling consumption of
-// the registry lands separately; these handlers only manage the persisted
-// list, so they are safe to ship ahead of the switchover.
-ipcMain.handle('hermes:connections:list', async () => sanitizeConnectionsRegistry())
-ipcMain.handle('hermes:connections:save', async (_event, payload) => {
-  const saved = await saveRegistryConnection(payload)
-
-  return { ok: true, connection: saved, registry: sanitizeConnectionsRegistry() }
-})
-ipcMain.handle('hermes:connections:remove', async (_event, id) => {
-  const key = String(id || '')
-  managedConnectionUpdateGate.assertCanMutate(key)
-  const registry = removeConnection(readDesktopConnectionsRegistry(), key)
-  writeDesktopConnectionsRegistry(registry)
-  // Tear down anything the removed connection still had running: pooled
-  // backends under its composite keys and any ssh tunnel scopes it owned.
-  await stopRegistryConnectionBackends(key)
-  // …and everything cached ABOUT it. Ids are recycled label slugs, so re-adding "Mac mini"
-  // gets `mac-mini` back — with the removed machine's profile list still cached under it.
-  evictConnectionCaches(key)
-  // And the renderer side: without this push, secondaries scoped to the
-  // removed connection keep their WebSocket open (remote/cloud have no local
-  // process to kill) and stream ghost events until page reload.
-  broadcastConnectionsChanged({ connectionId: key, reason: 'removed' })
-  desktopProfilePreferences.connectionRemoved(key)
-
-  return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
-})
-ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
-  assertCanMutateManagedPrimaryRouting()
-  const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), String(id || ''))
-  writeDesktopConnectionsRegistry(registry)
-
-  return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
-})
-ipcMain.handle('hermes:connections:set-launch-mode', async (_event, mode) => {
-  assertCanMutateManagedPrimaryRouting()
-  const registry = setConnectionLaunchMode(readDesktopConnectionsRegistry(), String(mode || ''))
-  writeDesktopConnectionsRegistry(registry)
-
-  return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
-})
-ipcMain.handle('hermes:connections:set-last-used', async (_event, id) => {
-  const registry = setLastUsedConnection(readDesktopConnectionsRegistry(), String(id || ''))
-  writeDesktopConnectionsRegistry(registry)
-
-  return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
-})
-ipcMain.handle('hermes:connections:test', async (_event, id) => {
-  const registry = readDesktopConnectionsRegistry()
-  const entry = registry.connections.find(c => c.id === String(id || ''))
-
-  if (!entry) {
-    throw new Error(`No connection with id "${String(id || '')}".`)
-  }
-
-  // The ssh probe path in testDesktopConnectionConfig never consults v1
-  // connection state, so mapping the entry onto it is safe.
-  if (entry.kind === 'ssh') {
-    const result = await testDesktopConnectionConfig({
-      mode: 'ssh',
-      sshHost: entry.host,
-      sshUser: entry.user,
-      sshPort: entry.port,
-      sshKeyPath: entry.keyPath,
-      sshRemoteHermesPath: entry.remoteHermesPath
-    })
-
-    if (result?.reachable) {
-      sshInventoryAttemptedAt.delete(entry.id)
-      sshRosterCache.delete(entry.id)
-      await probeSshProfileInventory(entry)
-    }
-
-    return result
-  }
-
-  // Remote/cloud/local probe built DIRECTLY from the registry entry. Routing
-  // through coerceDesktopConnectionConfig would use v1 connection.json as the
-  // `existing` base: an entry with a broken/absent token would inherit the v1
-  // global remote's token and send it to THIS entry's URL (cross-host
-  // credential transmission + a false "reachable"), and testing the local
-  // entry would probe whatever v1's global mode points at instead of the
-  // app-managed local backend.
-  let baseUrl
-  let token = null
-  let authMode = 'token'
-  let testHeaders = {}
-
-  if (entry.kind === 'local') {
-    const local = await startHermes()
-    baseUrl = local.baseUrl
-    token = local.token
-    authMode = normAuthMode(local.authMode)
-  } else {
-    baseUrl = normalizeRemoteBaseUrl(entry.url)
-    authMode = normAuthMode(entry.authMode)
-    testHeaders = decryptRemoteHeaders(entry.headers)
-
-    if (authMode !== 'oauth') {
-      token = decryptDesktopSecret(entry.token)
-
-      if (!token) {
-        throw new Error('This connection has no saved session token. Edit the connection and paste one.')
-      }
-    }
-  }
-
-  const status = (await fetchConnectionStatus(baseUrl, authMode, token, testHeaders)) as any
-
-  // The Test button is the cheapest moment to (re)learn this backend's stable
-  // identity for the same-backend roster collapse + Settings hint.
-  rememberConnectionInstallId(entry.id, status)
-
-  // Same HTTP+WS two-leg check as testDesktopConnectionConfig: HTTP alone is
-  // a false positive when the WebSocket leg is blocked.
-  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, {
-    mintTicket: url => mintGatewayWsTicket(url, testHeaders)
-  })
-
-  if (wsUrl && typeof globalThis.WebSocket === 'function') {
-    const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket, headers: testHeaders })
-
-    if (!probe.ok) {
-      throw new Error(
-        `Reached the gateway over HTTP, but the live WebSocket (/api/ws) connection failed: ${probe.reason} ` +
-          'The HTTP check can pass while the WebSocket is blocked by a proxy, firewall, or gateway auth/origin guard.'
-      )
-    }
-  }
-
-  return { ok: true, baseUrl, version: status?.version || null }
+registerDesktopConnectionRegistryIpc({
+  ipcMain,
+  testDesktopConnectionConfig,
+  secretStoragePolicy,
+  applySecretStorageEncryption,
+  sanitizeConnectionsRegistry,
+  saveRegistryConnection,
+  managedConnectionUpdateGate,
+  readDesktopConnectionsRegistry,
+  writeDesktopConnectionsRegistry,
+  stopRegistryConnectionBackends,
+  broadcastConnectionsChanged,
+  desktopProfilePreferences,
+  assertCanMutateManagedPrimaryRouting,
+  probeSshProfileInventory,
+  startHermes,
+  decryptRemoteHeaders,
+  decryptDesktopSecret,
+  fetchConnectionStatus,
+  rememberConnectionInstallId,
+  mintGatewayWsTicket
 })
 
 // ── Union agent roster + registry ws-url + fan-out updates (phase 3-5) ─────
@@ -7534,187 +6443,47 @@ async function fetchJsonForBackend(
   })
 }
 
-ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
-ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
-  // Capability-gated login (RFC 8252). Probe the gateway's public /api/status
-  // for supported auth_flows and /api/auth/providers for provider capabilities:
-  //   - all providers support password → always use the embedded login window
-  //     (password providers require the dashboard login form; native PKCE
-  //     can never complete for that provider shape)
-  //   - advertises "native_pkce" AND at least one non-password provider →
-  //     run the system-browser + loopback + PKCE flow
-  //   - older gateway with no provider metadata → fall back to the auth_flows
-  //     check (existing compatibility)
-  //   - a failed native login reports the error rather than auto-falling back
-  //     to the embedded flow — one sign-in action opens at most one window.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-  // Order login attempts without interrupting rotation of the existing session.
-  const authIsCurrent = nativeAccessTokenCoordinator.beginLogin(baseUrl)
-
-  let statusBody: any = null
-
-  try {
-    statusBody = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
-  } catch {
-    // Can't read status — fall through to the embedded flow, which has its
-    // own error handling and works against any gated gateway.
-  }
-
-  const authRequired = statusBody && authModeFromStatus(statusBody) === 'oauth'
-  const providers = authRequired ? await gatewayAuthProviders(baseUrl) : []
-
-  const strategy = resolveLoginStrategy(statusBody, { providers })
-
-  if (!authIsCurrent()) {
-    throw new NativeAuthChangedError()
-  }
-
-  if (strategy === 'native') {
-    try {
-      const tokens = await runNativeLogin(baseUrl, {
-        openExternal: url => shell.openExternal(url),
-        postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
-        rememberLog
-      })
-
-      if (!authIsCurrent()) {
-        throw new NativeAuthChangedError()
-      }
-
-      nativeAccessTokenCoordinator.storeTokens(baseUrl, tokens)
-      // Confirmed sign-in — release the reauth latch so the next
-      // startHermes() re-dials instead of replaying the stale rejection.
-      remoteReauthFailure = null
-
-      return { ok: true, baseUrl, connected: true }
-    } catch (error) {
-      rememberLog(`[native-oauth] native login failed (${error instanceof Error ? error.message : String(error)})`)
-
-      return { ok: false, error: error instanceof Error ? error.message : String(error), connected: false }
-    }
-  }
-
-  // Legacy embedded-webview cookie flow.
-  await openOauthLoginWindow(baseUrl)
-
-  const connected = await hasOauthSessionCookie(baseUrl)
-
-  // Only a CONFIRMED sign-in releases the latch. A cancelled/closed login
-  // window must leave it set, or the overlay's "Sign in" button starts
-  // flickering again on the next retry.
-  if (!authIsCurrent()) {
-    throw new NativeAuthChangedError()
-  }
-
-  if (connected) {
-    // A confirmed cookie login supersedes any older native identity.
-    nativeAccessTokenCoordinator.clearTokens(baseUrl)
+registerDesktopConnectionAuthIpc({
+  ipcMain,
+  probeRemoteAuthMode,
+  nativeAccessTokenCoordinator,
+  fetchPublicJson,
+  gatewayAuthProviders,
+  postJsonNoAuth,
+  rememberLog,
+  clearOauthSession,
+  hasLiveOauthSession,
+  hasNativeSession,
+  hasOauthSessionCookie,
+  openOauthLoginWindow,
+  resolvePortalBaseUrl,
+  hasLivePortalSession,
+  openPortalLoginWindow,
+  discoverCloudAgents,
+  cloudAgentSilentSignIn,
+  assertCanMutateManagedPrimaryRouting,
+  coerceDesktopConnectionConfig,
+  writeDesktopConnectionConfig,
+  sanitizeDesktopConnectionConfig,
+  readDesktopConnectionConfig,
+  readDesktopConnectionsRegistry,
+  testDesktopConnectionConfig,
+  writeDesktopConnectionsRegistry,
+  sshBootstrapCoordinator,
+  primaryProfileKey,
+  sendConnectionApplied,
+  firstRunBoot,
+  teardownPrimaryBackendAndWait,
+  stopPoolBackend,
+  teardownSshConnection,
+  clearRemoteReauthFailure: () => {
     remoteReauthFailure = null
-  }
-
-  return { ok: true, baseUrl, connected }
+  },
+  clearLocalBootstrapFailure: () => {
+    bootstrapFailure = null
+  },
+  shell
 })
-ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-
-  // Also drop any native (RFC 8252) bearer tokens for this gateway so a
-  // logout clears BOTH auth shapes.
-  // Clear before awaiting cookie I/O: a pending login/refresh cannot restore
-  // logout, and a later login must not be erased when cookie clearing settles.
-  nativeAccessTokenCoordinator.clearTokens(baseUrl)
-  await clearOauthSession(baseUrl)
-
-  // Report against the SAME liveness notion the Settings indicator uses
-  // (AT-or-RT cookie, or a native token) so a logout that left any session
-  // behind is reflected as still-connected rather than silently signed-out.
-  const connected = (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl)
-
-  return { ok: true, connected }
-})
-
-// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
-// One portal login in the OAuth partition powers both discovery and the silent
-// per-agent cascade. See the discovery/cascade helpers above.
-ipcMain.handle('hermes:cloud:status', async () => ({
-  portalBaseUrl: resolvePortalBaseUrl(),
-  signedIn: await hasLivePortalSession()
-}))
-ipcMain.handle('hermes:cloud:login', async () => {
-  await openPortalLoginWindow()
-
-  return { ok: true, signedIn: await hasLivePortalSession() }
-})
-ipcMain.handle('hermes:cloud:logout', async () => {
-  await clearOauthSession(resolvePortalBaseUrl())
-
-  return { ok: true, signedIn: await hasLivePortalSession() }
-})
-ipcMain.handle('hermes:cloud:discover', async (_event, org) => {
-  // Returns { agents } or { needsOrgSelection: true, orgs }. `org` (optional)
-  // scopes discovery to a chosen org for multi-org users.
-  return discoverCloudAgents(typeof org === 'string' && org ? org : undefined)
-})
-ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
-  // Silent per-agent sign-in via the shared portal session. Returns the agent's
-  // gateway baseUrl + whether its session cookie landed; the renderer then
-  // saves a cloud-mode connection pointed at this dashboardUrl.
-  return cloudAgentSilentSignIn(dashboardUrl)
-})
-ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
-  assertCanMutateManagedPrimaryRouting()
-  const config = coerceDesktopConnectionConfig(payload)
-  writeDesktopConnectionConfig(config)
-
-  return sanitizeDesktopConnectionConfig(config, payload?.profile)
-})
-ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
-  assertCanMutateManagedPrimaryRouting()
-  const previousConfig = readDesktopConnectionConfig()
-  const previousRegistry = readDesktopConnectionsRegistry()
-  const config = coerceDesktopConnectionConfig(payload, previousConfig)
-
-  const key = connectionScopeKey(payload?.profile)
-  const scope = key || ''
-  const nextRegistry = key ? previousRegistry : reconcileAppliedGlobalConnection(previousRegistry, config)
-
-  await applyConnectionConfigAtomically({
-    previousConfig,
-    previousRegistry,
-    nextConfig: config,
-    nextRegistry,
-    // Exercise the same authenticated REST + real WebSocket legs before either
-    // config file changes. A rejected OAuth session or blocked /api/ws leaves
-    // the previous primary/current connection intact.
-    preflight: !key && modeIsRemoteLike(config.mode) ? () => testDesktopConnectionConfig(payload) : undefined,
-    writeConfig: writeDesktopConnectionConfig,
-    writeRegistry: writeDesktopConnectionsRegistry,
-    apply: () =>
-      applyConnectionChange({
-        cancelAndWait: value => sshBootstrapCoordinator.cancelAndWait(value),
-        isPrimary: !key || key === primaryProfileKey(),
-        rehomePrimary: () =>
-          rehomePrimaryConnection({
-            clearLocalBootstrapFailure: () => {
-              // A remote connection bypasses local runtime/bootstrap failures. Clear
-              // the local-install latch so unsupported/failure escape paths can re-home.
-              bootstrapFailure = null
-            },
-            mode: config.mode,
-            notifyConnectionApplied: sendConnectionApplied,
-            resumeFirstRunRemote: firstRunBoot.abandonFirstRunSetupChoiceForRemoteApply,
-            teardownPrimaryBackend: teardownPrimaryBackendAndWait
-          }),
-        scope,
-        sendApplied: sendConnectionApplied,
-        stopPool: stopPoolBackend,
-        teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
-        teardownSsh: value => teardownSshConnection(value || null)
-      })
-  })
-
-  return sanitizeDesktopConnectionConfig(config, payload?.profile)
-})
-
 ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
 ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
@@ -7768,515 +6537,32 @@ ipcMain.handle('hermes:window:readBelow', async event => {
   return readWindowBelow(process.pid, { x, y, width, height }, titlesAvailable)
 })
 
-// Re-route remote-profile session requests to the owning remote backend. Returns
-// `undefined` when not interceptable (caller takes the normal local path), else
-// the response. Reads tag the profile as ?profile=<name>; mutations carry it in
-// request.profile. Either way, a remote profile's session lives only on its
-// remote host, so the request must go there (where it serves its own state.db).
-//   GET    /api/profiles/sessions        → splice each remote profile's rows in
-//   GET    /api/sessions/{id}[/messages] → read from remote
-//   DELETE /api/sessions/{id}            → delete on remote
-//   PATCH  /api/sessions/{id}            → rename/archive on remote
-async function interceptSessionRequestForRemote(request) {
-  if (typeof request?.path !== 'string') {
-    return undefined
-  }
-
-  const method = (request.method || 'GET').toUpperCase()
-
-  let parsed
-
-  try {
-    parsed = new URL(request.path, 'http://x')
-  } catch {
-    return undefined
-  }
-
-  const { pathname, searchParams } = parsed
-
-  if (method === 'GET' && pathname === '/api/profiles/sessions') {
-    const remoteProfiles = configuredRemoteProfileNames()
-    const registrySources = await pooledRegistrySessionSources()
-
-    if (remoteProfiles.length === 0 && registrySources.length === 0) {
-      return undefined // no remote profiles and no connected registry gateways → local fast path
-    }
-
-    const requested = (searchParams.get('profile') || 'all').trim() || 'all'
-
-    if (requested !== 'all') {
-      return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
-    }
-
-    return mergeRemoteProfileSessions(searchParams, remoteProfiles)
-  }
-
-  // Batched sidebar slices. With no remote profiles the local batched endpoint
-  // (one DB open per profile) serves it directly — take the fast path. When
-  // remotes exist, fan the three slices back out to the per-slice
-  // /api/profiles/sessions path (which already merges remote rows correctly) and
-  // reassemble; local profiles fall back to three primary reads there, but
-  // remote correctness is preserved.
-  if (method === 'GET' && pathname === '/api/profiles/sessions/sidebar') {
-    const remoteProfiles = configuredRemoteProfileNames()
-    const registrySources = await pooledRegistrySessionSources()
-
-    if (remoteProfiles.length === 0 && registrySources.length === 0) {
-      return undefined // local fast path → batched endpoint's single DB open
-    }
-
-    const { recents: recentsSp, cron: cronSp, messaging: messagingSp } = buildSidebarSessionSliceParams(searchParams)
-
-    const [recents, cron, messaging] = await Promise.all([
-      fetchProfilesSessionSlice(recentsSp, remoteProfiles),
-      fetchProfilesSessionSlice(cronSp, remoteProfiles),
-      fetchProfilesSessionSlice(messagingSp, remoteProfiles)
-    ])
-
-    return {
-      recents: {
-        sessions: rowsOf(recents),
-        total: Number(recents?.total) || 0,
-        profile_totals: recents?.profile_totals || {}
-      },
-      cron: { sessions: rowsOf(cron) },
-      messaging: {
-        sessions: rowsOf(messaging),
-        total: Number(messaging?.total) || rowsOf(messaging).length
-      },
-      errors: []
-    }
-  }
-
-  // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
-  // (mutations). Two remote shapes:
-  //  - per-profile override: route to that profile's own remote, sans profile
-  //    param (it serves its own state.db natively).
-  //  - global remote mode: ONE backend serves every profile via ?profile=, so
-  //    route there and KEEP the profile param so it opens the right state.db.
-  if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
-    let profile = (searchParams.get('profile') || request.profile || '').trim()
-
-    if (!profile) {
-      // No explicit owner hint (#85834). The list endpoints above already know
-      // which remote profile owns each row (remoteSessionList tags s.profile),
-      // but a caller without a hint used to fall straight through to the LOCAL
-      // backend and 404 on its state.db even though the session lives on a
-      // remote. Consult the same remote lists to find the owner; only fall
-      // through when the id is genuinely unknown remotely.
-      const sessionId = decodeURIComponent(pathname.split('/')[3] || '')
-      profile = (await remoteOwnerProfileForSession(sessionId)) || ''
-
-      if (!profile) {
-        return undefined
-      }
-    }
-
-    // Preserve every non-profile query param (limit/offset/order pagination —
-    // stripping them made getAllSessionMessages loop the same default page
-    // against paginating remote backends).
-    const passthroughParams = new URLSearchParams(searchParams)
-    passthroughParams.delete('profile')
-    const passthroughQuery = passthroughParams.toString()
-
-    if (profileHasRemoteOverride(profile)) {
-      if (method === 'GET') {
-        return fetchJsonForProfile(profile, passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname)
-      }
-
-      const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
-
-      if (body) {
-        delete body.profile
-      }
-
-      return requestJsonForProfile(profile, pathname, method, body)
-    }
-
-    if (globalRemoteActive()) {
-      // Single global backend: keep ?profile= so it opens the right state.db.
-      passthroughParams.set('profile', profile)
-      const path = `${pathname}?${passthroughParams.toString()}`
-
-      if (method === 'GET') {
-        return fetchJsonForProfile(null, path)
-      }
-
-      const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
-
-      return requestJsonForProfile(null, path, method, body)
-    }
-
-    return undefined
-  }
-
-  return undefined
-}
-
-const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
-
-// A remote profile's session list, read from its remote host and tagged with the
-// desktop-facing profile name (the remote's /api/sessions doesn't know it).
-async function remoteSessionList(profile, searchParams) {
-  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile)
-
-  for (const s of rowsOf(data)) {
-    s.profile = profile
-    s.is_default_profile = false
-  }
-
-  return { ...(data as any), sessions: rowsOf(data) }
-}
-
-// #85834: find which remote profile owns a session id when the caller gave no
-// profile hint (pure lookup lives in profile-session-routing.ts). Results are
-// memoized briefly so a burst of hint-less reads (transcript + messages)
-// costs one sweep across the configured remotes.
-const remoteOwnerBySessionId = new Map<string, { at: number; profile: null | string }>()
-const REMOTE_OWNER_CACHE_TTL_MS = 30_000
-
-async function remoteOwnerProfileForSession(sessionId: string) {
-  if (!sessionId) {
-    return null
-  }
-
-  const remoteProfiles = configuredRemoteProfileNames()
-
-  if (remoteProfiles.length === 0) {
-    return null
-  }
-
-  const cached = remoteOwnerBySessionId.get(sessionId)
-
-  if (cached && Date.now() - cached.at < REMOTE_OWNER_CACHE_TTL_MS) {
-    return cached.profile
-  }
-
-  const owner = await findRemoteOwnerProfileForSession(sessionId, remoteProfiles, (profile, params) =>
-    remoteSessionList(profile, params)
-  ).catch(() => null)
-
-  remoteOwnerBySessionId.set(sessionId, { at: Date.now(), profile: owner })
-
-  return owner
-}
-
-// Resolve one /api/profiles/sessions slice with remote profiles spliced in —
-// the same branch logic as the GET /api/profiles/sessions intercept, but always
-// returns data (never `undefined`) so a batched caller can compose slices. A
-// specific local profile reads from the local primary; a remote-override profile
-// reads from its remote; 'all' merges every remote into the primary aggregate.
-async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
-  const requested = (searchParams.get('profile') || 'all').trim() || 'all'
-
-  if (requested !== 'all') {
-    if (profileHasRemoteOverride(requested)) {
-      return remoteSessionList(requested, searchParams)
-    }
-
-    return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)
-  }
-
-  return mergeRemoteProfileSessions(searchParams, remoteProfiles)
-}
-
-// Unified list: primary's local aggregate, with each remote profile's stale local
-// rows/totals swapped for the remote's real ones, re-sorted by recency and
-// re-windowed to the requested page. A dead remote contributes nothing rather
-// than breaking the sidebar. Connected registry gateways' sessions are spliced
-// in too (#88880) — the unified Sessions list shows EVERY connected gateway's
-// chats, tagged with connection_id + profile so opens route correctly.
-async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
-  const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
-  const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
-  const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
-
-  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)) as any
-
-  // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
-  // is correct for this page — mirrors the primary's per-profile over-fetch.
-  const remoteParams = new URLSearchParams(searchParams)
-  remoteParams.set('limit', String(limit + offset))
-  remoteParams.set('offset', '0')
-
-  const remoteSet = new Set(remoteProfiles)
-  const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
-  const profileTotals = { ...(base.profile_totals || {}) }
-  let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
-
-  // Swap each remote profile's stale local rows/total for the remote's real ones.
-  await Promise.all(
-    remoteProfiles.map(async name => {
-      const list = await remoteSessionList(name, remoteParams).catch(() => null)
-
-      if (!list) {
-        delete profileTotals[name] // dead remote → drop its stale local total too
-
-        return
-      }
-
-      const rows = rowsOf(list)
-      merged.push(...rows)
-      profileTotals[name] = Number(list.total) || rows.length
-      total += profileTotals[name]
-    })
-  )
-
-  // Registry gateways (v2 connections): splice every CONNECTED gateway's rows
-  // into the unified list. Only already-pooled backends are read — a sidebar
-  // refresh must never dial or spawn a backend (the Bot Mode roster-respawn
-  // trap). Reads omit include_hidden, so Bot Mode's hidden canonical chats
-  // stay out of the global list, same as local sessions.
-  const registrySources = await pooledRegistrySessionSources()
-
-  if (registrySources.length) {
-    const registryRows = await fetchRegistrySessionRows(registrySources, remoteParams, (descriptor, path) =>
-      getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
-    )
-
-    const { added } = spliceRegistrySessionRows(merged, registryRows, profileTotals)
-    total += added
-  }
-
-  const recency = s => s?.[order] ?? s?.started_at ?? 0
-  merged.sort((a, b) => recency(b) - recency(a))
-
-  return {
-    ...(base as any),
-    sessions: mergeProfileSessionWindow(merged, offset, limit),
-    total,
-    profile_totals: profileTotals
-  }
-}
-
-// Every CONNECTED registry gateway as a session source: resolved descriptors
-// straight from the backend pool, never dialing. SSH sources contribute one
-// backend per pooled (connection, profile) scope; remote/cloud sources are one
-// shared host (any pooled scope's descriptor serves the cross-profile read).
-// The primary local connection is excluded — the primary aggregate already
-// carries local rows.
-async function pooledRegistrySessionSources(): Promise<RegistrySessionSource[]> {
-  const registry = readDesktopConnectionsRegistry()
-  const sources: RegistrySessionSource[] = []
-
-  for (const connection of registry.connections) {
-    if (connection.kind === 'local') {
-      continue
-    }
-
-    const prefix = backendScopePrefix(connection.id)
-
-    const pooled = [...backendPool.entries()].filter(
-      ([key, entry]) => key.startsWith(prefix) && entry.connectionPromise
-    )
-
-    if (pooled.length === 0) {
-      continue
-    }
-
-    const backends: Array<{ descriptor: unknown; profileLabel: null | string }> = []
-
-    for (const [key, entry] of connection.kind === 'ssh' ? pooled : pooled.slice(0, 1)) {
-      try {
-        // Already-resolved for a connected backend; a still-dialing entry is
-        // skipped via the timeout guard rather than blocking the sidebar.
-        const descriptor = await Promise.race([
-          entry.connectionPromise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
-        ])
-
-        backends.push({
-          descriptor,
-          profileLabel: connection.kind === 'ssh' ? key.slice(prefix.length) || 'default' : null
-        })
-      } catch {
-        // Dead or still-connecting backend — contributes nothing this refresh.
-      }
-    }
-
-    if (backends.length) {
-      sources.push({ backends, connectionId: connection.id, kind: connection.kind })
-    }
-  }
-
-  return sources
-}
-
-async function dispatchRegistryApiRequest(
-  request,
-  registryConnectionId,
-  routeProfile = request?.profile,
-  requestProfile = request?.profile
-) {
-  // Claim-guarded (#90812): every registry-scoped REST call funnels through
-  // here, so it can race a renderer's own WS reconnect dial for the same
-  // (connectionId, profile) scope; coalescing avoids bootstrapping a second
-  // SSH tunnel / remote dashboard. A passive read never dials, so it stays
-  // OUT of the claim: an interactive open coalescing onto an in-flight
-  // passive read would otherwise inherit its "no warm backend" rejection.
-  const spawnPriority = spawnPriorityFrom(request?.priority)
-
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
-      )
-
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
-
-  const response = await fetchJsonForBackend(connection, requestPath, {
-    method: request?.method,
-    body: request?.body,
-    upload: request?.upload,
-    timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-  })
-
-  desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)
-
-  return (request?.method || 'GET').toUpperCase() === 'GET'
-    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
-    : response
-}
-
-function registryConnectionKind(connectionId) {
-  const registry = readDesktopConnectionsRegistry()
-  const source = registry.connections.find(connection => connection.id === connectionId)
-
-  if (!source) {
-    throw new Error(`No connection with id "${connectionId}".`)
-  }
-
-  return source.kind
-}
-
-async function teardownConnectionScopedProfileBackend(connectionId, profile) {
-  const key = backendScopeKey(connectionId, profile)
-  await Promise.all([
-    poolStopper.stop(key),
-    sshBootstrapCoordinator.cancelAndWait(key).then(() => teardownSshConnection(key))
-  ])
-}
-
-async function handleHermesApiRequest(request) {
-  // Registry-pinned request (request.connectionId): the renderer is working
-  // against a REGISTERED gateway connection, so the data — cron jobs and their
-  // run sessions included — lives in THAT host's state.db, not any local
-  // profile's. Resolve the backend through the registry (same pool the job
-  // list and WS traffic use) instead of the legacy profile route; a shared
-  // remote/cloud host serves every profile via ?profile=, so scope the path.
-  // An absent/empty id falls through to the byte-identical v1 route below.
-  // Explicit `local` stays registry-pinned so it cannot inherit a v1 remote.
-  const registryConnectionId = apiRequestRegistryConnectionId(request)
-
-  if (registryConnectionId) {
-    return dispatchRegistryApiRequest(request, registryConnectionId)
-  }
-
-  // Remote-profile session requests would otherwise hit the local primary off
-  // each profile's on-disk state.db — fine for local profiles, but a remote
-  // profile's sessions live on its remote host, so the UI's IDs 404 (or mutations
-  // no-op) the moment they run there. Route reads + mutations to the remote.
-  const rerouted = await interceptSessionRequestForRemote(request)
-
-  if (rerouted !== undefined) {
-    return rerouted
-  }
-
-  const profileRename = await prepareProfileRenameRequest(request)
-  const tornDownProfile = await prepareProfileDeleteRequest(request)
-
-  const profile = request?.profile
-  const spawnPriority = spawnPriorityFrom(request?.priority)
-  // After tearing down a backend for profile deletion, route to the primary
-  // backend instead of spawning a fresh pool backend.  A freshly spawned
-  // backend calls ensure_hermes_home() which recreates the profile directory,
-  // defeating the deletion and leaving a zombie process.
-  //
-  // Local-profile REST calls stay on the primary dashboard and carry ?profile=
-  // (or name the profile in the path / PATCH body). A request that MUTATES
-  // state the server cannot scope at all retains its pooled backend, whose
-  // HERMES_HOME is then the scope, so a destructive call can never fall
-  // through to the primary home — `resolveProfileBackendRoute` case 6.
-  //
-  // A profile rename tears down the old-name backend the same way; for a
-  // primary rename the lifecycle has already made `default` the temporary
-  // primary until the PATCH settles, so the request routes there.
-  const apiRoute = resolveProfileApiRequest(profile, request.path, profileRouteOptions(profile, request))
-
-  const routeProfile = profileRename
-    ? profileRename.routeProfile
-    : resolveRouteProfile(tornDownProfile, apiRoute.backendProfile)
-
-  let response
-  let connection
-
-  try {
-    connection = await ensureBackend(routeProfile, {
-      passive: request?.passive,
-      request: { method: request?.method, path: request?.path },
-      spawnPriority
-    })
-    const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-    response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
-      method: request?.method,
-      body: request?.body,
-      upload: request?.upload,
-      timeoutMs
-    })
-  } catch (error) {
-    // A failed rename PATCH must not strand the app on the temporary primary:
-    // restore the original active profile and restart its backend.
-    if (profileRename) {
-      try {
-        await profileRename.rollback()
-      } catch (rollbackError) {
-        rememberLog(`Failed to restore primary profile after rename error: ${String(rollbackError)}`)
-      }
-    }
-
-    throw error
-  }
-
-  try {
-    desktopProfilePreferences.afterProfileRequest(null, request, response, connection.mode)
-  } finally {
-    await profileRename?.complete()
-  }
-
-  return response
-}
-
-ipcMain.handle('hermes:api', async (_event, request) => {
-  // Hold the deletion gate for BOTH profile deletes and renames: a concurrent
-  // renderer reconnect entering ensureBackend() mid-mutation would otherwise
-  // respawn the old-name backend and recreate its HERMES_HOME (#45474).
-  const deletingProfile = profileNameFromDeleteRequest(request)
-  const mutatingProfile = deletingProfile || profileRenameFromRequest(request)?.oldName || null
-  const registryConnectionId = apiRequestRegistryConnectionId(request)
-
-  if (deletingProfile && registryConnectionId) {
-    return dispatchConnectionScopedProfileDelete(request, {
-      acquire: profile => profileDeletionGate.acquire(profile),
-      connectionKind: connectionId => registryConnectionKind(connectionId),
-      dispatch: routeProfile =>
-        dispatchRegistryApiRequest(request, registryConnectionId, routeProfile, deletingProfile),
-      isDefaultProfile: profile => profile === 'default',
-      isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
-      prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
-      teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
-    })
-  }
-
-  if (!mutatingProfile) {
-    return handleHermesApiRequest(request)
-  }
-
-  const releaseProfileDeletion = profileDeletionGate.acquire(mutatingProfile)
-
-  return handleHermesApiRequest(request).finally(releaseProfileDeletion)
+registerDesktopConnectionApiIpc({
+  ipcMain,
+  backendDialClaims,
+  backendPool,
+  configuredRemoteProfileNames,
+  desktopProfilePreferences,
+  ensureBackend,
+  ensureRegistryBackend,
+  fetchJsonForBackend,
+  fetchJsonForProfile,
+  getJsonForBackend,
+  globalRemoteActive,
+  poolStopper,
+  prepareProfileDeleteRequest,
+  prepareProfileRenameRequest,
+  PROFILE_NAME_RE,
+  profileDeletionGate,
+  profileHasRemoteOverride,
+  profileRouteOptions,
+  readDesktopConnectionsRegistry,
+  rememberLog,
+  requestJsonForProfile,
+  spawnPriorityFrom,
+  sshBootstrapCoordinator,
+  teardownSshConnection
 })
-
 // Main serializes cross-window ambient claims (see event-dedupe.ts for why a
 // spoken reply holds its claim far longer than a beep).
 const ownsAmbientCue = createAmbientClaimArbiter()

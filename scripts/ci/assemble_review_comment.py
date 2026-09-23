@@ -149,8 +149,11 @@ def collect_failed_jobs(
     """Build error items for failed CI jobs from the ``needs`` context.
 
     ``needs_json`` is the JSON string emitted by ``all-checks-pass`` — a
-    ``{job_name: result}`` dict where result is ``success`` / ``failure``
-    / ``skipped``. Only ``failure`` entries become error items.
+    ``{job_name: result}`` dict. Every result other than ``success`` and
+    ``skipped`` becomes an error item, matching what the gate itself
+    blocks on (``scripts/ci/gate_results.py``). ``cancelled`` in
+    particular must surface: it is a lane that ran no assertions, and
+    leaving it out of the comment hid the reason the gate went red.
 
     ``exclude_sources`` is a set of ``source`` values from status objects
     declared by workflow_call jobs. Job names containing any of these
@@ -177,7 +180,7 @@ def collect_failed_jobs(
 
     items: list[ReviewItem] = []
     for name, result in sorted(needs.items()):
-        if result != "failure":
+        if result in ("success", "skipped"):
             continue
         if norm_sources:
             norm = name.lower().replace("-", " ")
@@ -187,8 +190,50 @@ def collect_failed_jobs(
         items.append(ReviewItem(
             severity="error",
             title=name,
-            summary=f"Job **{name}** failed.",
+            summary=f"Job **{name}** {'failed' if result == 'failure' else result}.",
             job_url=job_url,
+        ))
+    return items
+
+
+def collect_failed_runs(
+    runs_json: str,
+    run_urls: dict[str, str] | None = None,
+) -> list[ReviewItem]:
+    """Build error items for workflow runs that finished without passing.
+
+    ``runs_json`` is a ``{workflow_name: conclusion}`` dict of *runs*, not
+    jobs. The two are separate settlement coordinates: a run concludes
+    ``cancelled``, ``action_required`` or ``startup_failure`` while its
+    jobs endpoint returns nothing at all, so :func:`collect_failed_jobs`
+    sees an empty ``needs`` and produces no item. Without this collector
+    the comment then renders "all good!" for a commit on which nothing
+    ran — the same false green the merge gate exists to prevent.
+
+    ``run_urls`` is an optional ``{workflow_name: html_url}`` dict linking
+    each item to the run's own page.
+    """
+    if not runs_json:
+        return []
+    try:
+        runs = json.loads(runs_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(runs, dict):
+        return []
+
+    items: list[ReviewItem] = []
+    for name, conclusion in sorted(runs.items()):
+        items.append(ReviewItem(
+            severity="error",
+            title=f"{name} (workflow run)",
+            summary=(
+                f"Workflow run **{name}** finished with conclusion "
+                f"`{conclusion}`. A run that does not conclude `success` or "
+                f"`skipped` has not passed, whether or not it produced jobs."
+            ),
+            link=str((run_urls or {}).get(name, "")),
+            link_label="View run",
         ))
     return items
 
@@ -374,6 +419,8 @@ def assemble(
     pending_jobs: list[str] | None = None,
     commit_info: str = "",
     waiting: bool = False,
+    runs_json: str = "",
+    run_urls: dict[str, str] | None = None,
 ) -> str:
     """Assemble the full comment body from all available inputs."""
     items: list[ReviewItem] = []
@@ -385,7 +432,11 @@ def assemble(
     # 2. Synthesized error items for failed jobs not covered by statuses
     items.extend(collect_failed_jobs(needs_json, run_url, exclude_sources=sources, job_urls=job_urls))
 
-    # 3. Attach per-job log links to all items (not just synthesized errors)
+    # 3. Workflow runs that stopped without passing — a run that produced no
+    #    job at all leaves nothing for step 2 to report.
+    items.extend(collect_failed_runs(runs_json, run_urls))
+
+    # 4. Attach per-job log links to all items (not just synthesized errors)
     _attach_job_urls(items, job_urls or {}, run_url)
 
     return render_comment(items, pending_jobs, commit_info, waiting=waiting)

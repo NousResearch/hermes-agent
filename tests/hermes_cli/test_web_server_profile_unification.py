@@ -889,3 +889,29 @@ class TestProfileScopedAudio:
         assert resp.status_code == 404
         resp = client.post("/api/audio/speak?profile=ghost", json={"text": "x"})
         assert resp.status_code == 404
+
+    def test_elevenlabs_voices_env_fallback_stays_scoped_to_the_requested_profile(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """The env-only fallback (no ELEVENLABS_API_KEY in the profile's own .env) must resolve
+        against the REQUESTED profile's scope, not whatever os.environ holds for the dashboard's
+        own (default) profile — else a secondary profile's voice list silently uses the default
+        profile's ElevenLabs account. ``worker_beta``'s .env is empty (isolated_profiles), so a
+        correctly-scoped fallback finds nothing and must never reach the network with a
+        borrowed key."""
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "leaked-default-profile-key")
+
+        import urllib.request
+
+        def _urlopen_must_not_be_called(*_args, **_kwargs):
+            raise AssertionError(
+                "worker_beta has no ElevenLabs key of its own; the fallback must not have "
+                "found one to call the API with"
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", _urlopen_must_not_be_called)
+
+        resp = client.get("/api/audio/elevenlabs/voices?profile=worker_beta")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"available": False, "voices": []}

@@ -316,9 +316,17 @@ def _api_server(config: GatewayConfig) -> None:
 
 
 def _webhook(config: GatewayConfig) -> None:
-    if is_truthy_value(getenv("WEBHOOK_ENABLED")):
-        extra = _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False).extra
-        _env_extras(extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
+    """Gate the block like msgraph_webhook: WEBHOOK_SECRET/WEBHOOK_PORT must reach ``extra`` whenever
+    the platform is enabled via config.yaml too — gating them behind WEBHOOK_ENABLED dropped the
+    secret from the documented .env-secrets-only setup and routes failed the HMAC check (#119763).
+    WEBHOOK_ENABLED still never beats an explicit YAML ``enabled: false`` (_enable_from_env marker)."""
+    enabled = is_truthy_value(getenv("WEBHOOK_ENABLED"))
+    if not (enabled or Platform.WEBHOOK in config.platforms or getenv("WEBHOOK_PORT") or getenv("WEBHOOK_SECRET")):
+        return
+    webhook_cfg = config.platforms.setdefault(Platform.WEBHOOK, PlatformConfig())
+    if enabled:
+        _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False)
+    _env_extras(webhook_cfg.extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
 
 
 def _msgraph_webhook(config: GatewayConfig) -> None:

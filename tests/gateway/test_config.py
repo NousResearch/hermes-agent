@@ -1470,3 +1470,62 @@ class TestWebhookEnvOverride:
             config.platforms[Platform.WEBHOOK].extra.get("secret")
             == "shared-secret"
         )
+
+    def test_env_secret_applied_when_enabled_via_config_yaml(self, tmp_path, monkeypatch):
+        """WEBHOOK_SECRET/WEBHOOK_PORT must reach ``extra`` when the platform is enabled via
+        config.yaml — .env is for secrets per the repo policy, so the documented setup is
+        ``platforms.webhook.enabled: true`` plus ``WEBHOOK_SECRET`` in .env.
+
+        Regression (#119763): the webhook block was wholly gated behind WEBHOOK_ENABLED
+        (which only the setup wizard writes), silently dropping the secret; every signed
+        request then failed the HMAC check. Mirrors msgraph_webhook's
+        enabled-OR-platform-present-OR-env-value gate."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n  webhook:\n    enabled: true\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("WEBHOOK_SECRET", "supersecret-hmac-key-123")
+        monkeypatch.setenv("WEBHOOK_PORT", "8646")
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+
+        wh = load_gateway_config().platforms[Platform.WEBHOOK]
+
+        assert wh.enabled is True
+        assert wh.extra.get("secret") == "supersecret-hmac-key-123"
+        assert wh.extra.get("port") == 8646
+
+    def test_stray_secret_does_not_enable_webhook(self, tmp_path, monkeypatch):
+        """A stray WEBHOOK_SECRET with no config.yaml block and no WEBHOOK_ENABLED must
+        not start the listener: the entry stays disabled while the credential lands in
+        ``extra`` (same shape as msgraph_webhook / api_server)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("WEBHOOK_SECRET", "stray-secret")
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.delenv("WEBHOOK_PORT", raising=False)
+
+        wh = load_gateway_config().platforms[Platform.WEBHOOK]
+
+        assert wh.enabled is False
+        assert wh.extra.get("secret") == "stray-secret"
+
+    def test_explicit_yaml_disable_beats_env_secret(self):
+        """An explicit ``platforms.webhook.enabled: false`` stays disabled when only
+        WEBHOOK_SECRET is present (#119763's fail-closed edge: the widened gate must
+        not let a stray credential flip the listener on)."""
+        config = GatewayConfig(
+            platforms={
+                Platform.WEBHOOK: PlatformConfig(
+                    enabled=False, extra={"_enabled_explicit": True}
+                )
+            },
+        )
+
+        with patch.dict(os.environ, {"WEBHOOK_SECRET": "stray-secret"}, clear=True):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.WEBHOOK].enabled is False
+        assert config.platforms[Platform.WEBHOOK].extra.get("secret") == "stray-secret"

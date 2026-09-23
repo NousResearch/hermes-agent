@@ -723,7 +723,12 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
 
 def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     """#100523: the CLI's single-owner lease refusal is a delivery FAILURE the
-    sender can read, not a raw exit-1 with the payload silently gone."""
+    sender can read, not a raw exit-1 with the payload silently gone.
+
+    Its own typed code, NOT ``target_busy`` (#93091 follow-up): nothing is queued
+    behind a turn here — the target's chat has a live owner mid-turn, so retrying
+    is the only move. The two used to be indistinguishable to a sender.
+    """
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hi", encoding="utf-8")
     child = tmp_path / "owned.py"
@@ -740,7 +745,7 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
 
     assert returncode == 1
     payload = json.loads(capsys.readouterr().out)
-    assert payload["reason"] == "target_busy"
+    assert payload["reason"] == "target_session_live"
     assert "NOT delivered" in payload["error"]
 
 

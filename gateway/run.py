@@ -4646,6 +4646,28 @@ def _housekeeping_paste_sweep() -> None:
         logger.info("Paste sweep: deleted %d expired paste(s), %d pending", deleted, remaining)
 
 
+def _housekeeping_long_running_sessions() -> None:
+    """Flag delivery sessions alive far past a normal turn — never kill them.
+
+    The 2026-09-20 orphan (a delivery child whose requester was killed) held a target profile's
+    ``state.db`` for 1h46m and only surfaced as somebody's ``target_busy`` refusal. This names it
+    as its own signal: WHICH profile, WHICH pid, and for how long. Ownership of a session's life
+    belongs to that session (the requester watch ends a stranded delivery child); this sweep only
+    refuses to let a stuck one stay invisible.
+    """
+    from hermes_cli.active_sessions import long_running_delivery_sessions
+
+    for entry in long_running_delivery_sessions():
+        logger.warning(
+            "long-running delivery session: profile '%s' (pid %s, surface %s) has held its "
+            "session for %.0f min — past every legitimate delivery turn, so it is stuck or its "
+            "requester is gone. Session %s (lease %s).",
+            entry.get("profile") or Path(entry["profile_home"]).name,
+            entry.get("pid"), entry.get("surface"), entry["age_seconds"] / 60.0,
+            entry.get("session_id"), entry.get("lease_id"),
+        )
+
+
 def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
     """External cron providers only: fire jobs whose time passed with no external fire delivered (dead
     loopback hop). No-op for the built-in ticker; enforces misfire_grace_minutes; CAS claim de-dupes."""
@@ -4829,6 +4851,10 @@ def _start_gateway_housekeeping(
                 _housekeeping_state_db_maintenance(_launch))),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+        # Names a delivery session alive far past every legitimate turn (a stuck or requester-less
+        # child still holding a target profile's state.db). Query only — never kills; the point is
+        # that the 2026-09-20 orphan went 1h46m without anything saying so.
+        (60, "Long-running delivery sessions", _housekeeping_long_running_sessions),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]

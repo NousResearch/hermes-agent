@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import subprocess
 import sys
 import threading
 import time
 from typing import Any, Callable, MutableMapping
+
+logger = logging.getLogger(__name__)
 
 # Nested A→B→C is one extra turn; this caps a runaway message_agent chain.
 _MAX_QUIET_NOTIFY_ROUNDS = 8
@@ -78,6 +81,124 @@ def read_turn_report(path: str, pid: int) -> dict | None:
     if not isinstance(record, dict) or record.get("pid") != pid:
         return None
     return record
+
+
+# ── requester-death policy for a spawner-owned delivery child ────────────────
+#
+# A delivery child is a DISPOSABLE one-shot whose output has exactly one consumer: the process
+# that spawned it (the delivery runner / the gateway's relay handler). When that requester dies
+# — the fleet kills a stuck delivery, the gateway is restarted, a cron tick is reaped — nothing
+# reads the child again, yet the child keeps running: it holds the TARGET profile's
+# ``state.db`` (+ its WAL), its own MCP server children, the one-shot exit linger, and it keeps
+# spawning deliveries on its own account. On 2026-09-20 that orphan outlived its requester by
+# 1h46m and reparented to the gateway, and every later delivery to that profile was refused
+# with the mid-turn refusal text (not the turn-lock one).
+#
+# The policy (see ``website/docs/user-guide/bot-mode.md``): the child DETECTS the dead requester
+# and ends its own turn. It does not linger, because the follow-up turns the linger exists to
+# protect (#90879 / #113608) would have no consumer either. Ending normally is what releases the
+# target profile's ``state.db`` and reaps the MCP children — the same teardown a clean exit runs.
+#
+# Armed ONLY when the spawner says so (REQUESTER_PID_ENV), so a person's ``hermes chat -Q`` is
+# never affected. The requester pid is consumed (popped) before the turn, like
+# TURN_REPORT_FILE_ENV, so nothing the turn spawns mistakes its own parent for the requester.
+REQUESTER_PID_ENV = "HERMES_QUIET_REQUESTER_PID"
+# Distinct from every other one-shot exit code: the turn was cut short because its requester
+# exited, not because the turn failed. Also outside the kanban codes (75 rate-limit / 78
+# terminal-provider), which describe a worker's own provider wall.
+REQUESTER_DEATH_EXIT_CODE = 79
+# Poll cadence and the bound on letting an interrupted turn unwind before the child finalizes.
+REQUESTER_DEATH_POLL_SECONDS = 1.0
+REQUESTER_DEATH_GRACE_SECONDS = 5.0
+
+
+def peek_requester_pid(environ: MutableMapping[str, str] = os.environ) -> int | None:
+    """The spawner's pid without consuming it (the active-session claim runs before the turn)."""
+    return _parse_pid(environ.get(REQUESTER_PID_ENV))
+
+
+def take_requester_pid(environ: MutableMapping[str, str] = os.environ) -> int | None:
+    """Read and remove the spawner's pid so subprocesses started during the turn do not inherit it."""
+    return _parse_pid(environ.pop(REQUESTER_PID_ENV, None))
+
+
+def _parse_pid(raw: "str | None") -> int | None:
+    try:
+        pid = int(str(raw or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def requester_pid_env(pid: int | None = None) -> dict[str, str]:
+    """Child-env entry that arms the requester-death policy in a delivery child."""
+    return {REQUESTER_PID_ENV: str(os.getpid() if pid is None else pid)}
+
+
+def requester_alive(requester_pid: int, *, getppid=os.getppid, pid_exists=None) -> bool:
+    """Whether ``requester_pid`` is still this child's living parent.
+
+    Reparenting is the primary signal: the kernel moves a child to the nearest subreaper (the
+    gateway) or init the moment its parent is REAPED, so ``getppid()`` is exact, instant and
+    free (the same mechanism ``tui_gateway.slash_worker`` relies on). The pid probe only
+    corroborates, for the window in which the requester is a zombie its own parent has not
+    reaped yet — ``getppid()`` still names it there.
+    """
+    if getppid() != int(requester_pid):
+        return False
+    if pid_exists is None:
+        try:
+            from gateway.status import _pid_exists as pid_exists
+        except Exception:  # pragma: no cover — no gateway module on a stripped install
+            return True
+    try:
+        return bool(pid_exists(int(requester_pid)))
+    except Exception:
+        return True
+
+
+def arm_requester_watchdog(
+    requester_pid: int | None, on_requester_death: Callable[[], Any], *,
+    poll_seconds: float | None = None,
+    getppid=os.getppid, pid_exists=None,
+) -> threading.Event:
+    """End the enclosing one-shot when its requester dies; returns the stop Event.
+
+    ``on_requester_death`` runs exactly once, on the watcher thread, as soon as the requester is
+    gone — the caller's job there is to stop an in-flight turn (interrupt) and mark the run so
+    the main thread exits through the normal finalize path. A no-op (never fires) without a
+    requester pid, so an ordinary quiet one-shot is untouched.
+
+    ``poll_seconds`` defaults to :data:`REQUESTER_DEATH_POLL_SECONDS` resolved at call time, so
+    the cadence is tunable (tests, an operator leash) without reaching into the signature.
+    """
+    stop = threading.Event()
+    pid = requester_pid
+    if not pid:
+        return stop
+    interval = REQUESTER_DEATH_POLL_SECONDS if poll_seconds is None else float(poll_seconds)
+
+    def _await_requester_death() -> None:
+        while True:
+            # Check BEFORE the first wait: a requester can already be gone when the child starts
+            # (the spawner died between fork and the turn), and that case must not wait a cadence.
+            if requester_alive(pid, getppid=getppid, pid_exists=pid_exists):
+                if stop.wait(max(0.01, interval)):
+                    return
+                continue
+            logger.warning(
+                "delivery child %s: requester pid %s is gone — ending this run instead of "
+                "outliving it (holding a target profile's state.db and MCP children with no "
+                "consumer left for this turn)", os.getpid(), pid)
+            try:
+                on_requester_death()
+            except Exception:  # a failed callback must not leave the orphan alive
+                logger.debug("requester-death callback failed", exc_info=True)
+            return
+
+    threading.Thread(target=_await_requester_death, name=f"requester-death-{pid}",
+                     daemon=True).start()
+    return stop
 
 
 # After the child reports its turn, a child with nothing to linger for exits at once; a spawner

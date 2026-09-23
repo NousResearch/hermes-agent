@@ -19,6 +19,18 @@ QUEUED_EXPIRED = "queued_expired"
 DELIVERY_TIMEOUT = "delivery_timeout"
 AGENT_BLOCKED = "agent_blocked"
 CANCELLED = "cancelled"
+# Two refusals that used to ship the SAME code ('target_busy'), because a waiter only saw the
+# human prose. They are different conditions with different operator actions (#93091 follow-up):
+# TARGET_BUSY: another delivery TURN holds this profile's cross-process turn lock — a live turn,
+#   or a delivery stuck in one; retry shortly, and a hold past the whole turn budget is a WEDGED
+#   holder (tools.bot_relay names its pid and age).
+# TARGET_SESSION_LIVE: the target's chat has a LIVE OWNER mid-turn — an interactive surface, or a
+#   delivery session that outlived its requester (the orphan this code names). Nothing is queued
+#   behind a turn here; the message was refused at the session lease, so retrying is the only
+#   move and a session alive far past a turn is the watchdog signal
+#   (hermes_cli.active_sessions.long_running_delivery_sessions).
+TARGET_BUSY = "target_busy"
+TARGET_SESSION_LIVE = "target_session_live"
 
 # agent-side
 PROVIDER_AUTH_OR_ACCESS = "provider_auth_or_access"
@@ -38,6 +50,18 @@ ALL_REASONS = frozenset({
 
 #: Reasons a supervisor may retry automatically without human intervention.
 AUTO_RETRYABLE = frozenset({RUNTIME_OFFLINE, DELIVERY_TIMEOUT, PROVIDER_RATE_LIMIT, PROVIDER_SERVER_ERROR})
+
+#: The delivery-refusal codes a lane may put in an exception's ``reason`` and forward verbatim.
+#: Kept BESIDE ``ALL_REASONS`` rather than inside it: ``ALL_REASONS`` is the agent/provider
+#: vocabulary that is total over the retry policy (``retry_action``) and is the accepted set for
+#: hosted-room ``turn.failed`` event payloads (``gateway.hosted_room_discussion``), whereas these
+#: name the TARGET's state at admission, not the turn's failure class.
+DELIVERY_REFUSAL_REASONS = frozenset({TARGET_BUSY, TARGET_SESSION_LIVE})
+
+#: Every code that may appear in a delivery refusal's ``reason`` field: the agent/provider
+#: vocabulary plus the two target-state refusals that predate it. Consumers that validate a
+#: *delivery* reason (rather than a turn-failure reason) accept this set.
+DELIVERY_REASONS = ALL_REASONS | DELIVERY_REFUSAL_REASONS
 
 
 def is_auto_retryable(reason: str) -> bool:
@@ -121,6 +145,35 @@ def classify_agent_error(text: str) -> str:
     return UNKNOWN
 
 
+# ``hermes_cli.active_sessions.SESSION_NOT_OWNED``, mirrored as a literal: this module is imported
+# by both delivery lanes and must not drag in the CLI's session layer (import cycle). The two are
+# pinned together by ``tests/tools/test_bot_delivery_refusal_codes.py``.
+SESSION_NOT_OWNED_REASON = "SESSION_NOT_OWNED"
+_REFUSAL_MARKER = "hermes-refusal-reason: "
+
+
+def classify_delivery_detail(text: str) -> str:
+    """Typed reason for a FAILED delivery turn, from the child's combined stdout+stderr.
+
+    A one-shot CLI child reports a session-lease refusal with its own code on stderr
+    (``hermes_cli.active_sessions.format_refusal_stderr``), and that refusal is a TARGET-STATE
+    condition, not a turn failure: the target's chat has a live owner mid-turn, so the turn never
+    ran. Naming it ``target_session_live`` is what lets the sender tell it apart from a held turn
+    lock — both shipped ``target_busy`` before, and this lane did not even name the lease case
+    (``unknown``). Everything else classifies from the raw text as usual, so older CLIs without
+    the marker still resolve via the historical wording.
+    """
+    detail = str(text or "")
+    for line in detail.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_REFUSAL_MARKER):
+            code = stripped[len(_REFUSAL_MARKER):].strip()
+            return TARGET_SESSION_LIVE if code == SESSION_NOT_OWNED_REASON else classify_agent_error(detail)
+    if "already has a live owner" in detail:
+        return TARGET_SESSION_LIVE
+    return classify_agent_error(detail)
+
+
 def delivery_failure_reason(error: BaseException) -> str:
     """The typed reason for a delivery refusal, kept inside the documented vocabulary.
 
@@ -130,8 +183,10 @@ def delivery_failure_reason(error: BaseException) -> str:
     expect a closed set. Anything else is classified like every other failure. Shared by the
     relay lane (``bot_relay.deliver``) and the local runner (``bot_mode_dm --run-delivery``).
     """
-    # 'target_busy' extends the structured refusal enum and predates ALL_REASONS.
+    # The delivery-refusal codes extend the structured refusal enum and predate ALL_REASONS,
+    # which stays the agent/provider vocabulary the hosted-room event schema and the retry
+    # policy are total over (see DELIVERY_REFUSAL_REASONS).
     supplied = str(getattr(error, "reason", "") or "").strip()
-    if supplied == "target_busy" or supplied in ALL_REASONS:
+    if supplied in DELIVERY_REFUSAL_REASONS or supplied in ALL_REASONS:
         return supplied
     return classify_agent_error(str(error))

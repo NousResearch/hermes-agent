@@ -141,6 +141,14 @@ class TestGuessCategory:
         p.write_text("x")
         assert dg.guess_category(p) is None
 
+    def test_scripts_tree_never_tracked(self, _isolate_env):
+        """$HERMES_HOME/scripts is user-authored; test_*/tmp_* there is not disposable (#107343)."""
+        dg = _load_lib()
+        p = _isolate_env / "scripts" / "test_result_gate.py"
+        p.parent.mkdir()
+        p.write_text("x")
+        assert dg.guess_category(p) is None
+
 
 class TestProfileUserTreesNeverCleaned:
     """``workspace/`` (and the other per-profile user trees) hold project files, so
@@ -152,7 +160,8 @@ class TestProfileUserTreesNeverCleaned:
 
     def test_session_end_hook_leaves_workspace_files_alone(self, _isolate_env):
         """End-to-end: write_file into a project tree, then session end. A scratch file at
-        the HERMES_HOME root is the control: it is still tracked and removed."""
+        the HERMES_HOME root is still classified ``test`` but same-day AUTO_QUICK
+        must not unlink it (24h floor)."""
         pi = _load_plugin_init()
         dg = _load_lib()
         keep = _isolate_env / "workspace" / "proj" / "tests" / "test_parse.py"
@@ -171,7 +180,7 @@ class TestProfileUserTreesNeverCleaned:
             )
         pi._on_session_end(session_id="s_ws", completed=True, interrupted=False)
         assert keep.exists(), "session-end cleanup must not touch workspace project files"
-        assert not scratch.exists(), "root-level scratch files are still cleaned up"
+        assert scratch.exists(), "same-day root-level test_* still needs the 24h floor"
 
     def test_empty_dir_sweep_skips_workspace(self, _isolate_env):
         """Empty dirs inside a project tree are meaningful (``data/``, ``.artifacts/``)
@@ -235,8 +244,9 @@ class TestProtectedDirsNeverRmtreed:
         pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
 
         assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
-        assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
-        assert dg.load_tracked() == []
+        assert scratch.exists(), "same-day root-level test_* still needs the 24h floor"
+        remaining = dg.load_tracked()
+        assert remaining and Path(remaining[0]["path"]) == scratch.resolve()
 
 
 class TestGitWorktreeFilesNeverCleaned:
@@ -271,8 +281,9 @@ class TestGitWorktreeFilesNeverCleaned:
         scratch = _isolate_env / "test_scratch.py"
         scratch.write_text("x")
         assert dg.guess_category(scratch) == "test"
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         dg.save_tracked([{"path": str(scratch), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+                          "timestamp": old_ts, "size": 1}])
         result = dg.quick()
         assert not scratch.exists()
         assert result["deleted"] == 1
@@ -368,6 +379,13 @@ class TestTrackForgetQuick:
         p = _isolate_env / "test_a.py"
         p.write_text("x")
         assert dg.track(str(p), "test", silent=True) is True
+        # Same-day test files are not auto-deleted (24h floor).
+        summary = dg.quick()
+        assert summary["deleted"] == 0
+        assert p.exists()
+        tracked = dg.load_tracked()
+        tracked[0]["timestamp"] = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        dg.save_tracked(tracked)
         summary = dg.quick()
         assert summary["deleted"] == 1
         assert not p.exists()
@@ -412,7 +430,14 @@ class TestDryRun:
         dg.track(str(test_f), "test", silent=True)
         dg.track(str(big), "other", silent=True)
         auto, prompt = dg.dry_run()
-        # test → auto, other → neither (doesn't hit any rule)
+        # same-day test is under the 24h floor → neither bucket
+        assert not any(i["path"] == str(test_f) for i in auto)
+        tracked = dg.load_tracked()
+        for item in tracked:
+            if item["path"] == str(test_f):
+                item["timestamp"] = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        dg.save_tracked(tracked)
+        auto, prompt = dg.dry_run()
         assert any(i["path"] == str(test_f) for i in auto)
 
 
@@ -477,7 +502,77 @@ class TestOnSessionEndHook:
         )
         assert p.exists()
         pi._on_session_end(session_id="s1", completed=True, interrupted=False)
-        assert not p.exists(), "test file should be auto-deleted"
+        assert p.exists(), "same-day test file must survive session-end AUTO_QUICK"
+
+
+class TestScriptsTreeNeverCleaned:
+    """Regression for #107343 — operator scripts under $HERMES_HOME/scripts
+    (including test_*.py and tmp_*.sh) must never be tracked or auto-deleted."""
+
+    def test_session_end_leaves_scripts_alone(self, _isolate_env):
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        keep = _isolate_env / "scripts" / "test_result_gate.py"
+        keep.parent.mkdir()
+        keep.write_text("x")
+        assert dg.guess_category(keep) is None
+        # Post-fix the hook never tracks scripts/ files, so arm AUTO_QUICK with a
+        # same-day control file elsewhere in HERMES_HOME (it survives the 24h floor).
+        control = _isolate_env / "test_control_scratch.py"
+        control.write_text("x")
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(control), "content": "x"},
+            result="OK",
+            task_id="t_sc", session_id="s_sc",
+        )
+        # A stale pre-fix tracked.json entry must be dropped, not deleted.
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        dg.save_tracked([{"path": str(keep), "category": "test",
+                          "timestamp": old_ts, "size": 1}])
+        pi._on_session_end(session_id="s_sc", completed=True, interrupted=False)
+        assert keep.exists(), "scripts/ is user-authored, never AUTO_QUICK-deleted"
+        assert dg.load_tracked() == []
+
+    def test_quick_drops_stale_scripts_entry_instead_of_deleting(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "scripts" / "tmp_guard_cron.sh"
+        p.parent.mkdir()
+        p.write_text("x")
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        dg.save_tracked([{"path": str(p), "category": "test",
+                          "timestamp": old_ts, "size": 1}])
+        result = dg.quick()
+        assert p.exists()
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == []
+
+
+class TestTestCategoryAgeFloor:
+    """Same-day category=test files must survive AUTO_QUICK; age>=1 day still deletes."""
+
+    def test_same_day_test_file_survives_quick(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "test_fresh.py"
+        p.write_text("x")
+        dg.save_tracked([{"path": str(p), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert p.exists()
+        assert result["deleted"] == 0
+        remaining = dg.load_tracked()
+        assert remaining and Path(remaining[0]["path"]) == p.resolve()
+
+    def test_day_old_test_file_is_deleted(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "test_stale.py"
+        p.write_text("x")
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        dg.save_tracked([{"path": str(p), "category": "test",
+                          "timestamp": old_ts, "size": 1}])
+        result = dg.quick()
+        assert not p.exists()
+        assert result["deleted"] == 1
 
 
 

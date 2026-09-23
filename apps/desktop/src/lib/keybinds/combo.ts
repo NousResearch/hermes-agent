@@ -259,6 +259,20 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   )
 }
 
+/**
+ * True when a keydown belongs to a text control: the event target, the focused
+ * element, or any node on the composed path is editable. Window-capture
+ * listeners see the deepest target, and a portal or composite control can
+ * present a non-input target while an input still holds focus.
+ */
+export function isEditableKeyEvent(event: KeyboardEvent): boolean {
+  return (
+    isEditableTarget(event.target) ||
+    isEditableTarget(document.activeElement) ||
+    event.composedPath().some(node => node instanceof Element && isEditableTarget(node))
+  )
+}
+
 const INPUT_SAFE_ACTIONS = new Set([
   'composer.modelPicker',
   'composer.voice',

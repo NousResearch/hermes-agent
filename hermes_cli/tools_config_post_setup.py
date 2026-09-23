@@ -13,6 +13,11 @@ from hermes_cli.cli_output import (
     print_warning as _print_warning)
 from hermes_cli.config import get_env_value
 from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
+from tools.transcription_common import DEFAULT_LOCAL_MODEL, LOCAL_STT_MODEL_OPTIONS
+
+_LOCAL_STT_MODEL_SUMMARY = ", ".join(
+    f"{model} (default)" if model == DEFAULT_LOCAL_MODEL else model for model in LOCAL_STT_MODEL_OPTIONS
+)
 
 
 def _info_lines(*lines: str) -> None:
@@ -120,7 +125,7 @@ def _python_hook(module, extra, label, installing, on_install=(), always=()) -> 
 _PYTHON_POST_SETUP_HOOKS: dict = {
     "faster_whisper": _python_hook(
         "faster_whisper", "stt-whisper", "faster-whisper", "Installing faster-whisper (model ~150MB downloads on first use)...",
-        on_install=("Model sizes: tiny, base (default), small, medium, large-v3",
+        on_install=(f"Model sizes: {_LOCAL_STT_MODEL_SUMMARY}",
                     "Change via stt.local.model in config.yaml")),
     "kittentts": _python_hook(
         "kittentts", "kittentts", "kittentts", "Installing kittentts (~25-80MB model, CPU-only)...",

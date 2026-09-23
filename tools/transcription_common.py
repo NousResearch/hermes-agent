@@ -14,6 +14,7 @@ logger = logging.getLogger("tools.transcription_tools")
 
 DEFAULT_PROVIDER = "local"
 DEFAULT_LOCAL_MODEL = "base"
+LOCAL_STT_MODEL_OPTIONS = ("tiny", "base", "small", "medium", "large-v3", "turbo")
 DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")

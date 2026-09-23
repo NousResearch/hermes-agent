@@ -46,6 +46,9 @@ def test_occupied_directory_is_preserved_when_scan_blocks(tmp_path):
         empty.mkdir()
         empty_result = _create_skill("empty-skill", VALID_CONTENT)
 
+        # A directory create made itself is its own to remove when the scan blocks.
+        fresh_result = _create_skill("fresh-skill", VALID_CONTENT)
+
         # A directory create cannot even list is somebody's: refuse cleanly, never raise.
         unreadable_result = None
         if _can_make_unreadable_dir():
@@ -67,6 +70,9 @@ def test_occupied_directory_is_preserved_when_scan_blocks(tmp_path):
     assert empty.is_dir()
     assert not any(empty.iterdir())
 
+    assert fresh_result["success"] is False
+    assert not (tmp_path / "fresh-skill").exists()
+
     if unreadable_result is not None:
         assert unreadable_result["success"] is False
         assert "Choose another name" in unreadable_result["error"]
@@ -87,6 +93,7 @@ def test_occupied_directory_is_refused_and_empty_leftover_is_reused(tmp_path):
         empty_result = _create_skill("empty-skill", VALID_CONTENT)
 
     assert result["success"] is False
+    assert "Choose another name" in result["error"]
     assert nested.read_bytes() == b"nested"
     assert not (category / "SKILL.md").exists()
 

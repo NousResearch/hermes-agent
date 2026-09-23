@@ -239,6 +239,9 @@ interface PromptActionsOptions {
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  /** Drop residual stream-queue entries for a session that is starting a new
+   *  turn (#119543). Supplied by useMessageStream in wiring. */
+  discardQueuedDeltas?: (sessionId?: string) => void
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
@@ -271,6 +274,7 @@ export function usePromptActions({
   busyRef,
   branchCurrentSession,
   createBackendSessionForSend,
+  discardQueuedDeltas,
   getRoutedStoredSessionId,
   getRuntimeIdForStoredSession,
   getRouteToken,
@@ -517,6 +521,7 @@ export function usePromptActions({
     busyRef,
     copy,
     createBackendSessionForSend,
+    discardQueuedDeltas,
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,
@@ -988,6 +993,7 @@ export function usePromptActions({
       }
 
       clearNotifications()
+      discardQueuedDeltas?.(sessionId)
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
 
       try {
@@ -1061,6 +1067,7 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
+      discardQueuedDeltas?.(sessionId)
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
 
       try {
@@ -1128,6 +1135,7 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
+      discardQueuedDeltas?.(sessionId)
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
 
       const isStaleTargetError = (err: unknown) =>

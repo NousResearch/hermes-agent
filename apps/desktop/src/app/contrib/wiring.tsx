@@ -516,7 +516,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
-  const { handleGatewayEvent, handleServerRequest } = useMessageStream({
+  const { handleGatewayEvent, handleServerRequest, discardQueuedDeltas } = useMessageStream({
     activeGatewayProfile,
     activeSessionIdRef,
     hydrateFromStoredSession,
@@ -756,6 +756,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     branchCurrentSession: branchInNewChat,
     busyRef,
     createBackendSessionForSend,
+    discardQueuedDeltas,
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,

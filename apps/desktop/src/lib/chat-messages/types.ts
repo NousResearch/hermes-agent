@@ -107,6 +107,11 @@ export type GatewayEventPayload = {
   yolo?: boolean
   running?: boolean
   turn_started_at?: number | null
+  /** Turn identity stamped by the gateway on message.start / message.complete
+   *  (#119543). Absent on older gateways and on unstamped emitters (auto-
+   *  continue, notifications, child mirrors) — consumers must treat absence
+   *  as "no identity" and keep pre-token behavior. */
+  turn?: string
   cwd?: string
   branch?: string
   terminal_backend?: string

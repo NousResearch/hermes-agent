@@ -60,6 +60,8 @@ interface SubmitPromptDeps {
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  /** Drop residual stream-queue entries when arming a new turn (#119543). */
+  discardQueuedDeltas?: (sessionId?: string) => void
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
@@ -107,6 +109,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     busyRef,
     copy,
     createBackendSessionForSend,
+    discardQueuedDeltas,
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,
@@ -404,6 +407,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           touchSessionActivity(targetStoredSessionId, activity)
         }
 
+        // Residual queue from the previous turn must not flush into this
+        // seed (#119543) — discard before the state arm below.
+        discardQueuedDeltas?.(sid)
+
         updateSessionState(
           sid,
           state => ({
@@ -431,6 +438,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // mutateStream/completeAssistantMessage drop every delta of this turn
             // (what made drained-after-interrupt sends go silent).
             interrupted: false,
+            // Arm the stale-completion guard (#119543): remember the token of
+            // whatever turn is in flight so a late message.complete from it is
+            // dropped, and clear ours so this seed owns no identity yet.
+            supersededTurnToken: state.turnToken ?? state.supersededTurnToken,
+            turnToken: null,
             // Arm the turn clock at send, not at the backend's message.start —
             // the round trip (submit RPC → gateway accept → WS event) can take
             // seconds under load, and the honest latency clock starts when the

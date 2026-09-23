@@ -1007,6 +1007,13 @@ def _run_prompt_submit(
         muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
     if muted:
         display_kind = "hidden"
+    # Turn identity for the stale-completion guard (#119543): one token minted
+    # per accepted prompt, stamped on message.start and message.complete so a
+    # late frame from a superseded turn can be dropped client-side instead of
+    # appending after the next user message. Rebound bodies see server globals
+    # (uuid is imported there); local import keeps this module self-contained.
+    import uuid as _uuid
+    turn_token = _uuid.uuid4().hex[:16]
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
@@ -1022,7 +1029,7 @@ def _run_prompt_submit(
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
     if not muted:
-        _emit("message.start", sid)
+        _emit("message.start", sid, {"turn": turn_token})
 
     def run_body():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
@@ -1051,6 +1058,7 @@ def _run_prompt_submit(
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+            payload["turn"] = turn_token
             _emit("message.complete", sid, payload)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":

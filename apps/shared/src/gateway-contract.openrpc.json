@@ -17652,6 +17652,18 @@
               }
             ],
             "default": null
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn"
           }
         },
         "title": "MessageCompletePayload",
@@ -17843,6 +17855,26 @@
           "role"
         ],
         "title": "MessageReactionPayload",
+        "type": "object"
+      },
+      "MessageStartPayload": {
+        "additionalProperties": false,
+        "description": "``prompt_turn._run_prompt_submit`` \u2014 turn identity for the stale-completion guard (#119543).\nOlder backends omit ``turn`` (payload ``None``); the client's rules then stay inert.",
+        "properties": {
+          "turn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn"
+          }
+        },
+        "title": "MessageStartPayload",
         "type": "object"
       },
       "MoaAggregatingPayload": {
@@ -37686,13 +37718,12 @@
     },
     {
       "name": "message.start",
-      "summary": "A turn began streaming; no payload.",
+      "summary": "A turn began streaming; optional ``turn`` token identifies the turn for stale-completion drops.",
       "params": [
         {
           "name": "payload",
           "schema": {
-            "type": "object",
-            "additionalProperties": false
+            "$ref": "#/components/schemas/MessageStartPayload"
           }
         }
       ]

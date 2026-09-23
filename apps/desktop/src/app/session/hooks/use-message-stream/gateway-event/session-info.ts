@@ -136,6 +136,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const {
     activeGatewayProfile,
     activeSessionIdRef,
+    flushQueuedDeltas,
     hydrateFromStoredSession,
     lastCwdInfoSessionRef,
     queryClient,
@@ -281,6 +282,30 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // message never arrived. The updater is invoked exactly once,
       // synchronously, by updateSessionState.
       let recoveredIncompleteTurn = false
+      const busy = Boolean(payload!.running)
+      const preState = sessionStateByRuntimeIdRef.current.get(sessionId)
+
+      // Settle without message.complete: flush residual queued deltas into
+      // the STILL-LIVE bubble BEFORE the updater nulls streamId. Flushing
+      // inside the updater nests updateSessionState → mutateStream and the
+      // outer settle would overwrite the flushed messages (#119543).
+      // Mirror the updater's early-return gates so an already-idle or
+      // pre-start state never flushes (that would seed a fresh bubble).
+      if (!busy && preState) {
+        const alreadyIdle = !preState.busy && !preState.awaitingResponse
+        const withinPreStartGrace =
+          typeof preState.turnStartedAt === 'number' &&
+          Date.now() - preState.turnStartedAt < PRE_TURN_LIVE_SETTLE_GRACE_MS
+        const preStartHold =
+          preState.awaitingResponse &&
+          !preState.sawAssistantPayload &&
+          !preState.turnLive &&
+          withinPreStartGrace
+
+        if (!alreadyIdle && !preStartHold) {
+          flushQueuedDeltas(sessionId)
+        }
+      }
 
       const nextState = updateSessionState(
         sessionId,
@@ -315,6 +340,12 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
               // message.start (e.g. resuming an already-running session
               // that never replays its start event).
               turnLive: true,
+              // A turn this window did not seed: clear any prior turn token
+              // so an unstamped complete stays inert and a stamped one from
+              // a *different* turn is not mismatch-dropped against the old
+              // token (#119543 adopt path). Seed short-circuits above via
+              // busy already true, so seeded turns keep their token.
+              turnToken: null,
               turnStartedAt: state.turnStartedAt ?? gatewayTurnStartedAt ?? Date.now()
             }
           }

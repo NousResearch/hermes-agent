@@ -6,11 +6,40 @@ import {
   completionErrorText,
   delegateTaskPayloads,
   hasSessionInfoStatePatch,
+  isStaleCompletion,
   sessionInfoStatePatch,
   toTodoPayload
 } from './utils'
 
 const payload = (over: Record<string, unknown>): GatewayEventPayload => over as GatewayEventPayload
+
+describe('isStaleCompletion', () => {
+  const idle = { supersededTurnToken: null, turnToken: null }
+
+  it('never treats an absent or empty turn token as stale (older gateways)', () => {
+    expect(isStaleCompletion(undefined, { ...idle, turnToken: 'live', supersededTurnToken: 'old' })).toBe(false)
+    expect(isStaleCompletion('', { ...idle, turnToken: 'live', supersededTurnToken: 'old' })).toBe(false)
+  })
+
+  it('drops a complete whose turn equals the superseded token (seed/rewind arm)', () => {
+    expect(isStaleCompletion('old', { supersededTurnToken: 'old', turnToken: null })).toBe(true)
+  })
+
+  it('drops a mismatched stamped complete when a live token is already claimed', () => {
+    expect(isStaleCompletion('other', { supersededTurnToken: null, turnToken: 'live' })).toBe(true)
+  })
+
+  it('keeps the matching stamped complete for the in-flight turn', () => {
+    expect(isStaleCompletion('live', { supersededTurnToken: 'old', turnToken: 'live' })).toBe(false)
+  })
+
+  it('keeps a stamped complete when no identity is claimed yet (turnToken null)', () => {
+    // Seed nulls turnToken and arms superseded; a token that is neither
+    // superseded nor a claim-mismatch stays live (muted/backend-originated).
+    expect(isStaleCompletion('fresh', { supersededTurnToken: 'old', turnToken: null })).toBe(false)
+    expect(isStaleCompletion('fresh', idle)).toBe(false)
+  })
+})
 
 describe('completionErrorText', () => {
   it('flags provider/HTTP/retry failures, ignores normal text', () => {

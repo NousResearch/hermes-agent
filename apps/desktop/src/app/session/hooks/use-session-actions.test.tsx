@@ -1690,6 +1690,8 @@ describe('resumeSession failure recovery', () => {
             streamId: null,
             turnStartedAt: null,
             turnLive: false,
+            turnToken: null,
+            supersededTurnToken: null,
             usage: null,
             yolo: false
           }

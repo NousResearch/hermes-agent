@@ -26,6 +26,7 @@ function errorContext(message: string) {
       compactedTurnRef: { current: new Set<string>() },
       failAssistantMessage,
       flushQueuedDeltas: vi.fn(),
+      discardQueuedDeltas: vi.fn(),
       hydrateFromStoredSession: vi.fn(),
       queryClient: { invalidateQueries: vi.fn() },
       sessionStateByRuntimeIdRef: { current: new Map() },

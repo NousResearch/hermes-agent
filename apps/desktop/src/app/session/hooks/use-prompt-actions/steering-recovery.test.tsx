@@ -355,6 +355,7 @@ it.each(rebuiltRuntimeCases)(
           completeAssistantMessage: vi.fn(),
           failAssistantMessage: vi.fn(),
           flushQueuedDeltas: vi.fn(),
+          discardQueuedDeltas: vi.fn(),
           finalizeInterimAssistantMessage: vi.fn(),
           hydrateFromStoredSession: vi.fn(async () => undefined),
           queryClient: new QueryClient(),

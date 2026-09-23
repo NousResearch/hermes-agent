@@ -30,6 +30,9 @@ export interface GatewayEventDeps {
     surface?: ErrorSurface | null
   ) => void
   flushQueuedDeltas: (sessionId?: string) => void
+  /** Drop residual queue entries without applying them — a new turn must not
+   *  inherit the previous turn's unsent deltas (#119543). */
+  discardQueuedDeltas: (sessionId?: string) => void
   finalizeInterimAssistantMessage: (sessionId: string, text: string, occurredAt?: number) => void
   hydrateFromStoredSession: (
     attempts?: number,

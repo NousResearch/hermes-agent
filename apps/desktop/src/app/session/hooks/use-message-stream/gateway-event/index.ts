@@ -248,6 +248,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       deps.activeGatewayProfile,
       deps.compactedTurnRef,
       deps.completeAssistantMessage,
+      deps.discardQueuedDeltas,
       deps.failAssistantMessage,
       deps.finalizeInterimAssistantMessage,
       deps.flushQueuedDeltas,

@@ -20,6 +20,7 @@ import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
+import { isStaleCompletion } from '../utils'
 
 function firstBillingLine(text: string): string {
   return (text || '').split('\n')[0]?.trim() ?? ''
@@ -75,6 +76,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     appendReasoningDelta,
     compactedTurnRef,
     completeAssistantMessage,
+    discardQueuedDeltas,
     finalizeInterimAssistantMessage,
     flushQueuedDeltas,
     nativeSubagentSessionsRef,
@@ -87,7 +89,10 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       return true
     }
 
-    flushQueuedDeltas(sessionId)
+    // A new turn supersedes anything still sitting in the queue — discard,
+    // don't flush: residual deltas from the previous turn must not seed the
+    // new bubble (#119543). The new turn's own deltas enqueue after this.
+    discardQueuedDeltas(sessionId)
     pruneFinishedSessionSubagents(sessionId)
     setSessionCompacting(sessionId, false)
     compactedTurnRef.current.delete(sessionId)
@@ -132,6 +137,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         // Backend accepted the turn — the no-payload settle gate below may
         // now treat a running=false heartbeat as a real turn end.
         turnLive: true,
+        // Turn identity for the stale-completion drop (#119543). A stamped
+        // start sets the token; an unstamped start (auto-continue, notif,
+        // follow-up bookkeeping) CLEARS it so a stamped complete from a
+        // different turn is not mismatch-dropped against the previous turn's
+        // token. Seed already nulled it on the submit path.
+        turnToken: typeof payload?.turn === 'string' && payload.turn ? payload.turn : null,
         // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
         // here would hide the submit→accept round trip from the timer.
         // Backend-originated turns (queue drain elsewhere, goal follow-up)
@@ -315,6 +326,15 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'message.complete') {
     if (!sessionId) {
+      return true
+    }
+
+    // Stale-completion drop (#119543): a late frame from a superseded or
+    // already-replaced turn must not clear prompts, flush the queue, or
+    // append after the next user row. Checked before ANY side effect.
+    const preState = sessionStateByRuntimeIdRef.current.get(sessionId)
+
+    if (preState && isStaleCompletion(payload?.turn, preState)) {
       return true
     }
 

@@ -739,7 +739,17 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
         finally:
             server._sessions.pop("sid", None)
 
-    assert run_flag_on() == run_flag_off()
+    def _strip_turn(events):
+        out = []
+        for event, sid, payload in events:
+            if event in ("message.start", "message.complete") and isinstance(payload, dict):
+                payload = {k: v for k, v in payload.items() if k != "turn"}
+                if not payload:
+                    payload = None
+            out.append((event, sid, payload))
+        return out
+
+    assert _strip_turn(run_flag_on()) == _strip_turn(run_flag_off())
 
 
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):

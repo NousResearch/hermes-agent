@@ -57,6 +57,7 @@ function deliver(event: GatewayEvent<'tool.complete'>) {
     isActiveEvent: false,
     deps: {
       flushQueuedDeltas: vi.fn(),
+      discardQueuedDeltas: vi.fn(),
       updateSessionState: vi.fn(),
       sessionInterrupted: () => false,
       upsertToolCall: () => {

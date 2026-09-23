@@ -104,7 +104,15 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 
-event("message.start", None, doc="A turn began streaming; no payload.")
+class MessageStartPayload(Payload):
+    """``prompt_turn._run_prompt_submit`` — turn identity for the stale-completion guard (#119543).
+    Older backends omit ``turn`` (payload ``None``); the client's rules then stay inert."""
+
+    turn: str | None = None
+
+
+event("message.start", MessageStartPayload,
+      doc="A turn began streaming; optional ``turn`` token identifies the turn for stale-completion drops.")
 
 
 class StreamDeltaPayload(Payload):
@@ -199,6 +207,7 @@ class MessageCompletePayload(Payload):
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
     persisted_turn: PersistedTurn | None = None
+    turn: str | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")

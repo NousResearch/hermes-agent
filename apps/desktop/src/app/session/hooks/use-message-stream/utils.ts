@@ -140,6 +140,32 @@ export function completionErrorText(finalText: string): string | null {
   return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
 }
 
+/** Drop a message.complete that belongs to a turn this window already superseded
+ *  or replaced (#119543). Absent/empty `turn` (older gateways, unstamped
+ *  emitters) is never stale — rules stay inert and behavior matches pre-token.
+ *
+ *  Two arms, both required:
+ *  - `turn === supersededTurnToken` — seedOptimistic/rewind armed the token
+ *    before the new start arrived, so a late frame from the old turn has no
+ *    matching live token yet.
+ *  - `turnToken !== null && turn !== turnToken` — a stamped start already
+ *    claimed identity for the in-flight turn; any other stamped token is a
+ *    straggler (covers backend-originated turns that never seed). */
+export function isStaleCompletion(
+  turn: string | undefined,
+  state: { supersededTurnToken: string | null; turnToken: string | null }
+): boolean {
+  if (typeof turn !== 'string' || !turn) {
+    return false
+  }
+
+  if (turn === state.supersededTurnToken) {
+    return true
+  }
+
+  return state.turnToken !== null && turn !== state.turnToken
+}
+
 export const SUBAGENT_EVENT_TYPES = new Set([
   'subagent.spawn_requested',
   'subagent.start',

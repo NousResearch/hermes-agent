@@ -196,4 +196,10 @@ export interface ClientSessionState {
    *  the primary-only $currentUsage — the statusbar reads it for a focused
    *  tile's context count. Null until the first turn reports. */
   usage: null | UsageStats
+  /** Turn token stamped by the gateway on message.start / message.complete
+   *  (#119543). Null until a stamped start lands or a new turn is seeded. */
+  turnToken: string | null
+  /** Token of the turn this window just superseded (seedOptimistic / rewind
+   *  arm). A late message.complete carrying it is dropped before render. */
+  supersededTurnToken: string | null
 }

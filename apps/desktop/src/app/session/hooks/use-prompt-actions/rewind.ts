@@ -549,6 +549,9 @@ export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPla
     ],
     pendingBranchGroup: plan.branchGroupId,
     sawAssistantPayload: false,
+    // Arm the stale-completion guard (#119543) the same way seedOptimistic does.
+    supersededTurnToken: state.turnToken ?? state.supersededTurnToken,
+    turnToken: null,
     // Arm the turn clock with the optimistic busy. The clock is what bounds
     // the no-payload settle gate's pre-start hold (#86795): an armed turn
     // with no clock is settled by the first running=false heartbeat, so a
@@ -684,6 +687,9 @@ export function applyRewindOptimistic(
       : state.messages.slice(0, sourceIndex + 1),
     pendingBranchGroup: null,
     sawAssistantPayload: false,
+    // Arm the stale-completion guard (#119543) the same way seedOptimistic does.
+    supersededTurnToken: state.turnToken ?? state.supersededTurnToken,
+    turnToken: null,
     // Same as applyReloadOptimistic: seed the clock so the no-payload settle
     // gate holds through the submit round trip but never latches (#86795).
     turnLive: false,

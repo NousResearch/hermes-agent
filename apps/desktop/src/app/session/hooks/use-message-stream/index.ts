@@ -228,6 +228,16 @@ export function useMessageStream({
   // relocating the SAME session (follow it) from a session switch (don't yank).
   const lastCwdInfoSessionRef = useRef<null | string>(null)
 
+  const discardQueuedDeltas = useCallback((sessionId?: string) => {
+    const queue = queuedDeltasRef.current
+
+    if (sessionId) {
+      queue.delete(sessionId)
+    } else {
+      queue.clear()
+    }
+  }, [])
+
   const flushQueuedDeltas = useCallback(
     (sessionId?: string) => {
       const queue = queuedDeltasRef.current
@@ -998,6 +1008,7 @@ export function useMessageStream({
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
     completeAssistantMessage,
+    discardQueuedDeltas,
     failAssistantMessage,
     flushQueuedDeltas,
     finalizeInterimAssistantMessage,
@@ -1028,6 +1039,7 @@ export function useMessageStream({
     appendAssistantDelta,
     appendReasoningDelta,
     completeAssistantMessage,
+    discardQueuedDeltas,
     handleGatewayEvent,
     handleServerRequest,
     finalizeInterimAssistantMessage,

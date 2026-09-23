@@ -950,6 +950,55 @@ class TestDeferredCallSchemaProbe:
         assert result["ok"] is True
         assert calls == [{"count": 42}]
 
+    @pytest.mark.parametrize("parameters", [{}, "", "{}"])
+    def test_optional_object_parameters_reach_mcp_tool_as_object(self, parameters):
+        import model_tools
+
+        calls = []
+        name = "mcp__stripe__stripe_api_read"
+        toolset = "mcp-stripe-object-probe"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {
+                "stripe_api_operation_id": {"type": "string"},
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+            "required": ["stripe_api_operation_id", "parameters"],
+        }, calls)
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {
+                "stripe_api_operation_id": "GetBalance", "parameters": parameters,
+            }},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert result["ok"] is True
+        assert calls == [{"stripe_api_operation_id": "GetBalance", "parameters": {}}]
+
+    def test_blank_object_with_required_subfield_is_not_fabricated(self):
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_required_object"
+        toolset = "mcp-probe-required-object"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {"parameters": {
+                "type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"],
+            }},
+            "required": ["parameters"],
+        }, calls)
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"parameters": ""}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert calls == []
+        assert result["path"] == "arguments.parameters"
+        assert result["constraint"] == "type"
+
     def test_nullable_extension_remains_accepted(self):
         import model_tools
 

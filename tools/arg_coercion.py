@@ -105,6 +105,8 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
 
     if isinstance(value, str):
         trimmed = value.strip()
+        if schema.get("type") == "object" and not trimmed and not schema.get("required"):
+            return {}
         expects_array = _schema_accepts_kind(schema, "array")
         expects_object = _schema_accepts_kind(schema, "object")
         if not ((expects_array and trimmed.startswith("[")) or (expects_object and trimmed.startswith("{"))):
@@ -141,6 +143,8 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
     """Coerce string *value* to *expected_type* (str or union list); original on failure."""
     if _schema_allows_null(schema) and value.strip().lower() == "null":
         return None
+    if expected_type == "object" and not value.strip() and isinstance(schema, dict) and not schema.get("required"):
+        return {}
 
     if isinstance(expected_type, list):
         return next((r for t in expected_type if (r := _coerce_value(value, t, schema=schema)) is not value), value)

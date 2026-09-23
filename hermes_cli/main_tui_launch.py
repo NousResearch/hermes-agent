@@ -138,10 +138,9 @@ def _npm_lock_workspace_closure(packages: dict, starts) -> Optional[set]:
     reinstall on every launch. Names resolve by walking up ``node_modules``
     ancestors; ``link: true`` entries are followed to their real package.
 
-    The launch install is scoped with ``npm install --workspace ui-tui`` (see ``_make_tui_argv``), so only
-    the ui-tui workspace's dependency closure is written to the hidden ``.package-lock.json``. On Termux it
-    additionally selects ui-tui's child ``packages/*`` workspaces, so their devDependencies join the closure
-    too. See #66978.
+    The launch install explicitly selects ui-tui and its child ``packages/*``
+    workspaces on every platform, so their devDependencies join the closure.
+    Install argv and freshness share ``_tui_selected_workspace_keys``. See #66978.
     """
     start_set = {starts} if isinstance(starts, str) else {s for s in starts if s}
     present = [s for s in start_set if s in packages]
@@ -186,19 +185,20 @@ def _npm_lock_workspace_closure(packages: dict, starts) -> Optional[set]:
 
 
 def _tui_selected_workspace_keys(tui_dir: Path, ws_root: Path) -> set:
-    """Lock-map keys the launch install scopes to: ui-tui, plus its child ``packages/*`` on Termux
-    (each a dev-included closure root). Empty when ui-tui isn't under *ws_root*."""
-    from hermes_cli.main import _is_termux_startup_environment
+    """Workspace roots shared by install argv and lockfile freshness checks.
+
+    Select nested packages explicitly for npm 11, including their dev dependencies.
+    Desktop and web are not TUI workspace roots.
+    """
     try:
         keys = {tui_dir.relative_to(ws_root).as_posix()}
     except ValueError:
         return set()
-    if _is_termux_startup_environment():
-        for child in _child_workspace_dirs(tui_dir):
-            try:
-                keys.add(child.relative_to(ws_root).as_posix())
-            except ValueError:
-                continue
+    for child in _child_workspace_dirs(tui_dir):
+        try:
+            keys.add(child.relative_to(ws_root).as_posix())
+        except ValueError:
+            continue
     return keys
 
 
@@ -239,7 +239,7 @@ def _tui_need_npm_install(root: Path) -> bool:
         return any(a[k] is not None and b[k] is not None and a[k] != b[k] for k in a.keys() & b.keys())
 
     # Shared workspace checkout: the launch install is scoped to ui-tui (+ child
-    # packages on Termux), so limit the comparison to that closure. Standalone /
+    # packages), so limit the comparison to that closure. Standalone /
     # own-lockfile layouts do a full install and keep the full comparison.
     # Limit the comparison to the same selected-workspace closure so unrelated workspace deps (apps/desktop,
     # web, …) don't force a reinstall every launch (#66978).
@@ -487,8 +487,8 @@ def _run_tui_npm_build(npm: str, cwd: Path, failure_message: str) -> None:
 def _install_tui_dependencies(tui_dir: Path, *, termux_startup: bool) -> None:
     """``npm install`` for the TUI workspace, with one EBADENGINE repair retry. Exits on failure.
 
-    ``--workspace ui-tui`` avoids resolving apps/desktop (Electron + node-pty) and
-    is omitted when ui-tui/ has its own lockfile. ``--include=dev``: the build
+    Explicit TUI and child workspace selection excludes apps/desktop (Electron
+    + node-pty) and is omitted when ui-tui/ has its own lockfile. ``--include=dev``: the build
     toolchain is in devDependencies and an inherited ``NODE_ENV=production`` /
     ``omit=dev`` would silently skip it.
     """
@@ -496,13 +496,17 @@ def _install_tui_dependencies(tui_dir: Path, *, termux_startup: bool) -> None:
     if not os.environ.get("HERMES_QUIET"):
         print("Installing TUI dependencies…")
     npm_cwd = _workspace_root(tui_dir)
-    # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty). See #38772. When ui-tui/ has
-    # its own package-lock.json (e.g. curl install), _workspace_root() returns tui_dir itself. Passing
-    # --workspace in that case fails because npm cannot find a workspace named "ui-tui" inside ui-tui/. See
-    # #42973.
-    npm_workspace_args: tuple[str, ...] = () if npm_cwd == tui_dir else ("--workspace", "ui-tui")
-    if termux_startup:
-        npm_cwd, npm_workspace_args = _termux_workspace_install_context(tui_dir, include_child_workspaces=True)
+    # Share selection with freshness so nested workspace dev dependencies agree.
+    # Standalone installs must not name a workspace outside their own lockfile.
+    npm_workspace_args: tuple[str, ...] = ()
+    if npm_cwd != tui_dir:
+        npm_workspace_args = tuple(
+            item
+            for workspace in sorted(_tui_selected_workspace_keys(tui_dir, npm_cwd))
+            for item in ("--workspace", workspace)
+        )
+        if termux_startup:
+            npm_workspace_args += ("--include-workspace-root=false",)
     npm_install_cmd = [
         npm, "install", *npm_workspace_args,
         "--include=dev", "--silent", "--no-fund", "--no-audit", "--progress=false",

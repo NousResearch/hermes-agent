@@ -760,7 +760,7 @@ class ControlAPI:
             else:
                 entry = live_status["platforms"].get(channel.provider)
                 live = (
-                    {"state": "disconnected", "detail": "the gateway has not connected it"}
+                    {"state": "unknown", "detail": "the gateway has not reported this connection"}
                     if entry is None else
                     {"state": "connected" if entry["state"] == "connected" else "disconnected",
                      "detail": entry["error"] or entry["state"], "since": entry["updated_at"]}

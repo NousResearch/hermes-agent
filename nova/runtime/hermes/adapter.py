@@ -602,6 +602,33 @@ class HermesRuntime(AgentRuntime):
         # never needs the runtime's vocabulary to look a channel up.
         provider_of = {platform: provider for provider, platform in _channels.PLATFORM_NAMES.items()}
         platforms: dict[str, dict[str, Any]] = {}
+        # The state file is not the whole record: a platform a *secondary* profile connects
+        # is logged ("✓ slack connected (profile: customer-support)",
+        # gateway/run_adapters.py) without always getting an entry here. The gateway logs
+        # every connect and every shutdown disconnect, so the newest such line is used where
+        # the file is silent — and a platform neither mentions stays unknown, never "down".
+        from nova.runtime.hermes.model_status import _tail_lines
+        import re
+
+        event = re.compile(
+            r"^(?P<ts>\S+ \S+) .*?(?P<mark>[✓✗]) (?P<platform>\w+) "
+            r"(?P<what>connected|reconnected|disconnected|failed to connect|error)\b.*?\(profile: (?P<profile>[^)]+)\)"
+        )
+        for line in _tail_lines(self.paths.home / "logs" / "gateway.log"):
+            match = event.match(line)
+            if not match:
+                continue
+            platform = provider_of.get(match["platform"], match["platform"])
+            up = match["what"] in ("connected", "reconnected")
+            current = platforms.get(platform)
+            if current is None or up or current["state"] != "connected" or current.get("profile") == match["profile"]:
+                platforms[platform] = {
+                    "state": "connected" if up else "disconnected",
+                    "error": "" if up else f"gateway log: {match['what']}",
+                    "profile": match["profile"],
+                    "updated_at": match["ts"],
+                    "source": "gateway.log",
+                }
         for key, entry in (state.get("platforms") or {}).items():
             if not isinstance(entry, Mapping):
                 continue
@@ -613,9 +640,12 @@ class HermesRuntime(AgentRuntime):
                 "error": entry.get("error_message") or "",
                 "profile": profile or "default",
                 "updated_at": entry.get("updated_at") or "",
+                "source": "gateway_state.json",
             }
-            # One platform can be served by several profiles; any connected one means live.
-            if current is None or (row["state"] == "connected" and current["state"] != "connected"):
+            # The state file is authoritative where it speaks; one platform can be served by
+            # several profiles, and any connected one means live.
+            if (current is None or current.get("source") == "gateway.log"
+                    or (row["state"] == "connected" and current["state"] != "connected")):
                 platforms[platform] = row
         return {"gateway": str(state.get("gateway_state") or "unknown"), "platforms": platforms}
 

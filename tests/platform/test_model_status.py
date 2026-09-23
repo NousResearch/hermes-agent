@@ -121,3 +121,35 @@ def test_a_channel_is_live_only_when_the_gateway_says_so(bundle, runtime, home):
     channel = api.handle("/platform/v1/channels").body["channels"][0]
     assert channel["live"]["state"] == "connected"
     assert channel["capabilities"]  # carried for the card, never invented
+
+
+def test_a_platform_the_state_file_omits_is_read_from_the_gateway_log(bundle, runtime, home):
+    """Seen live: a secondary profile's Slack connected and was logged, but never got an
+    entry in gateway_state.json. Reading absence as "down" called a working bot broken."""
+    (home / "gateway_state.json").write_text(json.dumps({
+        "gateway_state": "running",
+        "platforms": {"customer-support:discord": {"state": "connected"}},
+    }), encoding="utf-8")
+    logs = home / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    log = logs / "gateway.log"
+    log.write_text(
+        "2026-09-23 15:42:21,344 INFO gateway.run: ✓ telegram disconnected (0.00s) (profile: customer-support)\n"
+        "2026-09-23 15:42:50,667 INFO gateway.run: ✓ telegram connected (profile: customer-support)\n",
+        encoding="utf-8",
+    )
+    api = ControlAPI(bundle, runtime)
+    live = {c["provider"]: c["live"]["state"] for c in api.handle("/platform/v1/channels").body["channels"]}
+    assert live["telegram"] == "connected"
+
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write("2026-09-23 16:10:00,000 INFO gateway.run: ✓ telegram disconnected (0.00s) (profile: customer-support)\n")
+    live = {c["provider"]: c["live"]["state"] for c in api.handle("/platform/v1/channels").body["channels"]}
+    assert live["telegram"] == "disconnected"
+
+
+def test_a_platform_nothing_mentions_is_unknown_not_down(bundle, runtime, home):
+    (home / "gateway_state.json").write_text(json.dumps({"gateway_state": "running", "platforms": {}}),
+                                             encoding="utf-8")
+    channels = ControlAPI(bundle, runtime).handle("/platform/v1/channels").body["channels"]
+    assert {c["live"]["state"] for c in channels} == {"unknown"}

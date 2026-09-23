@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from tools.patch_parser import (
     OperationType,
     apply_v4a_operations,
@@ -373,6 +375,30 @@ class TestReadFileRaw:
 
 class TestValidationPhase:
     """Bug 2 regression tests — validation prevents partial apply."""
+
+    @pytest.mark.parametrize("hint", ["@@ def second @@\n", ""])
+    def test_context_hint_disambiguates_a_repeated_block(self, hint):
+        """The ``@@ context hint @@`` is what separates a hunk whose context appears twice. Validation must consult
+        it as apply does, or the patch is rejected ("Found 2 matches") before apply ever looks; without a hint the
+        hunk stays ambiguous and is still refused."""
+        block = "    total = compute(values)\n    return total\n"
+        content = "def first(values):\n" + block + "\n" + "# filler\n" * 80 + "\ndef second(values):\n" + block
+        patch = ("*** Begin Patch\n*** Update File: calc.py\n" + hint
+                 + "     total = compute(values)\n-    return total\n+    return total * 2\n*** End Patch")
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        file_ops = _DictFileOps({"calc.py": content})
+
+        result = apply_v4a_operations(ops, file_ops)
+
+        if not hint:
+            assert result.success is False and "2 matches" in (result.error or "")
+            assert file_ops.files["calc.py"] == content
+            return
+        assert result.success is True, result.error
+        written = file_ops.files["calc.py"]
+        assert written.count("return total * 2") == 1
+        assert written.index("return total * 2") > written.index("def second")
 
     def test_validation_failure_writes_nothing(self):
         """If one hunk is invalid, no files should be written."""

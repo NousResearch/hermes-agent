@@ -375,6 +375,36 @@ def test_friendly_names_and_desktop_slugs_resolve_to_folder_ids(tmp_path, monkey
     assert argv[1:3] == ["-p", expected]
 
 
+@pytest.mark.parametrize(("target", "local_name", "relayed"), [
+    ("hermes@mini", "Hermes Mini", True),
+    ("@hermes@mini", "HermesMini", True),
+    ("Ops@Home", "Ops@Home", False),  # an '@' friendly name no connection answers to stays local (#100671)
+])
+def test_connection_qualified_target_reaches_the_relay_not_a_look_alike_local_bot(
+        tmp_path, monkeypatch, target, local_name, relayed):
+    """'hermes@mini' is the form the relay hands out, and stamps on replies, for a remote row whose bare forms
+    collide. Resolved locally first, a local bot whose friendly name slugs to 'hermes-mini' captured it: the DM
+    and its reply thread landed in the wrong bot's transcript and memory."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("ops",))
+    _rename(home, "ops", display_name=local_name)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "mini", "connection_label": "Mini"},
+    ])
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="status?", agent=_FakeAgent(home)))
+
+    local = [_runner_parts(c["command"])[2][1:3] for c in calls if "--run-delivery" in c["command"]]
+    envelopes = bot_relay.claim_pending_envelopes(home)
+    if relayed:
+        assert [e["target_connection"] for e in envelopes] == ["mini"], result
+        assert local == []
+    else:
+        assert envelopes == [] and result["to"] == "@ops"
+        assert local == [["-p", "ops"]]
+
+
 def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
     """Two bots titled the same must not let a DM land on whichever sorts first; the
     reserved @hermes alias can never be hijacked by a rename."""

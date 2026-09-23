@@ -1,5 +1,6 @@
 """Tests for gateway configuration management."""
 
+import json
 import logging
 import os
 from unittest.mock import patch
@@ -678,6 +679,51 @@ class TestLoadGatewayConfig:
         assert discord_cfg is None or discord_cfg.enabled is False
         # Non-messaging surfaces are untouched.
         assert config.platforms[Platform.API_SERVER].enabled is True
+
+    @pytest.mark.parametrize("bad_extra", ["yes", "'some-string'", "[a, b]"])
+    def test_a_non_mapping_platform_extra_degrades_instead_of_dropping_the_yaml_layer(
+        self, tmp_path, monkeypatch, bad_extra
+    ):
+        """A scalar or list ``extra`` in one platform block must degrade like every other malformed
+        value in this loader, not raise TypeError out of merge_platform_sections and take the
+        entire config.yaml layer down with it (the caller falls back to env + gateway.json)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    enabled: true\n"
+            f"    extra: {bad_extra}\n"
+            "  signal:\n"
+            "    enabled: true\n"
+            "    account: '+15550001111'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        signal = config.platforms.get(Platform.SIGNAL)
+        assert signal is not None and signal.enabled is True
+        telegram = config.platforms.get(Platform.TELEGRAM)
+        assert telegram is not None and telegram.enabled is True
+        assert isinstance(telegram.extra, dict)
+
+    def test_a_scalar_extra_from_gateway_json_cannot_crash_the_env_bridge(self, tmp_path, monkeypatch):
+        """gateway.json entries reach platforms_data raw (they never pass merge()'s coercion), so a
+        scalar extra there must not abort bridge_core_env_settings mid-layer either."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "gateway.json").write_text(
+            json.dumps({"platforms": {"telegram": {"extra": "oops"}}}), encoding="utf-8")
+        (hermes_home / "config.yaml").write_text("require_mention: true\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["require_mention"] is True
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") == "true"
 
 
     def test_relay_yaml_url_keeps_other_platforms_enabled(self, tmp_path, monkeypatch):

@@ -879,8 +879,15 @@ class TestBackgroundReviewDeleteGate:
     (surfaced via /memory pending) instead of silently dropped — the fork's own review
     summary is never published back."""
 
+    @staticmethod
+    def _enable_write_approval(tmp_path):
+        """Create a minimal config.yaml with memory.write_approval: true."""
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("memory:\n  write_approval: true\n")
+
     def test_remove_staged_not_applied(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._enable_write_approval(tmp_path)
         store.add("memory", "never create records without permission")
         token = set_current_write_origin("background_review")
         try:
@@ -901,6 +908,7 @@ class TestBackgroundReviewDeleteGate:
 
     def test_replace_staged_in_background_review(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._enable_write_approval(tmp_path)
         store.add("memory", "entry the fork must not rewrite")
         token = set_current_write_origin("background_review")
         try:
@@ -915,6 +923,7 @@ class TestBackgroundReviewDeleteGate:
 
     def test_batch_containing_remove_staged_whole_batch(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._enable_write_approval(tmp_path)
         store.add("memory", "rule one")
         token = set_current_write_origin("background_review")
         try:

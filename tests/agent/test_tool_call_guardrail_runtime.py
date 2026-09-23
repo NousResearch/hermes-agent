@@ -462,6 +462,77 @@ def test_original_pruned_args_never_reach_real_managed_relay(tmp_path, monkeypat
         relay_runtime._reset_for_tests()
 
 
+def test_pruned_block_sanitizes_post_hook_and_outbound_tool_input():
+    agent = _make_agent("test_effectful_write")
+    args = _compressed_args("body")
+    args["note"] = "safe metadata stays intact"
+    original = json.loads(json.dumps(args))
+    tc = _mock_tool_call(
+        "test_effectful_write", json.dumps(args, ensure_ascii=False), "c-pruned-hook-redaction"
+    )
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    terminal_events = []
+
+    def capture_post_hook(**kwargs):
+        terminal_events.append(kwargs)
+
+    with (
+        patch("model_tools._emit_post_tool_call_hook", side_effect=capture_post_hook),
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    dispatch.assert_not_called()
+    assert args == original, "sanitizing hook payloads must not mutate the source args"
+    assert len(terminal_events) == 1
+    event = terminal_events[0]
+    hook_args = event["function_args"]
+    assert hook_args["body"] == "[context-compression artifact removed]"
+    assert hook_args["note"] == "safe metadata stays intact"
+    assert "HERMES-CONTEXT-COMPRESSION" not in json.dumps(hook_args, ensure_ascii=False)
+
+    from agent import outbound_webhooks
+
+    body = outbound_webhooks._serialize_payload(
+        "post_tool_call",
+        {
+            "tool_name": event["function_name"],
+            "args": hook_args,
+            "session_id": event.get("session_id", ""),
+            "status": event.get("status"),
+            "error_type": event.get("error_type"),
+        },
+        "did-pruned-redaction",
+    )
+    payload = json.loads(body)
+    assert payload["tool_input"]["body"] == "[context-compression artifact removed]"
+    assert payload["tool_input"]["note"] == "safe metadata stays intact"
+    assert "HERMES-CONTEXT-COMPRESSION" not in body.decode("utf-8")
+
+    refusal = json.loads(messages[0]["content"])
+    assert refusal["error"] == "suspected_pruned_tool_arguments"
+    assert refusal["argument_paths"] == ["$.body"]
+
+
+def test_pruned_argument_redaction_is_shape_preserving_and_leaf_scoped():
+    from agent.tool_dispatch_helpers import _redact_context_pruned_arguments
+
+    args = {
+        "outer": [{"body": "x" * 20 + "...[truncated]", "keep": "literal ...[truncated] then more"}],
+        "count": 3,
+    }
+
+    redacted = _redact_context_pruned_arguments("test_effectful_write", args)
+
+    assert redacted is not args
+    assert redacted["outer"] is not args["outer"]
+    assert redacted["outer"][0]["body"] == "[context-compression artifact removed]"
+    assert redacted["outer"][0]["keep"] == "literal ...[truncated] then more"
+    assert redacted["count"] == 3
+    assert args["outer"][0]["body"].endswith("...[truncated]")
+
+
 def test_request_middleware_pruned_args_block_before_short_circuit_execution_middleware():
     agent = _make_agent("test_effectful_write")
     pruned = _compressed_args("body")

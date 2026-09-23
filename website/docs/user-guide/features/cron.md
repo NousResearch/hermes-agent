@@ -1014,9 +1014,32 @@ If the primary API key is rate-limited or the provider returns an error, the cro
 - **Rotate to the next credential** in your [credential pool](../configuration.md#credential-pool-strategies) for the same provider. This applies to every job, pinned or not.
 - **Fall back to an alternate provider** from `fallback_providers` (or the legacy `fallback_model`) in `config.yaml` — **unpinned jobs only**. That covers a failure while resolving credentials before the run starts and a provider error mid-run.
 
-A job with its own `provider`, `model` or `base_url` (set with `--provider` / `--model`, `--pin`, the dashboard, or `jobs.json`) never falls back to the global chain. The pin says which route the job runs on, and a fallback entry is a different provider and usually a different model, so when the pinned route fails the run fails and the failure alert says so. This is the same rule [subagent delegation](./delegation.md) applies to a pinned child. To keep fallback for a job, leave it unpinned: it follows `cron.model` / `cron.model_provider` (or the main model) and walks the chain like any other unpinned job.
+A job with its own `provider`, `model` or `base_url` (set with `--provider` / `--model`, `--pin`, the dashboard, or `jobs.json`) never falls back to that chain. The pin says which route the job runs on, and a fallback entry is a different provider and usually a different model, so when the pinned route fails the run fails and the failure alert says so. This is the same rule [subagent delegation](./delegation.md) applies to a pinned child. To keep fallback for a job, leave it unpinned: it follows `cron.model` / `cron.model_provider` (or the main model) and walks the chain like any other unpinned job.
 
 Before this rule, a pinned job whose provider failed could run on the first working `fallback_providers` entry instead, with a one-line notice in its output. If you relied on that, unpin the job (`hermes cron edit <job_id> --unpin`) and set the model through `cron.model` instead.
+
+To give cron agents a chain separate from interactive sessions, set `cron.fallback_providers`:
+
+```yaml
+cron:
+  model: your-cron-model
+  model_provider: openrouter
+  fallback_providers:
+    - provider: anthropic
+      model: claude-sonnet-4
+```
+
+Omitting this setting or setting it to `null` inherits the top-level
+`fallback_providers` and legacy `fallback_model` chain. An explicit list replaces
+that chain for cron agents. An empty list (`[]`) disables cron provider fallback.
+Entries use the same format and normalization as the global chain. Invalid entries
+are ignored without restoring the global chain. Pinned jobs still walk no chain at
+all, cron-specific or global.
+
+This setting applies to preflight credential checks, provider-resolution recovery,
+and the cron agent's model-call fallback. It leaves interactive sessions,
+delegation settings, auxiliary-task routing, and same-provider credential rotation
+unchanged. Per-job fallback lists are not supported.
 
 A single rate-limited key therefore does not fail a run that has another credential for the same provider, and unpinned jobs still survive a provider outage when a chain is configured.
 

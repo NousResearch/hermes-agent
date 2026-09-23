@@ -40,7 +40,8 @@ from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
-from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
+from hermes_cli.fallback_config import (
+    get_cron_fallback_chain, scoped_fallback_chain)
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
@@ -108,13 +109,15 @@ def _job_route_pinned(job: dict) -> bool:
 def _job_fallback_chain(job: dict, cfg: Any) -> Optional[list]:
     """The fallback chain this job may walk, at credential resolution AND mid-run (#100437).
 
-    A pinned job never borrows the global ``fallback_providers`` chain, the same rule a pinned
-    ``delegate_task`` child follows (``scoped_fallback_chain``): a chain entry is a different
-    provider and usually a different model, which is exactly what the pin ruled out. Same-provider
-    credential-pool rotation is not the chain and still applies. Unpinned jobs inherit the chain.
+    The inherited chain is cron's own (``cron.fallback_providers`` when declared, else the global
+    chain), so scheduled agents can carry a different backup route from interactive sessions.
+    A pinned job still never borrows that chain, the same rule a pinned ``delegate_task`` child
+    follows (``scoped_fallback_chain``): a chain entry is a different provider and usually a
+    different model, which is exactly what the pin ruled out. Same-provider credential-pool
+    rotation is not the chain and still applies. Unpinned jobs inherit the chain.
     """
     return scoped_fallback_chain(
-        get_fallback_chain(cfg), None, pinned=_job_route_pinned(job), owner="cron job")
+        get_cron_fallback_chain(cfg), None, pinned=_job_route_pinned(job), owner="cron job")
 
 
 def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
@@ -130,13 +133,13 @@ def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
         )
     try:
         cfg = load_config() or {}
-        chain = get_fallback_chain(cfg)
+        chain = get_cron_fallback_chain(cfg)
     except Exception:
         return "No backup provider succeeded either."
     if chain:
         return "No backup provider succeeded either."
     return (
-        "No backup provider is configured — add one with `hermes fallback add`, "
+        "No backup provider is configured — check `cron.fallback_providers` or add a global backup with `hermes fallback add`, "
         "or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."
     )
 
@@ -2391,7 +2394,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
     # Mid-run provider ladder: same rule as resolution above, so a pinned job cannot be swapped
-    # onto the global chain by a 5xx/429 either.
+    # onto the cron chain by a 5xx/429 either.
     setup.fallback_model = _job_fallback_chain(job, _cfg)
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.

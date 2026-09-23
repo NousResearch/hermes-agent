@@ -34,6 +34,52 @@ STREAM_KEEPALIVE_INTERVAL_SECONDS = 120.0
 STREAM_KEEPALIVE_ENABLED_DEFAULT = False
 
 
+# ---------------------------------------------------------------------------
+# Group-chat policy (2026-09-12)
+# ---------------------------------------------------------------------------
+# A WeCom **group** must only ever see the finished answer. The gateway's stream
+# consumer routes every tool-progress line into the native bubble
+# (``stream_consumer.accepts_tool_progress`` is true whenever native streaming is
+# active and WeCom advertises ``SUPPORTS_NATIVE_STREAMING``), so without a policy
+# at the adapter — the only layer that knows the chat is a group — a group sees
+# "Reading skill …", "🖥️ Running python3 …" and the raw script bodies, while the
+# final answer can be swallowed by the suppression path (the gateway believes the
+# streamed delivery landed). Two knobs, both scoped to groups; DMs are untouched:
+#
+#   1. ``group_final_only`` (default True) — only the turn-final frame is written
+#      to a group. The seed frame still opens the WeCom "thinking" bubble (so the
+#      group gets feedback and the stream stays valid) and the tool-progress
+#      overlay is additionally stripped from whatever does go out.
+#   2. ``group_final_ack_strict`` (default True) — a group finalize frame must be
+#      POSITIVELY acked by WeCom. The upstream default converts an ack timeout
+#      into "assumed delivered" and suppresses the normal final send; in a group
+#      that can mean the answer never arrives. With this on, an unconfirmed
+#      finalize declines and the caller falls back to ``send()`` — the group may
+#      see the answer twice (bubble + message), which beats never seeing it.
+#
+# Config keys (``platforms.wecom.extra``): ``group_final_only``,
+# ``group_final_ack_strict``. Set ``group_final_only: false`` to restore the
+# previous streaming behaviour for groups.
+GROUP_FINAL_ONLY_DEFAULT = True
+GROUP_FINAL_ACK_STRICT_DEFAULT = True
+# stream_consumer composes a native frame as "<text>\n\n---\n<tool-progress>".
+GROUP_PROGRESS_SEPARATOR = "\n\n---\n"
+
+
+def ack_confirmed(response: Any) -> bool:
+    """True only when WeCom positively acked the frame.
+
+    ``_send_reply_queued`` returns an assumed-delivery marker on ack timeout
+    (``ack_pending``); that is not a confirmation, and group finalizes must not
+    suppress the fallback send on the strength of it.
+    """
+    if not isinstance(response, dict):
+        return False
+    if response.get("ack_pending") or response.get("confirmed") is False:
+        return False
+    return response.get("errcode", 0) in (0, None)
+
+
 class WeComStreamExpiredError(RuntimeError):
     """Raised on errcode 846608/846604: the stream/req_id reply flow is dead; fall back to ``aibot_send_msg``."""
 
@@ -118,13 +164,18 @@ class WeComStreamMixin:
         if not is_final:  # fire-and-forget; pending_ack stays registered so later frames can skip
             return {"errcode": 0, "errmsg": "sent_nonblocking"}
         try:
-            return await asyncio.wait_for(future, timeout=self._REPLY_ACK_TIMEOUT)
+            resolved = await asyncio.wait_for(future, timeout=self._REPLY_ACK_TIMEOUT)
         except asyncio.TimeoutError:
             # Bytes went out, ack is late — WeCom already rendered it; raising caused duplicates.
             logger.warning("[%s] Final frame ack timeout (req_id=%s) — treating as delivered (matches official wecom-openclaw-plugin behaviour). No fallback send.", self.name, normalized)
-            return {"errcode": 0, "errmsg": "ack_timeout_assumed_delivered", "ack_pending": True}
+            # ``confirmed: False`` keeps the timeout distinguishable from a real ack: group
+            # policy (``group_final_ack_strict``) declines the finalize on it and lets send() deliver.
+            return {"errcode": 0, "errmsg": "ack_timeout_assumed_delivered", "ack_pending": True, "confirmed": False}
         finally:
             self._release_pending(queue, normalized, frame)
+        if not isinstance(resolved, dict):
+            return {"errcode": 0, "errmsg": "ack_resolved_non_dict", "confirmed": False}
+        return {**resolved, "confirmed": True}
 
     async def _drain_pending_ack(self, queue: ReplyQueue, req_id: str) -> None:
         """Before a final frame: wait (bounded) for the pending intermediate's ack, then clear it."""
@@ -172,6 +223,27 @@ class WeComStreamMixin:
         """Explicit ``reply_to`` (cached message id) → last inbound req_id for the chat → None."""
         return self._reply_req_id_for_message(reply_to) or self._last_chat_req_ids.get(str(chat_id or "").strip()) or None
 
+    # ---- Group-chat policy helpers (see the module-level policy note) ----
+
+    def _is_group_chat(self, chat_id: Optional[str]) -> bool:
+        """True when this chat is a WeCom group (populated in ``_admit_inbound``)."""
+        return str(chat_id or "").strip() in self._group_chat_ids
+
+    def _group_final_only_on(self) -> bool:
+        """Group "final answer only" policy (default on)."""
+        return bool(getattr(self, "_group_final_only", GROUP_FINAL_ONLY_DEFAULT))
+
+    def _group_ack_strict_on(self) -> bool:
+        """Group "finalize must be positively acked" policy (default on)."""
+        return bool(getattr(self, "_group_final_ack_strict", GROUP_FINAL_ACK_STRICT_DEFAULT))
+
+    @staticmethod
+    def _strip_tool_progress(text: str) -> str:
+        """Drop the tool-progress overlay the stream consumer appends below the rule."""
+        if not text or GROUP_PROGRESS_SEPARATOR not in text:
+            return text
+        return text.split(GROUP_PROGRESS_SEPARATOR, 1)[0].rstrip()
+
     @staticmethod
     def _cancel_keepalive(turn: StreamTurn) -> None:
         handle, turn.keepalive_handle = turn.keepalive_handle, None
@@ -217,6 +289,13 @@ class WeComStreamMixin:
         if turn.finalized or turn.expired or turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES:
             return  # cap reached: no room for intermediates; let finalize / Layer 2 run
         content = turn.accumulated_text or ""
+        if self._is_group_chat(turn.chat_id) and self._group_final_only_on():
+            # Group policy: keep-alive frames carry the accumulated text — never write it to a group.
+            # Keep the timer armed so a live stream can still be finalized; if the stream window
+            # lapses, the finalize declines and send() delivers the answer as a message.
+            logger.debug("[%s] Group final-only: skipping keep-alive content frame (chat=%s)", self.name, turn.chat_id)
+            self._arm_keepalive(turn, turn_id=turn_id)
+            return
         if not content.strip():
             self._arm_keepalive(turn, turn_id=turn_id)
             return
@@ -311,9 +390,27 @@ class WeComStreamMixin:
                 self._expire_turn(turn, turn_id)
                 return False
         self._cancel_keepalive(turn)
+        group = self._is_group_chat(chat)
+        strict_ack = group and self._group_ack_strict_on()
+        if group and self._group_final_only_on():
+            # Belt and braces: even the final frame must not carry the tool-progress overlay.
+            stripped = self._strip_tool_progress(text)
+            if stripped != text:
+                logger.debug("[%s] Group finalize: stripped tool-progress overlay (chat=%s)", self.name, chat)
+            text = stripped
         # A final frame identical to the last intermediate is silently dropped — differ via ZWSP.
         final_text = text + "\u200b" if text and text == turn.last_sent_content else text
-        await self._send_stream_reply(turn.req_id, turn.stream_id, final_text, finish=True)
+        response = await self._send_stream_reply(turn.req_id, turn.stream_id, final_text, finish=True)
+        if strict_ack and not ack_confirmed(response):
+            # 2026-09-12 incident: WeCom never acked the finalize, the gateway marked the reply as
+            # delivered and skipped the normal send — the group never saw the answer. Decline here
+            # so send() delivers it (a possible duplicate beats a missing answer in a group).
+            logger.warning(
+                "[%s] Group finalize ack unconfirmed (chat=%s, req_id=%s, errmsg=%s) — declining streamed delivery, falling back to normal send.",
+                self.name, chat, turn.req_id, response.get("errmsg", "?"),
+            )
+            self._retire_turn(turn, turn_id)
+            return False
         turn.finalized = True
         self._stream_turns.pop(f"{chat}:{turn_id or turn.req_id}", None)
         return True
@@ -335,6 +432,13 @@ class WeComStreamMixin:
                 return await self._finalize_turn(turn, text, chat, turn_id)
             # Fire-and-forget: the gateway decides when to push (identity dedup in stream_consumer.py).
             turn.accumulated_text = text
+            if self._is_group_chat(chat) and self._group_final_only_on():
+                # Group policy: withhold every intermediate frame (assistant text *and* the
+                # tool-progress lines the consumer composed into it). The seed frame above already
+                # opened the "thinking" bubble, so the group still gets feedback; the finalize
+                # frame carries the finished answer.
+                logger.debug("[%s] Group final-only: withholding intermediate frame (chat=%s, len=%d)", self.name, chat, len(text or ""))
+                return True
             if turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES or text == turn.last_sent_content:
                 return True  # cap reached (finalize drains the rest) or nothing new
             await self._send_stream_reply(turn.req_id, turn.stream_id, text, finish=False)

@@ -8,7 +8,7 @@
  * `setPluginCtx`, and every reader goes through `getPluginCtx()`.
  */
 
-import type { PluginContext } from '@hermes/plugin-sdk'
+import { atom, type PluginContext } from '@hermes/plugin-sdk'
 
 export const ID = 'hermes-bots'
 
@@ -28,11 +28,16 @@ export function setPluginCtx(ctx: PluginContext | null) {
  *  live in the same module. */
 let botOpenGeneration = 0
 
+/** Pending intent, not chat ownership. Never use it to route a prompt. */
+export const $openingBotKey = atom<string | null>(null)
+
 export function getBotOpenGeneration() {
   return botOpenGeneration
 }
 
 /** Invalidate every in-flight open; returns the generation that now owns it. */
 export function bumpBotOpenGeneration() {
+  $openingBotKey.set(null)
+
   return ++botOpenGeneration
 }

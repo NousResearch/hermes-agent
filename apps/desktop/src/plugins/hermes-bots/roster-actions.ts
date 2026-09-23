@@ -20,7 +20,7 @@ import { closeGroupChatMainTab } from './group-panes'
 import { displayName } from './labels'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { botCanonicalSessionId } from './row-helpers'
-import { bumpBotOpenGeneration, getBotOpenGeneration, getPluginCtx } from './shared'
+import { $openingBotKey, bumpBotOpenGeneration, getBotOpenGeneration, getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
 // last_active watermark per source-qualified bot, seeded on first poll so a
@@ -190,6 +190,8 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
   }
 }
 
+let pendingBotOpen: { key: string; generation: number; promise: Promise<boolean> } | null = null
+
 /** Select one exact roster owner and open its canonical Bot Chat — the same
  *  session the row previews. Resolution always goes through the owner
  *  profile's "Bot Chat" title registry: an already-open canonical tab is
@@ -201,8 +203,37 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
  *  conversations ("[Bots] - Sessions is not in sync again"). The workspace
  *  remembers only this transient opened-view observation; it never stores or
  *  resolves a canonical-chat id. */
-export async function openRosterBot(bot: RosterRow): Promise<boolean> {
+export function openRosterBot(bot: RosterRow): Promise<boolean> {
+  const key = botRosterKey(bot)
+
+  if (pendingBotOpen?.key === key && pendingBotOpen.generation === getBotOpenGeneration()) {
+    // Coalesce I/O, not navigation: the user may have focused a side chat
+    // while the canonical tile was still hydrating in the background.
+    focusExistingBotTab(bot)
+
+    return pendingBotOpen.promise
+  }
+
   const generation = bumpBotOpenGeneration()
+  $openingBotKey.set(key)
+
+  const promise = performRosterBotOpen(bot, generation).finally(() => {
+    // A superseded open must not retire the next click's feedback.
+    if (generation === getBotOpenGeneration()) {
+      $openingBotKey.set(null)
+    }
+
+    if (pendingBotOpen?.generation === generation) {
+      pendingBotOpen = null
+    }
+  })
+
+  pendingBotOpen = { key, generation, promise }
+
+  return promise
+}
+
+async function performRosterBotOpen(bot: RosterRow, generation: number): Promise<boolean> {
   const key = botRosterKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())
   // Keep the currently visible group as a fallback until this explicit action

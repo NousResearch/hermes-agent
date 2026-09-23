@@ -21,6 +21,7 @@ import {
   ContextMenuTrigger,
   haptic,
   host,
+  Loader,
   queryClient,
   RowButton,
   SessionStatusDot,
@@ -76,6 +77,7 @@ import {
   workerActiveAt
 } from './row-helpers'
 import { openBotScreen } from './screen-open'
+import { $openingBotKey } from './shared'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
 import {
   $botSections,
@@ -116,6 +118,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const b = useBots()
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
   const selectedRosterKey = useValue($selectedRosterKey)
+  const isOpening = useValue($openingBotKey) === botRosterKey(bot)
   const botChatFocused = useValue($botChatFocused)
   const activeGroup = useValue($groupChatWorkspace)
   const allMeta = useValue($botMeta)
@@ -236,6 +239,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
 
   const row = (
     <RowButton
+      aria-busy={isOpening || undefined}
       aria-label={rowTooltip}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
@@ -303,7 +307,12 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             </span>
           ) : null}
         </div>
-        {showDetailsRow ? (
+        {isOpening ? (
+          <div className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
+            <Loader className="size-3 shrink-0" label={b.bot.openingChat} />
+            <span className="truncate">{b.bot.openingChat}</span>
+          </div>
+        ) : showDetailsRow ? (
           <div className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
             {showHandle ? (
               <span className="shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)">{`@${handle}`}</span>

@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { readKey, writeKey } from '@/lib/storage'
 import { $currentCwd } from '@/store/session'
+import { $revealBackgroundTerminals } from '@/store/terminal-prefs'
 
 import { setTerminalTakeover } from '../store'
 
@@ -193,6 +194,53 @@ export function ensureAgentTerminal(procId: string, title: string): string | nul
   return id
 }
 
+// Proc ids already considered for auto-reveal in this renderer lifetime —
+// revealed, skipped (closed tab / stack / inactive session), or no-op'd after
+// a first look. Status/output/title churn must not take over again.
+const autoRevealConsidered = new Set<string>()
+
+/**
+ * Surface an agent background process as a read-only tab (once), then maybe
+ * select it and open the terminal pane.
+ *
+ * Reveal fires only when `hermes.desktop.revealBackgroundTerminals === 'auto'`,
+ * `allowAutoReveal` is true (active session), `ensureAgentTerminal` returns a
+ * tab id, and this `procId` has not been considered before. Uses the same
+ * select + `setTerminalTakeover(true)` seam as a status-stack click — does
+ * not call `openAgentTerminal`, so a user-closed tab stays closed.
+ *
+ * Pass `allowAutoReveal: false` for other sessions so first-seen bookkeeping
+ * still runs and a later session switch cannot yank the pane.
+ */
+export function maybeAutoRevealAgentTerminal(
+  procId: string,
+  title: string,
+  allowAutoReveal = true
+): string | null {
+  if (!procId) {
+    return null
+  }
+
+  // No-resurrection lives in ensureAgentTerminal (surfacedProcs). This wrapper
+  // must not call openAgentTerminal or otherwise recreate a user-closed tab.
+  const tabId = ensureAgentTerminal(procId, title)
+
+  if (autoRevealConsidered.has(procId)) {
+    return tabId
+  }
+
+  autoRevealConsidered.add(procId)
+
+  if (!allowAutoReveal || $revealBackgroundTerminals.get() !== 'auto' || !tabId) {
+    return tabId
+  }
+
+  selectTerminal(tabId)
+  setTerminalTakeover(true)
+
+  return tabId
+}
+
 /** Open + focus an agent process's tab (the status-stack link), recreating it if
  *  the user had closed it. Opens the pane. */
 export function openAgentTerminal(procId: string, title: string): void {
@@ -304,10 +352,15 @@ export function closeTerminal(id: string): void {
 /** Close the read-only agent tab mirroring a background process. The agent
  *  drives this via the desktop-gated `close_terminal` tool → `terminal.close`.
  *  The process is NOT killed — only the view is dropped; `surfacedProcs` keeps
- *  it from auto-resurfacing, and the status-stack row can reopen it on demand.
+ *  it from auto-resurfacing, `autoRevealConsidered` is pruned so a reused
+ *  procId can auto-reveal later, and the status-stack row can reopen it.
  *  No-op when no such tab exists. */
 export function closeAgentTerminalByProc(procId: string): boolean {
   const term = $terminals.get().find(t => t.kind === 'agent' && t.procId === procId)
+
+  // Drop first-sight bookkeeping so a later process that reuses this procId
+  // (or a tab re-opened via the status stack) can be auto-revealed again.
+  autoRevealConsidered.delete(procId)
 
   if (!term) {
     return false

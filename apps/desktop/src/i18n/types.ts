@@ -999,6 +999,36 @@ export interface Translations {
       emptyTitle: string
       namePlaceholder: string
       contextPlaceholder: string
+      active: string
+      apiKeySet: string
+      use: string
+      editEndpoint: string
+      addEndpoint: string
+      newEndpoint: string
+      nameLabel: string
+      providerIdLabel: string
+      endpointUrlLabel: string
+      apiModeLabel: string
+      apiModeAutoDetect: string
+      defaultModelLabel: string
+      contextLabel: string
+      apiKeyLabel: string
+      apiKeyPlaceholderExisting: string
+      apiKeyPlaceholderOptional: string
+      useForNewChats: string
+      discoverModels: string
+      test: string
+      loadFailed: string
+      saved: string
+      saveFailed: string
+      testFailed: string
+      activateFailed: string
+      deleteFailed: string
+      deleteConfirmTitle: (name: string) => string
+      reachable: string
+      reachableWithTransport: (transport: string) => string
+      foundModels: (count: number) => string
+      validationFailed: string
     }
     computerUse: {
       accessibility: string

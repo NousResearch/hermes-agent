@@ -9,19 +9,26 @@ cell runs as a plain test, so it must pass. Whichever lands first, suite or fix,
 green, and a probe that disagrees with the end-to-end cell still fails loudly (XPASS, or a
 real failure) instead of hiding.
 
-When a fix has landed, delete its entry and every ``expect_gap`` call naming it.
+Probes exercise behaviour only (never read source text). When a fix has landed, delete its
+entry and every ``expect_gap`` / ``gap_open`` call naming it.
+
+A gap with no fix PR yet has no probe: ``known_failure`` is a run-time xfail keyed on the gap's
+own assertion message, so the cell XFAILs only while it fails exactly that way, fails loudly on
+any other failure, and simply passes once someone fixes the gap.
 """
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict
+from typing import Callable, Dict, Iterator, Optional
 
 import pytest
 
@@ -32,20 +39,6 @@ _PRELUDE = "import json, os, sys\nsys.path.insert(0, os.getcwd())\n"
 # PR -> (extra env, script). A script prints ``open`` while the defect reproduces, ``fixed`` once
 # it no longer does; anything else (including a crash) fails the cell that asked.
 PROBES: Dict[int, tuple] = {
-    # The due gate compared same-zone wall clocks: 01:00 EST (fold=1) looked due at 01:01 EDT.
-    120314: ({"HERMES_TIMEZONE": "America/New_York", "TZ": "UTC"}, r'''
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-from cron import jobs
-ny = ZoneInfo("America/New_York")
-now = datetime(2026, 11, 1, 5, 1, tzinfo=timezone.utc).astimezone(ny)       # 01:01 EDT
-scheduled = datetime(2026, 11, 1, 6, 0, tzinfo=timezone.utc).astimezone(ny)  # 01:00 EST, 59 min later
-jobs._hermes_now = lambda: now
-jobs.save_jobs([{"id": "p", "name": "p", "prompt": "p", "schedule": {"kind": "interval", "minutes": 60},
-                 "next_run_at": scheduled.isoformat(), "last_run_at": None, "enabled": True,
-                 "state": "scheduled", "repeat": {"times": None, "completed": 0}, "deliver": "local"}])
-print("open" if jobs.get_due_jobs() else "fixed")
-'''),
     # No timezone configured: the next cron occurrence kept the base time's fixed UTC offset, so a
     # 09:00 job in a DST process zone fired at 10:00 local the day after spring-forward.
     119970: ({"TZ": "America/New_York"}, r'''
@@ -90,36 +83,6 @@ async def main():
 print("fixed" if asyncio.run(main()) == ["preview never landed and more streamed text then the end."]
       else "open")
 '''),
-    # Unclean startup ran the 120 s recency sweep: every recently active session was marked
-    # resume_pending and auto-resumed, i.e. answered a second time.
-    120377: ({}, r'''
-import inspect
-from gateway.run import GatewayRunner
-src = inspect.getsource(GatewayRunner._recover_unclean_sessions)
-print("open" if "suspend_recently_active" in src else "fixed")
-'''),
-    # Inbound de-duplication lived only on the adapter instance; the reconnect watcher builds a
-    # fresh adapter without it, so a replay after a reconnect was processed again.
-    120444: ({}, r'''
-import inspect
-from gateway.run import GatewayRunner
-src = inspect.getsource(GatewayRunner._reconnect_failed_platform)
-print("fixed" if "dedup" in src.lower() else "open")
-'''),
-    # The boot sweep claimed a 'pending' row without moving it to 'attempting', so a boot killed
-    # inside that plain resend left 'pending' behind and the next boot resent it UNMARKED.
-    120450: ({}, r'''
-import sqlite3
-from gateway import delivery_ledger as L
-L.record_obligation(obligation_id="p", session_key="k", platform="telegram", chat_id="1",
-                    thread_id=None, content="x")
-with L._transaction() as conn:
-    conn.execute("UPDATE delivery_obligations SET owner_pid=NULL, owner_started_at=NULL")
-assert [r["obligation_id"] for r in L.sweep_recoverable()] == ["p"]
-with L._transaction() as conn:
-    state = conn.execute("SELECT state FROM delivery_obligations").fetchone()[0]
-print("fixed" if state == "attempting" else "open")
-'''),
 }
 
 
@@ -148,3 +111,20 @@ def expect_gap(request, pr: int, reason: str) -> None:
     assert f"#{pr}" in reason, f"reason for a #{pr} gap must name the PR: {reason!r}"
     if gap_open(pr):
         request.applymarker(pytest.mark.xfail(strict=True, reason=reason))
+
+
+@contextlib.contextmanager
+def known_failure(pattern: str, reason: str,
+                  on_xfail: Optional[Callable[[], None]] = None) -> Iterator[None]:
+    """Run-time xfail for a live gap without a fix PR: an ``AssertionError`` raised inside the
+    block whose message matches ``pattern`` XFAILs the cell; any other failure propagates, and a
+    clean pass stays a pass. Wrap only the final assertions, after every wait has settled, so a
+    lost reply, a failed restart or a timeout can never be mistaken for the gap."""
+    try:
+        yield
+    except AssertionError as exc:
+        if not re.search(pattern, str(exc)):
+            raise
+        if on_xfail is not None:
+            on_xfail()
+        pytest.xfail(f"{reason} [observed: {str(exc).splitlines()[0][:240]}]")

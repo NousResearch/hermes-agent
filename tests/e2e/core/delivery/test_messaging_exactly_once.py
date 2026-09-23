@@ -24,6 +24,7 @@ Invariants asserted after every scenario (they hold for every correct implementa
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sqlite3
@@ -45,7 +46,7 @@ from tests.e2e.core.delivery._fake_platform import (
     visible_copies,
     wait_until,
 )
-from tests.e2e.core.delivery._pending_fixes import expect_gap, gap_open
+from tests.e2e.core.delivery._pending_fixes import expect_gap, known_failure
 from tests.fakes.fake_llm_provider import FakeLLMServer, StallMidStream, Text, ToolCall
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL + process-group restart harness")
@@ -269,6 +270,11 @@ STREAM_ACK_LOST_GAP = (
     "nothing delivered and the gateway's final send re-sends it UNMARKED -> the user sees the reply "
     "twice with no 'may be a duplicate' marker. The non-streaming path hands the same timeout to the "
     "delivery ledger, which redelivers with the marker.")
+# No fix PR yet: a run-time xfail on this exact failure (see _pending_fixes.known_failure), so the
+# cell passes on its own the day the gap closes.
+STREAM_ACK_LOST_SIGNATURE = r"^\d+ unmarked copies of A-fk_(tg|dc)\.ack_lost \(silent duplicate\)"
+# Tokens whose cell actually XFAILed on a known gap this run: excluded from the whole-run audit.
+XFAILED_TOKENS: set = set()
 
 
 def faults_fired(gw: GatewayProcess, aid: str) -> List[dict]:
@@ -297,13 +303,15 @@ def test_delivery_fault_matrix(gw, director, platform, fault, request):
                f"{token} complete reply\n" + dump(gw, platform, chat), proc=gw.proc, log=gw.log)
     if kind is not None:
         assert faults_fired(gw, aid), f"injected {kind} never hit a platform call\n{dump(gw, platform, chat)}"
-    if fault == "ack_lost" and STREAMING[platform]:
-        request.applymarker(pytest.mark.xfail(strict=True, reason=STREAM_ACK_LOST_GAP))
     if (fault, platform) in STREAM_OVERFLOW_GAP_CELLS:
         expect_gap(request, 120315, STREAM_OVERFLOW_GAP)
-    assert_exactly_once(gw, director, platform, chat, token, aid,
-                        marked_duplicates_allowed=expect == "marked_dupes",
-                        first_copy_may_be_marked=expect == "one_copy")
+    guard = (known_failure(STREAM_ACK_LOST_SIGNATURE, STREAM_ACK_LOST_GAP,
+                           on_xfail=lambda: XFAILED_TOKENS.add(token))
+             if fault == "ack_lost" and STREAMING[platform] else contextlib.nullcontext())
+    with guard:
+        assert_exactly_once(gw, director, platform, chat, token, aid,
+                            marked_duplicates_allowed=expect == "marked_dupes",
+                            first_copy_may_be_marked=expect == "one_copy")
 
 
 # Concurrency: slow turn + busy follow-up, interrupt, parallel threads -------------------------
@@ -387,7 +395,7 @@ def test_parallel_threads_are_independent(gw, director):
 
 
 @pytest.mark.parametrize("when", ["during_turn", "after_turn", "after_reconnect"])
-def test_redelivered_inbound_id_processed_once(gw, director, when, request):
+def test_redelivered_inbound_id_processed_once(gw, director, when):
     """The platform re-delivers an inbound id (webhook retry, websocket resume, reconnect replay):
     the message is processed exactly once and answered exactly once."""
     platform = "fk_tg"
@@ -403,7 +411,6 @@ def test_redelivered_inbound_id_processed_once(gw, director, when, request):
     if when == "after_turn":
         gw.inject(platform, text, message_id=mid, chat_id=chat)
     if when == "after_reconnect":
-        expect_gap(request, 120444, RECONNECT_DEDUP_GAP)
         before = gw.rpc("reconnect", platform=platform)["id"]
         wait_until(lambda: gw.rpc("adapter_id", platform=platform)["id"] not in (before, None),
                    "the reconnect watcher to install a fresh adapter", proc=gw.proc, log=gw.log)
@@ -411,12 +418,6 @@ def test_redelivered_inbound_id_processed_once(gw, director, when, request):
     gw.wait_idle([chat], f"{tok} after re-delivery")
     wait_until(lambda: ledger_quiescent(gw.db_path, chat), "ledger to settle", proc=gw.proc, log=gw.log)
     assert_exactly_once(gw, director, platform, chat, tok, f"A-{tok}")
-
-
-RECONNECT_DEDUP_GAP = (
-    "LIVE GAP (#119848 family, fixed by #120444): inbound de-duplication state lives on the adapter instance "
-    "(MessageDeduplicator); the gateway's reconnect watcher builds a FRESH adapter, so a platform "
-    "replaying a recent inbound id after the reconnect gets it processed and answered a second time.")
 
 
 # Crash between provider completion and the send: SIGKILL + restart on the same state ------------
@@ -434,19 +435,20 @@ CRASH_POINTS = {
     "stream_accepted_unpersisted": ("any", "hold_after"),
 }
 
-# completed_not_ledgered: until #120377, GatewayRunner._handle_message clears the durable active-turn
-# marker in its finally BEFORE the base adapter records the delivery obligation, so a SIGKILL in that
-# window leaves neither a resume marker nor a ledger row and only the 120 s recency fallback recovers
-# the reply (by re-running the turn, see RECENCY_FALLBACK_GAP). #120377 removes that fallback and
-# hands the persisted reply to the ledger instead; either way exactly one complete reply must show.
-SENT_ACK_LOST_STREAM_GAP = (
-    "LIVE GAP (fixed by #120377): streaming turn persisted, the platform accepted the final edit, "
-    "SIGKILL before the ack -> the unclean restart re-runs the already-answered turn (turn marker / "
-    "120 s recency fallback) and the model's second answer is sent UNMARKED next to the first.")
+# completed_not_ledgered: the turn is persisted and the handler returned, but the final text never
+# reached the delivery ledger; recovery must hand the persisted reply to the ledger rather than
+# re-run the turn. Either way exactly one complete reply must show.
+
 STREAM_CRASH_AFTER_ACCEPT_GAP = (
     "LIVE GAP: streaming turn, the platform already shows the complete final answer, SIGKILL before "
     "the turn is persisted -> restart auto-resumes and the model answers AGAIN; the second answer is "
     "unmarked and the first (visible) answer was never persisted (visible != transcript).")
+# No fix PR yet: run-time xfail only when the visible pair is exactly the gap's shape, the held
+# original answer AND an auto-resumed re-answer, both unmarked.
+STREAM_CRASH_AFTER_ACCEPT_SIGNATURE = (
+    r"(?s)^(2 unmarked complete replies after catch-up|both the held answer and an auto-resumed "
+    r"re-answer are visible)\n.*<<A-fk_tg\.crash-stream_accepted_unpersisted>>.*"
+    r"<<R-fk_tg\.crash-stream_accepted_unpersisted-\d>>")
 
 
 def _replies(gw: GatewayProcess, platform: str, chat: str, token: str, aid: str):
@@ -475,7 +477,7 @@ def fresh_gw(tmp_path, llm):
 
 
 @pytest.mark.parametrize("point,platform", CRASH_MATRIX)
-def test_crash_between_completion_and_send(fresh_gw, director, point, platform, request):
+def test_crash_between_completion_and_send(fresh_gw, director, point, platform):
     """kill -9 the gateway at a point between provider completion and the platform ack, restart it
     on the same HERMES_HOME. Recovery may be the delivery ledger (redeliver the held answer) or,
     for a turn that never finished, auto-resume (a fresh model turn): either way the inbound ends
@@ -484,10 +486,6 @@ def test_crash_between_completion_and_send(fresh_gw, director, point, platform, 
     gw = fresh_gw
     op, kind = CRASH_POINTS[point]
     streaming = STREAMING[platform]
-    if point == "sent_ack_lost" and streaming:
-        expect_gap(request, 120377, SENT_ACK_LOST_STREAM_GAP)
-    if point == "stream_accepted_unpersisted":
-        request.applymarker(pytest.mark.xfail(strict=True, reason=STREAM_CRASH_AFTER_ACCEPT_GAP))
     token = f"{platform}.crash-{point}"
     chat = f"k-{platform}-{point}"
     aid = f"A-{token}"
@@ -513,6 +511,15 @@ def test_crash_between_completion_and_send(fresh_gw, director, point, platform, 
                proc=gw.proc, log=gw.log)
     gw.wait_idle([chat], f"{token} to settle after restart")
     wait_until(lambda: ledger_quiescent(gw.db_path, chat), f"{token} ledger to settle", proc=gw.proc, log=gw.log)
+    # Every wait above must have succeeded before a known gap may XFAIL the cell: only the final
+    # assertions run under the run-time xfail, so a lost reply or a failed restart stays red.
+    guard = (known_failure(STREAM_CRASH_AFTER_ACCEPT_SIGNATURE, STREAM_CRASH_AFTER_ACCEPT_GAP)
+             if point == "stream_accepted_unpersisted" else contextlib.nullcontext())
+    with guard:
+        _assert_single_final_reply(gw, director, platform, chat, token, aid, point, streaming)
+
+
+def _assert_single_final_reply(gw, director, platform, chat, token, aid, point, streaming) -> None:
     ctx = dump(gw, platform, chat)
     originals, resumes = _replies(gw, platform, chat, token, aid)
     complete = [c for c in originals + resumes if c.complete]
@@ -535,16 +542,7 @@ def test_crash_between_completion_and_send(fresh_gw, director, point, platform, 
     assert len(persisted_user_rows(gw.db_path, f"[in:{token}]")) == 1, ctx
 
 
-# Scenarios whose strict xfail documents a live gap: excluded from the whole-run audit below.
-KNOWN_GAP_TOKENS = {"fk_tg.ack_lost", "fk_dc.ack_lost"}
 RESUME_EXPECTED: set = set()
-
-
-def known_gap_tokens() -> set:
-    gaps = set(KNOWN_GAP_TOKENS)
-    if gap_open(120444):
-        gaps.add("fk_tg.redeliver-after_reconnect")
-    return gaps
 
 
 def test_zz_whole_run_audit(gw, director):
@@ -554,7 +552,7 @@ def test_zz_whole_run_audit(gw, director):
     visible = gw.platform_view().visible()
     head = re.compile(r"<<((?:A-|R-)?[A-Za-z0-9_.-]+?)>>")
     problems = []
-    gaps = known_gap_tokens()
+    gaps = set(XFAILED_TOKENS)  # cells that XFAILed on a known gap this run
     for token in sorted(director.turns):
         if token in gaps or ".crash-" in token:  # crash scenarios run on their own homes
             continue
@@ -574,19 +572,9 @@ def test_zz_whole_run_audit(gw, director):
     assert not problems, "\n".join(problems)
 
 
-RECENCY_FALLBACK_GAP = (
-    "LIVE GAP (fixed by #120377): on an unclean startup GatewayRunner._recover_unclean_sessions also runs the legacy "
-    "recency fallback SessionStore.suspend_recently_active(120), which marks EVERY session updated in "
-    "the last 120 s resume_pending with reason 'restart_interrupted' - a reason in _AUTO_RESUME_REASONS - "
-    "so _schedule_resume_pending_sessions synthesizes a turn for sessions whose turn had already "
-    "completed and been delivered: after a crash/OOM/kill -9 every recently active chat gets an "
-    "unsolicited second answer.")
-
-
-def test_zzz_unclean_restart_reruns_nothing(gw, director, request):
+def test_zzz_unclean_restart_reruns_nothing(gw, director):
     """Runs LAST on the module gateway: after every scenario above has been answered, an unclean
     restart with NOTHING in flight must not re-run or re-deliver anything."""
-    expect_gap(request, 120377, RECENCY_FALLBACK_GAP)
     tok = "fk_tg.quiet-restart"
     director.script(tok, Director.answer(f"A-{tok}", "answered long before the crash."))
     gw.inject("fk_tg", f"[in:{tok}] hi", message_id=f"in-{tok}", chat_id="quiet")

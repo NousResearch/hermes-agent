@@ -2063,8 +2063,14 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
+
+        def send(request):
+            from agent.managed_route_wire import enforce_chat_wire
+            enforce_chat_wire(agent, summary_client, request)
+            return summary_client.chat.completions.create(**request)
+
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
+            agent, api_request_id, summary_kwargs, send, retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
 
@@ -2100,7 +2106,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
         final_response = _EMPTY_SUMMARY_RESPONSE
         for retry_count in (0, 1):
-            text = attempt(retry_count)
+            from agent.managed_route_health import observe_request
+            from agent.managed_route_wire import enforce_supported_wire
+
+            enforce_supported_wire(agent)
+            # Summary requests bypass the turn call owner on every protocol.
+            with observe_request(getattr(agent, "_managed_routing_home", None),
+                                 getattr(agent, "_managed_routing_receipt_id", None)):
+                text = attempt(retry_count)
             if not text:
                 continue
             if "<think>" in text:

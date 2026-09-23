@@ -214,7 +214,7 @@ def _worker_python() -> str:
 
 def _run_worker(*, profile_home: Path, provider: str, model: str, receipt_id: str,
                  query: str, reasoning: str = "high", timeout: float = 60.0,
-                 base_url: str = None, bootstrap=None):
+                 base_url: str = None, bootstrap=None, canonical_receipt_id=None):
     """Launches the REAL CLI entry point exactly as
     ``hermes_cli.kanban_db_dispatch._worker_argv``/``_resolve_hermes_argv``
     would (module form, since no ``hermes`` console script is guaranteed on
@@ -228,7 +228,7 @@ def _run_worker(*, profile_home: Path, provider: str, model: str, receipt_id: st
     env["HERMES_KANBAN_ROUTING_RECEIPT"] = receipt_id
     if receipt_id:
         from agent.model_selection_store import get_receipt
-        receipt = get_receipt(profile_home, receipt_id)
+        receipt = get_receipt(profile_home, canonical_receipt_id or receipt_id)
         env["HERMES_KANBAN_DB"] = str(profile_home / "worker-test.db")
         env["HERMES_KANBAN_ROUTING_ORIGIN_HOME"] = str(profile_home)
         if receipt:
@@ -253,6 +253,55 @@ def _run_worker(*, profile_home: Path, provider: str, model: str, receipt_id: st
         capture_output=True, text=True, timeout=timeout,
     )
     return proc
+
+
+@pytest.mark.parametrize("substitution", [None, "task", "attempt", "role", "board_link"])
+def test_intact_receipt_must_match_live_canonical_claim(tmp_path, fake_server, substitution):
+    from agent.model_selection import select
+    from agent.model_selection_store import get_active_policy, get_receipt, persist_receipt
+    from hermes_cli.kanban_db_connect import connect
+
+    server, handler = fake_server
+    url = f"http://127.0.0.1:{server.server_port}/v1"
+    home = tmp_path / "home"
+    _write_profile_home(home, url, "fake-model", "custom-fake")
+    canonical_id = _persist_receipt(home, provider="custom-fake", model="fake-model", endpoint=url)
+    canonical = get_receipt(home, canonical_id)
+    from agent.model_selection_types import REQUIRED_REQUIREMENT_FIELDS
+    requirements = {key: canonical["requirements"][key]
+                    for key in REQUIRED_REQUIREMENT_FIELDS if key != "schema_version"}
+    requirements["schema_version"] = 1
+    supplied_id = canonical_id
+    if substitution in ("task", "attempt", "board_link"):
+        if substitution in ("task", "board_link"):
+            requirements["execution_id"] = "another-task"
+        else:
+            requirements["attempt_id"] = "another-attempt"
+        policy = get_active_policy(home, "kanban-default")
+        supplied_id = persist_receipt(home, select(requirements, policy, {}, now=1000))
+        assert supplied_id != canonical_id
+        assert get_receipt(home, supplied_id)["selected"] == canonical["selected"]
+        if substitution == "board_link":
+            with connect(home / "worker-test.db") as conn:
+                conn.execute("UPDATE tasks SET routing_receipt_id=? WHERE id=?",
+                             (supplied_id, canonical["requirements"]["execution_id"]))
+                conn.commit()
+            supplied_id = canonical_id
+    elif substitution == "role":
+        with connect(home / "worker-test.db") as conn:
+            conn.execute("UPDATE tasks SET routing_role=? WHERE id=?",
+                         ("reviewquality", requirements["execution_id"]))
+            conn.commit()
+    proc = _run_worker(
+        profile_home=home, provider="custom-fake", model="fake-model",
+        receipt_id=supplied_id, canonical_receipt_id=canonical_id, query="canonical claim probe",
+    )
+    if substitution is None:
+        assert handler.requests, proc.stdout + proc.stderr
+        assert "canonical claim probe" in json.dumps(handler.requests)
+    else:
+        assert handler.requests == [], proc.stdout + proc.stderr
+        assert proc.returncode != 0
 
 
 def test_worker_checks_assembled_input_not_claimed_estimate(tmp_path, fake_server):

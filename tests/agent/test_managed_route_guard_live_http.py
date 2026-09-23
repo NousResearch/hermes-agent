@@ -597,3 +597,44 @@ def test_final_execution_middleware_cannot_change_managed_wire(managed_agent_env
     assert reached == [True], "a policy denial must not enter transport retry/recovery"
     assert env["approved"].requests == []
     assert env["unapproved"].requests == []
+
+
+@pytest.mark.parametrize("mutation", [None, "model", "reasoning", "reserve", "revocation"])
+def test_iteration_summary_is_a_managed_send(managed_agent_env, monkeypatch, mutation):
+    from agent import relay_llm
+    from agent.model_selection_store import list_outcomes, revoke_route
+
+    env = managed_agent_env
+    agent, approved = env["agent"], env["approved"]
+    agent.max_iterations = 1
+    approved.response_queue.extend([_tc_resp("read_file", '{"path":"missing-fixture-file"}')] * 3)
+    original = relay_llm.execute_current
+    summary_at = []
+
+    def final_transform(request, send, **context):
+        if context.get("metadata", {}).get("call_role") == "iteration_summary":
+            summary_at.append(len(approved.requests))
+            approved.response_queue[:] = [_text_resp("managed summary complete")]
+            request = dict(request)
+            if mutation == "revocation":
+                revoke_route(env["hermes_home"], "kanban-default", route_id="fake-route",
+                             reason="fixture emergency", approval_ref="operator:test")
+            elif mutation == "model":
+                request["model"] = "unauthorized-summary-model"
+            elif mutation == "reasoning":
+                request["reasoning_effort"] = "low"
+            elif mutation == "reserve":
+                request["max_tokens"] = 300000
+        return original(request, send, **context)
+
+    monkeypatch.setattr(relay_llm, "execute_current", final_transform)
+    result = agent.run_conversation("Read a fixture until the budget ends", conversation_history=[], task_id="summary-test")
+    assert len(summary_at) == 1, result
+    assert summary_at[0] > 0, "reach summary from the real managed turn loop"
+    assert len(approved.requests) == summary_at[0] + (mutation is None)
+    assert env["unapproved"].requests == []
+    if mutation is None:
+        assert "managed summary complete" in result["final_response"]
+        outcomes = list_outcomes(env["hermes_home"], env["receipt_id"])
+        health = [entry for entry in outcomes if entry["kind"] == "routing_health"]
+        assert len(health) == len(approved.requests), "summary contact must not disappear from attempt history"

@@ -37,6 +37,7 @@ if _REPO_ROOT not in sys.path:
 
 class _CapturingHandler(BaseHTTPRequestHandler):
     requests: list
+    refused_models = ()
 
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("Content-Length", 0))
@@ -45,6 +46,9 @@ class _CapturingHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
         type(self).requests.append(req)
+        if req.get("model") in self.refused_models:
+            self._send_json({"error": {"message": "Insufficient credits", "type": "insufficient_quota"}}, status=402)
+            return
         if req.get("stream"):
             self._send_stream()
         else:
@@ -69,9 +73,9 @@ class _CapturingHandler(BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
         self.wfile.write(b"data: [DONE]\n\n")
 
-    def _send_json(self, payload: dict):
+    def _send_json(self, payload: dict, status=200):
         body = json.dumps(payload).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -192,6 +196,81 @@ def test_managed_delegation_task_reaches_real_child_and_pins_receipt(routed_home
     assert "Summarize the managed routing design" in sent
 
 
+@pytest.mark.parametrize("first_mode", ["enforced", "shadow"])
+def test_separate_calls_have_host_owned_receipts(routed_home, monkeypatch, first_mode):
+    from agent.model_selection_store import get_receipt
+    from tools.delegate_tool import delegate_task
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    parent = _make_parent(home, endpoint=url)
+    task = {"goal": "Complete a separately launched task", "routing_role": "builder",
+            "_delegation_id": "untrusted-caller-id",
+            "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}}
+    try:
+        first = json.loads(delegate_task(tasks=[{**task, "routing_mode": first_mode}], parent_agent=parent))
+        second = json.loads(delegate_task(tasks=[task], parent_agent=parent))
+        entries = [result["results"][0] for result in (first, second)]
+        assert all(entry["status"] == "completed" for entry in entries), (first, second)
+        ids = [entry.get("routing_receipt_id") or entry["routing_shadow_receipt_id"] for entry in entries]
+        assert ids[0] != ids[1]
+        executions = [get_receipt(home, receipt)["requirements"]["execution_id"] for receipt in ids]
+        assert executions[0] != executions[1]
+        assert "untrusted-caller-id" not in executions
+        assert task["_delegation_id"] == "untrusted-caller-id", "do not mutate caller intake"
+        assert len(handler.requests) == 2
+        assert parent._active_children == []
+    finally:
+        parent.close()
+
+
+@pytest.mark.parametrize("failure", ["malformed_first", "malformed_last", "constructor"])
+def test_batch_fatal_failure_releases_real_children(routed_home, monkeypatch, failure):
+    import tools.delegate_tool as dt
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    parent = _make_parent(home)
+    built, closed = [], []
+    build = dt._build_child_preserving_parent_tools
+
+    def record_child(**kwargs):
+        if failure == "constructor" and kwargs["task_index"] == 1:
+            raise ValueError("fixture fatal constructor failure")
+        child = build(**kwargs)
+        built.append(child)
+        close = child.close
+        def record_close():
+            closed.append(child)
+            return close()
+        monkeypatch.setattr(child, "close", record_close)
+        return child
+
+    monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", record_child)
+    tasks = [{"goal": "Complete eligible batch member", "routing_role": "builder",
+              "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}}
+             for _ in range(2)]
+    if failure != "constructor":
+        tasks[0 if failure == "malformed_first" else 1]["routing_requirements"]["unexpected"] = True
+    try:
+        result = json.loads(dt.delegate_task(tasks=tasks, parent_agent=parent))
+        assert "error" in result, result
+        assert handler.requests == []
+        assert parent._active_children == []
+        assert closed == built
+        if failure != "constructor":
+            assert built == [], "validate every member before constructing any child"
+        else:
+            assert len(built) == 1, "exercise cleanup of an actually constructed child"
+    finally:
+        for child in built:
+            if child not in closed:
+                child.close()
+        parent.close()
+
+
 @pytest.mark.parametrize("denied_first", [True, False])
 @pytest.mark.parametrize("denial", ["policy", "credentials"])
 def test_policy_denial_does_not_cancel_eligible_batch_member(routed_home, monkeypatch, denied_first, denial):
@@ -251,9 +330,15 @@ def test_mixed_background_batch_delivers_each_member_once(routed_home, monkeypat
     from tools.delegate_tool import delegate_task
     from tools.process_registry import process_registry
     import tools.delegate_tool_config as config
+    from agent.model_selection_store import activate_policy, publish_policy
 
     home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
-    _publish_active(home, url)
+    policy = _policy(url)
+    policy["routes"].append({**policy["routes"][0], "route_id": "second-route",
+                             "model": "second-model", "allowed_roles": ["writer"]})
+    policy["rankings"]["writer"] = {"deep": ["second-route"], "shallow": ["second-route"]}
+    publish_policy(home, policy, approval_ref="operator:test")
+    activate_policy(home, "kanban-default", 1)
     _patch_custom_provider(monkeypatch, url)
     monkeypatch.setattr(config, "_get_independent_completions", lambda: independent)
     completions = queue.Queue()
@@ -264,10 +349,12 @@ def test_mixed_background_batch_delivers_each_member_once(routed_home, monkeypat
     tasks = [
         {"goal": "eligible first", "routing_role": "builder"},
         {"goal": "denied content", "routing_role": "unapproved-role"},
-        {"goal": "eligible last", "routing_role": "builder"},
+        {"goal": "eligible last", "routing_role": "writer"},
     ]
     for task in tasks:
         task["routing_requirements"] = {"input_tokens": 1000, "reserve_tokens": 8192}
+    tasks[0]["reasoning_effort"] = "high"
+    tasks[2]["reasoning_effort"] = "low"
     try:
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent, background=True))
         assert result["status"] == "dispatched", result
@@ -282,6 +369,9 @@ def test_mixed_background_batch_delivers_each_member_once(routed_home, monkeypat
         assert all(entry["status"] == "completed" for entry in entries)
         assert len({entry["routing_receipt_id"] for entry in entries}) == 2
         assert len(handler.requests) == 2
+        assert {(sent["model"], sent["reasoning_effort"]) for sent in handler.requests} == {
+            ("test-model", "high"), ("second-model", "low"),
+        }
         assert "denied content" not in json.dumps(handler.requests)
         assert parent._active_children == []
     finally:
@@ -307,6 +397,46 @@ def test_managed_delegation_denied_route_reaches_zero_endpoints(routed_home, mon
     )
     assert "error" in result_json.lower() or "routing" in result_json.lower()
     assert len(handler.requests) == 0, "a denied managed route must never reach the endpoint"
+
+
+@pytest.mark.parametrize("mode", [None, "shadow", "enforced"])
+def test_global_request_overrides_do_not_cross_enforced_boundary(routed_home, monkeypatch, mode):
+    from pathlib import Path
+    from tools.delegate_tool import delegate_task
+    from hermes_cli import runtime_provider
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    resolve = runtime_provider.resolve_runtime_provider
+
+    def with_selected_settings(**kwargs):
+        runtime = resolve(**kwargs)
+        runtime["request_overrides"] = {"extra_body": {"selected_setting": "selected"}}
+        return runtime
+
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", with_selected_settings)
+    (Path(home) / "config.yaml").write_text(
+        "delegation:\n  request_overrides:\n    extra_body:\n      global_setting: global\n"
+    )
+    parent = _make_parent(home, endpoint=url)
+    task = {"goal": "override boundary probe"}
+    if mode:
+        task.update(routing_role="builder", routing_mode=mode,
+                    routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192})
+    try:
+        result = json.loads(delegate_task(tasks=[task], parent_agent=parent))
+        assert result["results"][0]["status"] == "completed", result
+        assert len(handler.requests) == 1
+        sent = handler.requests[0]
+        if mode == "enforced":
+            assert sent["selected_setting"] == "selected"
+            assert "global_setting" not in sent
+        else:
+            assert sent["global_setting"] == "global"
+            assert "selected_setting" not in sent
+    finally:
+        parent.close()
 
 
 @pytest.mark.parametrize("fault", [None, "provenance", "store", "outcome"])
@@ -379,6 +509,59 @@ def test_shadow_lifecycle_constructor_retains_legacy_fallback(routed_home, monke
     finally:
         for child in children:
             child.close()
+        parent.close()
+
+
+@pytest.mark.parametrize("entrypoint", ["tool", "lifecycle"])
+@pytest.mark.parametrize("mode", [None, "shadow", "shadow_error", "enforced"])
+def test_shadow_preserves_actual_failure_recovery(routed_home, monkeypatch, entrypoint, mode):
+    from agent.subagent_lifecycle import SubagentLaunchRequest, SubagentLifecycleService
+    import tools.delegate_tool as dt
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    handler.refused_models = ("parent-model", "test-model")
+    parent = _make_parent(home, endpoint=url)
+    original = dt._resolve_child_runtime
+
+    def with_fallback(*args, **kwargs):
+        runtime = original(*args, **kwargs)
+        runtime["fallback_model"] = [{"provider": "custom", "model": "fallback-model",
+                                      "base_url": url, "api_key": "fixture-key"}]
+        return runtime
+
+    monkeypatch.setattr(dt, "_resolve_child_runtime", with_fallback)
+    task = {"goal": "recover after provider refusal"}
+    if mode:
+        task.update(routing_role="reviewquality" if mode == "shadow_error" else "builder",
+                    routing_mode="shadow" if mode == "shadow_error" else mode,
+                    routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192})
+    try:
+        if entrypoint == "tool":
+            result = json.loads(dt.delegate_task(tasks=[task], parent_agent=parent))["results"][0]
+            completed = result["status"] == "completed"
+            summary = result.get("summary", "")
+            if mode == "shadow_error":
+                assert result["routing_shadow_error"]
+        else:
+            service = SubagentLifecycleService(lambda: parent)
+            handle = service.launch(SubagentLaunchRequest(**task))
+            assert service.wait(handle, timeout_seconds=30).completed
+            result = service.result(handle)
+            completed = result.terminal_state.value == "SUCCEEDED"
+            summary = result.summary or ""
+        assert handler.requests
+        if mode == "enforced":
+            assert not completed
+            assert all(sent["model"] == "test-model" for sent in handler.requests)
+        else:
+            assert completed, result
+            assert "child done" in summary
+            assert handler.requests[0]["model"] == "parent-model"
+            assert handler.requests[-1]["model"] == "fallback-model"
+        assert parent._active_children == []
+    finally:
         parent.close()
 
 

@@ -28,6 +28,23 @@ def test_public_examples_validate_and_explain_without_state(tmp_path):
     assert not list(home.rglob("kanban.db"))
 
 
+def test_routing_help_points_to_checkout_operator_guide(tmp_path):
+    import re
+
+    root = Path(__file__).resolve().parents[2]
+    proc = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "kanban", "routing", "--help"],
+        cwd=root, env=dict(os.environ, HERMES_HOME=str(tmp_path / "home"), HOME=str(tmp_path)),
+        text=True, capture_output=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    help_text = re.sub(r"-\n\s*", "-", proc.stdout)
+    targets = re.findall(r"website/docs/[^\s)]+\.md", help_text)
+    assert targets, "routing help must point to a guide shipped in the checkout"
+    for target in targets:
+        assert (root / target).is_file()
+
+
 def test_public_adapter_examples_survive_validation():
     from hermes_cli.kanban_model_routing import validate_routing_requirements
     from hermes_cli.moa_config import normalize_moa_config

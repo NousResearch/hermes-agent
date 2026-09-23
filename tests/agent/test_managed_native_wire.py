@@ -69,7 +69,7 @@ def native_endpoint():
         thread.join()
 
 
-def _receipt(home, url, model, provider):
+def _receipt(home, url, model, provider, effort="high"):
     from agent.model_selection import select
     from agent.model_selection_store import publish_policy, activate_policy, persist_receipt
 
@@ -78,13 +78,13 @@ def _receipt(home, url, model, provider):
                   "route_id": "native", "route_revision": 1, "provider": provider,
                   "model": model, "endpoint": url, "maker": "anthropic", "model_family": "claude",
                   "status": "approved", "allowed_roles": ["builder"], "capabilities": [],
-                  "verified_input_budget": 200000, "allowed_reasoning": ["high"],
+                  "verified_input_budget": 200000, "allowed_reasoning": [effort],
                   "qualifications": ["deep"], "assessment": "fixture", "evidence": ["fixture"],
               }], "rankings": {"builder": {"deep": ["native"]}}}
     req = {"schema_version": 1, "execution_kind": "delegation", "execution_id": "native",
            "attempt_id": "1", "slot_id": "", "role": "builder", "task_class": "cross-component",
            "required_capabilities": [], "input_tokens": 1000, "reserve_tokens": 8192,
-           "reasoning": "high", "provenance": {"frozen_sha": "fixture", "verified_by": "fixture",
+           "reasoning": effort, "provenance": {"frozen_sha": "fixture", "verified_by": "fixture",
                                                  "complete": True, "contributors": []}}
     publish_policy(home, policy, approval_ref="fixture")
     activate_policy(home, "native", 1)
@@ -206,3 +206,63 @@ def test_auxiliary_native_conversion_is_checked(tmp_path, monkeypatch, native_en
         assert response.choices[0].message.content == "done"
         assert len(requests) == 1
     assert reached, "the real native conversion must run before final validation"
+
+
+@pytest.mark.parametrize("entrypoint", ["agent", "auxiliary"])
+@pytest.mark.parametrize("model,effort,wire_effort", [
+    ("claude-sonnet-4-6", "xhigh", "max"),
+    ("claude-haiku-4-5", "high", None),
+])
+def test_actual_reasoning_conversion_cannot_change_managed_contract(
+    tmp_path, monkeypatch, native_endpoint, entrypoint, model, effort, wire_effort,
+):
+    from contextlib import nullcontext
+    from agent import auxiliary_client
+    from agent.managed_route_aux_wire import managed_aux_wire_scope
+    from agent.model_selection_types import RoutingBlocked
+    from run_agent import AIAgent
+
+    url, requests = native_endpoint
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    receipt_id = _receipt(tmp_path, url, model, "custom", effort)
+    reasoning = {"enabled": True, "effort": effort}
+    for managed in (False, True):
+        requests.clear()
+        if entrypoint == "auxiliary":
+            def call():
+                with managed_aux_wire_scope(tmp_path, receipt_id) if managed else nullcontext():
+                    return auxiliary_client.call_llm(
+                        provider="custom", model=model, base_url=url, api_key="fixture-key",
+                        api_mode="anthropic_messages", max_tokens=8192,
+                        messages=[{"role": "user", "content": "actual conversion probe"}],
+                        reasoning_config=reasoning,
+                        extra_body={"reasoning": reasoning},
+                    )
+            if managed:
+                with pytest.raises(RoutingBlocked):
+                    call()
+            else:
+                assert call().choices[0].message.content == "done"
+        else:
+            agent = AIAgent(
+                provider="custom", model=model, base_url=url, api_key="fixture-key",
+                api_mode="anthropic_messages", reasoning_config=reasoning,
+                max_iterations=1, enabled_toolsets=[], quiet_mode=True,
+                skip_context_files=True, skip_memory=True, save_trajectories=False,
+            )
+            if managed:
+                agent._managed_routing_home = tmp_path
+                agent._managed_routing_receipt_id = receipt_id
+            try:
+                result = agent.run_conversation("actual conversion probe")
+                if managed:
+                    assert result["failed"]
+                else:
+                    assert "done" in result["final_response"]
+            finally:
+                agent.close()
+        if managed:
+            assert requests == [], "real transport coercion must block before content leaves"
+        else:
+            assert len(requests) == 1
+            assert requests[0].get("output_config", {}).get("effort") == wire_effort

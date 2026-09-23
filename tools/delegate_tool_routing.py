@@ -266,7 +266,6 @@ def _current_hermes_home():
 
 def build_lifecycle_child(request, parent):
     """Public host lifecycle uses the same routed construction as the tool."""
-    import uuid
     from tools import delegate_tool as dt
 
     cfg = dt._load_config()
@@ -274,8 +273,7 @@ def build_lifecycle_child(request, parent):
     task = {"goal": request.goal, "context": request.context, "model": request.model,
             "routing_role": request.routing_role, "routing_mode": request.routing_mode,
             "routing_policy_id": request.routing_policy_id,
-            "routing_requirements": request.routing_requirements,
-            "_delegation_id": uuid.uuid4().hex}
+            "routing_requirements": request.routing_requirements}
     children, error = dt._build_children(
         [task], [None], creds, top_role=request.role,
         max_iterations=cfg.get("max_iterations", dt.DEFAULT_MAX_ITERATIONS),

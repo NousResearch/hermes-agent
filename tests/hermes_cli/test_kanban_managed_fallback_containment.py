@@ -450,3 +450,134 @@ def test_recovery_retains_whole_attempt_uncertainty(
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize("history", ["effect_then_refusal", "refusal_then_interruption", "refusal"])
+def test_actual_agent_attempt_drives_dispatch_replay_hold(
+    routing_home, all_assignees_spawnable, history,
+):
+    import json
+    import os
+    import subprocess
+    import sys
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from agent.model_selection_store import activate_policy, list_outcomes, publish_policy
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_dispatch as kbd
+
+    requests = []
+    accepted = threading.Event()
+    release = threading.Event()
+    effect = routing_home / "effect.txt"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if not self.path.endswith("/chat/completions"):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+                return
+            requests.append(request)
+            if history == "refusal_then_interruption" and len(requests) == 2:
+                accepted.set()
+                release.wait(timeout=60)
+                return
+            success = history == "effect_then_refusal" and len(requests) == 1
+            payload = ({"id": "fixture", "choices": [{"index": 0, "message": {
+                "role": "assistant", "content": None, "tool_calls": [{"id": "effect", "type": "function",
+                "function": {"name": "write_file", "arguments": json.dumps({
+                    "path": str(effect), "content": "effect from actual tool loop"})}}]},
+                "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+                if success else {"error": {"message": "Insufficient credits", "type": "insufficient_quota"}})
+            body = json.dumps(payload).encode()
+            self.send_response(200 if success else 402)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    policy = _recovery_policy()
+    endpoint = f"http://127.0.0.1:{server.server_port}/v1"
+    policy["routes"][0]["endpoint"] = endpoint
+    publish_policy(routing_home, policy, approval_ref="operator:test")
+    activate_policy(routing_home, "kanban-default", 1)
+    kb.init_db()
+    spawned = []
+    process = None
+    code = '''
+import sys
+from run_agent import AIAgent
+from agent.managed_route_runtime import enforce_worker_route
+home, receipt, endpoint, history = sys.argv[1:]
+agent = AIAgent(provider="openai", model="gpt-5", base_url=endpoint, api_key="fixture-key",
+    api_mode="chat_completions", reasoning_config={"enabled": True, "effort": "medium"}, max_iterations=4,
+    request_overrides={"reasoning_effort": "medium"},
+    enabled_toolsets=["file"], quiet_mode=True, skip_memory=True, skip_context_files=True,
+    save_trajectories=False)
+agent._disable_streaming = True
+agent._managed_routing_home = home
+agent._managed_routing_receipt_id = receipt
+enforce_worker_route(home, receipt, actual_provider="openai", actual_model="gpt-5",
+    actual_endpoint=endpoint, actual_reasoning="medium")
+try:
+    print(agent.run_conversation("Perform the harmless file effect, then finish."), flush=True)
+    if history == "refusal_then_interruption":
+        agent.run_conversation("Try the next request in the same attempt.")
+finally:
+    agent.close()
+'''
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="actual worker replay", assignee="alice", routing_role="builder",
+                                 routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192}, max_retries=10)
+            spawn = lambda task, workspace: spawned.append(task.model_override)
+            kbd.dispatch_once(conn, spawn_fn=spawn)
+            first = kb.get_task(conn, tid)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("HERMES_KANBAN_")}
+            env.update(HERMES_HOME=str(routing_home), TERMINAL_CWD=str(routing_home))
+            with (routing_home / "worker.log").open("w+") as output:
+                process = subprocess.Popen([sys.executable, "-c", code, str(routing_home),
+                    first.routing_receipt_id, endpoint, history], env=env, stdout=output, stderr=subprocess.STDOUT)
+                if history == "refusal_then_interruption":
+                    assert accepted.wait(timeout=60), "worker never reached second accepted request"
+                    process.kill()
+                process.wait(timeout=60)
+                output.seek(0)
+                worker_log = output.read()
+            if history != "refusal_then_interruption":
+                assert process.returncode == 0, worker_log
+            events = list_outcomes(routing_home, first.routing_receipt_id)
+            starts = [event for event in events if event["kind"] == "routing_request_started"]
+            health = [event for event in events if event["kind"] == "routing_health"]
+            assert starts and health, worker_log
+            if history == "effect_then_refusal":
+                assert effect.exists(), worker_log
+                assert effect.read_text() == "effect from actual tool loop", worker_log
+                assert any(message.get("role") == "tool" for message in requests[-1]["messages"])
+            elif history == "refusal_then_interruption":
+                assert len(starts) > len(health)
+                assert len(requests) == 2
+            _fail_current_run(conn, first)
+            result = kbd.dispatch_once(conn, spawn_fn=spawn)
+            if history == "refusal":
+                assert result.spawned
+                assert spawned == ["gpt-5", "claude-alternate"]
+            else:
+                assert result.spawned == []
+                assert spawned == ["gpt-5"]
+                assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join()

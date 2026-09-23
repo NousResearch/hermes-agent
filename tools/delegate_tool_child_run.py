@@ -89,6 +89,13 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
     except (ValueError, UnboundLocalError) as e:
         logger.debug("Could not remove child from active_children: %s", e)
 
+def discard_unstarted_children(parent_agent: Any, children: list) -> None:
+    """A failed batch never transfers these children to the run/cleanup owner."""
+    for _index, _task, child in children:
+        _detach_child(parent_agent, child)
+        _close_child(child, "Failed to close unstarted delegation child")
+
+
 def _signal_child_stop(child: Any, *reason: str) -> None:
     """Cooperative interrupt so the child's worker thread can exit cleanly."""
     with _quiet(None):

@@ -377,6 +377,18 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
+    from tools.delegate_tool_child_run import discard_unstarted_children
+    from tools.delegate_tool_routing import _task_intake
+    import uuid
+
+    # Structural rejection precedes resource acquisition; policy eligibility
+    # remains an independent per-member result.
+    for i, task in enumerate(task_list):
+        try:
+            _task_intake(task)
+        except ValueError as exc:
+            return [], f"Task {i} routing: {exc}"
+    launch_id = uuid.uuid4().hex
     overrides = {
         "override_provider": creds["provider"], "override_base_url": creds["base_url"],
         "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
@@ -387,6 +399,8 @@ def _build_children(
     }
     children = []
     for i, t in enumerate(task_list):
+        # Host identity cannot come from model intake or best-effort logging.
+        t = {**t, "_delegation_id": f"{launch_id}:task-{i}"}
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -404,12 +418,14 @@ def _build_children(
             _routing_resolution = resolve_delegation_route(t, parent_agent, task_index=i)
         except _RoutingBlocked as exc:
             if blocked_results is None:
+                discard_unstarted_children(parent_agent, children)
                 raise
             entry = _fabricated_entry(i, "error", str(exc), None)
             entry["routing_reason"] = exc.reason
             blocked_results.append(entry)
             continue
         except ValueError as exc:
+            discard_unstarted_children(parent_agent, children)
             return [], f"Task {i} routing: {exc}"
         _task_overrides = dict(overrides)
         _routing_enforced = bool(
@@ -438,6 +454,7 @@ def _build_children(
             except ValueError as exc:
                 blocked = _RoutingBlocked("provider_unavailable", "managed route provider could not be resolved")
                 if blocked_results is None:
+                    discard_unstarted_children(parent_agent, children)
                     raise blocked from exc
                 entry = _fabricated_entry(i, "error", str(blocked), None)
                 entry.update(routing_reason=blocked.reason, routing_receipt_id=_routing_resolution["receipt_id"])
@@ -461,6 +478,7 @@ def _build_children(
                 managed_resolution=_routing_resolution, **_task_overrides,
             )
         except ValueError as exc:
+            discard_unstarted_children(parent_agent, children)
             return [], str(exc)
         if _routing_enforced:
             if _routing_resolution.get("reasoning_effort"):

@@ -525,8 +525,9 @@ _SPECS = [
          help="Guided model routing: publish/activate policy revisions, inspect receipts",
          description=(
              "Manage the origin profile's guided-routing policy used to resolve "
-             "--routing-role tasks at claim time (plans/2026-09-15_141016-"
-             "guided-model-routing.md). Publishing/activating a policy is a "
+             "--routing-role tasks at claim time. See "
+             "website/docs/user-guide/features/kanban-worker-lanes.md "
+             "(Guided model routing). Publishing/activating a policy is a "
              "local, auditable admission step — it never itself dispatches a "
              "worker or changes a running task's route."
          )),

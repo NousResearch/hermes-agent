@@ -107,10 +107,11 @@ def test_allowlist_config_read_failure_skips_all_cards(
     def raise_read_error(**_kwargs):
         raise OSError("config unavailable")
 
-    monkeypatch.setattr(config_effective, "load_user_config_effective", raise_read_error)
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="foreign card", assignee="default")
-        res = kbd.dispatch_once(conn, dry_run=True)
+        with monkeypatch.context() as patch:
+            patch.setattr(config_effective, "load_user_config_effective", raise_read_error)
+            res = kbd.dispatch_once(conn, dry_run=True)
     assert res.spawned == []
     assert res.skipped_nonspawnable == [tid]
 

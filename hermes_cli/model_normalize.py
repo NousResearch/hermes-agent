@@ -62,6 +62,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "xiaomi-token-plan",
     "arcee",
     "ollama-cloud",
     "nebius-token-factory",
@@ -84,7 +85,7 @@ _CATALOGUE_PREFIX_REPAIR_PROVIDERS: frozenset[str] = frozenset({
 # Providers whose APIs require lowercase model IDs (Xiaomi rejects ``MiMo-V2.5-Pro`` copied from
 # marketing docs; only ``mimo-v2.5-pro`` works). Applied after matching-prefix stripping.
 _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
-    "xiaomi"})
+    "xiaomi", "xiaomi-token-plan"})
 
 # DeepSeek retired ``deepseek-chat`` / ``deepseek-reasoner`` on 2026-07-24 (HTTP 400 since); saved
 # configs still carry them, so they fold onto the current Flash id (thinking mode is controlled by

@@ -2767,6 +2767,12 @@ OPTIONAL_ENV_VARS = {
     "XIAOMI_BASE_URL": _prov(
         "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
         "Xiaomi base URL (leave empty for default)", None, password=False),
+    "XIAOMI_TOKEN_PLAN_API_KEY": _prov(
+        "Xiaomi MiMo Token Plan key (separate from the pay-as-you-go API key)",
+        "Xiaomi MiMo Token Plan API Key", "https://platform.xiaomimimo.com", advanced=False),
+    "XIAOMI_TOKEN_PLAN_BASE_URL": _prov(
+        "Xiaomi MiMo Token Plan regional OpenAI-compatible base URL (China, Singapore, or Europe)",
+        "Xiaomi Token Plan base URL", None, password=False),
     "UPSTAGE_API_KEY": _prov("Upstage API key for Solar LLM models", "Upstage API Key",
         "https://console.upstage.ai/api-keys", advanced=False),
     "UPSTAGE_BASE_URL": _prov("Upstage base URL override (default: https://api.upstage.ai/v1)",

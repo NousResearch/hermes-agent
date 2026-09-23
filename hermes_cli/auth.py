@@ -234,6 +234,8 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
     ("kilocode", "Kilo Code", "https://api.kilo.ai/api/gateway", ("KILOCODE_API_KEY",), "KILOCODE_BASE_URL"),
     ("huggingface", "Hugging Face", "https://router.huggingface.co/v1", ("HF_TOKEN",), "HF_BASE_URL"),
     ("xiaomi", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", ("XIAOMI_API_KEY",), "XIAOMI_BASE_URL"),
+    ("xiaomi-token-plan", "Xiaomi MiMo Token Plan", "https://token-plan-sgp.xiaomimimo.com/v1",
+     ("XIAOMI_TOKEN_PLAN_API_KEY",), "XIAOMI_TOKEN_PLAN_BASE_URL"),
     ("tencent-tokenhub", "Tencent TokenHub", "https://tokenhub.tencentmaas.com/v1", ("TOKENHUB_API_KEY",),
      "TOKENHUB_BASE_URL"),
     ("tencent-tokenplan", "Tencent TokenPlan", "https://api.lkeap.cloud.tencent.com/plan/anthropic",

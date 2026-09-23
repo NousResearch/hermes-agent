@@ -64,6 +64,9 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "xai": HermesOverlay(transport="codex_responses", base_url_override="https://api.x.ai/v1", base_url_env_var="XAI_BASE_URL"),
     "nvidia": HermesOverlay(base_url_override="https://integrate.api.nvidia.com/v1", base_url_env_var="NVIDIA_BASE_URL"),
     "xiaomi": HermesOverlay(base_url_env_var="XIAOMI_BASE_URL"),
+    "xiaomi-token-plan": HermesOverlay(extra_env_vars=("XIAOMI_TOKEN_PLAN_API_KEY",),
+                                        base_url_override="https://token-plan-sgp.xiaomimimo.com/v1",
+                                        base_url_env_var="XIAOMI_TOKEN_PLAN_BASE_URL"),
     "tencent-tokenhub": HermesOverlay(base_url_env_var="TOKENHUB_BASE_URL"),
     "tencent-tokenplan": HermesOverlay(transport="anthropic_messages",
                                        base_url_override="https://api.lkeap.cloud.tencent.com/plan/anthropic",
@@ -141,7 +144,8 @@ ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.item
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
-    "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
+    "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo",
+    "xiaomi-token-plan": "Xiaomi MiMo Token Plan", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",

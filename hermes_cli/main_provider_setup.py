@@ -24,7 +24,7 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
 _GENERIC_API_KEY_PROVIDERS = frozenset({
     "openai-api", "gemini", "deepseek", "xai", "zai", "kimi-coding-cn",
     "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go",
-    "alibaba", "huggingface", "xiaomi", "arcee", "gmi",
+    "alibaba", "huggingface", "xiaomi", "xiaomi-token-plan", "arcee", "gmi",
     "nvidia", "ollama-cloud", "tencent-tokenhub", "tencent-tokenplan", "lmstudio"})
 
 

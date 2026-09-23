@@ -1185,8 +1185,34 @@ export const en: Translations = {
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: {
       dangerZone: 'Danger zone',
+      checkingInstalled: 'Checking what’s installed…',
+      uninstallHermes: 'Uninstall Hermes',
+      chooseHowMuch:
+        'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
       confirmUninstall: 'Confirm uninstall',
-      uninstallHermes: 'Uninstall Hermes'
+      confirmBody: what => `This removes ${what}. This can’t be undone.`,
+      appLabel: 'App:',
+      couldNotStart: 'Uninstall could not start.',
+      uninstalling: 'Uninstalling…',
+      yesUninstall: 'Yes, uninstall',
+      options: {
+        gui: {
+          title: 'Uninstall Chat GUI only',
+          description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+          consequence: 'the desktop Chat GUI (this app and its data)'
+        },
+        lite: {
+          title: 'Uninstall GUI + agent, keep my data',
+          description:
+            'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+          consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+        },
+        full: {
+          title: 'Uninstall everything',
+          description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+          consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+        }
+      }
     },
     poolLimits: {
       warmBotBackendsAria: 'Warm bot backends',

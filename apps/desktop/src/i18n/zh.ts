@@ -1155,8 +1155,32 @@ export const zh = defineLocale({
     }),
     uninstallSection: {
       dangerZone: '危险操作',
+      checkingInstalled: '正在检查已安装内容…',
+      uninstallHermes: '卸载 Hermes',
+      chooseHowMuch: '选择要删除的内容。应用会关闭以完成卸载；随时重新打开安装程序即可恢复。',
       confirmUninstall: '确认卸载',
-      uninstallHermes: '卸载 Hermes'
+      confirmBody: what => `这将删除${what}。此操作无法撤销。`,
+      appLabel: '应用：',
+      couldNotStart: '无法开始卸载。',
+      uninstalling: '正在卸载…',
+      yesUninstall: '是，卸载',
+      options: {
+        gui: {
+          title: '仅卸载聊天图形界面',
+          description: '仅移除此桌面应用。Hermes 智能体、你的配置和聊天记录都会保留。',
+          consequence: '桌面聊天图形界面（此应用及其数据）'
+        },
+        lite: {
+          title: '卸载图形界面和智能体，保留数据',
+          description: '移除应用和 Hermes 智能体，但保留配置、聊天记录和密钥，以便将来重新安装。',
+          consequence: '聊天图形界面和 Hermes 智能体（配置、聊天记录和密钥会保留）'
+        },
+        full: {
+          title: '全部卸载',
+          description: '移除应用、智能体和所有用户数据——配置、聊天记录、定时任务、密钥和日志。',
+          consequence: '全部内容——聊天图形界面、Hermes 智能体以及你的所有配置、聊天记录、密钥和日志'
+        }
+      }
     },
     poolLimits: {
       warmBotBackendsAria: '预热机器人后端',

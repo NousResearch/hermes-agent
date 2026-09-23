@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   postgres:
-    name: PostgreSQL session storage
+    name: PostgreSQL storage
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -49,7 +49,8 @@ jobs:
             tests/agent/test_postgres_insights.py \
             tests/gateway/test_postgres_delivery_ledger.py \
             tests/cron/test_postgres_cron_stores.py \
-            tests/hermes_cli/test_postgres_kanban.py
+            tests/hermes_cli/test_postgres_kanban.py \
+            tests/hermes_cli/test_postgres_remaining_stores.py
         env:
           HERMES_TEST_POSTGRES: "1"
           HERMES_TEST_WORKERS: "4"

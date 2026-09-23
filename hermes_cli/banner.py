@@ -224,6 +224,32 @@ def _is_full_sha(value: Optional[str]) -> bool:
 _compare_payload_cache: Dict[tuple, dict] = {}
 
 
+def _github_api_read(url: str, accept: str) -> bytes:
+    """Read a GitHub API response with configured auth, retrying stale credentials anonymously.
+
+    Update checks are best effort: a rejected local token must not prevent the
+    public endpoint from answering within the anonymous quota.
+    """
+    import urllib.request
+    from urllib.error import HTTPError
+    from tools.skills_hub_github import GitHubAuth
+
+    def _request(headers: dict[str, str]) -> bytes:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.read()
+
+    headers = dict(GitHubAuth().get_headers())
+    headers["Accept"] = accept
+    headers["User-Agent"] = "hermes-cli-update-check"
+    try:
+        return _request(headers)
+    except HTTPError as error:
+        if error.code != 401 or "Authorization" not in headers:
+            raise
+    return _request({"Accept": accept, "User-Agent": "hermes-cli-update-check"})
+
+
 def _github_compare(current_rev: str, target_rev: str) -> Optional[dict]:
     """Compare payload for ``current...target`` from the GitHub API; memoized per process.
 
@@ -239,12 +265,7 @@ def _github_compare(current_rev: str, target_rev: str) -> Optional[dict]:
     url = f"https://api.github.com/repos/nousresearch/hermes-agent/compare/{current_rev}...{target_rev}"
 
     def _fetch():
-        import urllib.request
-        # api.github.com 403s requests without a User-Agent.
-        req = urllib.request.Request(
-            url, headers={"Accept": "application/vnd.github+json", "User-Agent": "hermes-cli-update-check"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        return json.loads(_github_api_read(url, "application/vnd.github+json").decode("utf-8"))
     payload = _quiet(_fetch)
     if not isinstance(payload, dict):
         return None
@@ -307,17 +328,13 @@ def _tips_behind(head_rev: Optional[str], target_rev: Optional[str], repo_dir: O
 
 
 def _github_branch_tip(repo_slug: str, branch: str) -> Optional[str]:
-    """Tip SHA of ``branch`` on GitHub via the REST API (40-byte body, no git, no auth)."""
+    """Tip SHA of ``branch`` on GitHub via the REST API (40-byte body, no git)."""
     from urllib.parse import quote
 
     url = f"https://api.github.com/repos/{repo_slug}/commits/{quote(branch, safe='')}"
 
     def _fetch():
-        import urllib.request
-        req = urllib.request.Request(
-            url, headers={"Accept": "application/vnd.github.sha", "User-Agent": "hermes-cli-update-check"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.read().decode("utf-8").strip()
+        return _github_api_read(url, "application/vnd.github.sha").decode("utf-8").strip()
     sha = _quiet(_fetch)
     return sha if _is_full_sha(sha) else None
 

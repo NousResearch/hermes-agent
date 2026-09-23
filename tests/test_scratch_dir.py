@@ -32,6 +32,27 @@ def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
     assert "TMP" not in user_env  # a partially user-set triple is left exactly as found
 
 
+def test_msys_default_tmp_is_reclaimed_but_real_choices_survive(tmp_path):
+    """Git Bash pre-sets the temp triple to ``/tmp``; that default is reclaimed for scratch,
+    while a genuine user value — including ``/tmp`` outside MSYS — is still left alone."""
+    scratch = str(tmp_path / "cache" / "scratch")
+
+    msys_env = {"HERMES_HOME": str(tmp_path), "MSYSTEM": "MINGW64",
+                "TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": "/tmp"}
+    assert apply_scratch_tmp_env(msys_env) is True
+    assert msys_env["TMPDIR"] == msys_env["TMP"] == msys_env["TEMP"] == scratch
+
+    # Same value, no MSYSTEM: a plain POSIX shell pointed at /tmp on purpose.
+    posix_env = {"HERMES_HOME": str(tmp_path), "TMPDIR": "/tmp"}
+    assert apply_scratch_tmp_env(posix_env) is False
+    assert posix_env["TMPDIR"] == "/tmp"
+
+    # Under MSYS but pointed somewhere deliberate: still the user's call.
+    chosen_env = {"HERMES_HOME": str(tmp_path), "MSYSTEM": "MINGW64", "TMPDIR": "D:/scratch"}
+    assert apply_scratch_tmp_env(chosen_env) is False
+    assert chosen_env["TMPDIR"] == "D:/scratch"
+
+
 def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
     """``import hermes_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch."""
     env = {k: v for k, v in os.environ.items() if k not in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR")}

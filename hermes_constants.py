@@ -9,7 +9,7 @@ import re
 import shutil
 import stat
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -1259,19 +1259,36 @@ def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
     return total
 
 
+def _msys_default_tmp(env: Mapping[str, str]) -> str:
+    """Return the temp value MSYS/Git Bash pre-sets, or "" when not under MSYS.
+
+    A Git Bash shell exports ``TMPDIR``/``TMP``/``TEMP`` as ``/tmp`` before Hermes runs, so the
+    "user set it deliberately" check below would see a value that nobody chose and skip the
+    scratch dir. ``MSYSTEM`` is set by those shells and by nothing else, so the reclaim stays
+    scoped: a POSIX ``/tmp``, macOS ``/var/folders/...`` or a real ``%TEMP%`` is still honoured.
+    """
+    if not env.get("MSYSTEM", "").strip():
+        return ""
+    return "/tmp"
+
+
 def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     """Point ``TMPDIR``/``TMP``/``TEMP`` in *env* at the scratch dir of ``env["HERMES_HOME"]``.
 
     A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
-    respected and nothing changes. A value Hermes itself exported earlier — recognisable
+    respected and nothing changes. The one exception is the ``/tmp`` that MSYS/Git Bash
+    exports into every shell it starts (see :func:`_msys_default_tmp`): that is a shell
+    default rather than a choice, so it is reclaimed. A value Hermes itself exported
+    earlier — recognisable
     because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
     profile's home gets that home's scratch dir rather than its parent's. Returns True when
     the vars were (re)written.
     """
     ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
+    inherited = _msys_default_tmp(env)
     for key in SCRATCH_TMP_ENV_VARS:
         value = env.get(key, "").strip()
-        if value and value != ours:
+        if value and value != ours and value != inherited:
             return False
     home = env.get("HERMES_HOME", "").strip()
     try:

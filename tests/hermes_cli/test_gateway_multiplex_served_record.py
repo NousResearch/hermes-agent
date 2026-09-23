@@ -227,9 +227,10 @@ def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):
 def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypatch):
     """`gateway restart` for a served profile restarts the multiplexer (a `-p X` child only exits 78 into
     the action log); `start`/`stop` refuse; a profile with its own gateway is managed normally."""
-    from hermes_cli import profiles as profiles_mod
+    from hermes_cli import web_server_gateway
     from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
-    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
+    # No stub: a served profile's liveness answers "running" on the MULTIPLEXER's pid, and that must
+    # not read as a gateway of its own (stubbing it False hid exactly that).
     # This process's own HERMES_HOME is coder's; the restart child must still run under the DEFAULT
     # home (the multiplexer's) — a bare `gateway restart` here would inherit coder's home and exit 78.
     restart = _gateway_subcommand("coder", "restart")
@@ -239,7 +240,7 @@ def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypat
     assert _gateway_subcommand("other", "restart") == ["-p", "other", "gateway", "restart"]
     assert multiplexed_profile_refusal("other", "stop") is None
     # coder started its own gateway with --force: it is that gateway the verbs address.
-    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: True)
+    monkeypatch.setattr(web_server_gateway, "_has_own_gateway", lambda profile_dir: True)
     assert _gateway_subcommand("coder", "restart") == ["-p", "coder", "gateway", "restart"]
     assert multiplexed_profile_refusal("coder", "stop") is None
 
@@ -260,10 +261,8 @@ def test_the_multiplexer_restart_names_the_root_even_under_a_sticky_active_profi
     action log says restarted and the multiplexer never was."""
     from pathlib import Path
 
-    from hermes_cli import profiles as profiles_mod
     from hermes_cli.main import _apply_profile_override
     from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment
-    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
     monkeypatch.setenv("HERMES_HOME", str(served_root))  # the dashboard runs as the default profile
     (served_root / "active_profile").write_text("coder")
     monkeypatch.setattr(Path, "home", lambda: served_root.parent)
@@ -277,3 +276,13 @@ def test_the_multiplexer_restart_names_the_root_even_under_a_sticky_active_profi
     monkeypatch.setattr("sys.argv", ["hermes", *restart])
     _apply_profile_override()  # what the spawned child does first
     assert os.environ["HERMES_HOME"] == str(served_root)
+
+
+def test_the_topology_lists_a_served_profile_under_the_multiplexer_not_as_its_own_gateway(served_root, monkeypatch):
+    """`/api/status` topology: a served profile's liveness is the multiplexer's, so it is one gateway
+    serving both, not a second gateway entry for `coder` beside it."""
+    from hermes_cli.web_server_gateway import _collect_profile_gateway_topology
+    monkeypatch.setenv("HERMES_HOME", str(served_root))
+    topology = _collect_profile_gateway_topology()
+    assert [g["profile"] for g in topology["gateways"]] == ["default"]
+    assert "coder" in topology["gateways"][0]["served_profiles"]

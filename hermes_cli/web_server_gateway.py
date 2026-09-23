@@ -158,7 +158,9 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     multiplex = False
     for name, home in homes:
         try:
-            if not _check_gateway_running(home):
+            # A served profile's liveness is the multiplexer's: listing it here showed one phantom
+            # gateway per served profile beside the host.
+            if not (_check_gateway_running(home) if name == "default" else _has_own_gateway(home)):
                 continue
         except Exception:
             continue
@@ -528,6 +530,24 @@ def _profile_is_multiplexed(profile: str) -> bool:
     return named_profile_served_by_running_multiplexer(profile)
 
 
+def _has_own_gateway(profile_dir: Path) -> bool:
+    """A live gateway of the profile's OWN (a ``--force``-started separate one), not the multiplexer that
+    serves it. Gateway liveness reports a served profile as running on the multiplexer's PID (#97120),
+    so reading liveness alone made every served profile look self-hosted and the refusal below never
+    fired while a multiplexer was live, which is the only time it is needed."""
+    from gateway.status import get_running_pid, multiplexer_liveness_for_profile, resolve_gateway_liveness
+    from hermes_cli.profiles import _check_gateway_running
+    if not _check_gateway_running(profile_dir):
+        return False
+    served = multiplexer_liveness_for_profile(profile_dir)
+    if served is None:
+        return True
+    liveness = resolve_gateway_liveness(
+        profile_dir=profile_dir, use_cache=False,
+        pid_probe=lambda path: get_running_pid(path, cleanup_stale=False))
+    return liveness.running and liveness.pid != served[0]
+
+
 def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[str]:
     """Refusal text for ``gateway start``/``stop`` on a named profile with no gateway of its own (a
     ``--force``-started separate one is managed normally), else None. ``stop`` is refused only when the
@@ -552,8 +572,7 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
         return standalone_rescan_message(requested)
     if not served and verb != "start":
         return None
-    from hermes_cli.profiles import _check_gateway_running
-    if _check_gateway_running(profile_dir):
+    if _has_own_gateway(profile_dir):
         return None
     if served:
         return (f"The default gateway already serves profile '{requested}' as a multiplexer; "

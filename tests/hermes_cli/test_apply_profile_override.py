@@ -307,3 +307,72 @@ class TestGeneralizedSupervisorMarkers:
 
         plist = generate_launchd_plist()
         assert "<key>HERMES_SUPERVISED_CHILD</key>" in plist
+
+
+class TestOneshotGatewayCommandsHonorStickyProfile:
+    """Regression tests for issue #113206.
+
+    A one-shot ``gateway restart`` typed into a shell that merely carries a
+    supervisor marker (inherited env, not a supervised slot) is an operator
+    command, not a supervised child. It must honor the sticky
+    ``active_profile``; only the supervised serving process (``gateway run``)
+    is barred from following it (#74872).
+    """
+
+    def _root_home(self, tmp_path):
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        return hermes_root
+
+    def test_restart_under_supervisor_marker_follows_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """HERMES_SUPERVISED_CHILD=1 + `gateway restart` must resolve the
+        sticky profile, not silently restart the default-profile unit."""
+        self._root_home(tmp_path)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="deepseek",
+            argv=["hermes", "gateway", "restart"],
+            extra_env={"HERMES_SUPERVISED_CHILD": "1"},
+        )
+        assert result is not None
+        assert result.endswith("deepseek"), (
+            "gateway restart under a supervisor marker resolved "
+            f"{result!r} instead of the sticky profile"
+        )
+
+    def test_status_under_supervisor_marker_follows_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """Same one-shot principle for `gateway status` — the marker must
+        not flip read-only resolution to the default root either."""
+        self._root_home(tmp_path)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="deepseek",
+            argv=["hermes", "gateway", "status"],
+            extra_env={"INVOCATION_ID": "deadbeef" * 4},
+        )
+        assert result is not None
+        assert result.endswith("deepseek")
+
+    def test_run_under_supervisor_marker_still_skips_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """Guard: the supervised serving process itself (`gateway run`) must
+        keep ignoring the sticky pointer (#74872)."""
+        hermes_root = self._root_home(tmp_path)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="deepseek",
+            argv=["hermes", "gateway", "run"],
+            extra_env={"HERMES_SUPERVISED_CHILD": "1"},
+        )
+        assert result == str(hermes_root)

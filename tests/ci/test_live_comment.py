@@ -12,6 +12,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
 
 _PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "live_comment.py"
 _spec = importlib.util.spec_from_file_location("live_comment", _PATH)
@@ -85,6 +86,55 @@ def test_parse_watch_workflows_keeps_commas_inside_a_name():
     ]
     assert _mod.parse_watch_workflows("A\nB\n\n  C  \n") == ["A", "B", "C"]
     assert _mod.parse_watch_workflows("") == []
+
+
+def test_workflow_watch_list_names_a_workflow_that_exists():
+    """The names the workflow passes must match real workflow ``name:`` values.
+
+    A name that matches nothing makes the poller silently drop that run
+    from the comment, which no unit test on its own would notice.
+    """
+    yaml = pytest.importorskip("yaml")
+    root = Path(__file__).resolve().parents[2]
+    caller = yaml.safe_load(
+        (root / ".github/workflows/ci-review-comment.yml").read_text(encoding="utf-8")
+    )
+    step = next(
+        s for s in caller["jobs"]["comment"]["steps"]
+        if "WATCH_WORKFLOWS" in (s.get("env") or {})
+    )
+    watched = _mod.parse_watch_workflows(step["env"]["WATCH_WORKFLOWS"])
+    assert watched, "the poller is watching nothing"
+
+    known = set()
+    for path in (root / ".github/workflows").glob("*.yml"):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(doc, dict) and isinstance(doc.get("name"), str):
+            known.add(doc["name"])
+
+    assert set(watched) <= known, f"unknown workflow names: {set(watched) - known}"
+
+
+def test_poller_never_watches_its_own_workflow():
+    """The poller's own run must never gate completion.
+
+    ``runs_all_completed`` waits until every relevant run is completed.
+    The poller's run is in progress for as long as it polls, so watching
+    itself would make the loop wait for itself and only ever exit on
+    timeout.
+    """
+    yaml = pytest.importorskip("yaml")
+    root = Path(__file__).resolve().parents[2]
+    doc = yaml.safe_load(
+        (root / ".github/workflows/ci-review-comment.yml").read_text(encoding="utf-8")
+    )
+    own_name = doc["name"]
+    step = next(
+        s for s in doc["jobs"]["comment"]["steps"]
+        if "WATCH_WORKFLOWS" in (s.get("env") or {})
+    )
+    watched = _mod.parse_watch_workflows(step["env"]["WATCH_WORKFLOWS"])
+    assert own_name not in watched
 
 
 # ─── runs_all_completed ───────────────────────────────────────────────

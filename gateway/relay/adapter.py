@@ -95,6 +95,17 @@ def _event_ids(event) -> Tuple[Optional[str], Optional[str]]:
     return message_id, getattr(event.source, "chat_id", None)
 
 
+def _profile_from_session_key(session_key: str) -> Optional[str]:
+    """Named profile encoded in an ``agent:<ns>:...`` session key; None for the legacy ``agent:main``
+    namespace (single-profile gateway) so the wire frame stays byte-identical there."""
+    parts = (session_key or "").split(":")
+    if len(parts) < 2 or parts[0] != "agent" or not parts[1]:
+        return None
+    from gateway.session import profile_from_session_key_namespace
+    profile = profile_from_session_key_namespace(parts[1])
+    return None if profile == "default" else profile
+
+
 class RelayAdapter(BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
@@ -125,6 +136,10 @@ class RelayAdapter(BasePlatformAdapter):
         # platforms on one WS and a reply must egress through the platform the
         # inbound came from. Empty for a single-platform gateway (connector default).
         self._platform_by_chat: Dict[str, str] = {}
+        # chat_id -> Hermes profile the connector routed the inbound to (multiplex mode). Echoed
+        # on every outbound frame's metadata so the connector can stamp the SAME profile on the
+        # next passthrough_forward for that chat; empty on a single-profile gateway.
+        self._profile_by_chat: Dict[str, str] = {}
         # Chats the connector has refused (see the terminal-decline latch).
         # chat_id -> (thread_id, initial_name) of the auto-thread the CONNECTOR
         # created for our latest send; read by the semantic thread-rename lane.
@@ -1042,6 +1057,7 @@ class RelayAdapter(BasePlatformAdapter):
             for attr, cache in (
                 ("user_id", self._dm_user_by_chat), ("scope_id", self._scope_by_chat),
                 ("chat_type", self._chat_type_by_chat),
+                ("profile", self.__dict__.setdefault("_profile_by_chat", {})),
             ):
                 value = getattr(src, attr, None)
                 if value:
@@ -1059,7 +1075,11 @@ class RelayAdapter(BasePlatformAdapter):
         first and only falls back to user_id on a route miss, so carrying both never
         overrides routing-table resolution."""
         meta: Dict[str, Any] = dict(metadata or {})
-        for key, cache in (("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat)):
+        # ``getattr``: relay tests build bare adapters via ``__new__`` without ``__init__``.
+        for key, cache in (
+            ("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat),
+            ("profile", getattr(self, "_profile_by_chat", {})),
+        ):
             if not meta.get(key):
                 value = cache.get(str(chat_id))
                 if value:
@@ -1698,13 +1718,20 @@ class RelayAdapter(BasePlatformAdapter):
         # default routes it.
         prefix = kind.split(".", 1)[0] if kind and "." in kind else None
         follow_up_platform = prefix if prefix and self.fronts_platform(prefix) else None
+        follow_up_metadata = dict(metadata or {})
+        # The session key names the profile namespace the interaction ran under; carry it so the
+        # connector's next passthrough_forward for this interaction routes to the same profile.
+        if not follow_up_metadata.get("profile"):
+            profile = _profile_from_session_key(session_key)
+            if profile:
+                follow_up_metadata["profile"] = profile
         result = await self._transport.send_follow_up(
             {
                 "op": "follow_up",
                 "session_key": session_key,
                 "kind": kind,
                 "content": content,
-                "metadata": metadata or {},
+                "metadata": follow_up_metadata,
             },
             platform=follow_up_platform,
         )
@@ -2203,7 +2230,57 @@ class RelayAdapter(BasePlatformAdapter):
             meta["thread_id"] = str(thread_id)
         return meta
 
-    # ── Phase 3 ack lifecycle (👀 → ✅/❌) ────────────────────────────────
+    # ── Phase 3 ack lifecycle (in-progress → outcome reaction) ───────────────
+
+    # Telegram accepts only a CURATED reaction vocabulary — the 73 emoji listed
+    # on `ReactionTypeEmoji` (https://core.telegram.org/bots/api#reactiontypeemoji,
+    # "Reaction emoji. Currently, it can be one of …"). 👀 (U+1F440) is in that
+    # set; ✅ (U+2705) and ❌ (U+274C) are NOT. So on Telegram the in-progress
+    # ack landed and every completion ack was rejected by the Bot API — the
+    # `turn_ack_reaction_lifecycle` finding ("👀 lands and is removed on
+    # completion; the ✅ completion reaction never lands"). Because a react
+    # failure is deliberately cosmetic (`_react` is best-effort, logged at
+    # debug), it failed silently on every single Telegram turn.
+    #
+    # 👍/👎 are both in Telegram's set and carry the same success/failure sense.
+    # Platforms with free-form reaction vocabularies (Slack, Discord, Matrix,
+    # Signal) keep ✅/❌, which read better and are what their users already see.
+    # Per-platform divergence here follows `_descriptor_for_chat`'s precedent:
+    # platform capabilities genuinely differ, so one hardcoded set cannot serve
+    # every lane a multi-platform gateway fronts.
+    _ACK_EMOJI_DEFAULT = ("👀", "✅", "❌")
+    _ACK_EMOJI_BY_PLATFORM = {
+        "telegram": ("👀", "👍", "👎"),
+    }
+    # `_event_from_wire` maps an absent OR unknown wire platform to
+    # `Platform.RELAY`, so an unresolved lane arrives as the truthy string
+    # "relay", never as "". Treating only "" as unresolved makes the fallback
+    # dead code and silently serves ✅ to a Telegram-primary gateway whose
+    # connector did not stamp the platform.
+    _ACK_PLATFORM_UNRESOLVED = frozenset({"", "relay"})
+
+    def _ack_emoji(self, event, chat_id) -> tuple:
+        """(in_progress, success, failure) for the lane this event arrived on.
+
+        Prefers the EVENT's own platform: an ack always follows an inbound
+        event, so the platform is on hand and needs no cache. Falls back to the
+        chat's lane as seen inbound, then to the descriptor's primary platform.
+        Each candidate is checked in turn because any of them can be the
+        placeholder "relay", which resolves nothing.
+
+        `Platform` is a plain `Enum`, so `str()` on a member yields
+        "Platform.TELEGRAM", not "telegram" — read `.value` first or every
+        lookup misses and silently falls back to the default set.
+        """
+        for candidate in (
+            getattr(getattr(event, "source", None), "platform", None),
+            self._platform_by_chat.get(str(chat_id)),
+            getattr(self.descriptor, "platform", None),
+        ):
+            name = str(getattr(candidate, "value", candidate) or "").lower()
+            if name and name not in self._ACK_PLATFORM_UNRESOLVED:
+                return self._ACK_EMOJI_BY_PLATFORM.get(name, self._ACK_EMOJI_DEFAULT)
+        return self._ACK_EMOJI_DEFAULT
 
     async def _react(
         self,
@@ -2231,21 +2308,24 @@ class RelayAdapter(BasePlatformAdapter):
         return result is not None
 
     async def on_processing_start(self, event) -> None:
-        """Add the 👀 in-progress reaction (op-gated; silent no-op otherwise)."""
+        """Add the in-progress reaction (op-gated; silent no-op otherwise)."""
         message_id, chat_id = _event_ids(event)
         if message_id and chat_id:
-            await self._react(str(chat_id), str(message_id), "👀")
+            eyes, _ok, _fail = self._ack_emoji(event, chat_id)
+            await self._react(str(chat_id), str(message_id), eyes)
 
     async def on_processing_complete(self, event, outcome) -> None:
-        """Swap 👀 for ✅/❌ per outcome (op-gated; silent no-op otherwise)."""
+        """Swap the in-progress reaction for the outcome one (op-gated; silent
+        no-op otherwise)."""
         message_id, chat_id = _event_ids(event)
         if not (message_id and chat_id):
             return
-        await self._react(str(chat_id), str(message_id), "👀", remove=True)
+        eyes, ok_emoji, fail_emoji = self._ack_emoji(event, chat_id)
+        await self._react(str(chat_id), str(message_id), eyes, remove=True)
         if outcome == ProcessingOutcome.SUCCESS:
-            await self._react(str(chat_id), str(message_id), "✅")
+            await self._react(str(chat_id), str(message_id), ok_emoji)
         elif outcome == ProcessingOutcome.FAILURE:
-            await self._react(str(chat_id), str(message_id), "❌")
+            await self._react(str(chat_id), str(message_id), fail_emoji)
 
     # ── Phase 4 thread lifecycle ──────────────────────────────────────────
 

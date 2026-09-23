@@ -12,7 +12,9 @@ only HERMES_HOME. And the launch-profile asymmetry: a default-member hosted-room
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -131,6 +133,70 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     r = server._methods["model.options"]("r2", {"profile": "b"})
     assert r["result"] == {"providers": []}
     assert seen["options"] == (b, B_VAL, None)
+
+
+@pytest.mark.parametrize("route", ["session.compress", "slash.compress"])
+def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, monkeypatch, route):
+    """Manual compression must resolve secrets from its session across an A→B→A sequence."""
+    from agent.secret_scope import get_secret
+    from hermes_constants import get_hermes_home
+
+    root, b = two_homes
+    seen = []
+
+    def observe_scope():
+        seen.append((Path(get_hermes_home()), get_secret("A_ONLY_TOKEN"), get_secret("B_ONLY_TOKEN")))
+
+    def invoke(profile_home):
+        sid = f"compress-{len(seen)}"
+        agent = SimpleNamespace(_cached_system_prompt="", tools=None)
+        session = {
+            "agent": agent,
+            "profile_home": str(profile_home) if profile_home else None,
+            "history": [{"role": "user", "content": "hello"}],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "running": False,
+            "session_key": sid,
+        }
+        server._sessions[sid] = session
+        try:
+            if route == "session.compress":
+                monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
+                monkeypatch.setattr(server, "_sess", lambda params, rid: (session, None))
+                monkeypatch.setattr(server, "_session_uses_compute_host", lambda value: False)
+
+                def compress_live(*args, **kwargs):
+                    observe_scope()
+                    return server._ok("rid", {"status": "compressed"})
+
+                monkeypatch.setattr(server, "_compress_live", compress_live)
+                response = server._methods["session.compress"]("rid", {"session_id": sid})
+                assert "error" not in response
+            else:
+                def compress_history(*args, **kwargs):
+                    observe_scope()
+                    raise server.CompressionLockHeld("test holder")
+
+                monkeypatch.setattr(server, "_compress_session_history", compress_history)
+                monkeypatch.setattr(
+                    "agent.model_metadata.estimate_request_tokens_rough", lambda *args, **kwargs: 1)
+                server._compress_live_with_feedback(sid, session, agent, "", snapshot_kwargs=True)
+        finally:
+            server._sessions.pop(sid, None)
+
+    invoke(None)
+    _probe("b")  # activate multiplexing and freeze the launch profile's own secret scope
+    invoke(b)
+    invoke(None)
+
+    assert seen == [
+        (root, A_VAL, None),
+        (b, None, B_VAL),
+        (root, A_VAL, None),
+    ]
+    assert os.environ["A_ONLY_TOKEN"] == A_VAL
+    assert "B_ONLY_TOKEN" not in os.environ
 
 
 def test_config_show_keeps_each_profiles_values_after_multiplex_activation(two_homes):

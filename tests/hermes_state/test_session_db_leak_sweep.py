@@ -20,6 +20,9 @@ test is actually closed by the suite-level sweep.
 
 from __future__ import annotations
 
+import threading
+import time
+
 import hermes_state_guard
 from hermes_state import SessionDB
 
@@ -58,3 +61,24 @@ def test_previously_leaked_instance_was_closed_by_the_sweep():
     # must have closed the leaked instance (writer conn released), which is
     # what bounds fd/RSS growth in single-process runs.
     assert db._conn is None
+
+
+# Same handoff shape for the auto-title upgrade thread a turn leaves behind: it holds the
+# turn's SessionDB, so the sweep must join it before closing stores (else the daemon thread
+# reopens the closed store and races interpreter finalization — the SIGSEGV shape of #113186).
+_upgrade_thread: list[threading.Thread] = []
+
+
+def test_slow_title_upgrade_thread_is_left_running_within_the_test():
+    from agent.title_generator import _UPGRADE_THREADS
+
+    thread = threading.Thread(target=time.sleep, args=(1.5,), name="auto-title", daemon=True)
+    _UPGRADE_THREADS.add(thread)
+    thread.start()
+    assert thread.is_alive()
+    _upgrade_thread.append(thread)
+
+
+def test_title_upgrade_thread_was_joined_before_the_sweep_closed_stores():
+    assert _upgrade_thread, "expected the previous test to have started an upgrade thread"
+    assert not _upgrade_thread.pop().is_alive()

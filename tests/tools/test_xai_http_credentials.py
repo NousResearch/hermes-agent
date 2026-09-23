@@ -184,3 +184,53 @@ def test_prefer_api_key_honors_profile_scope_only_key(tmp_path, monkeypatch):
         secret_scope.reset_secret_scope(token)
         secret_scope.set_multiplex_active(previous_multiplex)
         invalidate_env_cache()
+
+
+# ---------------------------------------------------------------------------
+# #116155: `hermes auth remove xai` suppresses env:XAI_API_KEY, but a stale value
+# still inherited by the gateway process environment overrode the working
+# xai-oauth grant for x_search (prefer_api_key=True).
+# ---------------------------------------------------------------------------
+
+
+def _write_auth_store(tmp_path, monkeypatch, suppressed):
+    import json
+    import time
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"xai-oauth": {"tokens": {
+            "access_token": "oauth-live-token", "refresh_token": "r",
+            "expires_at": int(time.time() * 1000) + 3_600_000}}},
+        "credential_pool": {},
+        "suppressed_sources": suppressed,
+    }), encoding="utf-8")
+
+
+@pytest.mark.parametrize("suppressed, expected_provider", [
+    ({"xai": ["env:XAI_API_KEY"]}, "xai-oauth"),   # removed source is ignored -> OAuth serves
+    ({}, "xai"),                                    # control: the env key still wins when not removed
+])
+def test_suppressed_env_key_does_not_override_oauth(tmp_path, monkeypatch, suppressed, expected_provider):
+    from hermes_cli.config import invalidate_env_cache
+    from tools.xai_http import resolve_xai_http_credentials
+
+    _write_auth_store(tmp_path, monkeypatch, suppressed)
+    monkeypatch.setenv("XAI_API_KEY", "dead-creditless-team-key")
+    invalidate_env_cache()
+
+    creds = resolve_xai_http_credentials(prefer_api_key=True)
+    assert creds["provider"] == expected_provider
+    assert (creds["api_key"] == "dead-creditless-team-key") is (expected_provider == "xai")
+
+
+def test_suppression_is_scoped_to_its_provider(tmp_path, monkeypatch):
+    """Suppressing xai's env source must not blind another provider's env read."""
+    from tools.tool_backend_helpers import resolve_provider_secret
+
+    _write_auth_store(tmp_path, monkeypatch, {"xai": ["env:XAI_API_KEY"]})
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
+    monkeypatch.setenv("XAI_API_KEY", "dead-key")
+    assert resolve_provider_secret("ELEVENLABS_API_KEY", "elevenlabs") == "el-key"
+    assert resolve_provider_secret("XAI_API_KEY", "xai") == ""

@@ -14,7 +14,7 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
-    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
+    FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
@@ -222,8 +222,12 @@ class SessionSearchMixin:
         return {"pending": True, "total": total, "indexed": progress, "percent": min(100, int(100 * progress / total))}
 
     # Re-index rows in an id window the index is missing. docsize has one row
-    # per indexed doc, so the anti-join is exact. Params: (lo, hi) — the base sweep
-    # takes (hw, prefix_chars, lo, hi): tool rows past the high water index only a prefix.
+    # per indexed doc, so the anti-join is exact. Params: (lo, hi).
+    # NOTE: with the aligned projection (FTS_STORAGE_VERSION 3) every writer
+    # of the index — this sweep, the chunked backfill, and the sync triggers —
+    # feeds ``messages_fts`` through the ONE stable per-row expression:
+    # tool rows are truncated to FTS_TOOL_CONTENT_PREFIX_CHARS, everything
+    # else is verbatim, and nothing consults a moving state_meta marker.
     _BOUNDARY_SWEEP_SQL = (
         "INSERT INTO {table}(rowid, content, tool_name, tool_calls) "
         "SELECT m.id, m.content, m.tool_name, m.tool_calls FROM messages m WHERE m.id > ? AND m.id <= ? {extra}"
@@ -231,7 +235,7 @@ class SessionSearchMixin:
     )
     _BASE_BOUNDARY_SWEEP_SQL = (
         "INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) "
-        "SELECT m.id, CASE WHEN m.role = 'tool' AND m.id > ? THEN substr(COALESCE(m.content, ''), 1, ?) "
+        "SELECT m.id, CASE WHEN m.role = 'tool' THEN substr(COALESCE(m.content, ''), 1, ?) "
         "ELSE m.content END, m.tool_name, m.tool_calls FROM messages m WHERE m.id > ? AND m.id <= ? "
         "AND NOT EXISTS (SELECT 1 FROM messages_fts_docsize d WHERE d.id = m.id)"
     )
@@ -244,7 +248,9 @@ class SessionSearchMixin:
     )
     _CHUNK_INSERT_SQL = (
         "INSERT INTO {table}(rowid, content, tool_name, tool_calls) "
-        "SELECT id, content, tool_name, tool_calls FROM messages WHERE id > ? AND id <= ?{extra}"
+        "SELECT id, CASE WHEN role = 'tool' "
+        f"THEN substr(COALESCE(content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS}) "
+        "ELSE content END, tool_name, tool_calls FROM messages WHERE id > ? AND id <= ?{extra}"
     )
     _TRIGRAM_CHUNK_INSERT_SQL = (
         "INSERT INTO messages_fts_trigram(rowid, content, tool_name) "
@@ -272,13 +278,13 @@ class SessionSearchMixin:
 
     def _rebuild_finish(self, prefix: str, sweep_sqls: List[Tuple[str, bool]]) -> None:
         """Sweep a generous window around the high-water boundary, then clear the markers.
-        ``(sql, bounded)``: a bounded sweep takes the (hw, prefix_chars) tool-content params first."""
+        ``(sql, bounded)``: a bounded sweep takes the tool-content prefix_chars param first."""
         def _do(conn):
             hw_row = _meta_row(conn, f"{prefix}_high_water")
             if hw_row is not None:
                 hw = int(hw_row[0])
                 for sql, bounded in sweep_sqls:
-                    params = (hw, FTS_TOOL_CONTENT_PREFIX_CHARS) if bounded else ()
+                    params = (FTS_TOOL_CONTENT_PREFIX_CHARS,) if bounded else ()
                     conn.execute(sql, (*params, hw - 1000, hw + 1000))
             _delete_meta(conn, f"{prefix}_high_water", f"{prefix}_progress")
         self._execute_write(_do)
@@ -478,12 +484,10 @@ class SessionSearchMixin:
         existing_hw = _meta_row(conn, "fts_rebuild_high_water")
         if existing_hw is not None and not force:
             self._reseed_missing_progress(conn)
-            self.set_meta(FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(int(existing_hw[0])), cursor=conn)
             return int(existing_hw[0])
         hw = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
         self.set_meta("fts_rebuild_high_water", str(hw), cursor=conn)
         self.set_meta("fts_rebuild_progress", "0", cursor=conn)
-        self.set_meta(FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(hw), cursor=conn)
         return int(hw)
 
     def _repair_optimize_bookkeeping(self) -> None:
@@ -1250,9 +1254,11 @@ class SessionSearchMixin:
         handle never issues ``'optimize'``: it rewrites index segments in place and would compound
         structural damage (or a split WAL generation) instead of leaving it diagnosable."""
         self._raise_if_db_corrupt()
-        self._raise_if_db_replaced()
         optimized = 0
         with self._lock:
+            self._raise_if_db_replaced()
+            if self._conn is None:
+                self._reopen_after_close_locked(context="write")
             for tbl in self._present_fts_tables():
                 try:
                     self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('optimize')")
@@ -1281,7 +1287,6 @@ class SessionSearchMixin:
         and at next startup.
         """
         self._raise_if_db_corrupt()
-        self._raise_if_db_replaced()
         rebuilt = 0
         with fts_rebuild_admission(self.db_path) as admitted:
             if not admitted:
@@ -1289,11 +1294,9 @@ class SessionSearchMixin:
                     "Deferred in-place FTS rebuild: another process holds the rebuild authority for this state.db.")
                 return 0
             with self._lock:
-                high_water = self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
-                self._conn.execute(
-                    "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
-                )
+                self._raise_if_db_replaced()
+                if self._conn is None:
+                    self._reopen_after_close_locked(context="write")
                 for tbl in self._present_fts_tables():
                     try:
                         self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')")

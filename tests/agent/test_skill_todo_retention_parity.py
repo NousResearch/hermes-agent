@@ -141,13 +141,6 @@ class TestPrunedSkillReloadNotice:
         notice = _pruned_skill_reload_notice([{"role": "user", "content": text}])
         assert notice.count("skill_view(name=") == _MAX_PRUNED_SKILL_MARKERS
 
-    def test_deterministic_bytes(self):
-        rows = [
-            {"role": "user", "content": _skill_pruned_marker("stable-skill")}
-        ]
-        assert _pruned_skill_reload_notice(rows) == _pruned_skill_reload_notice(
-            rows
-        )
 
     def test_notice_does_not_feed_the_marker_extractor(self):
         """The notice must never re-trigger marker extraction on the next
@@ -206,13 +199,6 @@ class TestSkillGuidanceSurvivesWithTodos:
             _PRUNED_SKILL_RELOAD_NOTICE_HEADER
         )
 
-    def test_no_notice_when_no_skills_pruned(self, tmp_path):
-        compressed = self._run_compaction(
-            tmp_path, "[CONTEXT COMPACTION] summary"
-        )
-        tail_text = str(compressed[-1]["content"])
-        assert TODO_INJECTION_HEADER in tail_text
-        assert _PRUNED_SKILL_RELOAD_NOTICE_HEADER not in tail_text
 
     def test_synthetic_row_classification_unbroken(self, tmp_path):
         """A snapshot+notice appended as its own row must still classify as

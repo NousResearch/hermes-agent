@@ -19,6 +19,7 @@ import {
   GlyphSpinner,
   host,
   Input,
+  nextRunOverdueMs,
   PanelEmpty,
   queryClient,
   relativeTime,
@@ -45,6 +46,7 @@ import { labeled } from './dialog-parts'
 import { botsText, useBots } from './i18n'
 import { displayName } from './labels'
 import { botConnectionRoute, botRosterMeta, requestForBot } from './routing'
+import { ScreenHero } from './screen-hero'
 import { ID } from './shared'
 import type { BotMeta, RosterRow, RoutineJob } from './types'
 
@@ -381,7 +383,12 @@ export function routineDetailRows(job: RoutineJob | null | undefined): Array<{ l
       // raw string when it says something the label dropped.
       ['Schedule (raw)', raw && raw !== label ? raw : null],
       ['Repeat', job?.repeat],
-      ['Next run', paused ? null : routineTimestamp(job?.next_run_at)],
+      // A slot parked past the scheduler grace is labelled overdue, never
+      // promised as a next run (#114309); the card below makes the same call.
+      [
+        job && nextRunOverdueMs(job) !== null ? 'Overdue since' : 'Next run',
+        paused ? null : routineTimestamp(job?.next_run_at)
+      ],
       ['Last run', routineTimestamp(job?.last_run_at)],
       ['Last result', routineLastResult(job?.last_status)],
       ['Delivers to', job?.deliver],
@@ -584,7 +591,7 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
         </span>
         <span className="ml-auto shrink-0 whitespace-nowrap text-[0.65rem] text-(--ui-text-quaternary)">
           {active && job.next_run_at
-            ? `${c.next} ${relativeTime(new Date(job.next_run_at).getTime())}`
+            ? `${nextRunOverdueMs(job) === null ? c.next : c.overdueSince} ${relativeTime(new Date(job.next_run_at).getTime())}`
             : c.states.paused}
         </span>
       </div>
@@ -1249,6 +1256,9 @@ export function RoutinesPane() {
 
   return (
     <div className="flex h-full flex-col">
+      <div className="px-3 pt-3">
+        <ScreenHero bot={owner} meta={meta} />
+      </div>
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <BotFace color={avatarColor(color, bot)} image={image} name={bot} shape={shape} size={22} />
         <div className="min-w-0 flex-1">

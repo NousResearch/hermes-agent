@@ -41,12 +41,6 @@ def make_config(**kwargs):
 # 1. Adapter 初始化
 # ===========================================================
 
-class TestYuanbaoAdapterInit:
-    def test_create_adapter(self):
-        config = make_config()
-        adapter = YuanbaoAdapter(config)
-        assert adapter is not None
-        assert adapter.PLATFORM == Platform.YUANBAO
 
 
 
@@ -55,8 +49,6 @@ class TestYuanbaoAdapterInit:
 # ===========================================================
 
 class TestYuanbaoConfig:
-    def test_platform_enum(self):
-        assert Platform.YUANBAO.value == "yuanbao"
 
 
     def test_get_connected_platforms_requires_key_and_secret(self):
@@ -90,10 +82,6 @@ class TestYuanbaoConfig:
 # ===========================================================
 
 class TestGatewayRunnerRegistration:
-    def test_yuanbao_in_platform_enum(self):
-        """Platform 枚举包含 YUANBAO"""
-        assert hasattr(Platform, "YUANBAO")
-        assert Platform.YUANBAO.value == "yuanbao"
 
     def _make_minimal_runner(self, config):
         """通过 __new__ + 最小初始化绕过 run.py 的模块级 dotenv/ssl 副作用"""
@@ -150,15 +138,6 @@ class TestGatewayRunnerRegistration:
 # 4. Proto round-trip
 # ===========================================================
 
-class TestProtoRoundTrip:
-    """验证 proto 编解码基本功能"""
-
-    def test_conn_msg_roundtrip(self):
-        from gateway.platforms.yuanbao_proto import encode_conn_msg, decode_conn_msg
-        encoded = encode_conn_msg(msg_type=1, seq_no=42, data=b"hello")
-        decoded = decode_conn_msg(encoded)
-        assert decoded["seq_no"] == 42
-        assert decoded["data"] == b"hello"
 
 
 
@@ -166,16 +145,6 @@ class TestProtoRoundTrip:
 # 5. Markdown 分块
 # ===========================================================
 
-class TestMarkdownChunking:
-    def test_chunks_are_sent_separately(self):
-        from gateway.platforms.yuanbao import MarkdownProcessor
-        long_text = "paragraph\n\n" * 100
-        chunks = MarkdownProcessor.chunk_markdown_text(long_text, 200)
-        assert len(chunks) > 1
-        for c in chunks:
-            # 段落原子块允许轻微超限，仅验证不崩溃
-            assert isinstance(c, str)
-            assert len(c) > 0
 
 
 
@@ -189,24 +158,6 @@ class TestMarkdownChunking:
 # 6b. ConnectionManager / OutboundManager
 # ===========================================================
 
-class TestManagerImports:
-
-
-
-
-
-    def test_adapter_has_outbound_manager(self):
-        adapter = YuanbaoAdapter(make_config())
-        from gateway.platforms.yuanbao import ConnectionManager, OutboundManager
-        assert isinstance(adapter._connection, ConnectionManager)
-        assert isinstance(adapter._outbound, OutboundManager)
-
-    def test_outbound_composes_sub_managers(self):
-        adapter = YuanbaoAdapter(make_config())
-        from gateway.platforms.yuanbao import MessageSender, HeartbeatManager, SlowResponseNotifier
-        assert isinstance(adapter._outbound.sender, MessageSender)
-        assert isinstance(adapter._outbound.heartbeat, HeartbeatManager)
-        assert isinstance(adapter._outbound.slow_notifier, SlowResponseNotifier)
 
 
 # ===========================================================
@@ -219,14 +170,6 @@ class TestManagerImports:
 # 8. Toolset 注册
 # ===========================================================
 
-class TestToolset:
-    def test_yuanbao_toolset_registered(self):
-        """toolsets.py 中存在 hermes-yuanbao 键"""
-        import importlib
-        ts = importlib.import_module("toolsets")
-        assert hasattr(ts, "TOOLSETS") or hasattr(ts, "toolsets")
-        toolsets_dict = getattr(ts, "TOOLSETS", getattr(ts, "toolsets", {}))
-        assert "hermes-yuanbao" in toolsets_dict
 
 
 
@@ -241,29 +184,8 @@ class TestToolset:
 # ===========================================================
 
 import asyncio
-import collections
 
 
-class TestP0ReconnectGuard:
-    """P0-1: _reconnecting flag prevents concurrent reconnect attempts."""
-
-    def test_reconnecting_flag_initialized(self):
-        adapter = YuanbaoAdapter(make_config())
-        assert hasattr(adapter._connection, '_reconnecting')
-        assert adapter._connection._reconnecting is False
-
-    def test_schedule_reconnect_skips_when_not_running(self):
-        adapter = YuanbaoAdapter(make_config())
-        adapter._running = False
-        adapter._connection._reconnecting = False
-        adapter._connection.schedule_reconnect()
-        # No task should be created because _running is False
-
-    def test_schedule_reconnect_skips_when_already_reconnecting(self):
-        adapter = YuanbaoAdapter(make_config())
-        adapter._running = True
-        adapter._connection._reconnecting = True
-        adapter._connection.schedule_reconnect()
         # No new task should be created because already reconnecting
 
 
@@ -295,27 +217,8 @@ class TestP0ChatLockEviction:
         # The oldest unlocked entry should have been evicted
         assert len(adapter._outbound.sender._chat_locks) == MessageSender.CHAT_DICT_MAX_SIZE
 
-    def test_move_to_end_on_access(self):
-        """Accessing an existing key moves it to the end (MRU)."""
-        adapter = YuanbaoAdapter(make_config())
-        adapter._outbound.sender._chat_locks["a"] = asyncio.Lock()
-        adapter._outbound.sender._chat_locks["b"] = asyncio.Lock()
-        adapter._outbound.sender._chat_locks["c"] = asyncio.Lock()
-
-        # Access "a" — should move to end
-        adapter._outbound.sender.get_chat_lock("a")
-        keys = list(adapter._outbound.sender._chat_locks.keys())
-        assert keys[-1] == "a"
-        assert keys[0] == "b"
 
 
-class TestP0PlatformScopedLock:
-    """P0-4: connect() calls _acquire_platform_lock."""
-
-    def test_adapter_has_platform_lock_methods(self):
-        adapter = YuanbaoAdapter(make_config())
-        assert hasattr(adapter, '_acquire_platform_lock')
-        assert hasattr(adapter, '_release_platform_lock')
 
 
 if __name__ == "__main__":

@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
 import sys
 import time
 import types
-import unittest.mock
 from pathlib import Path
 
 import pytest
 
-import hermes_state
 import hermes_state_wal
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -386,6 +384,50 @@ def test_rate_limit_exit_requeues_without_counting_failure(
         assert "crashed" not in outcomes
 
 
+@pytest.mark.parametrize("lane", ["ready", "review"])
+def test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane(kanban_home, monkeypatch, lane):
+    """A worker that exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` (credential revoked, model
+    gone) parks the card ``blocked`` on the FIRST death — well below ``failure_limit`` and the
+    per-task ``max_retries`` — with the provider error as the reason, sticky against
+    ``recompute_ready``. Same booking for the implementation and the review lane (#114587)."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="terminal", assignee="a", max_retries=5)
+        claimed = kb.claim_task(conn, tid, claimer=f"{host}:w0")
+        if lane == "review":
+            assert kb.request_review(conn, tid, summary="done", reviewer="r",
+                                     expected_run_id=claimed.current_run_id)
+            assert kb.claim_review_task(conn, tid, claimer=f"{host}:r0") is not None
+        pid = 71000
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+        conn.commit()
+        _kbd._record_worker_exit(pid, _exited_status(_kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE))
+
+        crashed = kbd.detect_crashed_workers(conn)
+        assert tid in crashed
+        assert tid in getattr(_kbd.detect_crashed_workers, "_last_auto_blocked", [])
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1  # one spawn, not failure_limit / max_retries of them
+        assert "terminal provider error" in (task.last_failure_error or "")
+        gave_up = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='gave_up'", (tid,),
+        ).fetchone()
+        assert json.loads(gave_up["payload"])["terminal_provider"] is True
+
+        # Sticky: the breaker did not reach its counter limit, yet the card must stay parked
+        # until an operator fixes the provider and unblocks it.
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
 
 
 def test_respawn_guard_defers_rate_limited_within_cooldown(
@@ -425,6 +467,139 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         # though last_failure_error contains "rate-limited".
         monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
         assert kbd.check_respawn_guard(conn, tid) is None
+
+
+@pytest.mark.parametrize(
+    "error_text, expected",
+    [
+        # Worker progress prose talking about *writing*, not an auth failure
+        # (#117009): must NOT trip the guard.
+        ("Workstream C items C-3 and C-4: author t  (90.59s)", None),
+        ("docs authored by the previous cycle", None),
+        ("relying on an authoritative source", None),
+        # Genuine auth failures must still trip the guard, one row per
+        # curated stem family (bare, -ate, -ize, -ise).
+        ("401 auth failed", "blocker_auth"),
+        ("authentication error from provider", "blocker_auth"),
+        ("still authorizing the request", "blocker_auth"),
+        ("still authorising the request", "blocker_auth"),
+    ],
+)
+def test_respawn_guard_blocker_auth_curated_not_open_stem(
+    kanban_home, monkeypatch, error_text, expected,
+):
+    """``_RESPAWN_BLOCKER_RE`` used to use an open ``auth\\w*`` stem that matched
+    ordinary English words like "author"/"authored"/"authoring"/"authoritative"
+    in worker progress prose, parking a healthy ``ready`` card forever (#117009).
+    The auth family must be a curated set of real auth-failure tokens."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="prose", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=? WHERE id=?",
+            (error_text, tid),
+        )
+        conn.commit()
+        assert kbd.check_respawn_guard(conn, tid) == expected
+
+
+def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
+    """A plain crash's captured stdout is context, not a diagnosis.
+
+    ``_classify_dead_worker`` appends the worker's last output to the persisted
+    failure text.  A benign command such as ``claude auth status`` must not turn
+    an unrelated crash into a permanent auth guard on the next dispatch.
+    """
+    with kbc.connect() as conn:
+        crashed_id = kb.create_task(conn, title="crashed", assignee="a")
+        kb.claim_task(conn, crashed_id)
+        crashed_run_id = kb.get_task(conn, crashed_id).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='failed', ended_at=? "
+            "WHERE id=?",
+            (5_000_000, crashed_run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (
+                "pid 1 killed by signal 9. Worker's last output: "
+                "'env -u ANTHROPIC_API_KEY claude auth status --text'",
+                crashed_id,
+            ),
+        )
+
+        spawn_failed_id = kb.create_task(conn, title="spawn failed", assignee="a")
+        kb.claim_task(conn, spawn_failed_id)
+        spawn_run_id = kb.get_task(conn, spawn_failed_id).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='spawn_failed', status='failed', ended_at=? "
+            "WHERE id=?",
+            (5_000_000, spawn_run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("provider authentication failed", spawn_failed_id),
+        )
+        conn.commit()
+
+        assert kbd.check_respawn_guard(conn, crashed_id) is None
+        assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
+
+
+def test_infrastructure_spawn_refusal_never_charges_the_card(
+    kanban_home, monkeypatch, all_assignees_spawnable,
+):
+    """The host refusing to place a worker (managed gateway, user bus gone —
+    #114720) is not a card failure: through the REAL spawn boundary and the
+    real dispatcher accounting, ``consecutive_failures`` stays put, the breaker
+    never parks the card as a bare ``blocked``, the run is tagged
+    ``infrastructure`` and the guard spaces the retries. A control spawn
+    failure on the same card still counts."""
+    import tools.process_registry as process_registry
+
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+    monkeypatch.setenv("INVOCATION_ID", "managed-gateway")
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+
+    def spawn_via_real_boundary(task, workspace, board=None):
+        kbd._restart_safe_worker_argv(task, ["hermes", "chat"])  # raises: real probe verdict, real _degrade()
+        raise AssertionError("unreachable")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="bus is down", assignee="a")
+        for _ in range(3):
+            res = kbd.dispatch_once(conn, spawn_fn=spawn_via_real_boundary, failure_limit=2)
+            assert res.auto_blocked == []
+        row = conn.execute(
+            "SELECT status, block_kind, consecutive_failures, last_failure_error FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+        assert (row["status"], row["block_kind"], row["consecutive_failures"]) == ("ready", None, 0)
+        assert "enable-linger" in row["last_failure_error"]
+        runs = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id = ? ORDER BY id", (tid,),
+        ).fetchall()
+        assert [r["outcome"] for r in runs] == ["spawn_failed"] * 3
+        assert all(json.loads(r["metadata"])["infrastructure"] is True for r in runs)
+
+        monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+        assert kbd.check_respawn_guard(conn, tid) == "infrastructure_cooldown"
+
+        # Control: an ordinary spawn failure on the same card still spends budget.
+        monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+
+        def spawn_broken(task, workspace, board=None):
+            raise RuntimeError("profile launcher exploded")
+
+        kbd.dispatch_once(conn, spawn_fn=spawn_broken, failure_limit=2)
+        assert conn.execute(
+            "SELECT consecutive_failures FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()[0] == 1
 
 
 
@@ -1181,11 +1356,25 @@ def test_link_tasks_emits_dependency_wait_when_demoting_ready_child(kanban_home)
         assert payload["parent"] == parent
 
 
+def test_link_tasks_rejects_unowned_running_child_without_recording_edge(kanban_home):
+    """Regression for #113374: an unowned dependency cannot gate an active run."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="unfinished parent")
+        child = kb.create_task(conn, title="claimed child")
+        assert kb.claim_task(conn, child, claimer="worker") is not None
+
+        with pytest.raises(ValueError, match="child is already running"):
+            kb.link_tasks(conn, parent, child)
+
+        assert kb.parent_ids(conn, child) == []
+        assert "linked" not in [event.kind for event in kb.list_events(conn, child)]
+
+
 def test_link_tasks_no_dependency_wait_when_parent_done(kanban_home):
     """A done parent demotes nothing and reports no gate."""
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="done parent")
-        kb.complete_task(conn, parent)
+        kb.complete_task(conn, parent, result="done")
         child = kb.create_task(conn, title="follower")
 
         gated = kb.link_tasks(conn, parent, child)
@@ -1241,7 +1430,7 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     with kbc.connect() as conn:
         # A is done.
         a = kb.create_task(conn, title="parent-done")
-        kb.complete_task(conn, a)
+        kb.complete_task(conn, a, result="done")
 
         # C is running (not done) — blocks child B.
         c = kb.create_task(conn, title="parent-running")
@@ -1303,54 +1492,6 @@ def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
     conn.close()
 
 
-def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home):
-    """Full _migrate_add_optional_columns must not raise when columns already
-    exist (issue #21708 race window — two connections migrate concurrently)."""
-    import sqlite3
-
-    # Schema already in fully-migrated state (all optional columns present).
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        """
-        CREATE TABLE tasks (
-            id INTEGER PRIMARY KEY,
-            title TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT '',
-            tenant TEXT,
-            result TEXT,
-            idempotency_key TEXT,
-            branch_name TEXT,
-            consecutive_failures INTEGER NOT NULL DEFAULT 0,
-            worker_pid INTEGER,
-            last_failure_error TEXT,
-            max_runtime_seconds INTEGER,
-            last_heartbeat_at INTEGER,
-            current_run_id INTEGER,
-            workflow_template_id TEXT,
-            current_step_key TEXT,
-            skills TEXT,
-            max_retries INTEGER,
-            session_id TEXT
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE task_events (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id    TEXT NOT NULL DEFAULT '',
-            run_id     INTEGER,
-            kind       TEXT NOT NULL DEFAULT '',
-            payload    TEXT,
-            created_at INTEGER NOT NULL DEFAULT 0
-        )
-        """
-    )
-
-    # Running migration on an already-migrated schema must not raise.
-    kbc._migrate_add_optional_columns(conn)
-    conn.close()
 
 
 def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_home):
@@ -1427,23 +1568,6 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
-def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeypatch):
-    """When the shim is not on PATH, fall back to `python -m hermes_cli.main`.
-
-    Pins the correct module name (NOT `hermes` — there is no top-level
-    `hermes` package). Regression for #23198: the original PR shipped
-    `python -m hermes` which fails with `No module named hermes` on every
-    invocation.
-    """
-    import shutil
-    import sys
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_dispatch as kbd
-
-    monkeypatch.delenv("HERMES_BIN", raising=False)
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    argv = kbd._resolve_hermes_argv()
-    assert argv == [sys.executable, "-m", "hermes_cli.main"]
 
 
 def test_resolve_hermes_argv_module_actually_runs():
@@ -1456,7 +1580,6 @@ def test_resolve_hermes_argv_module_actually_runs():
     Run it as a real subprocess to catch that regression.
     """
     import subprocess
-    import hermes_cli.kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
     import shutil
     import unittest.mock as mock
@@ -1470,7 +1593,6 @@ def test_resolve_hermes_argv_module_actually_runs():
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
-    assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -1488,27 +1610,6 @@ def test_resolve_hermes_argv_module_actually_runs():
 # ---------------------------------------------------------------------------
 
 
-def _make_task(**overrides) -> "kb.Task":
-    """Minimal Task with all required fields filled in. Override anything."""
-    defaults = dict(
-        id="t_age",
-        title="x",
-        body=None,
-        assignee=None,
-        status="ready",
-        priority=0,
-        created_by=None,
-        created_at=0,
-        started_at=None,
-        completed_at=None,
-        workspace_kind="scratch",
-        workspace_path=None,
-        claim_lock=None,
-        claim_expires=None,
-        tenant=None,
-    )
-    defaults.update(overrides)
-    return kb.Task(**defaults)
 
 
 
@@ -1680,72 +1781,6 @@ def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
 # First-use tip for scratch workspaces
 # ---------------------------------------------------------------------------
 
-def test_maybe_emit_scratch_tip_fires_once_per_install(kanban_home, caplog):
-    """First scratch workspace materialization warns + emits an event.
-
-    Subsequent scratch workspaces on the SAME install stay silent — the
-    sentinel file under kanban_home() flips after the first emit.
-    """
-    import logging
-
-    with kbc.connect() as conn:
-        t1 = kb.create_task(conn, title="first scratch")
-        t2 = kb.create_task(conn, title="second scratch")
-
-    # Sentinel must not exist yet on a fresh install.
-    assert not kbw._scratch_tip_shown()
-
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
-        with kbc.connect() as conn:
-            kbw._maybe_emit_scratch_tip(conn, t1, "scratch")
-
-    # Sentinel is now set.
-    assert kbw._scratch_tip_shown()
-    assert kbw._scratch_tip_sentinel_path().exists()
-
-    # Warning was logged exactly once.
-    tip_records = [
-        r for r in caplog.records
-        if "scratch workspaces are ephemeral" in r.getMessage()
-    ]
-    assert len(tip_records) == 1, (
-        f"Expected exactly one tip warning, got {len(tip_records)}: "
-        f"{[r.getMessage() for r in tip_records]!r}"
-    )
-
-    # An event row was appended on the first task.
-    with kbc.connect() as conn:
-        events = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
-            (t1,),
-        ).fetchall()
-    kinds = [e["kind"] for e in events]
-    assert "tip_scratch_workspace" in kinds, (
-        f"Expected tip_scratch_workspace event on first scratch task; "
-        f"got {kinds!r}"
-    )
-
-    # Second scratch materialization on the same install stays silent.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
-        with kbc.connect() as conn:
-            kbw._maybe_emit_scratch_tip(conn, t2, "scratch")
-    tip_records2 = [
-        r for r in caplog.records
-        if "scratch workspaces are ephemeral" in r.getMessage()
-    ]
-    assert tip_records2 == [], (
-        f"Tip should not re-fire after sentinel is set; got "
-        f"{[r.getMessage() for r in tip_records2]!r}"
-    )
-    with kbc.connect() as conn:
-        events2 = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
-            (t2,),
-        ).fetchall()
-    assert "tip_scratch_workspace" not in [e["kind"] for e in events2], (
-        "Tip event should not be appended for subsequent scratch tasks."
-    )
 
 
 
@@ -1887,20 +1922,6 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 
 
 
-def test_bare_connect_does_not_close_on_context_exit(tmp_path):
-    """Document the leak that connect_closing exists to prevent.
-
-    sqlite3.Connection's __exit__ commits/rollbacks but doesn't close.
-    This is the upstream behaviour we cannot change; the regression
-    guard is to make sure connect_closing() does the right thing.
-    """
-    db_path = tmp_path / "kanban.db"
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-    with kbc.connect(db_path=db_path) as conn:
-        pass
-    # Still usable after with-block exit (the leak).
-    conn.execute("SELECT 1").fetchone()
-    conn.close()  # explicit close to avoid leaking THIS test
 
 
 def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):

@@ -5,6 +5,7 @@ import contextlib
 import inspect
 import ipaddress
 import logging
+import math
 import os
 import random
 import re
@@ -106,9 +107,8 @@ def _or_default(thunk, default, exc=(TypeError, ValueError)):
         return default
 
 
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    return _or_default(lambda: float(raw) if raw else default, default)
+DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS = 0.35
+DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS = 1.0
 
 
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
@@ -154,6 +154,9 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
 
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics."""
+    override = getattr(event, "reply_anchor_override", None)
+    if override is not None:
+        return override  # the turn was redirected onto another message (#115001)
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
@@ -1118,9 +1121,12 @@ def _log_safe_path(path: str) -> str:
     return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
-def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional[str]:
+def _validated_delivery_path(raw_path, session_key: str, label: str,
+                             dropped: Optional[List[dict]] = None) -> Optional[str]:
     """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning. A path the
-    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466)."""
+    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466). When
+    ``dropped`` is a list, a rejected path is appended as ``{"path", "reason"}`` so the caller can
+    report the drop instead of booking a delivery that never happened (#115908)."""
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
@@ -1131,6 +1137,8 @@ def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional
         # a sandbox path failed to translate) and is not a security rejection.
         reason = "not found on this host" if not _existing_regular_file(raw) else "denied by the delivery policy"
         logger.warning("Skipping %s (%s): %s", label, reason, _log_safe_path(raw))
+        if dropped is not None:
+            dropped.append({"path": raw, "reason": reason})
     return safe_path
 
 
@@ -1887,12 +1895,16 @@ class BasePlatformAdapter(ABC):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
-        # Legacy env knob; the runner syncs the busy_input_mode value after construction.
-        # Default "interrupt" so a pre-sync read never silently queues.
-        self._busy_text_mode: str = (
-            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower() or "interrupt")
-        self._busy_text_debounce_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35)
-        self._busy_text_hard_cap_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_HARD_CAP_SECONDS", 1.0)
+        # Busy-text policy is a per-profile config decision the runner installs after construction
+        # (``_wire_adapter_handlers``); a constructor-time process-env read would freeze the launch
+        # profile's values into every profile's adapter under multiplexing (#116893). Defaults here
+        # only cover a pre-sync read so it never silently queues.
+        self._busy_text_mode: str = "interrupt"
+        self._busy_text_debounce_seconds: float = DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS
+        self._busy_text_hard_cap_seconds: float = DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS
+        # ``human_delay`` pacing range in ms, or None (off); per-profile config installed by the
+        # runner, never process env (#116895).
+        self._human_delay_range_ms: Optional[tuple[int, int]] = None
         self._text_debounce: dict[str, TextDebounceState] = {}
         # handle_message() tasks; shutdown cancels them so a replaced gateway stops working.
         self._background_tasks: set[asyncio.Task] = set()
@@ -2097,14 +2109,13 @@ class BasePlatformAdapter(ABC):
         self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)
 
     def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
-        """Write runtime status; log first failure per context at warning, rest at debug
-        (failures — permissions, ENOSPC — must neither be silent nor spam reconnect loops)."""
+        """Publish runtime status; log preparation failures without disrupting the adapter."""
         try:
-            from gateway.status import write_runtime_status
+            from gateway.status import publish_runtime_status
             # Multiplexed adapters share the status file; the runner stamps
             # ``<profile>:<platform>``.
             platform_key = getattr(self, "_runtime_status_platform_key", None) or self.platform.value
-            write_runtime_status(platform=platform_key, **kwargs)
+            publish_runtime_status(platform=platform_key, **kwargs)
         except Exception as exc:
             logged = _lazy_attr(self, "_status_write_logged", set)  # object.__new__ in tests
             first = (self.platform.value, context) not in logged
@@ -2187,10 +2198,20 @@ class BasePlatformAdapter(ABC):
         release_scoped_lock(self._platform_lock_scope, identity)
         self._platform_lock_identity = None
 
+    # Plugin handler factories wired on the live native client: ``(plugin, qualname)`` keys, reset when
+    # the native client is rebuilt. ``None`` = ``connect()`` has not wired yet (class defaults so
+    # subclasses that skip ``super().__init__`` still re-wire safely).
+    _plugin_handler_native: Any = None
+    _plugin_handlers_wired: Optional[set] = None
+
     def _wire_plugin_handlers(self, native: Any = None) -> None:
         """Invoke plugin-registered native handler factories (``ctx.register_platform_handler``)
         with ``(native, adapter)``; adapters call this from ``connect()`` once the native
-        client exists. Each factory is isolated so a bad plugin can't block connecting."""
+        client exists and :meth:`rewire_plugin_handlers` re-runs it for plugins loaded later.
+        Idempotent per native client: a factory is keyed by ``(plugin, qualname)`` and skipped once
+        wired on this ``native`` (a force re-discovery hands back NEW function objects for the same
+        plugin, so identity alone would double-register). Each factory is isolated so a bad plugin
+        can't block connecting."""
         try:
             from hermes_cli.plugins import get_plugin_manager
             factories = get_plugin_manager().get_platform_handler_factories(
@@ -2198,13 +2219,32 @@ class BasePlatformAdapter(ABC):
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[%s] Could not load plugin handler factories: %s", self.name, e)
             return
+        if self._plugin_handler_native is not native or self._plugin_handlers_wired is None:
+            # A rebuilt native client (transient-init rebuild, reconnect) starts with nothing wired.
+            self._plugin_handler_native = native
+            self._plugin_handlers_wired = set()
         for factory, plugin_name in factories:
+            key = (plugin_name, getattr(factory, "__qualname__", None) or repr(factory))
+            if key in self._plugin_handlers_wired:
+                continue
             try:
                 factory(native, self)
                 logger.info("[%s] Wired native handlers from plugin '%s'", self.name, plugin_name)
             except Exception as exc:
                 logger.error("[%s] Plugin '%s' handler factory raised: %s", self.name, plugin_name,
                              exc, exc_info=True)
+            # A raising factory is recorded too: re-wire must not re-raise it on every plugin load.
+            self._plugin_handlers_wired.add(key)
+
+    def rewire_plugin_handlers(self) -> None:
+        """Register handlers of plugins loaded AFTER ``connect()`` wired the first batch (#87770);
+        the gateway runner calls this on every plugin-loaded event. Safe to call repeatedly: only
+        factories not yet wired on the live native client run. Before ``connect()`` has wired once
+        there is nothing to re-wire — connect will pick everything up. Adapters with extra plugin
+        registries (Slack action handlers) extend this."""
+        if self._plugin_handlers_wired is None:
+            return
+        self._wire_plugin_handlers(self._plugin_handler_native)
 
     @property
     def name(self) -> str:
@@ -2247,7 +2287,8 @@ class BasePlatformAdapter(ABC):
             logger.debug("topic recovery hook failed", exc_info=True)
             return
         try:
-            event.source = dataclasses.replace(source, thread_id=str(recovered))
+            from gateway.session_identity import replace_source
+            event.source = replace_source(source, thread_id=str(recovered))  # keeps the pinned identity
         except Exception:
             logger.debug("topic recovery rewrite failed", exc_info=True)
 
@@ -2304,12 +2345,60 @@ class BasePlatformAdapter(ABC):
         :meth:`_session_key_profile` so adapter-level keys leave ``agent:main:``."""
         self._owner_profile = None if (name := (profile_name or "").strip() or None) == "default" else name
 
+    def _owner_transport_profile(self) -> Optional[str]:
+        """Transport profile for :func:`resolve_identity`: the owner name, or ``None`` = derive it
+        from the registry (the primary's identity then spells ``"default"`` out itself)."""
+        owner = getattr(self, "_owner_profile", None)
+        return owner if isinstance(owner, str) and owner.strip() else None
+
+    def _canonicalize(self, source: Optional["SessionSource"]):
+        """Pin the source's :class:`RoutingIdentity` before anything derives a key from it. Every
+        ingress path (fresh event, batch merge, busy path, control command, callback) calls this
+        FIRST. Returns the identity, or ``None`` when it cannot be resolved (a rejected route under
+        multiplexing marks ``source.profile_route_rejected``; ``_drop_unresolved`` reads it) or when
+        no runner seam exists (hand-built adapters, restored sources: the legacy readers stay)."""
+        if source is None:
+            return None
+        from gateway.session_identity import canonical_identity, identity_of
+        identity = identity_of(source)
+        if identity is not None:
+            return identity
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None or not callable(getattr(runner, "_transport_owner", None)):
+            return None
+        try:
+            return canonical_identity(
+                source, runner=runner, adapter=self, transport_profile=self._owner_transport_profile())
+        except Exception:
+            # Duck-typed runners (SimpleNamespace / MagicMock rigs) have no registry to resolve
+            # against; the key then falls back to the pre-identity readers instead of failing ingress.
+            logger.debug("[%s] identity resolution failed; using legacy key readers", self.name, exc_info=True)
+            return None
+
+    def _drop_unresolved(self, event: "MessageEvent") -> bool:
+        """True when *event* must be dropped: its identity could not be resolved because the route
+        targets an unserved profile. Same disposition as the runner's ingress gate — one WARNING,
+        never a fall-through to ``agent:main``."""
+        source = getattr(event, "source", None)
+        if self._canonicalize(source) is not None:
+            return False
+        if getattr(source, "profile_route_rejected", False) is not True:
+            return False
+        logger.warning(
+            "[%s] Dropping inbound event for %s: explicit profile route targets an unserved profile",
+            self.name, getattr(source, "chat_id", "?"))
+        return True
+
     def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
         """Profile namespace for an adapter-derived session key. Ingress runs BEFORE the runner
         stamps ``source.profile``, so without this every bot in a multiplexed gateway shares one
-        ``agent:main:`` lane. Order: ``source.profile`` → ``_owner_profile`` → session-store
-        resolver; getattr-guarded (object.__new__ in tests), type-checked (no MagicMock in the
-        key)."""
+        ``agent:main:`` lane. Order: pinned ``RoutingIdentity`` → ``source.profile`` →
+        ``_owner_profile`` → session-store resolver; getattr-guarded (object.__new__ in tests),
+        type-checked (no MagicMock in the key)."""
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.session_key_profile
         for candidate in (
             getattr(source, "profile", None) if source is not None else None,
             getattr(self, "_owner_profile", None)):
@@ -2334,12 +2423,43 @@ class BasePlatformAdapter(ABC):
     _SPLIT_THRESHOLD: int = 4000
     _text_batch_delay_seconds: float = 0.0
     _text_batch_split_delay_seconds: float = 0.0
+    # Shared cadence for adapters that batch: a quiet period long enough to merge a client-side
+    # split (Telegram's measured envelope), short enough that a single short message is not
+    # visibly delayed (#44883). Ceilings bound a misconfigured value fed to asyncio.sleep().
+    _TEXT_BATCH_DEFAULT_DELAY_S: float = 0.3
+    _TEXT_BATCH_MAX_DELAY_S: float = 2.0
+    _TEXT_BATCH_DEFAULT_SPLIT_DELAY_S: float = 1.0
+    _TEXT_BATCH_MAX_SPLIT_DELAY_S: float = 4.0
+
+    def _coerce_float_extra(self, key: str, default: float, *, min_value: float = 0.0, max_value: Optional[float] = None) -> float:
+        """Float from ``config.extra``; NaN/Inf/negative/unparseable → ``default``; clamped to ``[min_value, max_value]``."""
+        extra = getattr(self.config, "extra", None) or {}
+        try:  # float(None) → TypeError → default
+            parsed = float(extra.get(key))
+        except (TypeError, ValueError):
+            parsed = float(default)
+        if not math.isfinite(parsed) or parsed < 0:
+            parsed = float(default)
+        parsed = max(parsed, min_value)
+        if max_value is not None and parsed > max_value:
+            logger.warning("%s=%s exceeds the %s ceiling; clamped", key, parsed, max_value)
+            parsed = max_value
+        return parsed
+
+    def _configure_text_batch_delays(self) -> None:
+        """Read ``text_batch_delay_seconds`` / ``text_batch_split_delay_seconds`` from ``config.extra`` at the shared cadence."""
+        self._text_batch_delay_seconds = self._coerce_float_extra(
+            "text_batch_delay_seconds", self._TEXT_BATCH_DEFAULT_DELAY_S, max_value=self._TEXT_BATCH_MAX_DELAY_S)
+        self._text_batch_split_delay_seconds = self._coerce_float_extra(
+            "text_batch_split_delay_seconds", self._TEXT_BATCH_DEFAULT_SPLIT_DELAY_S,
+            min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_MAX_SPLIT_DELAY_S)
 
     def _event_session_key(self, event: "MessageEvent") -> str:
         """Adapter-level session key for ``event``, profile-namespaced like the agent run."""
         return self._source_session_key(event.source)
 
     def _source_session_key(self, source: "SessionSource") -> str:
+        self._canonicalize(source)  # identity FIRST; no key derivation before it
         extra = self.config.extra
         return build_session_key(
             source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
@@ -2352,6 +2472,8 @@ class BasePlatformAdapter(ABC):
 
     def _enqueue_text_event(self, event: "MessageEvent") -> None:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""
+        if self._drop_unresolved(event):
+            return
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         if existing is None:
@@ -2585,6 +2707,25 @@ class BasePlatformAdapter(ABC):
         """Escape hook for command preview/reason; HTML-mode platforms (Telegram) override."""
         return text
 
+    def _ea_fit(self, text: str, budget: int, suffix: str = "...", escape: Optional[Callable[[str], str]] = None) -> str:
+        """``_truncate_preview`` measured after ``escape`` (default ``_ea_escape``) in
+        ``message_len_fn`` units: the platform cap applies to the wire payload, and escaping
+        expands (``&`` → ``&amp;``), so a raw-length cut can still overflow. Returns raw text (the
+        caller escapes); ``suffix`` rides outside ``budget`` like ``_truncate_preview``."""
+        text = str(text or "")
+        escape = escape or self._ea_escape
+        len_fn = self.message_len_fn
+        if len_fn(escape(text)) <= budget:
+            return text
+        lo, hi = 0, len(text)
+        while lo < hi:  # escaped length is monotonic in the raw prefix, so bisect it
+            mid = (lo + hi + 1) // 2
+            if len_fn(escape(text[:mid])) <= budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo] + suffix
+
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         """Chars of command preview that fit; platforms with a hard message cap compute it."""
         return self._EA_CMD_BUDGET
@@ -2599,8 +2740,8 @@ class BasePlatformAdapter(ABC):
         flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
         platform-local."""
         if self._EA_REASON_BUDGET:
-            description = self._truncate_preview(str(description or ""), self._EA_REASON_BUDGET)
-        cmd_preview = self._truncate_preview(
+            description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
+        cmd_preview = self._ea_fit(
             str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
@@ -3001,11 +3142,12 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path, session_key=session_key)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def filter_media_delivery_paths(media_files, session_key: str = "",
+                                    dropped: Optional[List[dict]] = None) -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths; ``dropped`` collects the rejects."""
         return [
             (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
-            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path"))]
+            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped))]
 
     @staticmethod
     def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:
@@ -3373,7 +3515,7 @@ class BasePlatformAdapter(ABC):
         """The runner's CURRENT adapter for a new final-response send: a reconnect can swap the
         registry adapter mid-task; an unsent final response belongs on the replacement transport,
         while message IDs, edits and deletes stay owned by the old one (nothing is migrated)."""
-        resolve = getattr(self.gateway_runner, "_adapter_for_source", None)
+        resolve = getattr(self.gateway_runner, "_delivery_adapter_for", None)
         if not callable(resolve):
             return self
         try:
@@ -3392,6 +3534,15 @@ class BasePlatformAdapter(ABC):
         failures fall back to a plain-text send, exhausted retries notify the user."""
         async def _send(text: str) -> "SendResult":
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+
+        async def _send_again(previous: "SendResult") -> "Optional[SendResult]":
+            """Retry: the whole payload normally; only the undelivered remainder after a partial split
+            delivery (``raw_response["partial_overflow"]``). ``None`` when the adapter cannot resume — the
+            caller then keeps the partial failure rather than re-sending the already-visible head."""
+            if not self._is_partial_delivery(previous):
+                return await _send(content)
+            return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
+
         result = await _send(content)
         if result.success or self._send_retry_is_final(result):
             return result
@@ -3434,7 +3585,13 @@ class BasePlatformAdapter(ABC):
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
                                attempt, max_retries, delay, error_str)
                 await asyncio.sleep(delay)
-                result = await _send(content)
+                resumed = await _send_again(result)
+                if resumed is None:
+                    logger.warning(
+                        "[%s] Split send partly delivered and the remainder cannot be resumed safely; "
+                        "not re-sending the whole payload (would duplicate the visible head): %s", self.name, error_str)
+                    return result
+                result = resumed
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
@@ -3484,6 +3641,10 @@ class BasePlatformAdapter(ABC):
         # Non-network / post-retry formatting failure: try plain text as fallback. A
         # rate-limited error never reaches here: it classifies as network above and the
         # loop only breaks on a non-transient, non-rate-limited error.
+        if self._is_partial_delivery(result):
+            # Part of a split payload is already on screen; a plain-text re-send of the whole would duplicate it.
+            logger.warning("[%s] Send failed after partial delivery: %s — not re-sending as plain text", self.name, error_str)
+            return result
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self._send_plain_fallback(chat_id, content, reply_to=reply_to, metadata=metadata)
         if not fallback_result.success:
@@ -3494,6 +3655,21 @@ class BasePlatformAdapter(ABC):
         """True when a failed send must be returned as-is: neither a retry nor the plain-text
         fallback can fix it (a structured auth/target refusal). Default: never."""
         return False
+
+    @staticmethod
+    def _is_partial_delivery(result: "SendResult") -> bool:
+        """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
+        contract Telegram's send/edit-overflow paths set and the stream consumer reads): the visible
+        head must never be sent again."""
+        raw = getattr(result, "raw_response", None)
+        return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: "SendResult", *, reply_to: Optional[str], metadata: Any) -> "Optional[SendResult]":
+        """Deliver only the remainder of a partially delivered split payload. ``None`` (the default) means
+        this adapter cannot resume; ``_send_with_retry`` then returns the partial failure instead of
+        re-sending the whole payload. Override only where non-delivery of the remainder is CERTAIN."""
+        return None
 
     async def _send_plain_fallback(
             self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> "SendResult":
@@ -3759,6 +3935,9 @@ class BasePlatformAdapter(ABC):
 
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
+        # Identity FIRST: every key below (routing check, guard lookup, batch lane) derives from it.
+        if self._drop_unresolved(event):
+            return
         expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
         # Explicitly routed events already name their destination; recovering a
         # different topic would redirect them and yield before the session claim.
@@ -3789,6 +3968,7 @@ class BasePlatformAdapter(ABC):
         # races with the running task (split-brain, see PR #4926).
         # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
         # runner. Without this, they are queued as pending messages and either: See #4926.
+        self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
         if should_bypass_active_session(cmd):
@@ -3852,18 +4032,13 @@ class BasePlatformAdapter(ABC):
                                         merge_text=event.message_type == MessageType.TEXT)
             event._gateway_accepted = True
 
-    @staticmethod
-    def _get_human_delay() -> float:
-        """Random human-like pacing delay (s) from HERMES_HUMAN_DELAY_MODE: "off" (default) |
-        "natural" 800-2500ms | "custom" via HERMES_HUMAN_DELAY_MIN_MS /
-        HERMES_HUMAN_DELAY_MAX_MS."""
-        mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
-        if mode == "off":
+    def _get_human_delay(self) -> float:
+        """Random human-like pacing delay (s) from this adapter's ``human_delay`` config range
+        (ms), installed per profile by the runner (``_wire_adapter_handlers``); ``None`` = off."""
+        bounds = self._human_delay_range_ms
+        if not bounds:
             return 0.0
-        lo, hi = 800, 2500
-        if mode != "natural":  # custom mode tolerates malformed env vars
-            lo = _or_default(lambda: int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", str(lo))), lo)
-            hi = _or_default(lambda: int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", str(hi))), hi)
+        lo, hi = bounds
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
     async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:
@@ -3951,24 +4126,25 @@ class BasePlatformAdapter(ABC):
         delivery_adapter: "BasePlatformAdapter") -> None:
         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent). On a flood-control refusal
-        arm the runner's timed redelivery, so the reply goes out once the penalty has passed instead
-        of waiting for the next restart."""
+        before this failure landed; atomic claiming keeps it idempotent). On any other rejection arm
+        the runner's timed redelivery, so the reply goes out once the flood penalty or the retry
+        backoff has passed instead of waiting for the next restart (#91653)."""
         try:
-            from gateway.delivery_ledger import is_flood_error, mark_delivered, mark_failed
+            from gateway.dead_targets import classify_dead_error
+            from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
             error = str(getattr(result, "error", "") or "")
             await asyncio.to_thread(mark_failed, obligation_id, error)
-            if error == "send_path_degraded":
+            if is_reconnect_only(error):
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
                 live = self._final_delivery_adapter(event.source)
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
-            elif is_flood_error(error):
+            elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
                 schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
                 if callable(schedule):
                     schedule(event.source.platform,
@@ -4274,6 +4450,18 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
+                # Suspend the typing refresh before the first delivery attempt, not just in
+                # the turn's finally (#117300): if the final send stalls (platform accepted it
+                # but the HTTP ack never returns), control never reaches the finally, and
+                # _keep_typing keeps refreshing sendChatAction forever while the agent is
+                # already idle and the user can read the answer. Reuse the existing
+                # _typing_paused mechanism: _keep_typing skips paused chats each tick and
+                # _stop_typing_refresh's finally discards it, so it cannot leak into the next
+                # turn. No new await on the delivery path (a fire-and-forget stop task was
+                # measured to have no effect).
+                if text_content or extracted.images or extracted.media_files or extracted.local_files \
+                        or _tts_paths or _tts_caption_delivered:
+                    self.pause_typing_for_chat(event.source.chat_id)
                 if text_content and not _tts_caption_delivered:
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
@@ -4411,7 +4599,8 @@ class BasePlatformAdapter(ABC):
             return str(value) if value else None
         fields = dict(
             platform=self.platform, chat_id=str(chat_id), chat_name=chat_name, chat_type=chat_type,
-            user_id=_opt(user_id), user_name=user_name, thread_id=_opt(thread_id),
+            user_id=None if user_id is None or user_id == "" else str(user_id),
+            user_name=user_name, thread_id=_opt(thread_id),
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),

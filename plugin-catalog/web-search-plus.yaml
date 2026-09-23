@@ -1,11 +1,12 @@
 name: web-search-plus
 repo: https://github.com/robbyczgw-cla/hermes-web-search-plus
-sha: 053fcce7432c58d7329ef556c971394c80040f98
+sha: 90e9c3acbeafa18c256fd68ac3298e6e663fc981
 description: Multi-provider web search, URL extraction, quality reports, and opt-in research mode
 maintainer: robbyczgw-cla
 tier: community
 category: web
 docs_url: https://github.com/robbyczgw-cla/hermes-web-search-plus#readme
+version: "4.2.1"
 capabilities:
   provides_tools:
   - web_extract_plus

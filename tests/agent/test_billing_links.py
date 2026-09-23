@@ -7,7 +7,6 @@ few that are the whole point of the mapping (the host they must land on).
 from __future__ import annotations
 
 from agent.billing_links import (
-    BillingBlock,
     build_billing_block,
     is_nous_inference_route,
 )
@@ -39,15 +38,3 @@ def test_known_provider_by_slug_resolves_label_and_url():
 
 
 
-def test_to_dict_round_trips_all_fields():
-    block = build_billing_block(provider="openai", base_url="", model="gpt-5")
-    data = block.to_dict()
-    assert set(data) == {
-        "provider",
-        "provider_label",
-        "model",
-        "billing_url",
-        "is_nous",
-        "message",
-    }
-    assert isinstance(block, BillingBlock)

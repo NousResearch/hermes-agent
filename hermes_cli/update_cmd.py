@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
+from hermes_cli import update_handoff as _update_handoff
 from hermes_cli.update_cmd_common import _best_effort
 from hermes_constants import get_default_hermes_root, project_venv_dir, venv_python_path
 
@@ -85,8 +86,8 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _repair_node_deps_on_current_checkout, _restore_active_tool_dependencies,
     _sync_python_dependencies_after_pull, _update_node_dependencies,
     _upgrade_pip_before_lazy_refresh, _validate_critical_modules_import,
-    _venv_core_imports_healthy, _venv_foreign_owned_paths, _web_build_toolchain_ready,
-    _web_toolchain_roots)
+    _venv_core_imports_healthy, _venv_dependency_set_stale, _venv_foreign_owned_paths,
+    _web_build_toolchain_ready, _web_toolchain_roots)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
@@ -152,6 +153,35 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 # otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
 # minutes is generous for a scoped single-branch fetch and still ends in a real error.
 NETWORK_GIT_TIMEOUT_SECONDS = 300
+
+
+def _record_update_skip(step: str, reason: str) -> None:
+    """Best-effort ``update_receipt.record_skip``; the receipt must never break an update."""
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_skip
+        record_skip(step, reason)
+
+
+def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
+    """Record the pre-update backup as a skip when it was disabled, else as a step.
+
+    ``snapshot_id`` is None both when the backup was deliberately turned off (config
+    ``updates.pre_update_backup: off``/``false``, or ``--no-backup``) and when a requested backup
+    produced nothing. Recording both as ``ok=false, "disabled or failed"`` made an opt-out
+    indistinguishable from a real failure in the receipt, so a disabled safety net read as a
+    broken one (#94944 is the shipped-opt-out case). A deliberate opt-out is a SKIP WITH its
+    reason; only a requested-but-empty backup is a failed step.
+    """
+    if snapshot_id:
+        _record_update_step("pre_update_backup", True, f"snapshot={snapshot_id}")
+        return
+    if _resolve_pre_update_backup_mode(args) == "off":
+        reason = ("disabled by --no-backup" if getattr(args, "no_backup", False)
+                  else "disabled by updates.pre_update_backup (mode: off)")
+        _record_update_skip("pre_update_backup", reason)
+        return
+    _record_update_step("pre_update_backup", False, "no snapshot captured")
+
 
 
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
@@ -621,6 +651,9 @@ def _repair_venv_on_current_checkout(
     _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
     _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
+    # Same order as the pull and ZIP paths: the ``[all]`` reinstall above may have stripped the
+    # active memory provider's bridge packages (torch, embedding stacks, ...).
+    _m()._refresh_active_memory_provider_dependencies()
     _m()._reapply_plugin_python_dependencies()
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —
     # that phase uses its own marker so a later lazy failure cannot be "healed" by clearing the core marker
@@ -680,13 +713,21 @@ def _repair_current_checkout(
     # The Windows shim hand-off child is current BY DESIGN; its one job is the pending sync,
     # not venv health — without this it would print "Already up to date!" and skip it.
     handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
+    # Importable is not synced: a venv installed from an older release imports fine while its
+    # pins lag the checkout (the sync after the pull was refused or died, #97208).
+    stale, stale_detail = (
+        _venv_dependency_set_stale() if healthy and not handed_off_sync else (False, ""))
     if handed_off_sync:
         print("→ Finishing the dependency install handed off by hermes.exe...")
     elif not healthy:
         print("⚠ Checkout is current, but the venv is unhealthy:")
         print(f"  {detail}")
         print("→ Repairing Python dependencies...")
-    if handed_off_sync or not healthy:
+    elif stale:
+        print("⚠ Checkout is current, but its dependencies were never synced after the last pull:")
+        print(f"  {stale_detail}")
+        print("→ Syncing Python dependencies...")
+    if handed_off_sync or not healthy or stale:
         current_checkout_complete = _repair_venv_on_current_checkout(
             assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,
@@ -712,6 +753,8 @@ def _repair_current_checkout(
                       "to finish import-based venv repair.")
             _m()._restore_active_tool_dependencies(
                 active_tool_dependencies, repair_prefix, env=repair_env)
+            # Same order as the pull path: the swapped-in venv was built from uv.lock alone.
+            _m()._refresh_active_memory_provider_dependencies()
             _m()._reapply_plugin_python_dependencies()
         current_checkout_complete = _repair_node_deps_on_current_checkout(
             _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
@@ -1238,7 +1281,18 @@ def _finish_already_up_to_date(
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
         _windows_gateway_resume=_windows_gateway_resume)
-    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    # Same contract as the pull path's _resume_windows_gateways_and_merge_outcome: a failed
+    # Windows gateway resume (e.g. the relaunch verification racing a Job-Object kill, #48820)
+    # must demote this run to incomplete, never abort it. A bare call here let the identical
+    # RuntimeError the pull path treats as a warning kill "Already up to date" outright (#115563).
+    resume_outcome = _GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[],
+        restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(),
+    )
+    _resume_windows_gateways_and_merge_outcome(resume_outcome, _windows_gateway_resume, gateway_mode)
+    if resume_outcome.incomplete:
+        current_checkout_complete = False
     # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
     # gate so a partial outcome can't strand the fleet on stale code.
     # Catch up even on the "Already up to date" path — that early return is what left the gateway on stale
@@ -1269,7 +1323,10 @@ def _apply_pulled_update(
     # completed restart leaves this marker so the next update catches up even when git is
     # current. Distinct from ``.update-incomplete`` (venv/install repair).
     # See #95294.
-    _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "")
+    _write_fleet_restart_pending_marker(
+        expected_sha=post_pull_sha or "",
+        runtimes=_pre_update_plan.to_dict().get("runtimes") if _pre_update_plan is not None else None,
+    )
     # Stale .pyc would ImportError on gateway restart when new source references new names.
     _sweep_bytecode_after_update(branch)
 
@@ -1336,11 +1393,11 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
     The parent detaches from the receipt and its Windows resume hook — the child owns both —
     and only relays the exit code (``hermes_cli/update_handoff.py``).
     """
-    from hermes_cli.update_handoff import continue_update_in_fresh_interpreter
     from hermes_cli.update_receipt import resume_update_receipt
 
     payload = _post_swap_payload(**payload_kwargs)
-    code = continue_update_in_fresh_interpreter(payload, argv_tail=_post_swap_argv_tail(args))
+    code = _update_handoff.continue_update_in_fresh_interpreter(
+        payload, argv_tail=_post_swap_argv_tail(args))
     token = payload_kwargs.get("_windows_gateway_resume")
     if token and code is not None:
         # The child got its own copy (serialized before this flip) and owns the resume; every
@@ -1363,10 +1420,9 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
 def _run_post_swap_phase(args, gateway_mode: bool) -> None:
     """Child half of the update (``--post-swap``): resume the receipt and finish the run on the
     pulled code."""
-    from hermes_cli.update_handoff import read_handoff
     from hermes_cli.update_receipt import resume_update_receipt
 
-    payload = read_handoff(args.post_swap)
+    payload = _update_handoff.read_handoff(args.post_swap)
     with suppress(OSError):
         Path(args.post_swap).unlink()
     if payload.get("receipt"):
@@ -1497,6 +1553,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
+    # A child spawned off hermes.exe already outwaited its parent in ``cmd_update`` (before the
+    # update lock, so the lock it now holds is its own — the parent's marker left with it).
+    from hermes_cli.update_handoff import adopt_handed_off_gateway_resume
+
     if getattr(args, "post_swap", None):
         # Second half of a run whose pre-pull interpreter stopped at the code swap.
         _run_post_swap_phase(args, gateway_mode)
@@ -1508,13 +1568,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _pre_update_plan = _begin_update_receipt_and_plan(args)
 
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
-    # the post-update cron-jobs safety net.
+    # the post-update cron-jobs safety net. A deliberate opt-out is recorded as a skip with its
+    # reason, not as a failed step (see _record_pre_update_backup_outcome).
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
-    _record_update_step(
-        "pre_update_backup", pre_update_snapshot_id is not None,
-        f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or failed")
+    _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
 
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
+    # A legacy re-exec child resumes exactly the fleet its parent stopped; re-running discovery
+    # here found the parent's just-relaunched gateway and force-killed it (#101600).
+    _windows_gateway_resume = adopt_handed_off_gateway_resume() or _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)

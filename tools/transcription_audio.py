@@ -161,10 +161,10 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
         return None, f"Failed to convert audio for local STT: {details}"
 
 
-def _convert_caf_to_wav(file_path: str) -> Optional[str]:
-    """Convert CAF to WAV using ffmpeg or afconvert (macOS)."""
+def _convert_caf_to_wav(file_path: str, work_dir: str) -> Optional[str]:
+    """Convert CAF to WAV in a caller-owned directory using ffmpeg or afconvert."""
     audio_path = Path(file_path)
-    wav_path = os.path.join(audio_path.parent, f"{audio_path.stem}.wav")
+    wav_path = os.path.join(work_dir, f"{audio_path.stem}.wav")
     ffmpeg = _find_ffmpeg_binary()
     afconvert = shutil.which("afconvert")
     candidates = (

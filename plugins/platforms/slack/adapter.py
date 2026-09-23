@@ -1685,13 +1685,19 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _register_plugin_action_handlers(self) -> None:
         """Wire ``ctx.register_slack_action_handler`` callbacks; each is wrapped so a plugin
-        exception is logged and slack_bolt still sees a clean ack."""
+        exception is logged and slack_bolt still sees a clean ack. Idempotent per ``AsyncApp``:
+        a ``(action_id, plugin)`` already registered on the live app is skipped, so the late
+        re-wire (#87770) never stacks a second listener that would run the callback twice."""
         try:
             from hermes_cli.plugins import get_plugin_manager
             _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[Slack] Could not load plugin action handlers: %s", e)
             _plugin_handlers = []
+        if self._plugin_actions_app is not self._app:
+            self._plugin_actions_app, self._plugin_actions_wired = self._app, set()
+        _plugin_handlers = [(a, cb, n) for a, cb, n in _plugin_handlers
+                            if (repr(a), n) not in self._plugin_actions_wired]
         # Closure factory: slack_bolt passes ``None`` for unrecognised listener params, so loop
         # vars captured as default args (``_cb=_cb``) would be silently clobbered at dispatch.
         def _make_wrapper(cb, plugin_name):
@@ -1712,10 +1718,22 @@ class SlackAdapter(BasePlatformAdapter):
 
         for _action_id, _cb, _plugin_name in _plugin_handlers:
             self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
+            self._plugin_actions_wired.add((repr(_action_id), _plugin_name))
             logger.debug(
                 "[Slack] Registered plugin action handler %s (from %s)", _action_id, _plugin_name)
         if _plugin_handlers:
             logger.info("[Slack] Wired %d plugin action handler(s)", len(_plugin_handlers))
+
+    # ``(repr(action_id), plugin)`` pairs registered on ``_plugin_actions_app``; reset per AsyncApp.
+    _plugin_actions_app: Any = None
+    _plugin_actions_wired: set = frozenset()
+
+    def rewire_plugin_handlers(self) -> None:
+        """Late plugin loads carry both registries: action handlers and ``register_platform_handler``
+        factories (base). Both are per-app idempotent."""
+        if self._app is not None and self._plugin_actions_app is self._app:
+            self._register_plugin_action_handlers()
+        super().rewire_plugin_handlers()
 
     @staticmethod
     def _new_web_client(token: str, proxy_url: Optional[str]) -> Any:
@@ -4506,13 +4524,13 @@ class SlackAdapter(BasePlatformAdapter):
             team_id=team_id, is_thread_reply=is_thread_reply, is_mentioned=is_mentioned,
             is_dm=is_dm)
         # Thread-root media is delivered ahead of the trigger message's own files.
-        media_urls, media_types, text = await self._collect_inbound_media(
+        media_urls, media_types, media_text_inlined, text = await self._collect_inbound_media(
             event, channel_id, team_id, text, thread_root_media_urls, thread_root_media_types)
         msg_event = await self._build_message_event(
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
-            media_types=media_types, channel_context=channel_context)
+            media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context)
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -4532,7 +4550,7 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, *, text: str, original_text: str, command_probe_text: str,
         is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
         thread_ts: Optional[str], is_dm: bool, media_urls: List[str], media_types: List[str],
-        channel_context: Optional[str]) -> MessageEvent:
+        media_text_inlined: List[bool], channel_context: Optional[str]) -> MessageEvent:
         """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
         from canonical input: the parser needs the token at char zero and enrichment (blocks,
         unfurls, file text, history) must never mutate arguments."""
@@ -4569,6 +4587,7 @@ class SlackAdapter(BasePlatformAdapter):
             message_id=ts,
             media_urls=media_urls,
             media_types=media_types,
+            media_text_inlined=media_text_inlined,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             channel_context=channel_context,
@@ -4690,12 +4709,14 @@ class SlackAdapter(BasePlatformAdapter):
     async def _collect_inbound_media(
         self, event: dict, channel_id: str, team_id: str, text: str,
         thread_root_media_urls: List[str], thread_root_media_types: List[str],
-    ) -> Tuple[List[str], List[str], str]:
-        """Download/cache ``event["files"]`` → ``(media_urls, media_types, text)``; root images
-        lead. Small text-like docs are injected into ``text`` (gated on ext/MIME, not blind UTF-8
-        decode — PDF/zip headers decode). Failures are prepended as an attachment notice."""
+    ) -> Tuple[List[str], List[str], List[bool], str]:
+        """Download/cache ``event["files"]`` → ``(media_urls, media_types, media_text_inlined, text)``;
+        root images lead. Small text-like docs are injected into ``text`` (gated on ext/MIME, not blind
+        UTF-8 decode — PDF/zip headers decode) and flagged True in ``media_text_inlined``. Failures are
+        prepended as an attachment notice."""
         media_urls = list(thread_root_media_urls)
         media_types = list(thread_root_media_types)
+        media_text_inlined: List[bool] = [False] * len(media_urls)
         notices: List[str] = []
         for f in event.get("files", []):
             if f.get("file_access") == "check_file_info":
@@ -4714,6 +4735,7 @@ class SlackAdapter(BasePlatformAdapter):
                 cached_path, media_type, injection = cached
                 media_urls.append(cached_path)
                 media_types.append(media_type)
+                media_text_inlined.append(bool(injection))
                 if injection:
                     text = f"{injection}\n\n{text}" if text else injection
             except Exception as e:  # pragma: no cover - defensive logging
@@ -4723,7 +4745,7 @@ class SlackAdapter(BasePlatformAdapter):
         if notices:
             notice_block = "[Slack attachment notice]\n" + "\n".join(f"- {n}" for n in notices)
             text = f"{notice_block}\n\n{text}" if text else notice_block
-        return media_urls, media_types, text
+        return media_urls, media_types, media_text_inlined, text
 
     # ----- Approval button support (Block Kit) -----
 
@@ -5957,30 +5979,24 @@ class SlackAdapter(BasePlatformAdapter):
     def _build_thread_session_key(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "", *,
         chat_type: str = "group") -> Optional[str]:
-        """Thread session key via ``build_session_key()`` (honours per-user isolation).
-        ``chat_type`` must come from the event's ``channel_type``, not the ID prefix (MPIM ids
-        start with ``G``)."""
-        session_store = getattr(self, "_session_store", None)
-        if not session_store:
+        """Thread session key through the adapter seam (``_source_session_key``: per-user isolation
+        from the adapter config the runner seeded, owner-profile namespace). ``chat_type`` must come
+        from the event's ``channel_type``, not the ID prefix (MPIM ids start with ``G``)."""
+        if not getattr(self, "_session_store", None):
             return None
         try:
-            from gateway.session import build_session_key
             source = self._thread_session_source(channel_id, thread_ts, user_id, team_id, chat_type)
-            store_cfg = getattr(session_store, "config", None)
-            return build_session_key(
-                source, group_sessions_per_user=getattr(store_cfg, "group_sessions_per_user", True),
-                thread_sessions_per_user=getattr(store_cfg, "thread_sessions_per_user", False),
-                profile=self._session_key_profile(source))
+            return self._source_session_key(source)
         except Exception:
             return None
 
-    @staticmethod
     def _thread_session_source(
-        channel_id: str, thread_ts: str, user_id: str, team_id: str, chat_type: str) -> Any:
-        from gateway.session import SessionSource
-        return SessionSource(
-            platform=Platform.SLACK, chat_id=channel_id, chat_type=chat_type, user_id=user_id,
-            thread_id=thread_ts, scope_id=team_id or None)
+        self, channel_id: str, thread_ts: str, user_id: str, team_id: str, chat_type: str) -> Any:
+        # ``build_source``: transport provenance + profile route, so the thread key canonicalizes
+        # like the message that started the thread.
+        return self.build_source(
+            chat_id=channel_id, chat_type=chat_type, user_id=user_id, thread_id=thread_ts,
+            scope_id=team_id or None)
 
     def _thread_rehydration_key(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:

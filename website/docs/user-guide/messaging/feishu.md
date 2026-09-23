@@ -102,7 +102,7 @@ FEISHU_CONNECTION_MODE=websocket
 
 **Requirements:** The `websockets` Python package must be installed. The SDK handles connection lifecycle, heartbeats, and auto-reconnection internally.
 
-**How it works:** The adapter runs the Lark SDK's WebSocket client in a background executor thread. Inbound events (messages, reactions, card actions) are dispatched to the main asyncio loop. On disconnect, the SDK will attempt to reconnect automatically.
+**How it works:** The adapter runs the Lark SDK's WebSocket client in a background executor thread. Inbound events (messages, reactions, card actions) are dispatched to the main asyncio loop. On disconnect, the SDK will attempt to reconnect automatically. If the link dies outright (the SDK's retry ladder gives up or the client thread exits), Hermes' supervisor rebuilds the client with capped backoff. While a link is down, `hermes gateway status` shows the platform as `retrying` until the connection is re-established.
 
 ### Optional: Webhook mode
 
@@ -398,9 +398,9 @@ The adapter receives and caches the following media types from users:
 | **Video** | .mp4, .mov, .avi, .mkv, .webm, .m4v, .3gp | Downloaded and cached as documents |
 | **Files** | .pdf, .doc, .docx, .xls, .xlsx, .ppt, .pptx, and more | Downloaded and cached as documents |
 
-Media from rich-text (post) messages, including inline images and file attachments, is also extracted and cached.
+Media from rich-text (post) messages is also extracted and cached — both inline images/files inside the post body and attachments the composer sends in the top-level `files` list (a caption plus a file in one bubble). Every attachment is collected; folder entries are skipped, and each one leaves an `[Attachment: <name>]` marker in the text.
 
-For small text-based documents (.txt, .md), the file content is automatically injected into the message text so the agent can read it directly without needing tools.
+For small text-based documents (.txt, .md), the file content is automatically appended after the message text so the agent can read it directly without needing tools — the caption you typed alongside the file stays in place.
 
 ### Outbound (sending)
 

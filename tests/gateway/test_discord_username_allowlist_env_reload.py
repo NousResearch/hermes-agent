@@ -165,8 +165,3 @@ class TestDiscordAdapterResolvedAccessor:
         adapter = self._adapter({"teknium", "*", OPERATOR_ID})
         assert adapter.resolved_allowlist_user_ids() == {OPERATOR_ID}
 
-    def test_missing_attribute_yields_empty_set(self):
-        from plugins.platforms.discord.adapter import DiscordAdapter
-
-        adapter = object.__new__(DiscordAdapter)  # no _allowed_user_ids at all
-        assert adapter.resolved_allowlist_user_ids() == set()

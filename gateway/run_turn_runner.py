@@ -34,6 +34,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Consecutive turns a session's persisted transcript may lag its live cached history before
+# _load_turn_history escalates the lag line from WARNING to ERROR (#114266: 11 days of WARNING).
+_TRANSCRIPT_LAG_ESCALATION_TURNS = 3
+
 # Exact refusals retained for older adapters/connectors without destination preflight.
 # Substring matching would also silence transient thread-resolution errors.
 _CARD_DESTINATION_REFUSALS = {
@@ -260,7 +264,7 @@ class TurnRunner:
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
-            adapter = self._runner._adapter_for_source(ctx.source)
+            adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
@@ -700,7 +704,7 @@ class TurnRunner:
 
     async def send_progress_messages(self):
         ctx = self._ctx
-        adapter = self._runner._adapter_for_source(ctx.source) if ctx.progress_queue else None
+        adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
@@ -924,10 +928,19 @@ class TurnRunner:
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
-                adapter = self._runner._adapter_for_source(ctx.source)
+                adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
+                    supports_incremental_stream = (
+                        getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
+                    )
+                    consumer_stream_deltas = want_stream_deltas and supports_incremental_stream
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
-                        ctx.source, scfg, adapter, on_missing_cursor="raise",
+                        ctx.source, scfg, adapter,
+                        # A complete commentary message needs no edit cursor.  Keeping it on the
+                        # consumer records what reached non-editable platforms, so an interim
+                        # callback carrying the final answer participates in final-send dedup.
+                        on_missing_cursor="fallback" if want_interim_messages else "raise",
                     )
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
@@ -942,11 +955,16 @@ class TurnRunner:
                     # #105341: a consumer created only for interim commentary (text streaming off)
                     # is never fed the final reply's deltas — mark it so the duplicate-risk
                     # diagnostic in ``_run_agent_mark_streamed_delivery`` stays silent.
-                    stream_consumer.stream_deltas_enabled = want_stream_deltas
+                    stream_consumer.stream_deltas_enabled = consumer_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
-        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
+        delta_sinks = [
+            sc for sc in (
+                stream_consumer if stream_consumer and stream_consumer.stream_deltas_enabled else None,
+                stts,
+            ) if sc is not None
+        ]
         stream_delta_cb = None
         if delta_sinks:
             def stream_delta_cb(text: Optional[str]) -> None:
@@ -1557,16 +1575,27 @@ class TurnRunner:
         # #50502.
         if reused_cached_agent and getattr(agent, "session_id", None) == ctx.session_id:
             selected = _select_cached_agent_history(agent_history, getattr(agent, "_session_messages", None))
+            # Consecutive lagging turns per session (cleared on /new): one lag is a blip, a streak
+            # is the #114266 write outage and must escalate past a repeating WARNING.
+            streaks = getattr(self._runner, "_transcript_lag_streaks", None)
+            if streaks is None:  # tests may build bare runners
+                streaks = self._runner._transcript_lag_streaks = {}
             if selected is not agent_history:
-                logger.warning(
+                streak = streaks[ctx.session_key] = streaks.get(ctx.session_key, 0) + 1
+                log = logger.error if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else logger.warning
+                log(
                     "Persisted transcript lagged live cached history for "
-                    "session %s (disk=%d, memory=%d); preserving live "
-                    "conversation context (possible FTS write corruption)",
-                    ctx.session_key, len(agent_history), len(selected),
+                    "session %s (disk=%d, memory=%d, consecutive_turns=%d); preserving live "
+                    "conversation context (possible FTS write corruption)%s",
+                    ctx.session_key, len(agent_history), len(selected), streak,
+                    "; state.db is not receiving this session's writes and needs operator attention"
+                    if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else "",
                 )
                 # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
                 # the full canonicalization so no replay transform can slip through.
                 agent_history = canonicalize_replay_history(selected)
+            else:
+                streaks.pop(ctx.session_key, None)
         # MEDIA paths already in history are excluded from this turn's extraction (compression-safe).
         return agent_history, observed_group_context, _collect_history_media_paths(agent_history)
 
@@ -1582,7 +1611,7 @@ class TurnRunner:
     def _resume_note_interactive(self) -> bool:
         """Interactive platforms report the restore and ask what next; event platforms (webhook,
         API server) continue the work — nobody is present to answer."""
-        return bool(getattr(self._runner._adapter_for_source(self._ctx.source), "interactive_resume", True))
+        return bool(getattr(self._runner._delivery_adapter_for(self._ctx.source), "interactive_resume", True))
 
     def _prepare_turn_message(self, agent_history):
         """Prepend recovery/notice guidance to ``ctx.message``.
@@ -1882,6 +1911,10 @@ class TurnRunner:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
             )
+            # Stashed by _resolve_session_agent_runtime when the primary's credentials failed and a
+            # fallback was resolved before any agent exists (#74349); one-shot per turn.
+            pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
+            runner._pre_agent_fallback_notice = None
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -1890,6 +1923,12 @@ class TurnRunner:
             # Model/credential resolution failed before the turn began; the raw text (URLs, status
             # codes) belongs in the log, and the chat gets the commands that fix it.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            from hermes_cli.auth import is_rate_limited_auth_error
+            if is_rate_limited_auth_error(exc.__cause__):
+                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+                from gateway.run import _gateway_provider_error_reply
+                return {"final_response": _gateway_provider_error_reply(str(exc)),
+                        "messages": [], "api_calls": 0, "tools": []}
             return {
                 "final_response": (
                     "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
@@ -1906,6 +1945,9 @@ class TurnRunner:
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
+        if pending_fallback_notice:
+            # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+            agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)

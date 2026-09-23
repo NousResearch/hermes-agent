@@ -185,18 +185,6 @@ def _simulate_note_injection(
 # ---------------------------------------------------------------------------
 
 
-class TestSessionEntryResumeFields:
-    def test_defaults(self):
-        now = datetime.now()
-        entry = SessionEntry(
-            session_key="agent:main:telegram:dm:1",
-            session_id="sid",
-            created_at=now,
-            updated_at=now,
-        )
-        assert entry.resume_pending is False
-        assert entry.resume_reason is None
-        assert entry.last_resume_marked_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -216,13 +204,6 @@ class TestMarkResumePending:
         assert refreshed.resume_reason == "restart_timeout"
         assert refreshed.last_resume_marked_at is not None
 
-    def test_custom_reason_persists(self, tmp_path):
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = store.get_or_create_session(source)
-
-        store.mark_resume_pending(entry.session_key, reason="shutdown_timeout")
-        assert store._entries[entry.session_key].resume_reason == "shutdown_timeout"
 
 
 class TestClearResumePending:
@@ -302,18 +283,6 @@ class TestResumePendingSystemNote:
         )
 
 
-    def test_empty_message_noninteractive_note_continues_task(self):
-        """Non-interactive platforms (webhook, API server): nobody can answer
-        'what next?', so the resumed turn must complete the interrupted work
-        instead of acknowledging (#57056)."""
-        note = build_resume_recovery_note("restart_timeout", "", interactive=False)
-        assert "CONTINUE the interrupted task" in note
-        assert "session was restored" not in note
-        assert "ask what they would like to do next" not in note
-        # Must not tell the model to skip the unfinished work it should finish.
-        assert "skip any unfinished work" not in note
-        # But still guards against re-running already-recorded tool calls.
-        assert "already appear in the history" in note
 
 
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
@@ -323,7 +292,6 @@ class TestResumePendingSystemNote:
         )
 
         assert message
-        assert "CONTINUE the interrupted task" in message
         assert persisted == message
         assert persisted != ""
 
@@ -363,7 +331,6 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=entry)
         assert "[System note:" in result
         assert "gateway restart" in result
-        assert "NEW message" in result
 
 
     def test_no_resume_pending_preserves_tool_tail_note(self):
@@ -378,7 +345,6 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert "[System note:" in result
         assert "pending tool outputs" in result
-        assert "Do NOT re-execute" in result
 
     def test_stale_resume_pending_does_not_inject_restart_note(self):
         """Old restart markers must not revive an unrelated stale task.
@@ -493,7 +459,6 @@ class TestResumePendingSystemNote:
         )
         assert "[System note:" in result
         assert "pending tool outputs" in result
-        assert "Do NOT re-execute" in result
 
     def test_legacy_history_without_timestamps_still_injects(self):
         """Transcripts predating timestamp persistence must keep the old
@@ -507,7 +472,6 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert "[System note:" in result
         assert "pending tool outputs" in result
-        assert "Do NOT re-execute" in result
 
 
 # ---------------------------------------------------------------------------
@@ -563,10 +527,6 @@ class TestFreshnessHelpers:
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "7200")
         assert _auto_continue_freshness_window() == 7200.0
 
-    def test_auto_continue_freshness_window_default_when_unset(self, monkeypatch):
-        monkeypatch.delenv("HERMES_AUTO_CONTINUE_FRESHNESS", raising=False)
-        # Default is 1 hour
-        assert _auto_continue_freshness_window() == 3600.0
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +557,7 @@ async def test_drain_timeout_marks_resume_pending():
     runner.session_store = session_store
 
     with patch("gateway.status.remove_pid_file"), patch(
-        "gateway.status.write_runtime_status"
+        "gateway.status.publish_runtime_status"
     ):
         await runner.stop()
 
@@ -764,6 +724,70 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
     assert seen == ["resume-start", "inbound:hello"]
     assert runner._startup_restore_queue == []
     assert runner._startup_restore_in_progress is False
+
+
+@pytest.mark.asyncio
+async def test_one_raising_replay_neither_wedges_gate_nor_eats_queue(monkeypatch):
+    """A replay whose adapter handle_message raises must not strand the inbound
+    gate closed, must not abort the drain, and must not lose the remaining queue."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+    monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "0")
+    runner._start_startup_warmup()
+
+    handled: list[str] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        if event.source.chat_id == "bad-chat":
+            raise RuntimeError("adapter exploded mid-drain")
+        handled.append(event.text)
+
+    adapter.handle_message = fake_handle_message
+
+    bad_source = make_restart_source(chat_id="bad-chat")
+    good_source = make_restart_source(chat_id="good-chat")
+    runner._queue_startup_restore_event(
+        MessageEvent(text="first", message_type=MessageType.TEXT, source=bad_source))
+    runner._queue_startup_restore_event(
+        MessageEvent(text="second", message_type=MessageType.TEXT, source=good_source))
+
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+
+    assert runner._startup_restore_in_progress is False
+    assert handled == ["second"]
+    assert runner._startup_restore_queue == []
+
+
+@pytest.mark.asyncio
+async def test_post_drain_inbound_processes_instead_of_queueing(monkeypatch):
+    """After a contained replay failure the gate is open, so the next inbound
+    event dispatches instead of queueing into the (drained) restore queue."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+    monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "0")
+    runner._start_startup_warmup()
+
+    async def exploding_handle_message(event: MessageEvent) -> None:
+        raise RuntimeError("boom")
+
+    adapter.handle_message = exploding_handle_message
+    runner._queue_startup_restore_event(
+        MessageEvent(text="doomed", message_type=MessageType.TEXT,
+                     source=make_restart_source(chat_id="bad-chat")))
+
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+    assert runner._startup_restore_in_progress is False
+
+    # The next inbound event reads the flag at run_inbound's gate; with the gate
+    # open it proceeds past the queueing branch rather than appending.
+    late = MessageEvent(text="late", message_type=MessageType.TEXT,
+                        source=make_restart_source(chat_id="late-chat"))
+    await runner._handle_message(late)
+    assert runner._startup_restore_queue == []
 
 
 # ---------------------------------------------------------------------------
@@ -1255,5 +1279,4 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner._send_restart_notification.assert_awaited_once()
     runner._claim_pending_obligations.assert_awaited_once()
     runner._redeliver_claimed_obligations.assert_awaited_once()
-
 

@@ -40,13 +40,16 @@ def auth_json_path():
 def _read_nous_provider_state() -> Optional[dict]:
     """The profile's Nous state, or None. A free-tier identity counts only while the free tier is on:
     with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
-    attached to a request."""
+    attached to a request.
+
+    Resolves through the same profile-then-global-root fallback every other credential reader
+    uses: a profile created with ``share_auth`` has no ``auth.json`` of its own and signs in with
+    the root identity. Reading only ``HERMES_HOME/auth.json`` made that profile look signed out to
+    the connector gate alone, so ``manage_connections`` vanished from its tool list."""
     try:
-        path = auth_json_path()
-        if not path.is_file():
-            return None
-        providers = json.loads(path.read_text(encoding="utf-8-sig")).get("providers", {})
-        nous_provider = providers.get("nous", {}) if isinstance(providers, dict) else None
+        from hermes_cli.auth import get_provider_auth_state
+
+        nous_provider = get_provider_auth_state("nous")
         if not isinstance(nous_provider, dict):
             return None
         from hermes_cli.anon_auth import guest_enabled, is_guest_state
@@ -76,15 +79,14 @@ def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
 
 def _read_user_token_override() -> Optional[str]:
     """Read the TOOL_GATEWAY_USER_TOKEN override through the secret scope. Scope verdict is authoritative
-    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only when unscoped."""
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
+    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only
+    when unscoped. Any non-UnscopedSecretError failure propagates -- a failed scoped read must never
+    silently borrow the ambient env."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
 
-        try:
-            explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
-        except UnscopedSecretError:
-            explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
-    except Exception:
+    try:
+        explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
+    except UnscopedSecretError:
         explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
     return _clean(explicit)
 
@@ -122,16 +124,19 @@ def read_nous_access_token() -> Optional[str]:
         from hermes_cli.anon_auth import AnonCredentialDead
 
         if isinstance(exc, AnonCredentialDead):
-            return _replace_dead_guest_token(nous_provider)
+            return _replace_dead_guest_token(nous_provider, str(exc.code or "anon_credential_dead"))
         logger.debug("Nous access token refresh failed: %s", exc)
     return cached_token
 
 
-def _replace_dead_guest_token(dead_state: dict) -> Optional[str]:
-    from hermes_cli.anon_auth import clear_dead_guest, ensure_portal_identity
+def _replace_dead_guest_token(dead_state: dict, code: str = "anon_credential_dead") -> Optional[str]:
+    from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED, clear_dead_guest, ensure_portal_identity
     from hermes_cli.auth import resolve_nous_access_token
 
-    clear_dead_guest("anon_credential_dead", dead_token=dead_state.get("anon_token"))
+    clear_dead_guest(code, dead_token=dead_state.get("anon_token"))
+    # Same rule as inference: a locked account is retired but never silently replaced.
+    if code == ANON_ACCOUNT_LOCKED:
+        return None
     try:
         if ensure_portal_identity(explicit=True) is None:
             return None

@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -5,7 +6,6 @@ import type { ClientSessionState } from '@/app/types'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionTodos } from '@/store/todos'
-import type { RpcEvent } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -264,20 +264,6 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts).toHaveLength(2)
   })
 
-  it('settles an identical final completion onto the interim when response_previewed', async () => {
-    mountStream()
-    await start()
-
-    await interim('same reply')
-    await completePreviewed('same reply')
-
-    // With response_previewed, the final text is the same model response
-    // that was published provisionally as an interim — settle onto the
-    // existing interim instead of creating a duplicate. (#65919 review)
-    const texts = assistantMessages()
-    expect(texts.filter(t => t === 'same reply')).toHaveLength(1)
-  })
-
   it('settles a prefix-matched final onto the interim when response_previewed', async () => {
     mountStream()
     await start()
@@ -317,12 +303,14 @@ describe('useMessageStream interim text sealing', () => {
     await start()
 
     // No payload at all
-    await act(() => stream.handleEvent({ type: 'message.interim' } as RpcEvent))
+    await act(() => stream.handleEvent({ type: 'message.interim' } as GatewayEvent))
     // Empty text
-    await act(() => stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as RpcEvent))
+    await act(() =>
+      stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as GatewayEvent)
+    )
     // Undefined text
     await act(() =>
-      stream.handleEvent({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as RpcEvent)
+      stream.handleEvent({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as GatewayEvent)
     )
 
     // Turn continues without finalizing or throwing

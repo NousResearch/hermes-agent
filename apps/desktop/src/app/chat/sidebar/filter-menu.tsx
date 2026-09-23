@@ -21,6 +21,7 @@ import {
 import { useI18n } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
 import { cn } from '@/lib/utils'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import {
   $sidebarCardRows,
   $sidebarFiltersActive,
@@ -43,6 +44,7 @@ import {
   setSidebarShowAllSessions,
   setSidebarShowArchived,
   setWorkspaceNodesOpen,
+  SIDEBAR_GROUPING_ORDER,
   type SidebarGrouping,
   type SidebarOrdering,
   type SidebarRowMeta,
@@ -59,6 +61,7 @@ import {
   requestProfileCreate,
   toggleShowAllProfiles
 } from '@/store/profile'
+import { $profileRailVisible, toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { runImportProfileFlow } from '@/store/profile-share'
 import { $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
@@ -74,12 +77,14 @@ interface Option<T extends string = string> {
   label: string
 }
 
-const GROUPINGS: Option<SidebarGrouping>[] = [
-  { icon: 'clock', id: 'date', label: 'Updated' },
-  { icon: 'root-folder', id: 'project', label: 'Project' },
-  { icon: 'pulse', id: 'status', label: 'Status' },
-  { icon: 'account', id: 'profile', label: 'Profile' }
-]
+const GROUPING_OPTIONS: Record<SidebarGrouping, Omit<Option<SidebarGrouping>, 'id'>> = {
+  date: { icon: 'clock', label: 'Updated' },
+  profile: { icon: 'account', label: 'Profile' },
+  project: { icon: 'root-folder', label: 'Project' },
+  status: { icon: 'pulse', label: 'Status' }
+}
+
+const GROUPINGS: Option<SidebarGrouping>[] = SIDEBAR_GROUPING_ORDER.map(id => ({ id, ...GROUPING_OPTIONS[id] }))
 
 const ORDERINGS: Option<SidebarOrdering>[] = [
   { icon: 'clock', id: 'updated', label: 'Updated' },
@@ -157,6 +162,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const ordering = useStore($sidebarOrdering)
   const rowMeta = useStore($sidebarRowMeta)
   const cardRows = useStore($sidebarCardRows)
+  const profileRailVisible = useStore($profileRailVisible)
   const showAllSessions = useStore($sidebarShowAllSessions)
   const statusFilter = useStore($sidebarStatusFilter)
   const projectFilter = useStore($sidebarProjectFilter)
@@ -177,6 +183,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   // locally, the gateway's REST mirror remotely. Resolved per render, not once
   // at module load: switching to a remote profile swaps the bridge underneath.
   const prAvailable = Boolean(desktopGit()?.review?.prList)
+  // Simple mode owns the row readouts and the rail, and PRs are a coding
+  // signal — those rows wait for Advanced rather than appearing pre-decided.
+  const showsAdvancedChrome = useStore($showsAdvancedChrome)
 
   // Fold the level in view: project rows, or the date/status buckets. Project
   // rows default open, so "all collapsed" means every one of them has been
@@ -277,19 +286,21 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             </DropdownMenuSubContent>
           </DropdownMenuSub>
 
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Show</DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              {rowMetaOptions.map(option => (
-                <OptionCheckbox
-                  checked={rowMeta.includes(option.id)}
-                  key={option.id}
-                  onCheck={() => toggleSidebarRowMeta(option.id)}
-                  option={option}
-                />
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+          {showsAdvancedChrome && (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Show</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                {rowMetaOptions.map(option => (
+                  <OptionCheckbox
+                    checked={rowMeta.includes(option.id)}
+                    key={option.id}
+                    onCheck={() => toggleSidebarRowMeta(option.id)}
+                    option={option}
+                  />
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
 
           {grouping === 'project' && (
             <OptionCheckbox
@@ -306,6 +317,17 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             onCheck={() => setSidebarCardRows(!cardRows)}
             option={{ icon: 'inbox', id: 'card-rows', label: 'Inbox style' }}
           />
+
+          {/* The colored strip at the sidebar foot. Off, the statusbar grows a
+              profile dropdown beside the gateway switcher, so nobody loses the
+              door — this is for people whose profiles are bots, not workspaces. */}
+          {showsAdvancedChrome && (
+            <OptionCheckbox
+              checked={profileRailVisible}
+              onCheck={toggleProfileRailVisible}
+              option={{ icon: 'organization', id: 'profile-rail', label: t.sidebar.profileRail }}
+            />
+          )}
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />
@@ -329,7 +351,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
           {/* `gh` only exists where the checkout does, so on a remote backend
               this submenu never appears rather than filtering everything out. */}
-          {prAvailable && (
+          {prAvailable && showsAdvancedChrome && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>Pull request</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>

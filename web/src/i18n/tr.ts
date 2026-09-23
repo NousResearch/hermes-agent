@@ -165,6 +165,10 @@ export const tr: Translations = {
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
     newChat: "Yeni sohbet",
+    workspace: "çalışma alanı",
+    workspaceDefault: "Varsayılan",
+    workspaceRescan: "Depoları yeniden tara",
+    workspaceCustom: "Başka yol…",
     previousPage: "Önceki sayfa",
     nextPage: "Sonraki sayfa",
     roles: {
@@ -324,6 +328,8 @@ export const tr: Translations = {
     disableRuntime: "Devre dışı bırak",
     enableAfterInstall: "Yüklemeden sonra etkinleştir",
     enableRuntime: "Etkinleştir",
+    toggleTakesEffectAfterRestart:
+      "Kaydedildi — değişikliği uygulamak için ağ geçidini yeniden başlatın.",
     forceReinstall: "Yeniden yüklemeyi zorla (önce mevcut klasörü sil)",
     headline:
       "Hermes eklentilerini keşfedin, yükleyin, etkinleştirin ve güncelleyin (`hermes plugins` ile eşdeğer).",

@@ -28,6 +28,11 @@ export interface BackendStartFailureContext {
    * cloud) primary backend rather than spawning a local child.
    */
   attemptedRemote: boolean
+  /**
+   * True when the boot that just failed was a supervisor-owned respawn after
+   * an unexpected primary exit, not an initial or user-driven start.
+   */
+  supervisorRecovery?: boolean
 }
 
 /**
@@ -35,9 +40,14 @@ export interface BackendStartFailureContext {
  * Latch local failures (prevent install-restart loops); never latch remote
  * failures (they are transient and must stay retryable so recovery paths work
  * without an app restart).
+ *
+ * A supervisor-owned respawn never latches either: it already has its own
+ * bounded crash-loop budget, so a pre-ready child exit must not become a
+ * permanent local boot latch before that budget can run. Initial and
+ * user-driven starts keep the fail-closed latch.
  */
 export function shouldLatchBackendStartFailure(context: BackendStartFailureContext): boolean {
-  return !context.attemptedRemote
+  return !context.attemptedRemote && !context.supervisorRecovery
 }
 
 export interface RemoteReauthFailureContext {
@@ -137,4 +147,36 @@ export function shouldLatchHostKeyChangedFailure(context: RemoteBootRetryContext
  */
 export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): boolean {
   return context.attemptedRemote && !context.isReauth && context.isHostKeyChanged !== true
+}
+
+export interface BootProgressUpdateLike {
+  /** The failure text an error update carries; absent/null on progress updates. */
+  error?: unknown
+}
+
+/**
+ * Whether a boot-progress update must be dropped because a CONFIRMED remote
+ * reauth rejection is latched.
+ *
+ * `latchedMessage` is the message of the latched reauth failure (null when
+ * nothing is latched). While it is set, the recovery overlay with its Sign in
+ * button is the only correct surface until the user signs in, and any update
+ * that is not a re-emit of that same failure would lift it: a `running: true`
+ * phase or a cleared error from an attempt that was already in flight when the
+ * latch closed, or an unrelated failure from a sibling caller (which would
+ * also swap the retryable verdict back to true and re-arm the renderer's
+ * boot-retry loop — the flicker of #95701). Re-emits of the latched failure
+ * pass so the non-retryable verdict is never lost. Every recovery path
+ * (reset, repair, apply-config, confirmed sign-in) clears the latch BEFORE it
+ * re-drives boot, so this never holds a legitimate restart.
+ */
+export function shouldHoldBootProgressForReauth(
+  latchedMessage: string | null | undefined,
+  update: BootProgressUpdateLike
+): boolean {
+  if (!latchedMessage) {
+    return false
+  }
+
+  return update.error !== latchedMessage
 }

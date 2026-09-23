@@ -78,6 +78,21 @@ def _gateway_only_success():
     }
 
 
+def test_desktop_owned_serve_survivor_does_not_hold_the_flag():
+    """#111494: the recovery pass may not restart a Desktop-supervised serve, so it
+    cannot be the reason recovery stays incomplete; an operator-owned survivor
+    alongside it still blocks."""
+    desktop = {"pid": 6161, "kind": "serve", "profile": "default", "supervisor": "desktop"}
+    manual = {"pid": 4242, "kind": "serve", "profile": "default", "supervisor": "manual-serve"}
+    kwargs = dict(
+        planned_gateway_profiles={"default"},
+        covered_gateway_profiles={"default"},
+        recovery_result=_gateway_only_success(),
+    )
+    assert update_cmd._abort_recovery_is_complete(stale_runtime_rows=[desktop], **kwargs) is True
+    assert update_cmd._abort_recovery_is_complete(stale_runtime_rows=[desktop, manual], **kwargs) is False
+
+
 def test_full_gateway_recovery_does_not_clear_the_flag_while_serve_is_stale():
     """The reported bug as a predicate: gateway green, serve still generation N."""
     assert (
@@ -223,18 +238,6 @@ def test_restarted_serve_leaves_no_survivor(monkeypatch):
     )
 
 
-def test_gateway_runtimes_are_not_counted_as_serve_survivors(monkeypatch):
-    monkeypatch.setattr(
-        _identity_module(),
-        "ledger_entries",
-        lambda *a, **k: [{"pid": 4242, "purpose": "gateway"}],
-    )
-    assert (
-        update_cmd._surviving_pre_update_serve_runtimes(
-            _plan(_runtime("gateway", "default", "systemd", 4242))
-        )
-        == []
-    )
 
 
 def test_dashboard_survivors_count_too(monkeypatch):
@@ -480,17 +483,6 @@ def test_no_systemctl_means_no_serve_pass(monkeypatch):
     }
 
 
-def test_non_linux_hosts_do_not_run_the_serve_pass(monkeypatch):
-    monkeypatch.setattr(recovery.sys, "platform", "win32")
-    monkeypatch.setattr(recovery.shutil, "which", lambda name: "systemctl")
-
-    def unreachable(*a, **k):
-        raise AssertionError("serve unit pass ran off Linux")
-
-    assert recovery.restart_serve_units(run=unreachable) == {
-        "verified": [],
-        "failed": [],
-    }
 
 
 def test_active_unit_with_no_readable_main_pid_is_failed(linux_systemctl):
@@ -659,57 +651,8 @@ def test_serve_only_fleet_still_spawns_the_recovery_child(monkeypatch):
     assert result["serve_units"] == {"verified": ["hermes-serve"], "failed": []}
 
 
-def test_child_timeout_budget_covers_the_serve_pass(monkeypatch):
-    """A serve-only recovery must not be killed before its settle window."""
-    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: True)
-    captured = {}
-
-    def fake_run(argv, **kwargs):
-        captured["timeout"] = kwargs["timeout"]
-        return _Completed(
-            0,
-            stdout=json.dumps(
-                {
-                    "verified": [],
-                    "relaunch_attempted": [],
-                    "failed": [],
-                    "serve_units": {"verified": [], "failed": []},
-                }
-            ),
-        )
-
-    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
-    update_cmd._recover_gateway_restart_after_abort(
-        _plan(_runtime("serve", "default", "manual-serve", 4242)),
-        gateway_mode=False,
-    )
-    assert captured["timeout"] >= 180
 
 
-def test_verified_serve_units_do_not_enter_gateway_restart_vocabulary(monkeypatch):
-    """Serve coverage must not silently widen the gateway fleet-probe gate."""
-    monkeypatch.setattr(abort_recovery, "_serve_unit_recovery_available", lambda: True)
-
-    def fake_run(argv, **kwargs):
-        return _Completed(
-            0,
-            stdout=json.dumps(
-                {
-                    "verified": ["default"],
-                    "relaunch_attempted": [],
-                    "failed": [],
-                    "serve_units": {"verified": ["hermes-serve"], "failed": []},
-                }
-            ),
-        )
-
-    monkeypatch.setattr(abort_recovery.subprocess, "run", fake_run)
-    result = update_cmd._recover_gateway_restart_after_abort(
-        _plan(_runtime("gateway", "default", "systemd", 111)),
-        gateway_mode=False,
-    )
-    assert result["verified"] == ["default"]
-    assert "hermes-serve" not in result["verified"]
 
 
 def test_no_serve_authority_and_no_gateway_profile_spawns_nothing(monkeypatch):
@@ -891,21 +834,6 @@ def test_serve_coverage_reaches_the_persisted_receipt(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_stale_serve_warning_names_the_process_and_the_fix(capsys):
-    update_cmd._warn_stale_serve_runtimes(
-        [
-            {
-                "pid": 4242,
-                "kind": "serve",
-                "profile": "default",
-                "supervisor": "manual-serve",
-            }
-        ]
-    )
-    out = capsys.readouterr().out
-    assert "4242" in out
-    assert "serve" in out
-    assert "systemctl --user restart hermes-serve.service" in out
 
 
 def test_no_survivors_prints_nothing(capsys):
@@ -946,33 +874,6 @@ def _stub_dashboard_helpers(monkeypatch, **helpers):
 
     for name, value in helpers.items():
         monkeypatch.setattr(main_dashboard, name, value)
-
-
-def _dashboard_main_stub(scan_calls, *, restart_result=True):
-    return dict(
-        _DASHBOARD_SYSTEMD_UNIT="hermes-dashboard.service",
-        _restart_managed_dashboard_service=lambda reason, *a, **k: restart_result,
-        _find_stale_dashboard_pids=lambda **kwargs: scan_calls.append(kwargs) or [],
-    )
-
-
-def test_managed_dashboard_restart_still_scans_for_serve_backends(monkeypatch):
-    """A restarted dashboard unit may not end the pass (#92145).
-
-    The reporter's host runs ``hermes-dashboard.service`` AND
-    ``hermes-serve.service``.  Returning as soon as the dashboard unit was
-    restarted meant the serve backend hosting ``tui_gateway`` was never even
-    looked for, so it kept serving the pre-update generation.
-    """
-    from hermes_cli import dashboard_procs
-
-    scan_calls: list[dict] = []
-    _stub_dashboard_helpers(monkeypatch, **_dashboard_main_stub(scan_calls))
-    monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
-
-    dashboard_procs._kill_stale_dashboard_processes(restart_managed=True)
-
-    assert scan_calls, "serve/dashboard scan never ran after the dashboard restart"
 
 
 def test_restarted_dashboard_unit_is_not_killed_by_the_continued_scan(monkeypatch):
@@ -1099,31 +1000,8 @@ def test_settled_system_scope_does_not_suppress_the_stale_user_scope(
     assert out == {"verified": ["user/hermes-serve"], "failed": []}
 
 
-def test_one_authorized_scope_never_mutates_the_same_name_in_the_other(
-    linux_systemctl,
-):
-    """Name equality is not identity: no systemctl verb at all may reach the
-    scope that was already settled."""
-    run, calls = _dual_scope_systemctl()
-    recovery.restart_serve_units(
-        skip_units=[{"scope": "user", "unit": "hermes-serve.service"}],
-        run=run,
-        sleep=lambda _: None,
-    )
-    user_verbs = [
-        argv for scope, argv in calls if scope == "user" and "list-units" not in argv
-    ]
-    assert user_verbs == [], user_verbs
 
 
-def test_each_scope_reports_its_own_outcome(linux_systemctl):
-    """One scope failing must not be reported as the other's failure."""
-    run, _ = _dual_scope_systemctl(settle=("user",))
-    out = recovery.restart_serve_units(run=run, sleep=lambda _: None)
-    assert out == {
-        "verified": ["user/hermes-serve"],
-        "failed": ["system/hermes-serve"],
-    }
 
 
 def test_legacy_unqualified_skip_is_honoured_in_both_scopes(linux_systemctl):

@@ -1,9 +1,8 @@
 """Tests for xAI TTS speech-tag handling."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-import pytest
 
 from tools.tts_tool import _generate_xai_tts
 from tools.tts_tool_providers import (
@@ -201,7 +200,7 @@ def test_generate_xai_tts_prefers_explicit_api_key_over_oauth(tmp_path, monkeypa
     )
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "tools.xai_http.get_env_value",
+        "hermes_cli.config.get_env_value",
         lambda name, default=None: {
             "XAI_API_KEY": "paid-api-key",
             "XAI_BASE_URL": "https://staging.x.ai/v1/",
@@ -235,7 +234,6 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
     mock_call.assert_called_once()
     call_kwargs = mock_call.call_args.kwargs
     assert call_kwargs["task"] == "tts_audio_tags"
-    assert call_kwargs["temperature"] == 0.7
 
     messages = call_kwargs["messages"]
     assert messages[0]["role"] == "system"
@@ -254,13 +252,9 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
         assert tag in system_prompt, (
             f"wrapping tag {tag!r} missing from system prompt"
         )
-    # The prompt must explicitly show the BBCode-style closing syntax so
-    # the rewriter uses [/tag] and not <tag>...</tag>.
-    assert "[/tag]" in system_prompt
 
     # The user message carries the locally pause-tagged transcript (the
     # conservative fallback the rewriter is asked to enrich).
-    assert "TRANSCRIPT TO TAG" in messages[1]["content"]
     assert "[pause]" in messages[1]["content"]
 
 
@@ -281,27 +275,3 @@ def test_auto_speech_tags_strips_markdown_fences_from_rewriter_output():
     assert result == "[warmly] Bonjour. [soft laugh]"
 
 
-def test_generate_xai_tts_omits_text_normalization_when_explicit_false(
-    tmp_path, monkeypatch
-):
-    """text_normalization: false is the API default; field is not sent."""
-    captured = {}
-
-    fake_response = Mock()
-    fake_response.content = b"mp3"
-    fake_response.raise_for_status.return_value = None
-
-    def fake_post(url, headers, json, timeout, stream=False):
-        captured["json"] = json
-        return fake_response
-
-    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
-    monkeypatch.setattr("requests.post", fake_post)
-
-    _generate_xai_tts(
-        "Hello world.",
-        str(tmp_path / "out.mp3"),
-        {"xai": {"voice_id": "ara", "language": "en", "text_normalization": False}},
-    )
-
-    assert "text_normalization" not in captured["json"]

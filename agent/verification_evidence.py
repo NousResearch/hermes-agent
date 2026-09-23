@@ -10,11 +10,10 @@ import shlex
 import sqlite3
 import tempfile
 import threading
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -27,7 +26,16 @@ _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
 
-_INTERPRETERS = {"python", "python3", "node", "bash", "sh", "ruby", "perl"}
+_INTERPRETERS = {"python", "python3", "py", "node", "bash", "sh", "ruby", "perl"}
+# Windows spells the same interpreters `python.exe` / `py.exe` (a venv's absolute Scripts path).
+_WINDOWS_EXE_SUFFIX_RE = re.compile(r"\.(?:exe|bat|cmd)$", re.IGNORECASE)
+# The same interpreter is reached as `python3`, `python3.12`, `/usr/bin/python3.12`, or
+# `env python3`. Matching only the bare token recorded no evidence for the invocation shapes
+# the verify-on-stop nudge itself hands the agent, so a passing run left the workspace
+# "unverified" and the nudge returned every turn.
+_INTERPRETER_NAME_RE = re.compile(
+    r"^(?:" + "|".join(sorted(_INTERPRETERS, key=len, reverse=True)) + r")(?:[0-9]+(?:\.[0-9]+)*)?$"
+)
 _TARGET_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java")
 _TARGET_PREFIXES = ("test_", "tests", "spec", "__tests__")
 # Ordered: first matching keyword group wins; "check" only counts when the
@@ -120,40 +128,15 @@ def _ledger_enabled() -> bool:
 
 
 def _connect() -> sqlite3.Connection:
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_cli.sqlite_util import open_db
 
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    try:
-        apply_wal_with_fallback(conn, db_label="verification_evidence.db")
-        conn.execute("PRAGMA busy_timeout=5000")
-        _ensure_schema(conn)
-    except Exception:
-        # A PRAGMA/DDL failure after connect() must not leak the open connection.
-        conn.close()
-        raise
-    return conn
+    return open_db(_db_path(), db_label="verification_evidence.db", initialize=_ensure_schema)
 
 
-@contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, and ALWAYS close it.
+def _transaction():
+    from hermes_cli.sqlite_util import transaction
 
-    ``sqlite3.Connection`` as a context manager only commits/rolls back; without
-    the close, each call leaks a connection (and WAL/SHM fds) until GC runs.
-
-    Using ``with _connect()`` alone therefore leaks a connection — and its WAL/SHM file descriptors — on
-    every call, deferring the close to the garbage collector, which over a long-running process can exhaust
-    ``RLIMIT_NOFILE`` (the cron-ledger sibling of this bug was #69567 / PR #69594).
-    """
-    conn = _connect()
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    return transaction(_connect())
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -328,6 +311,18 @@ def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
     return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, tempfile.gettempdir()) and not _is_under(token, root)
 
 
+def _is_interpreter_token(token: str) -> bool:
+    """Whether a command word names a shell interpreter.
+
+    ``python3``, ``python3.12`` and ``/usr/bin/python3.12`` are the same interpreter; matching
+    only the bare token left the ad-hoc branch blind to the invocation shapes the nudge hands
+    the agent, so a passing run recorded no evidence and the workspace stayed ``unverified``.
+    """
+    # Basename by hand: on POSIX ``Path`` treats a Windows backslash path as one component.
+    name = token.replace("\\", "/").rsplit("/", 1)[-1]
+    return bool(_INTERPRETER_NAME_RE.match(_WINDOWS_EXE_SUFFIX_RE.sub("", name)))
+
+
 def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[list[str]]:
     candidate_tokens = _strip_command_prefix(tokens)
     if not candidate_tokens:
@@ -335,7 +330,10 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     command = candidate_tokens[0]
     if _is_temp_script_path(command, root):
         return candidate_tokens[1:]
-    if command in _INTERPRETERS:
+    if Path(command).name == "env" and len(candidate_tokens) > 1 and _is_interpreter_token(candidate_tokens[1]):
+        # `/usr/bin/env python3 script` names the same interpreter as `python3 script`.
+        candidate_tokens, command = candidate_tokens[1:], candidate_tokens[1]
+    if _is_interpreter_token(command):
         # Skip interpreter flags; the first positional must be the script.
         for idx, token in enumerate(candidate_tokens[1:], start=1):
             if _is_temp_script_path(token, root):

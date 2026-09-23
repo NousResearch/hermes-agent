@@ -1,7 +1,7 @@
 """Honcho 2.2 SDK/local HTTP lifecycle probe; no hosted service or model inference.
 
 Run with isolated HOME/HERMES_HOME and honcho-ai==2.2.0 installed (or on PYTHONPATH):
-  .venv/bin/python evals/memory/honcho_current_query.py --out /tmp/honcho-proof.json
+  .venv/bin/python evals/memory/honcho_current_query.py --out honcho-proof.json
 Prepared ongoing sessions bypass startup/migration. Message writes are disabled.
 The fixture proves query routing, ownership and caller waiting, not memory quality.
 """
@@ -196,7 +196,7 @@ proof["checks"] = {"alignment": True, "default_unchanged": True, "single_flight"
                    "empty_omitted": True, "cadence_gap_empty": True, "no_duplicate_end_turn": True}
 proof["events"] = events
 args.out.parent.mkdir(parents=True, exist_ok=True)
-args.out.write_text(json.dumps(proof, indent=2))
+args.out.write_text(json.dumps(proof, indent=2), encoding="utf-8")
 print(json.dumps({"checks": proof["checks"], "out": str(args.out),
                   "current_elapsed": [row["elapsed"] for row in rows],
                   "timeout_elapsed": blocked["elapsed"]}, indent=2))

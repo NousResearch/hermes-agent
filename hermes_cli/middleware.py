@@ -159,10 +159,11 @@ class _DownstreamExecutionError(Exception):
 
 
 def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwargs: Any) -> Any:
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_cli.plugins import _delivery_manager
 
     payload_key = "request" if "request" in kwargs else "args"
-    callbacks = list(get_plugin_manager()._middleware.get(kind, []))
+    manager = _delivery_manager()
+    callbacks = list(manager._middleware.get(kind, []))
     if not callbacks:
         return terminal_call(kwargs[payload_key])
 
@@ -201,9 +202,9 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         except _DownstreamExecutionError as exc:
             raise exc.original
         except Exception as exc:
-            logger.warning(
-                "Middleware '%s' callback %s raised: %s",
-                kind, getattr(callback, "__name__", repr(callback)), exc)
+            # Runs once per tool/LLM call: a mis-declared callback fails identically every time,
+            # so it goes through the manager's warn-once reporter (#111922).
+            manager._report_hook_failure(kind, callback, call_kwargs, exc, surface="Middleware")
             if next_succeeded:
                 return next_result
             if next_called:

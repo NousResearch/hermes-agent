@@ -33,7 +33,7 @@ def test_signature_uses_neutral_keys(honcho_json):
         "pin_user_identity": True,
         "runtime_identity_prefix": "tg_",
         "user_identity_aliases": [("111", "alice"), ("222", "bob")],
-        "session_prefixing": [True],
+        "session_prefixing": [True, False],
         "a2a_sessions": False,
     }
     assert not any(k.startswith("honcho") for k in sig)

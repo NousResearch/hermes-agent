@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
@@ -18,14 +20,17 @@ import {
   forwardSpec,
   hostArgs,
   redactSecrets,
+  REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,
   SSH_ERROR,
   SshConnection,
-  sshErrorMessage,
   stopTunnelChild,
   target,
-  validateSshTarget
+  validateSshTarget,
+  withRemoteTimeout
 } from './ssh-connection'
+
+const execFileAsync = promisify(execFile)
 
 test('redactSecrets scrubs the spawn-time session token env var', () => {
   const line = 'setsid env HERMES_DASHBOARD_SESSION_TOKEN=abc123deadbeef HERMES_DESKTOP=1 hermes dashboard'
@@ -202,12 +207,6 @@ test('classifySshError detects auth failure', () => {
 test('classifySshError detects unreachable', () => {
   assert.equal(classifySshError('ssh: Could not resolve hostname nope'), SSH_ERROR.UNREACHABLE)
   assert.equal(classifySshError('connect to host x port 22: Connection refused'), SSH_ERROR.UNREACHABLE)
-})
-
-test('sshErrorMessage gives actionable guidance for auth and host-key-change', () => {
-  const conn = { user: 'me', host: 'box', port: 22 }
-  assert.match(sshErrorMessage(SSH_ERROR.AUTH_FAILED, conn, 'Permission denied'), /ssh-agent|ssh-add|IdentityFile/)
-  assert.match(sshErrorMessage(SSH_ERROR.HOST_KEY_CHANGED, conn, 'CHANGED'), /ssh-keygen -R box/)
 })
 
 // A fake child process that emits a scripted result on next tick.
@@ -1066,4 +1065,97 @@ test('stopTunnelChild waits for process exit', async () => {
   assert.equal(stopped, false)
   await stopping
   assert.equal(stopped, true)
+})
+
+test.skipIf(process.platform === 'win32')(
+  'withRemoteTimeout runs a healthy probe under a zsh login shell (#111949)',
+  async t => {
+    // SSH runs the remote command through the account's login shell. In
+    // non-interactive zsh, a bare `set -m` is fatal, so the wrapper must still
+    // run a healthy probe rather than reporting the remote as unsupported.
+    const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
+
+    // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
+    // skip, not a pass, or a wrapper regression stays green unnoticed.
+    if (!zsh) {
+      t.skip('zsh not installed')
+
+      return
+    }
+
+    const { stdout: zshStdout } = await execFileAsync(zsh, ['-fc', withRemoteTimeout('echo zsh-ok', 5)])
+
+    assert.equal(zshStdout, 'zsh-ok\n')
+  }
+)
+
+test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#110478)', async () => {
+  if (process.platform === 'win32') {
+    return
+  }
+
+  // Shape: POSIX watchdog — macOS remotes have no GNU `timeout`.
+  const wrapped = withRemoteTimeout('hermes --version 2>&1', 15)
+
+  assert.ok(!/(^|[ ;(])timeout[ ;]/.test(wrapped), 'no GNU timeout dependency')
+  assert.ok(
+    withRemoteTimeout('true').includes(`sleep ${REMOTE_PROBE_TIMEOUT_SECS}`),
+    'defaults to REMOTE_PROBE_TIMEOUT_SECS'
+  )
+  assert.ok(REMOTE_PROBE_TIMEOUT_SECS * 1000 < 20_000, 'remote watchdog fires before the local exec timeout')
+
+  // Behavior through a real POSIX shell: healthy output passes through …
+  const healthyStart = Date.now()
+  const { stdout } = await execFileAsync('sh', ['-c', withRemoteTimeout('echo hello', 5)])
+  const healthyElapsed = Date.now() - healthyStart
+
+  assert.equal(stdout, 'hello\n')
+  // … and returns promptly: the watchdog's orphaned `sleep` must not hold the
+  // session pipes open until the full timeout on the healthy path.
+  assert.ok(healthyElapsed < 4000, `healthy probe returned fast (took ${healthyElapsed}ms)`)
+
+  // … a hung command is killed promptly with a non-zero exit … The duration
+  // is unique to this run so the orphan sweep below cannot match an unrelated
+  // `sleep` on a busy host.
+  const hungSecs = 30_000 + (process.pid % 10_000)
+  const start = Date.now()
+
+  const err: any = await execFileAsync('sh', ['-c', withRemoteTimeout(`sleep ${hungSecs}`, 1)]).then(
+    () => null,
+    e => e
+  )
+
+  const elapsed = Date.now() - start
+
+  assert.ok(err && err.code !== 0, 'hung command must exit non-zero')
+  assert.ok(elapsed < 15000, `watchdog fired promptly instead of waiting ${hungSecs}s (took ${elapsed}ms)`)
+
+  // … and no orphan is left behind.
+  const { stdout: strays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${hungSecs}$" || true`])
+
+  assert.equal(strays.trim(), '', 'killed probe left no orphan process')
+
+  // … including the grandchild of a launcher that runs the CLI without exec
+  // (the broken-launcher class of #110478). Needs a shell with job control
+  // off a tty; bash has it, dash does not.
+  const bash = await execFileAsync('sh', ['-c', 'command -v bash || true']).then(r => r.stdout.trim())
+
+  if (bash) {
+    const grandSecs = hungSecs + 1
+    const launcher = `sh -c 'sleep ${grandSecs}; echo done'`
+
+    const err2: any = await execFileAsync(bash, ['-c', withRemoteTimeout(launcher, 1)]).then(
+      () => null,
+      e => e
+    )
+
+    assert.ok(err2 && err2.code !== 0, 'hung launcher must exit non-zero')
+
+    const { stdout: grandStrays } = await execFileAsync('sh', [
+      '-c',
+      `ps -eo args | grep "[s]leep ${grandSecs}$" || true`
+    ])
+
+    assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
+  }
 })

@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
 /** The model the free-tier route runs on. Used to recognise a session that is
@@ -50,6 +51,88 @@ export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): 
   }
 }
 
+/**
+ * Why the free tier is not set up, when the backend says it tried and could
+ * not. `null` when there is an identity, when the tier is off, or when the
+ * backend never reported a failure (an older backend, or no boot yet).
+ *
+ * `door` is which way forward the copy may honestly offer. The account service
+ * that refused is the same one a sign-in goes through: when it is unreachable
+ * or erroring, offering sign-in walks the user into a second failure, so those
+ * codes get "try again / another provider" only.
+ */
+export interface FreeTierSetupFailure {
+  /** One of the backend's `anon_*` codes (`hermes_cli/anon_auth.py`), or a newer one this build does not know. */
+  code: string
+  door: 'retry' | 'sign_in'
+  message: string
+  retryAfter: number
+  retryable: boolean
+}
+
+const UNREACHABLE_CODES = new Set<string>(['anon_server_error', 'anon_unreachable'])
+
+export function freeTierSetupFailure(status: FreeTierStatus | null): FreeTierSetupFailure | null {
+  if (!status || !status.enabled || status.has_guest) {
+    return null
+  }
+
+  const code = typeof status.error_code === 'string' ? status.error_code.trim() : ''
+
+  if (!code) {
+    return null
+  }
+
+  return {
+    code,
+    door: UNREACHABLE_CODES.has(code) ? 'retry' : 'sign_in',
+    message: typeof status.error === 'string' ? status.error : '',
+    retryAfter: Math.max(0, Math.round(Number(status.retry_after) || 0)),
+    retryable: status.retryable === true
+  }
+}
+
+/**
+ * A rounded, spoken duration for copy — "a few seconds", "about a minute",
+ * "about 5 minutes", "about an hour" — mirroring the backend's `friendly_wait`
+ * so a wait reads the same whichever side phrased it. Never a raw second count.
+ */
+export function friendlyWait(seconds: number): string {
+  const s = Math.max(0, Number.isFinite(seconds) ? seconds : 0)
+
+  if (s <= 15) {
+    return 'a few seconds'
+  }
+
+  if (s < 90) {
+    return 'about a minute'
+  }
+
+  if (s < 3600) {
+    return `about ${Math.round(s / 60)} minutes`
+  }
+
+  const hours = Math.round(s / 3600)
+
+  return hours <= 1 ? 'about an hour' : `about ${hours} hours`
+}
+
+/**
+ * The user's own retry of the free-tier set-up (`free_tier.provision`): the one
+ * attempt that may run inside the backend's cooldown. Re-reads the status
+ * afterwards so every surface keyed on it moves together. Returns the fresh
+ * status, or the last known one when the call itself failed.
+ */
+export async function provisionFreeTier(requestGateway: FreeTierRequester): Promise<FreeTierStatus | null> {
+  try {
+    await requestGateway('free_tier.provision')
+  } catch {
+    // The status read below still reports what the backend knows.
+  }
+
+  return refreshFreeTierStatus(requestGateway)
+}
+
 /** Persist the one-time notice acknowledgement, then re-read so every surface
  *  keyed on `notice_pending` drops away together. */
 export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Promise<boolean> {
@@ -98,7 +181,7 @@ export function freeTierReadyPending(status: FreeTierStatus | null, route: boole
  * instead, so the two can never both be on screen.
  */
 export function freeTierStripPending(status: FreeTierStatus | null, route: boolean | null): boolean {
-  return freeTierNoticePending(status) && route === false
+  return freeTierNoticePending(status) && route === false && !onboardingSurfaceActive()
 }
 
 // Several composers can be mounted at once (split zones, a popout mid-dock).

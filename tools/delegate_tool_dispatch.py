@@ -14,9 +14,9 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
 from tools.async_delegation import _new_delegation_id, record_unit_child
-from tools.delegate_tool_child_run import _detach_child, _fabricated_entry, _signal_child_stop
+from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
-    SUBAGENT_FAILURE_STATUSES, _clean_error_text, _print_completion_line, _quiet, format_batch_tag,
+    SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
 from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
@@ -91,14 +91,28 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
     label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
     status = entry.get("status", "?")
     _slot = f"{tag} · {idx+1}/{n_tasks}" if tag else f"{idx+1}/{n_tasks}"
-    completion_line = f"{'✓' if status == 'completed' else '✗'} [{_slot}] {label}  ({entry.get('duration_seconds', 0)}s)"
-    _err_line = _clean_error_text(entry.get("error"), max_chars=120) if status in SUBAGENT_FAILURE_STATUSES else ""
+    schema_invalid = entry.get("schema_valid") is False and status == "completed"
+    icon = "⚠" if schema_invalid else ("✓" if status == "completed" else "✗")
+    completion_line = f"{icon} [{_slot}] {label}  ({entry.get('duration_seconds', 0)}s)"
+    _err_line = (
+        describe_subagent_failure(entry.get("failure_reason"), entry.get("error"), max_chars=120)
+        if status in SUBAGENT_FAILURE_STATUSES else "")
+    if schema_invalid:
+        _err_line = "output_schema not satisfied — raw text returned (schema_valid=false)"
     if _err_line:
         completion_line += f" — {_err_line}"
     _print_completion_line(parent_agent, spinner_ref, completion_line)
     if spinner_ref and remaining > 0:
         with _quiet("Spinner update_text failed: %s"):
             spinner_ref.update_text(f"🔀 {'[' + tag + '] ' if tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining")
+
+def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bool) -> None:
+    """Detached (background) unit: durably record a child on the unit's own row the moment it finishes, so an owner
+    death before the unit's join — or anywhere before its durable completion write, the whole remaining window for a
+    one-child unit — loses only children still running, never finished work (#116000). Best-effort by construction:
+    ``record_unit_child`` never raises into the join."""
+    if not honor_parent_interrupt and batch.unit_id and isinstance(entry, dict):
+        record_unit_child(batch.unit_id, entry)
 
 def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
@@ -126,20 +140,26 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         except Exception as exc:
             return _fabricated_entry(idx, "error", str(exc), _child_by_index.get(idx))
 
-    with DaemonThreadPoolExecutor(max_workers=batch.max_children) as executor:
+    executor = DaemonThreadPoolExecutor(max_workers=batch.max_children)
+    # ``with`` would join every worker on exit, so a child wedged in an
+    # uninterruptible call defeats the interrupt fast-path: the poll loop marks
+    # it interrupted and returns, then the join hangs forever. Shutdown without
+    # waiting on the interrupt path instead (same shape as moa_loop).
+    interrupted = False
+    try:
         futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
                 results.extend(_entry_of(f, futures[f]) for f in pending)
+                interrupted = True
                 break
             done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in done:
                 entry = _entry_of(future, futures[future])
                 results.append(entry)
-                if not honor_parent_interrupt and batch.unit_id:
-                    # Detached unit: a crash before the join must not lose children that already finished.
-                    record_unit_child(batch.unit_id, entry)
+                # Detached unit: a crash before the join must not lose children that already finished.
+                _record_finished_child(batch, entry, honor_parent_interrupt)
                 _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
                 if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
                         and len(results) < n_here):
@@ -151,6 +171,10 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                         _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
                         push_task_failure_notice(
                             batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
+    finally:
+        # Abandoned workers unwind on their own (daemon threads, and the
+        # child-run layer already applies the deferred-close transport drain).
+        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
     results.sort(key=lambda r: r["task_index"])  # match input order
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
@@ -162,6 +186,9 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     results: list = []
     if len(batch.children) == 1:
         results.append(batch.run_child(*batch.children[0]))
+        # A one-child unit has no join to wait on, but everything after the child returns — host-owned finalize,
+        # transcript, manifest, then the durable write — is still owner-lifetime: record before any of it (#116000).
+        _record_finished_child(batch, results[-1], honor_parent_interrupt)
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
@@ -371,8 +398,18 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
+        # Persist locators before starting workers; live_paths omits failed writers and can be compressed.
+        task_transcripts={str(i): str(unit.live_writers[i].path) for i, _, _ in unit.children
+                          if i < len(unit.live_writers) and unit.live_writers[i] is not None
+                          and unit.live_writers[i].path is not None},
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
+
+def _restore_parent_cancellation(unit: _Batch) -> None:
+    """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that
+    arrived while async admission had them detached)."""
+    for _, _, child in unit.children:
+        _attach_child(unit.parent_agent, child)
 
 def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
@@ -387,10 +424,6 @@ def _dispatch_background(batch: _Batch) -> str:
 
     parent_agent = batch.parent_agent
     session_key, origin_ui_session_id = _resolve_async_session_key(parent_agent, batch.origin_ui_session_id)
-    # The children's lifecycle is owned by the async registry now: drop them from the parent's
-    # interrupt-propagation list (_build_child_agent attached them, which is correct for sync runs).
-    for (_, _, c) in batch.children:
-        _detach_child(parent_agent, c)
     routing = dict(
         session_key=session_key, origin_ui_session_id=origin_ui_session_id, origin_session_id=wake_sid,
         parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
@@ -405,11 +438,16 @@ def _dispatch_background(batch: _Batch) -> str:
         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
         unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
+        # The worker can start before admission returns. Detach only this unit:
+        # unsubmitted units must still receive parent stops while a fallback runs.
+        for _, _, child in unit.children:
+            _detach_child(parent_agent, child)
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
             slot_key = slot_key or dispatch["delegation_id"]
             dispatched.append((unit, dispatch["delegation_id"]))
             continue
+        _restore_parent_cancellation(unit)
         if not dispatched:
             logger.info(
                 "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
@@ -419,7 +457,7 @@ def _dispatch_background(batch: _Batch) -> str:
         # Later units of an admitted call share its slot and cannot be capacity-rejected; a scheduler failure runs
         # the unit inline so no task is silently dropped.
         logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
-        inline_results.extend(_execute_and_aggregate(unit, honor_parent_interrupt=False)["results"])
+        inline_results.extend(_execute_and_aggregate(unit)["results"])
     payload = _dispatched_payload(batch, dispatched)
     if inline_results:
         payload["inline_results"] = inline_results

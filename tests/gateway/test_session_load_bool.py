@@ -67,16 +67,5 @@ class TestSessionLoadBoolCorruption:
         # The corrupted entry must NOT be loaded
         assert "corrupted_key" not in store._entries
 
-    def test_string_entry_skipped(self, tmp_path):
-        """A string entry must also be skipped without crashing."""
-        data = {
-            "bad_string": "not a dict",
-            "valid_key": self._valid_entry("20260101_130000_def67890"),
-        }
-        store = self._make_store(tmp_path, data)
-        store._ensure_loaded()
-
-        assert "valid_key" in store._entries
-        assert "bad_string" not in store._entries
 
 

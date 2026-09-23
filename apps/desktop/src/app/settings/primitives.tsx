@@ -1,4 +1,5 @@
 import type { ComponentProps, ReactNode } from 'react'
+import { createContext, useContext } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,6 +10,9 @@ import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { PAGE_INSET_X } from '../layout-constants'
+
+// The settings shell owns page titles; embedded callers retain their headings.
+export const SettingsBreadcrumbContext = createContext(false)
 
 // `bare` drops the page gutters + tall bottom pad for embedding in a tighter
 // surface (e.g. the boot-failure recovery card owns its own padding).
@@ -50,6 +54,7 @@ export function SectionHeading({
   aside,
   icon: Icon,
   meta,
+  page = false,
   title
 }: {
   // Right-aligned trailing content on the heading row (e.g. a compact status +
@@ -57,12 +62,24 @@ export function SectionHeading({
   aside?: ReactNode
   icon: IconComponent
   meta?: string
+  page?: boolean
   title: string
 }) {
+  const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
+  const showTitle = !page || !hasBreadcrumb
+
+  if (!showTitle && !aside && !meta) {
+    return null
+  }
+
   return (
     <div className="mb-2.5 flex items-center gap-2 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
-      <Icon className="size-4 shrink-0 text-muted-foreground" />
-      <span>{title}</span>
+      {showTitle && (
+        <>
+          <Icon className="size-4 shrink-0 text-muted-foreground" />
+          <span>{title}</span>
+        </>
+      )}
       {meta && <Pill>{meta}</Pill>}
       {aside && <div className="ml-auto flex min-w-0 items-center">{aside}</div>}
     </div>

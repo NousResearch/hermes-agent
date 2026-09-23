@@ -12,6 +12,35 @@ from typing import Any, Dict, Mapping, Tuple
 from urllib.parse import urlsplit
 
 from agent.skill_utils import yaml_load
+from hermes_platform.declaration import Declaration, parse_declaration
+
+_HERMES_EXTENSION = "com.nousresearch.hermes"
+_LIVENESS: Dict[str, dict] = {}
+
+
+def liveness_for(server_name: str) -> dict | None:
+    """Return a copy of the portable server's liveness declaration."""
+    value = _LIVENESS.get(server_name)
+    return dict(value) if value is not None else None
+
+
+def _set_liveness(server_name: str, value: object) -> None:
+    if value is None:
+        _LIVENESS.pop(server_name, None)
+    elif isinstance(value, dict):
+        _LIVENESS[server_name] = dict(value)
+    else:
+        raise AgentPluginError(f"server '{server_name}' liveness must be an object")
+
+
+def _clear_liveness(server_name: str) -> None:
+    _LIVENESS.pop(server_name, None)
+
+
+@dataclass(frozen=True)
+class AgentPluginServerDeclaration:
+    declaration: Declaration
+    liveness: dict | None
 
 PLUGIN_SCHEMA_V1 = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 MCP_SCHEMA_V1 = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
@@ -56,7 +85,43 @@ class AgentPluginPackage:
     manifest: Mapping[str, Any]
     skills: Tuple[AgentPluginSkill, ...]
     mcp_servers: Mapping[str, Dict[str, Any]]
+    server_declarations: Mapping[str, AgentPluginServerDeclaration]
     diagnostics: Tuple[AgentPluginDiagnostic, ...]
+
+
+def _server_declarations(
+    manifest: Mapping[str, Any], mcp_servers: Mapping[str, Dict[str, Any]]
+) -> Dict[str, AgentPluginServerDeclaration]:
+    namespace = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {})
+    raw_servers = namespace.get("servers", {})
+    if not isinstance(raw_servers, dict):
+        raise AgentPluginError(f"extension '{_HERMES_EXTENSION}'.servers must be an object")
+    declarations: Dict[str, AgentPluginServerDeclaration] = {}
+    for name, raw in raw_servers.items():
+        if name not in mcp_servers:
+            raise AgentPluginError(f"server declaration '{name}' has no matching mcp.json server")
+        if not isinstance(raw, dict):
+            raise AgentPluginError(f"server declaration '{name}' must be an object")
+        if "liveness" in raw and "app" not in raw and "requires" not in raw:
+            raise AgentPluginError(f"server declaration '{name}' has liveness without app or requires")
+        unknown = set(raw) - {"app", "requires", "liveness"}
+        if unknown:
+            raise AgentPluginError(f"server declaration '{name}' has unknown keys {sorted(unknown)}")
+        try:
+            declaration = parse_declaration(
+                name, raw.get("app"), raw.get("requires"),
+                where=f"plugin.json extension server {name!r}",
+            )
+        except ValueError as exc:
+            raise AgentPluginError(str(exc)) from exc
+        liveness = raw.get("liveness")
+        if liveness is not None and not isinstance(liveness, dict):
+            raise AgentPluginError(f"server declaration '{name}' liveness must be an object")
+        declarations[name] = AgentPluginServerDeclaration(
+            declaration=declaration,
+            liveness=dict(liveness) if liveness is not None else None,
+        )
+    return declarations
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -359,11 +424,15 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
     """Validate and translate one installed Agent Plugins v1 package."""
     root, manifest, diagnostics = _validate_root(plugin_root)
     resolved_data = Path(data_root).resolve(strict=False)
-    return AgentPluginPackage(  # skills are discovered before MCP: diagnostics keep that order
+    skills = _discover_skills(root, diagnostics)
+    mcp_servers = _discover_mcp(root, resolved_data, diagnostics)
+    return AgentPluginPackage(
         name=manifest["name"], version=manifest.get("version", ""),
         description=manifest.get("description", ""), root=root, data_root=resolved_data,
-        manifest=dict(manifest), skills=_discover_skills(root, diagnostics),
-        mcp_servers=_discover_mcp(root, resolved_data, diagnostics), diagnostics=tuple(diagnostics))
+        manifest=dict(manifest), skills=skills, mcp_servers=mcp_servers,
+        server_declarations=_server_declarations(manifest, mcp_servers),
+        diagnostics=tuple(diagnostics),
+    )
 
 
 def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPluginDiagnostic, ...]]:

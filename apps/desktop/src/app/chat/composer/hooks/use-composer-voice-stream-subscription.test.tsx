@@ -1,4 +1,4 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 const mocks = await vi.hoisted(async () => {
@@ -47,6 +47,8 @@ vi.mock('@/store/wake-word', () => ({
   resumeWakeAfterVoice: vi.fn(async () => undefined),
   stopClientCapture: vi.fn(async () => undefined)
 }))
+
+import { requestVoiceConversationStart } from '@/store/composer'
 
 import { useComposerVoice } from './use-composer-voice'
 
@@ -99,4 +101,38 @@ test('re-renders once when an in-progress assistant reply first becomes speakabl
   })
 
   expect(mocks.useVoiceConversation).toHaveBeenCalledTimes(callsAfterFirstDelta)
+})
+
+test('wake transcription stays a draft until a human sends it, unlike manual voice', async () => {
+  const insertText = vi.fn()
+  const onSubmit = vi.fn(async () => true)
+  const { result } = renderHook(() =>
+    useComposerVoice({
+      busy: false,
+      clearDraft: vi.fn(),
+      disabled: false,
+      focusInput: vi.fn(),
+      insertText,
+      maxRecordingSeconds: 60,
+      onSubmit,
+      onTranscribeAudio: vi.fn(async () => ''),
+      sessionId: 'voice-session',
+      target: 'main'
+    })
+  )
+
+  act(() => requestVoiceConversationStart())
+  await waitFor(() => expect(result.current.voiceConversationActive).toBe(true))
+  const wakeSubmit = mocks.useVoiceConversation.mock.lastCall?.[0].onSubmit
+  await act(async () => wakeSubmit('untrusted transcript'))
+  expect(insertText).toHaveBeenCalledWith('untrusted transcript')
+  expect(onSubmit).not.toHaveBeenCalled()
+  await act(async () => wakeSubmit('late transcript'))
+  expect(onSubmit).not.toHaveBeenCalled()
+  await waitFor(() => expect(result.current.voiceConversationActive).toBe(false))
+
+  act(() => result.current.startConversation())
+  const manualSubmit = mocks.useVoiceConversation.mock.lastCall?.[0].onSubmit
+  await act(async () => manualSubmit('deliberate turn'))
+  expect(onSubmit).toHaveBeenCalledWith('deliberate turn')
 })

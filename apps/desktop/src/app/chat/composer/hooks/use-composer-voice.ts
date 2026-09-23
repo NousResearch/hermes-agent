@@ -160,7 +160,23 @@ export function useComposerVoice({
     }
   }
 
+  const wakeConfirmationRef = useRef<'pending' | 'ended' | null>(null)
+  const holdWakeTranscript = (text: string): boolean => {
+    if (!wakeConfirmationRef.current) {
+      return false
+    }
+    if (wakeConfirmationRef.current === 'pending') {
+      wakeConfirmationRef.current = 'ended'
+      insertText(text)
+      setVoiceConversationActive(false)
+    }
+    return true
+  }
+
   const submitVoiceTurn = async (text: string) => {
+    if (holdWakeTranscript(text)) {
+      return
+    }
     if (busy) {
       return
     }
@@ -174,6 +190,9 @@ export function useComposerVoice({
   /** A GPT-Live delegation → Hermes turn. The bubble and the persisted row are
    *  what the user said; the transcript window rides the model input only. */
   const submitLiveDelegation = async (text: string, voiceContext: string) => {
+    if (holdWakeTranscript(text)) {
+      return
+    }
     triggerHaptic('submit')
     resetBrowseState(sessionId)
     clearDraft()
@@ -247,7 +266,8 @@ export function useComposerVoice({
    *  decided in the same state batch so the other engine never sees a frame of
    *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
    *  gateway) falls back to chained with a notice rather than a dead button. */
-  const activateConversation = useCallback(() => {
+  const activateConversation = useCallback((fromWake = false) => {
+    wakeConfirmationRef.current = fromWake ? 'pending' : null
     const status = $voiceLiveStatus.get()
     let live = false
 
@@ -317,7 +337,7 @@ export function useComposerVoice({
 
   useEffect(() => {
     if (target === 'main' && !disabled && takeVoiceConversationStart(voiceStartRequest) && !voiceConversationActive) {
-      activateConversation()
+      activateConversation(true)
     }
   }, [activateConversation, disabled, target, voiceConversationActive, voiceStartRequest])
 

@@ -124,6 +124,15 @@ class TestTranscribeLocalWiring:
         assert captured["no_speech_threshold"] == _NO_SPEECH_PROB_THRESHOLD_DEFAULT
         assert captured["log_prob_threshold"] == _LOGPROB_THRESHOLD_DEFAULT
 
+    def test_explicit_auto_language_reaches_local_model(self, monkeypatch):
+        for language in ("", "auto"):
+            captured, result = self._run(monkeypatch, {"language": "en", "local": {"language": language}})
+            assert result["success"] is True
+            assert "language" not in captured
+        captured, result = self._run(monkeypatch, {"language": "en", "local": {"language": "ja"}})
+        assert result["success"] is True
+        assert captured["language"] == "ja"
+
 
     def test_hallucinated_segments_filtered_from_transcript(self, monkeypatch):
         segments = [

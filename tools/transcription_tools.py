@@ -93,17 +93,21 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
 def _resolve_stt_language(
     provider_key: str, stt_config: Optional[Dict[str, Any]] = None, *, extra_keys: tuple = ()
 ) -> Optional[str]:
-    """Language hint for an STT provider, first non-empty wins (never ""): ``stt.<provider>.language``
-    (plus *extra_keys* aliases, e.g. ``language_code``) > ``stt.language`` > ``HERMES_LOCAL_STT_LANGUAGE``
-    env > None (provider auto-detects)."""
+    """Language hint: provider > global > env. An explicit empty/auto provider
+    language requests auto-detection rather than falling through to global defaults."""
     if stt_config is None:
         stt_config = _load_stt_config()
     provider_cfg = _get_stt_section(stt_config, provider_key)
+    if "language" in provider_cfg and isinstance(provider_cfg["language"], str):
+        provider_language = provider_cfg["language"].strip()
+        if not provider_language or provider_language.lower() == "auto":
+            return None
     candidates = [provider_cfg.get(key) for key in ("language", *extra_keys)]
     if isinstance(stt_config, dict):
         candidates.append(stt_config.get("language"))
     candidates.append(os.getenv(LOCAL_STT_LANGUAGE_ENV))
-    return next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
+    resolved = next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
+    return None if resolved and resolved.lower() == "auto" else resolved
 
 
 def _openai_audio_unavailable_reason() -> Optional[str]:
@@ -352,8 +356,10 @@ def _transcribe_local(
             return _error_result("Local whisper model failed to load")
         # pre_transcription hook overrides win over config-resolved values.
         transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
-        transcribe_kwargs.update({k: v for k, v in (("language", language), ("initial_prompt", prompt))
-                                  if v})
+        if language and language.strip().lower() != "auto":
+            transcribe_kwargs["language"] = language
+        if prompt:
+            transcribe_kwargs["initial_prompt"] = prompt
         try:
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
             # faster-whisper's transcribe() is lazy: the decode (and with it the

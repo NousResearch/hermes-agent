@@ -11,9 +11,11 @@ user-facing guidance:
   ``messages`` (the turn proceeds);
 * an FTS-scoped error that still escapes (detach refused) classifies as ``fts_index`` and
   never quarantines the handle;
+* a sibling process holding the write lock when the detach runs is waited out, not a lost write;
 """
 
 import sqlite3
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -115,7 +117,7 @@ def test_escaped_fts_only_error_is_index_scoped_not_quarantined(tmp_path, monkey
     try:
         _seed(db)
         _stomp_fts_shadow(db_path)
-        monkeypatch.setattr(db, "_enter_fts_fail_open", lambda exc: False)
+        monkeypatch.setattr(db, "_enter_fts_fail_open", lambda exc, **_: False)
         agent = _flush_agent(db, "s1")
 
         ok = agent._flush_messages_to_session_db(
@@ -129,5 +131,50 @@ def test_escaped_fts_only_error_is_index_scoped_not_quarantined(tmp_path, monkey
         assert db._db_corrupt is False
         assert db._fts_stale is False
         assert "refused detach" not in _contents(db_path)
+    finally:
+        db.close()
+
+
+def test_detach_waits_out_a_sibling_holding_the_write_lock(tmp_path):
+    """Gateway + TUI hit the same corrupt index: one detaches while the other waits. A sibling
+    that takes the write lock between this writer's corruption error and its detach, and holds
+    it past the writer connection's 1 s busy timeout, must be waited out on the write budget —
+    the canonical row lands instead of escaping as 'database disk image is malformed'."""
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    try:
+        _seed(db, rows=5)
+        _stomp_fts_shadow(db_path)
+        held, release = threading.Event(), threading.Event()
+
+        def sibling():
+            raw = sqlite3.connect(str(db_path), timeout=30, isolation_level=None)
+            raw.execute("BEGIN IMMEDIATE")
+            held.set()
+            release.wait(10)
+            raw.execute("COMMIT")
+            raw.close()
+
+        real_check = db._is_fts_write_corruption_error
+        holder = []
+
+        def check_then_contend(exc):
+            hit = real_check(exc)
+            if hit and not holder:  # the writer has rolled back; the sibling grabs the lock now
+                holder.append(threading.Thread(target=sibling))
+                holder[0].start()
+                assert held.wait(10)
+                threading.Timer(1.6, release.set).start()
+            return hit
+
+        db._is_fts_write_corruption_error = check_then_contend
+        db.append_message("s1", "user", "lands after the sibling lets go")
+        if not holder:
+            pytest.skip("this SQLite build defers FTS shadow corruption past the insert trigger")
+        holder[0].join(10)
+
+        assert _contents(db_path)[-1] == "lands after the sibling lets go"
+        assert db._fts_stale is True
+        assert db._db_corrupt is False
     finally:
         db.close()

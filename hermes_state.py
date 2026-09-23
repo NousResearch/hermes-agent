@@ -1078,7 +1078,7 @@ class SessionDB(
                             self._raise_if_db_replaced()
                     # Corrupt FTS shadow tables fail every write via the sync triggers while canonical
                     # rows are intact: detach the derived indexes atomically and retry (never rebuild here).
-                    if self._enter_fts_fail_open(exc):
+                    if self._enter_fts_fail_open(exc, deadline=deadline, patience_s=patience_s):
                         continue
                     # What survives both checks is structural damage: quarantine.
                     if self._is_structural_corruption_error(exc):

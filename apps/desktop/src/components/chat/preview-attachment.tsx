@@ -3,9 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { Download, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
-import { downloadGatewayMediaFile } from '@/lib/media'
+import { downloadGatewayMediaFile, mediaExternalUrl } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview, type PreviewRecordSource } from '@/store/preview'
@@ -142,6 +143,14 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
       >
         <Download className="size-3" />
         {downloaded ? t.fileMenu.downloadSaved : t.fileMenu.download}
+      </button>
+      <button
+        aria-label={t.preview.openWithSystemApp}
+        className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground"
+        onClick={() => openExternalLink(mediaExternalUrl(target))}
+        type="button"
+      >
+        {t.preview.openWithSystemApp}
       </button>
       <button
         className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"

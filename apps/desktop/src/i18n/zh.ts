@@ -3940,6 +3940,7 @@ export const zh = defineLocale({
     openPreview: '打开预览',
     openInBrowser: '在浏览器中打开',
     openInExternal: '在外部打开',
+    openWithSystemApp: '在系统程序中打开',
     popIn: '弹回',
     popOut: '弹出',
     linkHint: '⌘/Ctrl+点击在预览面板打开',

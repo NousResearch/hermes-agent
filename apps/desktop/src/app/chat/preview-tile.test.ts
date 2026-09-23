@@ -72,10 +72,10 @@ describe('browserTabExternalUrl', () => {
     expect(browserTabExternalUrl(openBrowser('about:blank'))).toBeNull()
   })
 
-  it('is null for a file peek', () => {
+  it('hands a local file peek to the audited system-app bridge', () => {
     openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
 
-    expect(browserTabExternalUrl('file:/tmp/a.ts')).toBeNull()
+    expect(browserTabExternalUrl('file:/tmp/a.ts')).toBe('file:///tmp/a.ts')
   })
 })
 

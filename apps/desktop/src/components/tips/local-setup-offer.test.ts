@@ -52,6 +52,11 @@ describe('offerLocalSetupTip', () => {
     cleanup()
   })
 
+  it('qualifies the local-privacy claim and points out fallback notices', () => {
+    expect(en.tips.items['local-setup'].text).toContain('while it is active')
+    expect(en.tips.items['local-setup'].text).toContain('fallback provider')
+  })
+
   it('holds the first quiet moment while the read flies, then shows on the next', async () => {
     primeEligibleBackend()
 

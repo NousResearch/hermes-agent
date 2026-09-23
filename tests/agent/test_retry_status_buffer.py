@@ -181,6 +181,27 @@ def test_pending_fallback_notice_continues_after_callback_error():
     assert agent._pending_fallback_notice is None
 
 
+def test_pending_fallback_notice_dual_delivery():
+    """Fallback notice is delivered both via _emit_status and as an AgentNotice via notice_callback."""
+    agent = _make_bare_agent()
+    status_emitted = []
+    notices_emitted = []
+    agent._emit_status = status_emitted.append
+    agent.notice_callback = notices_emitted.append
+    agent._pending_fallback_notice = "🔄 Switched to fallback model: local-model → remote-model via openrouter"
+
+    agent._emit_pending_fallback_notice()
+
+    assert status_emitted == ["🔄 Switched to fallback model: local-model → remote-model via openrouter"]
+    assert len(notices_emitted) == 1
+    notice = notices_emitted[0]
+    assert notice.text == "🔄 Switched to fallback model: local-model → remote-model via openrouter"
+    assert notice.level == "warn"
+    assert notice.kind == "ttl"
+    assert notice.ttl_ms == 15_000
+    assert agent._pending_fallback_notice is None
+
+
 def test_pending_fallback_notice_noop_when_unset():
     """No fallback this turn → no notice emitted on the success path."""
     agent = _make_bare_agent()

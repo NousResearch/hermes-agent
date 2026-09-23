@@ -347,7 +347,7 @@ def _marker_only_restart_obsolete() -> bool:
     phase never touched it — this marker only stops re-warning about it on every later startup.
     """
     from hermes_cli.update_cmd_fleet_checkout import checkout_contains
-    from hermes_cli.update_serve_obligations import defer_manual_serve
+    from hermes_cli.update_cmd_fleet_gatewayless import runtime_outside_gateway_evidence
 
     try:
         fields = _obligation_fields()
@@ -366,10 +366,7 @@ def _marker_only_restart_obsolete() -> bool:
             for runtime in runtimes:
                 if not isinstance(runtime, dict):
                     return False
-                if runtime.get("kind") in ("serve", "dashboard") and (
-                    defer_manual_serve(runtime)
-                    or runtime.get("supervisor") in _SUPERVISOR_OWNED_SERVE_BACKENDS
-                ):
+                if runtime_outside_gateway_evidence(runtime):
                     continue
                 if runtime.get("kind") != "gateway":
                     return False

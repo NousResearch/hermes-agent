@@ -1541,14 +1541,9 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
 
 def _print_multiplex_standalone_reason() -> None:
     """The boot guard kept an unset-default gateway standalone: say so in status, with the remedy."""
-    try:
-        from gateway.status import read_runtime_status
-        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
-    except Exception:
-        return
-    if reason:
-        print(f"⚠ Serving the default profile only: {reason}")
-        print("  Fold every profile onto this gateway: hermes gateway migrate --multiplex")
+    from hermes_cli.gateway_multiplex_mode import recorded_standalone_warning_lines
+    for line in recorded_standalone_warning_lines():
+        print(line)
 
 
 def _print_served_ingress_urls(profile: str | None = None) -> None:

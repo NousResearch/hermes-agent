@@ -535,6 +535,7 @@ async def get_status(profile: Optional[str] = None):
         status["profiles"] = topology["profiles"]
         status["parked_profiles"] = topology.get("parked_profiles", [])
         status["gateway_mode"] = topology["gateway_mode"]
+        status["multiplex_standalone_reason"] = topology.get("multiplex_standalone_reason")
 
         # Host paths, gateway PID, internal health URL and per-gateway ports are deployment
         # recon a liveness probe never needs, and on a gated bind *any* unauthenticated caller

@@ -159,6 +159,32 @@ def implicit_multiplex_blocker() -> Optional[str]:
     return None
 
 
+def _default_profile_home() -> Path:
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
+
+
+def persist_resolved_default(decision: MultiplexDecision, default_home: Optional[Path] = None) -> bool:
+    """Write ``gateway.multiplex_profiles: true`` into the DEFAULT profile's config.yaml once the
+    runtime has resolved the unset key to on, so the file reads as the gateway behaves ("left unset"
+    was read as "off" by more than one operator). Comment-preserving writer, once, never on a guard
+    refusal (the file would then promise a topology the gateway refused). Returns True on a write."""
+    if not decision.enabled or decision.source == "guard":
+        return False
+    default_home = Path(default_home) if default_home is not None else _default_profile_home()
+    try:
+        if explicit_multiplex_flag(default_home) is True:
+            return False
+        from hermes_cli.gateway_migrate import _write_multiplex_flag
+        _write_multiplex_flag(default_home, True)
+    except Exception:
+        logger.debug("could not persist gateway.multiplex_profiles: true", exc_info=True)
+        return False
+    logger.info("Wrote gateway.multiplex_profiles: true to %s (the resolved default, made explicit).",
+                default_home / "config.yaml")
+    return True
+
+
 def resolve_multiplex_mode(config) -> MultiplexDecision:
     """Settle ``config.multiplex_profiles`` for one gateway boot; the config is updated in place.
 
@@ -212,5 +238,58 @@ def log_multiplex_decision(decision: MultiplexDecision) -> None:
         logger.warning(
             "This gateway stays standalone: %s. It serves only the launching profile.",
             decision.reason)
+        for line in standalone_warning_lines(decision):
+            print(line)
     elif decision.source == "default":
         logger.info("Serving every profile on this host (gateway.multiplex_profiles unset; default on).")
+        persist_resolved_default(decision)
+
+
+def unserved_profiles() -> list[str]:
+    """Named profiles a standalone gateway leaves without a bot (the whole point of the warning)."""
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    from hermes_cli.profiles import profiles_to_serve
+    me = profile_name_for_home(get_hermes_home()) or "default"
+    return [name for name, _home in profiles_to_serve(multiplex=True, include_parked=True) if name != me]
+
+
+def standalone_warning_lines(decision: MultiplexDecision, unserved: Optional[list[str]] = None) -> list[str]:
+    """The boxed warning a multi-profile host prints when a guard keeps its gateway standalone.
+
+    Empty for anything but a guard refusal on a host with other profiles to serve: a single-profile
+    install has nothing unserved, so there is nothing to shout about. The same box appears at
+    gateway start, in the ``hermes update`` summary and (as text) in the dashboard banner.
+    """
+    if decision.source != "guard" or decision.reason == SINGLE_PROFILE_REASON:
+        return []
+    if unserved is None:
+        try:
+            unserved = unserved_profiles()
+        except Exception:
+            unserved = []
+    if not unserved:
+        return []
+    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    body = [
+        "⚠ This gateway is STANDALONE: it serves only its own profile.",
+        "Profiles NOT served (their bots stay silent): " + ", ".join(unserved),
+        f"Why: {decision.reason}",
+        f"Fix: {MIGRATE_COMMAND}",
+    ]
+    width = max(len(line) for line in body) + 2
+    return ["┌" + "─" * width + "┐",
+            *[f"│ {line.ljust(width - 1)}│" for line in body],
+            "└" + "─" * width + "┘"]
+
+
+def recorded_standalone_warning_lines() -> list[str]:
+    """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
+    make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
+    try:
+        from gateway.status import read_runtime_status
+        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
+    except Exception:
+        return []
+    if not reason:
+        return []
+    return standalone_warning_lines(MultiplexDecision(False, "guard", str(reason)))

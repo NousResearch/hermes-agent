@@ -127,8 +127,8 @@ def finish_text_response(
 
     agent._empty_content_retries = 0
     agent._thinking_prefill_retries = 0
-    # Surface the one-shot fallback switch notice before dropping the retry buffer so a
-    # provider/model switch stays visible on success.
+    # Surface the one-shot pre-agent (credential-resolution) fallback notice. In-loop switches were
+    # already emitted at the switch by try_activate_fallback; only retry chatter is dropped here.
     agent._emit_pending_fallback_notice()
     agent._clear_status_buffer()
 

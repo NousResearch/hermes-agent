@@ -271,7 +271,8 @@ def recover_empty_response(
         if agent._try_activate_fallback():
             active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
             agent._empty_content_retries = 0
-            agent._buffer_diagnostic_status(f"↻ Switched to fallback: {agent.model} " f"({agent.provider})")
+            # No switch line buffered: try_activate_fallback already emitted it, and the buffer is
+            # flushed on terminal failure — buffering would show the same switch twice.
             logger.info(
                 "Fallback activated after empty responses: now using %s on %s",
                 agent.model, agent.provider,

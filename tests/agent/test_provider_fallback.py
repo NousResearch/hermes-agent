@@ -113,12 +113,14 @@ class TestFallbackChainAdvancement:
             assert agent._fallback_activated is True
 
     @patch("time.monotonic", return_value=1000.0)
-    def test_records_user_visible_switch_with_reason(self, _clock):
+    def test_emits_user_visible_switch_with_reason(self, _clock):
         agent = _make_agent(
             fallback_model={"provider": "zai", "model": "glm-5.2"},
         )
         agent.model = "gpt-5.6-sol"
         agent.provider = "openai-codex"
+        emitted = []
+        agent._emit_status = emitted.append
         with patch(
             "agent.auxiliary_client.resolve_provider_client",
             return_value=(_mock_client(base_url="https://api.z.ai/v1"), "glm-5.2"),
@@ -130,11 +132,14 @@ class TestFallbackChainAdvancement:
             "(rate limit); using glm-5.2 via zai. "
             "Primary retry eligible in ~60 s; recovery is not guaranteed."
         )
-        assert agent._pending_fallback_notice == [expected]
-        assert agent._retry_status_buffer[-1] == ("status", expected)
+        # Emitted at the switch: neither deferred to the first successful content
+        # nor buffered for a terminal-failure flush that would show it twice.
+        assert emitted == [expected]
+        assert not getattr(agent, "_pending_fallback_notice", None)
+        assert ("status", expected) not in (getattr(agent, "_retry_status_buffer", None) or [])
 
     @patch("time.monotonic", return_value=1000.0)
-    def test_records_sequential_switches_in_order(self, _clock):
+    def test_emits_sequential_switches_in_order(self, _clock):
         agent = _make_agent(
             fallback_model=[
                 {"provider": "zai", "model": "glm-5.2"},
@@ -143,6 +148,8 @@ class TestFallbackChainAdvancement:
         )
         agent.model = "gpt-5.6-sol"
         agent.provider = "openai-codex"
+        emitted = []
+        agent._emit_status = emitted.append
         clients = [
             _mock_client(base_url="https://api.z.ai/v1"),
             _mock_client(base_url="https://api.deepseek.com/v1"),
@@ -154,7 +161,7 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
             assert agent._try_activate_fallback(FailoverReason.overloaded) is True
 
-        assert agent._pending_fallback_notice == [
+        assert emitted == [
             "⚠️ Model fallback: gpt-5.6-sol via openai-codex unavailable "
             "(rate limit); using glm-5.2 via zai. "
             "Primary retry eligible in ~60 s; recovery is not guaranteed.",

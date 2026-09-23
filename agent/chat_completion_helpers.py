@@ -1991,17 +1991,6 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
         logger.debug("Failed to resolve extra_body for fallback %s; keeping current: %s", agent.model, _eb_err)
 
 
-def _buffer_fallback_notice(agent, notice: str) -> None:
-    """Buffer the switch notice for terminal failure AND retain it as a durable one-shot for
-    _emit_pending_fallback_notice (a successful fallback clears retry chatter)."""
-    agent._buffer_diagnostic_status(notice)
-    pending = getattr(agent, "_pending_fallback_notice", None)
-    if isinstance(pending, list):
-        pending.append(notice)
-    else:
-        agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
-
-
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
@@ -2106,7 +2095,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             if cooldown_seconds is not None:
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
-            _buffer_fallback_notice(agent, notice)
+            # Emitted at the switch, not deferred to the first successful content: a notice that can
+            # only arrive after the fallback's answer cannot warn anyone against acting on it. Nothing
+            # is buffered alongside (the buffer is flushed on terminal failure, which would show the
+            # switch twice). _emit_status never raises, so this cannot fall into the `except` below
+            # and cascade down the chain.
+            agent._emit_diagnostic_status(notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.
             agent._provider_fallback_active = True

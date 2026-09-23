@@ -479,13 +479,17 @@ def _export_markdown(db, args, filters, redact):
         # The history the user sees, not only the live rows: in-place compaction archives earlier turns under
         # the same id, and --delete-after-verified removes every row of it.
         export = db.export_session_lineage if include_lineage else db.export_session
-        data = export(session_id, include_compacted=True)
-        if not data:
-            return None, None
-        data = redact(data)
+        raw_data = export(session_id, include_compacted=True)
+        if not raw_data:
+            return None, None, None
+        snapshots = {
+            segment["id"]: segment.get("messages") or []
+            for segment in (raw_data.get("segments") or [raw_data]) if segment.get("id")
+        }
+        data = redact(raw_data)
         path = write_session_markdown(data, output_dir, fmt=args.format, force=args.force)
         append_manifest_entry(output_dir, data, path, fmt=args.format)
-        return data, path
+        return data, path, snapshots
     if args.delete_after_verified and not args.yes:
         print("--delete-after-verified requires --yes.")
         return
@@ -505,7 +509,7 @@ def _export_markdown(db, args, filters, redact):
     exported = 0
     for row in candidates:
         try:
-            data, exported_path = _export_one(row["id"], include_lineage=lineage_is_logical)
+            data, exported_path, _ = _export_one(row["id"], include_lineage=lineage_is_logical)
         except FileExistsError as e:
             print(f"Skipping existing export: {e}. Pass --force to overwrite.")
             continue
@@ -527,7 +531,7 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
     exported_items = []
     for target_id in delete_target_ids:
         try:
-            data, exported_path = export_one(
+            data, exported_path, snapshots = export_one(
                 target_id, include_lineage=(target_id == resolved_session_id and lineage_is_logical),
             )
         except FileExistsError as e:
@@ -536,14 +540,15 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         if not data or not exported_path:
             print(f"Session '{target_id}' disappeared during export; nothing was deleted.")
             return
-        exported_items.append((data, exported_path))
-    message_count = sum(len(data.get("messages") or []) for data, _path in exported_items)
+        exported_items.append((data, exported_path, snapshots))
+    message_count = sum(len(data.get("messages") or []) for data, _path, _ in exported_items)
     n = len(exported_items)
     print(f"Exported {n} session{'' if n == 1 else 's'} ({message_count} message{'' if message_count == 1 else 's'}) "
           f"to {exported_items[0][1] if n == 1 else output_dir}")
     if not args.delete_after_verified:
         return
-    for data, exported_path in exported_items:
+    expected_messages = {}
+    for data, exported_path, snapshots in exported_items:
         ok, reason = verify_export_file(exported_path, data)
         # The file only proves it matches the dict it was written from; the delete removes what the store holds
         # now, so re-count the store just before it (like the adoption retire loop, outside its transaction).
@@ -556,10 +561,19 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         if not ok:
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
             return
+        for covered_id, snapshot in snapshots.items():
+            previous = expected_messages.get(covered_id)
+            if previous is not None and previous != snapshot:
+                print(f"Export verification failed; not deleting session '{data.get('id')}': "
+                      f"session '{covered_id}' changed while the export set was being built")
+                return
+            expected_messages[covered_id] = snapshot
     if not db.delete_session(
-        resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids
+        resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids,
+        expected_display_messages=expected_messages,
     ):
-        print(f"Exported, but session '{resolved_session_id}' was not deleted because its delegate set changed.")
+        print(f"Exported, but session '{resolved_session_id}' was not deleted because its history or delegate set "
+              "changed after export.")
         return
     delegates = len(delete_target_ids) - 1
     delegate_suffix = f" and {delegates} delegate session{'' if delegates == 1 else 's'}" if delegates else ""

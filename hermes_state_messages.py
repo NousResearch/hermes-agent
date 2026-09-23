@@ -1003,6 +1003,44 @@ class SessionMessagesMixin:
         return msg
 
     @staticmethod
+    def _display_rows_from_conn(conn, session_id: str, *, limit: Optional[int] = None,
+                                offset: int = 0, latest: bool = False):
+        """One display-history projection for normal reads and transactional verification."""
+        direction = "DESC" if latest else "ASC"
+        return conn.execute(
+            f"""WITH page AS (
+                   SELECT display_order FROM messages
+                   WHERE session_id = ? AND (active = 1 OR compacted = 1)
+                   GROUP BY display_order ORDER BY display_order {direction}
+                   LIMIT ? OFFSET ?
+               )
+               SELECT chosen.* FROM page
+               JOIN messages AS chosen ON chosen.id = (
+                   SELECT candidate.id FROM messages AS candidate
+                   WHERE candidate.session_id = ?
+                     AND candidate.display_order = page.display_order
+                     AND (candidate.active = 1 OR candidate.compacted = 1)
+                   ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+               )
+               ORDER BY page.display_order ASC""",
+            (session_id, -1 if limit is None else limit, offset, session_id),
+        ).fetchall()
+
+    def _display_messages_from_conn(self, conn, session_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Exact display snapshot on an already-held transaction; None means fail closed."""
+        if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
+            return None
+        if conn.execute(
+            "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
+            "AND display_order IS NULL LIMIT 1", (session_id,),
+        ).fetchone():
+            return None
+        return [
+            self._row_to_message_dict(row, warn_context="verified delete", summary_flag=True)
+            for row in self._display_rows_from_conn(conn, session_id)
+        ]
+
+    @staticmethod
     def _active_clause(include_inactive: bool, include_compacted: bool) -> str:
         """Audit: every row; display: active plus compaction-archived (never Undo/Rewind rows); default: live."""
         return "" if include_inactive else (_DISPLAY_ACTIVE_CLAUSE if include_compacted else " AND active = 1")
@@ -1019,23 +1057,9 @@ class SessionMessagesMixin:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
         if include_compacted and not include_inactive and self._ensure_display_order(session_id):
-            direction = "DESC" if latest else "ASC"
-            sql = f"""WITH page AS (
-                    SELECT display_order FROM messages
-                    WHERE session_id = ? AND (active = 1 OR compacted = 1)
-                    GROUP BY display_order ORDER BY display_order {direction}
-                    LIMIT ? OFFSET ?
-                )
-                SELECT chosen.* FROM page
-                JOIN messages AS chosen ON chosen.id = (
-                    SELECT candidate.id FROM messages AS candidate
-                    WHERE candidate.session_id = ?
-                      AND candidate.display_order = page.display_order
-                      AND (candidate.active = 1 OR candidate.compacted = 1)
-                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
-                )
-                ORDER BY page.display_order ASC"""
-            rows = self._read_all(sql, [session_id, -1 if limit is None else limit, offset, session_id])
+            with self._read_ctx() as conn:
+                rows = self._display_rows_from_conn(
+                    conn, session_id, limit=limit, offset=offset, latest=latest)
         elif include_compacted:
             # Read-only legacy stores cannot persist display identities; keep only fixed-width
             # identities and representative ids while scanning, then fetch the selected payloads.

@@ -1,5 +1,4 @@
-"""/save md|html is a transcript: after in-place compaction it still holds every turn the chat shows.
-/save json stays the live rows import_sessions restores."""
+"""Human-readable /save mirrors display history; JSON remains import-safe live context."""
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
@@ -17,8 +16,10 @@ def _compacted_store(path):
         db.append_message("s1", "user", f"question {i}")
         db.append_message("s1", "assistant", f"answer {i}")
     tail = [{"role": "user", "content": "question 6"}, {"role": "assistant", "content": "answer 6"}]
-    db.archive_and_compact("s1", [{"role": "user", "content": "[CONTEXT COMPACTION] summary"}, *tail],
-                           watermark=db.get_active_message_watermark("s1"), tail_count=len(tail))
+    db.archive_and_compact(
+        "s1", [{"role": "user", "content": "[CONTEXT COMPACTION] summary"}, *tail],
+        watermark=db.get_active_message_watermark("s1"), tail_count=len(tail),
+    )
     return db
 
 
@@ -57,7 +58,7 @@ def _gateway_save(db, fmt, out):
 
 @pytest.mark.parametrize("save", [_cli_save, _gateway_save], ids=["cli", "gateway"])
 @pytest.mark.parametrize("fmt, expected", [("md", 6), ("html", 6), ("json", 1)])
-def test_save_transcript_holds_every_turn_the_chat_shows(tmp_path, monkeypatch, save, fmt, expected):
+def test_save_transcript_holds_display_history(tmp_path, monkeypatch, save, fmt, expected):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = _compacted_store(tmp_path / "state.db")
     try:

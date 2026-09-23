@@ -360,8 +360,10 @@ def _register_child(
     if owner_session_id and (owner_transport is None or owner_session_record is None):
         owner_transport, owner_session_record = _capture_gateway_steer_authority(owner_session_id)
     _raw_depth = getattr(child, "_delegate_depth", 1)
+    _child_sid = _str_or_none(getattr(child, "session_id", None))
     _register_subagent({
         "subagent_id": _subagent_id,
+        "child_session_id": _child_sid,
         "parent_id": _str_or_none(getattr(child, "_parent_subagent_id", None)),
         "depth": max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0,
         "goal": goal,
@@ -614,6 +616,10 @@ def _build_result_entry(
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
+    _child_sid = _str_or_none(getattr(child, "session_id", None))
+    if _child_sid:
+        entry["session_id"] = _child_sid
+        entry["child_session_id"] = _child_sid
     if status == "failed":
         entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")

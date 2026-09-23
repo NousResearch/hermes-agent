@@ -359,6 +359,10 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     if any(isinstance(s, str) and s for s in sids):
         payload["subagent_ids"] = sids
         payload["control_hint"] = _BACKGROUND_NOTES["control_hint"]
+    child_session_ids = [getattr(c, "session_id", None) for (_, _, c) in batch.children]
+    if any(isinstance(s, str) and s for s in child_session_ids):
+        payload["child_session_ids"] = child_session_ids
+        payload["session_ids"] = child_session_ids
     if batch.live_paths:
         payload["live_transcripts"] = list(batch.live_paths)
         payload["live_transcripts_hint"] = _BACKGROUND_NOTES["live_transcripts_hint"]

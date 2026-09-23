@@ -85,9 +85,18 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
   const titles = goals.length > 0 ? goals : dispatched.length > 0 ? dispatched : finished.map(() => 'Delegated task')
   const idle: DelegateRowStatus = result === undefined ? 'running' : 'dispatched'
 
+  const record = parseMaybeObject(result)
+  const childSessionIds = Array.isArray(record.child_session_ids)
+    ? record.child_session_ids.map(s => (typeof s === 'string' ? s : ''))
+    : Array.isArray(record.session_ids)
+      ? record.session_ids.map(s => (typeof s === 'string' ? s : ''))
+      : []
+
   return titles.map((goal, index) => {
     const entry = finished[index]
     const summary = entry ? field(entry, 'summary') : ''
+    const entrySessionId = entry ? field(entry, 'session_id') || field(entry, 'child_session_id') : ''
+    const sessionId = entrySessionId || childSessionIds[index] || undefined
 
     return {
       activity: summary ? [summary] : [],
@@ -95,19 +104,25 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
       goal,
       id: `${toolCallId}:${index}`,
       model: entry ? field(entry, 'model') || undefined : undefined,
+      sessionId,
       status: entry ? settledRowStatus(field(entry, 'status')) : idle
     }
   })
 }
 
-function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: string): DelegateRow {
+function fromSubagent(
+  live: SubagentProgress,
+  fallbackId: string,
+  fallbackGoal: string,
+  fallbackSessionId?: string
+): DelegateRow {
   return {
     activity: live.stream.map(entry => entry.text).filter(Boolean),
     durationSeconds: live.durationSeconds,
     goal: live.goal || fallbackGoal,
     id: live.id || fallbackId,
     model: live.model,
-    sessionId: live.sessionId,
+    sessionId: live.sessionId || fallbackSessionId,
     status: live.status
   }
 }
@@ -129,13 +144,22 @@ function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: 
 export function mergeDelegateRows(
   rows: readonly DelegateRow[],
   live: readonly SubagentProgress[],
-  toolCallId = ''
+  toolCallId = '',
+  delegationId = ''
 ): DelegateRow[] {
   if (live.length === 0) {
     return [...rows]
   }
 
-  const unclaimed = [...live]
+  const matchingLive = delegationId
+    ? live.filter(c => !c.delegationId || c.delegationId === delegationId)
+    : live
+
+  if (matchingLive.length === 0) {
+    return [...rows]
+  }
+
+  const unclaimed = [...matchingLive]
 
   const claim = (predicate: (candidate: SubagentProgress) => boolean): SubagentProgress | undefined => {
     const index = unclaimed.findIndex(predicate)
@@ -146,12 +170,12 @@ export function mergeDelegateRows(
   const prefix = toolCallId ? `delegate-tool:${toolCallId}:` : ''
   const byId = rows.map((_row, index) => (prefix ? claim(c => c.id === `${prefix}${index}`) : undefined))
   const byGoal = rows.map((row, index) => byId[index] ?? claim(c => normalize(c.goal) === normalize(row.goal)))
-  const sameShape = rows.length === live.length
+  const sameShape = rows.length === matchingLive.length
 
   return rows.map((row, index) => {
     const matched = byGoal[index] ?? (sameShape ? claim(c => c.taskIndex === index) : undefined)
 
-    return matched ? fromSubagent(matched, row.id, row.goal) : row
+    return matched ? fromSubagent(matched, row.id, row.goal, row.sessionId) : row
   })
 }
 

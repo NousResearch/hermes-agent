@@ -4,6 +4,7 @@ import { TOOL_LABELS_ARG } from '@/lib/connector-tools'
 import { firstStringField, normalize } from '@/lib/text'
 import { isTodoToolName, parseTodos } from '@/lib/todos'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
+import { extractToolErrorMessage } from '@/lib/tool-result-summary'
 import type { SessionMessage, StoredToolCallLabels } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart, GatewayEventPayload } from './types'
@@ -361,7 +362,12 @@ export function upsertToolPart(
       result: payload?.result !== undefined ? payload.result : prevResult,
       toolResultMetadata: toolResultMetadata(payload, prev?.toolResultMetadata, prevResult, prevArgs),
       isError:
-        payload?.error !== undefined ? Boolean(payload.error) : Boolean(prev && 'isError' in prev && prev.isError)
+        payload?.error !== undefined
+          ? Boolean(payload.error)
+          : Boolean(
+              (prev && 'isError' in prev && prev.isError) ||
+                extractToolErrorMessage(payload?.result !== undefined ? payload.result : prevResult)
+            )
     })
   } satisfies ChatMessagePart
 
@@ -825,11 +831,17 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
 
     const parts = [...message.parts]
     const existing = parts[partIndex]
+    const parsedResult = parseStoredToolResult(content)
+    const isError = Boolean(
+      (existing && 'isError' in existing && existing.isError) ||
+        extractToolErrorMessage(parsedResult) ||
+        (parsedResult && typeof parsedResult === 'object' && (parsedResult as Record<string, unknown>).error)
+    )
     parts[partIndex] = {
       ...existing,
       completedAt: toolMessage.timestamp,
-      result: parseStoredToolResult(content),
-      isError: false
+      result: parsedResult,
+      isError
     } as ChatMessagePart
     messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
 
@@ -859,11 +871,17 @@ export function applyStoredToolResultToParts(
 
   const next = [...parts]
   const existing = next[partIndex]
+  const parsedResult = parseStoredToolResult(content)
+  const isError = Boolean(
+    (existing && 'isError' in existing && existing.isError) ||
+      extractToolErrorMessage(parsedResult) ||
+      (parsedResult && typeof parsedResult === 'object' && (parsedResult as Record<string, unknown>).error)
+  )
   next[partIndex] = {
     ...existing,
     completedAt: toolMessage.timestamp,
-    result: parseStoredToolResult(content),
-    isError: false
+    result: parsedResult,
+    isError
   } as ChatMessagePart
 
   return next

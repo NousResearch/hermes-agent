@@ -75,9 +75,32 @@ describe('delegateRowsFromCall', () => {
   it('still lists a background dispatch whose goals only survive in the result', () => {
     expect(delegateRowsFromCall({}, { status: 'dispatched', goals: ['A', 'B'] }).map(r => r.goal)).toEqual(['A', 'B'])
   })
+
+  it('extracts sessionId from dispatched background payload and completed result rows', () => {
+    const backgroundRows = delegateRowsFromCall(
+      { tasks: [{ goal: 'Task 1' }, { goal: 'Task 2' }] },
+      { status: 'dispatched', child_session_ids: ['sess-child-1', 'sess-child-2'] }
+    )
+    expect(backgroundRows.map(r => r.sessionId)).toEqual(['sess-child-1', 'sess-child-2'])
+
+    const completedRows = delegateRowsFromCall(
+      { tasks: [{ goal: 'Task 1' }] },
+      { results: [{ status: 'completed', session_id: 'sess-done-1' }] }
+    )
+    expect(completedRows[0]?.sessionId).toBe('sess-done-1')
+  })
 })
 
 describe('mergeDelegateRows', () => {
+  it('respects delegationId filtering when isolating multiple delegations', () => {
+    const rows = delegateRowsFromCall({ tasks: [{ goal: 'Task A' }] }, undefined, 'call-d1')
+    const live = [
+      subagent({ id: 'sa-1', goal: 'Task A', delegationId: 'deleg_1' }),
+      subagent({ id: 'sa-2', goal: 'Task A', delegationId: 'deleg_2' })
+    ]
+    const merged = mergeDelegateRows(rows, live, 'call-d1', 'deleg_2')
+    expect(merged[0]?.id).toBe('sa-2')
+  })
   it('joins fallback rows by the tool call id they were keyed with', () => {
     const rows = delegateRowsFromCall({ tasks: [{ goal: 'A' }, { goal: 'B' }] }, undefined, 'call-7')
 

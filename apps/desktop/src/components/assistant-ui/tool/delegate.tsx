@@ -25,7 +25,7 @@ import {
   isDelegateRowLive,
   mergeDelegateRows
 } from './delegate-model'
-import { formatDurationSeconds, type ToolPart } from './fallback-model'
+import { formatDurationSeconds, parseMaybeObject, type ToolPart } from './fallback-model'
 import { ToolRunTicker } from './run-ticker'
 
 // Activity lines kept mounted behind the visible one. Enough for the reel to
@@ -88,26 +88,47 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
 
   return (
     <div
-      className="grid min-w-0 max-w-full gap-0.5 rounded-xl border border-(--ui-stroke-tertiary) px-3 py-2"
+      className={cn(
+        'group grid min-w-0 max-w-full gap-0.5 rounded-xl border border-(--ui-stroke-tertiary) px-3 py-2 transition-colors',
+        open && 'cursor-pointer hover:border-(--ui-stroke-secondary) hover:bg-(--ui-surface-hover,transparent)'
+      )}
       data-conversation-scaffold=""
+      onClick={open}
+      onKeyDown={
+        open
+          ? e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                open()
+              }
+            }
+          : undefined
+      }
+      role={open ? 'button' : undefined}
+      tabIndex={open ? 0 : undefined}
+      title={open ? 'Open subagent chat' : undefined}
     >
       <div className="flex min-w-0 max-w-full items-center gap-1.5">
         <span className={SCAFFOLD_GLYPH_CLASS}>{statusGlyph(row.status, statusLabel)}</span>
-        <button
+        <span
           className={cn(
             SCAFFOLD_LABEL_CLASS,
             'min-w-0 truncate text-left transition-colors',
-            open ? 'hover:text-foreground focus-visible:text-foreground focus-visible:outline-none' : 'cursor-default'
+            open ? 'group-hover:text-foreground' : 'cursor-default'
           )}
-          disabled={!open}
-          onClick={open}
-          type="button"
         >
           {row.goal}
-        </button>
+        </span>
         {meta.length > 0 && <span className={SCAFFOLD_META_CLASS}>{meta.join(' · ')}</span>}
         {live && <ActivityTimerText className={cn(SCAFFOLD_META_CLASS, 'ml-auto')} seconds={elapsed} />}
-        <Codicon className="ml-auto shrink-0 text-(--conversation-scaffold-text)" name="agent" size="0.625rem" />
+        <Codicon
+          className={cn(
+            'ml-auto shrink-0 transition-colors text-(--conversation-scaffold-text)',
+            open && 'group-hover:text-foreground'
+          )}
+          name="agent"
+          size="0.625rem"
+        />
       </div>
       {activity.length > 0 && (
         <div className="min-w-0 max-w-full pl-5">
@@ -143,10 +164,12 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
 export const DelegateTool: FC<Pick<ToolPart, 'args' | 'result' | 'toolCallId'>> = ({ args, result, toolCallId }) => {
   const sessionId = useStore(useSessionView().$runtimeId)
   const live = useSessionSlice($subagentsBySession, sessionId)
+  const record = parseMaybeObject(result)
+  const delegationId = typeof record.delegation_id === 'string' ? record.delegation_id : ''
 
   const rows = useMemo(
-    () => mergeDelegateRows(delegateRowsFromCall(args, result, toolCallId), live, toolCallId),
-    [args, live, result, toolCallId]
+    () => mergeDelegateRows(delegateRowsFromCall(args, result, toolCallId), live, toolCallId, delegationId),
+    [args, delegationId, live, result, toolCallId]
   )
 
   if (rows.length === 0) {

@@ -3590,19 +3590,18 @@ def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbat
     history and search, and the summary never saw them. Above the cap they take the concurrent-append path
     instead (cloned after the compacted set).
 
-    Only while the held history is a live prefix of the session: its newest durable row names its ``_row_id``
-    (one held without it could sit above the cap and be cloned beside its own carried copy), and that row is
-    still active (after another surface compacted, the held rows are archived and every live row would be
-    cloned beside the new summary).
+    Only while the held history is a live prefix of the session: its LAST row names its ``_row_id`` (a
+    trailing row of unknown provenance may be durable under the lease watermark without any stamp, e.g. the
+    TUI model-switch marker appended to history and written with a bare ``append_message``; capped below it,
+    the clone would land beside its own carried copy), and that row is still active (after another surface
+    compacted, the held rows are archived and every live row would be cloned beside the new summary).
     """
     if watermark is None:
         return None
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    rows = [*((m, False) for m in messages), *((m, True) for m in verbatim_tail or ())]
-    held = [m.get("_row_id") for m, _ in rows if isinstance(m, dict)]
+    rows = [*messages, *(verbatim_tail or ())]
+    held = [m.get("_row_id") for m in rows if isinstance(m, dict)]
     held = [rid for rid in held if isinstance(rid, int) and not isinstance(rid, bool) and rid > 0]
-    newest = next((m for m, kept in reversed(rows) if isinstance(m, dict)
-                   and (kept or "_row_id" in m or m.get(_DB_PERSISTED_MARKER))), None)
+    newest = next((m for m in reversed(rows) if isinstance(m, dict)), None)
     if newest is None or newest.get("_row_id") not in held or max(held) >= watermark:
         return watermark
     if agent._session_db.get_message_role(agent.session_id, max(held)) is None:

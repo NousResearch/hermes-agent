@@ -143,6 +143,25 @@ def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
     assert json.loads(os.environ["TERMINAL_DOCKER_VOLUMES"])  # A unchanged
 
 
+def test_multiplexed_docker_mount_uses_own_workspace_signal(tmp_path):
+    """A mounted Docker profile keeps its own legacy workspace signal and
+    otherwise mounts its own Hermes home, never the launch profile's cwd."""
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    profile_a = _profile(
+        tmp_path, "alpha",
+        "terminal:\n  backend: docker\n  docker_mount_cwd_to_workspace: true\n",
+        "MESSAGING_CWD=/host/alpha\n",
+    )
+    profile_b = _profile(
+        tmp_path, "bravo",
+        "terminal:\n  backend: docker\n  docker_mount_cwd_to_workspace: true\n",
+    )
+
+    assert build_profile_terminal_scope(profile_a)["TERMINAL_CWD"] == "/host/alpha"
+    assert build_profile_terminal_scope(profile_b)["TERMINAL_CWD"] == str(profile_b)
+
+
 def test_malformed_profile_config_refuses_execution(tmp_path):
     """Unresolvable policy → refusal scope; terminal_tool refuses instead of
     running under the launch process's ambient policy (fail closed)."""

@@ -23,4 +23,13 @@ class TestResolvePlaceholderTerminalCwd:
             home_fallback="/home/user",
         ) is None
 
+    def test_docker_placeholder_mount_on_uses_workspace_fallback(self):
+        assert resolve_placeholder_terminal_cwd(
+            configured_cwd="auto",
+            terminal_backend="docker",
+            messaging_cwd=None,
+            docker_mount_cwd_to_workspace=True,
+            home_fallback="/home/user",
+            workspace_fallback="/opt/data",
+        ) == "/opt/data"
 

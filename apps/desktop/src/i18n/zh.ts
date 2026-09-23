@@ -1,8 +1,10 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introZh } from './intro-zh'
 
 export const zh = defineLocale({
+  intro: introZh,
   connectors: {
     title: '连接你的应用',
     connect: '连接',

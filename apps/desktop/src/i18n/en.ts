@@ -3,6 +3,8 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  // English editorial copy stays in the shipped JSONL; other locales override it.
+  intro: { stock: {}, custom: () => [] },
   connectors: {
     title: 'Connect your apps',
     connect: 'Connect',

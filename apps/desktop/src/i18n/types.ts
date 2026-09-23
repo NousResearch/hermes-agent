@@ -59,6 +59,10 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  intro: {
+    stock: Record<string, string[]>
+    custom: (label: string) => string[]
+  }
   connectors: {
     title: string
     connect: string

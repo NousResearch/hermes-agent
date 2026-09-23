@@ -1,8 +1,10 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introZhHant } from './intro-zh-hant'
 
 export const zhHant = defineLocale({
+  intro: introZhHant,
   sessionImport: {
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
@@ -1830,6 +1832,16 @@ export const zhHant = defineLocale({
   skills: {
     plugins: {
       pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。'
+    },
+    hub: {
+      search: '搜尋',
+      searching: '搜尋中…',
+      noResults: '技能中心沒有符合的技能。',
+      installed: '已安裝',
+      installStarted: name => `正在安裝「${name}」…`,
+      pickerBrowse: '瀏覽完整技能中心',
+      pickerHide: '隱藏技能中心瀏覽器',
+      pickerHint: '按下任一技能的「+ Add to this Agent」，即可安裝並顯示在上方清單中。'
     },
     tabSkills: '技能',
     tabToolsets: '工具集',

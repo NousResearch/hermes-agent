@@ -397,8 +397,8 @@ def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_up
     # A multi-profile host whose gateway came back standalone on a guard says so here too — the
     # update summary is the one line operators read (the boot log under s6 is not).
     with suppress(Exception):
-        from hermes_cli.gateway_multiplex_mode import recorded_standalone_warning_lines
-        for line in recorded_standalone_warning_lines():
+        from hermes_cli.gateway_multiplex_mode import consume_rewritten_notice, recorded_standalone_warning_lines
+        for line in [*consume_rewritten_notice(), *recorded_standalone_warning_lines()]:
             print(line)
     return desktop_build_ok and sqlite_runtime_ok
 

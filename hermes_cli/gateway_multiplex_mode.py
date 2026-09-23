@@ -41,9 +41,13 @@ STANDALONE_DEPRECATION_NOTICE = (
 #: ``gateway.multiplex_profiles: false`` is no longer an opt-out from the one-gateway-per-host
 #: topology; it parses, it is reported, and it is ignored.
 RETIRED_OPT_OUT_REASON = (
-    "gateway.multiplex_profiles: false is retired and was ignored: one gateway per host serves "
-    "every profile. Remove the key; `hermes gateway migrate --multiplex` folds any leftover "
-    "per-profile gateway.")
+    "gateway.multiplex_profiles: false is retired and was rewritten to true; one gateway per host "
+    "serves every profile. A per-profile gateway is `gateway.standalone: true` in that profile's "
+    "config (temporary shim) or `--force`.")
+
+#: One-time marker the gateway leaves after rewriting a retired ``false``; ``hermes update``'s summary
+#: prints the notice from it and clears it, so the flip is never silent on either surface.
+REWRITTEN_MARKER_NAME = ".multiplex_opt_out_rewritten"
 
 
 def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
@@ -165,24 +169,60 @@ def _default_profile_home() -> Path:
 
 
 def persist_resolved_default(decision: MultiplexDecision, default_home: Optional[Path] = None) -> bool:
-    """Write ``gateway.multiplex_profiles: true`` into the DEFAULT profile's config.yaml once the
-    runtime has resolved the unset key to on, so the file reads as the gateway behaves ("left unset"
-    was read as "off" by more than one operator). Comment-preserving writer, once, never on a guard
-    refusal (the file would then promise a topology the gateway refused). Returns True on a write."""
+    """Write ``gateway.multiplex_profiles: true`` into the DEFAULT profile's config.yaml so the file
+    reads as the gateway behaves. The key has ONE valid value right now (Teknium ruling): an unset key
+    is made explicit ("left unset" was read as "off"), a retired ``false`` is rewritten in place and
+    leaves a one-time marker for the boxed notice. Comment-preserving writer, once, and NEVER on a guard
+    refusal (the file must not say true while the runtime is standalone). Returns True on a write."""
     if not decision.enabled or decision.source == "guard":
         return False
     default_home = Path(default_home) if default_home is not None else _default_profile_home()
+    cfg_path = default_home / "config.yaml"
     try:
-        if explicit_multiplex_flag(default_home) is True:
+        from hermes_cli.config import read_user_config_raw
+        cfg = read_user_config_raw(cfg_path) or {} if cfg_path.exists() else {}
+        section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        in_file = cfg.get("multiplex_profiles", section.get("multiplex_profiles"))
+        if in_file is True:
             return False
         from hermes_cli.gateway_migrate import _write_multiplex_flag
         _write_multiplex_flag(default_home, True)
+        if decision.source == "retired-opt-out":
+            (default_home / REWRITTEN_MARKER_NAME).write_text(RETIRED_OPT_OUT_REASON + "\n", encoding="utf-8")
     except Exception:
         logger.debug("could not persist gateway.multiplex_profiles: true", exc_info=True)
         return False
-    logger.info("Wrote gateway.multiplex_profiles: true to %s (the resolved default, made explicit).",
-                default_home / "config.yaml")
+    logger.info("Wrote gateway.multiplex_profiles: true to %s (was %s).", cfg_path,
+                "unset" if in_file is None else repr(in_file))
     return True
+
+
+def retired_opt_out_notice_lines() -> list[str]:
+    """The one-time boxed notice for a rewritten ``false`` (same box as the guard warning)."""
+    return _box(["⚠ gateway.multiplex_profiles: false is retired and was rewritten to true;",
+                 "one gateway per host serves every profile.",
+                 "A per-profile gateway is `gateway.standalone: true` in that profile's config",
+                 "(temporary shim) or `--force`."])
+
+
+def consume_rewritten_notice(default_home: Optional[Path] = None) -> list[str]:
+    """``hermes update``'s summary: print the rewrite notice ONCE more, then clear the marker."""
+    default_home = Path(default_home) if default_home is not None else _default_profile_home()
+    marker = default_home / REWRITTEN_MARKER_NAME
+    if not marker.exists():
+        return []
+    try:
+        marker.unlink()
+    except OSError:
+        return []
+    return retired_opt_out_notice_lines()
+
+
+def _box(body: list[str]) -> list[str]:
+    width = max(len(line) for line in body) + 2
+    return ["┌" + "─" * width + "┐",
+            *[f"│ {line.ljust(width - 1)}│" for line in body],
+            "└" + "─" * width + "┘"]
 
 
 def resolve_multiplex_mode(config) -> MultiplexDecision:
@@ -232,6 +272,9 @@ def log_multiplex_decision(decision: MultiplexDecision) -> None:
     record_multiplex_decision(decision)
     if decision.source == "retired-opt-out":
         logger.warning("%s", RETIRED_OPT_OUT_REASON)
+        persist_resolved_default(decision)
+        for line in retired_opt_out_notice_lines():
+            print(line)
     elif decision.source == "guard" and decision.reason == SINGLE_PROFILE_REASON:
         logger.info("Single-profile install: gateway.multiplex_profiles unset, serving the default profile only.")
     elif decision.source == "guard":
@@ -276,10 +319,7 @@ def standalone_warning_lines(decision: MultiplexDecision, unserved: Optional[lis
         f"Why: {decision.reason}",
         f"Fix: {MIGRATE_COMMAND}",
     ]
-    width = max(len(line) for line in body) + 2
-    return ["┌" + "─" * width + "┐",
-            *[f"│ {line.ljust(width - 1)}│" for line in body],
-            "└" + "─" * width + "┘"]
+    return _box(body)
 
 
 def recorded_standalone_warning_lines() -> list[str]:

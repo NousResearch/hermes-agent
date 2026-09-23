@@ -121,11 +121,13 @@ profile that opts out with `gateway.standalone: true`:
 
 - `gateway.multiplex_profiles: true` (what the migration writes) multiplexes
   regardless of the preflight — you, or the migration, made the call.
-- `gateway.multiplex_profiles: false` is **retired**. It used to keep
-  per-profile gateways for good; now it resolves exactly like an unset key and
-  the gateway logs a warning pointing at `hermes gateway migrate --multiplex`.
-  `--force` remains the path for the boundary cases below; `gateway.standalone:
-  true` is a temporary shim for fleets the switch broke, not a supported topology.
+- `gateway.multiplex_profiles` has **one valid value right now: `true`**, and
+  it is written for you. An unset key resolves on and is made explicit in the
+  default profile's `config.yaml`. `false` is **retired**: the gateway rewrites
+  it to `true` in place and prints a one-time boxed notice at that start and in
+  the next `hermes update` summary — never a silent flip. A per-profile gateway
+  is `gateway.standalone: true` in that profile's own config (a temporary shim,
+  not a supported topology) or `--force` for the boundary cases below.
 - `GATEWAY_MULTIPLEX_PROFILES` in the process environment overrides the
   unset-key decision the same way an explicit `true` does.
 - `gateway.standalone: true` in a **named** profile's own `config.yaml`

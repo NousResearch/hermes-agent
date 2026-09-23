@@ -105,10 +105,6 @@ _HTTP_TARGET_RE = re.compile(r"https?://", re.IGNORECASE)
 _NEWLINE_SQUEEZE_RE = re.compile(r"\n{3,}")
 
 
-def _drop_link_target(match: "re.Match[str]") -> str:
-    return match.group(1)
-
-
 def _keep_link_target(match: "re.Match[str]") -> str:
     r"""``[label](https://url)`` -> ``label\nurl``.
 
@@ -131,7 +127,7 @@ def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
     """
     for pattern, repl in _STRIP_RULES:
         text = pattern.sub(repl, text)
-    text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else _drop_link_target, text)
+    text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", text)
     return _NEWLINE_SQUEEZE_RE.sub("\n\n", text).strip()
 
 

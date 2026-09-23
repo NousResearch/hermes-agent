@@ -303,24 +303,17 @@ def _markdown_enabled() -> bool:
 _SIDECAR_URL_RE = re.compile(r"https?://[^\s)'\"<>]+", re.IGNORECASE)
 
 
-def _strip_for_imessage(text: str) -> str:
-    """Strip markdown, but keep ``[label](url)`` targets as a bare URL on its own line.
+def _sidecar_payload_text(text: str, send_markdown: bool) -> str:
+    """The ``/send`` text: verbatim only when the sidecar will really use spectrum-ts' markdown builder.
 
-    Every plain-text path here ends at iMessage, which auto-links bare URLs and
-    nothing else, so discarding a link target makes the link unreachable — see
-    the ``chooseSendFormat`` comment for why these payloads lose markdown at all.
+    ``chooseSendFormat`` routes markdown containing a raw URL through the verbatim ``text()`` builder
+    (the markdown builder's data detection 500s on those), and a plain send has no renderer at all, so
+    both are stripped here or iMessage shows literal ``**``/fences. Link targets survive as bare URLs:
+    iMessage auto-links those and nothing else.
     """
+    if send_markdown and not _SIDECAR_URL_RE.search(text or ""):
+        return text
     return strip_markdown(text, keep_link_targets=True)
-
-
-def _sidecar_downgrades_to_text(text: str) -> bool:
-    """True when the sidecar will route a markdown payload to the text builder.
-
-    ``chooseSendFormat`` sends markdown containing a raw http(s) URL through
-    spectrum-ts' ``text()`` builder, because the markdown builder's iMessage
-    data detection 500s on those messages.
-    """
-    return bool(_SIDECAR_URL_RE.search(text or ""))
 
 
 def _url_only_candidate(text: str) -> Optional[str]:
@@ -1321,7 +1314,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         # Markdown passes through verbatim (sidecar markdown() builder); PHOTON_MARKDOWN=false strips.
-        return content if _markdown_enabled() else _strip_for_imessage(content)
+        return content if _markdown_enabled() else strip_markdown(content, keep_link_targets=True)
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
@@ -1350,8 +1343,7 @@ class PhotonAdapter(BasePlatformAdapter):
         """No Markdown banner (replies are markdown or already-stripped plain text); bypass
         richlink() so a rich-link outage doesn't strand a sendable URL."""
         return await self._sidecar_send(
-            chat_id, _strip_for_imessage(self.format_message(content))[: self.MAX_MESSAGE_LENGTH],
-            richlink=False, markdown=False)
+            chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
 
     async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False) -> SendResult:
         """POST a send-like body and wrap the outcome as a SendResult. ``structured`` carries
@@ -1379,13 +1371,9 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.warning("[photon] rich-link send failed, falling back to plain text: %s", rich_result.error)
             markdown = False
         send_markdown = markdown and _markdown_enabled()
-        if send_markdown and _sidecar_downgrades_to_text(text):
-            # spectrum-ts' markdown() degrades to readable plain text on its own;
-            # text() does not, and ships the source verbatim. Strip before the
-            # sidecar downgrades, or iMessage renders literal ** markers.
-            # The format key stays: the sidecar owns the builder choice, and an
-            # older sidecar without chooseSendFormat must keep rendering natively.
-            text = _strip_for_imessage(text)
+        # The format key stays even when the text is stripped: the sidecar owns the builder choice,
+        # and an older sidecar without chooseSendFormat must keep rendering natively.
+        text = _sidecar_payload_text(text, send_markdown)
         if len(text) > self.MAX_MESSAGE_LENGTH:
             logger.warning("[photon] truncating outbound from %d to %d chars", len(text), self.MAX_MESSAGE_LENGTH)
             text = text[: self.MAX_MESSAGE_LENGTH]
@@ -1552,8 +1540,10 @@ async def _standalone_send(
                 if rich_url:
                     _resp, data = await _post("/send-richlink", {"spaceId": chat_id, "url": rich_url})
                 if not data:  # no URL-only message, or the rich-link send failed: plain text
-                    send_body: Dict[str, Any] = {"spaceId": chat_id, "text": message[:_MAX_MESSAGE_LENGTH]}
-                    if _markdown_enabled() and not rich_url:
+                    send_markdown = _markdown_enabled() and not rich_url
+                    send_body: Dict[str, Any] = {
+                        "spaceId": chat_id, "text": _sidecar_payload_text(message, send_markdown)[:_MAX_MESSAGE_LENGTH]}
+                    if send_markdown:
                         send_body["format"] = "markdown"
                     resp, data = await _post("/send", send_body)
                     if not data:

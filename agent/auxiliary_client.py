@@ -27,6 +27,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 from agent.error_classifier import (
     _BILLING_PATTERNS,
     _OVERLOADED_PATTERNS,
+    _has_usage_limit_transient_signal,
     UNSUPPORTED_PARAM_MARKERS,
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
@@ -3196,12 +3197,36 @@ _PAYMENT_KEYWORDS = _BILLING_PATTERNS + (
 )
 
 
+# Codex/ChatGPT word an exhausted plan quota as ``usage_limit_reached`` (structured ``error.type``
+# or ``error.code``) / "the usage limit has been reached". Neither is a ``_PAYMENT_KEYWORDS``
+# phrase, so the aux ladder used to call it a plain throttle while the main classifier called it
+# ``billing`` — and ``_run_recovery_ladder`` spent one more same-provider call on a key that is by
+# definition out of quota before rotating (PR #34024, reported by @carltonawong against session
+# summarization). Terminal only WITHOUT a reset window: the same split ``_status_429`` makes, via
+# the same helper, so the two surfaces cannot drift again.
+_USAGE_LIMIT_MARKERS = ("usage_limit_reached", "the usage limit has been reached")
+
+
+def _is_exhausted_usage_limit(exc: Exception) -> bool:
+    """A usage-limit wall that names no reset window — exhaustion, not a throttle."""
+    if getattr(exc, "status_code", None) not in {402, 403, 404, 429, None}:
+        return False
+    text = str(exc).lower()
+    if not _contains_any(text, _USAGE_LIMIT_MARKERS):
+        return False
+    body = getattr(exc, "body", None)
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    return not _has_usage_limit_transient_signal(
+        text, body if isinstance(body, dict) else {}, headers
+    )
+
+
 def _is_payment_error(exc: Exception) -> bool:
     """Payment/credit/quota exhaustion: HTTP 402, or a billing/quota body on 403/404/429/no-status."""
     status = getattr(exc, "status_code", None)
     return status == 402 or (
         status in {403, 404, 429, None} and _contains_any(str(exc).lower(), _PAYMENT_KEYWORDS)
-    )
+    ) or _is_exhausted_usage_limit(exc)
 
 
 def _nous_portal_account_has_fresh_paid_access() -> bool:

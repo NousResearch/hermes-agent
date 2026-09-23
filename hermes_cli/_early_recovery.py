@@ -211,36 +211,80 @@ def _marker_owner_is_live(marker: Path) -> bool:
     return False
 
 
-# ``hermes update`` writes this into ``.git/`` right before git moves the checkout and removes it once
-# git is done. Git rewrites the tree file by file and moves HEAD last, so an update killed in between
-# leaves HEAD on the old commit with a prefix of the files already new; that mixed tree fails at import
-# in every entry point, ``hermes update`` included. A marker whose owner is gone means exactly that.
+# ``hermes update`` writes this into the git dir right before git moves the checkout and removes it
+# once git has exited (a kill is the only exit that keeps it). Git rewrites the tree file by file and
+# moves HEAD last, so an update killed in between leaves HEAD on the old commit with a prefix of the
+# files already new; that mixed tree fails at import in every entry point, ``hermes update`` included.
 INTERRUPTED_PULL_MARKER = "hermes-update-pull"
 # A fast-forward takes seconds; past this a "live" owner pid is a recycled one.
 _INTERRUPTED_PULL_MAX_AGE_SECONDS = 10 * 60
+# The user (or a killed updater) is mid-operation: its own state files own the tree.
+_GIT_OPERATION_IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply")
+_REGULAR_FILE_MODES = ("100644", "100755")
+
+
+def _git_dir(root: Path) -> Path:
+    """``root``'s git dir: ``.git`` itself, or where a linked worktree's ``.git`` file points."""
+    dot_git = root / ".git"
+    if dot_git.is_file():
+        text = dot_git.read_text(encoding="utf-8").strip()
+        if text.startswith("gitdir:"):
+            return root / text[len("gitdir:"):].strip()
+    return dot_git
 
 
 def interrupted_pull_marker(root: Path) -> Path:
-    return root / ".git" / INTERRUPTED_PULL_MARKER
+    return _git_dir(root) / INTERRUPTED_PULL_MARKER
+
+
+def _paths_git_wrote(git, root: Path, pre: str, target: str) -> tuple[list[str], list[str]] | None:
+    """Paths the killed git already moved to ``target``: (restore from HEAD, delete as added).
+
+    Only a path whose content is exactly ``target``'s blob (or, for a deletion, that is gone) counts;
+    anything else is the user's own edit — e.g. a re-applied stash — and is left alone.
+    """
+    diff = git("diff", "--raw", "-z", "--no-renames", "--no-abbrev", pre, target)
+    if diff.returncode != 0:
+        return None
+    parts = diff.stdout.split("\0")
+    entries = []  # (status, path, target blob)
+    for meta, path in zip(parts[::2], parts[1::2]):
+        old_mode, new_mode, _old_blob, new_blob, status = meta.lstrip(":").split()
+        if status == "D" and old_mode in _REGULAR_FILE_MODES:
+            entries.append((status, path, None))
+        elif status != "D" and new_mode in _REGULAR_FILE_MODES:
+            entries.append((status, path, new_blob))
+    present = [path for _s, path, blob in entries if blob and (root / path).is_file()]
+    hashed = git("hash-object", "--stdin-paths", stdin="\n".join(present) + "\n") if present else None
+    if hashed is not None and hashed.returncode != 0:
+        return None
+    worktree_blob = dict(zip(present, hashed.stdout.split() if hashed else ()))
+    restore, added = [], []
+    for status, path, blob in entries:
+        written = (not (root / path).exists()) if blob is None else worktree_blob.get(path) == blob
+        if written:
+            (added if status == "A" else restore).append(path)
+    return restore, added
 
 
 def restore_interrupted_pull(project_root: Path | None = None) -> bool:
-    """Put back the files a killed ``hermes update`` had half-moved to the new commit. Never raises.
+    """Put back the files a killed ``hermes update`` had half-moved to the new commit.
 
     Returns True when files were restored: modules this process already imported may be the
     half-written ones, so the caller must relaunch (``relaunch_after_restore``).
 
-    Fast path (no marker) is one ``stat``. Acts only when the marker's owner is gone and HEAD is still
-    the pre-pull commit: every path that differs between it and the pull target returns to HEAD (the
-    commit the venv was built for), so the install is whole again and ``hermes update`` redoes the
-    update from the start. Paths the update does not change keep any local edits; the updater's
-    autostash (if any) stays in ``git stash list``.
+    Fast path (no marker) is one or two ``stat`` calls. Acts only when the marker's owner is gone,
+    HEAD is still the pre-pull commit and no merge/rebase is in progress; then every path whose
+    content is the pull target's returns to HEAD (the commit the venv was built for), so the install is
+    whole again and ``hermes update`` redoes the update from the start. Local edits are never touched;
+    the updater's autostash (if any) stays in ``git stash list``.
     """
     try:
         root = _project_root() if project_root is None else project_root
         marker = interrupted_pull_marker(root)
         if not marker.is_file() or _pytest_owns_live_checkout(root):
             return False
+        git_dir = marker.parent
         fields = dict(line.partition("=")[::2] for line in marker.read_text(encoding="utf-8").splitlines())
         try:
             owner = int(fields.get("pid", ""))
@@ -251,36 +295,33 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
         if (owner != os.getpid() and _pid_is_running(owner)
                 and time.time() - marker.stat().st_mtime < _INTERRUPTED_PULL_MAX_AGE_SECONDS):
             return False
+        if any((git_dir / name).exists() for name in _GIT_OPERATION_IN_PROGRESS):
+            return False
 
         def git(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
             return subprocess.run(["git", "--literal-pathspecs", "-C", str(root), *args], input=stdin,
-                                  capture_output=True, text=True, timeout=120,
-                                  stdin=None if stdin is not None else subprocess.DEVNULL)
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=120, stdin=None if stdin is not None else subprocess.DEVNULL)
 
         pre, target = fields.get("pre", "").strip(), fields.get("target", "").strip()
         if not pre or not target or git("rev-parse", "HEAD").stdout.strip() != pre:
             marker.unlink()  # git finished (HEAD moved) or the marker is unusable
             return False
-        diff = git("diff", "--name-status", "-z", "--no-renames", pre, target)
-        if diff.returncode != 0:
+        written = _paths_git_wrote(git, root, pre, target)
+        if written is None:
             return False
-        parts = diff.stdout.split("\0")
-        added = [p for s, p in zip(parts[::2], parts[1::2]) if s == "A"]
-        kept = [p for s, p in zip(parts[::2], parts[1::2]) if s and s != "A"]
-        # The dead git's index lock would refuse every command below.
-        (root / ".git" / "index.lock").unlink(missing_ok=True)
-        status = git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
-        dirty = {entry[3:] for entry in status.stdout.split("\0") if len(entry) > 3}
-        if status.returncode != 0 or dirty.isdisjoint(added + kept):
-            if status.returncode == 0:
-                marker.unlink()  # the killed git never reached the tree: nothing to put back
+        restore, added = written
+        if not restore and not added:
+            marker.unlink()  # the killed git never reached the tree: nothing to put back
             return False
         print("⚠ A previous `hermes update` was killed while git was writing the new code — "
               f"restoring the checkout to {pre[:10]}...", file=sys.stderr)
+        # The dead git's index lock would refuse every command below.
+        (git_dir / "index.lock").unlink(missing_ok=True)
         ok = True
-        if kept:
+        if restore:
             ok = git("restore", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=-",
-                     "--pathspec-file-nul", stdin="\0".join(kept)).returncode == 0
+                     "--pathspec-file-nul", stdin="\0".join(restore)).returncode == 0
         if added and ok:
             ok = git("rm", "-q", "--cached", "--ignore-unmatch", "--pathspec-from-file=-",
                      "--pathspec-file-nul", stdin="\0".join(added)).returncode == 0
@@ -298,8 +339,9 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
             return True
         print(f"  ✗ Could not restore it automatically. Recover with: git -C {root} reset --hard {pre}",
               file=sys.stderr)
-    except Exception:
-        pass  # Never block launch — the import that follows surfaces the real error.
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        # Never block launch: the import that follows surfaces any real breakage.
+        print(f"⚠ Could not check for an interrupted `hermes update`: {exc}", file=sys.stderr)
     return False
 
 

@@ -122,6 +122,7 @@ import {
   DESKTOP_PROFILE_NAME_RE,
   type DesktopProfileRoute
 } from './desktop-profile'
+import { registerDesktopQuitRuntime } from './desktop-quit-runtime'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import { createDesktopRendererAssetsRuntime } from './desktop-renderer-assets-runtime'
 import { createDesktopSecondaryWindowRuntime } from './desktop-secondary-window-runtime'
@@ -5662,123 +5663,50 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
   return true
 }
 
-app.on('before-quit', event => {
-  // Runs ahead of every teardown below, so "Keep Running" leaves the app
-  // exactly as it was.
-  if (heldQuitForActiveWork(event)) {
-    return
-  }
-
-  minimizeToTray.beginQuit()
-
-  // A detached remote updater can outlive this Electron process. Do not tear
-  // down its SSH observer/restore transaction at the generic SSH shutdown
-  // deadline: join it first (BEFORE sealing the bootstrap coordinator, whose
-  // shutdown would refuse the restore dials), then re-enter before-quit for
-  // normal teardown. A crash still fails closed on next launch via the remote
-  // install-marker preflight in both POSIX and Windows lifecycle
-  // implementations.
-  if (
-    !managedUpdateQuitWaitDone &&
-    (managedUpdateQuitWait || managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0)
-  ) {
-    event.preventDefault()
-
-    if (!managedUpdateQuitWait) {
-      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
-        ...managedConnectionUpdates.values(),
-        ...managedConnectionRecoveries.values()
-      ]).finally(() => {
-        managedUpdateQuitWaitDone = true
-        app.quit()
-      })
+registerDesktopQuitRuntime({
+  IS_WINDOWS,
+  app,
+  backendConnectionState,
+  backendQuitNeedsWait,
+  backendShutdown,
+  closePetOverlay,
+  closeQuickEntryWindow,
+  flushDesktopLogBufferSync,
+  getBootstrapAbortController: () => bootstrapAbortController,
+  getIsQuittingForHandoff: () => isQuittingForHandoff,
+  getWindowsSandboxFallbackSticky: () => windowsSandboxFallbackSticky,
+  heldQuitForActiveWork,
+  introRevealController,
+  localBackendLifecycle,
+  managedConnectionRecoveries,
+  managedConnectionUpdates,
+  managedUpdateQuitState: {
+    get wait() {
+      return managedUpdateQuitWait
+    },
+    set wait(value) {
+      managedUpdateQuitWait = value
+    },
+    get done() {
+      return managedUpdateQuitWaitDone
+    },
+    set done(value) {
+      managedUpdateQuitWaitDone = value
     }
-
-    return
-  }
-
-  // A prevented first quit leaves the renderer alive while teardown runs.
-  // Seal the SSH coordinator before touching connections so reconnect
-  // callbacks cannot recreate a backend for a registration whose app is
-  // already quitting (#91668).
-  sshBootstrapCoordinator.shutdown()
-
-  const backendNeedsWait = backendQuitNeedsWait({
-    connectionPending: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),
-    poolPending: poolStopper.hasPending(),
-    processAttached: backendConnectionState.getProcess() !== null,
-    shutdownPending: backendShutdown.isPending()
-  })
-
-  const sshNeedsWait =
-    sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0 || sshTeardowns.hasPending()
-
-  const teardownTasks = [{ run: () => backendShutdown.run(), waitForCompletion: backendNeedsWait }]
-
-  if (sshNeedsWait) {
-    teardownTasks.push({ run: teardownSshForQuit, waitForCompletion: true })
-  }
-
-  if (quitTeardown.begin(teardownTasks)) {
-    event.preventDefault()
-  }
-
-  // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).
-  // FATAL GPU aborts skip before-quit, leaving the `booting` marker in place.
-  // Keyed on sticky (not active): a manual --no-sandbox run still records a
-  // clean quit, while an engaged fallback keeps its sticky marker.
-  if (IS_WINDOWS && !windowsSandboxFallbackSticky) {
-    try {
-      writeSandboxMarker(app.getPath('userData'), markerAfterSuccessfulBoot({ fallbackActive: false }))
-    } catch {
-      void 0
-    }
-  }
-
-  // The always-on-top overlay isn't a "real" app window; close it so a stray
-  // pet can't keep the process alive or float over a quit app.
-  closePetOverlay()
-  wakeIndicatorController.close()
-  introRevealController.destroy()
-
-  // Same for the HUD — an always-on-top panel outliving the app would leave a
-  // floating composer with nothing behind it. Close it directly rather than via
-  // closeHudWindow(): that also re-shows the main window, which is wrong on the
-  // way out (and `hudRestoreMainWindow` may still be armed from entering HUD).
-  shellOverlayRuntime.closeHudWindowForQuit()
-
-  // Same for the Quick Entry composer — and release its global accelerator so a
-  // quitting Hermes never keeps another app's chord hostage.
-  closeQuickEntryWindow()
-
-  // Quitting mid-install should stop the installer, not orphan it.
-  if (bootstrapAbortController) {
-    try {
-      bootstrapAbortController.abort()
-    } catch {
-      void 0
-    }
-  }
-
-  stopDesktopLogFlushTimer()
-  flushDesktopLogBufferSync()
-  previewTargetRuntime.closePreviewWatchers()
-
-  // Kill open PTYs before environment teardown to avoid the node-pty#904
-  // ThreadSafeFunction SIGABRT race.
-  terminalIpc.disposeAllTerminalSessions()
-
-  void backendShutdown.run()
-})
-
-app.on('window-all-closed', () => {
-  // macOS convention: keep the process alive in the Dock when the user closes
-  // the last window. But when we're handing off to a detached updater / swap /
-  // uninstall script, the process MUST exit so the script can replace or remove
-  // the bundle and relaunch — without this the script's PID-wait spins to its
-  // full timeout and the user is left with an invisible app (or an uninstall
-  // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
-    app.quit()
-  }
+  },
+  markerAfterSuccessfulBoot,
+  minimizeToTray,
+  poolStopper,
+  previewTargetRuntime,
+  quitTeardown,
+  shellOverlayRuntime,
+  sshBootstrapCoordinator,
+  sshConnections,
+  sshTeardowns,
+  stopDesktopLogFlushTimer,
+  teardownSshForQuit,
+  terminalIpc,
+  waitForManagedUpdateOperations,
+  wakeIndicatorController,
+  writeSandboxMarker
 })

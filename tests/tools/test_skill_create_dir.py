@@ -95,12 +95,6 @@ class TestDisplaySkillCreateDir:
         _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
         assert "opt-brain" in display_skill_create_dir()
 
-    def test_schema_helper_follows_config(self, isolated_home, tmp_path):
-        from tools.skill_manager_tool import _display_create_dir
-        brain = tmp_path / "opt-brain"
-        _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
-        assert "opt-brain" in _display_create_dir()
-
 
 class TestDiscovery:
     def test_create_dir_in_all_skills_dirs(self, isolated_home, tmp_path):

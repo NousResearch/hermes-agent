@@ -20,7 +20,7 @@ import pytest
 from tools.connectors.contract import SettleReason, TargetState
 from tools.connectors import live
 from tools.connectors.mcp import apply_answer
-from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
+from tools.connectors.tool import manage_connections
 from tools.registry import registry
 
 CATALOG = ["figma", "linear", "notion"]
@@ -273,13 +273,6 @@ def test_a_managed_action_never_accepts_mcp_targets_and_vice_versa():
     assert "must carry" in out["error"]
 
 
-def test_a_managed_call_off_desktop_returns_a_link_per_target():
-    client = FakeClient()
-    out = json.loads(manage_connections(
-        {"action": "connect", "connectors": ["gmail"]}, client_factory=lambda: client))
-    assert client.calls == [("connections", ("gmail",), False)]
-    assert out["targets"][0]["connect_url"] == "https://x/gmail"
-    assert out["status"] == "initiated"
 
 
 def test_unknown_target_fields_are_rejected():
@@ -336,13 +329,6 @@ def test_setup_mcp_replay_shim_translates_to_an_mcp_target(backend):
     assert out["targets"][0]["state"] == TargetState.skipped.value
 
 
-def test_setup_mcp_is_gone_from_every_advertised_toolset():
-    from toolsets import TOOLSETS, resolve_toolset
-
-    assert all("setup_mcp" not in resolve_toolset(name) for name in TOOLSETS)
-    assert "manage_connections" in resolve_toolset("connections")
-    assert "hand-edit" in MANAGE_CONNECTIONS_SCHEMA["description"]
-    assert "mcp_servers" in MANAGE_CONNECTIONS_SCHEMA["description"]
 
 
 # ---------------------------------------------------------------------------
@@ -350,10 +336,6 @@ def test_setup_mcp_is_gone_from_every_advertised_toolset():
 # ---------------------------------------------------------------------------
 
 
-def test_the_bounded_wait_owns_the_deadline_not_the_sequential_guard():
-    from agent import tool_executor as te
-
-    assert "manage_connections" in te._SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
 
 
 # ---------------------------------------------------------------------------

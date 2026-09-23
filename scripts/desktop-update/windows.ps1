@@ -1198,6 +1198,8 @@ function Resolve-HermesVenvDir([string]$Root) {
 }
 
 $finalCode = 1
+$manualAction = $false
+$manualMsg = ""
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
 
@@ -1679,6 +1681,25 @@ try {
         }
     }
 
+    # Desktop stopped every locally running profile gateway before handing off
+    # so their venv launchers could not hold the update lock. That happens
+    # before `hermes update` captures its Windows pause inventory, leaving the
+    # updater nothing to resume on its normal success path. Restore the same
+    # all-profile fleet only after the updated runtime verifies. A remote-served
+    # Desktop must stay passive: its -NoGateway hand-off owns no local poller.
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed -and -not $NoGateway) {
+        $gatewayRestart = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "gateway", "start", "--all") "gateway restart"
+        if ($gatewayRestart.Code -ne 0) {
+            # The update itself succeeded; a restart miss is a manual follow-up
+            # (Write-Result's manual flag -> Desktop boot dialog), never a failed
+            # update: a non-zero exit here would run the error finale and hide
+            # the fact that the new runtime is installed and verified.
+            $manualAction = $true
+            $manualMsg = "Update complete, but Hermes could not restart every messaging gateway. Run `hermes gateway start --all` in a terminal."
+            Write-HandoffLog $manualMsg
+        }
+    }
+
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $finalCode = 0
         $finalMsg = "Update complete."
@@ -1710,7 +1731,8 @@ try {
         Show-ErrorFinale $finalMsg
         Close-ProgressWindow
     } else {
-        Write-Result ($finalCode -eq 0) $finalCode $finalMsg
+        if ($finalCode -eq 0 -and $manualAction) { $finalMsg = $manualMsg }
+        Write-Result ($finalCode -eq 0) $finalCode $finalMsg ($finalCode -eq 0 -and $manualAction)
         Remove-MarkerIfOwned
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg

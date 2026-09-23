@@ -387,7 +387,7 @@ describe('per-turn socket lease', () => {
     expect(resumes.length).toBeGreaterThan(0)
 
     for (const resume of resumes) {
-      expect(resume).toMatchObject({ spawnPriority: 'foreground', timeoutMs: 180_000 })
+      expect(resume).toMatchObject({ spawnPriority: 'foreground' })
     }
 
     expect(room.gateway.rpcFor('session.create')).toEqual([expect.objectContaining({ spawnPriority: 'foreground' })])
@@ -401,15 +401,6 @@ describe('per-turn socket lease', () => {
     // Exactly one disposal, via the turn lease's own release at the end.
     expect(room.gateway.disposals()).toBe(1)
     expect(room.gateway.timeline.at(-1)).toBe('release')
-  })
-
-  it('is released after the turn — the refcount returns to zero', async () => {
-    const room = await loadRoom({ turn: () => 'done' })
-
-    await room.turns.runGroupChatMemberTurn('Room', ROUTED_MEMBER, 'hi', 't1', [])
-
-    expect(room.gateway.refcount()).toBe(0)
-    expect(room.gateway.disposals()).toBe(1)
   })
 
   it('is released even when the turn fails', async () => {

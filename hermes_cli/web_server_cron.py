@@ -87,7 +87,7 @@ def _cron_profile_dicts() -> List[Dict[str, Any]]:
     try:
         return [
             {"name": name, "path": str(home), "is_default": name == "default"}
-            for name, home in profiles_mod.profiles_to_serve(multiplex=True)]
+            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True)]
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
         return _fallback_profile_dicts(profiles_mod)

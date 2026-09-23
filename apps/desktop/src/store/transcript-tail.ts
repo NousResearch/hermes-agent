@@ -177,7 +177,17 @@ export function recordTranscriptTail(
     return
   }
 
-  setTranscriptTailEntry(transcriptTailKey(storedSessionId, owner), tailStateFromPage(page, route))
+  const key = transcriptTailKey(storedSessionId, owner)
+  const existing = $transcriptTailBySessionId.get()[key]
+
+  // This runs before the active refresh decides whether the page is
+  // authoritative (use-background-sync). A transient zero-row read must not
+  // turn a known-truncated tail into "nothing earlier", or "Show earlier"
+  // disarms while the rows are still on the backend. Re-recording the kept
+  // entry (a no-op write) still bumps it to the MRU end.
+  const keepTruncated = page.messages.length === 0 && existing?.possiblyTruncated
+
+  setTranscriptTailEntry(key, keepTruncated ? existing : tailStateFromPage(page, route))
 }
 
 /** Advance the bookkeeping after one older backfill page landed. */

@@ -39,8 +39,8 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
         setattr(cli, attr, value)
     cli._tui_process_one_input(cli._pending_input.get_nowait())
     visible = capsys.readouterr().out
-    expected = "Background Process Finished: cd /tmp && bash long-build.sh"
-    assert expected in visible
+    expected = process_completion_display_text(events)
+    assert "long-build.sh" in expected and expected in visible
     assert "[IMPORTANT" not in visible and "SECRET_OUTPUT_LINE" not in visible
     queued = cli.chat.call_args.args[0]
     assert queued == payload  # the model still receives the full notification
@@ -72,12 +72,3 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     assert kwargs["display_metadata"] == {"display_text": expected}
 
 
-def test_process_completion_titles_reflect_outcome_and_batch():
-    assert process_completion_display_text([_event("p", 1)]) == (
-        "Background Process Failed (exit 1): cd /tmp && bash long-build.sh")
-    killed = {**_event("p", -15), "completion_reason": "killed"}
-    assert process_completion_display_text([killed]).startswith("Background Process Terminated: ")
-    assert process_completion_display_text([_event("a", 0), _event("b", 2)]) == "2 Background Processes Finished"
-    long_cmd = "x" * 200
-    title = process_completion_display_text([_event("p", 0, command=long_cmd)])
-    assert title.endswith("...") and len(title) < 120

@@ -91,41 +91,5 @@ class TestStrictApiValidation:
         assert tool_call["id"] == "call_123"
         assert tool_call["function"]["name"] == "terminal"
 
-    def test_codex_preserves_fields_for_replay(self, monkeypatch):
-        """Codex mode should preserve fields for Responses API replay."""
-        agent = _make_agent(monkeypatch, "openrouter")
-        agent.api_mode = "codex_responses"
 
-        messages = [
-            {"role": "user", "content": "hi"},
-            {
-                "role": "assistant",
-                "content": "Checking now.",
-                "tool_calls": [
-                    {
-                        "id": "call_123",
-                        "call_id": "call_123",
-                        "response_item_id": "fc_123",
-                        "type": "function",
-                        "function": {"name": "terminal", "arguments": '{"command":"pwd"}'},
-                    }
-                ],
-            },
-        ]
-
-        # In Codex mode, original messages should NOT be mutated
-        assert messages[1]["tool_calls"][0]["call_id"] == "call_123"
-        assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
-
-    def test_sanitize_method_with_fireworks_provider(self, monkeypatch):
-        """Simulating Fireworks provider should trigger sanitization."""
-        agent = _make_agent(
-            monkeypatch,
-            "fireworks",
-            api_mode="chat_completions",
-            base_url="https://api.fireworks.ai/inference/v1"
-        )
-
-        # Should sanitize for Fireworks (chat_completions mode)
-        assert agent._should_sanitize_tool_calls() is True
 

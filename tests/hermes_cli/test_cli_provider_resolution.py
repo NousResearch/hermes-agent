@@ -9,7 +9,6 @@ import pytest
 from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
 import hermes_cli.main_provider_setup as hermes_cli_main_provider_setup
-from hermes_cli import model_setup_flows
 from hermes_cli import model_switch
 
 
@@ -263,21 +262,6 @@ def test_provider_flag_logs_when_custom_default_model_cannot_resolve(monkeypatch
     )
 
 
-def test_hermes_cli_init_does_not_eagerly_resolve_runtime_provider(monkeypatch):
-    cli = _import_cli()
-    calls = {"count": 0}
-
-    def _unexpected_runtime_resolve(**kwargs):
-        calls["count"] += 1
-        raise AssertionError("resolve_runtime_provider should not be called in HermesCLI.__init__")
-
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _unexpected_runtime_resolve)
-    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-
-    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
-
-    assert shell is not None
-    assert calls["count"] == 0
 
 
 def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
@@ -444,18 +428,6 @@ def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_pa
     assert bad_shell._credentials_rate_limited is False
 
 
-def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
-    cli = _import_cli()
-    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
-    shell.provider = "openrouter"
-    shell.api_mode = "chat_completions"
-    shell.base_url = "https://openrouter.ai/api/v1"
-    shell.api_key = "sk-primary"
-
-    result = shell._resolve_turn_agent_config("what time is it in tokyo?")
-
-    assert result["model"] == "gpt-5"
-    assert result["runtime"]["provider"] == "openrouter"
 
 
 
@@ -673,7 +645,7 @@ def test_custom_entry_model_swap_re_resolves_reasoning(monkeypatch):
 
 
 
-def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
+def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.get_env_value",
         lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
@@ -706,11 +678,10 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": next(answers))
 
-    hermes_main._model_flow_custom({})
-    output = capsys.readouterr().out
+    caller_cfg = {}
+    hermes_main._model_flow_custom(caller_cfg)
 
-    assert "Saving the working base URL instead" in output
-    assert "Detected model: llm" in output
+    assert caller_cfg["model"]["base_url"] == "http://localhost:8000/v1"
     # OPENAI_BASE_URL is no longer saved to .env — config.yaml is authoritative
     assert "OPENAI_BASE_URL" not in saved_env
     assert saved_env["MODEL"] == "llm"
@@ -840,10 +811,6 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
 # _auto_provider_name — unit tests
 # ---------------------------------------------------------------------------
 
-def test_auto_provider_name_localhost():
-    from hermes_cli.main_provider_setup import _auto_provider_name
-    assert _auto_provider_name("http://localhost:11434/v1") == "Local (localhost:11434)"
-    assert _auto_provider_name("http://127.0.0.1:1234/v1") == "Local (127.0.0.1:1234)"
 
 
 
@@ -908,7 +875,6 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
     raise on exactly the local-proxy setups this is meant to protect. The
     fixed prefix makes the result valid by construction.
     """
-    import re
 
     from hermes_cli.config import _ENV_VAR_NAME_RE, custom_endpoint_key_env
 

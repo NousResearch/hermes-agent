@@ -62,7 +62,7 @@ def _servable_profile_homes() -> set:
     from hermes_constants import named_profile_has_servable_identity
     from hermes_cli.profiles import profiles_to_serve
 
-    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True)
+    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True, include_standalone=True)
              if name == "default" or named_profile_has_servable_identity(home)}
     homes.add(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve())
     return homes
@@ -150,14 +150,23 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
 
 @contextlib.contextmanager
 def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
-    """Bind the launch profile's own runtime scope for one body: ``launch_secret_scope`` plus its
-    terminal policy over the frozen launch ``TERMINAL_*`` overlay. No HERMES_HOME override — the
-    launch home IS the process home. For hosts whose launch-profile bodies are not RPC sessions
-    (the standalone messaging gateway after a hosted room activated multiplexing, #112878)."""
+    """Bind the launch profile's own runtime scope for one body: HERMES_HOME override naming the
+    launch home, ``launch_secret_scope``, and its terminal policy over the frozen launch
+    ``TERMINAL_*`` overlay. For hosts whose launch-profile bodies are not RPC sessions (the
+    standalone messaging gateway after a hosted room activated multiplexing, #112878).
+
+    The home override is bound even though the launch home IS the process home: under multiplexing
+    "override unset" is the fail-closed signal for an UNBOUND context (``serves_routed_profile``,
+    plugin runtime bindings such as OMH's ``pre_tool_call`` gate, per-home slots keyed on the
+    override), so a launch-profile turn without it was indistinguishable from no turn at all and
+    every plugin hook it fired saw an unscoped process (#118538). Routed turns already bind theirs
+    (``gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
     from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 
     home = Path(launch_home)
+    home_token = set_hermes_home_override(str(home))
     secret_token = set_secret_scope(launch_secret_scope(home))
     terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
     try:
@@ -165,6 +174,7 @@ def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
     finally:
         reset_terminal_scope(terminal_token)
         reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
 
 
 def launch_profile_scope_if_multiplexed():

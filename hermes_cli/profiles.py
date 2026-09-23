@@ -39,7 +39,18 @@ _CLONE_SUBDIR_FILES = ["memories/MEMORY.md", "memories/USER.md"]
 
 # Runtime files stripped after --clone-all. A post-copy step rather than an ignore filter
 # because they are created dynamically and may be absent at copy time.
-_CLONE_ALL_STRIP: list[str] = ["gateway.pid", "gateway_state.json", "processes.json"]
+_CLONE_ALL_STRIP: list[str] = [
+    "gateway.pid", "gateway_state.json", "processes.json",
+    # Bot Desktop runtime identity: pid + create_time of the SOURCE's launcher, its DISPLAY/XAUTHORITY and
+    # lease. Copied verbatim, `screen stop` on the clone would kill the source's X server. Browser user data
+    # stays, but Chromium's process markers must not let the clone attach to the source's live browser.
+    "bot-desktop/launcher.pid", "bot-desktop/env", "bot-desktop/rfb.sock",
+    "bot-desktop/lease.json", "bot-desktop/lease.lock",
+    "bot-desktop/browser-profile/DevToolsActivePort",
+    "bot-desktop/browser-profile/SingletonLock",
+    "bot-desktop/browser-profile/SingletonCookie",
+    "bot-desktop/browser-profile/SingletonSocket",
+]
 
 # Infrastructure excluded from --clone-all ONLY when the source is the default profile
 # (``~/.hermes``): git checkout (+ ~3 GB venv), worktrees, sibling profiles, shared bins,
@@ -70,6 +81,11 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # seed_profile_skills() callers (fresh-create, `hermes update` all-profile sync, the
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
+
+# ``profile.yaml`` ``role`` values. A role grants backend capabilities (the setup toolset), so
+# only the backend writes one, and a copy of a profile (clone-all, import) never inherits it.
+SETUP_ROLE = "setup"
+PROFILE_ROLES = frozenset({SETUP_ROLE})
 
 # Header seeded into a profile's empty .env so it owns a credentials file from day one.
 _PLACEHOLDER_ENV = (
@@ -552,6 +568,8 @@ class ProfileInfo:
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
     previous_names: List[str] = field(default_factory=list)
+    # Backend-assigned role (``SETUP_ROLE`` or None). Only ``hermes_cli.setup_profile`` writes it.
+    role: Optional[str] = None
 
 
 def _load_yaml_dict(path: Path) -> Optional[dict]:
@@ -659,13 +677,12 @@ def _seed_model_config(profile_dir: Path) -> None:
     if config_path.exists():
         return
     with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
-        import yaml
         from hermes_constants import get_hermes_home
-        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.config import atomic_config_write, read_user_config_raw
         source = get_hermes_home() / "config.yaml"
         seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
         if seed:
-            config_path.write_text(yaml.safe_dump(seed, sort_keys=False), encoding="utf-8")
+            atomic_config_write(config_path, seed)
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
@@ -798,6 +815,7 @@ def read_profile_meta(profile_dir: Path) -> dict:
             "display_name": str(data.get("display_name") or "").strip(),
             "bot_title": bot_title,
             "previous_names": _clean_previous_names(data.get("previous_names")),
+            "role": data.get("role") if data.get("role") in PROFILE_ROLES else None,
         }
 
     # A copy per caller (list included): the cached value is shared, and a caller that mutates
@@ -825,13 +843,19 @@ def _clean_previous_names(raw) -> List[str]:
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
     display_name: Optional[str] = None, previous_names: Optional[List[str]] = None,
+    role: Optional[str] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
-    created if missing. The profile directory itself must exist."""
+    created if missing. The profile directory itself must exist. ``role`` grants backend
+    capabilities, so no client-facing writer passes it through."""
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"profile directory does not exist: {profile_dir}")
+    if role is not None and role not in PROFILE_ROLES:
+        raise ValueError(f"unknown profile role: {role!r}")
     path = profile_dir / "profile.yaml"
     existing: dict = _load_yaml_dict(path) or {}
+    if role is not None:
+        existing["role"] = role
     if description is not None:
         existing["description"] = description.strip()
     if description_auto is not None:
@@ -853,6 +877,17 @@ def write_profile_meta(
     # Atomic write: bare open("w") truncates before the dump, and the read path swallows
     # parse errors as {}, so a crashed write would silently drop unspecified fields.
     # See #51356.
+    from utils import atomic_yaml_write
+    atomic_yaml_write(path, existing, sort_keys=False)
+
+
+def drop_profile_role(profile_dir: Path) -> None:
+    """Remove ``role`` from a copied ``profile.yaml``: a copy is an ordinary profile."""
+    path = profile_dir / "profile.yaml"
+    existing = _load_yaml_dict(path)
+    if not existing or "role" not in existing:
+        return
+    existing.pop("role")
     from utils import atomic_yaml_write
     atomic_yaml_write(path, existing, sort_keys=False)
 
@@ -920,19 +955,92 @@ def list_profiles(*, lazy_skill_count: bool = False) -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+#: One signature/result per home: the webhook and
+#: api-server callers run :func:`profiles_to_serve` per inbound request, so the reader
+#: must not re-parse a profile's config.yaml every time.
+_STANDALONE_MEMO: Dict[str, Tuple[Optional[tuple], Optional[bool]]] = {}
+_STANDALONE_WARNED = False
+
+_STANDALONE_DEFAULT_WARNING = (
+    "gateway.standalone is ignored on the default profile: it is the host gateway")
+
+
+def profile_is_standalone(home: Path) -> bool:
+    """Does ``home``'s own config.yaml opt this profile out of the host multiplexer
+    (``gateway.standalone: true``)? Memoised by file signature. The DEFAULT profile is
+    never standalone — it IS the host — and warns once per process if the key is set there."""
+    global _STANDALONE_WARNED
+    from yaml import YAMLError
+    from utils import file_signature
+
+    home = Path(home)
+    cfg_path = home / "config.yaml"
+    key = str(home)
+    try:
+        signature = file_signature(cfg_path.stat())
+    except FileNotFoundError:
+        signature = None
+    except OSError as exc:
+        signature = ("stat-error", exc.errno)
+        if _STANDALONE_MEMO.get(key) != (signature, False):
+            logger.warning("Cannot read gateway.standalone from %s (%s); treating as not standalone",
+                           cfg_path, type(exc).__name__)
+        _STANDALONE_MEMO[key] = (signature, False)
+        return False
+    cached = _STANDALONE_MEMO.get(key)
+    if cached is not None and cached[0] == signature and cached[1] is not None:
+        return cached[1]
+    value = None
+    if signature is not None:
+        from hermes_cli.config import read_user_config_raw
+        try:
+            cfg = read_user_config_raw(cfg_path) or {}
+        except (YAMLError, OSError, UnicodeError) as exc:
+            if cached is None or cached[0] != signature:
+                logger.warning("Cannot read gateway.standalone from %s (%s); treating as not standalone",
+                               cfg_path, type(exc).__name__)
+            # Access can recover without changing the signature. None retains the
+            # warning receipt without caching a transient failure as config.
+            _STANDALONE_MEMO[key] = (signature, False if isinstance(exc, YAMLError) else None)
+            return False
+        if isinstance(cfg.get("gateway"), dict):
+            value = cfg["gateway"].get("standalone")
+    result = _standalone_truthy(value)
+    if home == _get_default_hermes_home():
+        if result and not _STANDALONE_WARNED:
+            logger.warning(_STANDALONE_DEFAULT_WARNING)
+            _STANDALONE_WARNED = True
+        result = False
+    _STANDALONE_MEMO[key] = (signature, result)
+    return result
+
+
+def _standalone_truthy(value: object) -> bool:
+    """``gateway.standalone`` truthiness via the shared bool parser; only the
+    ``gateway:`` section's ``standalone`` key is read (no top-level alias)."""
+    from gateway.config import _bool_token
+    if isinstance(value, str):
+        return _bool_token(value) is True
+    return bool(value)
+
+
+def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
     ``multiplex=False``: exactly one entry for the *active* profile (byte-for-byte the
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
     ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
-    profiles skipped). Pure directory read: never creates a profile dir (#94590)."""
+    profiles skipped). Pure directory read: never creates a profile dir (#94590).
+
+    Named profiles that authored ``gateway.standalone: true`` are skipped because they opted
+    out of the host multiplexer; callers enumerating INSTALLED profiles pass ``include_standalone=True``."""
     active = get_active_profile_name() or "default"
     if not multiplex:
         return [(active, get_profile_dir(active))]
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
-    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs())
+    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
+                 if include_standalone or not profile_is_standalone(entry))
     return serve
 
 
@@ -1039,9 +1147,10 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
 
 
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
-    """--clone-all: full copytree minus infrastructure/history, then strip runtime files
-    and cloned single-use OAuth grants."""
+    """--clone-all: full copytree minus infrastructure/history, then strip runtime files,
+    the backend-assigned role, and cloned single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
+    drop_profile_role(profile_dir)
     materialized = _materialize_symlinked_files(profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
@@ -1087,6 +1196,9 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    from hermes_cli.profile_memory_config import active_memory_provider, clone_memory_provider_config
+    clone_memory_provider_config(source_dir, profile_dir,
+                                 active_memory_provider(_load_yaml_dict(source_dir / "config.yaml")))
     if sync_imports:
         from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME  # lazy: keeps yaml/utils off the hot startup path
         _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)
@@ -1432,6 +1544,30 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     print(f"✓ Stopped {len(pids)} profile backend process(es)")
 
 
+def _stop_bot_desktop(profile_dir: Path) -> None:
+    """Stop the profile's Bot Desktop (Xvnc + Xfce launcher) before its directory is removed or renamed;
+    gateway shutdown does not reach it (its own session, its own pid file). Scoped through the hermes-home
+    override so the runtime reads THIS profile's bot-desktop/ state, whichever profile invoked the op.
+    A failure here is logged, never fatal: the profile op is what the user asked for."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime
+    if not runtime.is_supported_host():
+        return
+    token = set_hermes_home_override(profile_dir)
+    try:
+        if runtime.stop():
+            print("✓ Bot Desktop stopped")
+            # The screen a human's exclusion protected is gone; on rename the directory (lease.json
+            # included) moves with the profile, and a human lease for a dead viewer would fence the
+            # agent out of the renamed profile's next screen until someone force-released it.
+            from tools.bot_desktop import lease
+            lease.release()
+    except Exception as e:
+        logger.warning("Could not stop the Bot Desktop of %s: %s", profile_dir, e)
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _rmtree_make_writable(func, path, exc):
     """onexc/onerror handler: add +w on PermissionError so rmtree can proceed. Covers NixOS-
     style read-only copies where the path itself (0444) or its parent (0555) isn't writable."""
@@ -1544,6 +1680,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if gw_running:
         _stop_gateway_process(profile_dir)
     _stop_profile_backends(canon, profile_dir)
+    _stop_bot_desktop(profile_dir)
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
@@ -1566,8 +1703,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # Inside serve (DELETE /api/profiles/<name>) the handles live here; from the CLI no-op.
     with contextlib.suppress(Exception):  # best-effort: never block the delete on the release path
         # 2c. See #88347.
-        from plugins.memory.holographic.store import MemoryStore as _MemoryStore
-        _released = _MemoryStore.release_all_under(profile_dir)
+        from plugins.memory import import_provider_module
+        _released = import_provider_module("holographic", "store").MemoryStore.release_all_under(profile_dir)
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
     with contextlib.suppress(Exception):
@@ -1869,8 +2006,9 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-# Credential files dropped from named-profile exports.
-_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env"})
+# Credential files dropped from named-profile exports. ``bot-desktop`` is the screen's runtime state:
+# its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
+_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
 
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
@@ -1983,6 +2121,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
+        drop_profile_role(final_source)
         shutil.move(str(final_source), str(profile_dir))
     return profile_dir
 
@@ -2073,10 +2212,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise _profile_exists_error(new_canon)
 
-    # 1. Stop gateway if running
+    # 1. Stop gateway if running, and the screen whose launcher holds paths under the old name
     if _check_gateway_running(old_dir):
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
+    _stop_bot_desktop(old_dir)
 
     # 1b. Unroute the old name from a live multiplexer BEFORE the rename (same protocol as
     # delete_profile). A multiplexed secondary has no gateway.pid of its own, so the check above

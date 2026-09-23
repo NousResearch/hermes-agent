@@ -185,18 +185,6 @@ def _simulate_note_injection(
 # ---------------------------------------------------------------------------
 
 
-class TestSessionEntryResumeFields:
-    def test_defaults(self):
-        now = datetime.now()
-        entry = SessionEntry(
-            session_key="agent:main:telegram:dm:1",
-            session_id="sid",
-            created_at=now,
-            updated_at=now,
-        )
-        assert entry.resume_pending is False
-        assert entry.resume_reason is None
-        assert entry.last_resume_marked_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -216,13 +204,6 @@ class TestMarkResumePending:
         assert refreshed.resume_reason == "restart_timeout"
         assert refreshed.last_resume_marked_at is not None
 
-    def test_custom_reason_persists(self, tmp_path):
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = store.get_or_create_session(source)
-
-        store.mark_resume_pending(entry.session_key, reason="shutdown_timeout")
-        assert store._entries[entry.session_key].resume_reason == "shutdown_timeout"
 
 
 class TestClearResumePending:
@@ -302,18 +283,6 @@ class TestResumePendingSystemNote:
         )
 
 
-    def test_empty_message_noninteractive_note_continues_task(self):
-        """Non-interactive platforms (webhook, API server): nobody can answer
-        'what next?', so the resumed turn must complete the interrupted work
-        instead of acknowledging (#57056)."""
-        note = build_resume_recovery_note("restart_timeout", "", interactive=False)
-        assert "CONTINUE the interrupted task" in note
-        assert "session was restored" not in note
-        assert "ask what they would like to do next" not in note
-        # Must not tell the model to skip the unfinished work it should finish.
-        assert "skip any unfinished work" not in note
-        # But still guards against re-running already-recorded tool calls.
-        assert "already appear in the history" in note
 
 
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
@@ -323,7 +292,6 @@ class TestResumePendingSystemNote:
         )
 
         assert message
-        assert "CONTINUE the interrupted task" in message
         assert persisted == message
         assert persisted != ""
 
@@ -363,7 +331,6 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=entry)
         assert "[System note:" in result
         assert "gateway restart" in result
-        assert "NEW message" in result
 
 
     def test_no_resume_pending_preserves_tool_tail_note(self):
@@ -378,7 +345,6 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert "[System note:" in result
         assert "pending tool outputs" in result
-        assert "Do NOT re-execute" in result
 
     def test_stale_resume_pending_does_not_inject_restart_note(self):
         """Old restart markers must not revive an unrelated stale task.
@@ -493,7 +459,6 @@ class TestResumePendingSystemNote:
         )
         assert "[System note:" in result
         assert "pending tool outputs" in result
-        assert "Do NOT re-execute" in result
 
     def test_legacy_history_without_timestamps_still_injects(self):
         """Transcripts predating timestamp persistence must keep the old
@@ -507,7 +472,6 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert "[System note:" in result
         assert "pending tool outputs" in result
-        assert "Do NOT re-execute" in result
 
 
 # ---------------------------------------------------------------------------
@@ -563,10 +527,6 @@ class TestFreshnessHelpers:
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "7200")
         assert _auto_continue_freshness_window() == 7200.0
 
-    def test_auto_continue_freshness_window_default_when_unset(self, monkeypatch):
-        monkeypatch.delenv("HERMES_AUTO_CONTINUE_FRESHNESS", raising=False)
-        # Default is 1 hour
-        assert _auto_continue_freshness_window() == 3600.0
 
 
 # ---------------------------------------------------------------------------

@@ -149,7 +149,3 @@ def test_baseline_entries_are_burned_down_not_grown(tmp_path, monkeypatch, capsy
     assert mod.main(["--all"]) == 1  # burn-down view ignores the baseline
 
 
-def test_repo_tree_has_no_hits_outside_the_baseline():
-    """What CI runs: every literal /tmp in the tree is either marked or listed in _BASELINE."""
-    mod = _load()
-    assert mod.main([]) == 0

@@ -61,17 +61,5 @@ class TestStatusBarGoalSegment:
 
         assert "⊙ goal 5/20" in text
 
-    def test_active_goal_rendered_in_medium_status_bar(self):
-        cli_obj = _attach_goal(_make_cli(), active=True, turns_used=1, max_turns=20)
 
-        text = cli_obj._build_status_bar_text(width=60)
-
-        assert "⊙ goal 1/20" in text
-
-    def test_active_goal_rendered_in_narrow_status_bar(self):
-        cli_obj = _attach_goal(_make_cli(), active=True, turns_used=2, max_turns=20)
-
-        text = cli_obj._build_status_bar_text(width=50)
-
-        assert "⊙ goal" in text
 

@@ -245,42 +245,6 @@ class TestStableWindowsGatewayWorkingDir:
 
 
 
-def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
-    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
-    startup_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.cmd"
-    calls = []
-
-    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *args, **kwargs: (False, True))
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
-    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
-    monkeypatch.setattr(
-        gateway_windows,
-        "_install_scheduled_task",
-        lambda task_name, script_path: (
-            False,
-            "schtasks /Create failed (code 1): ERROR: Access is denied.",
-        ),
-    )
-    monkeypatch.setattr(gateway_windows, "_should_fall_back", lambda code, detail: True)
-    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
-    monkeypatch.setattr(
-        gateway_windows,
-        "_launch_elevated_install",
-        lambda force=False, start_now=None, start_on_login=None: calls.append(("elevate", force, start_now, start_on_login)) or True,
-    )
-
-    def fake_install_startup_entry(path: Path) -> Path:
-        calls.append(("install_startup", path))
-        return startup_entry
-
-    monkeypatch.setattr(gateway_windows, "_install_startup_entry", fake_install_startup_entry)
-    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda path: calls.append(("spawn", path)) or 12345)
-    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report_start", via)))
-    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: calls.append(("next_steps", None)))
-    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: running_pids)
-    monkeypatch.setattr(gateway, "_profile_arg", lambda: "--profile alice")
-    return script_path, calls
 
 
 

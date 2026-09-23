@@ -481,6 +481,13 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
         return real_match(p, **kw)
 
     monkeypatch.setattr(ui, "match_runtime_outcomes", _match)
+    # The gateway leg answers the fleet probe on the new code (otherwise the
+    # verifier polls its full no-rows window, ~2 min of wall clock).
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": "def456",
+                       "code_version": "0.21.0", "state": "current"}],
+    )
     # Real survivor probe semantics against a fake ledger: pid 5555 is still
     # the same incarnation the plan recorded.
     import hermes_cli.process_identity as pi

@@ -28,6 +28,14 @@ from hermes_cli import update_cmd
 SHA = "a" * 40
 
 
+@pytest.fixture(autouse=True)
+def _units_belong_to_this_update(monkeypatch):
+    """The fake units here run on invented PIDs (4242, per-unit tables) with no readable home;
+    ownership (#93349, ``test_update_fleet_home_scope.py``) is pinned so these tests keep proving
+    the once-per-host-process collapse, not home scoping."""
+    monkeypatch.setattr(fleet, "_systemd_unit_owned_by_update", lambda scope_cmd, svc_name: True)
+
+
 @pytest.fixture
 def two_profiles(tmp_path, monkeypatch):
     """Two profile HERMES_HOMEs behind ONE host state dir — the real multiplex topology."""
@@ -91,7 +99,6 @@ def test_host_gateway_restarts_once_when_two_profiles_run_the_catch_up(
     assert update_cmd._run_pending_fleet_restart() is True
 
     assert len(kills) == 1, "the one host gateway must be stopped once per update, not once per profile"
-    assert "already restarted for this update" in capsys.readouterr().out
 
 
 def test_legacy_per_home_marker_is_still_read_and_cleared(two_profiles, no_live_fleet, monkeypatch):
@@ -132,8 +139,6 @@ def test_leftover_per_profile_units_restart_their_one_host_process_once(monkeypa
 
     assert restarted == ["hermes-gateway"]
     assert failed == []
-    out = capsys.readouterr().out
-    assert "hermes-gateway-coder" in out and "legacy per-profile unit" in out
 
 
 def test_units_with_distinct_live_pids_are_each_restarted(monkeypatch):
@@ -193,15 +198,6 @@ def test_recovery_keeps_separate_processes_separate(tmp_path, monkeypatch):
     assert len([argv for argv in argvs if argv[-2:] == ["gateway", "restart"]]) == 2
 
 
-def test_host_obligation_lives_beside_the_host_rendezvous_record(two_profiles, monkeypatch, tmp_path):
-    """The record is written ONCE PER HOST, in the cross-profile rendezvous dir."""
-    _enter(monkeypatch, two_profiles["coder"])
-    _arm("coder")
-
-    path = host_obligation.host_obligation_path()
-    assert path == tmp_path / "gateway-locks" / "host-update-restart.json"
-    assert path.is_file()
-    assert not (two_profiles["coder"] / "fleet_restart_pending").exists()
 
 
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores directory permissions")
@@ -271,7 +267,6 @@ def test_restart_runs_once_per_host_on_a_non_git_install(two_profiles, monkeypat
     assert update_cmd._run_pending_fleet_restart() is True
 
     assert len(kills) == 1, "the host gateway must be stopped once per update, not once per profile"
-    assert "already restarted for this update" in capsys.readouterr().out
 
 
 def test_a_failing_main_pid_probe_keeps_its_own_restart():

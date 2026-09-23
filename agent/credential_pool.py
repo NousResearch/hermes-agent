@@ -1777,7 +1777,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     "%s OAuth refresh token is terminally invalid (%s); clearing local token state. "
                     "Re-run 'hermes auth add %s' to sign in again.", display, exc, self.provider)
                 self._clear_terminal_tokens_state(entry, exc)
-                self._quarantine_sources(entry, {"device_code"})
+                # A manual pool row is an independent grant: its terminal failure
+                # must not drop the unrelated auth.json singleton.
+                if entry.source == "device_code":
+                    self._quarantine_sources(entry, {"device_code"})
                 self._mark_dead_refresh_grant(entry, exc)
                 return None
         elif self.provider == "nous":

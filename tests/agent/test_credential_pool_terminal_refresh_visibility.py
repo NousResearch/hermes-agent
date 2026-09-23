@@ -120,6 +120,25 @@ def test_surviving_manual_entry_is_marked_dead_after_terminal_refresh(monkeypatc
     assert [e.id for e in pool._entries] == ["e1"]  # manual rows are never dropped by the quarantine
     assert pool._entries[0].last_status == STATUS_DEAD
 
+
+def test_terminal_manual_codex_refresh_keeps_independent_singleton(monkeypatch):
+    """A dead manual grant must not quarantine a separate device-code login."""
+    pool = _pool("openai-codex")
+    singleton = _entry("openai-codex")
+    singleton.id = "singleton"
+    entry = _entry("openai-codex", source="manual:device_code")
+    entry.id = "manual"
+    pool._entries = [singleton, entry]
+    monkeypatch.setattr(pool, "_sync_entry_from_auth_store", lambda e: e)
+    monkeypatch.setattr(pool, "_clear_terminal_tokens_state", lambda e, exc: None)
+    monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
+    monkeypatch.setattr(cp.auth_mod, "_is_terminal_codex_oauth_refresh_error", lambda exc: True)
+
+    assert pool._recover_failed_refresh(entry, RuntimeError("invalid_grant")) is None
+
+    assert [e.id for e in pool._entries] == ["singleton", "manual"]
+    assert pool._entries[1].last_status == STATUS_DEAD
+
 def _expired_invoke_jwt() -> str:
     def _part(payload: dict) -> str:
         return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")

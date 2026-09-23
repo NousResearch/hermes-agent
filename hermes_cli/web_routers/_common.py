@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import HTTPException
 
+from hermes_cli.config import ConfigWriteRefusedError
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_profiles import _profile_cli_args
 
@@ -89,11 +90,12 @@ def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, det
 
     ``HTTPException`` passes through; anything else is logged with ``log_msg`` (traceback),
     then re-raised as ``HTTPException(status, f"{prefix}: {exc}")`` — or ``detail`` when given
-    (fixed message, exception text only in the log).
+    (fixed message, exception text only in the log). ``ConfigWriteRefusedError`` also passes
+    through, to the app-level 409 handler that shows its fix-it message.
     """
     try:
         yield
-    except HTTPException:
+    except (HTTPException, ConfigWriteRefusedError):
         raise
     except Exception as exc:
         log.exception(log_msg)

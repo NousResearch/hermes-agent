@@ -60,7 +60,8 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
             # merge omitted sections back from disk.
             # See #62723.
             approvals_mode_changed = _approval_mode_of(parsed) != _approval_mode_of(read_raw_config())
-            save_config(parsed, merge_existing=False)
+            # The dashboard's only repair tool: a file that no longer parses is replaced, not refused.
+            save_config(parsed, merge_existing=False, replace_unparseable=True)
         # Same indicator refresh as the schema-driven save.
         if approvals_mode_changed and not _is_other_profile(body.profile or profile):
             _broadcast_gateway_session_info()

@@ -60,3 +60,18 @@ def test_off_silences_preparation_without_losing_streamed_content(box):
         assert cli._stream_box_live
         cli._flush_stream()
         assert not cli._stream_box_live
+
+
+@pytest.mark.parametrize(("saved_mode", "expected_hidden"), [("all", 2), ("off", 0)])
+def test_focus_view_silences_and_counts_preparation(saved_mode, expected_hidden):
+    """Focus hides preparation lines and reports only lines the saved mode would have shown."""
+    cli = _make_cli(tool_progress="off")
+    cli._focus_view_enabled = True
+    cli._focus_saved_tool_progress = saved_mode
+    cli._focus_hidden_lines = 0
+    cli._focus_last_counted_tool = None
+
+    assert _announce(cli, ["terminal", "read_file"]) == []
+    assert cli._focus_hidden_lines == expected_hidden
+    # Suppressed preparation must not pollute the per-batch announcement dedupe state.
+    assert "_tool_gen_announced" not in cli.__dict__

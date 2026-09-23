@@ -165,6 +165,33 @@ function redactSecrets(text) {
   return out
 }
 
+/** Extract fingerprints from ssh-keygen -F output. The caller must require
+ * exactly one result before treating it as the accepted host key. */
+function parseKnownHostsFingerprints(outputs: readonly string[]): string[] {
+  const fingerprints = new Set<string>()
+  const keyType = /^(?:ssh-|ecdsa-|sk-)/
+  const base64 = /^[A-Za-z0-9+/]+={0,2}$/
+
+  for (const output of outputs) {
+    for (const rawLine of String(output || '').split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith('#')) continue
+      const fields = line.split(/\s+/)
+      const index = fields.findIndex((field, position) =>
+        keyType.test(field) && position + 1 < fields.length && base64.test(fields[position + 1])
+      )
+      if (index < 0) continue
+      const keyBlob = Buffer.from(fields[index + 1], 'base64')
+      if (keyBlob.length === 0) continue
+      const digest = crypto.createHash('sha256').update(keyBlob).digest('base64')
+        .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')
+      fingerprints.add(`SHA256:${digest}`)
+    }
+  }
+
+  return [...fingerprints].sort()
+}
+
 // Control-socket path
 
 // Hash user@host:port to a short, stable, filesystem-safe socket id — stable
@@ -1177,6 +1204,7 @@ export {
   forwardSpec,
   hostArgs,
   pickLocalPort,
+  parseKnownHostsFingerprints,
   redactSecrets,
   REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,

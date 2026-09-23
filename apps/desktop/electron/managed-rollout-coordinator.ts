@@ -113,6 +113,7 @@ export interface ManagedRolloutTransition {
 export interface ManagedRolloutAuthorization {
   rolloutId: string
   installId: string
+  connectionId: string
   installationFingerprint: string
   sourceFingerprint: string
   targetSha: string
@@ -159,6 +160,11 @@ export interface ManagedRolloutEvidenceProof {
 
 export interface ManagedRolloutEvidenceAdapter {
   sweep: (state: ManagedRolloutState) => Promise<ManagedRolloutEvidenceProof>
+  recordObservation?: (input: {
+    authorization: ManagedRolloutAuthorization
+    receipt: unknown
+    health: unknown
+  }) => Promise<void> | void
 }
 
 /** Read-only observation and post-clearance recovery stay separate from apply. */
@@ -481,6 +487,7 @@ export function createManagedRolloutCoordinator(
   const authorizationFor = (attempt: ManagedRolloutAttempt): ManagedRolloutAuthorization => ({
     rolloutId: state.id,
     installId: attempt.installId,
+    connectionId: attempt.connectionId,
     installationFingerprint: attempt.installationFingerprint,
     sourceFingerprint: attempt.sourceFingerprint,
     targetSha: attempt.targetSha,

@@ -125,6 +125,7 @@ export interface ManagedRolloutProviderDependencies {
   managedSshUpdateService: Pick<ManagedSshUpdateService, 'issueLaunchCapability' | 'request'>
   observe: ManagedRolloutObservationReader
   evidence: ManagedRolloutEvidenceAdapter
+  ready?: () => boolean
   now?: () => number
   nowMono?: () => number
   processGeneration?: number
@@ -563,7 +564,7 @@ function exactConnectionSet(plan: RolloutPlan, connectionIds: readonly string[])
 }
 
 function sameAuthorization(left: ManagedRolloutAuthorization, right: ManagedRolloutAuthorization): boolean {
-  return left.rolloutId === right.rolloutId && left.installId === right.installId &&
+  return left.rolloutId === right.rolloutId && left.installId === right.installId && left.connectionId === right.connectionId &&
     left.installationFingerprint === right.installationFingerprint && left.sourceFingerprint === right.sourceFingerprint &&
     left.targetSha === right.targetSha && left.correlationId === right.correlationId &&
     left.queueGeneration === right.queueGeneration && JSON.stringify(left.reviewedSource) === JSON.stringify(right.reviewedSource)
@@ -698,6 +699,7 @@ export function createManagedRolloutProvider(
         payload: {
           kind: 'launch-authorization',
           installId: authorization.installId,
+          connectionId: authorization.connectionId,
           sourceFingerprint: authorization.sourceFingerprint,
           targetSha: authorization.targetSha,
           correlationId: authorization.correlationId,
@@ -772,7 +774,7 @@ export function createManagedRolloutProvider(
           runtime.authorizations.set(authorization.installId, authorization)
           try {
             const capability = deps.managedSshUpdateService.issueLaunchCapability(
-              authorization.installId,
+              authorization.connectionId,
               authorization.correlationId,
               { targetSha: authorization.targetSha, source: authorization.reviewedSource } satisfies ManagedSshUpdateIntent
             )
@@ -787,7 +789,7 @@ export function createManagedRolloutProvider(
         launch: (authorization, capability) => {
           let request: Promise<ManagedConnectionUpdateResult>
           try {
-            request = deps.managedSshUpdateService.request(authorization.installId, {
+            request = deps.managedSshUpdateService.request(authorization.connectionId, {
               mode: 'coordinator',
               correlationId: authorization.correlationId,
               intent: { targetSha: authorization.targetSha, source: authorization.reviewedSource },
@@ -883,6 +885,7 @@ export function createManagedRolloutProvider(
           )) {
             throw new Error('successful-observation-not-proven')
           }
+          await deps.evidence.recordObservation?.({ authorization, receipt: observation.receipt, health: observation.health })
           runtime.observations.set(installId, { receipt: observation.receipt, health: observation.health })
           const settled = await runtime.coordinator.terminal(installId, authorization.correlationId, observation.outcome)
           const facts = observation.receipt
@@ -1044,7 +1047,7 @@ export function createManagedRolloutProvider(
   }
 
   const provider: ManagedRolloutProvider = {
-    capabilities: async () => capabilities(true),
+    capabilities: async () => capabilities(deps.ready ? deps.ready() : true),
     inventory: async () => {
       const snapshot = await deps.inventoryReader.capture()
       if (!snapshot) throw new Error('inventory-unavailable')

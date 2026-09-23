@@ -295,6 +295,7 @@ import {
   waitForManagedSshBootstrapFence
 } from './managed-ssh-update'
 import { createManagedSshUpdateService } from './managed-ssh-update-service'
+import { createManagedRolloutMainIntegration } from './managed-rollout-main-integration'
 import { createManagedRolloutProvider } from './managed-rollout-provider'
 import { registerManagedRolloutIpc } from './managed-rollout-ipc-runtime'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
@@ -427,7 +428,7 @@ import {
 import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
-import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
+import { createSshProbeConnection, parseKnownHostsFingerprints, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
@@ -959,6 +960,10 @@ const DESKTOP_UPDATE_CHECK_CACHE_PATH = path.join(app.getPath('userData'), 'upda
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
 const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'managed-ssh-update-recovery.json')
+const DESKTOP_MANAGED_ROLLOUT_ROOT = path.join(app.getPath('userData'), 'managed-rollouts')
+const DESKTOP_MANAGED_ROLLOUT_REVIEW_PATH = path.join(DESKTOP_MANAGED_ROLLOUT_ROOT, 'review.json')
+const DESKTOP_MANAGED_ROLLOUT_ASSURANCE_ROOT = path.join(DESKTOP_MANAGED_ROLLOUT_ROOT, 'assurance')
+const DESKTOP_MANAGED_ROLLOUT_JOURNAL_ROOT = path.join(DESKTOP_MANAGED_ROLLOUT_ROOT, 'journal')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -10568,6 +10573,63 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
   }
 }
 
+async function readVerifiedHostKeyFingerprint(sshConfig) {
+  const sshBinary =
+    process.platform === 'win32'
+      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+      : 'ssh'
+  const target = sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
+  const args = ['-G']
+
+  if (sshConfig.port) args.push('-p', String(sshConfig.port))
+  if (sshConfig.keyPath) args.push('-i', sshConfig.keyPath)
+  args.push('--', target)
+
+  const expanded = await execText(sshBinary, args, { timeout: 10_000 })
+  const knownHosts = new Set<string>()
+  let resolvedHost = String(sshConfig.host)
+  let resolvedPort = Number(sshConfig.port || 22)
+  for (const line of String(expanded || '').split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/)
+    if (fields[0] === 'hostname' && fields[1]) resolvedHost = fields[1]
+    if (fields[0] === 'port' && /^\d+$/.test(fields[1] || '')) resolvedPort = Number(fields[1])
+    if (fields.length < 2 || !['userknownhostsfile', 'globalknownhostsfile'].includes(fields[0])) continue
+    for (const candidate of fields.slice(1)) {
+      if (!candidate || candidate === 'none' || candidate.includes('%')) continue
+      const resolved = candidate.startsWith('~/')
+        ? path.join(os.homedir(), candidate.slice(2))
+        : path.resolve(candidate)
+      knownHosts.add(resolved)
+    }
+  }
+
+  const hostNames = new Set<string>([String(sshConfig.host), resolvedHost])
+  const ports = new Set<number>([Number(sshConfig.port || 22), resolvedPort])
+  for (const port of ports) {
+    if (port !== 22) {
+      hostNames.add(`[${resolvedHost}]:${port}`)
+      hostNames.add(`[${sshConfig.host}]:${port}`)
+    }
+  }
+  const outputs: string[] = []
+  for (const knownHostsFile of knownHosts) {
+    for (const hostName of hostNames) {
+      try {
+        outputs.push(await execText('ssh-keygen', ['-F', hostName, '-f', knownHostsFile], { timeout: 10_000 }))
+      } catch {
+        // No entry in one configured file is normal; the accepted key must still
+        // resolve uniquely across every configured file before admission.
+      }
+    }
+  }
+
+  const fingerprints = parseKnownHostsFingerprints(outputs)
+  if (fingerprints.length !== 1) {
+    throw new Error(`Managed rollout host-key evidence is ambiguous (${fingerprints.length} fingerprints).`)
+  }
+  return fingerprints[0]
+}
+
 async function effectiveSshConfigFingerprint(sshConfig) {
   const ssh =
     process.platform === 'win32'
@@ -16329,10 +16391,27 @@ async function requestManagedSshUpdate(rawId) {
 
 ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
 
-// The production adapter is wired at the trusted seam, but remains fail-closed
-// until main owns coherent inventory, host-key/source, assurance, and observation
-// readers. It never falls back to the legacy single-install updater.
-const managedRolloutProvider = createManagedRolloutProvider({ managedSshUpdateService })
+const managedRolloutIntegration = createManagedRolloutMainIntegration({
+  nowMono: () => Date.now(),
+  listSources: () => readDesktopConnectionsRegistry().connections,
+  getSource: connectionId => readDesktopConnectionsRegistry().connections.find(connection => connection.id === connectionId) || null,
+  managedSshConfig,
+  openTransport: openManagedSshUpdateTransport,
+  captureScopes: captureManagedSshScopes,
+  readHostKeyFingerprint: readVerifiedHostKeyFingerprint,
+  effectiveConfigFingerprint: effectiveSshConfigFingerprint,
+  reviewManifestPath: DESKTOP_MANAGED_ROLLOUT_REVIEW_PATH,
+  assuranceRoot: DESKTOP_MANAGED_ROLLOUT_ASSURANCE_ROOT,
+  journalRoot: DESKTOP_MANAGED_ROLLOUT_JOURNAL_ROOT
+})
+const managedRolloutProvider = createManagedRolloutProvider({
+  ...managedRolloutIntegration.adapters,
+  journal: managedRolloutIntegration.journal,
+  managedSshUpdateService,
+  observe: managedRolloutIntegration.observe,
+  evidence: managedRolloutIntegration.evidence,
+  ready: managedRolloutIntegration.adapters.ready
+})
 registerManagedRolloutIpc(
   ipcMain,
   sender => Boolean(mainWindow && !mainWindow.isDestroyed() && sender === mainWindow.webContents),

@@ -210,8 +210,12 @@ function makeDependencies(options: { origin?: string } = {}): {
   })
   const launchCalls: string[] = []
   const fakeService = {
-    issueLaunchCapability: () => ({ internal: 'not-for-ipc' }),
+    issueLaunchCapability: (connectionId: string) => {
+      assert.equal(connectionId, CONNECTION_ID)
+      return { internal: 'not-for-ipc' }
+    },
     request: async (connectionId: string, input: { mode: string; correlationId: string }) => {
+      assert.equal(connectionId, CONNECTION_ID)
       assert.equal(input.mode, 'coordinator')
       launchCalls.push(`${connectionId}:${input.correlationId}`)
       return {

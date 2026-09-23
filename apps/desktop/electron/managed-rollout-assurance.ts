@@ -20,7 +20,7 @@ export interface TrustedSourceReader {
 
 export interface TrustedAssuranceReader {
   /** Load the applicable raw evidence envelope from #92618 custody, not from IPC. */
-  readEvidence(profile: string, targetSha: string): Promise<Uint8Array | null>
+  readEvidence(profile: string, targetSha: string, sourceFingerprint: string): Promise<Uint8Array | null>
   /** Resolve active generation and required IDs from the separately controlled security profile. */
   readProfile(profile: string): Promise<{ generation: number; requiredControlIds: readonly string[] } | null>
 }
@@ -135,7 +135,7 @@ export async function verifyApplicableAssurance(
   reader: TrustedAssuranceReader
 ): Promise<VerifiedAssuranceEvidence> {
   const [raw, profile] = await Promise.all([
-    reader.readEvidence(expected.profile, expected.targetSha),
+    reader.readEvidence(expected.profile, expected.targetSha, expected.sourceFingerprint),
     reader.readProfile(expected.profile)
   ])
   const requiredControlIds = profile?.requiredControlIds

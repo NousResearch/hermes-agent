@@ -3,11 +3,29 @@
 from pathlib import Path
 import tomllib
 
+
+def _load_project_metadata():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        return tomllib.load(handle)["project"]
+
+
 def _load_optional_dependencies():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
         project = tomllib.load(handle)["project"]
     return project["optional-dependencies"]
+
+
+def test_project_urls_expose_stable_discovery_links():
+    project = _load_project_metadata()
+
+    assert project["urls"] == {
+        "Homepage": "https://hermes-agent.nousresearch.com/",
+        "Documentation": "https://hermes-agent.nousresearch.com/docs/",
+        "Repository": "https://github.com/NousResearch/hermes-agent",
+        "Issues": "https://github.com/NousResearch/hermes-agent/issues",
+    }
 
 
 def _load_package_data():

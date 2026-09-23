@@ -21,7 +21,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 
+from gateway.action_journal import (
+    ActionJournal,
+    MutationConflict,
+    MutationCursorInvalid,
+)
+from gateway.becky_actions import (
+    OneShotResult,
+    StartLoopRequest,
+    StartLoopResult,
+    action_capabilities,
+    dump_mutation_page,
+    parse_mutation_list_params,
+    parse_one_shot_params,
+    parse_start_loop_params,
+)
 from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.becky_loop_summarizer import (
@@ -66,11 +82,14 @@ _READY = {
 # surface.
 _METHODS = ["list", "summarize", "close", "reopen", "reply", "reply_retry"]
 _SAFE_REMOTE_CODES = frozenset({
+    "actions_unavailable",
     "conversation_too_large",
     "idempotency_conflict",
     "revision_conflict",
     "reply_retry_unavailable",
     "reply_send_failed",
+    "mutation_cursor_invalid",
+    "one_shot_not_configured",
     "same_topic_reopen_unsupported",
     "source_not_found",
     "successor_already_exists",
@@ -78,6 +97,8 @@ _SAFE_REMOTE_CODES = frozenset({
     "successor_creation_incomplete",
     "summary_invalid",
     "summary_timeout",
+    "start_loop_incomplete",
+    "start_loop_unavailable",
     "topic_already_closed",
     "topic_already_open",
     "topic_control_unavailable",
@@ -312,6 +333,9 @@ class AgentReplyDispatcher(Protocol):
 
 
 AgentReplyCallback = Callable[..., Awaitable[None]]
+
+ActionExecutor = Callable[..., Awaitable[OneShotResult | dict[str, Any]]]
+ActionLoopStarter = Callable[..., Awaitable[StartLoopResult | dict[str, Any]]]
 
 
 class TopicController(Protocol):
@@ -960,6 +984,9 @@ class BeckyLoopsBridgeServer:
         topic_controller: TopicController | None = None,
         reply_generator: ReplyGenerator | None = None,
         agent_dispatcher: AgentReplyDispatcher | AgentReplyCallback | None = None,
+        action_journal: ActionJournal | None = None,
+        one_shot_executor: ActionExecutor | None = None,
+        action_loop_starter: ActionLoopStarter | None = None,
     ) -> None:
         if not config.enabled:
             raise ValueError("Becky loops bridge is disabled")
@@ -976,6 +1003,9 @@ class BeckyLoopsBridgeServer:
         self.topic_controller = topic_controller
         self.reply_generator = reply_generator
         self.agent_dispatcher = agent_dispatcher
+        self.action_journal = action_journal
+        self.one_shot_executor = one_shot_executor
+        self.action_loop_starter = action_loop_starter
         self._reply_attempts: dict[str, _ReplyAttempt] = {}
         self._reply_attempts_lock = asyncio.Lock()
         self._new_topic_answers: dict[
@@ -984,6 +1014,10 @@ class BeckyLoopsBridgeServer:
         self._new_topic_answers_lock = asyncio.Lock()
         self._close_results: dict[str, tuple[str, str, dict[str, Any], float]] = {}
         self._close_results_lock = asyncio.Lock()
+        self._action_loop_results: dict[
+            UUID, tuple[str, dict[str, Any]]
+        ] = {}
+        self._action_loop_results_lock = asyncio.Lock()
         self._server: Server | None = None
 
     @property
@@ -1125,6 +1159,28 @@ class BeckyLoopsBridgeServer:
     async def _method(
         self, method: str, params: dict[str, Any]
     ) -> dict[str, Any] | list[Any] | object:
+        if method == "becky.actions.capabilities":
+            if params:
+                return _PROTOCOL_FAILURE
+            return action_capabilities()
+        if method == "becky.actions.list_mutations":
+            if self.action_journal is None:
+                raise _RemoteFailure("actions_unavailable")
+            request = parse_mutation_list_params(params)
+            if request is None:
+                return _PROTOCOL_FAILURE
+            try:
+                page = self.action_journal.list(
+                    after_cursor=request.after_cursor,
+                    limit=request.limit,
+                )
+            except MutationCursorInvalid:
+                raise _RemoteFailure("mutation_cursor_invalid") from None
+            return dump_mutation_page(page)
+        if method == "becky.actions.execute_one_shot":
+            return await self._execute_one_shot(params)
+        if method == "becky.actions.start_loop":
+            return await self._start_loop_from_action(params)
         if method == "becky.loops.capabilities":
             if params:
                 return _PROTOCOL_FAILURE
@@ -1280,6 +1336,78 @@ class BeckyLoopsBridgeServer:
                 return _PROTOCOL_FAILURE
             raise _RemoteFailure("topic_control_unavailable")
         return _PROTOCOL_FAILURE
+
+    async def _execute_one_shot(self, params: dict[str, Any]) -> object:
+        request = parse_one_shot_params(params)
+        if request is None:
+            return _PROTOCOL_FAILURE
+        if self.one_shot_executor is None:
+            raise _RemoteFailure("one_shot_not_configured")
+        if self.action_journal is None:
+            raise _RemoteFailure("actions_unavailable")
+        existing = self.action_journal.get(request.idempotency_key)
+        if existing is not None:
+            return OneShotResult(
+                schema_version="1",
+                disposition=existing.status.value,
+                event=existing,
+            ).model_dump(mode="json")
+        try:
+            result = await self.one_shot_executor(
+                title=request.title,
+                text=request.text,
+                idempotency_key=request.idempotency_key,
+                note_default=request.note_default,
+                policy_version=request.policy_version,
+            )
+            result = OneShotResult.model_validate(result)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The executor is required to return a structured result.  A
+            # malformed result is a protocol failure, never a mutation claim.
+            return _PROTOCOL_FAILURE
+        if result.event is not None and result.event.source_event_key != request.idempotency_key:
+            return _PROTOCOL_FAILURE
+        if result.event is not None:
+            try:
+                self.action_journal.append(result.event)
+            except MutationConflict:
+                raise _RemoteFailure("idempotency_conflict") from None
+        return result.model_dump(mode="json")
+
+    async def _start_loop_from_action(self, params: dict[str, Any]) -> object:
+        request = parse_start_loop_params(params)
+        if request is None:
+            return _PROTOCOL_FAILURE
+        if self.action_loop_starter is None:
+            raise _RemoteFailure("start_loop_unavailable")
+        fingerprint = json.dumps(
+            request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        )
+        async with self._action_loop_results_lock:
+            existing = self._action_loop_results.get(request.idempotency_key)
+            if existing is not None:
+                if existing[0] != fingerprint:
+                    raise _RemoteFailure("idempotency_conflict")
+                return existing[1]
+            try:
+                result = await self.action_loop_starter(
+                    title=request.title,
+                    context=request.context,
+                    prior_status=request.prior_status,
+                    idempotency_key=request.idempotency_key,
+                )
+                validated = StartLoopResult.model_validate(result)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise _RemoteFailure("start_loop_incomplete") from None
+            if validated.title != request.title:
+                raise _RemoteFailure("start_loop_incomplete")
+            payload = validated.model_dump(mode="json")
+            self._action_loop_results[request.idempotency_key] = (fingerprint, payload)
+            return payload
 
     async def _answer_new_topic(
         self,
@@ -2401,11 +2529,21 @@ async def start_becky_loops_bridge(
     topic_controller: TopicController | None = None,
     reply_generator: ReplyGenerator | None = None,
     agent_dispatcher: AgentReplyDispatcher | AgentReplyCallback | None = None,
+    action_journal: ActionJournal | None = None,
+    one_shot_executor: ActionExecutor | None = None,
+    action_loop_starter: ActionLoopStarter | None = None,
 ) -> BeckyLoopsBridgeServer | None:
     """Start the opt-in bridge and return its lifecycle handle."""
     if config is None or not config.enabled:
         return None
     try:
+        if action_journal is None:
+            # Keep the bridge and the post-tool mutation observer on the same
+            # profile-local durable store.  The observer owns its connection
+            # lifecycle; this bridge only borrows it for reads/appends.
+            from agent.action_mutations import get_action_journal
+
+            action_journal = get_action_journal()
         store = SessionDBBeckyLoopsStore(
             db,
             session_store=session_store,
@@ -2423,6 +2561,9 @@ async def start_becky_loops_bridge(
             topic_sender=topic_sender,
             topic_controller=topic_controller,
             agent_dispatcher=agent_dispatcher,
+            action_journal=action_journal,
+            one_shot_executor=one_shot_executor,
+            action_loop_starter=action_loop_starter,
             reply_generator=(
                 reply_generator
                 if reply_generator is not None

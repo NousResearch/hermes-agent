@@ -140,6 +140,11 @@ def _default_journal() -> ActionJournal:
         return journal
 
 
+def get_action_journal() -> ActionJournal:
+    """Return the process-local profile journal used by mutation observers."""
+    return _default_journal()
+
+
 def close_action_journals() -> None:
     global _JOURNALS
     with _JOURNAL_LOCK:
@@ -232,4 +237,11 @@ def record_tool_mutation(
     return stored
 
 
-__all__ = ["MutationSpec", "REVIEWED_MUTATIONS", "close_action_journals", "record_tool_mutation", "reviewed_mutation_spec"]
+__all__ = [
+    "MutationSpec",
+    "REVIEWED_MUTATIONS",
+    "close_action_journals",
+    "get_action_journal",
+    "record_tool_mutation",
+    "reviewed_mutation_spec",
+]

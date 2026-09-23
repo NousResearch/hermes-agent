@@ -23,7 +23,7 @@ import {
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
-function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
+function sessionScoped(scope?: ProfileScope): { connectionId?: null | string; profile?: string } {
   if (scope === undefined || scope === null) {
     return {}
   }

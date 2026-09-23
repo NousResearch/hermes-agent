@@ -15,7 +15,6 @@ describe('invalidateProfileScopedQueries', () => {
     const profileScoped = [
       ['hermes-config-record'],
       ['hermes-config-schema'],
-      ['onboarding-model-options', 'provider', 'default', 'local'],
       ['skills-list'],
       ['toolsets-list'],
       ['model-options', 'global'],
@@ -28,6 +27,7 @@ describe('invalidateProfileScopedQueries', () => {
       ['billing', 'subscription'],
       ['marketplace-themes', 'all'],
       ['marketplace-themes-settings', 'x'],
+      ['onboarding-model-options', 'provider', 'default', 'local'],
       ['contrib-logs-tail']
     ]
 

@@ -403,7 +403,7 @@ it.each([
   })
   await flush()
   expect.soft(writes).toHaveLength(1)
-  expect.soft(writes.filter(write => write.connectionId !== (origin === 'legacy' ? undefined : origin))).toEqual([])
+  expect.soft(writes.filter(write => write.connectionId !== (origin === 'legacy' ? null : origin))).toEqual([])
   expect
     .soft(queryClient.getQueryData(hermesConfigKey($settingsOwner.get()!)))
     .toMatchObject({ owner: next === 'legacy-replaced' ? 'https://replacement.invalid' : next })
@@ -411,7 +411,7 @@ it.each([
   await flush()
   // The real API helper also pins a callback invoked after unmount/foreground switch.
   await saveHermesConfig({ checkpoints: { enabled: true } }, owner)
-  expect(writes.at(-1)?.connectionId).toBe(origin === 'legacy' ? undefined : origin)
+  expect(writes.at(-1)?.connectionId).toBe(origin === 'legacy' ? null : origin)
   expect(profileScopeKey(owner)).toBe(ownerKey)
 
   if (owner.legacyConnection) {

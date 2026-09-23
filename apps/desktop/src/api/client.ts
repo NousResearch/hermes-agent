@@ -146,7 +146,7 @@ export function ambientOwnerConnectionId(): string | undefined {
  *  Helpers under `api/` go through here rather than calling the preload bridge
  *  directly, so the connection tag cannot be forgotten on a new one.
  *  capabilityScoped() preserves concrete pins (including 'local') and emits
- *  an own undefined connectionId for an explicit legacy null pin. Both must
+ *  an explicit null connectionId for a legacy pin. Both must
  *  override the ambient tag underneath them, including in delayed callbacks. */
 export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
   return window.hermesDesktop.api<T>({ ...connectionScoped(), ...request })
@@ -188,7 +188,7 @@ export type ProfileScope =
     }
 
 export function capabilityScoped(scope?: ProfileScope): {
-  connectionId?: string
+  connectionId?: null | string
   priority?: 'foreground'
   profile?: string
   connectionOwner?: ConnectionOwner
@@ -201,7 +201,7 @@ export function capabilityScoped(scope?: ProfileScope): {
     return {
       ...(profile ? { profile } : {}),
       // An explicit legacy pin must also override hermesApi's ambient registry tag.
-      ...(connectionId ? { connectionId } : scope.connectionId === null ? { connectionId: undefined } : {}),
+      ...(connectionId ? { connectionId } : scope.connectionId === null ? { connectionId: null } : {}),
       ...(scope.connectionOwner ? { connectionOwner: scope.connectionOwner } : {}),
       ...(scope.legacyConnection ? { legacyConnection: scope.legacyConnection } : {}),
       priority: 'foreground'

@@ -29,7 +29,7 @@ import {
 //   - object scope     → explicit (connection, profile) pin; 'local' pins the
 //                        local pool and DROPS the ambient connection tag
 describe('capability helpers are connection-scoped', () => {
-  const api = vi.fn(async (_req: { connectionId?: string; path: string; profile?: string }) => ({}) as never)
+  const api = vi.fn(async (_req: { connectionId?: null | string; path: string; profile?: string }) => ({}) as never)
 
   beforeEach(() => {
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = { api }
@@ -42,7 +42,11 @@ describe('capability helpers are connection-scoped', () => {
     delete (window as { hermesDesktop?: unknown }).hermesDesktop
   })
 
-  const last = () => api.mock.calls.at(-1)?.[0] as { connectionId?: string; profile?: string; priority?: string }
+  const last = () => api.mock.calls.at(-1)?.[0] as {
+    connectionId?: null | string
+    profile?: string
+    priority?: string
+  }
 
   it('omits both scopes when none are active (single-source users unaffected)', () => {
     void getSkills()
@@ -163,6 +167,18 @@ describe('capability helpers are connection-scoped', () => {
     // route — absorb a "This device" pick (v0.20.6 regression, #91564 rung).
     expect(last().profile).toBe('coder')
     expect(last().connectionId).toBe('local')
+  })
+
+  it('an explicit legacy pin clears the ambient registry tag with a structured-clone-safe null', () => {
+    setApiRequestConnection('gw-tailscale')
+
+    void getSkills({
+      connectionId: null,
+      profile: 'coder',
+      legacyConnection: { baseUrl: 'https://legacy.example', mode: 'remote', token: 'synthetic-token' }
+    })
+
+    expect(last()).toMatchObject({ connectionId: null, profile: 'coder' })
   })
 
   it('registered owner descriptors partition cache keys without exposing credentials', () => {

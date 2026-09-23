@@ -30,6 +30,7 @@ const PROFILE_INDEPENDENT_QUERY_ROOTS = new Set<string>([
   'billing',
   'marketplace-themes',
   'marketplace-themes-settings',
+  'onboarding-model-options',
   'contrib-logs-tail'
 ])
 

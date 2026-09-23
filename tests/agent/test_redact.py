@@ -1694,3 +1694,45 @@ class TestWebappLaunchLinks:
     def test_code_that_builds_such_a_link_is_left_alone(self):
         source = "target.hash = `hermes-session=${token}`\nconst FRAGMENT_KEY = 'hermes-session'\n"
         assert redact_sensitive_text(source, code_file=True) == source
+class TestVaultRedactionRegistry:
+    """The fill-path exact-value registry (#120655): a short registered value must never
+    become a global substring scrub key, or a 2-char card expiry month redacts every
+    "2026", price and date in later model- and user-visible output."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_registry(self):
+        from agent import redact as R
+        yield
+        R.clear_vault_redaction_values()
+
+    def test_short_payment_fields_do_not_mask_innocent_text(self):
+        from agent import redact as R
+        for short in ("09", "20", "313"):  # expiry month, malformed year, CVC
+            R.register_vault_redaction_value(short)
+        text = "Order 2026-09-24: £20 fee, CVC 313"
+        assert R.redact_registered_vault_values(text) == text
+
+    def test_long_secret_value_is_still_scrubbed(self):
+        from agent import redact as R
+        R.register_vault_redaction_value("4242-4242-4242-4242")
+        out = R.redact_registered_vault_values("echo 4242-4242-4242-4242 back")
+        assert "4242" not in out
+        assert out.count("«redacted-vault-secret»") == 1
+
+    def test_floor_boundary_is_inclusive(self):
+        from agent import redact as R
+        R.register_vault_redaction_value("abcdefghijkl")  # exactly 12 chars
+        assert "abcdefghijkl" not in R.redact_registered_vault_values("token=abcdefghijkl")
+
+    def test_normalized_form_is_gated_independently(self):
+        from agent import redact as R
+        R.register_vault_redaction_value("ab\ncd\nef\ng")  # 11 raw, 7 normalized
+        assert R.redact_registered_vault_values("abcdefg stays readable") == "abcdefg stays readable"
+
+    def test_egress_surface_unaffected_by_short_registrations(self):
+        from agent import redact as R
+        text = "Invoice 2026-09-24 total £20.00"
+        baseline = R.redact_for_egress(text)
+        R.register_vault_redaction_value("20")
+        R.register_vault_redaction_value("09")
+        assert R.redact_for_egress(text) == baseline

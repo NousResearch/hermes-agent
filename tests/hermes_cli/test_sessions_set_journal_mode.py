@@ -53,14 +53,22 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(
     _wal_store(db)
     monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", db)
     holder = subprocess.Popen(
-        [sys.executable, "-c",
-         f"import sqlite3, time; c = sqlite3.connect({str(db)!r}); c.execute('SELECT 1'); time.sleep(60)"],
-        stdin=subprocess.DEVNULL,
+        [
+            sys.executable, "-c",
+            (
+                "import os,sqlite3,sys,time; "
+                "c=sqlite3.connect(sys.argv[1]); c.execute('SELECT 1'); "
+                "print(f'held:{os.getpid()}', flush=True); time.sleep(60)"
+            ),
+            str(db),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
     )
     try:
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not (tmp_path / "state.db-shm").exists():
-            time.sleep(0.05)
+        marker, pid_text = holder.stdout.readline().strip().split(":", 1)
+        assert marker == "held"
+        sqlite_pid = int(pid_text)
         # --force is compatibility syntax, never a holder-verification bypass.
         assert cmd_sessions(_args("delete", force=force)) == 1
     finally:
@@ -68,7 +76,7 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(
         holder.wait()
 
     out = capsys.readouterr().out
-    assert f"pid {holder.pid}" in out
+    assert f"pid {sqlite_pid}" in out
     assert db.read_bytes()[18:20] == b"\x02\x02", "a refused switch must leave the file untouched"
 
 

@@ -393,6 +393,14 @@ def read_yaml_layers(home: Path) -> dict:
         with open(config_yaml_path, encoding="utf-8") as f:
             yaml_cfg = yaml.safe_load(f) or {}
 
+    from hermes_cli.config import _expand_env_vars
+
+    # ${VAR} / ${env:VAR} expansion — the same primitive the CLI loader applies, so platform
+    # adapter settings (webhook secret, api_server key, teams credentials) arrive resolved
+    # instead of as literal refs. User layer first: the managed overlay is expanded by
+    # apply_managed_overlay itself and must not be re-resolved (config_effective._effective order).
+    yaml_cfg = _expand_env_vars(yaml_cfg)
+
     # Managed scope: overlay administrator-pinned values (this loader bypasses
     # hermes_cli.config.load_config, so managed quick_commands / stt would otherwise be ignored).
     from hermes_cli import managed_scope

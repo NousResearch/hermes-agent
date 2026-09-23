@@ -266,7 +266,79 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
+    def test_platforms_env_refs_expanded_for_adapters(self, tmp_path, monkeypatch):
+        """``${VAR}`` refs under ``platforms:`` reach the adapter config expanded — the gateway
+        YAML layer expands them the same way the CLI loader does (webhook secret used as the
+        HMAC key; api_server caller-auth key)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    port: 8089\n"
+            "    secret: ${WEBHOOK_SECRET}\n"
+            "  api_server:\n"
+            "    enabled: true\n"
+            "    key: ${env:API_SERVER_KEY}\n",
+            encoding="utf-8",
+        )
 
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("WEBHOOK_SECRET", "whsec-expanded")
+        monkeypatch.setenv("API_SERVER_KEY", "server-key-expanded")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WEBHOOK].extra["secret"] == "whsec-expanded"
+        assert (
+            config.platforms[Platform.API_SERVER].extra["key"] == "server-key-expanded"
+        )
+
+    def test_platforms_env_ref_unresolved_stays_literal(self, tmp_path, monkeypatch):
+        """An unset env var keeps the literal placeholder (loader is fail-open; the adapter's
+        startup validation is what reports a bad secret)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    secret: ${WEBHOOK_SECRET_UNSET_FOR_TEST}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_SECRET_UNSET_FOR_TEST", raising=False)
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.WEBHOOK].extra["secret"]
+            == "${WEBHOOK_SECRET_UNSET_FOR_TEST}"
+        )
+
+    def test_platforms_plain_values_untouched_by_expansion(self, tmp_path, monkeypatch):
+        """Configs without ``${VAR}`` refs load byte-identically through the same path."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    port: 8089\n"
+            "    secret: plain-secret-value\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.WEBHOOK].extra["secret"] == "plain-secret-value"
+        )
+        assert config.platforms[Platform.WEBHOOK].extra["port"] == 8089
 
     def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

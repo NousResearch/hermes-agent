@@ -218,6 +218,18 @@ CLIs without the code marker still use the historical refusal wording.
 
 A failed delivery turn is retried at most once, and only when a retry can actually help. Transient failures (target runtime offline, delivery timeout, provider rate limit or server error) re-run the same Bot Chat session unchanged. A context-overflow failure also re-runs the same session — the retried turn compacts the over-threshold transcript via the standard context-compression pass before calling the model, so the retry fits where the original didn't. Auth, quota, and configuration failures never auto-retry: a second attempt cannot fix them and only burns quota, so the failure is surfaced immediately. A retried turn never starts a fresh session — your Bot Chat history and context stay intact. The re-run resumes the message the failed attempt already wrote into the Bot Chat instead of appending it again, so the recipient's transcript carries exactly one copy of the DM.
 
+A delivery turn is bounded on both lanes: the local one-shot runs under the same
+per-attempt ceiling as the relay lane, and a turn that overruns it reports
+`delivery_timeout` instead of being retried (a second attempt would spend the
+budget twice). A quiet one-shot delivery keeps running briefly after its turn for
+the exit linger that protects its own nested `notify_on_complete` replies; that
+linger is not part of the delivery turn, so the per-profile turn lock is released
+the moment the turn ends. The lock serializes turns, and holding it across the
+linger both reported `target_busy` while no turn was running and let two Bots
+hold each other's lock while they waited on one another's replies. A hold that
+outlives the whole turn budget is a wedged delivery, not a busy one, and its
+refusal says so with the holder's pid and how long it has held the lock.
+
 When a target has no live Desktop or TUI owner, local delivery opens that
 profile's canonical Bot Chat through a quiet CLI turn. The transport prefers
 the Hermes entrypoint beside the sending runtime's Python interpreter, so an

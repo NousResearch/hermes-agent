@@ -2,7 +2,7 @@ name: hermes-trove
 repo: https://github.com/misterdas/hermes-trove
 sha: 69c673eeb2fcbaf12e9b88451ad1f627a88bc930
 description: DAG-based context engine that never loses a message — full-text search, semantic recall, assertion-backed evidence compilation, and pre-answer sufficiency gating
-maintainer: GOPAL
+maintainer: misterdas
 tier: community
 category: general
 requires_hermes: '>=0.20'

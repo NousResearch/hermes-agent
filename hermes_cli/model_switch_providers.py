@@ -1131,6 +1131,17 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     ids and warms them in the background rather than waiting on an 8s probe (#114215)."""
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS, get_curated_nous_model_ids
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
+    # Plugin providers have no _PROVIDER_MODELS entry, so on the non-blocking GUI read path a cold
+    # disk cache left them with an EMPTY curated list — the picker collapsed to just the current
+    # model until a later open. Their profile's fallback_models is exactly the curated list for
+    # that case; never override a static entry with it.
+    try:
+        from providers import list_providers
+        for _profile in list_providers():
+            if _profile.fallback_models and not curated.get(_profile.name):
+                curated[_profile.name] = list(_profile.fallback_models)
+    except Exception:
+        logger.debug("provider fallback_models seeding failed (picker curated lists)", exc_info=True)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
     # Plugin profiles without a static row: their fallback_models are the curated floor, so the
     # non-blocking GUI read (cold catalog cache) lists them instead of an empty provider row.

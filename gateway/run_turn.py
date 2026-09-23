@@ -309,6 +309,15 @@ class GatewayTurnMixin:
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
         if not await resolve_heartbeat_owner(self, event, session_entry):
             return
+        # Commands were dispatched before this path; internal and pinned work keeps its owner.
+        if not getattr(event, "internal", False) and not pinned_session_id and not strict_session:
+            from gateway.run import _get_session_mode
+            if _get_session_mode(self.config, source) == "per_message":
+                self._clear_conversation_scope(session_key, reason="per_message")
+                self._evict_cached_agent(session_key)
+                session_entry = await self.async_session_store.get_or_create_session(source, force_new=True)
+                if await asyncio.to_thread(self._is_telegram_topic_lane, source):
+                    await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):

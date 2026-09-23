@@ -302,10 +302,16 @@ class GatewayConfigLoadersMixin:
 
     def _effective_busy_input_mode(self, source: SessionSource) -> str:
         """Resolve busy input mode from the routed profile startup snapshot."""
+        from gateway.run import _get_session_mode
+        if _get_session_mode(self.config, source) == "per_message":
+            return "queue"  # independent commands must not interrupt/steer an earlier command
         return self._effective_busy_mode(source, "_busy_input_mode")
 
     def _effective_busy_text_mode(self, source: SessionSource) -> str:
         """Resolve legacy busy text mode from the routed profile snapshot."""
+        from gateway.run import _get_session_mode
+        if _get_session_mode(self.config, source) == "per_message":
+            return "interrupt"  # bypass legacy debounce/merge; runner FIFO preserves each message
         return self._effective_busy_mode(source, "_busy_text_mode")
 
     @staticmethod

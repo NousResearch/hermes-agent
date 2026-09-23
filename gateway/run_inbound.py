@@ -618,7 +618,10 @@ class GatewayInboundMixin:
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
-            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
+            if effective_busy_input_mode == "queue":
+                self._queue_or_replace_pending_event(_quick_key, event)
+            else:
+                self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
             return None
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)

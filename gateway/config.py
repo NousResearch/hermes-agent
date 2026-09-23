@@ -354,17 +354,26 @@ class SessionResetPolicy:
 
 @dataclass
 class ChannelOverride:
-    """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+    """Per-channel runtime and session behavior (``platforms.<name>.channel_overrides[channel_id]``)."""
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    session_mode: Optional[str] = None  # unset inherits chat; conversational | per_message
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
-        return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
+        if not data:
+            return cls()
+        mode = data.get("session_mode")
+        if mode is not None and (not isinstance(mode, str) or mode not in ("conversational", "per_message")):
+            raise ValueError(f"Invalid channel session_mode: {mode!r}")
+        return cls(
+            model=data.get("model"), provider=data.get("provider"),
+            system_prompt=data.get("system_prompt"), session_mode=mode,
+        )
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token

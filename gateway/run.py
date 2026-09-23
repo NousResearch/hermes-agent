@@ -2882,6 +2882,20 @@ def _get_channel_override(
     return None
 
 
+def _get_session_mode(config: GatewayConfig, source: SessionSource) -> str:
+    """Topic (chat-scoped) > chat > conversational; never match a bare topic ID."""
+    platform_config = (getattr(config, "platforms", None) or {}).get(source.platform)
+    overrides = getattr(platform_config, "channel_overrides", {}) or {}
+    chat_id = str(source.chat_id or "")
+    thread_id = str(source.thread_id or "")
+    keys = ([f"{chat_id}:{thread_id}"] if chat_id and thread_id else []) + ([chat_id] if chat_id else [])
+    for key in keys:
+        override = overrides.get(key)
+        if override is not None and override.session_mode is not None:
+            return override.session_mode
+    return "conversational"
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Hermes update command argv: ``hermes`` on PATH, else ``python -m hermes_cli.main``, else None."""
     import shutil

@@ -281,6 +281,30 @@ variables are ignored. Cached agents may be released to reclaim resources withou
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
+### Per-message sessions for a chat or topic
+
+For independent commands in a Telegram chat/topic, set `session_mode: per_message`
+under `channel_overrides`. Each ordinary message starts a fresh session before its
+model turn; prior conversation messages are not included in that turn. Session
+transcripts remain stored locally. Internal follow-ups and slash commands retain
+their usual session behavior. The default is `conversational`.
+
+```yaml
+platforms:
+  telegram:
+    channel_overrides:
+      "-1001234567890":       # chat-wide fallback, including messages without a topic
+        session_mode: conversational
+      "-1001234567890:84":    # chat_id:message_thread_id — just this topic
+        session_mode: per_message
+```
+
+An explicitly configured topic mode wins over the chat mode; an unset topic
+mode inherits the chat mode, even if the topic overrides another setting such
+as `model`. Topic IDs alone are not unique across chats, so use the composite
+key for a topic. This changes conversation history, not the system prompt,
+skills, or other configured turn context.
+
 
 ## Per-Channel Model & System Prompt Overrides
 

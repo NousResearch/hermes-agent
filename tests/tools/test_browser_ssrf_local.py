@@ -162,6 +162,74 @@ class TestPreNavigationSsrf:
 
 
 class TestIsLocalBackend:
+    @pytest.mark.parametrize(
+        ("env_override", "config_override", "terminal", "expected"),
+        [
+            (None, "http://localhost:9222", "local", True),
+            (
+                "ws://127.23.45.67:9222/devtools/browser/test",
+                "ws://remote.example:9222",
+                "",
+                True,
+            ),
+            (None, "http://[::1]:9222", "local", True),
+            ("ws://127.0.0.1:9222", None, "docker", False),
+            (
+                "ws://remote.example:9222",
+                "http://localhost:9222",
+                "local",
+                False,
+            ),
+        ],
+        ids=[
+            "config-http-localhost",
+            "env-ws-ipv4-loopback-wins",
+            "config-http-ipv6-loopback",
+            "loopback-in-container",
+            "env-remote-wins-over-config-loopback",
+        ],
+    )
+    def test_cdp_override_locality_follows_precedence_and_terminal(
+        self, monkeypatch, env_override, config_override, terminal, expected
+    ):
+        """Only the effective loopback override in a local terminal is local."""
+        if env_override is None:
+            monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+        else:
+            monkeypatch.setenv("BROWSER_CDP_URL", env_override)
+        monkeypatch.setenv("TERMINAL_ENV", terminal)
+        browser_config = (
+            {"browser": {"cdp_url": config_override}} if config_override else {}
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config", lambda: browser_config
+        )
+
+        assert bt_cloud._is_local_backend() is expected
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            "http://192.168.1.20:9222",
+            "ws://browser.example:9222/devtools/browser/test",
+            "ws://service.localhost:9222",
+            "ws://localhost.evil.example:9222",
+            "ws://localhost@remote.example:9222",
+            "localhost:9222",
+            "http:///devtools/browser/test",
+            "http://[::1",
+        ],
+    )
+    def test_non_loopback_or_malformed_cdp_override_remains_guarded(
+        self, monkeypatch, override
+    ):
+        """Private, public, deceptive, and invalid hosts remain non-local."""
+        monkeypatch.setenv("BROWSER_CDP_URL", override)
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
+
+        assert bt_cloud._is_local_backend() is False
+
     def test_camofox_is_local(self, monkeypatch):
         """Camofox mode counts as a local backend."""
         monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)

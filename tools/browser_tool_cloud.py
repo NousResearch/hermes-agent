@@ -4,8 +4,10 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 from agent.browser_provider import BrowserProvider as CloudBrowserProvider
 from agent.browser_registry import get_provider as _registry_get_browser_provider
@@ -165,13 +167,22 @@ def _is_local_backend() -> bool:
     """True when the browser runs locally AND the terminal is also local.
 
     SSRF protection only matters when the browser can reach networks the terminal cannot (cloud backends,
-    containerized terminals). A CDP override is never trusted as local (that Chrome may live off-host) and MUST
-    be checked before the Camofox short-circuit; ``_is_local_mode`` treats overrides the same way — keep the two
-    in agreement.
+    containerized terminals). A CDP override is local only when it targets a loopback host from a local terminal.
     """
     _bt = _origin()
-    if _cdp._get_cdp_override_raw():
-        return False
+    if cdp_override := _cdp._get_cdp_override_raw():
+        try:
+            hostname = urlparse(cdp_override).hostname
+            address = ipaddress.ip_address(hostname) if hostname != "localhost" else None
+        except (ValueError, TypeError):
+            return False
+        if hostname != "localhost" and not (
+            isinstance(address, ipaddress.IPv4Address) and address.is_loopback
+            or address == ipaddress.IPv6Address("::1")
+        ):
+            return False
+        from tools.terminal_scope import terminal_env
+        return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
     if _bt._is_camofox_mode():
         return True
     if _get_cloud_provider() is not None:

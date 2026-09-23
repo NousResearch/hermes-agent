@@ -82,12 +82,16 @@ def _existing_board_slug(slug: str) -> str:
 
 
 def _conn(board: Optional[str] = None):
-    """Connect to the already-normalised ``board`` (``None`` = active). ``init_db`` is
-    idempotent; running it here lets a fresh install self-heal if POST /tasks arrives first."""
-    try:
-        kanban_db.init_db(board=board)
-    except Exception as exc:
-        log.warning("kanban init_db failed: %s", exc)
+    """Connect to the already-normalised ``board`` (``None`` = active).
+
+    No ``init_db()`` here on purpose: it clears the process's initialized-paths
+    cache, so every board read would re-run a full ``PRAGMA integrity_check``
+    plus the schema/migration pass under the cross-process init flock — one
+    whole-DB scan per request. ``connect()`` already initializes a fresh board on
+    first touch (and re-initializes one whose schema vanished under a live
+    process), so a POST that arrives first still self-heals. Same rule the
+    gateway notifier/dispatcher loops state.
+    """
     return kbc.connect(board=board)
 
 

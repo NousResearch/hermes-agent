@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { withActive } from './model-settings'
+import { withActive } from './model-select'
 
 // A Radix <Select> shows a blank trigger when its `value` matches no
 // <SelectItem>. `withActive` guarantees the controlled value is always

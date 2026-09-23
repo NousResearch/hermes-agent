@@ -657,12 +657,18 @@ class CLIAgentSetupMixin:
                 if single_query_mode
                 else self._clarify_callback)
             connection_callback = None if single_query_mode else self._connection_callback
+            # Read max_tokens from config — prevents runaway generation when CLI
+            # path omits it (server-side cap only otherwise).
+            from hermes_cli.config import load_config
+            _model_cfg = (load_config().get("model") or {})
+            agent_max_tokens = _model_cfg.get("max_tokens")
             self.agent = AIAgent(
                 model=effective_model, api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"), provider=runtime.get("provider"),
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"), acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
+                max_tokens=agent_max_tokens,
                 max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,

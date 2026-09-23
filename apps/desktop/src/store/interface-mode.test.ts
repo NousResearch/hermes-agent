@@ -8,6 +8,8 @@
 import { atom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ToolViewMode } from '@/store/tool-view'
+
 const MODE_KEY = 'hermes.desktop.interfaceMode.v1'
 
 const loadStore = () => import('./interface-mode')
@@ -117,7 +119,7 @@ describe('modeBound resolver', () => {
     setInterfaceMode('advanced')
     expect($modeShadowed('statusbarVisible').get()).toBe(false)
 
-    const $pref = atom<'product' | 'technical'>('technical')
+    const $pref = atom<ToolViewMode>('technical')
     const $bound = modeBound('toolViewMode', $pref, value => $pref.set(value))
 
     expect($bound.get()).toBe('technical')

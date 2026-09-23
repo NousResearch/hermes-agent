@@ -95,3 +95,36 @@ it('still discloses failed edits when code diffs are hidden', async () => {
   expect(await screen.findByText('File is read-only')).toBeTruthy()
   expect(container.textContent).not.toContain('afterEdit')
 })
+
+it('hides activity runs but keeps edit cards when tool display is hidden', async () => {
+  setToolViewMode('hidden')
+
+  const edit = editMessage('patch')
+
+  const message = {
+    ...edit,
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'read-1',
+        toolName: 'read_file',
+        args: { path: '/repo/notes.md' },
+        argsText: '{}',
+        result: { content: 'hello' }
+      },
+      ...edit.content
+    ]
+  } as ThreadMessage
+
+  const { container } = render(
+    <ThreadRuntime messages={[message]}>
+      <Thread />
+    </ThreadRuntime>
+  )
+
+  await waitFor(() => expect(container.querySelector('[data-tool-row][data-file-edit]')).not.toBeNull())
+  expect(container.textContent).not.toContain('notes.md')
+
+  act(() => setToolViewMode('product'))
+  await waitFor(() => expect(container.textContent).toContain('notes.md'))
+})

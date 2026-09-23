@@ -1035,7 +1035,8 @@ export const en: Translations = {
       colorMode: 'Color Mode',
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
-      toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      toolViewDesc:
+        'Product hides raw tool payloads; Technical shows full input/output; Hide removes tool activity from chat.',
       hideCodeDiffsTitle: 'Hide code diffs',
       hideCodeDiffsDesc: 'Show file edits as inline tool rows with added/removed line counts, without the code.',
       hideThreadTimelineTitle: 'Hide thread timeline bars',
@@ -1127,6 +1128,7 @@ export const en: Translations = {
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
       technicalDesc: 'Include raw tool args/results and low-level details.',
+      hide: 'Hide',
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
       themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',

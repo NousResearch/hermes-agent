@@ -505,7 +505,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
   const toolOptions = [
     { id: 'product', label: a.product },
-    { id: 'technical', label: a.technical }
+    { id: 'technical', label: a.technical },
+    { id: 'hidden', label: a.hide }
   ] as const
 
   const sessionDensityOptions = [

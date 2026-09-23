@@ -1,4 +1,4 @@
-import { isSilentTool } from '@/lib/tool-render-class'
+import { isCardTool, isSilentTool } from '@/lib/tool-render-class'
 
 /**
  * Seconds of silence before an unnamed wait earns a row of its own.
@@ -55,8 +55,15 @@ export function activitySignature(content: readonly ActivityPart[]): string {
  * spinner under it would count the same seconds twice. Silent tools don't:
  * `todo` is hoisted to its own panel and a reaction's UI is the emoji landing
  * on the bubble, so neither leaves anything on screen to time — a wait on one
- * of those is as unnarrated as a wait on nothing at all.
+ * of those is as unnarrated as a wait on nothing at all. With runs hidden,
+ * only card tools are left on screen to narrate.
  */
-export function toolNarratesWait(content: readonly ActivityPart[]): boolean {
-  return content.some(part => part.type === 'tool-call' && !settled(part) && !isSilentTool(part.toolName ?? ''))
+export function toolNarratesWait(content: readonly ActivityPart[], runsHidden = false): boolean {
+  return content.some(
+    part =>
+      part.type === 'tool-call' &&
+      !settled(part) &&
+      !isSilentTool(part.toolName ?? '') &&
+      (!runsHidden || isCardTool(part.toolName ?? ''))
+  )
 }

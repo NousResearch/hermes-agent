@@ -1,21 +1,30 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
+import { type Codec, persistentAtom } from '@/lib/persisted'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { modeBound } from '@/store/interface-mode'
 
-export type ToolViewMode = 'product' | 'technical'
+export type ToolViewMode = 'hidden' | 'product' | 'technical'
 
 type ToolDisclosureStates = Record<string, boolean>
 
-const TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
+const TOOL_VIEW_MODE_STORAGE_KEY = 'hermes.desktop.toolView.mode'
+const LEGACY_TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
 const HIDE_CODE_DIFFS_STORAGE_KEY = 'hermes.desktop.toolView.hideCodeDiffs'
 const TOOL_DISCLOSURE_STORAGE_KEY = 'hermes.desktop.toolDisclosure.v1'
 const MAX_DISCLOSURE_STATES = 240
 
 // Simple mode rests on product summaries, diffs folded, without touching either
 // preference.
-const $toolViewModePref = atom<ToolViewMode>(
-  storedBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, false) ? 'technical' : 'product'
+const toolViewModeCodec: Codec<ToolViewMode> = {
+  decode: raw => (raw === 'hidden' || raw === 'technical' ? raw : 'product'),
+  encode: value => value
+}
+
+const $toolViewModePref = persistentAtom<ToolViewMode>(
+  TOOL_VIEW_MODE_STORAGE_KEY,
+  storedBoolean(LEGACY_TOOL_VIEW_TECHNICAL_STORAGE_KEY, false) ? 'technical' : 'product',
+  toolViewModeCodec
 )
 
 const $hideCodeDiffsPref = atom(storedBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, false))
@@ -26,7 +35,6 @@ export const $toolDisclosureStates = atom<ToolDisclosureStates>(loadToolDisclosu
 const disclosureOpenCache = new Map<string, ReadableAtom<boolean | undefined>>()
 const anyDisclosureOpenCache = new Map<string, ReadableAtom<boolean>>()
 
-$toolViewModePref.subscribe(mode => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical'))
 $hideCodeDiffsPref.subscribe(hidden => persistBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, hidden))
 $toolDisclosureStates.subscribe(persistToolDisclosureStates)
 

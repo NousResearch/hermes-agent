@@ -21,6 +21,7 @@ import { sessionAwaitingInput } from '@/store/prompts'
 import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
 import { $currentModel } from '@/store/session'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
+import { $toolViewMode } from '@/store/tool-view'
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
 // A status line is scaffolding like any other — "Editing" while the model
@@ -321,7 +322,8 @@ export const TurnActivityIndicator: FC = () => {
   // calls, its ticker names the current one, and it carries its own timer. A
   // second spinner under that adds a line and says nothing new. Silent tools
   // (`todo`, reactions) render nothing, so they narrate nothing.
-  const toolNarrating = useAuiState(s => toolNarratesWait(s.message.content))
+  const runsHidden = useStore($toolViewMode) === 'hidden'
+  const toolNarrating = useAuiState(s => toolNarratesWait(s.message.content, runsHidden))
 
   // Streaming counts as working too, and it leads busy by a flush on the first
   // turn of a fresh chat — so the row can't wait for the store to catch up.

@@ -1061,20 +1061,24 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
       .join('\u0000')
   )
 
+  const hideRuns = useStore($toolViewMode) === 'hidden'
   const items = useMemo(() => splitRunItems(toolNameKey.split('\u0000')), [toolNameKey])
   const rows = Children.toArray(children)
 
   return (
     <ToolEmbedContext.Provider value={false}>
-      {items.map(item =>
-        item.kind === 'card' ? (
-          <Fragment key={`card:${item.index}`}>{rows[item.index]}</Fragment>
-        ) : (
-          <ToolRun endIndex={startIndex + item.end} key={`run:${item.start}`} startIndex={startIndex + item.start}>
-            {rows.slice(item.start, item.end + 1)}
-          </ToolRun>
-        )
-      )}
+      {/* Cards survive Hide: diffs, questions and consent controls need the user. */}
+      {items
+        .filter(item => item.kind === 'card' || !hideRuns)
+        .map(item =>
+          item.kind === 'card' ? (
+            <Fragment key={`card:${item.index}`}>{rows[item.index]}</Fragment>
+          ) : (
+            <ToolRun endIndex={startIndex + item.end} key={`run:${item.start}`} startIndex={startIndex + item.start}>
+              {rows.slice(item.start, item.end + 1)}
+            </ToolRun>
+          )
+        )}
     </ToolEmbedContext.Provider>
   )
 }

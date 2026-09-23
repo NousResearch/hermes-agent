@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.inbound_mention import InboundMentionFacts, resolve_inbound_mention_decision
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -506,7 +507,10 @@ class MattermostAdapter(BasePlatformAdapter):
             _extra_or_secret(self.config.extra, "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", blank_is_unset=False))
         mention_patterns = [f"@{self._bot_username}", f"@{self._bot_user_id}"]
         has_mention = any(pattern.lower() in message_text.lower() for pattern in mention_patterns)
-        if require_mention and channel_id not in free_channels and not has_mention:
+        if not resolve_inbound_mention_decision(
+            InboundMentionFacts(is_mentioned=has_mention, is_free_response_scope=channel_id in free_channels),
+            require_mention=require_mention,
+        ):
             logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
             return None
         if has_mention:  # strip the @mention so the agent sees clean input

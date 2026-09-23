@@ -89,6 +89,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.inbound_mention import InboundMentionFacts, resolve_inbound_mention_decision
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
@@ -3369,7 +3370,10 @@ class FeishuAdapter(BasePlatformAdapter):
             return None if sender_ids & self._allowed_group_users else "dm_policy_rejected"
         if not self._allow_group_message(getattr(sender, "sender_id", None), chat_id, is_bot=is_bot):
             return "group_policy_rejected"
-        if require_mention and not self._mentions_self(message):
+        if not resolve_inbound_mention_decision(
+            InboundMentionFacts(is_mentioned=self._mentions_self(message)),
+            require_mention=require_mention,
+        ):
             return "group_policy_rejected"
         return None
 

@@ -77,6 +77,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.platforms.inbound_mention import InboundMentionFacts, resolve_inbound_mention_decision
 
 logger = logging.getLogger(__name__)
 
@@ -2040,18 +2041,23 @@ class MatrixAdapter(BasePlatformAdapter):
                 return None
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
-            if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
-                    logger.debug(
-                        "Matrix: ignoring message %s in %s — no @mention "
-                        "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
-                    return None
-            # thread_require_mention: even inside a bot thread require @mention — prevents
-            # infinite reply loops when several bots share one thread.
-            elif self._thread_require_mention and in_bot_thread and not is_free_room and not is_mentioned:
+            if self._thread_require_mention and in_bot_thread and not is_free_room and not is_mentioned:
                 logger.debug(
                     "Matrix: ignoring message %s in thread %s — no @mention (thread_require_mention=true)",
                     event_id, thread_id)
+                return None
+            if not resolve_inbound_mention_decision(
+                InboundMentionFacts(
+                    is_mentioned=is_mentioned,
+                    command_addresses_bot=body.startswith("/"),
+                    is_free_response_scope=is_free_room,
+                    is_participating_thread=in_bot_thread,
+                ),
+                require_mention=self._require_mention,
+            ):
+                logger.debug(
+                    "Matrix: ignoring message %s in %s — no @mention "
+                    "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
                 return None
         if is_mentioned and self._require_mention:
             # Strip the mention from the reply text only: the quote block carries the

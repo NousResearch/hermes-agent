@@ -270,6 +270,7 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.inbound_mention import InboundMentionFacts, resolve_inbound_mention_decision
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
@@ -5983,13 +5984,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 or is_voice_linked_channel
             )
             in_bot_thread = self._in_bot_thread(message)
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if (
-                    not self._self_is_explicitly_mentioned(message)
-                    and not mention_prefix
-                    and not self._is_bot_tag_debounce_continuation(message)
-                ):
-                    return False
+            if not resolve_inbound_mention_decision(
+                InboundMentionFacts(
+                    is_mentioned=(
+                        self._self_is_explicitly_mentioned(message)
+                        or mention_prefix
+                        or self._is_bot_tag_debounce_continuation(message)
+                    ),
+                    is_free_response_scope=is_free_channel,
+                    is_participating_thread=in_bot_thread,
+                ),
+                require_mention=require_mention,
+            ):
+                return False
         # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):

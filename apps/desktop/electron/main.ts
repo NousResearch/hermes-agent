@@ -81,6 +81,7 @@ import {
 import { createContentFileRuntime } from './content-file-runtime'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { registerDesktopActiveWorkRuntime } from './desktop-active-work-runtime'
 import { createDesktopBackendOwnershipRuntime } from './desktop-backend-ownership-runtime'
 import { registerDesktopBootstrapIpc } from './desktop-bootstrap-ipc'
 import { createDesktopBootstrapMarkerRuntime } from './desktop-bootstrap-marker-runtime'
@@ -214,7 +215,6 @@ import {
 } from './profile-delete-routing'
 import { sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
-import { type ActiveWork, mergeActiveWork, normalizeActiveWork } from './quit-guard'
 import { backendQuitNeedsWait, createQuitTeardownCoordinator } from './quit-teardown'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -233,7 +233,6 @@ import { fetchRosterSourceData } from './roster-source-fetch'
 import { chatWindowWebPreferences } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
 import { createSshProbeConnection } from './ssh-connection'
-import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth } from './titlebar-overlay-width'
 import { glassSupportedOn, translucencySupportedOn } from './translucency'
@@ -1859,32 +1858,7 @@ registerDesktopFileIpc({
 
 registerPreviewTargetIpc(ipcMain, previewTargetRuntime)
 
-// Each renderer reports the turns it has in flight; the quit guard reads the
-// merged picture. Keyed by webContents id so a closed window stops counting.
-const activeWorkByWebContents = new Map<number, ActiveWork>()
-
-// The same merged picture drives background throttling: chat windows run
-// unthrottled while any turn is in flight (streaming must paint while hidden)
-// and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
-const streamThrottle = createStreamThrottle()
-
-function updateStreamThrottleFromActiveWork() {
-  streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)
-}
-
-ipcMain.on('hermes:active-work', (event, payload) => {
-  const id = event.sender.id
-
-  if (!activeWorkByWebContents.has(id)) {
-    event.sender.once('destroyed', () => {
-      activeWorkByWebContents.delete(id)
-      updateStreamThrottleFromActiveWork()
-    })
-  }
-
-  activeWorkByWebContents.set(id, normalizeActiveWork(payload))
-  updateStreamThrottleFromActiveWork()
-})
+const { activeWorkByWebContents, streamThrottle } = registerDesktopActiveWorkRuntime(ipcMain)
 
 const { keepAwake, readPersistedKeepAwake } = createDesktopNativePreferencesRuntime({
   GLASS_SUPPORTED,

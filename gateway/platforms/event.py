@@ -93,6 +93,13 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Background-process heartbeat provenance: stamped by ``_inject_watch_notification`` on a
+    # synthetic event built from a ``type=heartbeat`` ``ProcessRegistry`` notification, then
+    # revalidated against the live process registry at turn-start so a heartbeat that became
+    # stale between put and delivery is dropped instead of starting a fresh "still running"
+    # turn after the process completed. See #120334.
+    _process_heartbeat_session_id: Optional[str] = field(default=None, init=False, repr=False, compare=False)
+    _process_heartbeat_started_at: Optional[float] = field(default=None, init=False, repr=False, compare=False)
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

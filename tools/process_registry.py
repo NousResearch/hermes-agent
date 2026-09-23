@@ -672,10 +672,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
                        if s.heartbeat_seconds > 0 and not s.exited
                        and now - s._heartbeat_last >= s.heartbeat_seconds]
             for session in due:
+                # Snapshot-then-emit race: the session may have exited between the due
+                # snapshot and now. Re-acquire the registry lock and re-validate liveness
+                # atomically so a heartbeat that became stale before put is NOT enqueued
+                # (otherwise the gateway promotes it into a fresh "still running" turn
+                # after the process has completed; see #120334).
+                with self._lock:
+                    still_live = not session.exited and session.id in self._running
+                if not still_live:
+                    continue
                 self._emit_heartbeat(session, now)
 
     def _emit_heartbeat(self, session: ProcessSession, now: float) -> None:
+        # Defensive backstop for the snapshot-then-emit race. Even when the caller
+        # re-checked under the registry lock, the process can exit before this method
+        # runs (different thread, different lock, GC pressure, etc). Valid at emission
+        # must imply valid at delivery; otherwise we promote a stale heartbeat into a
+        # turn the user already saw complete. See #120334.
+        with self._lock:
+            in_registry = session.id in self._running
         with session._lock:
+            if not in_registry or session.exited:
+                return
             delta = session.total_output_chars - session._heartbeat_total_at_last
             output = session.output_buffer[-delta:] if delta > 0 else ""
             session._heartbeat_total_at_last = session.total_output_chars
@@ -694,6 +712,17 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "started_at": session.started_at,
         }
         _redact_process_result(notification)
+        # Final liveness re-check right before put. The session may have exited between
+        # the lock release above and this line; a stale-at-delivery heartbeat must not
+        # be enqueued (a busy messaging Gateway session can sit on the queue entry
+        # long after the underlying process completed and would then be promoted into
+        # a fresh "still running" agent turn). See #120334.
+        with self._lock:
+            still_running = session.id in self._running
+        with session._lock:
+            still_alive = still_running and not session.exited
+        if not still_alive:
+            return
         self.completion_queue.put(notification)
 
     @staticmethod

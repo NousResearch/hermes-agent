@@ -1335,6 +1335,19 @@ class GatewayNotificationsMixin:
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
             )
+            # Background-process heartbeat provenance: stamped on the synthetic event
+            # so the gateway can revalidate liveness against the live process registry
+            # at turn-start (a heartbeat valid-at-emission can be stale-at-delivery if
+            # the process exited between the registry's put and the adapter admission;
+            # without this check the queued heartbeat promotes into a fresh "still
+            # running" turn after the user already saw the completion — see #120334).
+            if str(evt.get("type") or "") == "heartbeat":
+                _hb_sid = str(evt.get("session_id") or "").strip()
+                if _hb_sid:
+                    synth_event._process_heartbeat_session_id = _hb_sid
+                    _hb_started_at = evt.get("started_at")
+                    if _hb_started_at is not None:
+                        synth_event._process_heartbeat_started_at = _hb_started_at
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,

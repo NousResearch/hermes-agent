@@ -450,8 +450,23 @@ class GatewayTurnMixin:
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
-        from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
+        from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner, process_heartbeat_still_alive
         if not await resolve_heartbeat_owner(self, event, session_entry):
+            return
+        # Background-process heartbeat staleness guard. ``resolve_heartbeat_owner`` only
+        # acts on the scheduled /heartbeat provenance (``_heartbeat_session_id``); the
+        # ProcessRegistry heartbeat (``_process_heartbeat_session_id``) is a different
+        # path. The heartbeat was admitted on the completion queue while the process was
+        # alive, but a busy messaging Gateway session can sit on it for many seconds; if
+        # the process exited in the meantime, the queued heartbeat would promote into a
+        # fresh "still running" turn after the user already saw the completion. Drop the
+        # event here WITHOUT starting a turn (the completion notice still went through
+        # the normal FIFO path) — see #120334.
+        if not process_heartbeat_still_alive(event):
+            logger.debug(
+                "Discarding stale queued background-process heartbeat for session %s — process no longer running",
+                getattr(event, "_process_heartbeat_session_id", "unknown"),
+            )
             return
         return source, session_entry, session_key
 
@@ -2179,8 +2194,21 @@ class GatewayTurnMixin:
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
-            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current, process_heartbeat_still_alive
             if not heartbeat_owner_is_current(self, event, session_key):
+                return
+            # Final staleness re-check right before the agent runner starts. The earlier
+            # check in ``_hmwa_resolve_session`` may have been minutes ago on a busy
+            # session; if the underlying process has since exited the heartbeat we
+            # admitted is stale-at-delivery, and starting a turn now would burn a model
+            # call to deliver a "still running" message the user already saw complete.
+            # Preserve completion and human-message FIFO: the completion notice and
+            # subsequent user prompts keep their own path. See #120334.
+            if not process_heartbeat_still_alive(event):
+                logger.debug(
+                    "Discarding stale queued background-process heartbeat for session %s at turn-start — process no longer running",
+                    getattr(event, "_process_heartbeat_session_id", "unknown"),
+                )
                 return
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()

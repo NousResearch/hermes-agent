@@ -17602,6 +17602,52 @@
         "title": "OnboardingAnswers",
         "type": "object"
       },
+      "OnboardingCatalogPlugin": {
+        "additionalProperties": false,
+        "description": "A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.\n``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what\nis missing (empty when present or unknown).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/CatalogTier"
+          },
+          "platforms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Platforms",
+            "type": "array"
+          },
+          "app_state": {
+            "$ref": "#/components/schemas/CatalogAppState"
+          },
+          "sentence": {
+            "title": "Sentence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "description",
+          "tier",
+          "platforms",
+          "app_state",
+          "sentence"
+        ],
+        "title": "OnboardingCatalogPlugin",
+        "type": "object"
+      },
       "OnboardingEnsureSetupProfileResult": {
         "additionalProperties": false,
         "description": "``created`` is false when an existing setup profile was found (and returned untouched).",
@@ -20019,7 +20065,8 @@
           "install",
           "update",
           "remove",
-          "settings"
+          "settings",
+          "onboarding"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -20493,6 +20540,21 @@
             ],
             "default": null,
             "title": "Written"
+          },
+          "onboarding": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OnboardingCatalogPlugin"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Onboarding"
           }
         },
         "title": "PluginsManageResult",

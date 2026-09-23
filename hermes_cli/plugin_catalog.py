@@ -88,6 +88,8 @@ class PluginCatalogEntry:
     screenshots: List[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
     readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
     platforms: List[str] = field(default_factory=list)  # empty = all OSes
+    title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
+    onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
 
     @property
@@ -103,7 +105,7 @@ class PluginCatalogEntry:
             "requires_hermes": self.requires_hermes,
             "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
             "screenshots": list(self.screenshots), "readme": self.readme,
-            "platforms": list(self.platforms),
+            "platforms": list(self.platforms), "title": self.title, "onboarding": self.onboarding,
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -164,6 +166,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
+        title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
             provides_middleware=_str_list(caps.get("provides_middleware")),
@@ -403,11 +406,12 @@ def _live_generated_time(data: Dict[str, Any]) -> Optional[float]:
 
 
 def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tree_is_newer: Optional[bool]) -> bool:
-    """For one entry present in both sources with a different pin: the newer catalog wins. Newer is
+    """For one entry present in both sources that differs (a new pin, or new metadata such as ``title`` or
+    ``onboarding`` at the same pin): the newer catalog wins. Newer is
     decided by the checkout's catalog commit time vs the doc's ``generated_at`` when both resolve;
     otherwise by the entries' ``version`` labels when both parse; otherwise the live doc wins (a release
     install's in-tree copy is frozen at release time)."""
-    if tree.sha == live.sha:
+    if tree == live:
         return False
     if tree_is_newer is not None:
         return tree_is_newer
@@ -421,8 +425,8 @@ def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tr
 
 
 def load_catalog_live() -> List[PluginCatalogEntry]:
-    """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry at
-    different pins the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
+    """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry and
+    disagree the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
     a cache fetched before the bump must not re-install the old one (see :func:`_prefer_in_tree_entry`)."""
     data = fetch_live_catalog()
     if data is None:

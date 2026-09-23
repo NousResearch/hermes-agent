@@ -1696,7 +1696,12 @@ def _plugins_settings(rid, params):
     return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
 
 
-_PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
+def _plugins_onboarding(rid, params):
+    """Catalog plugins curated for the onboarding card that this OS runs, each with its app state."""
+    return _ok(rid, {"onboarding": _tools_mod("hermes_cli.plugin_catalog_presence").onboarding_entries()})
+
+
+_PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "toggle": _plugins_toggle, "install": _plugins_install,
                     "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
 
 

@@ -641,6 +641,12 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     workspace = _workspace_dir(task_id)
     if workspace:
         env["BH_AGENT_WORKSPACE"] = workspace
+        # One-call page snapshot: install the helper the harness auto-imports (see
+        # tools/browser_exec_page_snapshot.py — not to be confused with browser_tool_snapshot.py,
+        # which post-processes an AX tree rather than producing a control table).
+        # Best-effort: a helper install must never fail the exec.
+        _quiet(lambda: importlib.import_module("tools.browser_exec_page_snapshot").ensure_workspace_helpers(workspace),
+               None, "browser_exec: snapshot helper install failed")
 
     # BU_AUTOSPAWN makes the CLI start a Browser Use cloud browser when no local
     # Chrome/CDP endpoint is reachable (their API key authenticates it)
@@ -729,10 +735,12 @@ _HELPERS_DIGEST = (
     "state, js(expr) evaluates a JS expression and returns its value (js('document.title'); wrap function "
     "bodies as js('(() => {...})()') — a bare '() => {...}' returns the function itself, uncalled), "
     "fill_input(selector, text) types into inputs, click_at_xy(x, y) clicks viewport coordinates, "
-    "capture_screenshot() saves and prints a screenshot path, cdp('Domain.method', **kwargs) is raw CDP — "
-    "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's role/name/backendDOMNodeId (filter "
-    "in Python before printing; it is thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) "
-    "gives click coordinates. ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
+    "capture_screenshot() saves and prints a screenshot path, cdp('Domain.method', **kwargs) is raw CDP. "
+    "snapshot() reads all visible controls (role, name, value, geometry, occlusion) in ONE round trip, "
+    "capped by max_elements (default 120); snapshot_table() renders it, find_entry(snap, needle) finds "
+    "controls, point(entry) gives click_at_xy coordinates, page_changed(snap) checks freshness in one "
+    "call; re-snapshot after acting (cdp AX tree only for shadow DOM, iframes, canvas). "
+    "ensure_real_tab() recovers from a stale/internal tab. Login walls: never guess "
     "credentials; see the vault note below if present, otherwise stop and ask the user."
 )
 

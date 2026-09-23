@@ -1417,3 +1417,73 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+# ---------------------------------------------------------------------------
+# Inbound dedup: WS Resume replay + persistence across restarts (#119848)
+# ---------------------------------------------------------------------------
+
+class TestInboundDeduplication:
+    """QQ re-delivers a message with a byte-identical id after a Resume (~10 min
+    after first delivery). The dedup TTL must outlive that window and the seen-id
+    map must survive a gateway restart."""
+
+    def _make_adapter(self, monkeypatch, tmp_path, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir(exist_ok=True)
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @staticmethod
+    def _c2c_event(msg_id):
+        return {"id": msg_id, "content": "hi", "author": {}, "timestamp": "1"}
+
+    @pytest.mark.asyncio
+    async def test_same_message_id_dispatched_once(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(monkeypatch, tmp_path)
+        adapter._handle_c2c_message = mock.AsyncMock()
+
+        await adapter._on_message("C2C_MESSAGE_CREATE", self._c2c_event("ROBOT1.0_dup"))
+        await adapter._on_message("C2C_MESSAGE_CREATE", self._c2c_event("ROBOT1.0_dup"))
+
+        assert adapter._handle_c2c_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_distinct_message_ids_both_dispatched(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(monkeypatch, tmp_path)
+        adapter._handle_c2c_message = mock.AsyncMock()
+
+        await adapter._on_message("C2C_MESSAGE_CREATE", self._c2c_event("m-1"))
+        await adapter._on_message("C2C_MESSAGE_CREATE", self._c2c_event("m-2"))
+
+        assert adapter._handle_c2c_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_seen_state_persists_across_restart(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter(monkeypatch, tmp_path)
+        adapter._handle_c2c_message = mock.AsyncMock()
+        await adapter._on_message("C2C_MESSAGE_CREATE", self._c2c_event("m-restart"))
+        assert adapter._handle_c2c_message.await_count == 1
+
+        # A restarted adapter hydrates from the same state file and drops the replay.
+        restarted = self._make_adapter(monkeypatch, tmp_path)
+        restarted._handle_c2c_message = mock.AsyncMock()
+        await restarted._on_message("C2C_MESSAGE_CREATE", self._c2c_event("m-restart"))
+        assert restarted._handle_c2c_message.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_replay_outside_old_ttl_window_still_dropped(self, tmp_path, monkeypatch):
+        """The Resume replay lands ~10 min after first delivery — beyond the old
+        300 s TTL. A persisted entry that old must still hydrate and block."""
+        import json as _json
+        import time as _time
+        adapter = self._make_adapter(monkeypatch, tmp_path)
+        home = adapter._dedup._state_path().parent
+        state = {"message_ids": {"ROBOT1.0_replay": _time.time() - 600}}  # 10 min ago
+        (home / "qqbot_seen_message_ids.json").write_text(_json.dumps(state), encoding="utf-8")
+
+        restarted = self._make_adapter(monkeypatch, tmp_path)
+        restarted._handle_c2c_message = mock.AsyncMock()
+        await restarted._on_message("C2C_MESSAGE_CREATE", self._c2c_event("ROBOT1.0_replay"))
+        assert restarted._handle_c2c_message.await_count == 0
+

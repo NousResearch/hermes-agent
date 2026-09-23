@@ -44,7 +44,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
-from gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task, _to_thread
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.media_cache import ext_for_mime
 
@@ -163,7 +163,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
-        self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
+        self._dedup = MessageDeduplicator(
+            max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS,
+            state_filename="qqbot_seen_message_ids.json")
+        self._dedup.load_state()
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: Dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
         self._access_token: Optional[str] = None
@@ -581,6 +584,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not msg_id or self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate or missing message id: %s", self._log_tag, msg_id)
             return
+        # Persist the seen-ID map before dispatching so a Resume replay is still
+        # dropped after a restart; the write ends in fsync, so it stays off the
+        # WS reader's event loop.
+        await _to_thread(self._dedup.save_state)
         handler = self._INBOUND_HANDLERS.get(event_type)
         if handler:
             author = d.get("author") if isinstance(d.get("author"), dict) else {}

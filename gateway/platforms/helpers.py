@@ -18,47 +18,107 @@ logger = logging.getLogger(__name__)
 
 
 class MessageDeduplicator:
-    """TTL-based message deduplication cache (``if dedup.is_duplicate(msg_id): return``)."""
+    """TTL-based message deduplication cache (``if dedup.is_duplicate(msg_id): return``).
 
-    def __init__(self, max_size: int = 2000, ttl_seconds: float = 300):
+    With ``state_filename`` the cache also round-trips through
+    ``<hermes_home>/<state_filename>`` so a delivery replayed after a gateway
+    restart is still dropped: ``load_state()`` at construction, ``save_state()``
+    off the event loop after each accepted message.
+    """
+
+    def __init__(self, max_size: int = 2000, ttl_seconds: float = 300,
+                 state_filename: Optional[str] = None):
         self._seen: dict[str, float] = {}
         self._max_size = max_size
         self._ttl = ttl_seconds
+        self._state_filename = state_filename
+        # Guards the in-memory dict only: the loop mutates it in is_duplicate()
+        # while a worker thread snapshots it in save_state().  Never held across
+        # the atomic write — the rename's duration is unbounded under fs pressure.
+        self._lock = threading.Lock()
+
+    def _state_path(self) -> Optional[Path]:
+        if not self._state_filename:
+            return None
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / self._state_filename
+
+    def load_state(self) -> None:
+        """Hydrate seen IDs that are still inside the TTL window from disk."""
+        path = self._state_path()
+        if path is None:
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Failed to load dedup state from %s", path, exc_info=True)
+            return
+        entries = payload.get("message_ids") if isinstance(payload, dict) else None
+        if not isinstance(entries, dict):
+            return
+        now = time.time()
+        with self._lock:
+            for msg_id, seen_at in entries.items():
+                if (isinstance(msg_id, str) and msg_id
+                        and isinstance(seen_at, (int, float)) and now - seen_at < self._ttl):
+                    self._seen[msg_id] = float(seen_at)
+            if len(self._seen) > self._max_size:
+                self._seen = dict(sorted(self._seen.items(), key=lambda item: item[1])[-self._max_size:])
+
+    def save_state(self) -> None:
+        """Persist the seen-ID map under the same in-memory size cap."""
+        path = self._state_path()
+        if path is None:
+            return
+        try:
+            from hermes_constants import mkdir_under_hermes_home
+            mkdir_under_hermes_home(path.parent)
+            with self._lock:
+                payload = {"message_ids": dict(self._seen)}
+            atomic_json_write(path, payload, indent=None)
+        except OSError:
+            logger.warning("Failed to persist dedup state to %s", path, exc_info=True)
 
     def is_duplicate(self, msg_id: str) -> bool:
         """Return True if *msg_id* was already seen within the TTL window."""
         if not msg_id:
             return False
         now = time.time()
-        if msg_id in self._seen:
-            if now - self._seen[msg_id] < self._ttl:
-                return True
-            del self._seen[msg_id]  # expired: treat as new
-        self._seen[msg_id] = now
-        if len(self._seen) > self._max_size:
-            cutoff = now - self._ttl
-            self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+        with self._lock:
+            if msg_id in self._seen:
+                if now - self._seen[msg_id] < self._ttl:
+                    return True
+                del self._seen[msg_id]  # expired: treat as new
+            self._seen[msg_id] = now
             if len(self._seen) > self._max_size:
-                # All entries still fresh: keep the newest so max_size holds under load.
-                self._seen = dict(sorted(self._seen.items(), key=lambda item: item[1])[-self._max_size:])
+                cutoff = now - self._ttl
+                self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+                if len(self._seen) > self._max_size:
+                    # All entries still fresh: keep the newest so max_size holds under load.
+                    self._seen = dict(sorted(self._seen.items(), key=lambda item: item[1])[-self._max_size:])
         return False
 
     def contains(self, msg_id: str) -> bool:
         """Return whether *msg_id* is live in the cache without inserting it."""
-        seen_at = self._seen.get(msg_id) if msg_id else None
-        if seen_at is None:
+        with self._lock:
+            seen_at = self._seen.get(msg_id) if msg_id else None
+            if seen_at is None:
+                return False
+            if time.time() - seen_at < self._ttl:
+                return True
+            del self._seen[msg_id]
             return False
-        if time.time() - seen_at < self._ttl:
-            return True
-        del self._seen[msg_id]
-        return False
 
     def discard(self, msg_id: str) -> None:
         """Release a claimed message ID after cancelled/failed handoff."""
-        self._seen.pop(msg_id, None)
+        with self._lock:
+            self._seen.pop(msg_id, None)
 
     def clear(self):
-        self._seen.clear()
+        with self._lock:
+            self._seen.clear()
 
 
 # Worker-thread handoff used by the off-loop persist paths.  A module attribute

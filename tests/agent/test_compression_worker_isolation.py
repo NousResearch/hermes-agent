@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_state import SessionDB
 
 
@@ -128,6 +130,40 @@ def test_f3_mutating_engine_cannot_touch_live_transcript_after_timeout(
     while time.time() < deadline and db.get_compression_lock_holder(session_id):
         time.sleep(0.02)
     assert live == baseline
+
+
+@pytest.mark.parametrize("engine", ["compacts in place", "compacts in place, rotation", "changes nothing"])
+def test_in_place_mutating_engine_commit_reaches_the_live_transcript(tmp_path: Path, engine: str) -> None:
+    """The legacy contract lets an engine compact its input list in place. When that pass commits, the snapshot the
+    worker handed it IS the committed transcript; handing the caller its original list back left the live agent
+    re-sending the uncompressed history state.db no longer holds, and compacting again every turn. A pass that
+    changes nothing still hands back the caller's own list."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "F3_IN_PLACE_COMMIT"
+    db.create_session(session_id, source="cli")
+    live = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"} for i in range(20)]
+    for message in live:
+        db.append_message(session_id, message["role"], message["content"])
+    agent = _build_agent_with_db(db, session_id)
+    agent._cached_system_prompt = "sys"
+    agent.compression_in_place = engine != "compacts in place, rotation"
+
+    def _in_place_engine(msgs, **_kwargs):
+        if engine.startswith("compacts in place"):
+            msgs[:-3] = [{"role": "user", "content": "[CONTEXT COMPACTION] summary"}]
+        return msgs
+
+    agent.context_compressor.compress.side_effect = _in_place_engine
+    returned, _sp = agent._compress_context(live, "sys", approx_tokens=120_000)
+
+    durable = [m["content"] for m in db.get_messages_as_conversation(agent.session_id)]
+    if engine == "changes nothing":
+        assert returned is live
+        assert durable == [m["content"] for m in live]
+        return
+    assert (agent.session_id == session_id) is agent.compression_in_place
+    assert durable[0] == "[CONTEXT COMPACTION] summary"
+    assert [m["content"] for m in returned] == durable
 
 
 def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_blocked(

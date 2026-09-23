@@ -145,7 +145,12 @@ def _run_under_progress_timeout(
         result_msgs, result_prompt = run(
             fence, target_messages=snapshot, same_turn_fallback_recovery=same_turn_fallback_recovery
         )
-        return (messages if result_msgs is snapshot else result_msgs), result_prompt
+        # A no-op/abort hands the snapshot back untouched: return the caller's own list. But an engine may also
+        # compact the snapshot IN PLACE (the legacy contract) and commit it: then the snapshot IS the committed
+        # transcript, and the caller's list would keep re-sending history state.db no longer holds.
+        if result_msgs is snapshot and not getattr(agent, "_last_compression_attempt_committed", False):
+            return messages, result_prompt
+        return result_msgs, result_prompt
 
     # The stall-fallback retry is the same recovery attempt as the stalled primary, but the cancelled primary
     # worker records its stall_interrupted cooldown while unwinding — racing the retry's automatic gate

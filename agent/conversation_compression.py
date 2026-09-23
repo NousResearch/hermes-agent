@@ -3856,6 +3856,7 @@ def _begin_compression_attempt(agent: Any, *, force: bool, defer_notification: b
         raise RuntimeError("a compression notification is already pending")
     agent._last_compression_attempt_recorded = True
     agent._last_compression_attempt_in_place = None
+    agent._last_compression_attempt_committed = False
     agent._compression_skipped_due_to_lock = None
     # Clear the lock-skip signal at the VERY TOP, before the codex route and the breaker gates below can
     # early-return (per-attempt state rule, #58630/#69853). A stale ``True``/holder value from a prior
@@ -4092,6 +4093,8 @@ def compress_context(
         lifecycle.commit_status = (
             "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
         )
+        # Read by the pooled worker, which must tell a committed result from an untouched input (compression_facade).
+        agent._last_compression_attempt_committed = lifecycle.commit_status == "committed"
         _emit_compression_attempt_telemetry(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),

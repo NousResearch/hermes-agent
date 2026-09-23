@@ -52,10 +52,6 @@ export interface PreviewServerRestart {
   url: string
 }
 
-/** Where an open came from. HTML files default to a live Render for every
- *  source; an explicit `target.renderMode` is never overridden. */
-export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
-
 export interface PreviewTab {
   id: RightRailTabId
   target: PreviewTarget
@@ -504,7 +500,8 @@ function browserTabId(tabs: PreviewTab[]): RightRailTabId {
   return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId()
 }
 
-function previewTargetForSource(target: PreviewTarget, _source: PreviewRecordSource): PreviewTarget {
+/** HTML files open rendered unless the caller asks for a mode. */
+function withRenderMode(target: PreviewTarget): PreviewTarget {
   if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode) {
     return target
   }
@@ -527,12 +524,11 @@ export function setPreviewRenderMode(tabId: string, renderMode: 'preview' | 'sou
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
  *  its target so a stale label/path can't outlive the thing it points at. The
  *  only way anything reaches a preview. */
-export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
-  const resolved = previewTargetForSource(target, source)
+export function openPreview(target: PreviewTarget) {
   const current = $previewTabs.get()
-  const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
+  const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target)
   const index = current.findIndex(tab => tab.id === id)
-  const tab: PreviewTab = { id, target: resolved }
+  const tab: PreviewTab = { id, target: withRenderMode(target) }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)

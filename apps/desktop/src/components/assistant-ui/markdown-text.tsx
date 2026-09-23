@@ -269,7 +269,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // rendered/source toggle) instead of the download-link fallback that
     // `mediaKind() === 'file'` would produce. (#84951)
     if (isMarkdownDocumentPath(mediaPath)) {
-      return <PreviewAttachment source="tool-result" target={mediaPath} />
+      return <PreviewAttachment target={mediaPath} />
     }
 
     // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
@@ -279,7 +279,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // branch below produces — so MEDIA: uniformly delivers the richest
     // rendering for every file type.
     if (mediaKind(mediaPath) === 'file') {
-      return <PreviewAttachment source="tool-result" target={mediaPath} />
+      return <PreviewAttachment target={mediaPath} />
     }
 
     return <MediaAttachment path={mediaPath} />
@@ -288,7 +288,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const previewTarget = previewTargetFromMarkdownHref(href)
 
   if (previewTarget) {
-    return <PreviewAttachment source="explicit-link" target={previewTarget} />
+    return <PreviewAttachment target={previewTarget} />
   }
 
   const sessionRef = sessionRefFromMarkdownHref(href)
@@ -313,7 +313,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
     if (fileHref) {
       return mediaKind(fileHref) === 'file' ? (
-        <PreviewAttachment source="explicit-link" target={fileHref} />
+        <PreviewAttachment target={fileHref} />
       ) : (
         <MediaAttachment path={fileHref} />
       )

@@ -768,7 +768,7 @@ describe('PreviewPane local HTML Render|Source toggle', () => {
   })
 
   it('defaults a browsed HTML file to Render and toggles Source on the same tab', async () => {
-    openPreview(target, 'file-browser')
+    openPreview(target)
 
     const tabId = previewTabId(target)
     let rendered!: ReturnType<typeof render>

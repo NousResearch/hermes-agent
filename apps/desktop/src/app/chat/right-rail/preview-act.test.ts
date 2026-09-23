@@ -20,7 +20,7 @@ describe('actOnActivePreview (drive_preview tool)', () => {
   let cleanups: Array<() => void> = []
 
   const openBrowserTab = () => {
-    openPreview(urlTarget('https://example.com'), 'tool-result')
+    openPreview(urlTarget('https://example.com'))
 
     return $rightRailActiveTabId.get()!
   }

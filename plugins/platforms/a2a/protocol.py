@@ -435,14 +435,47 @@ def _conv_path(context_id: str) -> Path:
     return get_hermes_home() / "a2a_conversations" / f"{safe}.jsonl"
 
 
-def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
+def persist_message(context_id: str, role: str, text: str, task_id: str = "", *,
+                    peer_url: str | None = None, tenant: str = "") -> None:
     """Append one message to the context's on-disk conversation log. Never raises."""
     try:
         path = _conv_path(context_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        peer = {"peer": peer_url.rstrip("/"), "tenant": tenant} if peer_url is not None else {}
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
+            fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id, **peer}, ensure_ascii=False) + "\n")
     except Exception:
+        pass
+
+
+_peer_reply_lock = threading.Lock()
+
+
+def persist_peer_reply(context_id: str, text: str, task_id: str, peer_url: str,
+                       tenant: str, state: str) -> None:
+    """Count and persist each peer task outcome once, including after a client restart."""
+    key = {"peer": peer_url.rstrip("/"), "tenant": tenant, "task_id": task_id}
+    try:
+        with _peer_reply_lock:
+            path = _conv_path(context_id)
+            previous = None
+            if path.exists():
+                with path.open(encoding="utf-8") as fh:
+                    for line in fh:
+                        row = json.loads(line)
+                        if (row.get("role") == "user" and row.get("peer") == key["peer"]
+                                and row.get("tenant") == tenant):
+                            previous = None
+                        if row.get("role") == "agent" and all(row.get(k) == v for k, v in key.items()):
+                            previous = row
+            if previous and previous.get("state") == state and previous.get("text") == text:
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"ts": time.time(), "role": "agent", "text": text,
+                                     "state": state, **key}, ensure_ascii=False) + "\n")
+            metrics.inbound_total += 1
+    except (OSError, ValueError):
         pass
 
 

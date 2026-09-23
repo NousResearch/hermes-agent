@@ -5860,9 +5860,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _collect_thread_root_images(
         self, channel_id: str, thread_ts: str, team_id: str = "") -> Tuple[List[str], List[str]]:
-        """Thread-root ``image/*`` files → (paths, mimetypes); cold-start only (once per session),
-        read from the cache filled by :meth:`_fetch_thread_context`. Best-effort: text markers
-        already announce the image, so failures never produce an error turn."""
+        """Thread-root images, audio, and Slack voice clips → (paths, mimetypes); cold-start only
+        (once per session), read from the cache filled by :meth:`_fetch_thread_context`.
+        Best-effort: text markers already announce the media, so failures never produce an error turn."""
         media_urls: List[str] = []
         media_types: List[str] = []
         try:
@@ -5883,18 +5883,19 @@ class SlackAdapter(BasePlatformAdapter):
                     if f is None:
                         continue
                 mimetype = str(f.get("mimetype") or "")
+                kind = self._slack_file_kind(f, mimetype)
                 url = f.get("url_private_download") or f.get("url_private", "")
-                if not mimetype.startswith("image/") or not url:
+                if kind not in {"image", "audio", "voice clip"} or not url:
                     continue
                 try:
                     cached_path, media_type, _ = await self._cache_slack_file(
-                        "image", f, url, mimetype, team_id)
+                        kind, f, url, mimetype, team_id)
                     media_urls.append(cached_path)
                     media_types.append(media_type)
                 except Exception as exc:
                     logger.warning(
-                        "[Slack] Failed to cache thread-root image %s: %s",
-                        f.get("id") or f.get("name") or "unknown", exc)
+                        "[Slack] Failed to cache thread-root %s %s: %s",
+                        kind, f.get("id") or f.get("name") or "unknown", exc)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Thread-root image recovery failed: %s", exc)
         return media_urls, media_types

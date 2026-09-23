@@ -208,6 +208,10 @@ export interface Translations {
     failedToDeleteSelected: string;
     resumeInChat: string;
     newChat: string;
+    workspace: string;
+    workspaceDefault: string;
+    workspaceRescan: string;
+    workspaceCustom: string;
     previousPage: string;
     nextPage: string;
     roles: {

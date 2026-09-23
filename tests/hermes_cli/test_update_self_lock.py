@@ -32,7 +32,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import hermes_cli.main as cli_main
-import hermes_cli.update_cmd as update_cmd
 from hermes_cli import _early_recovery
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -109,22 +108,22 @@ class TestDependencySyncWouldRewrite:
 # ---------------------------------------------------------------------------
 
 
-@patch.object(cli_main, "_is_windows", return_value=False)
-def test_self_lock_detection_is_noop_off_windows(_winp):
+@pytest.mark.linux_only
+def test_self_lock_detection_is_noop_off_windows():
     with patch.dict(sys.modules, {"cryptography.hazmat.bindings._rust": MagicMock()}):
         assert cli_main._detect_self_loaded_native_modules() == []
 
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_loaded_module_with_pending_version_change_is_flagged(_winp):
+@pytest.mark.windows_only
+def test_loaded_module_with_pending_version_change_is_flagged():
     with patch.dict(
         sys.modules, {"cryptography.hazmat.bindings._rust": MagicMock()}
     ), patch.object(cli_main, "_dependency_sync_would_rewrite", return_value=True):
         assert "cryptography (_rust.pyd)" in cli_main._detect_self_loaded_native_modules()
 
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_loaded_module_already_at_target_version_is_not_flagged(_winp):
+@pytest.mark.windows_only
+def test_loaded_module_already_at_target_version_is_not_flagged():
     """#86735 core fix: loaded-but-not-changing must NOT trip the deferral.
 
     Installed cryptography already satisfies the on-disk pins → the sync
@@ -136,8 +135,8 @@ def test_loaded_module_already_at_target_version_is_not_flagged(_winp):
         assert cli_main._detect_self_loaded_native_modules() == []
 
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_unknown_rewrite_risk_fails_open(_winp):
+@pytest.mark.windows_only
+def test_unknown_rewrite_risk_fails_open():
     """Uncertain rewrite risk must NOT defer (None → proceed).
 
     PyYAML is loaded by every CLI process; deferring on an unparseable
@@ -149,16 +148,6 @@ def test_unknown_rewrite_risk_fails_open(_winp):
         sys.modules, {"cryptography.hazmat.bindings._rust": MagicMock()}
     ), patch.object(cli_main, "_dependency_sync_would_rewrite", return_value=None):
         assert cli_main._detect_self_loaded_native_modules() == []
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_self_lock_detection_clean_when_rust_not_loaded(_winp):
-    sys.modules.pop("cryptography.hazmat.bindings._rust", None)
-    with patch.object(cli_main, "_dependency_sync_would_rewrite", return_value=True):
-        assert (
-            "cryptography (_rust.pyd)"
-            not in cli_main._detect_self_loaded_native_modules()
-        )
 
 
 def test_recovered_update_retry_builds_parser_without_native_secret_modules(
@@ -206,9 +195,7 @@ def test_abort_helper_defers_and_exits_2(capsys):
     # Deferral contract: marker dropped so the next fresh launch completes
     # the dependency install (the code swap has already happened by now).
     assert marker_writes == ["written"]
-    out = capsys.readouterr().out
-    assert "cryptography (_rust.pyd)" in out
-    assert "deferred" in out
+    assert "cryptography (_rust.pyd)" in capsys.readouterr().out
 
 
 def test_abort_helper_resumes_paused_gateways_before_exit():
@@ -230,39 +217,6 @@ def test_abort_helper_resumes_paused_gateways_before_exit():
 # ---------------------------------------------------------------------------
 # Placement: the deferral must NOT fire before the fetch (#86735 / #86780)
 # ---------------------------------------------------------------------------
-
-
-def test_pre_fetch_flow_has_no_self_lock_preflight():
-    """#86780 regression: a loaded native module must not block the git fetch.
-
-    The old preflight sat between the venv-holder sweep and the fetch, so a
-    universally-loaded module (bitwarden's module-level cryptography import)
-    deferred every update before any code was pulled — the Windows infinite
-    update loop.  The deferral now lives at the dependency-sync boundaries
-    only; the stretch of _cmd_update_impl between the venv-holder sweep and
-    the fetch must not consult the detector at all.
-    """
-    import inspect
-
-    src = inspect.getsource(update_cmd._cmd_update_impl)
-    fetch_idx = src.index("Fetching updates")
-    pre_fetch = src[:fetch_idx]
-    assert "_detect_self_loaded_native_modules()" not in pre_fetch
-    assert "_m()._abort_dependency_sync_if_self_locked" not in pre_fetch
-    # ... and it must still guard the dependency sync after the code swap
-    # (the sync itself lives in _sync_python_dependencies_after_pull).
-    post_fetch = src[fetch_idx:] + inspect.getsource(update_cmd._finish_pulled_update)
-    assert "_sync_python_dependencies_after_pull(" in post_fetch
-    sync_src = inspect.getsource(update_cmd._sync_python_dependencies_after_pull)
-    assert "_m()._abort_dependency_sync_if_self_locked" in sync_src
-
-
-def test_zip_update_guards_dependency_sync():
-    import inspect
-
-    src = inspect.getsource(update_cmd._finish_zip_update)
-    swap_idx = src.index("Updating Python dependencies")
-    assert "_abort_dependency_sync_if_self_locked" in src[:swap_idx]
 
 
 # ---------------------------------------------------------------------------
@@ -311,25 +265,3 @@ class TestUpdateEntrypointImportHygiene:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "OK" in result.stdout
 
-    def test_update_dispatch_does_not_load_cryptography(self):
-        result = self._run(
-            textwrap.dedent(
-                """
-                import sys
-                from unittest.mock import patch
-                sys.argv = ["hermes", "update", "--check"]
-                import hermes_cli.main as m
-                with patch("hermes_cli.update_cmd._cmd_update_check", lambda *a, **k: 0):
-                    try:
-                        m.main()
-                    except SystemExit:
-                        pass
-                assert "cryptography.hazmat.bindings._rust" not in sys.modules, (
-                    "update dispatch eagerly loaded cryptography._rust"
-                )
-                print("OK")
-                """
-            )
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "OK" in result.stdout

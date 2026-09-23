@@ -11,9 +11,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.parse
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, NoReturn, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
@@ -491,6 +493,38 @@ def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
         path, json.dumps(metadata, indent=2, sort_keys=True) + "\n", tmp_prefix=f"{path.name}.tmp-")
 
 
+_INSTALL_METADATA_LOCK_HOLDER = threading.local()
+
+
+@contextmanager
+def _install_metadata_lock():
+    """Serialize read-modify-write of the sidecar across threads and processes. Installs overlap (the
+    Desktop install card runs its rows a second apart); each held a snapshot read before its clone, so
+    the later write dropped the earlier plugin's record."""
+    from hermes_cli.auth import _file_lock
+
+    path = _install_metadata_path()
+    with _file_lock(path.with_name(f"{path.name}.lock"), _INSTALL_METADATA_LOCK_HOLDER, 10.0,
+                    "Timed out waiting for the plugin install metadata lock"):
+        yield
+
+
+def _update_install_record(name: str, update: Callable[[Optional[dict]], Optional[dict]]) -> None:
+    """Rewrite one plugin's record in the CURRENT sidecar, under the lock. *update* maps the current
+    record (None when absent) to the new one (None removes it); every other record is re-read here,
+    never carried over from a caller's earlier snapshot."""
+    with _install_metadata_lock():
+        metadata = _read_install_metadata()
+        record = update(metadata.get(name))
+        if record is None:
+            if name not in metadata:
+                return
+            del metadata[name]
+        else:
+            metadata[name] = record
+        _write_install_metadata(metadata)
+
+
 def pinned_revision(name: str, metadata: Optional[dict] = None) -> Optional[str]:
     """Full SHA a ``--ref`` install of *name* is pinned to, else ``None``."""
     entry = (metadata if metadata is not None else _read_install_metadata()).get(name)
@@ -718,24 +752,22 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
         )
 
 
-def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
-    """Move the validated clone into place and persist metadata; on any failure restore the
-    previous tree (if one was replaced) and the previous metadata sidecar, then re-raise."""
+def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, plugin_name: str, record: dict) -> None:
+    """Move the validated clone into place and record it; on any failure restore the previous tree
+    (if one was replaced) and re-raise. The record write is the last step and atomic, so a failure
+    leaves the sidecar untouched: nothing to roll back there, and restoring a snapshot would erase
+    a concurrent install's record."""
     replaced_existing = target.exists()
     if replaced_existing:
         os.replace(target, backup)
     try:
         os.replace(tmp_target, target)
-        _write_install_metadata(new_metadata)
+        _update_install_record(plugin_name, lambda _current: record)
     except Exception:
         if target.exists():
             rmtree_readonly(target)
         if replaced_existing and backup.exists():
             os.replace(backup, target)
-        if old_metadata:
-            _write_install_metadata(old_metadata)
-        else:
-            _install_metadata_path().unlink(missing_ok=True)
         raise
 
 
@@ -823,8 +855,7 @@ def _install_plugin_core(
             record["catalog"] = {**catalog, "sha": installed_revision, "pin": reviewed_pin if at_reviewed_pin else ""}
         if allow_removed:
             record["allow_removed"] = True
-        new_metadata = {**old_metadata, plugin_name: record}
-        _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", old_metadata, new_metadata)
+        _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", plugin_name, record)
 
     if not _looks_like_plugin_dir(target):
         logger.warning("%s has no plugin.yaml / __init__.py; may not be a valid plugin", plugin_name)
@@ -917,8 +948,10 @@ def cmd_install(
     declared_caps = _declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
         _run_capability_consent(console, installed_name, declared_caps, context="install")
-    console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
-    console.print("[dim]  hermes gateway restart[/dim]")
+    if enable:
+        # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
+        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
+        console.print(f"[dim]{activation_hint(activate_plugin_now(installed_name, in_process=False))}[/dim]")
     console.print()
 
 
@@ -949,9 +982,8 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
     # Store the new HEAD in the plugin's install-metadata record (if it has one).
     git_exe = _resolve_git_executable() if install_record else None
     if git_exe:
-        install_record["revision"] = _git_head_revision(target, git_exe)
-        metadata[target.name] = install_record
-        _write_install_metadata(metadata)
+        revision = _git_head_revision(target, git_exe)
+        _update_install_record(target.name, lambda current: {**current, "revision": revision} if current else None)
     return output
 
 
@@ -1045,16 +1077,14 @@ def _post_pull_housekeeping(target: Path, console) -> None:
 
 def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
-    metadata = _read_install_metadata()
-    if target.name not in metadata:
+    if target.name not in _read_install_metadata():
         rmtree_readonly(target)
         return
-    updated = {k: v for k, v in metadata.items() if k != target.name}
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent))
     backup = staging / "plugin"
     os.replace(target, backup)
     try:
-        _write_install_metadata(updated)
+        _update_install_record(target.name, lambda _current: None)
     except Exception:
         try:
             os.replace(backup, target)
@@ -1278,7 +1308,9 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
             _fail(console, f"[red]Error:[/red] {exc}")
 
     if _activate_key(key, enable=True):
+        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
+        console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
 
@@ -2030,11 +2062,16 @@ def dashboard_install_plugin(
         _set_plugin_enabled(installed_name, enable=True)
     deps = _install_python_dependencies_quietly(target, warnings)
     ap = target / "after-install.md"
+    # Deps first, then load: the plugin activates in this process (TUI/Desktop server subscribers see it)
+    # and in the running gateway; ``activation`` says what is live now vs next session (#87770).
+    from hermes_cli.plugins_activation import activate_plugin_now
+    activated = activate_plugin_now(installed_name) if enable else {
+        "gateway_reloaded": False, "activation": None, "restart_required": False}
     return {
         "ok": True, "plugin_name": installed_name, "warnings": warnings,
         "python_dependencies": deps,
         "missing_env": [s["name"] for s in _missing_env_specs(installed_manifest)],
-        "after_install_path": str(ap) if ap.exists() else None, "enabled": enable,
+        "after_install_path": str(ap) if ap.exists() else None, "enabled": enable, **activated,
     }
 
 
@@ -2112,8 +2149,13 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     changed = _activate_key(key, enable=enabled)
     if changed:
         _toggle_plugin_toolset(key, enable=enabled)
-    # Config-only change: a running gateway/TUI scanned plugins once at start and will not pick it
-    # up, so every UI can say so (the CLI prints "Takes effect on next session") — #71595/#54941.
+    if changed and enabled:
+        # Load it now, here and in the running gateway; ``activation`` tells the UI what is live vs
+        # deferred, and ``restart_required`` only survives when no gateway answered (#87770).
+        from hermes_cli.plugins_activation import activate_plugin_now
+        return {"ok": True, "name": key, "unchanged": False, **activate_plugin_now(key)}
+    # Disable is config-only: there is no un-wire primitive, so a running gateway keeps the plugin's
+    # handlers until restart and every UI says so — #71595/#54941.
     return {"ok": True, "name": key, "unchanged": not changed, "restart_required": changed}
 
 
@@ -2142,8 +2184,10 @@ def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False
             warnings = list(result.warnings)
             new_target = target.parent / result.installed_name
             deps = _install_python_dependencies_quietly(new_target, warnings) if result.changed else []
+            from hermes_cli.plugins_activation import activate_plugin_now
+            activated = activate_plugin_now(result.installed_name) if result.changed else {}
             return {"ok": True, "name": result.installed_name, "sha": result.sha, "unchanged": not result.changed,
-                    "python_dependencies": deps, "warnings": warnings}
+                    "python_dependencies": deps, "warnings": warnings, **activated}
         msg = _pull_plugin_update(
             target,
             lambda rec: (

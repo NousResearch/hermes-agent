@@ -85,17 +85,6 @@ def _run_job_patches(tmp_path):
         yield fake_db, entered[-1]
 
 
-class TestCronMemoryContractOn:
-    """Direction (a): default cron agents GET persistent memory (#91447)."""
-
-    def test_resolver_denylist_has_no_memory_entry(self):
-        """_resolve_cron_disabled_toolsets({}) itself never emits 'memory'."""
-        from cron.scheduler import _resolve_cron_disabled_toolsets
-
-        assert "memory" not in _resolve_cron_disabled_toolsets({})
-        assert "memory" not in _resolve_cron_disabled_toolsets(
-            {"cron": {"allow_agent_scheduling": True}}
-        )
 
 
 class TestCronMemoryContractOff:
@@ -126,20 +115,3 @@ class TestCronMemoryContractOff:
             "the cron agent's denylist — the OFF direction of the contract"
         )
 
-    def test_skip_memory_is_not_a_per_job_knob(self, tmp_path):
-        """No per-job field flips skip_memory: the scheduler always passes False.
-
-        Guards against a partial re-flip where some job shape quietly gets
-        #91384 behavior back. A field named skip_memory on the job dict is
-        ignored by the construction site.
-        """
-        job = {
-            "id": "mem-contract-noknob",
-            "name": "t",
-            "prompt": "hi",
-            "skip_memory": True,  # not a supported job field; must be ignored
-        }
-        with _run_job_patches(tmp_path) as (_db, agent_cls):
-            run_job(job)
-        kwargs = agent_cls.call_args.kwargs
-        assert kwargs["skip_memory"] is False

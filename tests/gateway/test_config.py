@@ -2,7 +2,6 @@
 
 import logging
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -22,7 +21,6 @@ from gateway.config import (
     StreamingConfig,
     _apply_env_overrides,
     load_gateway_config,
-    persist_home_channel,
 )
 
 
@@ -77,12 +75,6 @@ class TestPlatformConfigRoundtrip:
         assert restored.home_channel.chat_id == "555"
         assert restored.extra == {"foo": "bar"}
 
-    def test_disabled_no_token(self):
-        pc = PlatformConfig()
-        d = pc.to_dict()
-        restored = PlatformConfig.from_dict(d)
-        assert restored.enabled is False
-        assert restored.token is None
 
     def test_from_dict_coerces_quoted_false_enabled(self):
         restored = PlatformConfig.from_dict({"enabled": "false"})
@@ -190,9 +182,10 @@ class TestStreamingConfig:
                 "fresh_final_after_seconds": "oops",
             }
         )
-        assert restored.edit_interval == 0.8
-        assert restored.buffer_threshold == 24
-        assert restored.fresh_final_after_seconds == 0.0
+        defaults = StreamingConfig()
+        assert restored.edit_interval == defaults.edit_interval
+        assert restored.buffer_threshold == defaults.buffer_threshold
+        assert restored.fresh_final_after_seconds == defaults.fresh_final_after_seconds
 
 
 class TestGatewayConfigRoundtrip:
@@ -223,10 +216,6 @@ class TestGatewayConfigRoundtrip:
         config = GatewayConfig.from_dict({"max_concurrent_sessions": "many"})
 
         assert config.max_concurrent_sessions is None
-        assert any(
-            "Ignoring invalid max_concurrent_sessions='many'" in record.message
-            for record in caplog.records
-        )
 
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):

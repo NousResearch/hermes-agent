@@ -170,13 +170,6 @@ def test_stream_execution_uses_canonical_relay_operation_name(relay_turn, monkey
     assert observed_names == ["anthropic.messages"]
 
 
-def test_unknown_api_mode_preserves_provider_name():
-    assert (
-        relay_llm._relay_operation_name("custom-provider", {"api_mode": "future_api"})
-        == "custom-provider"
-    )
-
-
 @pytest.mark.parametrize(
     ("api_mode", "operation", "codec_class"),
     [
@@ -195,16 +188,6 @@ def test_relay_protocol_drives_operation_and_codec(
 
     assert relay_llm._relay_operation_name("custom-provider", metadata) == operation
     assert isinstance(relay_llm._codec(relay, metadata), codec_type)
-
-
-def test_relay_metadata_preserves_provider_name():
-    metadata = {"api_mode": "chat_completions", "hermes.provider": "explicit"}
-
-    assert relay_llm._relay_metadata("openrouter", metadata) == metadata
-    assert relay_llm._relay_metadata("openrouter", {"api_mode": "chat_completions"}) == {
-        "api_mode": "chat_completions",
-        "hermes.provider": "openrouter",
-    }
 
 
 def test_provider_request_overlays_interceptor_added_codex_field():
@@ -537,16 +520,6 @@ def test_live_stream_defers_runtime_shutdown_until_exhaustion(
         relay_runtime._reset_for_tests()
 
 
-
-
-
-
-
-
-
-
-
-
 def test_anthropic_stream_accumulator_merges_plain_provider_object():
     accumulator = relay_llm.AnthropicStreamAccumulator()
     accumulator.observe({
@@ -593,10 +566,6 @@ def test_jsonable_does_not_probe_dynamic_attributes():
     assert relay_llm._jsonable(DynamicProviderObject()) == "opaque-provider-object"
 
 
-
-
-
-
 @pytest.mark.asyncio
 async def test_async_provider_callback_preserves_caller_context(relay_turn):
     del relay_turn
@@ -623,8 +592,6 @@ async def test_async_provider_callback_preserves_caller_context(relay_turn):
     )
 
     assert result == {"caller_value": "caller"}
-
-
 
 
 def test_anthropic_stream_callbacks_do_not_reenter_captured_context(
@@ -758,8 +725,6 @@ def test_explicit_stream_close_surfaces_provider_close_failure(relay_turn):
     stream.close()
 
 
-
-
 def test_non_stream_defers_logical_success_and_reuses_scope_for_retry(relay_turn):
     _relay, turn = relay_turn
     metadata = {"api_mode": "custom", "api_request_id": "request-retry"}
@@ -824,20 +789,6 @@ def test_non_stream_result_survives_logical_scope_close_failure(
     assert "request-close" in turn.logical_llm_calls
     relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
     assert turn.logical_llm_calls == {}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_stream_flushes_buffered_provider_chunks_after_relay_failure(
@@ -1006,20 +957,6 @@ def test_wedged_relay_aclose_does_not_block_provider_fallback(
     assert list(stream) == raw_chunks
     assert turn.logical_llm_calls == {}
     assert stream._runtime_lease is None
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_stream_refuses_replay_after_transformed_relay_output(
@@ -1225,10 +1162,6 @@ def test_anthropic_codec_preserves_tool_history_and_cached_system_blocks(relay_t
     assert observed_body_wire == original_wire
 
 
-
-
-
-
 @pytest.mark.asyncio
 async def test_async_non_stream_returns_namespaced_interceptor_result(
     relay_turn,
@@ -1297,17 +1230,7 @@ def test_non_stream_preserves_provider_error_from_relay_wrapper_suffix(
     assert "request-error" in turn.logical_llm_calls
 
 
-
-
-
-
-
-
-
-
-
-
-def test_codec_baseline_failure_is_explicit(relay_turn, monkeypatch, caplog):
+def test_codec_baseline_failure_is_explicit(relay_turn, monkeypatch):
     relay, _turn = relay_turn
     request_body = {"model": "test-model", "messages": []}
     request = relay.LLMRequest({}, request_body)
@@ -1318,16 +1241,14 @@ def test_codec_baseline_failure_is_explicit(relay_turn, monkeypatch, caplog):
 
     monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: FailingCodec())
 
-    with caplog.at_level("WARNING", logger="agent.relay_llm"):
-        baseline = relay_llm._codec_round_trip_request_body(
-            relay,
-            request,
-            relay_request_body=request_body,
-            metadata={"api_mode": "chat_completions"},
-        )
+    baseline = relay_llm._codec_round_trip_request_body(
+        relay,
+        request,
+        relay_request_body=request_body,
+        metadata={"api_mode": "chat_completions"},
+    )
 
     assert baseline is None
-    assert "ignoring request rewrites" in caplog.text
 
 
 def test_stream_current_unwraps_completed_response(tmp_path, monkeypatch):

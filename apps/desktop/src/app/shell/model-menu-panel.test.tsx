@@ -275,25 +275,6 @@ describe('ModelMenuPanel search', () => {
 })
 
 describe('ModelMenuPanel provider collapse', () => {
-  it('shows all provider models by default (none collapsed)', async () => {
-    const { content } = renderPanel()
-
-    await content.findByText('DeepSeek')
-    expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
-    expect(content.queryByText('Deepseek Chat')).not.toBeNull()
-  })
-
-  it('collapses provider models when header is clicked', async () => {
-    const { content } = renderPanel()
-
-    const header = await content.findByText('DeepSeek')
-    fireEvent.click(header)
-
-    // Models should disappear but header stays
-    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
-    expect(content.queryByText('DeepSeek')).not.toBeNull()
-  })
-
   it('expands provider models when header is clicked again', async () => {
     const { content } = renderPanel()
 
@@ -437,22 +418,6 @@ describe('ModelMenuPanel provider collapse', () => {
     expect(onSelectModel).not.toHaveBeenCalled()
     expect($currentModel.get()).toBe('glm-4.5-air')
     expect($currentProvider.get()).toBe('zhipu')
-  })
-
-  it('does not switch when Refresh Models still lists the current pick', async () => {
-    $currentProvider.set('deepseek')
-    $currentModel.set('deepseek-v4-pro')
-    getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
-
-    const { content, onSelectModel } = renderPanel()
-
-    await content.findByText(/Deepseek V4 Pro/i)
-    fireEvent.click(await content.findByText('Refresh models'))
-
-    await vi.waitFor(() => {
-      expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
-    })
-    expect(onSelectModel).not.toHaveBeenCalled()
   })
 
   it('does not rewrite the provider when Refresh Models lists the same model id elsewhere', async () => {

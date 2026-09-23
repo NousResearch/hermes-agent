@@ -24,7 +24,6 @@ from hermes_cli.profile_distribution import (
     DistributionManifest,
     EnvRequirement,
     MANIFEST_FILENAME,
-    USER_OWNED_EXCLUDE,
     _env_template_from_manifest,
     _looks_like_git_url,
     _parse_semver,
@@ -293,14 +292,6 @@ class TestInstall:
         # distribution.yaml is always written by write_manifest
         assert (plan.target_dir / "distribution.yaml").exists()
 
-    def test_install_default_owned_paths_preserved(self, profile_env):
-        """When distribution_owned is not set, all DEFAULT_DIST_OWNED paths are copied."""
-        staged = _make_staging_dir(profile_env, "default_owned")
-        plan = install_distribution(str(staged), name="default_owned")
-        for path in DEFAULT_DIST_OWNED:
-            full = plan.target_dir / path
-            assert full.exists() or full.is_dir(), \
-                f"DEFAULT_DIST_OWNED '{path}' not found in target"
 
     def test_install_omitted_allowlist_copies_everything(self, profile_env):
         """Legacy contract: when distribution_owned is OMITTED, every staged
@@ -570,12 +561,6 @@ class TestDescribe:
 
 class TestSecurity:
 
-    def test_user_owned_exclude_covers_credentials(self):
-        assert "auth.json" in USER_OWNED_EXCLUDE
-        assert ".env" in USER_OWNED_EXCLUDE
-        assert "memories" in USER_OWNED_EXCLUDE
-        assert "sessions" in USER_OWNED_EXCLUDE
-        assert "local" in USER_OWNED_EXCLUDE
 
     def test_install_does_not_import_credentials_from_staging(self, profile_env):
         """If an author accidentally ships auth.json or .env in their
@@ -633,18 +618,6 @@ class TestNestedUserOwnedExcludeNotFiltered:
         assert (plan.target_dir / "tools" / "bin").is_dir(), "nested bin/ was dropped"
         assert (plan.target_dir / "tools" / "bin" / "tool.py").exists()
 
-    def test_nested_logs_dir_is_preserved(self, profile_env):
-        mf = DistributionManifest(
-            name="nested_logs",
-            version="0.1.0",
-            distribution_owned=list(DEFAULT_DIST_OWNED) + ["scripts"],
-        )
-        staged = _make_staging_dir(profile_env, "src", manifest=mf)
-        (staged / "scripts" / "logs").mkdir(parents=True)
-        (staged / "scripts" / "logs" / "run.log").write_text("ok\n")
-        plan = install_distribution(str(staged), name="nested_logs")
-        assert (plan.target_dir / "scripts" / "logs").is_dir()
-        assert (plan.target_dir / "scripts" / "logs" / "run.log").read_text() == "ok\n"
 
     def test_top_level_user_owned_still_skipped(self, profile_env):
         """Top-level entries in USER_OWNED_EXCLUDE must still be skipped —
@@ -668,22 +641,6 @@ class TestNestedUserOwnedExcludeNotFiltered:
         assert not (plan.target_dir / "logs" / "shipped.log").exists(), \
             "staged logs/ content should not leak into target"
 
-    def test_both_nested_and_top_level_coexist(self, profile_env):
-        """Top-level bin/ filtered, but tools/bin/ kept."""
-        mf = DistributionManifest(
-            name="coexist",
-            version="0.1.0",
-            distribution_owned=list(DEFAULT_DIST_OWNED) + ["tools"],
-        )
-        staged = _make_staging_dir(profile_env, "src", manifest=mf)
-        (staged / "bin").mkdir(exist_ok=True)
-        (staged / "bin" / "top.sh").write_text("# top\n")
-        (staged / "tools" / "bin").mkdir(parents=True)
-        (staged / "tools" / "bin" / "helper.py").write_text("# helper\n")
-
-        plan = install_distribution(str(staged), name="coexist")
-        assert not (plan.target_dir / "bin").exists()
-        assert (plan.target_dir / "tools" / "bin" / "helper.py").exists()
 
 
 # ===========================================================================

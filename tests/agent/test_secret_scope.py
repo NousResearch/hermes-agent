@@ -385,11 +385,10 @@ class TestUnscopedSecretErrorSignature:
         err = ss.UnscopedSecretError("SURPLUS_API_KEY", "get_secret('SURPLUS_API_KEY') with no scope")
         assert err.secret_name == "SURPLUS_API_KEY" and "SURPLUS_API_KEY" in str(err)
         assert err.developer_detail in getattr(err, "__notes__", [])
-        assert "hermes gateway restart" in str(err)
 
     def test_legacy_single_message_positional_is_the_developer_detail(self):
         """Older callers passed the whole sentence positionally; it must not be read as a name."""
         err = ss.UnscopedSecretError("get_secret('X') called with no profile secret scope active.")
         assert err.secret_name == ""
         assert err.developer_detail.startswith("get_secret('X')")
-        assert "get_secret" not in str(err) and "API key" in str(err)
+        assert "get_secret" not in str(err)

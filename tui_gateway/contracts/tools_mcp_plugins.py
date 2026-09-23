@@ -12,6 +12,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionLiveInfo
+from .connectors_operation import CatalogAppState, CatalogTier
 from .registry import method
 
 
@@ -585,6 +586,7 @@ class PluginsAction(WireEnum):
     update = "update"
     remove = "remove"
     settings = "settings"
+    onboarding = "onboarding"
 
 
 class PluginsManageParams(ProfileParams):
@@ -671,10 +673,63 @@ class AgentPluginRow(Result):
     settings_schema: list[PluginSettingField] | None = None
 
 
+class PluginLiveServer(Result):
+    """One plugin MCP server connected at activation: its callable tool names, or the reason it did not connect."""
+
+    name: str
+    connected: bool
+    tools: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class PluginLiveSkill(Result):
+    """One plugin skill usable now through ``skill_view`` (qualified ``<plugin>:<skill>``)."""
+
+    name: str
+    description: str = ""
+
+
+class PluginLiveNow(Result):
+    mcp_servers: list[PluginLiveServer] = Field(default_factory=list)
+    skills: list[PluginLiveSkill] = Field(default_factory=list)
+
+
+class PluginActivation(Result):
+    """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
+    kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook
+    names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded
+    (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the
+    error) and skills, usable in every open chat of the profile from its next turn — the chats also get a
+    note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)
+    apply from the next session."""
+
+    name: str
+    key: str
+    activated_now: dict[str, list[str]] = Field(default_factory=dict)
+    live_now: PluginLiveNow | None = None
+    deferred: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class OnboardingCatalogPlugin(Result):
+    """A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.
+    ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what
+    is missing (empty when present or unknown)."""
+
+    name: str
+    title: str
+    description: str
+    tier: CatalogTier
+    platforms: list[str]
+    app_state: CatalogAppState
+    sentence: str
+
+
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
-    ok payload; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
+    ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
+    running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is
+    live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
     ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the
     client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus
     ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``."""
@@ -685,12 +740,16 @@ class PluginsManageResult(Result):
     ok: bool | None = None
     unchanged: bool | None = None
     restart_required: bool | None = None
+    gateway_reloaded: bool | None = None
+    activation: PluginActivation | None = None
     cleared_memory_provider: bool | None = None
     name: str | None = None
     plugin: AgentPluginRow | None = None
     plugin_name: str | None = None
     warnings: list[str] | None = None
     missing_env: list[str] | None = None
+    # ``install`` → the manifest's ``python_dependencies`` the installer applied (``[]`` when none).
+    python_dependencies: list[str] | None = None
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None
@@ -699,6 +758,8 @@ class PluginsManageResult(Result):
     delta_lines: list[str] | None = None
     error: str | None = None
     written: list[str] | None = None
+    # ``onboarding`` → the curated catalog plugins for the onboarding card.
+    onboarding: list[OnboardingCatalogPlugin] | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,

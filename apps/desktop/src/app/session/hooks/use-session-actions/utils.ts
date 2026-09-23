@@ -59,6 +59,13 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
+import {
+  acknowledgedTranscriptBoundary,
+  conflictingTranscriptIdentity,
+  persistedTurnsEquivalent,
+  transcriptRowIds
+} from './pending-turn-identity'
+
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
 
@@ -146,11 +153,11 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 // ships one), these fail tsc until someone explicitly classifies it.
 //
 // COMPARED: fields whose change must trigger a re-render (setMessages).
+// Durable identity changes must publish too: view-side refresh reconciliation
+// must see an acknowledgement even when its visible text is unchanged.
 // IGNORED:  fields that are intentionally not compared — display-only metadata
 //           or reference identity the runtime already guarantees.
-//   timestamp  — presentation-only (sort/age display), never affects transcript equality
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
-//   rowId — durable backend identity; stable for a given row, never changes what's painted
 //   serverRowSpan — backend rows the folded message covers; the older-page offset
 //                   accounting reads it, the transcript never paints it
 //
@@ -162,6 +169,8 @@ const _chatMessageFieldsExhaustive: {
 } = {}
 
 const COMPARED_FIELDS = [
+  'rowId',
+  'persistedTurn',
   'durableComplete',
   'recovered',
   'asyncResult',
@@ -184,7 +193,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId', 'serverRowSpan'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -282,6 +291,8 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
+    a.rowId !== b.rowId ||
+    !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
     a.role !== b.role ||
     a.durableComplete !== b.durableComplete ||
     a.recovered !== b.recovered ||
@@ -368,7 +379,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 
     const previous = previousByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
-    if (!previous) {
+    if (!previous || conflictingTranscriptIdentity(previous, message)) {
       return message
     }
 
@@ -608,10 +619,14 @@ export function preserveLocalPendingTurnMessages(
     return nextMessages
   }
 
+  const acknowledged = acknowledgedTranscriptBoundary(nextMessages, previousMessages)
+  const remainingNext = nextMessages.slice(acknowledged.storedIndex + 1)
+  const acknowledgedTurn = nextMessages.slice(Math.max(0, acknowledged.storedIndex))
+  const lastStoredRowId = nextMessages.reduce((last, message) => Math.max(last, ...transcriptRowIds(message)), 0)
   const nextByRoleOrdinal = new Map<string, ChatMessage>()
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
-  for (const message of nextMessages) {
+  for (const message of remainingNext) {
     if (isGatewaySystemMarker(message)) {
       continue
     }
@@ -637,7 +652,7 @@ export function preserveLocalPendingTurnMessages(
   const liveOptimisticUsers = new Set<ChatMessage>()
 
   if (newestOptimisticUser) {
-    for (let index = previousMessages.indexOf(newestOptimisticUser); index >= 0; index -= 1) {
+    for (let index = previousMessages.indexOf(newestOptimisticUser); index > acknowledged.localIndex; index -= 1) {
       const candidate = previousMessages[index]
 
       if (candidate.role === 'user' && candidate.id.startsWith('user-')) {
@@ -658,17 +673,27 @@ export function preserveLocalPendingTurnMessages(
     }
   }
 
-  const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
+  const latestAuthoritativeUser = [...remainingNext].reverse().find(message => message.role === 'user')
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
   const lastPreviousUser = previousMessages.findLastIndex(row => row.role === 'user' && !isGatewaySystemMarker(row))
+  let crossedUserBoundary = false
 
-  for (const message of previousMessages) {
-    if (isGatewaySystemMarker(message)) {
+  for (const [index, message] of previousMessages.entries()) {
+    if (index <= acknowledged.localIndex || isGatewaySystemMarker(message)) {
       continue
     }
+
+    crossedUserBoundary ||= message.role === 'user' || message.role === 'system'
+
+    // A second segment of the acknowledged turn can still be folded into its
+    // final row. A new prompt closes that ownership; identical later replies
+    // must not be consumed by the already-acknowledged prefix.
+    const candidates = (crossedUserBoundary ? remainingNext : acknowledgedTurn).filter(
+      candidate => !conflictingTranscriptIdentity(message, candidate)
+    )
 
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
@@ -700,16 +725,26 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
+    // The submit receipt already proved this row was saved. If the newest
+    // page has advanced beyond it, its absence is pagination, not unsent input.
+    if (isOptimisticUser && message.rowId !== undefined && message.rowId <= lastStoredRowId) {
+      continue
+    }
+
     if (
       isOptimisticUser &&
       latestAuthoritativeUser &&
+      !conflictingTranscriptIdentity(message, latestAuthoritativeUser) &&
       textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
         textWithoutReferenceLines(chatMessageText(message))
     ) {
       continue
     }
 
-    const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
+    const ordinalMatch = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
+
+    const authoritative =
+      ordinalMatch && !conflictingTranscriptIdentity(message, ordinalMatch) ? ordinalMatch : undefined
 
     // A settled stream row (`pending: false` after message.complete) whose reply
     // the authoritative transcript already carries under its committed id is
@@ -720,7 +755,7 @@ export function preserveLocalPendingTurnMessages(
     if (
       isPendingAssistant &&
       message.pending !== true &&
-      nextMessages.some(
+      candidates.some(
         candidate =>
           candidate.role === 'assistant' &&
           textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
@@ -770,7 +805,7 @@ export function preserveLocalPendingTurnMessages(
     if (isPendingAssistant) {
       const nextText = textWithoutReferenceLines(chatMessageText(message))
 
-      const committedMatch = nextMessages.find(
+      const committedMatch = candidates.find(
         candidate =>
           candidate.role === 'assistant' &&
           !isLiveTailRow(candidate) &&
@@ -782,7 +817,7 @@ export function preserveLocalPendingTurnMessages(
         continue
       }
 
-      const committedPrefix = nextMessages.find(
+      const committedPrefix = candidates.find(
         candidate =>
           candidate.role === 'assistant' &&
           !isLiveTailRow(candidate) &&
@@ -806,7 +841,7 @@ export function preserveLocalPendingTurnMessages(
     if (
       isPendingAssistant &&
       previousMessages.indexOf(message) > lastPreviousUser &&
-      durableFoldCoversLiveResponse(nextMessages, message)
+      durableFoldCoversLiveResponse(candidates, message)
     ) {
       continue
     }

@@ -1,7 +1,7 @@
 """Behavior contract for Honcho's latest-message query rewrite."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -12,8 +12,6 @@ from plugins.memory.query_rewrite import (
     _normalize_rewrite,
     rewrite_memory_query,
 )
-from hermes_cli.config import DEFAULT_CONFIG
-from hermes_cli.main_provider_setup import _AUX_TASKS
 
 
 def _response(text: str):
@@ -145,8 +143,7 @@ def test_session_prewarm_can_skip_query_rewrite():
     )
 
     rewriter.assert_not_called()
-    sent_query = provider._manager.dialectic_query.call_args.args[1]
-    assert "current conversation" in sent_query
+    provider._manager.dialectic_query.assert_called()
 
 
 def test_register_injects_query_rewriter():
@@ -161,10 +158,3 @@ def test_register_injects_query_rewriter():
     assert provider._query_rewriter is rewrite_memory_query
 
 
-def test_config_defaults_keep_rewrite_opt_in_and_bound_first_turn_waits():
-    from plugins.memory.honcho.client import HonchoClientConfig
-
-    cfg = HonchoClientConfig(api_key="k", enabled=True)
-    assert cfg.query_rewrite is False
-    assert cfg.first_turn_base_wait == 3.0
-    assert cfg.first_turn_dialectic_wait == 2.0

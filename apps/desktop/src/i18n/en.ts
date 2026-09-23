@@ -130,7 +130,9 @@ export const en: Translations = {
       managedUnavailable: 'Managed apps are not available for this account yet.',
       writeFailed: 'That change was not saved.',
       refreshFailed: 'The tool list was not refreshed.',
-      disconnectNoAccount: 'Hermes has no account to disconnect here. Refresh the page and try again.'
+      disconnectNoAccount: 'Hermes has no account to disconnect here. Refresh the page and try again.',
+      disconnectRefused:
+        'Nous could not remove this sign-in right now. Turn the app off with the switch instead, or try again later.'
     },
 
     add: {
@@ -176,7 +178,8 @@ export const en: Translations = {
       removeServerTitle: (name: string) => `Remove ${name}?`,
       removeServerBody: 'The entry leaves mcp.json on this computer. Nothing else is deleted.',
       appSwitch: (name: string) => `Hermes can use ${name}`,
-      waysTitle: (name: string) => `How Hermes reaches ${name}`,
+      waysTitle: (name: string) => `Where ${name} runs`,
+      wayNotConnected: (name: string) => `Not connected yet. Sign in to ${name} in your browser.`,
       wayHosted: 'Managed',
       bothOn: (name: string) => `Both are on, so Hermes sees every ${name} tool twice.`,
       turnOffLocal: 'Turn off the local server',
@@ -663,6 +666,7 @@ export const en: Translations = {
       'view.toggleStatusbar': 'Toggle status bar',
       'view.toggleTabStrip': 'Toggle tabs',
       'view.toggleProfileRail': 'Toggle profile rail',
+      'view.toggleSimpleMode': 'Toggle Simple mode',
       'view.showFiles': 'Show file browser',
       'view.showBrowser': 'Open browser',
       'view.toggleHud': 'Toggle HUD mode',
@@ -844,8 +848,10 @@ export const en: Translations = {
         reviewedHeading: 'Reviewed catalog entry',
         reviewedIntro:
           'This entry was human-reviewed at its pinned commit. You can still inspect the exact code below.',
-        restartToApply: 'Restart the gateway for the plugin to take effect.',
-        restartNow: 'Restart gateway',
+        toolsConnected: n => (n === 1 ? '1 tool connected' : `${n} tools connected`),
+        skillsReady: names => (names.length === 1 ? `skill ${names[0]} ready` : `${names.length} skills ready`),
+        nextChat: 'more tools available in your next chat',
+        serverNotConnected: (server, reason) => `MCP server ${server} is not connected${reason ? `: ${reason}` : '.'}`,
         missingEnvAction: 'Set it up',
         alreadyInstalled: (name: string) => `${name} is already installed.`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",
@@ -4227,6 +4233,20 @@ export const en: Translations = {
     }
   },
 
+  interfaceMode: {
+    title: 'Interface mode',
+    hint: 'Changes what is shown, not what Hermes can do.',
+    sessionNote: 'Set by Simple mode. A change here lasts for this session; switch to Advanced to make it yours.',
+    simple: {
+      label: 'Simple',
+      description: 'For talking to Hermes. Sidebar and chat; no terminal, file or diff panes.'
+    },
+    advanced: {
+      label: 'Advanced',
+      description: 'For developers. Terminal, files, diffs, statusbar and layouts, as you set them.'
+    }
+  },
+
   zones: {
     showTabStrip: 'Show tabs',
     hideTabStrip: 'Hide tabs',
@@ -4573,6 +4593,29 @@ export const en: Translations = {
       lateAnswerTip: 'Draft this answer as a follow-up message',
       lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
     },
+    catalogInstall: {
+      preparing: 'Preparing the install…',
+      install: 'Install',
+      advanced: 'Advanced',
+      skip: 'Skip',
+      installing: 'Installing…',
+      installed: 'Installed',
+      notInstalled: 'Not installed',
+      failed: 'Failed',
+      showNames: 'show names',
+      hideNames: 'hide names',
+      skill: name => `skill ${name}`,
+      kind: { plugin: 'plugin', skill: 'skill' },
+      tier: { official: 'official', community: 'community' },
+      targetProfile: profile => `Installs into your ${profile} profile`,
+      sendFailed: 'Could not send your answer. Try again.',
+      commitLabel: 'Commit',
+      subdirLabel: 'Folder',
+      securityHeading: 'Security',
+      scan: { passed: 'Scan passed', warnings: 'Scan found warnings', failed: 'Scan failed' },
+      requirementsLabel: 'Requires',
+      credentialsHeading: 'Credentials'
+    },
     mcpSetup: {
       installTitle: 'Add MCP servers',
       enableTitle: 'Enable MCP servers',
@@ -4703,6 +4746,7 @@ export const en: Translations = {
       'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
     sudoCommandUnavailable:
       'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
+    sudoInstallDesc: 'Hermes needs your sudo password to install the Bot Screen packages (TigerVNC + Xfce) on the gateway host. It is sent only to that host.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',

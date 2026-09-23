@@ -92,7 +92,7 @@ jobs:
         # because it could not build here).
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web
 
       - name: Minimize uv cache
         run: uv cache prune --ci

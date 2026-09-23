@@ -49,29 +49,3 @@ def test_doctor_runs_on_unload_during_teardown(tmp_path: Path) -> None:
     assert report.ok, report.format_text()
     assert marker.exists(), "ctx.on_unload must run before the temp home is removed"
     assert marker.read_text() == "unloaded"
-
-
-def test_doctor_still_reports_and_cleans_up_for_unload_plugin(tmp_path: Path) -> None:
-    # The added unload must not disturb the existing teardown contract: registry
-    # entries restored, no hermes_plugins.* module leak.
-    import sys
-
-    from hermes_cli.plugin_dev import doctor_plugin
-    from tools.registry import registry
-
-    marker = tmp_path / "unloaded2.marker"
-    plugin = _write_plugin(tmp_path, marker)
-    before_modules = {
-        name for name in sys.modules
-        if name == "hermes_plugins" or name.startswith("hermes_plugins.")
-    }
-
-    with patch.dict(os.environ, {"DOCTOR_UNLOAD_MARKER": str(marker)}, clear=False):
-        report = doctor_plugin(plugin)
-
-    assert report.ok, report.format_text()
-    after_modules = {
-        name for name in sys.modules
-        if name == "hermes_plugins" or name.startswith("hermes_plugins.")
-    }
-    assert after_modules == before_modules

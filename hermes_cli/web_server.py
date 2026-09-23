@@ -943,6 +943,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     status as _status_routes,
     actions as _actions_routes,
     audio as _audio_routes,
+    display as _display_routes,
     sessions as _sessions_routes,
     profiles as _profiles_routes,
     memory_providers as _memory_providers_routes,
@@ -957,6 +958,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     tools as _tools_routes,
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
+    chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
 )
 
@@ -966,6 +968,7 @@ app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
 app.include_router(_actions_routes.router)
 app.include_router(_audio_routes.router)
+app.include_router(_display_routes.router)
 app.include_router(_actions_routes.status_router)
 app.include_router(_sessions_routes.list_router)
 app.include_router(_profiles_routes.sessions_router)
@@ -987,6 +990,7 @@ app.include_router(_skills_routes.router)
 app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
+app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)

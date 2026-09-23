@@ -352,7 +352,11 @@ export const zhHant = defineLocale({
       installModal: {
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
-        repoPlaceholder: 'https://github.com/owner/repo'
+        repoPlaceholder: 'https://github.com/owner/repo',
+        toolsConnected: n => `已連線 ${n} 個工具`,
+        skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就緒` : `${names.length} 個技能已就緒`),
+        nextChat: '更多工具將在下一次聊天中可用',
+        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`
       }
     },
     closeSettings: '關閉設定',
@@ -3254,6 +3258,20 @@ export const zhHant = defineLocale({
     }
   },
 
+  interfaceMode: {
+    title: '介面模式',
+    hint: '只改變顯示的內容，不改變 Hermes 的能力。',
+    sessionNote: '由簡潔模式設定。此處的變更僅在本次工作階段內生效；切換到進階模式即可保留為你的設定。',
+    simple: {
+      label: '簡潔',
+      description: '用於與 Hermes 對話。只有側邊欄和聊天；沒有終端機、檔案或差異面板。'
+    },
+    advanced: {
+      label: '進階',
+      description: '面向開發者。終端機、檔案、差異、狀態列和版面配置，按你的設定顯示。'
+    }
+  },
+
   zones: {
     showTabStrip: '顯示分頁',
     hideTabStrip: '隱藏分頁',
@@ -3324,6 +3342,29 @@ export const zhHant = defineLocale({
   },
 
   assistant: {
+    catalogInstall: {
+      preparing: '正在準備安裝…',
+      install: '安裝',
+      advanced: '進階',
+      skip: '略過',
+      installing: '正在安裝…',
+      installed: '已安裝',
+      notInstalled: '未安裝',
+      failed: '失敗',
+      showNames: '顯示名稱',
+      hideNames: '隱藏名稱',
+      skill: name => `技能 ${name}`,
+      kind: { plugin: '外掛', skill: '技能' },
+      tier: { official: '官方', community: '社群' },
+      targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
+      sendFailed: '無法傳送你的回覆，請再試一次。',
+      commitLabel: '提交',
+      subdirLabel: '資料夾',
+      securityHeading: '安全性',
+      scan: { passed: '掃描通過', warnings: '掃描發現警告', failed: '掃描未通過' },
+      requirementsLabel: '需求',
+      credentialsHeading: '憑證'
+    },
     thread: {
       loadingSession: '正在載入工作階段',
       showEarlier: '顯示較早的訊息',
@@ -3521,6 +3562,7 @@ export const zhHant = defineLocale({
     sudoTitle: '管理員密碼',
     sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
     sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
+    sudoInstallDesc: 'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',

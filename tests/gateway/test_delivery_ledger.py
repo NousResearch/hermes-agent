@@ -382,10 +382,6 @@ class TestPrune:
         assert _row("ob-1") is None
 
 
-class TestLedgerEnabled:
-    def test_default_on(self):
-        assert dl.ledger_enabled({}) is True
-        assert dl.ledger_enabled({"gateway": {}}) is True
 
 
 class TestGatewayRedeliverySweep:

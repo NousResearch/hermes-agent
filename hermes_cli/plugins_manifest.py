@@ -59,10 +59,25 @@ def _plugins_debug() -> bool:
 
 def _portable_skill_namespace(key: str) -> str:
     """Return a readable, collision-resistant namespace for a portable plugin."""
-    slug = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-" for ch in key.lower())
-    slug = slug.strip("-_") or "plugin"
+    slug = _portable_slug(key)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
     return f"agent-plugin-{slug}-{digest}"
+
+
+def _portable_slug(key: str) -> str:
+    slug = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-" for ch in key.lower())
+    return slug.strip("-_") or "plugin"
+
+
+def portable_mcp_server_name(key: str, server: str) -> str:
+    """Internal name of a portable plugin's MCP server: exactly the name its ``mcp.json`` gives it, the same
+    rule a user's own ``mcp_servers`` block in config.yaml follows. The plugin's skill namespace
+    (``agent-plugin-<slug>-<digest>``) is NOT prepended: it keeps plugin-data and skill names collision-free
+    without coordination, but here it cost ~40 chars of every ``mcp__<server>__<tool>`` name, which providers
+    cap at 64, so the tool verb was hash-clamped away. A duplicate is refused at load (native config first,
+    then first-loaded plugin) with a warning naming both owners; that beats hiding it behind a digest."""
+    del key  # one signature for loader and card; the plugin identity is deliberately not part of the name
+    return _portable_slug(server)
 
 
 def _display_author(value: object) -> str:

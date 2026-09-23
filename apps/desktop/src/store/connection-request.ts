@@ -1,4 +1,7 @@
 import type {
+  CatalogAppState,
+  CatalogScan,
+  CatalogTier,
   ConnectionAnswer,
   ConnectionOperationStatus,
   ConnectionOperationTarget,
@@ -38,6 +41,26 @@ export type {
   ConnectionTargetState
 }
 
+/** What the catalog says about a `plugin` / `skill` row (CATALOG-ROW-CONTRACT.md). The host resolved all of
+ *  it; the model supplied only the id. */
+export interface CatalogEntry {
+  display: string
+  description: string
+  tier: CatalogTier | null
+  /** Empty when the entry runs everywhere; the card shows a platform only when it is restricted. */
+  platforms: string[]
+  repo: string | null
+  sha: string | null
+  subdir: string | null
+  scan: CatalogScan | null
+  requirements: string[]
+  hasDesktopHalf: boolean
+  targetProfile: string
+  appState: CatalogAppState | null
+  /** On an installed skill row: the qualified name the model can now load. */
+  skill: string | null
+}
+
 /** One target of the operation as the renderer knows it. State comes only from the backend
  *  (`connection.request`, `connectors.operation.status`, `connection.update`); the card never sets it. */
 export interface ConnectionTarget {
@@ -55,6 +78,8 @@ export interface ConnectionTarget {
   requiredEnv: SetupField[]
   instructions: string | null
   discoveryError: string | null
+  /** Present on `plugin` and `skill` rows only. */
+  catalog?: CatalogEntry
 }
 
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
@@ -97,6 +122,7 @@ const TARGET_STATES: readonly ConnectionTargetState[] = [
   'skipped'
 ]
 
+const KINDS: readonly ConnectionTargetKind[] = ['connector', 'mcp', 'plugin', 'skill']
 const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
 const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt']
 
@@ -106,9 +132,35 @@ const oneOf =
   (value: null | string | undefined): T | undefined =>
     allowed.find(candidate => candidate === value)
 
+const targetKind = oneOf(KINDS)
 const targetState = oneOf(TARGET_STATES)
 const targetAction = oneOf(ACTIONS)
 const settleReason = oneOf(SETTLE_REASONS)
+
+export const isCatalogKind = (kind: ConnectionTargetKind): kind is 'plugin' | 'skill' =>
+  kind === 'plugin' || kind === 'skill'
+
+function catalogEntry(entry: ConnectionOperationTarget, name: string): CatalogEntry {
+  return {
+    appState: entry.app_state ?? null,
+    description: entry.description ?? '',
+    display: entry.display?.trim() || name,
+    hasDesktopHalf: entry.has_desktop_half ?? false,
+    platforms: entry.platforms ?? [],
+    repo: entry.repo ?? null,
+    requirements: entry.requirements ?? [],
+    scan: entry.scan ?? null,
+    sha: entry.sha ?? null,
+    skill: entry.skill ?? null,
+    subdir: entry.subdir ?? null,
+    targetProfile: entry.target_profile?.trim() || 'default',
+    tier: entry.tier ?? null
+  }
+}
+
+// Every frame carries a fresh object; a field-equal entry keeps the old reference so the row does not churn.
+const sameCatalog = (next: CatalogEntry | undefined, previous: CatalogEntry | undefined): boolean =>
+  next === previous || JSON.stringify(next) === JSON.stringify(previous)
 
 export function parseConnectionTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
   const name = entry.name.trim()
@@ -117,11 +169,15 @@ export function parseConnectionTarget(entry: ConnectionOperationTarget): Connect
     return null
   }
 
+  // An unknown kind from a backend a version ahead renders as the generic MCP row.
+  const kind = targetKind(entry.kind) ?? 'mcp'
+
   return {
     action: targetAction(entry.action) ?? 'install',
+    catalog: isCatalogKind(kind) ? catalogEntry(entry, name) : undefined,
     connectUrl: entry.connect_url ?? null,
     detail: entry.detail ?? '',
-    kind: entry.kind === 'connector' ? 'connector' : 'mcp',
+    kind,
     name,
     state: targetState(entry.state) ?? 'pending',
     tools: entry.tools ?? [],
@@ -195,8 +251,11 @@ export function applyOperationStatus(request: ConnectionRequest, status: Connect
 }
 
 function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
+  const liveCatalog = target.catalog ? catalogEntry(live, target.name) : undefined
+
   const next: ConnectionTarget = {
     ...target,
+    catalog: sameCatalog(liveCatalog, target.catalog) ? target.catalog : liveCatalog,
     connectUrl: live.connect_url ?? target.connectUrl,
     detail: live.detail ?? target.detail,
     state: live.state,
@@ -208,6 +267,7 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
   }
 
   const same =
+    next.catalog === target.catalog &&
     next.connectUrl === target.connectUrl &&
     next.connectionId === target.connectionId &&
     next.detail === target.detail &&

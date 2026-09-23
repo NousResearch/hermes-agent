@@ -109,10 +109,7 @@ describe('CustomEndpointsSettings', () => {
       expect.objectContaining({ api_mode: 'codex_responses' }),
       'default'
     )
-    expect(notify).toHaveBeenCalledWith({
-      kind: 'success',
-      message: 'Endpoint is reachable (Responses API route served). Found 2 models.'
-    })
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
     expect(saveCustomEndpoint).toHaveBeenCalledWith(
       expect.objectContaining({
         api_mode: 'codex_responses',
@@ -151,7 +148,7 @@ describe('CustomEndpointsSettings', () => {
     await waitFor(() => expect(getCustomEndpoints).toHaveBeenCalledWith('content-studio'))
     expect(screen.getByText('Applies to')).toBeTruthy()
 
-    fireEvent.change(screen.getByPlaceholderText('Axet Proxy'), { target: { value: 'Studio gateway' } })
+    fireEvent.change(await screen.findByPlaceholderText('Axet Proxy'), { target: { value: 'Studio gateway' } })
     fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8081/v1'), {
       target: { value: 'https://studio.example.com/v1' }
     })

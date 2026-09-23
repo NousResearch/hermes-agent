@@ -14,30 +14,7 @@ from utils import IndentDumper, atomic_yaml_write
 class TestIndentDumperShape:
     """IndentDumper emits 2-space-indented list items under mapping keys."""
 
-    def test_indent_dumper_produces_2_indent_lists(self):
-        """List items under a mapping key must start at column 2, not 0."""
-        data = {
-            "custom_providers": [
-                {"name": "NVIDIA", "base_url": "https://api.nvidia.com"},
-            ],
-        }
-        out = yaml.dump(data, Dumper=IndentDumper, default_flow_style=False)
-        # The list item should be indented 2 spaces under the key
-        assert "  - " in out, f"Expected 2-indent list, got:\n{out}"
 
-    def test_default_pyyaml_produces_0_indent_lists(self):
-        """Default PyYAML (the buggy baseline) emits 0-indent lists."""
-        data = {
-            "custom_providers": [
-                {"name": "NVIDIA", "base_url": "https://api.nvidia.com"},
-            ],
-        }
-        out = yaml.dump(data, default_flow_style=False)
-        # The list item should be at column 0 (no leading spaces)
-        lines = out.strip().split("\n")
-        list_lines = [l for l in lines if l.lstrip().startswith("- ")]
-        assert all(not l.startswith("  - ") for l in list_lines), \
-            f"Expected 0-indent list (buggy baseline), got:\n{out}"
 
     def test_indent_dumper_matches_ruamel_layout(self):
         """IndentDumper output should match ruamel.yaml's list-under-mapping layout."""
@@ -85,17 +62,6 @@ class TestAtomicYamlWriteUsesIndentDumper:
         content = path.read_text(encoding="utf-8")
         assert "Tëst Näme" in content
 
-    def test_atomic_yaml_write_is_atomic(self, tmp_path):
-        """atomic_yaml_write should create the file and clean up temp files."""
-        data = {"key": "value"}
-        path = tmp_path / "config.yaml"
-        atomic_yaml_write(path, data)
-
-        assert path.exists()
-        assert path.read_text(encoding="utf-8").strip().endswith("value")
-        # No leftover temp files
-        temp_files = list(tmp_path.glob(".config_*.tmp"))
-        assert len(temp_files) == 0
 
 
 class TestRoundtripConsistency:

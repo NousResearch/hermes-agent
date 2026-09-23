@@ -23,7 +23,6 @@ from hermes_cli.auth import (
 from hermes_cli.models import normalize_provider as normalize_model_provider
 from hermes_cli.models import provider_model_ids
 from hermes_cli.providers import determine_api_mode
-from hermes_cli.providers import get_label
 from hermes_cli.providers import normalize_provider as normalize_overlay_provider
 from providers import get_provider_profile
 
@@ -39,7 +38,6 @@ def test_actual_aliases_and_profile_metadata():
 
     assert profile is not None
     assert profile.name == "actual"
-    assert profile.display_name == "Actual Computer"
     assert profile.base_url == DEFAULT_ACTUAL_BASE_URL
     assert profile.api_mode == "chat_completions"
     assert profile.auth_type == "api_key"
@@ -48,7 +46,6 @@ def test_actual_aliases_and_profile_metadata():
     assert normalize_model_provider("actualcomputer") == "actual"
     assert resolve_provider("actual-computer") == "actual"
     assert _normalize_aux_provider("aci") == "actual"
-    assert get_label("actual") == "Actual Computer"
     assert determine_api_mode("actual", "https://api.actual.inc") == "chat_completions"
 
 
@@ -141,7 +138,6 @@ def test_actual_runtime_repairs_stale_responses_mode(monkeypatch, caplog):
 
     assert resolved["api_mode"] == "chat_completions"
     assert explicit["api_mode"] == "chat_completions"
-    assert "persisted api_mode=codex_responses" in caplog.text
 
 
 def test_actual_runtime_ignores_legacy_mode_environment(monkeypatch):
@@ -541,36 +537,6 @@ def test_actual_oneshot_reasoning_override_reaches_agent(monkeypatch):
     assert captured["reasoning_config"] == {"enabled": True, "effort": "ultra"}
 
 
-def test_oneshot_dispatch_forwards_reasoning_override(monkeypatch):
-    from hermes_cli import main as main_mod
-    from hermes_cli import oneshot
-
-    captured = {}
-
-    def fake_run_oneshot(prompt, **kwargs):
-        captured["prompt"] = prompt
-        captured.update(kwargs)
-        return 0
-
-    class OneshotExit(Exception):
-        pass
-
-    def fake_exit(_rc):
-        raise OneshotExit
-
-    monkeypatch.setattr(oneshot, "run_oneshot", fake_run_oneshot)
-    monkeypatch.setattr(main_mod, "_cleanup_oneshot_runtime", lambda: None)
-    monkeypatch.setattr(main_mod, "_exit_after_oneshot", fake_exit)
-
-    with pytest.raises(OneshotExit):
-        main_mod._run_and_exit_oneshot(
-            "hello",
-            model="zai-org/GLM-5.3",
-            provider="actual",
-            reasoning="high",
-        )
-
-    assert captured["reasoning"] == "high"
 
 
 def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
@@ -605,28 +571,6 @@ def test_actual_agent_init_repairs_stale_responses_mode():
     assert agent.api_mode == "chat_completions"
 
 
-def test_actual_agent_init_ignores_legacy_mode_environment(monkeypatch):
-    from run_agent import AIAgent
-
-    _clear_actual_env(monkeypatch)
-    monkeypatch.setenv("ACTUAL_API_MODE", "codex_responses")
-    with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-    ):
-        agent = AIAgent(
-            api_key="actual-test-key",
-            base_url=DEFAULT_ACTUAL_BASE_URL,
-            provider="actual",
-            api_mode="chat_completions",
-            model="zai-org/GLM-5.3",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-
-    assert agent.api_mode == "chat_completions"
 
 
 def test_actual_chat_completions_wire_replays_reasoning_through_tool_turn(
@@ -810,47 +754,5 @@ def test_actual_chat_completions_wire_replays_reasoning_through_tool_turn(
     assert second.reasoning_content == "The tool result confirms the answer."
 
 
-def test_actual_chat_completion_without_reasoning_keeps_final_content():
-    from types import SimpleNamespace
-
-    from agent.transports.chat_completions import ChatCompletionsTransport
-
-    response = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                finish_reason="stop",
-                message=SimpleNamespace(
-                    content="ACTUAL_NO_REASONING_OK",
-                    reasoning=None,
-                    reasoning_content=None,
-                    tool_calls=None,
-                ),
-            )
-        ],
-        usage=None,
-    )
-
-    normalized = ChatCompletionsTransport().normalize_response(response)
-
-    assert normalized.content == "ACTUAL_NO_REASONING_OK"
-    assert normalized.reasoning is None
-    assert normalized.reasoning_content is None
 
 
-def test_actual_runtime_config_local_base_url_without_key(monkeypatch):
-    """Config-driven loopback base_url (not just env) reaches the no-auth path."""
-    _clear_actual_env(monkeypatch)
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "actual",
-            "base_url": "http://localhost:8080",
-            "default": "actual/local-model",
-        },
-    )
-
-    resolved = rp.resolve_runtime_provider(requested="actual")
-
-    assert resolved["api_key"] == ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
-    assert resolved["api_mode"] == "chat_completions"

@@ -50,6 +50,19 @@ function meaningfulNextSibling(node: ChildNode | null): ChildNode | null {
   return next
 }
 
+/** The live collapsed selection container, if it belongs to this editor. */
+function composerCollapsedSelectionContainer(editor: HTMLElement): Node | null {
+  const selection = window.getSelection()
+
+  if (!selection?.isCollapsed || selection.rangeCount === 0) {
+    return null
+  }
+
+  const range = selection.getRangeAt(0)
+
+  return editor.contains(range.startContainer) ? range.startContainer : null
+}
+
 /** Keep the `data-empty` marker the placeholder paints on in step with the
  *  editor root's contents.
  *
@@ -695,6 +708,21 @@ export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
   placeCaretEnd(editor)
 }
 
+/** Snapshot only when cleanup actually removes the focused caret's container;
+ * cloning the draft on every input flush makes ordinary typing needlessly costly. */
+function removeComposerJunk(editor: HTMLElement, node: ChildNode) {
+  const selected = composerCollapsedSelectionContainer(editor)
+
+  const offset =
+    document.activeElement === editor && selected && node.contains(selected) ? caretOffsetInEditor(editor) : null
+
+  node.remove()
+
+  if (offset !== null) {
+    placeCaretAtOffset(editor, Math.min(offset, composerPlainText(editor).length))
+  }
+}
+
 /** Nothing but a break / whitespace (recursively) — i.e. no real text or chip. */
 function isBlankNode(node: ChildNode | null): boolean {
   if (!node) {
@@ -724,10 +752,12 @@ function isBlankNode(node: ChildNode | null): boolean {
  *  rendering emits (we use text nodes + <br> + chips). Real <br> line breaks
  *  (Shift+Enter, which sit after actual text) are preserved. */
 export function normalizeComposerEditorDom(editor: HTMLElement) {
+  const selectedContainer = composerCollapsedSelectionContainer(editor)
+
   // Chromium's zero-length text nodes first: every check below reads siblings,
   // and litter between them makes a chip look like it has text either side.
   for (const child of Array.from(editor.childNodes)) {
-    if (isEmptyTextNode(child)) {
+    if (isEmptyTextNode(child) && child !== selectedContainer) {
       child.remove()
     }
   }
@@ -741,7 +771,7 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     (tailBlock.tagName === 'DIV' || tailBlock.tagName === 'P') &&
     isBlankNode(tailBlock)
   ) {
-    editor.removeChild(tailBlock)
+    removeComposerJunk(editor, tailBlock)
   }
 
   // Unwrap a lone block wrapper back to inline content.
@@ -749,7 +779,26 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     const wrapper = editor.firstChild as HTMLElement
 
     if ((wrapper.tagName === 'DIV' || wrapper.tagName === 'P') && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
+      // Moving the text nodes out resets Chromium's selection to the editor's
+      // start. Keep DOM endpoints (and direction), not serialized text offsets:
+      // chips are atomic and the wrapper's trailing newline is being removed.
+      const selection = editor.ownerDocument.getSelection()
+      const anchorNode = selection?.anchorNode
+      const focusNode = selection?.focusNode
+      const anchorOffset = selection?.anchorOffset ?? 0
+      const focusOffset = selection?.focusOffset ?? 0
+      const ownsSelection = anchorNode && focusNode && wrapper.contains(anchorNode) && wrapper.contains(focusNode)
+
       editor.replaceChildren(...Array.from(wrapper.childNodes))
+
+      if (ownsSelection && editor.isConnected) {
+        selection?.setBaseAndExtent(
+          anchorNode === wrapper ? editor : anchorNode,
+          anchorOffset,
+          focusNode === wrapper ? editor : focusNode,
+          focusOffset
+        )
+      }
     }
   }
 
@@ -764,7 +813,7 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     }
 
     if (!prev || (prev as HTMLElement).dataset?.refText) {
-      editor.removeChild(last)
+      removeComposerJunk(editor, last)
     }
   }
 

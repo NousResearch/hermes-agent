@@ -383,6 +383,7 @@ export const zh = defineLocale({
       'view.toggleStatusbar': '切换状态栏',
       'view.toggleTabStrip': '切换标签',
       'view.toggleProfileRail': '切换配置档案栏',
+      'view.toggleSimpleMode': '切换简洁模式',
       'view.showFiles': '显示文件浏览器',
       'view.showBrowser': '打开浏览器',
       'view.showTerminal': '显示终端',
@@ -629,8 +630,10 @@ export const zh = defineLocale({
           `Hermes 目录条目「${name}」— agent 部分将安装在经过审核的固定提交${sha ? ` ${sha}` : ''}，而不是分支最新代码。`,
         reviewedHeading: '经过审核的目录条目',
         reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
-        restartToApply: '重启网关后插件才会生效。',
-        restartNow: '重启网关',
+        toolsConnected: n => `已连接 ${n} 个工具`,
+        skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就绪` : `${names.length} 个技能已就绪`),
+        nextChat: '更多工具将在下一次聊天中可用',
+        serverNotConnected: (server, reason) => `MCP 服务器 ${server} 未连接${reason ? `：${reason}` : '。'}`,
         missingEnvAction: '去设置',
         alreadyInstalled: (name: string) => `${name} 已安装。`,
         desktopTarget: '安装到此应用的本地 desktop-plugins 文件夹',
@@ -4036,6 +4039,20 @@ export const zh = defineLocale({
     }
   },
 
+  interfaceMode: {
+    title: '界面模式',
+    hint: '只改变显示的内容，不改变 Hermes 的能力。',
+    sessionNote: '由简洁模式设定。此处的更改仅在本次会话内生效；切换到高级模式即可保留为你的设置。',
+    simple: {
+      label: '简洁',
+      description: '用于与 Hermes 对话。只有侧边栏和聊天；没有终端、文件或差异面板。'
+    },
+    advanced: {
+      label: '高级',
+      description: '面向开发者。终端、文件、差异、状态栏和布局，按你的设置显示。'
+    }
+  },
+
   zones: {
     showTabStrip: '显示标签',
     hideTabStrip: '隐藏标签',
@@ -4208,6 +4225,29 @@ export const zh = defineLocale({
       lateAnswerTip: '将此回答起草为后续消息',
       lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
     },
+    catalogInstall: {
+      preparing: '正在准备安装…',
+      install: '安装',
+      advanced: '高级',
+      skip: '跳过',
+      installing: '正在安装…',
+      installed: '已安装',
+      notInstalled: '未安装',
+      failed: '失败',
+      showNames: '显示名称',
+      hideNames: '隐藏名称',
+      skill: name => `技能 ${name}`,
+      kind: { plugin: '插件', skill: '技能' },
+      tier: { official: '官方', community: '社区' },
+      targetProfile: profile => `安装到你的 ${profile} 配置文件`,
+      sendFailed: '无法发送你的回复，请重试。',
+      commitLabel: '提交',
+      subdirLabel: '文件夹',
+      securityHeading: '安全',
+      scan: { passed: '扫描通过', warnings: '扫描发现警告', failed: '扫描未通过' },
+      requirementsLabel: '要求',
+      credentialsHeading: '凭据'
+    },
     mcpSetup: {
       installTitle: '添加 MCP 服务器',
       enableTitle: '启用 MCP 服务器',
@@ -4323,6 +4363,7 @@ export const zh = defineLocale({
     sudoTitle: '管理员密码',
     sudoDesc: '输入 sudo 密码前，请先检查命令。密码会发送给执行命令的 agent，并在本次会话中缓存。',
     sudoCommandUnavailable: '此 agent 未提供命令。如果无法在对话中确认，请取消。',
+    sudoInstallDesc: 'Hermes 需要你的 sudo 密码，以在网关主机上安装 Bot Screen 软件包（TigerVNC + Xfce）。它只会发送到该主机。',
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',

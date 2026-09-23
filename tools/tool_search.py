@@ -134,8 +134,10 @@ def _core_tool_names() -> frozenset[str]:
 
 
 # Session-gated GUI toolsets: off ``_HERMES_CORE_TOOLS`` so non-GUI clients never pay
-# their schema; once enabled they stay direct unless the deferral list names them.
-_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
+# their schema; once enabled they stay direct unless the deferral list names them. ``setup``
+# is the setup profile's whole job: a guide that has to search for its one tool first
+# answers the user's install request with a tool_search round trip.
+_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "setup"})
 
 # Event-triggered tools deferred BY DEFAULT (a catalog stub suffices). Keep the curated
 # list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit
@@ -236,7 +238,11 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
         (f"Search {deferred_count} additional tools that are loaded on demand. "
          if deferred_count else "Search remote connector tools (email, calendars, issue trackers, and more). ")
         + "Takes a list of queries searched in parallel against the same "
-        "catalog; send one query per distinct capability you need. Returns "
+        "catalog; send one query per distinct capability you need. Queries are "
+        "keyword searches, not questions: the app or service name plus an action "
+        "and object, no filler words (`gmail send email`, `nvidia driver status`, "
+        "not `what's my GPU driver version?`); a word no tool contains makes the "
+        "query return nothing. Returns "
         "matching tool names grouped per query plus a shared map with each "
         "tool's description. Follow with "
         f"`{TOOL_DESCRIBE_NAME}` to load full parameter schemas, "
@@ -278,7 +284,7 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                 "queries": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Search queries, each a few keywords describing one capability (e.g. ['create github issue', 'send slack message']). Searched in parallel; results come back grouped per query. A single string is accepted and treated as one query.",
+                    "description": "Keyword queries, one per capability: app or service name + action + object (e.g. ['github create issue', 'slack send message', 'gmail fetch emails']). Not questions or sentences: every word must appear in tool text, or the query returns nothing. Searched in parallel; results come back grouped per query. A single string is accepted and treated as one query.",
                 },
                 "limit": {
                     "type": "integer",

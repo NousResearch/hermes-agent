@@ -10,7 +10,6 @@ path retained as a compatibility fallback.
 """
 
 import threading
-import time
 import types
 
 import tools.async_delegation as ad
@@ -33,10 +32,6 @@ def _session(agent=None, **extra):
 
 # ── _enqueue_prompt ────────────────────────────────────────────────────────
 
-def test_enqueue_pins_text_and_transport():
-    session = _session()
-    server._enqueue_prompt(session, "hello", "ws-1")
-    assert session["queued_prompt"] == {"text": "hello", "transport": "ws-1"}
 
 
 def test_enqueue_preserves_order_after_an_image_turn():

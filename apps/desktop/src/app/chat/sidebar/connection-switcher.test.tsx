@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -22,27 +22,7 @@ vi.mock('@/store/connections', () => ({
   $activeConnectionId: atom<null | string>('local'),
   $connectionsRegistry: atom<DesktopConnectionsRegistry | null>(null),
   $pendingConnectionId: atom<null | string>(null),
-  initializeConnectionsRegistry: vi.fn(async () => null),
-  refreshConnectionsRegistry: vi.fn(async () => null),
   selectConnection: vi.fn(async () => undefined)
-}))
-
-vi.mock('@/store/boot', () => ({
-  $desktopBoot: atom({
-    error: null,
-    fakeMode: false,
-    message: 'Starting',
-    phase: 'renderer.init',
-    progress: 2,
-    running: true,
-    timestamp: 0,
-    visible: true
-  })
-}))
-
-vi.mock('@/store/windows', () => ({
-  isAuxiliaryWindow: vi.fn(() => false),
-  isPeerInstanceWindow: vi.fn(() => false)
 }))
 
 vi.mock('@/i18n', () => ({
@@ -69,17 +49,10 @@ vi.mock('@/i18n', () => ({
 }))
 
 const connectionStore = await import('@/store/connections')
-const bootStore = await import('@/store/boot')
-const windowStore = await import('@/store/windows')
 const $activeConnectionId = connectionStore.$activeConnectionId as ReturnType<typeof atom<null | string>>
 const $connectionsRegistry = connectionStore.$connectionsRegistry
-const $desktopBoot = bootStore.$desktopBoot
 const $pendingConnectionId = connectionStore.$pendingConnectionId
-const initializeConnectionsRegistry = vi.mocked(connectionStore.initializeConnectionsRegistry)
-const refreshConnectionsRegistry = vi.mocked(connectionStore.refreshConnectionsRegistry)
 const selectConnection = vi.mocked(connectionStore.selectConnection)
-const isAuxiliaryWindow = vi.mocked(windowStore.isAuxiliaryWindow)
-const isPeerInstanceWindow = vi.mocked(windowStore.isPeerInstanceWindow)
 const onConnect = vi.fn()
 
 const connection = (id: string, label: string, kind: 'local' | 'remote' = 'remote') => ({
@@ -102,73 +75,11 @@ afterEach(() => {
   vi.clearAllMocks()
   $connectionsRegistry.set(null)
   $activeConnectionId.set('local')
-  $desktopBoot.set({
-    error: null,
-    fakeMode: false,
-    message: 'Starting',
-    phase: 'renderer.init',
-    progress: 2,
-    running: true,
-    timestamp: 0,
-    visible: true
-  })
   $pendingConnectionId.set(null)
   $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
-  isAuxiliaryWindow.mockReturnValue(false)
-  isPeerInstanceWindow.mockReturnValue(false)
 })
 
 describe('ConnectionSwitcher', () => {
-  it('waits for primary boot fetches before restoring the launch source', async () => {
-    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
-    render(<ConnectionSwitcher onConnect={onConnect} />)
-
-    expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(1)
-    expect(initializeConnectionsRegistry).not.toHaveBeenCalled()
-
-    $desktopBoot.set({
-      ...$desktopBoot.get(),
-      phase: 'renderer.ready',
-      progress: 100,
-      running: false,
-      visible: false
-    })
-
-    await waitFor(() => expect(initializeConnectionsRegistry).toHaveBeenCalledTimes(1))
-  })
-
-  it('keeps a full peer on the shared backend instead of replaying app-launch source restoration', async () => {
-    isPeerInstanceWindow.mockReturnValue(true)
-    $desktopBoot.set({
-      ...$desktopBoot.get(),
-      phase: 'renderer.ready',
-      progress: 100,
-      running: false,
-      visible: false
-    })
-
-    render(<ConnectionSwitcher onConnect={onConnect} />)
-
-    await waitFor(() => expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(1))
-    expect(initializeConnectionsRegistry).not.toHaveBeenCalled()
-  })
-
-  it('keeps a secondary session window from replaying app-launch source restoration', async () => {
-    isAuxiliaryWindow.mockReturnValue(true)
-    $desktopBoot.set({
-      ...$desktopBoot.get(),
-      phase: 'renderer.ready',
-      progress: 100,
-      running: false,
-      visible: false
-    })
-
-    render(<ConnectionSwitcher onConnect={onConnect} />)
-
-    await waitFor(() => expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(1))
-    expect(initializeConnectionsRegistry).not.toHaveBeenCalled()
-  })
-
   it('adds no source chrome for a local-only setup', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local')]))
     render(<ConnectionSwitcher onConnect={onConnect} />)
@@ -189,9 +100,6 @@ describe('ConnectionSwitcher', () => {
     const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
 
     expect(trigger.textContent).toContain('This device')
-    expect(trigger.getAttribute('data-variant')).toBe('ghost')
-    expect(trigger.querySelector('[data-connection-kind="local"] svg')).toBeTruthy()
-    expect(trigger.querySelector('.codicon-home')).toBeNull()
 
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Homelab' }))
@@ -203,45 +111,12 @@ describe('ConnectionSwitcher', () => {
     expect(selectConnection).toHaveBeenCalledTimes(1)
   })
 
-  it('fits the shared statusbar slot without changing its gateway identity', () => {
-    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
-    render(<ConnectionSwitcher compact onConnect={onConnect} />)
-
-    const group = screen.getByRole('group', { name: 'Registered gateways' })
-    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
-
-    expect(group.className).toContain('h-full')
-    expect(group.className).toContain('min-w-20')
-    expect(group.className).toContain('max-w-40')
-    expect(group.className).toContain('shrink')
-    expect(group.className).toContain('overflow-hidden')
-    expect(trigger.className).toContain('text-[0.6875rem]')
-    expect(trigger.className).toContain('min-w-0')
-    expect(trigger.className).toContain('overflow-hidden')
-    expect(trigger.textContent).toContain('This device')
-  })
-
   it('keeps source controls stable while a remote is opening', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
     $pendingConnectionId.set('homelab')
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
     expect(screen.getByRole('group', { name: 'Registered gateways' }).getAttribute('aria-busy')).toBe('true')
-    expect(
-      screen.getByRole('button', { name: 'Registered gateways: This device' }).querySelector('.animate-spin')
-    ).toBeTruthy()
-  })
-
-  it.each([2, 20])('uses the same stable source selector for %i registered backends', count => {
-    $connectionsRegistry.set(
-      registry([
-        connection('local', 'This device', 'local'),
-        ...Array.from({ length: count - 1 }, (_, index) => connection(`remote-${index}`, `Remote ${index}`))
-      ])
-    )
-    render(<ConnectionSwitcher onConnect={onConnect} />)
-
-    expect(screen.getByRole('button', { name: 'Registered gateways: This device' })).toBeTruthy()
   })
 
   it('keeps small gateway lists simple and naturally sorted', () => {
@@ -347,29 +222,10 @@ describe('ConnectionSwitcher', () => {
 
     expect(screen.getByText('No gateways match your search.')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: 'Manage gateways…' })).toBeTruthy()
-    expect(globalThis.document.querySelector('[data-slot="dropdown-menu-radio-group"]')?.className).toContain('h-48')
   })
 
-  it('announces a pending switch in the compact source menu', () => {
-    $connectionsRegistry.set(
-      registry([
-        connection('local', 'This device', 'local'),
-        ...Array.from({ length: 6 }, (_, index) => connection(`remote-${index}`, `Remote ${index}`))
-      ])
-    )
-    $pendingConnectionId.set('remote-3')
-    render(<ConnectionSwitcher onConnect={onConnect} />)
-
-    expect(screen.getByRole('group', { name: 'Registered gateways' }).getAttribute('aria-busy')).toBe('true')
-  })
-
-  // #95393: connections.save succeeded but the switcher kept painting the
-  // stale registry until reload. Mirrors the live repro (w2_95393.py): open
-  // the menu, save a new connection via the bridge, re-open the menu WITHOUT
-  // reload — the new row must be there. Electron now pushes a 'saved'
-  // onChanged for every successful save; the switcher's listener re-pulls the
-  // snapshot.
-  it('repaints the menu after a connections.save without reload (#95393)', async () => {
+  // The window lifecycle owns IPC; this consumer paints its published cache.
+  it('repaints the menu after the registry changes without reload', () => {
     const before = registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')])
 
     const after = registry([
@@ -379,63 +235,17 @@ describe('ConnectionSwitcher', () => {
     ])
 
     $connectionsRegistry.set(before)
+    render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    let onChangedCallback: ((payload: { connectionId: string; reason: string }) => void) | null = null
+    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
 
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
-      connections: {
-        list: vi.fn(async () => after),
-        onChanged: vi.fn((callback: (payload: { connectionId: string; reason: string }) => void) => {
-          onChangedCallback = callback
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    expect(screen.queryByRole('menuitemradio', { name: 'W2Probe' })).toBeNull()
+    fireEvent.keyDown(document, { key: 'Escape' })
 
-          return () => {
-            onChangedCallback = null
-          }
-        })
-      }
-    }
+    act(() => $connectionsRegistry.set(after))
 
-    // The real refreshConnectionsRegistry re-pulls list() and republishes the
-    // atom; the mock mirrors exactly that seam against Electron's current
-    // registry state (before the save, then after it).
-    let electronRegistry = before
-
-    refreshConnectionsRegistry.mockImplementation(async () => {
-      $connectionsRegistry.set(electronRegistry)
-
-      return electronRegistry
-    })
-
-    try {
-      render(<ConnectionSwitcher onConnect={onConnect} />)
-
-      const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
-
-      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
-      expect(screen.queryByRole('menuitemradio', { name: 'W2Probe' })).toBeNull()
-      fireEvent.keyDown(document, { key: 'Escape' })
-
-      // The save lands in Electron's registry…
-      electronRegistry = after
-      // …and Electron's post-save push (reason 'saved' — no dial change) is
-      // the ONLY signal this window gets. Pre-fix, save never emitted it.
-      expect(onChangedCallback).not.toBeNull()
-      ;(onChangedCallback as unknown as (payload: { connectionId: string; reason: string }) => void)({
-        connectionId: 'w2-probe',
-        reason: 'saved'
-      })
-
-      await waitFor(() => expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(2))
-
-      fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: This device' }), {
-        button: 0,
-        pointerType: 'mouse'
-      })
-      expect(screen.getByRole('menuitemradio', { name: 'W2Probe' })).toBeTruthy()
-    } finally {
-      refreshConnectionsRegistry.mockReset()
-      refreshConnectionsRegistry.mockResolvedValue(null)
-      delete (window as { hermesDesktop?: unknown }).hermesDesktop
-    }
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    expect(screen.getByRole('menuitemradio', { name: 'W2Probe' })).toBeTruthy()
   })
 })

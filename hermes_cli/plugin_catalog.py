@@ -14,6 +14,7 @@ in-tree copy silently.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -88,6 +89,8 @@ class PluginCatalogEntry:
     screenshots: List[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
     readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
     platforms: List[str] = field(default_factory=list)  # empty = all OSes
+    title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
+    onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
 
     @property
@@ -103,7 +106,7 @@ class PluginCatalogEntry:
             "requires_hermes": self.requires_hermes,
             "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
             "screenshots": list(self.screenshots), "readme": self.readme,
-            "platforms": list(self.platforms),
+            "platforms": list(self.platforms), "title": self.title, "onboarding": self.onboarding,
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -164,6 +167,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
+        title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
             provides_middleware=_str_list(caps.get("provides_middleware")),
@@ -434,8 +438,24 @@ def load_catalog_live() -> List[PluginCatalogEntry]:
     in_tree = {e.name: e for e in load_catalog()}
     live_t, tree_t = _live_generated_time(data), in_tree_catalog_time()
     tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
-    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer) else e
+    raw_by_name = {str(raw.get("name")): raw for raw in data["entries"] if isinstance(raw, dict)}
+    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer)
+            else _with_curated_fields(e, in_tree.get(e.name), raw_by_name.get(e.name) or {})
             for e in entries]
+
+
+# Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
+# docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
+# the field; a doc that has the key (even ``false``) decides.
+_CURATED_FIELDS = ("onboarding", "title")
+
+
+def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: Dict[str, Any]
+                         ) -> PluginCatalogEntry:
+    if tree is None or tree.sha != live.sha:
+        return live
+    missing = {key: getattr(tree, key) for key in _CURATED_FIELDS if key not in raw}
+    return dataclasses.replace(live, **missing) if missing else live
 
 
 def live_removed_list() -> List[RemovedEntry]:

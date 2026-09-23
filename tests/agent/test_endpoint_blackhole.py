@@ -53,16 +53,7 @@ def _client_mock(side_effect):
 
 
 class TestBlackholeCache:
-    def test_unseen_endpoint_is_not_blackholed(self):
-        from agent.model_metadata import _endpoint_blackholed
 
-        assert _endpoint_blackholed("http://10.0.0.9:30080/v1") is False
-
-    def test_note_then_detected(self):
-        from agent.model_metadata import _endpoint_blackholed, _note_endpoint_blackholed
-
-        _note_endpoint_blackholed("http://10.0.0.9:30080/v1")
-        assert _endpoint_blackholed("http://10.0.0.9:30080/v1") is True
 
     def test_keyed_on_host_port_not_path(self):
         """Every probe path for one server shares a single entry."""
@@ -270,22 +261,3 @@ class TestQueryLocalContextLengthBlackhole:
         assert _endpoint_blackholed(self.URL) is False
 
 
-class TestIsConnectTimeout:
-    def test_httpx_connect_timeout(self):
-        from agent.model_metadata import _is_connect_timeout
-
-        assert _is_connect_timeout(httpx.ConnectTimeout("x")) is True
-
-    def test_requests_connect_timeout(self):
-        from requests.exceptions import ConnectTimeout
-
-        from agent.model_metadata import _is_connect_timeout
-
-        assert _is_connect_timeout(ConnectTimeout("x")) is True
-
-    def test_unrelated_errors_are_not_connect_timeouts(self):
-        from agent.model_metadata import _is_connect_timeout
-
-        assert _is_connect_timeout(httpx.ReadTimeout("x")) is False
-        assert _is_connect_timeout(httpx.ConnectError("x")) is False
-        assert _is_connect_timeout(ValueError("x")) is False

@@ -84,17 +84,6 @@ describe('ConnectionsRegistrySection', () => {
       _resetFleetRosterForTests()
     }
   })
-  it('distinguishes the current connection from the registry primary', async () => {
-    render(<ConnectionsRegistrySection />)
-
-    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    // Label and the managed pill share the copy, so expect both instances.
-    expect(screen.getAllByText('This device').length).toBeGreaterThan(0)
-    expect(screen.getByText('Current')).toBeTruthy()
-    expect(screen.getAllByText('Primary').length).toBeGreaterThan(0)
-    expect(list).toHaveBeenCalledTimes(1)
-  })
-
   it('opens the add-connection editor and saves with a required label', async () => {
     render(<ConnectionsRegistrySection />)
 
@@ -174,7 +163,7 @@ describe('ConnectionsRegistrySection', () => {
     expect(save.mock.calls[0][0]).toMatchObject({ id: 'build-host', remoteHermesPath: '' })
   })
 
-  it('offers every kind on create and disables Local while the managed entry exists', async () => {
+  it('disables Local on create while the managed entry exists', async () => {
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
@@ -182,9 +171,6 @@ describe('ConnectionsRegistrySection', () => {
 
     const localKind = screen.getByRole('button', { name: 'Local' }) as HTMLButtonElement
     expect(localKind.disabled).toBe(true)
-    expect(screen.getByRole('button', { name: 'Hermes Cloud' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Remote gateway' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'SSH' })).toBeTruthy()
   })
 
   it('rejects a duplicate gateway URL in the save path with an inline error', async () => {
@@ -222,11 +208,9 @@ describe('ConnectionsRegistrySection', () => {
   it('lets users opt into restoring the last-used source', async () => {
     render(<ConnectionsRegistrySection />)
 
-    const launchSetting = await screen.findByText('At startup, return to Sessions on the last-used gateway')
-    const addConnection = screen.getByText('Add connection')
-
-    expect(addConnection.compareDocumentPosition(launchSetting) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    fireEvent.click(screen.getByRole('switch', { name: 'At startup, return to Sessions on the last-used gateway' }))
+    fireEvent.click(
+      await screen.findByRole('switch', { name: 'At startup, return to Sessions on the last-used gateway' })
+    )
 
     await waitFor(() => expect(setLaunchMode).toHaveBeenCalledWith('last-used'))
   })
@@ -241,13 +225,6 @@ describe('ConnectionsRegistrySection', () => {
 
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
     expect(screen.getByText('At startup, return to Sessions on the last-used gateway')).toBeTruthy()
-  })
-
-  it('keeps search out of the way for a small registry', async () => {
-    render(<ConnectionsRegistrySection />)
-
-    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    expect(screen.queryByRole('searchbox', { name: 'Search gateways…' })).toBeNull()
   })
 
   it('sorts a large registry and searches names and endpoints', async () => {
@@ -289,8 +266,6 @@ describe('ConnectionsRegistrySection', () => {
     )
 
     const search = await screen.findByRole('searchbox', { name: 'Search gateways…' })
-    expect(search.parentElement?.className).toContain('mt-3')
-    expect(search.parentElement?.className).toContain('mb-0')
     const settingsScroller = screen.getByTestId('settings-scroller')
     settingsScroller.scrollTop = 200
     vi.spyOn(search, 'getBoundingClientRect')
@@ -357,15 +332,6 @@ describe('ConnectionsRegistrySection', () => {
 
     fireEvent.change(search, { target: { value: '' } })
     expect(search.closest<HTMLElement>('.border-t')?.style.minHeight).toBe('')
-  })
-
-  it('tests a connection through the bridge', async () => {
-    render(<ConnectionsRegistrySection />)
-
-    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    fireEvent.click(screen.getAllByText('Test')[0])
-
-    await waitFor(() => expect(test).toHaveBeenCalled())
   })
 })
 

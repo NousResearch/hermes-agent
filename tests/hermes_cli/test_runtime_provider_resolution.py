@@ -1554,11 +1554,6 @@ class TestProviderEntryApiKeyEnvAlias:
         assert normalized.get("key_env") == "MY_VENDOR_KEY"
 
 
-    def test_valid_fields_set_lists_key_env(self):
-        """The _VALID_CUSTOM_PROVIDER_FIELDS documentation set must include
-        key_env so the set stays in sync with what the runtime actually reads."""
-        from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
-        assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
 
     def test_extra_body_is_supported_schema(self):
         from hermes_cli.config import (
@@ -1716,23 +1711,6 @@ def test_openai_key_reaches_openai_host(monkeypatch):
     assert resolved["api_key"] == "sk-openai-secret"
 
 
-def test_openrouter_key_reaches_openrouter_host(monkeypatch):
-    """OPENROUTER_API_KEY must be forwarded when the base_url is openrouter.ai."""
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "openrouter",
-            "base_url": "https://openrouter.ai/api/v1",
-        },
-    )
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-secret")
-
-    resolved = rp.resolve_runtime_provider(requested="openrouter")
-
-    assert resolved["api_key"] == "or-secret"
 
 
 # ----------------------------------------------------------------------

@@ -104,7 +104,7 @@ function useOpenPluginsTab(): () => void {
   }
 }
 
-function localCost(controller: McpServersController, name: string) {
+export function localCost(controller: McpServersController, name: string) {
   const entry = controller.servers[name]
 
   if (!entry) {

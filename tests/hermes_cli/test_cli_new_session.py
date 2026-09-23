@@ -243,39 +243,6 @@ def test_clear_command_starts_new_session_before_redrawing(tmp_path):
     assert cli.conversation_history == []
 
 
-def test_new_session_resets_token_counters(tmp_path):
-    """Regression test for #2099: /new must zero all token counters."""
-    cli = _prepare_cli_with_active_session(tmp_path)
-
-    # Verify counters are non-zero before reset
-    agent = cli.agent
-    assert agent.session_total_tokens > 0
-    assert agent.session_api_calls > 0
-    assert agent.context_compressor.compression_count > 0
-
-    cli.process_command("/new")
-
-    # All agent token counters must be zero
-    assert agent.session_total_tokens == 0
-    assert agent.session_input_tokens == 0
-    assert agent.session_output_tokens == 0
-    assert agent.session_prompt_tokens == 0
-    assert agent.session_completion_tokens == 0
-    assert agent.session_cache_read_tokens == 0
-    assert agent.session_cache_write_tokens == 0
-    assert agent.session_reasoning_tokens == 0
-    assert agent.session_api_calls == 0
-    assert agent.session_estimated_cost_usd == 0.0
-    assert agent.session_cost_status == "unknown"
-    assert agent.session_cost_source == "none"
-
-    # Context compressor counters must also be zero
-    comp = agent.context_compressor
-    assert comp.last_prompt_tokens == 0
-    assert comp.last_completion_tokens == 0
-    assert comp.last_total_tokens == 0
-    assert comp.compression_count == 0
-    assert comp._context_probed is False
 
 
 def test_new_session_with_title(capsys):

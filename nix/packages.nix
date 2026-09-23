@@ -53,8 +53,6 @@
           }).node-gyp;
         default = full;
 
-        inherit sandbox;
-
         inherit minimal;
 
         # Ships discord.py + python-telegram-bot + slack-sdk so a plain
@@ -69,6 +67,9 @@
         desktop = full.hermesDesktop;
 
         update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
+      }
+      // lib.optionalAttrs pkgs.stdenv.isLinux {
+        inherit sandbox;
       };
     };
 }

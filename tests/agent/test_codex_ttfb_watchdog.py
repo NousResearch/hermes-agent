@@ -368,8 +368,9 @@ def test_large_codex_first_progress_deadline_is_attempt_local(tmp_path, monkeypa
         time.sleep(0.45)
         yield SimpleNamespace(type="response.in_progress")
         if mode == "reasoning_then_answer":
-            time.sleep(0.45)  # Past the first-progress deadline if it were not disarmed.
+            time.sleep(0.1)
             yield SimpleNamespace(type="response.reasoning_text.delta", delta="thinking")
+            time.sleep(0.35)  # Past the original first-progress deadline; progress disarmed it.
             yield SimpleNamespace(type="response.output_text.delta", delta="done")
             yield SimpleNamespace(type="response.completed", response=SimpleNamespace(
                 status="completed", id="resp-ok", usage=None))

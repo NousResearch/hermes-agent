@@ -5,6 +5,7 @@ AIAgent first: ``run_codex_app_server_turn`` drives one ``codex app-server`` sub
 from __future__ import annotations
 
 import contextvars
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -1118,7 +1119,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         writer_token["value"] = claim_stream_writer(agent)
         writer_token["raw_stream"] = _raw_stream
         logger.info("Codex stream opened at %.3f (attempt=%s/%s, model=%s)",
-            time.time(), attempt + 1, max_stream_retries + 1, model)
+            datetime.now(timezone.utc).timestamp(), attempt + 1, max_stream_retries + 1, model)
 
     def _drain_for_finalizer(event_stream: Any) -> None:
         # ``final`` is already assembled; draining only lets Relay run its finalizer. A transport error

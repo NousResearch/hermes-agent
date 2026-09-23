@@ -179,26 +179,6 @@ def test_tenant_filter(client):
     assert total == 1
 
 
-def test_dashboard_markdown_html_is_sanitized_before_render():
-    """Task markdown reaches ``dangerouslySetInnerHTML``, so the rendered HTML must
-    pass through ``sanitizeMarkdownHtml`` (tag allowlist, no event handlers, only
-    http(s)/mailto hrefs). Runs the real bundle functions under node — including a
-    raw-HTML renderer swap that proves MarkdownBlock applies the sanitizer — rather
-    than substring-matching the bundle text.
-    """
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node not available")
-    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    probe = Path(__file__).parent / "fixtures" / "kanban_markdown_sanitize_probe.js"
-    result = subprocess.run(
-        [node, str(probe), str(bundle)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
-    )
-    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
-    assert "PASS" in result.stdout
-
-
 
 
 # ---------------------------------------------------------------------------

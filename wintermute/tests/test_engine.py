@@ -420,7 +420,8 @@ def test_status_is_live_and_read_only(home):
         assert section in text
     assert "prochain éveil dans 02:00:00" in text and "telegram:7375758021" in text
     for panel in range(4):
-        assert "WINTERMUTE" in status.render_live(status.snapshot(T0), panel)
+        frame = status.render_live(status.snapshot(T0), panel, frame=panel)
+        assert "╦ ╦╦╔╗╔╔╦╗" in frame and "Neuromancer" in frame
     assert (home / "wintermute" / "drives.json").read_text() == before
 
 

@@ -654,6 +654,14 @@ def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[st
         token = (getattr(entry, "access_token", None) or "").strip()
         if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH or not token:
             continue
+        # A known-expired access token is a guaranteed 401 on this read-only path (no refresh
+        # here by design): skip it so a fresher grant later in the pool can win instead of
+        # shadowing it into a fail-open None. Unknown expiry (None/0, managed keys) stays
+        # eligible. Skew mirrors CredentialPool._entry_needs_refresh for anthropic.
+        expires_at_ms = getattr(entry, "expires_at_ms", None)
+        if expires_at_ms and int(expires_at_ms) <= int(time.time() * 1000) + 120_000:
+            logger.debug("Skipping Anthropic pool entry %s: access token expired", getattr(entry, "id", "?"))
+            continue
         # load_pool() re-seeds rows from the singleton files, so a spent-but-uncommitted rotation
         # (possibly from another process) looks healthy here.
         entry_source_path = spent_rotation_source_path(getattr(entry, "source", None))

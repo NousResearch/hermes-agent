@@ -84,6 +84,32 @@ class SessionLifecycleMixin:
         """Only explicit suspension replaces a routed conversation; time never does."""
         return "suspended" if entry.suspended else None
 
+    def idle_boundary_due(self, source: SessionSource) -> bool:
+        """Whether an inbound user message should take the opt-in idle boundary.
+
+        This is intentionally a read-only, lazy decision.  It never schedules a
+        sweep or changes a quiet chat; the caller sends a qualifying next message
+        through the normal ``/new`` lifecycle.  Active work fails closed.
+        """
+        platform = getattr(source, "platform", None)
+        platform_config = getattr(self.config, "platforms", {}).get(platform)
+        minutes = getattr(platform_config, "idle_new_conversation_minutes", None)
+        if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes <= 0:
+            return False
+        session_key = self._generate_session_key(source)
+        if self._has_active_processes_safe(session_key, context="idle boundary"):
+            return False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.active_turn_token:
+                return False
+            try:
+                age_seconds = (_now() - entry.updated_at).total_seconds()
+            except TypeError:
+                return False
+        return age_seconds > minutes * 60
+
     def _update_entry(self, session_key: str, mutate) -> bool:
         """Apply ``mutate(entry)`` under ``_lock`` and full-save; False when the entry is missing
         or *mutate* returned False (nothing to persist)."""

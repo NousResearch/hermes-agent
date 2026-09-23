@@ -23,11 +23,12 @@ whose result is unknown.
 
 ### Preparation
 
-Preparation is a per-install eligibility refresh. It runs before a target is
-reviewed and pinned. It does **not** contain a target SHA and does not mean that
-a particular revision was installed. A preparation receipt is tied to one
-operation by a correlation ID; only after eligibility is refreshed can an
-operator review and freeze a target.
+Preparation uses the existing individual managed SSH updater for the selected
+installation. It follows that connection's configured branch tip before a fleet
+target is reviewed and pinned. It does **not** contain a fleet target SHA and
+does not prove that a later reviewed revision was installed. Desktop shows the
+individual update and restore result with its correlation ID, discards any old
+fleet review, and refreshes the inventory before a new target can be reviewed.
 
 ### Pinned rollout
 

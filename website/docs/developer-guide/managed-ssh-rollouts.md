@@ -31,8 +31,11 @@ The main source files are:
   transitions and wave admission.
 - `apps/desktop/electron/managed-rollout-journal.ts` — durable records and
   unresolved fences.
-- `apps/desktop/electron/managed-rollout-main-integration.ts`, `main.ts`, and
-  `preload.ts` — the local adapters and fail-closed capability boundary.
+- `apps/desktop/electron/managed-rollout-main-integration.ts` and
+  `managed-rollout-desktop-runtime.ts` — the local adapters, shared update
+  admission check, and owner-gated IPC registration.
+- `apps/desktop/electron/main.ts` and `preload.ts` — the process-owned wiring
+  and renderer bridge.
 
 ## Preparation and pinned rollout are different operations
 
@@ -42,8 +45,8 @@ before a pinned target can be frozen and admitted.
 
 ### Preparation: refresh eligibility without a pinned target
 
-`createManagedSshUpdateService().prepare(connectionId)` is deliberately
-unpinned:
+The service exposes an internal `prepare(connectionId)` contract that is
+deliberately unpinned:
 
 1. It resolves a registered connection and requires a Desktop-managed SSH
    source. Local, URL/HTTP, Cloud, and other source kinds are refused.
@@ -58,6 +61,14 @@ Preparation is not a fleet rollout and is not proof that a particular commit was
 applied. It is the unpinned branch-tip/eligibility phase. A preparation failure
 returns `preparation-failed`; an invalid source, concurrent operation, malformed
 correlation ID, or pinned intent returns `refused`.
+
+The current Settings workflow performs explicit preparation through the
+existing individual `updateManaged` operation, then discards any earlier fleet
+review and refreshes inventory. The production service does not inject
+`prepareRemote` for its separate internal `prepare()` method, so that method
+cannot be called as a second live preparation route. Both the individual
+operation and fleet dispatch borrow the same Desktop update gate and operation
+maps; startup refuses the rollout provider if those identities differ.
 
 ### Pinned rollout: apply only the reviewed target
 

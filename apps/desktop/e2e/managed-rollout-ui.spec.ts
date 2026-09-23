@@ -18,6 +18,8 @@ import { expect, type Page, test } from './test'
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const FLEET_SIZE = 160
 const ROLLOUT_TITLE = 'عمليات النشر المُدارة'
+const FLEET_TITLE = 'أهداف النشر المُدار'
+const INVENTORY_TITLE = 'تثبيتات SSH المُدارة المرصودة'
 
 let server: ViteDevServer
 let scratch: string
@@ -51,7 +53,7 @@ function managedRollouts(page: Page) {
 }
 
 function fleet(page: Page) {
-  return managedRollouts(page).getByRole('region', { name: 'Managed rollout fleet' })
+  return managedRollouts(page).getByRole('region', { name: FLEET_TITLE })
 }
 
 async function capture(page: Page, name: string): Promise<void> {
@@ -109,8 +111,8 @@ test('keyboard selection retains focus and cannot authorize preparation', async 
   await expect(second).toBeFocused()
   await page.keyboard.press('Space')
   await expect(second).toHaveAttribute('aria-pressed', 'true')
-  await expect(managedRollouts(page).getByRole('button', { name: 'Prepare selected targets' })).toBeDisabled()
-  await expect(managedRollouts(page).getByRole('button', { name: 'Start rollout' })).toHaveCount(0)
+  await expect(managedRollouts(page).getByRole('button', { name: 'إعداد الأهداف المحددة' })).toBeDisabled()
+  await expect(managedRollouts(page).getByRole('button', { name: 'بدء النشر' })).toHaveCount(0)
   expect(await page.evaluate(() => (window as unknown as {
     __managedRolloutCalls: { preparation: number; start: number; command: number }
   }).__managedRolloutCalls)).toEqual({ preparation: 0, start: 0, command: 0 })
@@ -145,19 +147,19 @@ test('Arabic RTL, long identity text, and reduced motion remain usable', async (
 
   const firstRow = fleet(page).locator('div.border-b').first()
 
-  const observed = await managedRollouts(page).evaluate(section => ({
+  const observed = await managedRollouts(page).evaluate((section, { inventoryTitle, fleetTitle }) => ({
     title: section.querySelector('h2')?.textContent?.trim() ?? null,
-    inventoryExplanation: section.querySelector('section[aria-label="Observed managed SSH installations"] > p')?.textContent?.trim() ?? null,
-    inventoryRevision: section.querySelector('section[aria-label="Observed managed SSH installations"] > p:nth-of-type(2)')?.textContent?.trim() ?? null,
-    firstSelect: section.querySelector('section[aria-label="Managed rollout fleet"] button[aria-pressed]')?.textContent?.trim() ?? null,
-    sharedMachineWarning: section.querySelector('section[aria-label="Managed rollout fleet"] .text-amber-600')?.textContent?.trim() ?? null
-  }))
+    inventoryExplanation: section.querySelector(`section[aria-label="${inventoryTitle}"] > p`)?.textContent?.trim() ?? null,
+    inventoryRevision: section.querySelector(`section[aria-label="${inventoryTitle}"] > p:nth-of-type(2)`)?.textContent?.trim() ?? null,
+    firstSelect: section.querySelector(`section[aria-label="${fleetTitle}"] button[aria-pressed]`)?.textContent?.trim() ?? null,
+    sharedMachineWarning: section.querySelector(`section[aria-label="${fleetTitle}"] .border-s-2`)?.textContent?.trim() ?? null
+  }), { inventoryTitle: INVENTORY_TITLE, fleetTitle: FLEET_TITLE })
 
   expect(observed.inventoryExplanation).toBe('تعكس قائمة الأجهزة الحالة المرصودة فقط. لا يعني تحديد هدف وحده أنه مؤهل أو أن تحديثه مُصرَّح به.')
   expect(observed.inventoryRevision).toBe('مراجعة القائمة: ui-rehearsal-1؛ وقت الالتقاط وفق الساعة الرتيبة: 100.')
   expect(observed.firstSelect).toBe('تحديد')
   expect(observed.sharedMachineWarning).toBe('آلة مشتركة؛ راجع الملكية قبل الإعداد.')
-  await expect(firstRow.locator('p.text-amber-600')).toBeVisible()
+  await expect(firstRow.locator('p.border-s-2')).toBeVisible()
   expect((await firstRow.textContent())?.length ?? 0).toBeGreaterThan(200)
   await expect(firstRow.locator('button[aria-pressed]')).toBeVisible()
 

@@ -49,6 +49,20 @@ def test_classify_deleted_wal_separately_from_main_file_replacement():
     assert classify_persistence_error(str(replaced)) == "replaced"
 
 
+def test_classify_cantopen_as_disk_not_deleted_wal_generation():
+    # SQLITE_CANTOPEN is generic ("could not open it"): a missing parent dir, an unreadable file,
+    # FD exhaustion. It is not proof that a -wal/-shm generation was retired, so it belongs to
+    # the storage bucket — the proven case has its own type (DeletedWalGenerationError).
+    assert classify_persistence_error("unable to open database file") == "disk"
+    assert classify_persistence_error(
+        sqlite3.OperationalError("unable to open database file")
+    ) == "disk"
+    # Negative control: a busy that merely mentions the open failure stays retryable.
+    assert classify_persistence_error(
+        "unable to open database file: database is locked"
+    ) == "locked"
+
+
 def test_iter_holders_empty_on_non_linux(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_state.sys, "platform", "win32")
     assert iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db") == []

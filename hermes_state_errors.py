@@ -238,6 +238,12 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("was replaced underneath",), "replaced"),
     (_DB_CORRUPTION_MARKERS, "corrupt"),
     (("locked", "busy"), "locked"),
+    # Placeholder: SQLITE_CANTOPEN ("could not open it") is generic — missing parent dir,
+    # unreadable file, FD exhaustion — so it is NOT proof a -wal/-shm generation was retired.
+    # It maps to the storage bucket, AFTER locked, so a busy that merely mentions the open
+    # failure still reads as retryable. The proven retired generation keeps its own type
+    # (DeletedWalGenerationError) and its sidecar-identity/proc-fd evidence.
+    (("unable to open database file",), "disk"),
 )
 
 

@@ -304,8 +304,11 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
     from hermes_state_errors import CompressionSessionClosedError
     agent._last_persistence_error_cause = classify_persistence_error(e)
-    if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
-        # A replaced/quarantined handle will not take this batch again — keep it on disk.
+    if isinstance(e, (StateDbReplacedError, StateDbCorruptError)) or agent._last_persistence_error_cause in ("deleted_wal", "disk"):
+        # A replaced/quarantined handle, a proven retired WAL generation, or storage that refused
+        # the open outright: none of these will take this batch again — keep it on disk.
+        # Decided on the cause here, NOT by widening a classification bucket upstream: a generic
+        # SQLITE_CANTOPEN is not a retired generation, it is simply an unwritable/unopenable store.
         try:
             divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "", batch_rows)
         except Exception:

@@ -3,13 +3,16 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
+import type { ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileTag } from '@/app/chat/profile-tag'
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import type * as LayoutStore from '@/store/layout'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -53,7 +56,11 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
+const { ProfileTagMock } = vi.hoisted(() => ({
+  ProfileTagMock: vi.fn((_props: ComponentProps<typeof ProfileTag>) => null)
+}))
+
+vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: ProfileTagMock }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
@@ -101,6 +108,11 @@ vi.mock('@/store/session', async importOriginal => {
 
   return { ...actual, $unreadFinishedSessionIds: atom<string[]>([]) }
 })
+vi.mock('@/store/layout', async importOriginal => {
+  const actual = await importOriginal<typeof LayoutStore>()
+
+  return { ...actual, $sidebarRowMeta: atom<string[]>(['preview', 'updated']) }
+})
 vi.mock('@/store/session-states', async importOriginal => {
   const actual = await importOriginal<typeof SessionStatesStore>()
 
@@ -147,7 +159,7 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
 
 const noop = vi.fn()
 
-const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
+const renderRow = (session: SessionInfo, extra?: { card?: boolean; showProfile?: boolean }) =>
   render(
     <SidebarSessionRow
       card={extra?.card}
@@ -159,6 +171,7 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
       onResume={noop}
       onToggleUnread={noop}
       session={session}
+      showProfile={extra?.showProfile}
       unread={false}
     />
   )
@@ -322,5 +335,47 @@ describe('SidebarSessionRow inside the sortable list', () => {
     grabber.focus()
     fireEvent.keyDown(grabber, space)
     expect(grabber.getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
+describe('SidebarSessionRow profile ownership tag', () => {
+  afterEach(() => {
+    ProfileTagMock.mockClear()
+  })
+
+  it('renders the ProfileTag when showProfile is set (flat cross-profile lists), even for the default profile', () => {
+    renderRow(makeSession({ id: 's-default', profile: 'default', title: 'Default session' }), { showProfile: true })
+
+    expect(ProfileTagMock).toHaveBeenCalledTimes(1)
+    expect(ProfileTagMock.mock.calls[0][0]).toMatchObject({ profile: 'default' })
+  })
+
+  it('renders the ProfileTag for a named profile when showProfile is set', () => {
+    renderRow(makeSession({ id: 's-se', profile: 'se-maca', title: 'SE session' }), { showProfile: true })
+
+    expect(ProfileTagMock).toHaveBeenCalledTimes(1)
+    expect(ProfileTagMock.mock.calls[0][0]).toMatchObject({ profile: 'se-maca' })
+  })
+
+  it('renders no ProfileTag without showProfile (per-profile scoped list stays clean)', () => {
+    renderRow(makeSession({ id: 's1', profile: 'default', title: 'Scoped' }))
+
+    expect(ProfileTagMock).not.toHaveBeenCalled()
+  })
+
+  it('renders no ProfileTag for a default-profile row even with showProfile off but the Show-menu profile metadata opt-in', async () => {
+    // The opt-in Show ▾ → Profile toggle keeps its historical contract: named
+    // profiles only; the default profile's chip would be noise in every row of
+    // a single-profile user's own list.
+    const layout = await import('@/store/layout')
+    layout.$sidebarRowMeta.set(['profile'])
+
+    try {
+      renderRow(makeSession({ id: 's1', profile: 'default', title: 'Default, opt-in' }))
+
+      expect(ProfileTagMock).not.toHaveBeenCalled()
+    } finally {
+      layout.$sidebarRowMeta.set(['preview', 'updated'])
+    }
   })
 })

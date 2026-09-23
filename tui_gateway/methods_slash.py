@@ -99,7 +99,7 @@ def _format_live_history_output(sid: str, session: dict, arg: str) -> str:
     with session["history_lock"]:
         history = list(session.get("history", []))
     db_history = _live_session_messages(session)
-    messages = _history_to_messages(history if db_history is None else db_history)
+    messages = _history_to_messages(history if db_history is None else db_history, profile_home=session.get("profile_home"))
     if not messages:
         return "No conversation history yet."
     lines = ["Conversation History", "────────────────────────────────────────"]
@@ -128,12 +128,12 @@ def _format_live_prompt_output(sid: str, session: dict, arg: str) -> str:
 def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     from collections import Counter
     try:
-        messages = _history_to_messages(_live_session_messages(session) or [])
+        messages = _history_to_messages(_live_session_messages(session) or [], profile_home=session.get("profile_home"))
     except Exception:
         messages = []  # malformed db rows fall back to the live history below
     if not messages:
         with session["history_lock"]:
-            messages = _history_to_messages(list(session.get("history", [])))
+            messages = _history_to_messages(list(session.get("history", [])), profile_home=session.get("profile_home"))
     usage = _session_usage_snapshot(session)
     mirror = _metadata_mirror(session)
     lines = [f"Conversation: {len(messages)} messages" if messages else "Conversation is empty (no messages yet)."]

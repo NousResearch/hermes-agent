@@ -33,13 +33,17 @@ const DISCORD_TRIGGERING_NOTE_RE =
   /(^|\n)\[Triggering message id: `[^`\n]*` — use as `message_id` for reply\/react\/pin via the discord tools\.\]\n*/
 
 /**
- * Responses message items retain their channel in stored history. Commentary
- * is public assistant text, not analysis; restore it even when the same row
- * has a canonical final answer. Final items remain a content fallback only.
+ * Backend history projection authorizes/sanitizes public commentary before it
+ * reaches Desktop. Raw Responses sidecars are used only for final-answer fallback;
+ * phase=analysis and raw phase=commentary are never promoted to assistant text.
  */
 function codexMessageItemText(message: SessionMessage): { commentary: string[]; reply: string } {
   let items = message.codex_message_items
-  const commentary: string[] = []
+
+  const commentary = Array.isArray(message.display_commentary)
+    ? message.display_commentary.filter((part): part is string => typeof part === 'string' && Boolean(part.trim()))
+    : []
+
   const replies: string[] = []
 
   // REST carries SQLite JSON text; RPC history carries the decoded list.
@@ -68,7 +72,7 @@ function codexMessageItemText(message: SessionMessage): { commentary: string[]; 
 
     const phase = typeof record.phase === 'string' ? record.phase.trim().toLowerCase() : ''
 
-    if (phase === 'analysis' || !Array.isArray(record.content)) {
+    if (phase === 'analysis' || phase === 'commentary' || !Array.isArray(record.content)) {
       continue
     }
 
@@ -88,11 +92,7 @@ function codexMessageItemText(message: SessionMessage): { commentary: string[]; 
 
     const text = chunks.join('')
 
-    if (phase === 'commentary') {
-      if (text.trim()) {
-        commentary.push(text.trim())
-      }
-    } else {
+    if (text) {
       replies.push(text)
     }
   }
@@ -373,30 +373,34 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const sourceHasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
     const durableComplete = sourceHasTools ? false : rowId !== undefined ? true : undefined
 
-    const reasoning =
+    const codexText =
+      displayRole === 'assistant' && message.display_kind !== 'hidden' ? codexMessageItemText(message) : null
+
+    const commentary = codexText?.commentary ?? []
+
+    const rawReasoning =
       message.reasoning ||
       message.reasoning_content ||
       (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
+
+    const reasoning = message.display_reasoning !== undefined ? message.display_reasoning : rawReasoning
 
     if (reasoning && message.role === 'assistant') {
       parts.push(reasoningPart(reasoning, message.timestamp))
     }
 
-    const codexText =
-      displayRole === 'assistant' && message.display_kind !== 'hidden' ? codexMessageItemText(message) : null
-
-    const reply = displayContent || codexText?.reply
+    const reply = message.display_content !== undefined ? displayContent : displayContent || codexText?.reply
     // Some providers also persist the joined commentary as canonical content.
     // Keep that authoritative copy once, without treating unrelated final text
     // as a reason to discard the earlier public messages.
     const normalized = (value: string) => renderMediaTags(value).replace(/\s+/g, ' ').trim()
 
     const commentaryIsReply = Boolean(
-      reply && codexText?.commentary.length && normalized(codexText.commentary.join('\n\n')) === normalized(reply)
+      reply && commentary.length && normalized(commentary.join('\n\n')) === normalized(reply)
     )
 
-    if (codexText && !commentaryIsReply) {
-      parts.push(...codexText.commentary.map(text => assistantTextPart(text, message.timestamp)))
+    if (!commentaryIsReply) {
+      parts.push(...commentary.map(text => assistantTextPart(text, message.timestamp)))
     }
 
     if (reply) {

@@ -391,7 +391,7 @@ def _(rid, params: dict) -> dict:
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
-    messages = _history_to_messages(history)  # hidden seed rows are not on the wire; count what is (as resume does)
+    messages = _history_to_messages(history, profile_home=profile_home)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(messages), "messages": messages,
         # Reflect the override now so the client doesn't clobber its sticky pick.
@@ -564,7 +564,7 @@ class _Resume:
         return self.db.get_messages_as_conversation(self.target, repair_alternation=repair, include_row_ids=True)
 
     def messages(self, display: list) -> list:
-        return [] if self.omit_messages else _history_to_messages(display)
+        return [] if self.omit_messages else _history_to_messages(display, profile_home=self.profile_home)
 
     def read_history(self) -> tuple:
         """One lineage SELECT, two projections: model-fed copy alternation-repaired (healed once
@@ -1782,7 +1782,7 @@ def _(rid, params: dict, session: dict) -> dict:
                     # use. See #87059.
                     history = db.get_messages_as_conversation(
                         session["session_key"], include_ancestors=True, include_row_ids=True)
-    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history)})
+    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 
 @_session_method("session.undo", live=True)
@@ -1857,7 +1857,7 @@ def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
         "status": "compressed", "turn_isolation": True,
         # `messages` goes top-level for the transcript replacement; don't duplicate it in the ack.
         "host_ack": {key: value for key, value in ack.items() if key != "messages"}, "info": host_info,
-        "messages": _history_to_messages(ack.get("messages")) if isinstance(ack.get("messages"), list) else [],
+        "messages": _history_to_messages(ack.get("messages"), profile_home=session.get("profile_home")) if isinstance(ack.get("messages"), list) else [],
         "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {}})
 
 
@@ -1902,7 +1902,7 @@ def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
             "status": "aborted" if summary["aborted"] else "compressed", "removed": removed,
             "before_messages": before_count, "after_messages": len(messages),
             "before_tokens": before_tokens, "after_tokens": after_tokens, "summary": summary,
-            "usage": usage, "info": info, "messages": _history_to_messages(messages)})
+            "usage": usage, "info": info, "messages": _history_to_messages(messages, profile_home=session.get("profile_home"))})
     finally:
         # Always clear the pinned compressing status (success, no-op, or raise).
         _status_update(sid, "ready")
@@ -2060,7 +2060,7 @@ def _(rid, params: dict, session: dict) -> dict:
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
     return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
-                     "message_count": len(history), "messages": _history_to_messages(history),
+                     "message_count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home")),
                      "info": _session_info(agent, _sessions.get(new_sid))})
 
 

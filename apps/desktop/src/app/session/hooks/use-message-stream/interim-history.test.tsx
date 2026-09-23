@@ -1,8 +1,9 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
-import type { RpcEvent, SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/hermes'
 
 import { renderMessageStream } from './test-harness'
 
@@ -16,7 +17,7 @@ describe('intermediate assistant text survives Desktop lifecycle boundaries', ()
     async terminal => {
       const stream = renderMessageStream(SID)
 
-      const emit = async (type: RpcEvent['type'], payload: RpcEvent['payload']) => {
+      const emit = async (type: GatewayEvent['type'], payload: GatewayEvent['payload']) => {
         await act(() => stream.handleEvent({ type, payload, session_id: SID }))
       }
 
@@ -43,7 +44,7 @@ describe('intermediate assistant text survives Desktop lifecycle boundaries', ()
     async transport => {
       const stream = renderMessageStream(SID)
 
-      const emit = async (type: RpcEvent['type'], payload: RpcEvent['payload']) => {
+      const emit = async (type: GatewayEvent['type'], payload: GatewayEvent['payload']) => {
         await act(() => stream.handleEvent({ type, payload, session_id: SID }))
       }
 
@@ -69,7 +70,9 @@ describe('intermediate assistant text survives Desktop lifecycle boundaries', ()
           role: 'assistant',
           content: '',
           timestamp: 1,
-          reasoning: 'Real reasoning.',
+          reasoning: 'Real reasoning.\n\nI will inspect the files.',
+          display_reasoning: 'Real reasoning.',
+          display_commentary: ['I will inspect the files.'],
           codex_message_items: transport === 'rest' ? JSON.stringify(items) : items,
           tool_calls: [
             { id: 'call-1', type: 'function', function: { name: 'terminal', arguments: '{"command":"pwd"}' } }
@@ -89,6 +92,14 @@ describe('intermediate assistant text survives Desktop lifecycle boundaries', ()
       expect(live).toEqual(['I will inspect the files.', 'All checks passed.'])
       expect(restored).toEqual(live)
       expect(restored.join('')).not.toContain('Real reasoning.')
+
+      const restoredReasoning = toChatMessages(rows)
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'reasoning')
+        .map(part => part.text)
+
+      expect(restoredReasoning).toEqual(['Real reasoning.'])
+
       expect(
         toChatMessages(rows)
           .flatMap(message => message.parts)

@@ -625,6 +625,10 @@ export interface SessionMessage {
   content: unknown
   /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
   display_content?: unknown
+  /** Sanitized, profile-authorized public commentary supplied by the history backend. Never recover this from raw replay. */
+  display_commentary?: string[]
+  /** Display-only reasoning after removing exact public commentary; stored reasoning remains unmodified. */
+  display_reasoning?: string
   context?: unknown
   name?: string
   reasoning?: null | string

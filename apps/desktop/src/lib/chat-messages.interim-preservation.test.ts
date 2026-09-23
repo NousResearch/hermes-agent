@@ -48,6 +48,7 @@ describe('stored assistant commentary preservation', () => {
       content: 'Canonical final.',
       timestamp: 2,
       reasoning: 'Real reasoning.',
+      display_commentary: ['I will inspect the files.'],
       codex_message_items: transport === 'rest' ? JSON.stringify(items) : items
     }
 
@@ -67,6 +68,7 @@ describe('stored assistant commentary preservation', () => {
         role: 'assistant',
         content: '',
         timestamp: 2,
+        display_commentary: ['Still checking.'],
         codex_message_items: transport === 'rest' ? JSON.stringify(items) : items
       },
       { role: 'user', content: 'Continue.', timestamp: 3 }
@@ -85,6 +87,7 @@ describe('stored assistant commentary preservation', () => {
         role: 'assistant',
         content: '',
         timestamp: 2,
+        display_commentary: ['First update.', 'Second update.'],
         codex_message_items: [first, item('commentary', 'Second update.'), item('final_answer', 'Final answer.')]
       }
     ])
@@ -92,13 +95,14 @@ describe('stored assistant commentary preservation', () => {
     expect(textParts(message.parts)).toEqual(['First update.', 'Second update.', 'Final answer.'])
   })
 
-  it('normalizes phase spelling without exposing analysis', () => {
+  it('keeps backend-authorized commentary without exposing analysis', () => {
     expect(
       assistantText([
         {
           role: 'assistant',
           content: '',
           timestamp: 2,
+          display_commentary: ['Visible update.'],
           codex_message_items: [
             item(' Commentary ', 'Visible update.'),
             item(' ANALYSIS ', 'Hidden analysis.'),
@@ -117,6 +121,7 @@ describe('stored assistant commentary preservation', () => {
           role: 'assistant',
           content: 'First update.\n\nSecond update.',
           timestamp: 2,
+          display_commentary: ['First update.', 'Second update.'],
           codex_message_items: items
         }
       ])
@@ -130,6 +135,7 @@ describe('stored assistant commentary preservation', () => {
           role: 'assistant',
           content: 'Same text.',
           timestamp: 2,
+          display_commentary: ['Same text.'],
           codex_message_items: [item('commentary', 'Same text.'), item('final_answer', 'Stale text.')]
         }
       ])
@@ -159,7 +165,7 @@ describe('stored assistant commentary preservation', () => {
     expect(message.parts).toEqual([reasoningPart('Only reasoning.', 2)])
   })
 
-  it('rejects malformed and foreign-role items while keeping valid commentary', () => {
+  it('never promotes raw sidecar commentary without backend authorization', () => {
     expect(
       assistantText([
         {
@@ -178,7 +184,7 @@ describe('stored assistant commentary preservation', () => {
           ])
         }
       ])
-    ).toBe('Valid update.')
+    ).toBe('')
   })
 })
 
@@ -214,6 +220,17 @@ describe('authoritative final text is scoped to the latest tool-delimited respon
       'Done. The investigation details follow.',
       'Done.'
     ])
+  })
+
+  it('drops a later provisional draft when the cumulative final equals the earlier response exactly', () => {
+    const earlier = withTool([assistantTextPart('Earlier update.', 1)])
+    const parts = [...earlier, reasoningPart('Checking.', 3), assistantTextPart('Unfinished draft', 4)]
+
+    const result = mergeFinalAssistantText(parts, 'Earlier update.', 5)
+
+    expect(textParts(result)).toEqual(['Earlier update.'])
+    expect(result.slice(0, earlier.length)).toEqual(earlier)
+    expect(result.find(part => part.type === 'reasoning')?.text).toBe('Checking.')
   })
 
   it('still replaces provisional text within one response, even across reasoning parts', () => {

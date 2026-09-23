@@ -320,7 +320,15 @@ export function mergeFinalAssistantText(
     const responseText =
       earlierText && finalText.startsWith(earlierText) ? finalText.slice(earlierText.length) : finalText
 
-    return [...earlier, ...mergeFinalAssistantText(parts.slice(lastToolIndex + 1), responseText, fallbackTimestamp)]
+    const suffix = parts.slice(lastToolIndex + 1)
+
+    // A cumulative final can stop exactly at the pre-tool update. The suffix
+    // draft is still provisional; the ordinary empty-final path keeps drafts.
+    if (earlierText && finalText === earlierText) {
+      return [...earlier, ...suffix.filter(part => part.type !== 'text')]
+    }
+
+    return [...earlier, ...mergeFinalAssistantText(suffix, responseText, fallbackTimestamp)]
   }
 
   const previousText = parts.findLast(part => part.type === 'text')

@@ -32,6 +32,10 @@ The catalog complements — it does not replace — the existing
 normal plugin under the hood; the catalog just adds discovery and a review
 layer on top.
 
+During desktop onboarding, the setup guide can also offer catalog plugins and skills through an
+approval card. Each row installs into your `default` profile only when you click Install, at the
+same reviewed commit this page describes.
+
 ## What's in an entry
 
 Each catalog entry is a small YAML file in the

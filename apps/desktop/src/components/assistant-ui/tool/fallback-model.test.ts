@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { setRuntimeI18nLocale } from '@/i18n'
+import { setRuntimeI18nLocale, type ToolTitleKey, TRANSLATIONS } from '@/i18n'
 
 import {
   buildToolView,
@@ -504,15 +504,29 @@ describe('buildToolView title actions', () => {
     expect(terminal.titleAction?.text).toBe('실행 중')
     expect(terminal.title).toContain('실행 중')
 
-    // Static title: the verb comes from `titles.todo.pendingAction`, which has to be a
-    // substring of `titles.todo.pending` for the action to be found.
-    const todo = buildToolView(part({ result: undefined, toolName: 'todo' }), '')
-    const todoDone = buildToolView(part({ toolName: 'todo' }), '')
+    // Static title: the verb comes from `titles.patch.pendingAction`, which has to be a
+    // substring of `titles.patch.pending` for the action to be found. This pair is the
+    // one that regressed.
+    const patch = buildToolView(part({ result: undefined, toolName: 'patch' }), '')
+    const patchDone = buildToolView(part({ toolName: 'patch' }), '')
 
-    expect(todo.title).not.toBe(todoDone.title)
-    expect(todo.titleAction?.text).toBe('갱신하는 중')
-    expect(todo.title).toContain('갱신하는 중')
+    expect(patch.title).not.toBe(patchDone.title)
+    expect(patch.titleAction?.text).toBe('적용하는 중')
+    expect(patch.title).toContain('적용하는 중')
   })
+
+  // `titlePartsFromAction` locates the shimmered span with `pending.indexOf(pendingAction)`,
+  // so every static entry has to satisfy that on its own — checking one tool would let the
+  // other 22 rot.
+  it.each(Object.keys(TRANSLATIONS.ko.assistant.tool.titles))(
+    'keeps ko titles.%s pending distinct from done and containing its action',
+    name => {
+      const meta = TRANSLATIONS.ko.assistant.tool.titles[name as ToolTitleKey]
+
+      expect(meta.pending).not.toBe(meta.done)
+      expect(meta.pending).toContain(meta.pendingAction)
+    }
+  )
 
   // An unmapped tool falls back to the generic templates, whose pending title has to
   // carry `actions.running` verbatim or `titlePartsFromAction` finds nothing to shimmer.

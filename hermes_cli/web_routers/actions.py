@@ -287,7 +287,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
     # banner.check_for_updates() handles git / nix-revision paths through the GitHub API and
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
     try:
-        from hermes_cli.banner import check_for_updates, upstream_commits_behind
+        from hermes_cli.banner import UPDATE_DIVERGED, check_for_updates, upstream_commits_behind
 
         if force:
             # The checkout is host-wide, but the 24 h cache file lives in a profile home;
@@ -304,6 +304,12 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
         payload["message"] = "Couldn't reach the update source — try again later."
     elif behind == 0:
         payload["message"] = "You're on the latest version."
+    elif behind == UPDATE_DIVERGED:
+        payload["update_available"] = True
+        payload["message"] = (
+            "Branch diverged from origin/main (not a fast-forward). "
+            "Review WIP before updating."
+        )
     else:
         payload["update_available"] = True
         # "What's changed" for the desktop's remote update overlay; best-effort

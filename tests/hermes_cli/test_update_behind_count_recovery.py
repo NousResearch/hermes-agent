@@ -147,6 +147,9 @@ def _local_git(head_sha):
             return MagicMock(returncode=0, stdout=f"{head_sha}\n")
         if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
             return MagicMock(returncode=1, stdout="")
+        # Shallow / missing objects: no merge-base → GitHub compare, not DIVERGED.
+        if cmd[:2] == ["git", "merge-base"]:
+            return MagicMock(returncode=1, stdout="")
         raise AssertionError(f"unexpected git command: {cmd!r}")
 
     return fake_run

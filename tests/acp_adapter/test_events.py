@@ -252,60 +252,122 @@ class TestAssistantMessageIds:
 class TestToolCallsAlwaysReachATerminalStatus:
     """A tool call left ``in_progress`` makes a finished turn look like it ran nothing.
 
-    Two invariants: every call is closed exactly once from its own ``tool.completed``
-    (the ``prev_tools`` step closer stands down once completions arrive), and whatever
-    is still open at turn end is failed with BOTH per-turn dicts drained together."""
+    Every call is closed exactly once: its own ``tool.completed`` wins when projected;
+    otherwise the per-call ``prev_tools`` fallback closes it. Whatever is still open
+    at turn end is failed with both per-turn dicts drained together.
+    """
 
     def _patch(self):
         return patch("acp_adapter.events.asyncio.run_coroutine_threadsafe")
 
-    def test_tool_completed_closes_the_call_once_and_the_step_closer_stands_down(self, mock_conn, event_loop_fixture):
+    def test_tool_completed_closes_its_call_and_step_fallback_closes_the_rest(
+        self, mock_conn, event_loop_fixture,
+    ):
         from collections import deque
 
-        ids, meta, turn_state = {"read": deque(["tc-1", "tc-2"])}, {"tc-1": {"args": {"path": "a"}}}, {}
-        progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, meta, turn_state=turn_state)
-        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta, turn_state)
+        ids = {"read": deque(["tc-1", "tc-2"])}
+        meta = {"tc-1": {"args": {"path": "a"}}}
+        progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, meta)
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta)
         with self._patch() as rcts, patch("acp_adapter.events.build_tool_complete") as btc:
             rcts.return_value = MagicMock(spec=Future)
             progress("tool.completed", "read", None, None, result="file body")
             step(2, [{"name": "read", "result": "file body", "arguments": '{"path": "a"}'}])
-        btc.assert_called_once_with(
-            "tc-1", "read", result="file body", function_args={"path": "a"}, snapshot=None, is_error=False,
+
+        assert btc.call_count == 2
+        btc.assert_any_call(
+            "tc-1", "read", result="file body",
+            function_args={"path": "a"}, snapshot=None, is_error=False,
         )
-        assert list(ids["read"]) == ["tc-2"] and "tc-1" not in meta
+        btc.assert_called_with(
+            "tc-2", "read", result="file body",
+            function_args={"path": "a"}, snapshot=None,
+        )
+        assert "read" not in ids
+        assert meta == {}
 
     def test_step_fallback_coerces_wire_arguments_and_turn_end_flush_fails_what_is_still_open(
         self, mock_conn, event_loop_fixture,
     ):
-        """No completion projected: the step closer must survive the JSON-string ``arguments``
-        the wire carries (a real ``write_file`` close raised on ``.get`` and was swallowed);
-        a denied edit is then failed at turn end, draining ``tool_call_ids`` AND ``tool_call_meta``."""
+        """No completion projected: the step closer survives wire JSON-string arguments;
+        a still-open sibling is then failed at turn end."""
         from collections import deque
 
         from acp_adapter.events import flush_open_tool_calls
 
         ids = {"write_file": deque(["tc-1"]), "edit": deque(["tc-denied"])}
         meta = {"tc-1": {"args": {"path": "a"}, "snapshot": None}, "tc-denied": {"args": {}}}
-        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta, {})
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta)
         with self._patch() as rcts:
             rcts.return_value = MagicMock(spec=Future)
             step(2, [{"name": "write_file", "result": "ok", "arguments": '{"path": "a", "content": "x"}'}])
-            assert [c.args[1].status for c in mock_conn.session_update.call_args_list] == ["completed"]
+            assert [call.args[1].status for call in mock_conn.session_update.call_args_list] == ["completed"]
             assert flush_open_tool_calls(mock_conn, "s", event_loop_fixture, ids, meta) == 1
             assert flush_open_tool_calls(mock_conn, "s", event_loop_fixture, ids, meta) == 0
-        statuses = [c.args[1].status for c in mock_conn.session_update.call_args_list]
+
+        statuses = [call.args[1].status for call in mock_conn.session_update.call_args_list]
         assert statuses == ["completed", "failed"]
-        assert ids == {} and meta == {}
+        assert ids == {}
+        assert meta == {}
 
     def test_tool_completed_is_error_flag_closes_the_call_as_failed(self, mock_conn, event_loop_fixture):
-        """``tool.completed`` carries the executor's ``is_error``; a cancelled tool's plain-text
-        result trips no heuristic, so dropping the flag showed an interrupted call green."""
+        """``tool.completed`` carries the executor's ``is_error``; a cancelled tool's
+        plain-text result trips no heuristic, so dropping the flag showed it green."""
         from collections import deque
 
         ids = {"terminal": deque(["tc-1"])}
         progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, {})
         with self._patch() as rcts:
             rcts.return_value = MagicMock(spec=Future)
-            progress("tool.completed", "terminal", None, None, is_error=True,
-                     result="[Tool execution cancelled — terminal was skipped due to user interrupt]")
-        assert [c.args[1].status for c in mock_conn.session_update.call_args_list] == ["failed"]
+            progress(
+                "tool.completed", "terminal", None, None, is_error=True,
+                result="[Tool execution cancelled — terminal was skipped due to user interrupt]",
+            )
+        assert [call.args[1].status for call in mock_conn.session_update.call_args_list] == ["failed"]
+
+    def test_sibling_completion_does_not_abandon_open_calls(self, mock_conn, event_loop_fixture):
+        """A projected sibling completion must not disable fallback closure for another tool."""
+        from collections import deque
+
+        from acp_adapter.events import flush_open_tool_calls
+
+        ids = {"read": deque(["tc-a"]), "terminal": deque(["tc-b"])}
+        meta = {"tc-a": {"args": {"path": "a"}}, "tc-b": {"args": {"command": "ls"}}}
+        progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, meta)
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta)
+
+        with self._patch() as rcts, patch("acp_adapter.events.build_tool_abandoned") as abandoned:
+            rcts.return_value = MagicMock(spec=Future)
+            progress("tool.completed", "read", None, None, result="file body")
+            step(2, [{"name": "terminal", "result": "total 0", "arguments": '{"command": "ls"}'}])
+            assert flush_open_tool_calls(mock_conn, "s", event_loop_fixture, ids, meta) == 0
+
+        abandoned.assert_not_called()
+        assert [call.args[1].status for call in mock_conn.session_update.call_args_list] == [
+            "completed", "completed",
+        ]
+        assert ids == {}
+        assert meta == {}
+
+    def test_step_closes_one_call_and_turn_end_fails_only_the_unreported_sibling(
+        self, mock_conn, event_loop_fixture,
+    ):
+        from collections import deque
+
+        from acp_adapter.events import flush_open_tool_calls
+
+        ids = {"read": deque(["tc-1"]), "terminal": deque(["tc-2"])}
+        meta = {"tc-1": {"args": {"path": "a"}}, "tc-2": {"args": {"command": "ls"}}}
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta)
+
+        with self._patch() as rcts:
+            rcts.return_value = MagicMock(spec=Future)
+            step(2, [{"name": "read", "result": "ok"}])
+            flushed = flush_open_tool_calls(mock_conn, "s", event_loop_fixture, ids, meta)
+
+        assert flushed == 1
+        assert [call.args[1].status for call in mock_conn.session_update.call_args_list] == [
+            "completed", "failed",
+        ]
+        assert ids == {}
+        assert meta == {}

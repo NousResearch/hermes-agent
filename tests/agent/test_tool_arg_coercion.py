@@ -132,6 +132,21 @@ class TestCoerceToolArgs:
     def test_empty_args(self):
         assert coerce_tool_args("test_tool", {}) == {}
 
+    def test_blank_string_object_arg_becomes_empty_object(self):
+        """A model/MCP-bridge that emits ``parameters: ""`` for a no-required-property
+        object must be repaired to ``{}`` so the call passes schema validation instead of
+        being rejected as "'' is not of type 'object'" (#120269; mirrors #83937)."""
+        schema = self._mock_schema({
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        })
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"parameters": ""})["parameters"] == {}
+            # whitespace-only is equally an empty object
+            assert coerce_tool_args("test_tool", {"parameters": "  "})["parameters"] == {}
+            # a real JSON object string still parses; a populated object is untouched
+            assert coerce_tool_args("test_tool", {"parameters": '{"a": 1}'})["parameters"] == {"a": 1}
+            assert coerce_tool_args("test_tool", {"parameters": {"a": 1}})["parameters"] == {"a": 1}
+
 
 
 

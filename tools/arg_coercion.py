@@ -168,6 +168,14 @@ def _schema_allows_null(schema: dict | None) -> bool:
 def _coerce_json(value: str, expected_python_type: type):
     """json.loads *value* when the schema expects array/object; original string on mismatch."""
     name = expected_python_type.__name__
+    # A blank string for an OBJECT field is the model's empty object: some models (and MCP
+    # bridges) emit ``parameters: ""`` instead of ``{}`` for a no-required-property object —
+    # e.g. the Stripe MCP ``stripe_api_read`` tool on ``GET /v1/balance``. ``json.loads("")``
+    # would otherwise leave it a string that fails validation as "'' is not of type 'object'"
+    # and the call is rejected before dispatch. Mirror of the incoming-argument repair in
+    # #83937 (#120269). Arrays keep their existing bare-value list-wrapping path.
+    if expected_python_type is dict and not value.strip():
+        return {}
     try:
         parsed = json.loads(value)
     except (ValueError, TypeError) as exc:

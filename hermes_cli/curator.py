@@ -577,18 +577,18 @@ def _cmd_usage(args) -> int:
     if not rows:
         print("curator: no skills found")
         return 0
-    provenance = [r.get("provenance", "agent") for r in rows]
-    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub")}
+    provenance = [r.get("provenance", "user") for r in rows]
+    counts = {k: provenance.count(k) for k in ("agent", "user", "bundled", "hub")}
     print(
         f"skills: {len(rows)} total  "
-        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']})\n")
+        f"(agent={counts['agent']}  user={counts['user']}  bundled={counts['bundled']}  hub={counts['hub']})\n")
     print(
         f"  {'skill':40s}  {'origin':8s}  "
         f"{'use':>4s}  {'view':>4s}  {'patch':>5s}  {'act':>4s}  last_activity")
     for r in rows:
         print(
             f"  {r['name'][:40]:40s}  "
-            f"{r.get('provenance', 'agent'):8s}  "
+            f"{r.get('provenance', 'user'):8s}  "
             f"{r.get('use_count', 0):>4d}  "
             f"{r.get('view_count', 0):>4d}  "
             f"{r.get('patch_count', 0):>5d}  "
@@ -609,12 +609,12 @@ _STORE_TRUE = dict(action="store_true")
 _SUBCOMMANDS = (
     ("status", "Show curator status and skill stats", _cmd_status),
     (
-        "usage", "Show usage telemetry for ALL skills (built-in, hub, agent) with provenance",
+        "usage", "Show usage telemetry for ALL skills (built-in, hub, agent, user) with provenance",
         _cmd_usage,
         _arg("--sort", choices=("activity", "recent", "name"), default="activity",
              help="Sort order: activity (most-used first, default), recent "
                   "(most-recently-active first), or name (alphabetical)"),
-        _arg("--provenance", choices=("agent", "bundled", "hub"), default=None,
+        _arg("--provenance", choices=("agent", "user", "bundled", "hub"), default=None,
              help="Only show skills of this origin"),
         _arg("--json", **_STORE_TRUE, help="Emit the full report as JSON instead of a table")),
     (

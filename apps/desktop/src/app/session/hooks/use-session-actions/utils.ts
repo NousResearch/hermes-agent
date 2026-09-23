@@ -1,5 +1,5 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
-import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
+import { referenceRe, textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
 import {
   assistantTextPart,
@@ -1261,9 +1261,41 @@ export function removeRepresentedLocalLiveProjection(
 }
 
 /**
+ * A submitted prompt is optimistic until the gateway's durable row reaches the
+ * renderer. Match both the visible prose and its reference set: image refs are
+ * lifted into `attachmentRefs` during hydration while other refs stay inline.
+ */
+function userPresentationFingerprint(message: ChatMessage): string {
+  const inlineRefs = Array.from(chatMessageText(message).matchAll(referenceRe()), match => match[0])
+  const refs = [...new Set([...(message.attachmentRefs ?? []), ...inlineRefs])].sort()
+
+  return JSON.stringify([textWithoutReferenceLines(chatMessageText(message)), refs])
+}
+
+/**
+ * Overlay runs after an activation REST read. A prompt entered while that read
+ * waited has a renderer-only id, so pure id reconciliation would append it at
+ * the tail even when the authoritative transcript already persisted it in its
+ * real chronological position. Search only the durable suffix after the last
+ * baseline row: an identical older prompt is not proof this new send landed.
+ */
+function persistedTailAlreadyRepresentsOptimisticUser(message: ChatMessage, authoritativeTail: ChatMessage[]): boolean {
+  if (message.role !== 'user' || !message.id.startsWith('user-')) {
+    return false
+  }
+
+  const fingerprint = userPresentationFingerprint(message)
+
+  return authoritativeTail.some(
+    candidate => candidate.role === 'user' && userPresentationFingerprint(candidate) === fingerprint
+  )
+}
+
+/**
  * Overlay messages that changed while activation waited on REST. Existing ids
  * replace the older activation row; only rows added or changed since the warm
- * cache baseline are appended. This is identity-based, never text-based.
+ * cache baseline are appended, except an optimistic user row the authoritative
+ * tail already persisted under its durable id.
  */
 export function overlayConcurrentMessageChanges(
   nextMessages: ChatMessage[],
@@ -1272,6 +1304,17 @@ export function overlayConcurrentMessageChanges(
 ): ChatMessage[] {
   const baselineById = new Map(baselineMessages.map(message => [message.id, message]))
   const nextIndexById = new Map(nextMessages.map((message, index) => [message.id, index]))
+
+  // A known baseline anchor makes an equal older prompt unambiguous: only a
+  // matching user row AFTER it can acknowledge a user row created during the
+  // activation wait. Without an anchor, preserve the local row rather than
+  // risk losing an intentional repeat.
+  const latestBaselineIndex = baselineMessages.reduce(
+    (latest, message) => Math.max(latest, nextIndexById.get(message.id) ?? -1),
+    -1
+  )
+
+  const authoritativeTail = latestBaselineIndex >= 0 ? nextMessages.slice(latestBaselineIndex + 1) : []
   let changed = false
   const overlaid = [...nextMessages]
 
@@ -1296,6 +1339,10 @@ export function overlayConcurrentMessageChanges(
         changed = true
       }
 
+      continue
+    }
+
+    if (persistedTailAlreadyRepresentsOptimisticUser(current, authoritativeTail)) {
       continue
     }
 

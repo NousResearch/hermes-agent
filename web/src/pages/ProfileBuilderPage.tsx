@@ -263,13 +263,21 @@ export default function ProfileBuilderPage() {
           : undefined,
       });
       const pending = (res.hub_installs ?? []).filter((h) => h.pid).length;
-      showToast(
-        pending
-          ? `Profile "${n}" created — ${pending} hub skill${pending === 1 ? "" : "s"} installing`
-          : `Profile "${n}" created`,
-        "success",
-      );
-      navigate("/profiles");
+      const created = pending
+        ? `Profile "${n}" created — ${pending} hub skill${pending === 1 ? "" : "s"} installing`
+        : `Profile "${n}" created`;
+      // A create whose model was rejected still succeeds; the profile keeps
+      // the model it was seeded with.
+      const toast =
+        pickedModel && res.model_set === false
+          ? {
+              message: `${created}, but the model could not be saved — ${res.model_error || "set it from the profile editor."}`,
+              type: "error",
+            }
+          : { message: created, type: "success" };
+      // This page unmounts on navigate and its toast with it, so the Profiles
+      // page shows the result.
+      navigate("/profiles", { state: { toast } });
     } catch (e) {
       showToast(`Create failed: ${errorMessage(e)}`, "error");
     } finally {

@@ -4,6 +4,7 @@ export interface ProfileCreateResponse {
   name: string;
   path: string;
   model_set?: boolean;
+  model_error?: string;
   warnings?: string[];
   mcp_written?: number;
   skills_disabled?: number;

@@ -118,9 +118,11 @@ def _scan_context_pruned_arguments(tool_name: str, args: Any, *, redact: bool = 
                 for key, child in value.items()
             }
         if isinstance(value, list):
-            return [_walk(child, f"{path}[{index}]") for index, child in enumerate(value)] if redact else (
-                [_walk(child, f"{path}[{index}]") for index, child in enumerate(value)] and value
-            )
+            if redact:
+                return [_walk(child, f"{path}[{index}]") for index, child in enumerate(value)]
+            for index, child in enumerate(value):
+                _walk(child, f"{path}[{index}]")
+            return value
         if isinstance(value, tuple):
             if redact:
                 return tuple(_walk(child, f"{path}[{index}]") for index, child in enumerate(value))

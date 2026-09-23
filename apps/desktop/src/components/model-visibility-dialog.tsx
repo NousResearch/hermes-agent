@@ -95,8 +95,13 @@ export function ModelVisibilityDialog({
     !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
 
   // Typing an id no provider lists offers to add it — same gesture as the
-  // pickers, minus the switch — and the new row lands visible.
-  const customSlug = customModelCandidate(search, providers)
+  // pickers, minus the switch — and the new row lands visible. Only once the
+  // query matches nothing, so a partial search isn't shadowed by the offer.
+  const hasMatches = providers.some(provider =>
+    collapseModelFamilies(provider.models ?? []).some(family => matches(provider, family.id))
+  )
+
+  const customSlug = hasMatches ? null : customModelCandidate(search, providers)
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>

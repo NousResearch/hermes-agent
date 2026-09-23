@@ -299,15 +299,19 @@ export function ModelCatalogMenu({
     [moaPresets, q]
   )
 
-  // A typed id no provider lists is still a model to the backend. Offer it as
-  // a row per configured provider (the current one first) so a slug the
-  // catalog lacks is one Enter away, then remember it as a normal row.
-  const customSlug = customModelCandidate(search, pickerProviders)
   const hideCatalog = slugEntry && !search
 
   // The scrolling catalog list only mounts when it has rows; otherwise a
   // section below it (MoA, custom slug) would sit under two separators.
   const hasList = !hideCatalog && (groups.length > 0 || shownDownloads.length > 0)
+
+  // A typed id no provider lists is still a model to the backend. Offer it as
+  // a row per configured provider (the current one first) so a slug the
+  // catalog lacks is one Enter away, then remember it as a normal row. While
+  // the query still matches catalog rows the section stays out of the way
+  // unless the user asked for it via "Add custom model…".
+  const customSlug =
+    slugEntry || (!hasList && shownMoaPresets.length === 0) ? customModelCandidate(search, pickerProviders) : null
 
   const customProviders = useMemo(
     () =>

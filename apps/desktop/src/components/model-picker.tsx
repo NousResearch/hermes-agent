@@ -2,7 +2,7 @@ import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -67,6 +67,10 @@ export function ModelPickerDialog({
   // it: an empty query shows the curated list verbatim (like the `hermes
   // model` CLI picker) and a query ranks with the shared fuzzyRank.
   const [search, setSearch] = useState('')
+  // "Add custom model…" flips the search into slug entry: the typed id is
+  // offered per provider even while it fuzzy-matches catalog rows.
+  const [slugEntry, setSlugEntry] = useState(false)
+  const searchRef = useRef<HTMLInputElement>(null)
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
@@ -184,6 +188,11 @@ export function ModelPickerDialog({
     onOpenChange(false)
   }
 
+  const enterSlug = () => {
+    setSlugEntry(true)
+    searchRef.current?.focus()
+  }
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
@@ -199,7 +208,13 @@ export function ModelPickerDialog({
         </DialogHeader>
 
         <Command className="rounded-none bg-card" shouldFilter={false}>
-          <CommandInput autoFocus onValueChange={setSearch} placeholder={copy.search} value={search} />
+          <CommandInput
+            autoFocus
+            onValueChange={setSearch}
+            placeholder={slugEntry ? copy.customModelPlaceholder : copy.search}
+            ref={searchRef}
+            value={search}
+          />
           <CommandList className="max-h-96">
             {!loading && !error && <CommandEmpty>{copy.noModels}</CommandEmpty>}
             <ModelResults
@@ -209,6 +224,7 @@ export function ModelPickerDialog({
               error={error}
               loading={loading}
               loadingModels={loadingModels}
+              offerCustom={slugEntry}
               onSelectCustomModel={selectCustomModel}
               onSelectModel={selectModel}
               providers={providers}
@@ -218,6 +234,9 @@ export function ModelPickerDialog({
         </Command>
 
         <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
+          <Button className="mr-auto" onClick={enterSlug} variant="ghost">
+            {copy.addCustomModelAction}
+          </Button>
           <Button onClick={addProvider} variant="ghost">
             {copy.addProvider}
           </Button>
@@ -240,6 +259,7 @@ function ModelResults({
   loadingModels,
   onSelectModel,
   onSelectCustomModel,
+  offerCustom,
   search
 }: {
   loading: boolean
@@ -251,6 +271,8 @@ function ModelResults({
   loadingModels: Record<string, LocalModelLoadProgress>
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
   onSelectCustomModel: (provider: ModelOptionProvider, model: string) => void
+  /** Offer the typed id as a custom model even while catalog rows match. */
+  offerCustom: boolean
   search: string
 }) {
   const { t } = useI18n()
@@ -305,9 +327,20 @@ function ModelResults({
   const visibleDownloads = downloads.filter(job => !q || foldIncludes(job.target || '', q))
   const hasLocalGroup = configured.some(p => p.slug === LOCAL_PROVIDER_SLUG)
 
-  // A typed id no provider lists: one row per configured provider, current
+  const groups = configured.map(provider => ({
+    provider,
+    // Empty query: the backend's curated order, verbatim.
+    models: rankModels(provider, provider.models ?? []),
+    downloads: provider.slug === LOCAL_PROVIDER_SLUG ? visibleDownloads : []
+  }))
+
+  const hasMatches = groups.some(g => g.models.length > 0 || g.downloads.length > 0)
+
+  // A typed id nothing lists: one row per configured provider, current
   // provider first, so the slug is one Enter away and remembered afterwards.
-  const customSlug = customModelCandidate(search, configured)
+  // While the query still matches catalog rows the section stays out of the
+  // way unless the user asked for it via "Add custom model…".
+  const customSlug = offerCustom || !hasMatches ? customModelCandidate(search, configured) : null
 
   const customProviders = customSlug
     ? [...configured].sort(
@@ -318,11 +351,7 @@ function ModelResults({
 
   return (
     <>
-      {configured.map(provider => {
-        // Empty query: the backend's curated order, verbatim.
-        const models = rankModels(provider, provider.models ?? [])
-        const groupDownloads = provider.slug === LOCAL_PROVIDER_SLUG ? visibleDownloads : []
-
+      {groups.map(({ provider, models, downloads: groupDownloads }) => {
         if (models.length === 0 && groupDownloads.length === 0) {
           return null
         }

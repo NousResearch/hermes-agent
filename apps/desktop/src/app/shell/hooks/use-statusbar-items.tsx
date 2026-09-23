@@ -33,6 +33,7 @@ import {
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -391,6 +392,9 @@ export function useStatusbarItems({
       applyMessage: updateApply.message,
       behind: updateStatus?.behind ?? 0,
       branch: updateStatus?.branch,
+      checkedAt: updateStatus?.fetchedAt
+        ? t.settings.about.lastChecked(fmtDateTime.format(updateStatus.fetchedAt))
+        : undefined,
       copy,
       remote: connection?.mode === 'remote',
       restarting: updateApply.stage === 'restart',
@@ -418,11 +422,13 @@ export function useStatusbarItems({
     desktopVersion?.appVersion,
     connection?.mode,
     copy,
+    t.settings.about,
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
     updateStatus?.behind,
     updateStatus?.branch,
+    updateStatus?.fetchedAt,
     updateStatus?.currentSha,
     updateStatus?.updateAvailable
   ])

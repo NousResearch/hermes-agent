@@ -42,6 +42,8 @@ export interface VersionStatusInput {
    * apply mechanism is the caller's concern.
    */
   channel?: 'stable' | 'main'
+  /** Human-readable last-checked label for the cached update reading, when known. */
+  checkedAt?: string
   copy: VersionStatusCopy
   /** Stable channel: the newest release tag, when the check found one. */
   latestTag?: null | string
@@ -58,6 +60,9 @@ export interface VersionStatusInput {
 }
 
 export interface VersionStatusResult {
+  checkedAt?: string
+  /** Secondary text beside the label — the commit sha, when it adds anything. */
+  detail?: string
   /** An update is waiting: callers tint the row with it. */
   hasUpdate: boolean
   label: string
@@ -72,6 +77,7 @@ export function resolveVersionStatus({
   behind = 0,
   branch,
   channel = 'main',
+  checkedAt,
   copy,
   latestTag = null,
   remote,
@@ -114,6 +120,7 @@ export function resolveVersionStatus({
     !busy && available && stable && latestTag && copy.releaseAvailable(latestTag),
     !busy && !stable && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
     !busy && available && (stable ? !latestTag : behind <= 0) && copy.update,
+    !busy && checkedAt,
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
     // The branch line is main-channel vocabulary; a stable checkout sits on
@@ -124,6 +131,8 @@ export function resolveVersionStatus({
     .join(' · ')
 
   return {
+    checkedAt: !busy ? checkedAt : undefined,
+    detail: client && version && sha && !busy && !remote ? sha : undefined,
     hasUpdate: !busy && available,
     label: busy ? `${base} · ${restarting ? copy.restart : copy.update}` : `${base}${hint}`,
     tooltip: tooltip || undefined,

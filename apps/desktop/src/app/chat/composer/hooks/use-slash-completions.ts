@@ -19,6 +19,8 @@ import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion
 import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'
 
+import { useComposerScope } from '../scope'
+
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
@@ -70,10 +72,31 @@ export function useSlashCompletions(options: {
   loading: boolean
 } {
   const { gateway, sessionId, skinThemes, activeSkin } = options
+  // Owner profile of the surface this popover belongs to (a Bot tile runs on the
+  // Bot's own profile — the composer scope already carries it). The popover is
+  // answered on the window's AMBIENT socket, where a cross-profile chat's session
+  // is not live, so the profile has to travel with the request: without it the
+  // backend resolves skills against its LAUNCH profile and a secondary profile's
+  // local skills never appear here (the command itself still runs — dispatch and
+  // slash.exec route to the owning backend).
+  const ownerProfile = useComposerScope().profile || null
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
-  const sessionParams = useMemo(() => (sessionId ? { session_id: sessionId } : {}), [sessionId])
-  const catalogKey = sessionId ? `catalog:${sessionId}` : 'catalog'
+
+  // Session AND profile key both requests: the catalog is a scan of the profile's
+  // skills dir, so a response is only valid for the pair that produced it — the
+  // ambient profile can stay put while the focused chat moves between profiles.
+  const sessionParams = useMemo(
+    () => ({ ...(sessionId ? { session_id: sessionId } : {}), ...(ownerProfile ? { profile: ownerProfile } : {}) }),
+    [ownerProfile, sessionId]
+  )
+
+  const catalogKey = `catalog:${sessionId ?? ''}:${ownerProfile ?? ''}`
+
+  const slashKey = useCallback(
+    (text: string) => `slash:${ownerProfile ?? ''}:${sessionId ?? ''}:${text.toLowerCase()}`,
+    [ownerProfile, sessionId]
+  )
 
   // Warm argument_mode before the first `/` so Space treats /review as text.
   useEffect(() => {
@@ -204,7 +227,7 @@ export function useSlashCompletions(options: {
           return { items, query }
         }
 
-        const result = await cachedSlashCompletion(`slash:${sessionId ?? ''}:${text.toLowerCase()}`, () =>
+        const result = await cachedSlashCompletion(slashKey(text), () =>
           gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
             text,
             ...sessionParams
@@ -264,7 +287,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin, sessionId, catalogKey, sessionParams]
+    [gateway, skinThemes, activeSkin, catalogKey, sessionParams, slashKey]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
@@ -306,9 +329,9 @@ export function useSlashCompletions(options: {
         return true
       }
 
-      return hasCachedSlashCompletion(query ? `slash:${sessionId ?? ''}:${text.toLowerCase()}` : catalogKey)
+      return hasCachedSlashCompletion(query ? slashKey(text) : catalogKey)
     },
-    [skinThemes, sessionId, catalogKey]
+    [skinThemes, slashKey, catalogKey]
   )
 
   return useLiveCompletionAdapter({ enabled, epoch, fetcher, isCached, toItem })

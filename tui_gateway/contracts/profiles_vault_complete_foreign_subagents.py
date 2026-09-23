@@ -47,8 +47,14 @@ method("complete.path", params=CompletePathParams, result=CompletionItemsResult,
        doc="Path / @-reference completions for the composer (files, folders, profiles, plugin providers).")
 
 
-class CompleteSlashParams(Params):
-    """``session_id`` binds skill completions to that session's profile and workspace (project skills)."""
+class CompleteSlashParams(ProfileParams):
+    """``session_id`` binds skill completions to that session's profile and workspace (project skills).
+
+    ``profile`` is the cross-process leg: the Desktop answers a chat's popover on the window's ambient
+    socket, and a cross-profile tile's session is live in ANOTHER backend, so the request names the
+    profile that owns the chat. Same ladder as the dispatcher's ``_profile_scoped`` (explicit profile,
+    else the live session), and the reason this params class inherits ``ProfileParams`` — a routed
+    request carries ``profile`` and must not be rejected for it."""
 
     text: str | None = None
     session_id: str | None = None

@@ -7,6 +7,7 @@ import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 
 import { isSkillItem } from '../composer-utils'
+import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useSlashCompletions } from './use-slash-completions'
 
@@ -41,7 +42,7 @@ const RANKED_CATALOG = {
 const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
   items.map(item => (item.metadata as { command?: string })?.command)
 
-function harness(gateway: HermesGateway) {
+function harness(gateway: HermesGateway, scope: Partial<ComposerScope> = {}) {
   const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
 
   function Probe() {
@@ -51,7 +52,11 @@ function harness(gateway: HermesGateway) {
     return null
   }
 
-  render(<Probe />)
+  render(
+    <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, ...scope }}>
+      <Probe />
+    </ComposerScopeProvider>
+  )
 
   return api as { search: (query: string) => readonly Unstable_TriggerItem[] }
 }
@@ -173,5 +178,38 @@ describe('useSlashCompletions', () => {
     expect(groupOf('/refine')).toBe('Commands')
     expect(groupOf('/compress')).toBe('Commands')
     expect(groupOf('/docx')).toBe('Skills')
+  })
+
+  // A Bot tile's popover is answered on the window's AMBIENT socket, where that
+  // chat's session is not live. The owner profile has to ride the request: without
+  // it the backend resolves skills against its LAUNCH profile, so a secondary
+  // profile's local skills never appear ("/openevent" → "No matches") even though
+  // typing it anyway still runs it.
+  it('carries the scope owner profile on the catalog and completion requests', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: '/openevent', display: '/openevent', kind: 'skill', meta: 'Open an event' }] }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway, { profile: 'event-sales' })
+
+    expect(commandsOf(await completions(api, 'openevent'))).toEqual(['/openevent'])
+    expect(request).toHaveBeenCalledWith(
+      'complete.slash',
+      expect.objectContaining({ text: '/openevent', profile: 'event-sales' })
+    )
+    // The bare-slash catalog is a scan of that profile's skills dir, so it scopes too.
+    expect(request).toHaveBeenCalledWith('commands.catalog', { profile: 'event-sales' })
+  })
+
+  it('sends no profile for a scope that has none (the ambient socket answers its own)', async () => {
+    const request = vi.fn().mockResolvedValue(CATALOG)
+
+    await completions(harness({ request } as unknown as HermesGateway), '')
+
+    expect(request).toHaveBeenCalledWith('commands.catalog', {})
   })
 })

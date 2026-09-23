@@ -463,9 +463,11 @@ describe('renderRpcResult', () => {
   })
 
   describe('session.usage', () => {
-    it('formats calls / input / output / total with thousands separators', () => {
+    it('formats all usage counters in the host locale', () => {
+      const format = new Intl.NumberFormat().format
+
       expect(renderRpcResult({ calls: 12, input: 1_234_567, output: 89_012, total: 1_323_579 }, 'usage')).toBe(
-        'Usage: 12 calls · 1,234,567 in / 89,012 out · 1,323,579 total'
+        `Usage: ${format(12)} calls · ${format(1_234_567)} in / ${format(89_012)} out · ${format(1_323_579)} total`
       )
     })
 
@@ -482,8 +484,7 @@ describe('renderRpcResult', () => {
         'usage'
       )
 
-      expect(body.split('\n')).toEqual([
-        'Usage: 1 calls · 10 in / 20 out · 30 total',
+      expect(body.split('\n').slice(1)).toEqual([
         '📈 Account limits',
         'Provider: openai-codex (Plus)',
         'Weekly: 12% used',

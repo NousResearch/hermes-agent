@@ -1,6 +1,6 @@
 # Constraint Library
 
-Constraint-dispatch library — voice and approach inspired by [wttdotm.com/prompts.html](https://wttdotm.com/prompts.html). Adapted and expanded.
+Constraint-dispatch library, voice and approach inspired by [wttdotm.com/prompts.html](https://wttdotm.com/prompts.html). Adapted and expanded.
 
 Constraint plus direction is creativity. Pick a constraint, generate 3 ideas that satisfy it, ship one.
 
@@ -8,11 +8,11 @@ Constraint plus direction is creativity. Pick a constraint, generate 3 ideas tha
 
 The library is split by **domain affinity**:
 
-- **General** — works for any domain. Default for SPECIFICITY=NONE.
-- **Software / artifact** — when DOMAIN=ARTIFACT.
-- **Physical / object** — when DOMAIN=OBJECT.
-- **Social / collective** — when work involves other people.
-- **Lists** — domain-agnostic, more whimsical.
+- **General**: works for any domain. Default for SPECIFICITY=NONE.
+- **Software / artifact**: when DOMAIN=ARTIFACT.
+- **Physical / object**: when DOMAIN=OBJECT.
+- **Social / collective**: when work involves other people.
+- **Lists**: domain-agnostic, more whimsical.
 
 When in doubt: pick one from General. When the user has stated a domain, pick from that domain's section. Pick by random, by mood match, or by what's nearest the user's wording. Don't enumerate all of them.
 
@@ -20,7 +20,7 @@ Every prompt is interpreted as broadly as possible. "Does this include X?" → y
 
 ---
 
-## General — any domain (default)
+## General: any domain (default)
 
 **Start at the punchline.**
 Think of something that would be a funny sentence. Work backwards to make it real. *"I taught my thermostat to gaslight me"* → now build it.
@@ -32,7 +32,7 @@ A deep idea, lazily executed. The concept should be brilliant. The implementatio
 Remember an old project of yours. Do it again from scratch. No looking at the original. See what changed about how you think.
 
 **Blatantly copy something.**
-Pick something you admire — a tool, an artwork, an interface. Recreate it from scratch. The learning is in the gap between your version and theirs.
+Pick something you admire, a tool, an artwork, an interface. Recreate it from scratch. The learning is in the gap between your version and theirs.
 
 **Translate.**
 Take something meant for one audience and make it understandable by another. A research paper as a children's book. An API as a board game. A song as an architecture diagram.
@@ -65,7 +65,7 @@ Things that intermediate two places: opening, closing, permeating, excluding, co
 Something inspired by the Argentine. The library of Babel. The map that is the territory. Two writers separated by 400 years writing the same book.
 
 **An idea that comes from a book.**
-Read something — anything, deeply, even a footnote. Make something inspired by it.
+Read something, anything, deeply, even a footnote. Make something inspired by it.
 
 **Go to a museum.**
 Project ensues.
@@ -146,7 +146,7 @@ LED throwies, light installations, illuminated anything. Make something that glo
 The project works when you can use what you made to give something to somebody else.
 
 **Make a way to communicate.**
-The project works when you can hold a conversation with someone else using what you created. Not chat — something weirder.
+The project works when you can hold a conversation with someone else using what you created. Not chat, something weirder.
 
 **Write a love letter.**
 To a person, a programming language, a game, a place, a tool. On paper, in code, in music, in light. Mail it.

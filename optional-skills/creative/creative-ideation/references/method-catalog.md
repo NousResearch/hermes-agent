@@ -16,7 +16,7 @@ One-line summary + when-to-use for every method. Cross-reference with `heuristic
 |---|---|
 | `methods/oulipo.md` | Writing, especially poetry/fiction. Lipograms, S+7, snowballs, palindromes. |
 | `methods/scamper.md` | Have a base idea, want 7 systematic variations cheaply. |
-| `full-prompt-library.md` | Blank-page default. wttdotm-style project constraints. Sectioned by domain (General / Software / Physical / Social / Lists) — pick from the matching section, not the whole library. |
+| `full-prompt-library.md` | Blank-page default. wttdotm-style project constraints. Sectioned by domain (General / Software / Physical / Social / Lists), pick from the matching section, not the whole library.|
 
 ## Theoretical
 

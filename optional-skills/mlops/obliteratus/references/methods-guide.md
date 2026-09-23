@@ -1,4 +1,4 @@
-# OBLITERATUS Methods — Detailed Guide
+# OBLITERATUS Methods, Detailed Guide
 
 > The CLI accepts 9 methods via `--method`: basic, advanced, aggressive, spectral_cascade,
 > informed, surgical, optimized, inverted, nuclear.
@@ -6,8 +6,8 @@
 
 ## How Abliteration Works (Theory)
 
-Abliteration identifies a "refusal direction" — a vector in the model's activation space that
-corresponds to refusal behavior — and projects it out of the weight matrices.
+Abliteration identifies a "refusal direction", a vector in the model's activation space that
+corresponds to refusal behavior, and projects it out of the weight matrices.
 
 Mathematically: `W_new = W_old - (W_old @ d @ d.T)` where `d` is the refusal direction.
 
@@ -23,7 +23,7 @@ Before projecting, OBLITERATUS extracts refusal directions using one of three me
 |:-------|:-----|:------------|:---------|
 | Diff-in-Means | `--direction-method diff_means` | Difference between mean activations on refused vs. complied prompts | Default, fast, robust |
 | SVD | `--direction-method svd` | Multi-direction extraction via Singular Value Decomposition | Complex alignment, multiple refusal mechanisms |
-| LEACE | `--direction-method leace` | Linear Erasure via Closed-form Estimation — mathematically optimal | Maximum precision, research |
+| LEACE | `--direction-method leace` | Linear Erasure via Closed-form Estimation, mathematically optimal| Maximum precision, research |
 
 ---
 
@@ -36,7 +36,7 @@ Before projecting, OBLITERATUS extracts refusal directions using one of three me
 - **Use case:** Quick tests, prototyping, evaluating if abliteration works for a model
 - **How it works:** Extracts one refusal direction and projects it out uniformly across all layers.
 
-### advanced (DEFAULT — RECOMMENDED)
+### advanced (DEFAULT, RECOMMENDED)
 - **Directions:** 4 (multi-direction SVD)
 - **Speed:** Medium (~10-20 min for 8B model)
 - **Risk:** Low-Medium
@@ -59,7 +59,7 @@ Before projecting, OBLITERATUS extracts refusal directions using one of three me
 
 ### informed (EXPERIMENTAL)
 - **Speed:** Slow (~20-40 min for 8B model)
-- **Risk:** Variable — results depend on analysis quality
+- **Risk:** Variable, results depend on analysis quality
 - **Use case:** When you want auto-configuration, but be aware this is experimental and may not outperform `advanced`.
 - **How it works:** Runs 4 analysis modules first (alignment imprint, concept geometry, logit lens, ouroboros detection), then auto-configures extraction strategy. Includes an "Ouroboros loop" that detects and counteracts self-repair.
 - **Note:** The auto-detection can sometimes misconfigure. If results are poor, fall back to `advanced`.
@@ -68,10 +68,10 @@ Before projecting, OBLITERATUS extracts refusal directions using one of three me
 - **Speed:** Very slow (~1-2 hrs for 8B model)
 - **Risk:** Low (very precise)
 - **Use case:** Reasoning models (R1 distills, QwQ, etc.) where chain-of-thought must be preserved.
-- **How it works:** Uses SAE (Sparse Autoencoder) features + individual neuron masking + attention head surgery + per-expert decomposition (for MoE). CoT-aware — identifies and protects reasoning-critical directions before projecting.
+- **How it works:** Uses SAE (Sparse Autoencoder) features + individual neuron masking + attention head surgery + per-expert decomposition (for MoE). CoT-aware, identifies and protects reasoning-critical directions before projecting.
 
 ### optimized
-- **Speed:** Very slow (hours — runs many trials)
+- **Speed:** Very slow (hours, runs many trials)
 - **Risk:** Low (finds optimal parameters)
 - **Use case:** When quality matters more than speed. Production models.
 - **How it works:** Bayesian hyperparameter search via Optuna TPE sampler. Optimizes n_directions, regularization, refinement passes, and layer selection jointly. Evaluates each configuration on refusal rate + perplexity.

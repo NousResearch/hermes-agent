@@ -31,7 +31,7 @@ Which other sources can be joined and on what keys. Be explicit:
 
 ## 6. Data Quality
 
-Known issues — formatting inconsistencies, missing fields, duplicates,
+Known issues, formatting inconsistencies, missing fields, duplicates,
 historical gaps, redaction.
 
 ## 7. Acquisition Script

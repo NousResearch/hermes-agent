@@ -105,7 +105,7 @@ Reviewers are explicitly instructed to:
 - Penalizing authors for honest limitation acknowledgment
 - Rejecting for missing citations to reviewer's own work
 
-### Timeline (NeurIPS 2025 — verify dates for current year)
+### Timeline (NeurIPS 2025: verify dates for current year)
 
 - Bidding: May 17-21
 - Reviewing period: May 29 - July 2
@@ -249,7 +249,7 @@ COLM reviews focus on relevance to language modeling in addition to standard cri
 ### COLM-Specific Considerations
 
 - **Language model focus**: Reviewers will assess whether the contribution advances understanding of language models. General ML contributions need explicit LM framing.
-- **Newer venue norms**: COLM is newer than NeurIPS/ICML, so reviewer calibration varies more. Write more defensively — anticipate a wider range of reviewer expertise.
+- **Newer venue norms**: COLM is newer than NeurIPS/ICML, so reviewer calibration varies more. Write more defensively, anticipate a wider range of reviewer expertise.
 - **ICLR-derived process**: Review process is modeled on ICLR (open reviews, author response period, discussion among reviewers).
 - **Broad interpretation of "language modeling"**: Includes training, evaluation, alignment, safety, efficiency, applications, theory, multimodality (if language is central), and social impact of LMs.
 
@@ -353,7 +353,7 @@ Overall Assessment:
 - Thank reviewers for their time
 - Address each concern specifically
 - Provide evidence (new experiments if possible)
-- Be concise—reviewers are busy
+- Be concise, reviewers are busy
 - Acknowledge valid criticisms
 
 **Don't:**

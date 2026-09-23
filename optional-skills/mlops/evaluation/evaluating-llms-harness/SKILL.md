@@ -453,7 +453,7 @@ Verify model and tokenizer match:
 **Issue: HumanEval not executing code**
 
 Code-executing tasks (HumanEval, MBPP, etc.) are gated behind an explicit
-confirmation flag — you must pass `--confirm_run_unsafe_code` to run them:
+confirmation flag, you must pass `--confirm_run_unsafe_code` to run them:
 
 ```bash
 lm_eval --model hf \

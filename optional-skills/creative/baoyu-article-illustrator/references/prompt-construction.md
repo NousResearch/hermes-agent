@@ -30,7 +30,7 @@ references:                    # ⚠️ ONLY if files EXIST in references/ direc
 
 | Usage | Description | Generation Action |
 |-------|-------------|-------------------|
-| `direct` | Primary visual reference | Describe the reference (composition, subject, style, palette) in prompt text — `image_generate` does not accept reference-image inputs |
+| `direct` | Primary visual reference | Describe the reference (composition, subject, style, palette) in prompt text, `image_generate` does not accept reference-image inputs|
 | `style` | Style characteristics only | Describe style in prompt text |
 | `palette` | Color palette extraction | Include colors in prompt |
 
@@ -69,12 +69,12 @@ STYLE (from reference):
 
 ## Color Specification Rules
 
-Colors in prompts use hex codes for **rendering guidance only** — they tell the model which colors to use, NOT what text to display.
+Colors in prompts use hex codes for **rendering guidance only**: they tell the model which colors to use, NOT what text to display.
 
 **⚠️ CRITICAL**: Image generation models sometimes render color names and hex values as visible text labels in the image (e.g., painting "Macaron Blue #A8D8EA" as a label). This must be prevented.
 
 **Add to ALL prompts that contain a COLORS section**:
-> Color values (#hex) and color names are rendering guidance only — do NOT display color names, hex codes, or palette labels as visible text in the image.
+> Color values (#hex) and color names are rendering guidance only, do NOT display color names, hex codes, or palette labels as visible text in the image.
 
 ---
 

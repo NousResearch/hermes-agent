@@ -1,22 +1,22 @@
 # Context Budget Discipline
 
-Practical rules for keeping orchestrator context lean when spawning subagents or reading large artifacts. Use these whenever you're running a multi-step agent loop that will consume significant context — plan execution, subagent orchestration, review pipelines, multi-file refactors.
+Practical rules for keeping orchestrator context lean when spawning subagents or reading large artifacts. Use these whenever you're running a multi-step agent loop that will consume significant context, plan execution, subagent orchestration, review pipelines, multi-file refactors.
 
-Adapted from the GSD (Get Shit Done) project's context-budget reference — MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)).
+Adapted from the GSD (Get Shit Done) project's context-budget reference, MIT © 2025 Lex Christopherson ([gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)).
 
 ## Universal rules
 
 Every workflow that spawns agents or reads significant content must follow these:
 
-1. **Never read agent definition files.** `delegate_task` auto-loads them — you reading them too just doubles the cost.
+1. **Never read agent definition files.** `delegate_task` auto-loads them, you reading them too just doubles the cost.
 2. **Never inline large files into subagent prompts.** Tell the agent to read the file from disk with `read_file` instead. The subagent gets full content; your context stays lean.
 3. **Read depth scales with context window.** See the table below.
 4. **Delegate heavy work to subagents.** The orchestrator routes; it doesn't execute.
-5. **Proactively warn** the user when you've consumed significant context ("Context is getting heavy — consider checkpointing progress before we continue").
+5. **Proactively warn** the user when you've consumed significant context ("Context is getting heavy, consider checkpointing progress before we continue").
 
 ## Read depth by context window
 
-Check the model's actual context window (not "it's Claude so 200K"). Some Sonnet deployments are 1M, some are 200K. If you don't know, assume the smaller one — err toward leanness.
+Check the model's actual context window (not "it's Claude so 200K"). Some Sonnet deployments are 1M, some are 200K. If you don't know, assume the smaller one, err toward leanness.
 
 | Context window | Subagent output reading | Summary files | Verification files | Plans for other phases |
 |----------------|-------------------------|---------------|--------------------|-----------------------|
@@ -48,6 +48,6 @@ When these signs appear, checkpoint the work and either reset context or hand of
 
 ## Fundamental limitation
 
-When you orchestrate, you cannot verify semantic correctness of subagent output — only structural completeness ("did the file appear?", "does the test pass?"). Semantic verification requires either running the code yourself or delegating a review pass to another fresh subagent.
+When you orchestrate, you cannot verify semantic correctness of subagent output, only structural completeness ("did the file appear?", "does the test pass?"). Semantic verification requires either running the code yourself or delegating a review pass to another fresh subagent.
 
 **Mitigation:** in every task you delegate, include explicit "must-have" truths the subagent must confirm in its response (e.g., "confirm your test actually tests X, not just that X was imported"). The subagent re-asserting concrete facts is evidence; vague summaries are not.

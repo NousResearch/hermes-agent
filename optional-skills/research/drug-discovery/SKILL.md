@@ -20,7 +20,7 @@ Use this skill for all pharma/chemistry research tasks.
 
 ## Core Workflows
 
-### 1 — Bioactive Compound Search (ChEMBL)
+### 1, Bioactive Compound Search (ChEMBL)
 
 Search ChEMBL (the world's largest open bioactivity database) for compounds
 by target, activity, or molecule name. No API key required.
@@ -76,10 +76,10 @@ print(f\"QED        : {props.get('qed_weighted','N/A')}\")
 "
 ```
 
-### 2 — Drug-Likeness Calculation (Lipinski Ro5 + Veber)
+### 2, Drug-Likeness Calculation (Lipinski Ro5 + Veber)
 
 Assess any molecule against established oral bioavailability rules using
-PubChem's free property API — no RDKit install needed.
+PubChem's free property API, no RDKit install needed.
 
 ```bash
 COMPOUND="$1"
@@ -110,7 +110,7 @@ print(f'  Both rules met: {\"Yes → good oral absorption predicted\" if tpsa<=1
 "
 ```
 
-### 3 — Drug Interaction & Safety Lookup (OpenFDA)
+### 3, Drug Interaction & Safety Lookup (OpenFDA)
 
 ```bash
 DRUG="$1"
@@ -150,7 +150,7 @@ for r in results[:10]:
 "
 ```
 
-### 4 — PubChem Compound Search
+### 4, PubChem Compound Search
 
 ```bash
 COMPOUND="$1"
@@ -167,7 +167,7 @@ print(f\"InChIKey   : {p.get('InChIKey','N/A')}\")
 "
 ```
 
-### 5 — Target & Disease Literature (OpenTargets)
+### 5, Target & Disease Literature (OpenTargets)
 
 ```bash
 GENE="$1"
@@ -194,11 +194,11 @@ for row in assoc.get('rows',[]):
 
 When analysing drug-likeness or molecular properties, always:
 
-1. **State raw values first** — MW, LogP, HBD, HBA, TPSA, RotBonds
-2. **Apply rule sets** — Ro5 (Lipinski), Veber, Ghose filter where relevant
-3. **Flag liabilities** — metabolic hotspots, hERG risk, high TPSA for CNS penetration
-4. **Suggest optimizations** — bioisosteric replacements, prodrug strategies, ring truncation
-5. **Cite the source API** — ChEMBL, PubChem, OpenFDA, or OpenTargets
+1. **State raw values first**: MW, LogP, HBD, HBA, TPSA, RotBonds
+2. **Apply rule sets**: Ro5 (Lipinski), Veber, Ghose filter where relevant
+3. **Flag liabilities**: metabolic hotspots, hERG risk, high TPSA for CNS penetration
+4. **Suggest optimizations**: bioisosteric replacements, prodrug strategies, ring truncation
+5. **Cite the source API**: ChEMBL, PubChem, OpenFDA, or OpenTargets
 
 For ADMET questions, reason through Absorption, Distribution, Metabolism, Excretion, Toxicity systematically. See references/ADMET_REFERENCE.md for detailed guidance.
 

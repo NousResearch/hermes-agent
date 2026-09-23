@@ -1,17 +1,17 @@
 # Dérive and Mapping
 
 Three traditions of *attentive movement through territory* as ideation:
-- **Situationist dérive** — Guy Debord, *Théorie de la dérive* (1958). Drift through a city, displacing productive uses with attentive wandering.
-- **Kevin Lynch's cognitive mapping** — *The Image of the City* (1960). Five-element vocabulary for mental maps: paths, edges, districts, nodes, landmarks.
-- **Gaston Bachelard's topoanalysis** — *La Poétique de l'espace* (1958). Phenomenological reading of intimate spaces.
+- **Situationist dérive**: Guy Debord, *Théorie de la dérive* (1958). Drift through a city, displacing productive uses with attentive wandering.
+- **Kevin Lynch's cognitive mapping**: *The Image of the City* (1960). Five-element vocabulary for mental maps: paths, edges, districts, nodes, landmarks.
+- **Gaston Bachelard's topoanalysis**: *La Poétique de l'espace* (1958). Phenomenological reading of intimate spaces.
 
 ## When to use
 
-- Entering an unfamiliar field — drift before forming hypotheses
+- Entering an unfamiliar field, drift before forming hypotheses
 - Picking a research subject or thesis topic
-- Major life decision (where to live, what to study) — visit the territories
+- Major life decision (where to live, what to study), visit the territories
 - Site-specific creative work
-- Refreshing your own work — small-space artist date
+- Refreshing your own work, small-space artist date
 
 ## Don't use when
 
@@ -22,7 +22,7 @@ Three traditions of *attentive movement through territory* as ideation:
 
 ## Single-day urban dérive
 
-1. Pick a territory you don't know — an unfamiliar neighborhood, a long bus route, two hours' walk in a direction you don't usually go.
+1. Pick a territory you don't know, an unfamiliar neighborhood, a long bus route, two hours' walk in a direction you don't usually go.
 2. Drop other agenda for the period. Phone away.
 3. Walk where attention pulls. No destination. Follow what calls; turn from what repels.
 4. Note specifics: what's on the walls? What does the neighborhood smell like? What stores survive here? Who's in this neighborhood at this hour?
@@ -31,15 +31,15 @@ Three traditions of *attentive movement through territory* as ideation:
 
 ## Lynch's vocabulary (use to structure dérive output)
 
-- **Paths** — channels you move along (streets, walkways, transit, canals).
-- **Edges** — linear boundaries that aren't paths (shorelines, walls, river edges).
-- **Districts** — sections with common identifying character.
-- **Nodes** — strategic spots where movements converge (junctions, plazas, transit hubs).
-- **Landmarks** — point references identifiable from a distance, used for orientation.
+- **Paths**: channels you move along (streets, walkways, transit, canals).
+- **Edges**: linear boundaries that aren't paths (shorelines, walls, river edges).
+- **Districts**: sections with common identifying character.
+- **Nodes**: strategic spots where movements converge (junctions, plazas, transit hubs).
+- **Landmarks**: point references identifiable from a distance, used for orientation.
 
 After drifting:
 - Map *your* paths, not the official ones.
-- Where were the edges? What did each edge mean — division, transition, prohibition?
+- Where were the edges? What did each edge mean, division, transition, prohibition?
 - Which districts did you cross? How did you know you'd entered one?
 - Where were the nodes? What were they doing?
 - Which landmarks anchored you? Official or personal?
@@ -48,19 +48,19 @@ After drifting:
 
 Same method, conceptual territory:
 1. Pick a domain you don't know well.
-2. Drop usual filtering. Not "is this useful?" — just "what's here?"
+2. Drop usual filtering. Not "is this useful?", just "what's here?"
 3. Read scattered things broadly. Browse a library shelf. Read citation chains backward. Talk to people in adjacent fields. Watch lectures at random.
 4. Note what calls to you, without yet evaluating.
 5. Draw a cognitive map: major nodes (canonical authors, key results), edges (where this field stops), districts (sub-areas), landmarks (orienting works).
 6. Identify your attractions. That's your direction.
 
-## Bachelard — small-space attention
+## Bachelard: small-space attention
 
 Topoanalysis applied to intimate spaces:
-1. Pick a small space you spend time in but haven't really looked at — a corner, a drawer, a workshop bench.
+1. Pick a small space you spend time in but haven't really looked at, a corner, a drawer, a workshop bench.
 2. Sit with it for an hour.
 3. What does this space mean? What does it shelter? What does it expose? What does it remember?
-4. Note the strongest reverberation — a detail that produces a generative response.
+4. Note the strongest reverberation, a detail that produces a generative response.
 5. Use it as starting point for new work.
 
 (Cameron's artist date is essentially a Bachelard-flavored dérive.)

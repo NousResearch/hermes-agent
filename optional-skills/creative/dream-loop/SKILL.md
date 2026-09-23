@@ -24,7 +24,7 @@ convergence. Goal: the most visually stunning result at an acceptable frame
 rate for the target platform (e.g. 60 fps browser, 120 fps modern mobile).
 
 This skill does NOT cover general web-app functionality, 2D UI design, or
-non-visual quality — only the visual-fidelity loop.
+non-visual quality, only the visual-fidelity loop.
 
 ## When to Use
 
@@ -37,12 +37,12 @@ non-visual quality — only the visual-fidelity loop.
 
 - **Concept art**: the `image_generate` tool. If unavailable, stop and ask the
   user for a concept image (or an image-generation API to connect to).
-- **Screenshots**: `browser_exec` — serve the build locally
+- **Screenshots**: `browser_exec`: serve the build locally
   (`python3 -m http.server` for static builds), then `new_tab(url)`,
   `wait_for_load()`, `capture_screenshot()`.
 - **Judging**: `vision_analyze` (see Judge section for the one-image-per-call
   workaround).
-- **Optional**: Blender for asset modeling — see the `blender-3d-automation`
+- **Optional**: Blender for asset modeling, see the `blender-3d-automation`
   skill. `delegate_task` for parallel asset work and fresh-context judging.
 
 If you don't have the tools needed for the full loop, flag that to the user
@@ -65,7 +65,7 @@ early and stop.
 
 ### 1. The target concept
 
-If the user provided a description of a game, scene, or app, proceed — don't
+If the user provided a description of a game, scene, or app, proceed, don't
 ask for clarification unless it's too vague to generate concept art from. If
 they didn't, ask for it.
 
@@ -79,7 +79,7 @@ current AAA game running in real time. Physically plausible materials (wet
 stone, brushed metal, cloth, glass) with real roughness and normal detail,
 correct proportions, atmosphere (fog, haze, rain, dust, volumetric light),
 cinematic lighting with a clear key and rich shadows. It should NOT be
-stylized or an artistic rendition — it should look like a true screenshot of
+stylized or an artistic rendition, it should look like a true screenshot of
 the ideal result.
 
 Avoid these failure modes when generating with `image_generate`:
@@ -106,13 +106,13 @@ matches the user's vision before starting the build loop.
 ### 3. Time budget
 
 If the user gives a time budget, record the start time and check the clock
-between rounds. Don't degrade visual fidelity to hit the budget — strive for
+between rounds. Don't degrade visual fidelity to hit the budget, strive for
 the absolute best result, and don't rush work to the judge. Parallelize or
 distribute work (e.g. `delegate_task` for independent assets) to hit the
 time goal, but no shortcuts: it's better to hit the time limit with
 meaningful, beautiful progress than with something broadly complete but ugly.
 
-If no time budget is given, run until an exit criterion — but warn upfront
+If no time budget is given, run until an exit criterion, but warn upfront
 that this may consume a lot of tokens.
 
 ### 4. Build loop
@@ -131,7 +131,7 @@ style calls for it. Write intermediate files/plans to `.dream-loop/`.
 - Do not be lazy with key environmental details (scenery, flooring,
   buildings): simple shapes look blocky, shiny, flat, and fake. Tiny details
   and texturing matter and need custom sculpting.
-- Use `image_generate` for textures, normal maps, skyboxes, etc. — better
+- Use `image_generate` for textures, normal maps, skyboxes, etc., better
   looking and faster than procedural ones.
 
 ### 5. Screenshot
@@ -162,7 +162,7 @@ screenshot and verdict.
 
 Mechanics: `vision_analyze` takes one image per call. Either have the judge
 make sequential calls (concept, then screenshot, then compare from memory of
-its own descriptions), or — better — stitch a labeled side-by-side composite
+its own descriptions), or, better, stitch a labeled side-by-side composite
 with ImageMagick (`convert concept.png shot.png +append compare.png`) or PIL
 and analyze that single image.
 
@@ -201,7 +201,7 @@ Judge prompt:
 > a sequence, not the first. Maintain consistency. First mark each previous
 > directive LANDED, PARTIAL, or NOT DONE against the new screenshot; carry
 > forward anything PARTIAL or NOT DONE. Don't reverse a prior directive
-> unless the result is clearly worse — and if you do, say so and why.
+> unless the result is clearly worse, and if you do, say so and why.
 >
 > Output format:
 > 1. Score on the first line; "Tier N" (highest fully-passed gate) on the
@@ -211,12 +211,12 @@ Judge prompt:
 >    must clear these before anything else counts. Name the element and the
 >    change, with magnitudes: "Rocks: replace the stacked ovoid boulders with
 >    one continuous fractured slab; cracks 2-5cm wide, dark interiors, add
->    surface texture so they don't look flat/plastic" — not "the rocks look
+>    surface texture so they don't look flat/plastic", not "the rocks look
 >    artificial".
 > 3. Then at most 4 further directives from higher tiers, same style, ordered
 >    by points recoverable.
 >
-> No non-actionable feedback ("this looks synthetic") — name the specific
+> No non-actionable feedback ("this looks synthetic"), name the specific
 > causes. Every directive must be actionable this round. Don't round up: if a
 > gate isn't fully passed, the cap holds.
 
@@ -224,21 +224,21 @@ Judge prompt:
 
 - **Score >= 8 and target FPS acceptable**: done. Show the user the latest
   screenshot; ask if they want more iterations.
-- **Score >= 8 but FPS unacceptable**: optimize — lossless wins first, then
+- **Score >= 8 but FPS unacceptable**: optimize, lossless wins first, then
   minimal-visual-impact ones. Re-judge afterwards to confirm no regression.
 - **Stall approaching** (best score hasn't improved a full point in 2 rounds,
   or the judge named the same gap 3 times): stop incremental tweaks. Step
   back and ask what about the *approach* is capping the score. Make one big
   structural change in a round: swap asset strategy (sculpt in Blender, pull
   real models/textures/HDRIs if allowed), rewrite the lighting model, rebuild
-  the composition, change the camera. Self-check carefully — big changes
+  the composition, change the camera. Self-check carefully, big changes
   break things. Only repeat parameter tuning if you can articulate why it
   would work this time.
 - **Stalled** (already tried a big structural change, score flat 3 rounds,
   judge is nitpicking or demanding intractable things like raytracing on a
   GPU-less machine): stop, tell the user why you're blocked, give options.
 - **Otherwise**: address all or most heavy-hitting gaps this round, not just
-  the top one — rounds are expensive. Prioritize gaps that move the needle
+  the top one, rounds are expensive. Prioritize gaps that move the needle
   most (lighting, textures, mesh detail). Only revert if the score dropped a
   full point or more; small dips are judge noise, and reverting a whole round
   throws out good changes with bad. If one change clearly regressed, undo
@@ -247,7 +247,7 @@ Judge prompt:
 ## Follow-up loops
 
 When building on an existing product (or the user re-invokes the skill for
-refinements), don't create new concept art in a vacuum — it may diverge from
+refinements), don't create new concept art in a vacuum, it may diverge from
 what exists. Instead capture a live screenshot of the current product and
 prompt `image_generate` to render the best possible version of it (current
 screenshot → AAA-graphics version of the same shot), then use that as the
@@ -256,16 +256,16 @@ token cost.
 
 ## Pitfalls
 
-- Overbaked or oversimplified concept art (see failure modes) — fix the
+- Overbaked or oversimplified concept art (see failure modes), fix the
   concept before building against it.
 - Submitting half-baked screenshots to the judge; the self-check gate exists
   for a reason.
-- Screenshot at a different resolution/aspect than the concept — unfair
+- Screenshot at a different resolution/aspect than the concept, unfair
   comparison, noisy verdicts.
 - Tunnel-visioning on incremental tweaks when the judge says you're off base.
-- Judging both images in one `vision_analyze` call — it takes one image;
+- Judging both images in one `vision_analyze` call, it takes one image;
   composite them first.
-- Screenshotting before the scene loads/settles — add a wait after
+- Screenshotting before the scene loads/settles, add a wait after
   `wait_for_load()` for asset streaming and animation warm-up.
 
 ## Verification

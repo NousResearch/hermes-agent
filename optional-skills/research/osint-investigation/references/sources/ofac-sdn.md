@@ -1,4 +1,4 @@
-# OFAC SDN — Specially Designated Nationals List
+# OFAC SDN, Specially Designated Nationals List
 
 ## 1. Summary
 
@@ -36,7 +36,7 @@ Key fields emitted by `fetch_ofac_sdn.py`:
 
 ## 4. Coverage
 
-- Worldwide — all entities sanctioned by US Treasury
+- Worldwide, all entities sanctioned by US Treasury
 - ~10,000 entries on SDN, ~15,000 on consolidated lists
 - Updated continuously (sometimes daily during active enforcement)
 - Includes AKAs (very common, can be 10+ per entity)
@@ -44,7 +44,7 @@ Key fields emitted by `fetch_ofac_sdn.py`:
 ## 5. Cross-Reference Potential
 
 - **SEC EDGAR** ↔ `name` (public companies sanctioned)
-- **USAspending** ↔ `name` (sanctioned entity as federal contractor — should
+- **USAspending** ↔ `name` (sanctioned entity as federal contractor, should
   be impossible but verify)
 - **ICIJ Offshore** ↔ `name` (offshore entities also sanctioned)
 
@@ -53,10 +53,10 @@ Many sanctioned entities are caught only via aliases.
 
 ## 6. Data Quality
 
-- Names are transliterated from many scripts — multiple romanizations possible
+- Names are transliterated from many scripts, multiple romanizations possible
 - AKAs often differ wildly from primary name
 - Some entries have minimal info (no DOB, no address) for individuals
-- Free-text `remarks` contain critical context — read them
+- Free-text `remarks` contain critical context, read them
 - "Specially Designated Global Terrorists" (SDGT) and "Cyber-related" (CYBER2)
   programs add and remove entries frequently
 
@@ -78,10 +78,10 @@ python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --entity-type entity --out data/sdn_
 ## 8. Legal & Licensing
 
 - Public record under Executive Order authority and statutory sanctions programs
-- US persons MUST screen against this list — it is enforced
+- US persons MUST screen against this list, it is enforced
 - No restrictions on the data itself; restrictions are on transactions with
   the listed entities
-- ZERO penalty for "over-matching" — false positives must be cleared but are not
+- ZERO penalty for "over-matching", false positives must be cleared but are not
   prohibited
 
 ## 9. References

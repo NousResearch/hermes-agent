@@ -98,7 +98,7 @@ All 3 can be downloaded in parallel. Total size is several GB.
 HeartMuLa uses CUDA by default (`--mula_device cuda --codec_device cuda`). No extra setup needed if the user has an NVIDIA GPU with PyTorch CUDA support installed.
 
 - The installed `torch==2.4.1` includes CUDA 12.1 support out of the box
-- `torchtune` may report version `0.4.0+cpu` — this is just package metadata, it still uses CUDA via PyTorch
+- `torchtune` may report version `0.4.0+cpu`: this is just package metadata, it still uses CUDA via PyTorch
 - To verify GPU is being used, look for "CUDA memory" lines in the output (e.g. "CUDA memory before unloading: 6.20 GB")
 - **No GPU?** You can run on CPU with `--mula_device cpu --codec_device cpu`, but expect generation to be **extremely slow** (potentially 30-60+ minutes for a single song vs ~4 minutes on GPU). CPU mode also requires significant RAM (~12GB+ free). If the user has no NVIDIA GPU, recommend using a cloud GPU service (Google Colab free tier with T4, Lambda Labs, etc.) or the online demo at https://heartmula.github.io/ instead.
 
@@ -156,13 +156,13 @@ Bridge lyrics...
 | `--codec_dtype` | float32 | Dtype for HeartCodec (fp32 recommended for quality) |
 
 ### Performance
-- RTF (Real-Time Factor) ≈ 1.0 — a 4-minute song takes ~4 minutes to generate
+- RTF (Real-Time Factor) ≈ 1.0, a 4-minute song takes ~4 minutes to generate
 - Output: MP3, 48kHz stereo, 128kbps
 
 ## Pitfalls
-1. **Do NOT use bf16 for HeartCodec** — degrades audio quality. Use fp32 (default).
-2. **Tags may be ignored** — known issue (#90). Lyrics tend to dominate; experiment with tag ordering.
-3. **Triton not available on macOS** — Linux/CUDA only for GPU acceleration.
+1. **Do NOT use bf16 for HeartCodec**: degrades audio quality. Use fp32 (default).
+2. **Tags may be ignored**: known issue (#90). Lyrics tend to dominate; experiment with tag ordering.
+3. **Triton not available on macOS**: Linux/CUDA only for GPU acceleration.
 4. **RTX 5080 incompatibility** reported in upstream issues.
 5. The dependency pin conflicts require the manual upgrades and patches described above.
 

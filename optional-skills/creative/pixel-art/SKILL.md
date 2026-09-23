@@ -10,7 +10,7 @@ metadata:
     tags: [creative, pixel-art, arcade, snes, nes, gameboy, retro, image, video]
     category: creative
     credits:
-      - "Hardware palettes and animation loops ported from Synero/pixel-art-studio (MIT) — https://github.com/Synero/pixel-art-studio"
+      - "Hardware palettes and animation loops ported from Synero/pixel-art-studio (MIT), https://github.com/Synero/pixel-art-studio"
 ---
 
 # Pixel Art
@@ -20,8 +20,8 @@ MP4 or GIF with era-appropriate effects (rain, fireflies, snow, embers).
 
 Two scripts ship with this skill:
 
-- `scripts/pixel_art.py` — photo → pixel-art PNG (Floyd-Steinberg dithering)
-- `scripts/pixel_art_video.py` — pixel-art PNG → animated MP4 (+ optional GIF)
+- `scripts/pixel_art.py`: photo → pixel-art PNG (Floyd-Steinberg dithering)
+- `scripts/pixel_art_video.py`: pixel-art PNG → animated MP4 (+ optional GIF)
 
 Each is importable or runnable directly. Presets snap to hardware palettes
 when you want era-accurate colors (NES, Game Boy, PICO-8, etc.), or use
@@ -39,10 +39,10 @@ adaptive N-color quantization for arcade/SNES-style looks.
 Before generating, confirm the style with the user. Different presets produce
 very different outputs and regenerating is costly.
 
-### Step 1 — Offer a style
+### Step 1, Offer a style
 
 Call `clarify` with 4 representative presets. Pick the set based on what the
-user asked for — don't just dump all 14.
+user asked for, don't just dump all 14.
 
 Default menu when the user's intent is unclear:
 
@@ -61,7 +61,7 @@ clarify(
 When the user already named an era (e.g. "80s arcade", "Gameboy"), skip
 `clarify` and use the matching preset directly.
 
-### Step 2 — Offer animation (optional)
+### Step 2, Offer animation (optional)
 
 If the user asked for a video/GIF, or the output might benefit from motion,
 ask which scene:
@@ -82,7 +82,7 @@ Do NOT call `clarify` more than twice in a row. One for style, one for scene if
 animation is on the table. If the user explicitly asked for a specific style
 and scene in their message, skip `clarify` entirely.
 
-### Step 3 — Generate
+### Step 3, Generate
 
 Run `pixel_art()` first; if animation was requested, chain into
 `pixel_art_video()` on the result.
@@ -107,7 +107,7 @@ Run `pixel_art()` first; if animation was requested, chain into
 | `pastel` | Soft pastel | 10 pastels | 6px | Kawaii / gentle |
 
 Named palettes live in `scripts/palettes.py` (see `references/palettes.md` for
-the complete list — 28 named palettes total). Any preset can be overridden:
+the complete list, 28 named palettes total). Any preset can be overridden:
 
 ```python
 pixel_art("in.png", "out.png", preset="snes", palette="PICO_8", block=6)
@@ -174,7 +174,7 @@ python pixel_art_video.py out.png out.mp4 --scene night --duration 6 --gif
 1. Boost contrast/color/sharpness (stronger for smaller palettes)
 2. Posterize to simplify tonal regions before quantization
 3. Downscale by `block` with `Image.NEAREST` (hard pixels, no interpolation)
-4. Quantize with Floyd-Steinberg dithering — against either an adaptive
+4. Quantize with Floyd-Steinberg dithering, against either an adaptive
    N-color palette OR a named hardware palette
 5. Upscale back with `Image.NEAREST`
 
@@ -191,14 +191,14 @@ Quantizing before would waste error-diffusion on detail that disappears.
 
 - Python 3.9+
 - Pillow (`pip install Pillow`)
-- ffmpeg on PATH (only needed for video — Hermes installs package this)
+- ffmpeg on PATH (only needed for video, Hermes installs package this)
 
 ## Pitfalls
 
 - Pallet keys are case-sensitive (`"NES"`, `"PICO_8"`, `"GAMEBOY_ORIGINAL"`).
 - Very small sources (<100px wide) collapse under 8-10px blocks. Upscale the
   source first if it's tiny.
-- Fractional `block` or `palette` will break quantization — keep them positive ints.
+- Fractional `block` or `palette` will break quantization, keep them positive ints.
 - Animation particle counts are tuned for ~640x480 canvases. On very large
   images you may want a second pass with a different seed for density.
 - `mono_green` / `mono_amber` force `color=0.0` (desaturate). If you override

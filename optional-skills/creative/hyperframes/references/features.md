@@ -51,11 +51,11 @@ const result = window.__hyperframes.fitTextFontSize(group.text.toUpperCase(), {
 el.style.fontSize = result.fontSize + "px";
 ```
 
-When per-word styling uses `scale > 1.0`, compute `maxWidth = safeWidth / maxScale` to leave headroom. Container needs `overflow: visible` (not `hidden` — hidden clips scaled emphasis words and glow).
+When per-word styling uses `scale > 1.0`: compute `maxWidth = safeWidth / maxScale` to leave headroom. Container needs `overflow: visible` (not `hidden`: hidden clips scaled emphasis words and glow).
 
 ### Caption Exit Guarantee
 
-Every group MUST have a hard kill after its exit tween — otherwise groups leak into later ones:
+Every group MUST have a hard kill after its exit tween, otherwise groups leak into later ones:
 
 ```js
 tl.to(groupEl, { opacity: 0, scale: 0.95, duration: 0.12, ease: "power2.in" }, group.end - 0.12);
@@ -66,11 +66,11 @@ tl.set(groupEl, { opacity: 0, visibility: "hidden" }, group.end); // determinist
 
 Scan the transcript for words that deserve distinct treatment:
 
-- Brand / product names — larger, unique color.
-- ALL CAPS — scale boost, flash, accent color.
-- Numbers / statistics — bold weight, accent color.
-- Emotional keywords — exaggerated animation (overshoot, bounce).
-- Call-to-action — highlight, underline, color pop.
+- Brand / product names, larger, unique color.
+- ALL CAPS, scale boost, flash, accent color.
+- Numbers / statistics, bold weight, accent color.
+- Emotional keywords, exaggerated animation (overshoot, bounce).
+- Call-to-action, highlight, underline, color pop.
 
 ## TTS (Kokoro-82M)
 
@@ -90,7 +90,7 @@ Run `npx hyperframes tts --list` for all 54 voices across 8 languages.
 
 ### Multilingual Phonemization
 
-Voice ID first letter encodes language: `a`=American English, `b`=British English, `e`=Spanish, `f`=French, `h`=Hindi, `i`=Italian, `j`=Japanese, `p`=Brazilian Portuguese, `z`=Mandarin. The CLI auto-infers the phonemizer locale from that prefix — you don't need `--lang` when voice and text match.
+Voice ID first letter encodes language: `a`=American English, `b`=British English, `e`=Spanish, `f`=French, `h`=Hindi, `i`=Italian, `j`=Japanese, `p`=Brazilian Portuguese, `z`=Mandarin. The CLI auto-infers the phonemizer locale from that prefix, you don't need `--lang` when voice and text match.
 
 ```bash
 npx hyperframes tts "La reunión empieza a las nueve" --voice ef_dora --output es.wav
@@ -107,10 +107,10 @@ Valid `--lang` codes: `en-us`, `en-gb`, `es`, `fr-fr`, `hi`, `it`, `pt-br`, `ja`
 
 ### Speed
 
-- `0.7-0.8` — tutorial, complex content
-- `1.0` — natural (default)
-- `1.1-1.2` — intros, upbeat content
-- `1.5+` — rarely appropriate
+- `0.7-0.8`: tutorial, complex content
+- `1.0`: natural (default)
+- `1.1-1.2`: intros, upbeat content
+- `1.5+`: rarely appropriate
 
 ### TTS + Captions Workflow
 
@@ -144,7 +144,7 @@ const AUDIO_DATA = {
 | Overall amplitude      | `opacity`, `y`, `backgroundColor` | Breathe, lift, color shift |
 | Mid-range (`bands[4-8]`)| `borderRadius`, `width`          | Shape morphing             |
 
-Any GSAP-tweenable property works — `clipPath`, `filter`, SVG attributes, CSS custom properties. Let content guide the visual and let audio drive its behavior. **Never add** equalizer bars, spectrum analyzers, waveform displays, rainbow cycling, or generic particle systems — they look cheap.
+Any GSAP-tweenable property works, `clipPath`, `filter`, SVG attributes, CSS custom properties. Let content guide the visual and let audio drive its behavior. **Never add** equalizer bars, spectrum analyzers, waveform displays, rainbow cycling, or generic particle systems, they look cheap.
 
 ### Sampling pattern (required)
 
@@ -163,13 +163,13 @@ for (let f = 0; f < AUDIO_DATA.totalFrames; f++) {
 ### Gotchas
 
 - **textShadow on a container** with semi-transparent children (e.g. inactive caption words at `rgba(255,255,255,0.3)`) renders a visible glow rectangle behind every child. Apply the glow to active words individually, not to the container.
-- **Subtlety for text** — 3-6% scale variation, soft glow. Heavy pulsing makes text unreadable.
-- **Go bigger on non-text** — backgrounds and shapes can handle 10-30% swings.
-- **Deterministic only** — pre-extracted audio data, no Web Audio API, no runtime analysis.
+- **Subtlety for text**: 3-6% scale variation, soft glow. Heavy pulsing makes text unreadable.
+- **Go bigger on non-text**: backgrounds and shapes can handle 10-30% swings.
+- **Deterministic only**: pre-extracted audio data, no Web Audio API, no runtime analysis.
 
 ## Marker-Style Highlighting
 
-Deterministic CSS + GSAP implementations of the classic "highlight / circle / burst / scribble / sketchout" drawing modes for emphasizing text. Fully seekable — no animated SVG filters, no JS timers.
+Deterministic CSS + GSAP implementations of the classic "highlight / circle / burst / scribble / sketchout" drawing modes for emphasizing text. Fully seekable, no animated SVG filters, no JS timers.
 
 ### Highlight (yellow marker sweep)
 
@@ -213,7 +213,7 @@ A chaotic overlay created by animating `stroke-dashoffset` on an inline SVG `<pa
 
 A rough rectangle outline. Two `<rect>`s with slight `transform` offsets, animated via `stroke-dashoffset`.
 
-All five modes tween CSS transforms or `stroke-dashoffset` only — both tween cleanly, are deterministic, and seek correctly.
+All five modes tween CSS transforms or `stroke-dashoffset` only, both tween cleanly, are deterministic, and seek correctly.
 
 ## Scene Transitions
 
@@ -264,19 +264,19 @@ npx hyperframes add --list
 ### CSS vs shader
 
 - **CSS transitions** animate scene containers with opacity, transforms, `clip-path`, and filters. Simpler to set up.
-- **Shader transitions** composite both scene textures per-pixel on a WebGL canvas — can warp, dissolve, and morph in ways CSS cannot. Import from `@hyperframes/shader-transitions` instead of writing raw GLSL.
+- **Shader transitions** composite both scene textures per-pixel on a WebGL canvas, can warp, dissolve, and morph in ways CSS cannot. Import from `@hyperframes/shader-transitions` instead of writing raw GLSL.
 
-Don't mix CSS and shader transitions in the same composition — once a composition uses shader transitions, the WebGL canvas replaces DOM-based scene switching for every transition.
+Don't mix CSS and shader transitions in the same composition, once a composition uses shader transitions, the WebGL canvas replaces DOM-based scene switching for every transition.
 
 ### Shader-compatible CSS rules
 
 Shader transitions capture DOM scenes to WebGL textures via html2canvas. The canvas 2D pipeline doesn't match CSS exactly:
 
-1. No `transparent` keyword in gradients — use the target color at zero alpha: `rgba(200,117,51,0)` not `transparent`. (Canvas interpolates `transparent` as `rgba(0,0,0,0)` creating dark fringes.)
+1. No `transparent` keyword in gradients, use the target color at zero alpha: `rgba(200,117,51,0)` not `transparent`. (Canvas interpolates `transparent` as `rgba(0,0,0,0)` creating dark fringes.)
 2. No gradient backgrounds on elements thinner than 4px. Use solid `background-color` on thin accent lines.
-3. No CSS variables (`var()`) on elements visible during capture — html2canvas doesn't reliably resolve custom properties. Use literal color values.
-4. Mark uncapturable decoratives with `data-no-capture` — they stay on the live DOM but are absent from the shader texture.
-5. No gradient opacity below 0.15 — renders differently in canvas vs CSS.
+3. No CSS variables (`var()`) on elements visible during capture, html2canvas doesn't reliably resolve custom properties. Use literal color values.
+4. Mark uncapturable decoratives with `data-no-capture`: they stay on the live DOM but are absent from the shader texture.
+5. No gradient opacity below 0.15, renders differently in canvas vs CSS.
 6. Every `.scene` div must have explicit `background-color`, AND pass the same color as `bgColor` in the `init()` config. Without either, the texture renders as black.
 
 These rules only apply to shader transition compositions. CSS-only compositions have no restrictions.
@@ -284,6 +284,6 @@ These rules only apply to shader transition compositions. CSS-only compositions 
 ### Don't
 
 - Mix CSS and shader transitions in one composition.
-- Use exit animations on any scene except the final scene — the transition IS the exit.
-- Introduce a new transition type every scene — pick one primary + 1-2 accents.
-- Use transitions that create visible geometric repetition (grids, hex cells, uniform dots) — they look artificial regardless of the math behind them. Prefer organic noise (FBM, domain warping).
+- Use exit animations on any scene except the final scene, the transition IS the exit.
+- Introduce a new transition type every scene, pick one primary + 1-2 accents.
+- Use transitions that create visible geometric repetition (grids, hex cells, uniform dots), they look artificial regardless of the math behind them. Prefer organic noise (FBM, domain warping).

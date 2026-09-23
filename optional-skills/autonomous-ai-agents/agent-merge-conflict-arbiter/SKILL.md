@@ -15,7 +15,7 @@ metadata:
 
 Resolve a git merge conflict between two AGENTS' branches as an impartial third
 party. Agents resolving conflicts against a peer's work reliably either
-overwrite the peer or abandon their own change — they lack the peer's context
+overwrite the peer or abandon their own change: they lack the peer's context
 and are biased toward their own side. This skill is the fix: a neutral
 reconciler that receives both diffs plus both sides' stated intents and
 produces a merged result, like a merge-queue arbiter.
@@ -40,16 +40,16 @@ produces a merged result, like a merge-queue arbiter.
 
 ## How to Run
 
-**Standalone** — a human (or agent) invokes this skill inside the conflicted
+**Standalone**: a human (or agent) invokes this skill inside the conflicted
 repo: load the skill, then follow the Procedure top to bottom.
 
-**Spawned neutral agent** — the preferred shape in multi-agent campaigns:
+**Spawned neutral agent**: the preferred shape in multi-agent campaigns:
 
 - `delegate_task`: spawn a subagent whose task message contains the repo path,
   both branch names, and both sides' intent summaries verbatim, plus an
   instruction to follow this skill.
 - Kanban-native: create a reconciliation card assigned to a **third profile**
-  (not either worker's profile) with BOTH conflicted cards linked as parents —
+  (not either worker's profile) with BOTH conflicted cards linked as parents:
   `kanban_create(title="reconcile branch-a x branch-b", assignee="reconciler",
   parents=["t_a", "t_b"])`. The parent links carry both sides' completion
   summaries into the reconciler's context automatically; the card body should
@@ -87,7 +87,7 @@ explicitly in the hand-back summary.
 - Open each conflicted file with `read_file` and locate each
   `<<<<<<<`/`=======`/`>>>>>>>` block.
 - Assign each hunk exactly one class from the Quick Reference table, judging
-  by the stated intents — not by which change looks nicer.
+  by the stated intents, not by which change looks nicer.
 - If a single hunk contains multiple independent decisions (e.g., new logic
   that combines cleanly PLUS a styling/rounding choice both sides answered
   differently), decompose it into sub-decisions and classify each one.
@@ -106,7 +106,7 @@ explicitly in the hand-back summary.
   - superseded → keep the surviving side; delete the dead premise.
 - Never favor the side that spawned you. If intents genuinely tie, escalate
   (block the kanban card / report back) rather than guess.
-- Change nothing outside conflict markers — no formatting, renames, or
+- Change nothing outside conflict markers: no formatting, renames, or
   opportunistic fixes.
 - `git add` each resolved file via `terminal`.
 - Done when: `search_files` finds no `<<<<<<<` markers in the repo and every
@@ -124,16 +124,16 @@ explicitly in the hand-back summary.
 ### 5. Hand back
 
 - Produce a completion summary naming EVERY hunk decision:
-  `file:lines — class — which side(s) kept — rationale`. For every
+  `file:lines, class, which side(s) kept, rationale`. For every
   same-question-different-answer hunk, state the design question and the
-  answer you picked so a human can veto it — never bury a design call.
+  answer you picked so a human can veto it: never bury a design call.
 - Kanban: `kanban_complete(summary=...)`. Standalone: print the summary.
 - Done when: the summary is delivered and lists all hunks.
 
 ## Pitfalls
 
 - **Self-favoring**: if you were spawned by one of the conflicting agents,
-  you are structurally biased — state this and weigh the other side's intent
+  you are structurally biased. State this and weigh the other side's intent
   deliberately. Prefer the third-profile shape so this never arises.
 - **Splitting the difference** on a design collision produces a hybrid nobody
   designed; pick one answer and surface it.
@@ -145,8 +145,8 @@ explicitly in the hand-back summary.
   completion summaries or PR bodies. If neither side's intent is recoverable,
   escalate instead of guessing.
 - **Repeat offenders**: repeated conflicts on the SAME file across rounds are
-  a hotspot signal, not routine reconciliation work — flag it (e.g. a
-  `hotspot: <path> — <reason>` kanban comment) so the orchestrator decomposes
+  a hotspot signal, not routine reconciliation work: flag it (e.g. a
+  `hotspot: <path>, <reason>` kanban comment) so the orchestrator decomposes
   that file, rather than serially reconciling every new collision on it.
 
 ## Verification

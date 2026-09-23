@@ -17,7 +17,7 @@ A paper project with 50+ experiment files, multiple result directories, and exte
 | Revision pass | Full paper draft, specific reviewer concerns | Everything else |
 
 **Principles:**
-- **`experiment_log.md` is the primary context bridge** — it summarizes everything needed for writing without loading raw data files (see Step 4.6)
+- **`experiment_log.md` is the primary context bridge**: it summarizes everything needed for writing without loading raw data files (see Step 4.6)
 - **Load one section's context at a time** when delegating. A sub-agent drafting Methods doesn't need the literature review notes.
 - **Summarize, don't include raw files.** For a 200-line result JSON, load a 10-line summary table. For a 50-page related paper, load the 5-sentence abstract + your 2-line note about its relevance.
 - **For very large projects**: Create a `context/` directory with pre-compressed summaries:
@@ -31,7 +31,7 @@ A paper project with 50+ experiment files, multiple result directories, and exte
 
 ### The Narrative Principle
 
-**The single most critical insight**: Your paper is not a collection of experiments — it's a story with one clear contribution supported by evidence.
+**The single most critical insight**: Your paper is not a collection of experiments, it's a story with one clear contribution supported by evidence.
 
 Every successful ML paper centers on what Neel Nanda calls "the narrative": a short, rigorous, evidence-based technical story with a takeaway readers care about.
 
@@ -60,8 +60,8 @@ This skill synthesizes writing philosophy from researchers who have published ex
 | **Andrej Karpathy** | Single contribution focus | Various lectures |
 
 **For deeper dives into any of these, see:**
-- [references/writing-guide.md](references/writing-guide.md) — Full explanations with examples
-- [references/sources.md](references/sources.md) — Complete bibliography
+- [references/writing-guide.md](references/writing-guide.md), Full explanations with examples
+- [references/sources.md](references/sources.md), Complete bibliography
 
 ### Time Allocation
 
@@ -95,10 +95,10 @@ Paper Writing Checklist:
 
 When drafting with an AI agent, use a **two-pass** approach (proven effective in SakanaAI's AI-Scientist pipeline):
 
-**Pass 1 — Write + immediate refine per section:**
+**Pass 1, Write + immediate refine per section:**
 For each section, write a complete draft, then immediately refine it in the same context. This catches local issues (clarity, flow, completeness) while the section is fresh.
 
-**Pass 2 — Global refinement with full-paper context:**
+**Pass 2, Global refinement with full-paper context:**
 After all sections are drafted, revisit each section with awareness of the complete paper. This catches cross-section issues: redundancy, inconsistent terminology, narrative flow, and gaps where one section promises something another doesn't deliver.
 
 ```
@@ -166,7 +166,7 @@ From Sebastian Farquhar (DeepMind):
 
 ### Step 5.2: Figure 1
 
-Figure 1 is the second thing most readers look at (after abstract). Draft it before writing the introduction — it forces you to clarify the core idea.
+Figure 1 is the second thing most readers look at (after abstract). Draft it before writing the introduction, it forces you to clarify the core idea.
 
 | Figure 1 Type | When to Use | Example |
 |---------------|-------------|---------|
@@ -175,7 +175,7 @@ Figure 1 is the second thing most readers look at (after abstract). Draft it bef
 | **Problem illustration** | The problem is unintuitive | Before/after showing failure mode you fix |
 | **Conceptual diagram** | Abstract contribution needs visual grounding | 2x2 matrix of method properties |
 
-**Rules**: Figure 1 must be understandable without reading any text. The caption alone should communicate the core idea. Use color purposefully — don't just decorate.
+**Rules**: Figure 1 must be understandable without reading any text. The caption alone should communicate the core idea. Use color purposefully, don't just decorate.
 
 ### Step 5.3: Introduction (1-1.5 pages max)
 
@@ -208,7 +208,7 @@ Requirements:
 
 ### Step 5.6: Related Work
 
-Organize methodologically, not paper-by-paper. Cite generously — reviewers likely authored relevant papers.
+Organize methodologically, not paper-by-paper. Cite generously, reviewers likely authored relevant papers.
 
 ### Step 5.7: Limitations (REQUIRED)
 
@@ -248,7 +248,7 @@ Appendices are unlimited at all major venues and are essential for reproducibili
 | **Additional Figures** | Per-task breakdowns, trajectory visualizations, failure case examples |
 
 **Rules**:
-- The main paper must be self-contained — reviewers are not required to read appendices
+- The main paper must be self-contained, reviewers are not required to read appendices
 - Never put critical evidence only in the appendix
 - Cross-reference: "Full results in Table 5 (Appendix B)" not just "see appendix"
 - Use `\appendix` command, then `\section{A: Proofs}` etc.
@@ -259,18 +259,18 @@ When over the page limit:
 
 | Cut Strategy | Saves | Risk |
 |-------------|-------|------|
-| Move proofs to appendix | 0.5-2 pages | Low — standard practice |
-| Condense related work | 0.5-1 page | Medium — may miss key citations |
-| Combine tables with subfigures | 0.25-0.5 page | Low — often improves readability |
+| Move proofs to appendix | 0.5-2 pages | Low, standard practice|
+| Condense related work | 0.5-1 page | Medium, may miss key citations|
+| Combine tables with subfigures | 0.25-0.5 page | Low, often improves readability|
 | Use `\vspace{-Xpt}` sparingly | 0.1-0.3 page | Low if subtle, high if obvious |
-| Remove qualitative examples | 0.5-1 page | Medium — reviewers like examples |
-| Reduce figure sizes | 0.25-0.5 page | High — figures must remain readable |
+| Remove qualitative examples | 0.5-1 page | Medium, reviewers like examples|
+| Reduce figure sizes | 0.25-0.5 page | High, figures must remain readable|
 
 **Do NOT**: reduce font size, change margins, remove required sections (limitations, broader impact), or use `\small`/`\footnotesize` for main text.
 
 ### Step 5.10: Ethics & Broader Impact Statement
 
-Most venues now require or strongly encourage an ethics/broader impact statement. This is not boilerplate — reviewers read it and can flag ethics concerns that trigger desk rejection.
+Most venues now require or strongly encourage an ethics/broader impact statement. This is not boilerplate, reviewers read it and can flag ethics concerns that trigger desk rejection.
 
 **What to include:**
 
@@ -303,7 +303,7 @@ require [specific additional work].
 ```
 
 **Common mistakes:**
-- Writing "we foresee no negative impacts" (almost never true — reviewers distrust this)
+- Writing "we foresee no negative impacts" (almost never true, reviewers distrust this)
 - Being vague: "this could be misused" without specifying how
 - Ignoring compute costs for large-scale work
 - Forgetting to disclose LLM use at venues that require it
@@ -325,7 +325,7 @@ print(f"Energy: {energy_kwh:.0f} kWh, Carbon: {carbon_kg:.0f} kg CO2eq")
 
 If your paper introduces a **new dataset** or **releases a model**, include structured documentation. Reviewers increasingly expect this, and NeurIPS Datasets & Benchmarks track requires it.
 
-**Datasheets for Datasets** (Gebru et al., 2021) — include in appendix:
+**Datasheets for Datasets** (Gebru et al., 2021), include in appendix:
 
 ```
 Dataset Documentation (Appendix):
@@ -339,7 +339,7 @@ Dataset Documentation (Appendix):
   Potential for harm? Known biases?
 ```
 
-**Model Cards** (Mitchell et al., 2019) — include in appendix for model releases:
+**Model Cards** (Mitchell et al., 2019), include in appendix for model releases:
 
 ```
 Model Card (Appendix):
@@ -404,7 +404,7 @@ latexmk -pdf main.tex
 # Or manual: pdflatex main.tex && bibtex main && pdflatex main.tex && pdflatex main.tex
 ```
 
-If the unmodified template doesn't compile, fix that first (usually missing TeX packages — install via `tlmgr install <package>`).
+If the unmodified template doesn't compile, fix that first (usually missing TeX packages, install via `tlmgr install <package>`).
 
 **Step 3: Keep Template Content as Reference**
 
@@ -465,7 +465,7 @@ Templates in `templates/` directory. See [templates/README.md](templates/README.
 
 ### Tables and Figures
 
-**Tables** — use `booktabs` for professional formatting:
+**Tables**: use `booktabs` for professional formatting:
 
 ```latex
 \usepackage{booktabs}
@@ -486,16 +486,16 @@ Rules:
 - Consistent decimal precision
 
 **Figures**:
-- **Vector graphics** (PDF, EPS) for all plots and diagrams — `plt.savefig('fig.pdf')`
+- **Vector graphics** (PDF, EPS) for all plots and diagrams, `plt.savefig('fig.pdf')`
 - **Raster** (PNG 600 DPI) only for photographs
 - **Colorblind-safe palettes** (Okabe-Ito or Paul Tol)
 - Verify **grayscale readability** (8% of men have color vision deficiency)
-- **No title inside figure** — the caption serves this function
-- **Self-contained captions** — reader should understand without main text
+- **No title inside figure**: the caption serves this function
+- **Self-contained captions**: reader should understand without main text
 
 ### Conference Resubmission
 
-For converting between venues, see Phase 7 (Submission Preparation) — it covers the full conversion workflow, page-change table, and post-rejection guidance.
+For converting between venues, see Phase 7 (Submission Preparation), it covers the full conversion workflow, page-change table, and post-rejection guidance.
 
 ### Professional LaTeX Preamble
 
@@ -548,7 +548,7 @@ Add these packages to any paper for professional quality. They are compatible wi
 
 **Notes:**
 - `microtype` is the single highest-impact package for visual quality. It adjusts character spacing at a sub-pixel level. Always include it.
-- `siunitx` handles decimal alignment in tables via the `S` column type — eliminates manual spacing.
+- `siunitx` handles decimal alignment in tables via the `S` column type, eliminates manual spacing.
 - `cleveref` must be loaded **after** `hyperref`. Most conference .sty files load hyperref, so put cleveref last.
 - Check if the conference template already loads any of these (especially `algorithm`, `amsmath`, `graphicx`). Don't double-load.
 
@@ -705,7 +705,7 @@ representation $z$, which the decoder reconstructs.}
 
 ### latexdiff for Revision Tracking
 
-Essential for rebuttals — generates a marked-up PDF showing changes between versions:
+Essential for rebuttals, generates a marked-up PDF showing changes between versions:
 
 ```bash
 # Install
@@ -720,7 +720,7 @@ pdflatex paper_diff.tex
 latexdiff --flatten paper_v1.tex paper_v2.tex > paper_diff.tex
 ```
 
-This produces a PDF with deletions in red strikethrough and additions in blue — standard format for rebuttal supplements.
+This produces a PDF with deletions in red strikethrough and additions in blue, standard format for rebuttal supplements.
 
 ### SciencePlots for matplotlib
 
@@ -749,9 +749,9 @@ with plt.style.context(['science', 'no-latex']):
 ```
 
 **Standard figure sizes** (two-column format):
-- Single column: `figsize=(3.5, 2.5)` — fits in one column
-- Double column: `figsize=(7.0, 3.0)` — spans both columns
-- Square: `figsize=(3.5, 3.5)` — for heatmaps, confusion matrices
+- Single column: `figsize=(3.5, 2.5)`: fits in one column
+- Double column: `figsize=(7.0, 3.0)`: spans both columns
+- Square: `figsize=(3.5, 3.5)`: for heatmaps, confusion matrices
 
 ---
 

@@ -13,7 +13,7 @@ metadata:
 
 # Pinggy Tunnel Skill
 
-Expose a local service (dev server, webhook receiver, MCP endpoint, demo) to the public internet using a Pinggy SSH reverse tunnel. No daemon to install — the user's stock SSH client connects to `a.pinggy.io:443` and Pinggy hands back a public HTTP/HTTPS URL.
+Expose a local service (dev server, webhook receiver, MCP endpoint, demo) to the public internet using a Pinggy SSH reverse tunnel. No daemon to install, the user's stock SSH client connects to `a.pinggy.io:443` and Pinggy hands back a public HTTP/HTTPS URL.
 
 Free tier: 60-minute tunnels, random subdomain, no signup. Pro tier ($3/mo) is an opt-in with a token.
 
@@ -24,7 +24,7 @@ Free tier: 60-minute tunnels, random subdomain, no signup. Pro tier ($3/mo) is a
 - Sharing a one-off HTTP demo (MCP server, Ollama/vLLM endpoint, dashboard) with a remote party
 - The host has SSH but no `cloudflared` / `ngrok` binary, and installing one would be overkill
 
-If the host already has `cloudflared` configured, prefer the `cloudflared-quick-tunnel` skill — Cloudflare quick tunnels don't expire after 60 minutes.
+If the host already has `cloudflared` configured, prefer the `cloudflared-quick-tunnel` skill, Cloudflare quick tunnels don't expire after 60 minutes.
 
 ## Prerequisites
 
@@ -68,7 +68,7 @@ ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 \
 ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8000 "$PINGGY_TOKEN+a.pinggy.io"
 ```
 
-## Procedure — Start a Tunnel and Get the URL
+## Procedure, Start a Tunnel and Get the URL
 
 The model SHOULD use the `terminal` tool. The tunnel must stay alive for the duration of the share, so run it as a background process and parse the public URL from stdout.
 
@@ -79,7 +79,7 @@ curl -sI http://127.0.0.1:8000/ | head -1
 # expect HTTP/1.x 200 (or any non-connection-refused response)
 ```
 
-If nothing is listening yet, start it first (e.g. `python -m http.server 8000 --bind 127.0.0.1`). Pinggy will happily return a URL pointed at nothing — the user will see 502 until the origin comes up.
+If nothing is listening yet, start it first (e.g. `python -m http.server 8000 --bind 127.0.0.1`). Pinggy will happily return a URL pointed at nothing, the user will see 502 until the origin comes up.
 
 ### 2. Launch the tunnel as a background process
 
@@ -124,7 +124,7 @@ curl -sI https://<the-url>/ | head -3
 # expect 200/302/whatever the local origin actually returns
 ```
 
-If you get `502 Bad Gateway`, the SSH session is up but the local origin isn't listening — fix step 1 first.
+If you get `502 Bad Gateway`: the SSH session is up but the local origin isn't listening, fix step 1 first.
 
 ### 5. Teardown
 
@@ -146,7 +146,7 @@ Pinggy stacks control flags into the SSH username separated by `+`. Always quote
 | `k:token` | Bearer-token header gate (`Authorization: Bearer <token>`) |
 | `w:CIDR` | IP whitelist (single IP or CIDR, repeatable) |
 | `co` | Add `Access-Control-Allow-Origin: *` (CORS) |
-| `x:https` | Force HTTPS — auto-redirect HTTP to HTTPS |
+| `x:https` | Force HTTPS, auto-redirect HTTP to HTTPS|
 | `a:Name:Value` | Add request header |
 | `u:Name:Value` | Update request header |
 | `r:Name` | Remove request header |
@@ -171,16 +171,16 @@ Then open `http://localhost:4300` in a browser to see live request/response pair
 - **Concurrent free tunnels are limited to one per source IP.** Starting a second tunnel from the same machine usually kills the first. Pro tier lifts this.
 - **`+` in usernames must be quoted.** Bare `ssh ... b:admin:secret+free@a.pinggy.io` works in bash but breaks under shells that treat `+` specially or when assembled programmatically. Always wrap in double quotes.
 - **Don't tunnel anything sensitive without an access-control flag.** A bare HTTP tunnel is reachable by anyone with the URL. Use `b:`, `k:`, or `w:` for non-public services.
-- **`process(action='log')` may miss SSH banner output.** Pinggy prints the URLs and then the SSH session goes interactive. Always redirect to a logfile and `grep` the file directly — same pattern as `cloudflared-quick-tunnel`.
+- **`process(action='log')` may miss SSH banner output.** Pinggy prints the URLs and then the SSH session goes interactive. Always redirect to a logfile and `grep` the file directly, same pattern as `cloudflared-quick-tunnel`.
 - **Host-key prompt on first run.** Default OpenSSH config asks the user to accept Pinggy's host key. Always pass `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` for unattended runs.
 - **TCP and TLS tunnels return a `<subdomain>.a.pinggy.online:<port>` pair, not an https URL.** Parse with a different regex (`tcp://` and a port). Don't assume every Pinggy tunnel is HTTP.
-- **Pro mode requires the token as the username, not a flag.** Use `"$PINGGY_TOKEN+a.pinggy.io"` (no `free@`). With a token you can also add `:persistent` for a stable subdomain — see `pinggy.io/docs/`.
+- **Pro mode requires the token as the username, not a flag.** Use `"$PINGGY_TOKEN+a.pinggy.io"` (no `free@`). With a token you can also add `:persistent` for a stable subdomain, see `pinggy.io/docs/`.
 
 ## Recipes
 
-Composite patterns combining a local origin with a Pinggy tunnel. Each recipe is self-contained — start the origin, start the tunnel, parse the URL, hand it back to the user.
+Composite patterns combining a local origin with a Pinggy tunnel. Each recipe is self-contained, start the origin, start the tunnel, parse the URL, hand it back to the user.
 
-### Recipe 1 — Receive a webhook callback
+### Recipe 1, Receive a webhook callback
 
 Use this when an external service (Stripe, GitHub, Discord, AgentMail, etc.) needs to POST to a publicly reachable URL during a local task.
 
@@ -222,9 +222,9 @@ tail -f ~/.hermes/cache/scratch/webhook-hits.log
 
 Hand `$URL` to the service that needs to call you. Teardown: `kill $(cat ~/.hermes/cache/scratch/webhook-server.pid) $(cat ~/.hermes/cache/scratch/webhook-pinggy.pid)`.
 
-### Recipe 2 — Expose an MCP server over HTTP/SSE
+### Recipe 2, Expose an MCP server over HTTP/SSE
 
-Use when a remote MCP client (Claude Desktop on another machine, a teammate's editor, etc.) needs to reach an MCP server running on the local box. Only works for MCP servers that speak HTTP transport — stdio-mode servers can't be tunneled.
+Use when a remote MCP client (Claude Desktop on another machine, a teammate's editor, etc.) needs to reach an MCP server running on the local box. Only works for MCP servers that speak HTTP transport, stdio-mode servers can't be tunneled.
 
 ```bash
 # 1. Start the MCP server in HTTP mode (example: a FastMCP server on port 8765)
@@ -247,7 +247,7 @@ echo "Bearer token: $TOKEN"
 
 The remote client connects to `$URL` with `Authorization: Bearer $TOKEN`. Hermes' own native MCP client config: `{"transport": "http", "url": "<URL>", "headers": {"Authorization": "Bearer <TOKEN>"}}`.
 
-### Recipe 3 — Expose a local LLM endpoint (Ollama / vLLM / llama.cpp)
+### Recipe 3, Expose a local LLM endpoint (Ollama / vLLM / llama.cpp)
 
 Share a local model with a remote caller (another agent, a phone, a teammate). Ollama listens on `:11434`, vLLM and llama.cpp typically on `:8000`.
 
@@ -268,9 +268,9 @@ echo "Token:    $TOKEN"
 curl -s "$URL/api/tags" -H "Authorization: Bearer $TOKEN" | head
 ```
 
-`co` enables CORS so a browser caller can hit the endpoint. Drop `co` for backend-only callers. For an OpenAI-compatible vLLM/llama.cpp endpoint, callers use base URL `$URL/v1` with `Authorization: Bearer $TOKEN` — but note Pinggy strips/replaces nothing in the body, so the model server itself sees Pinggy's token; the local server should be configured to ignore auth (it's already on `127.0.0.1`) and let Pinggy do the gating.
+`co` enables CORS so a browser caller can hit the endpoint. Drop `co` for backend-only callers. For an OpenAI-compatible vLLM/llama.cpp endpoint, callers use base URL `$URL/v1` with `Authorization: Bearer $TOKEN`, but note Pinggy strips/replaces nothing in the body, so the model server itself sees Pinggy's token; the local server should be configured to ignore auth (it's already on `127.0.0.1`) and let Pinggy do the gating.
 
-### Recipe 4 — Share a dev server with a one-shot password
+### Recipe 4, Share a dev server with a one-shot password
 
 The fastest "let a teammate poke at my running app" pattern. Random password, prints once, dies when you Ctrl-C.
 

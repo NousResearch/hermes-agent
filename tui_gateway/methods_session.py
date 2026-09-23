@@ -231,8 +231,16 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
     login: the child is a Desktop session too, and the row only records identity at insert."""
+    # The child sends the parent's exact system prompt: a row without one makes the branch's first
+    # turn rebuild (re-probing the workspace) and forfeits the warm cache the copied transcript buys.
+    parent_prompt = None
+    try:
+        parent_prompt = (db.get_session(parent_key) or {}).get("system_prompt")
+    except Exception:
+        logger.debug("branch: parent system prompt read failed for %s", parent_key, exc_info=True)
     db.create_session(new_key, source=source, model=model, model_config={"_branched_from": parent_key},
-                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id)
+                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id,
+                      system_prompt=parent_prompt or None)
     try:
         # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
         # committed, the durable-but-empty row would defeat the lazy first-prompt fallback

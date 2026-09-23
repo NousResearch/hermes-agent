@@ -10,6 +10,8 @@ dedicated alias expansion. Left unconditional, it makes a bare allowlist entry
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from gateway.authz_mixin import _principal_matches_allowlist
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource
@@ -25,44 +27,12 @@ def _source(platform: Platform, user_id: str) -> SessionSource:
     )
 
 
-def test_bare_localpart_entry_does_not_admit_foreign_domain():
-    """alice@evil.example must not match an allowlist holding bare ``alice``."""
-    source = _source(Platform.EMAIL, "alice@evil.example")
-    assert _principal_matches_allowlist(source, "alice@evil.example", {"alice"}) is False
-
-
-def test_qualified_entry_still_matches():
-    source = _source(Platform.EMAIL, "alice@corp.example")
-    assert _principal_matches_allowlist(
-        source, "alice@corp.example", {"alice@corp.example"}
-    ) is True
-
-
-def test_whatsapp_bare_phone_entry_still_matches_jid():
-    """The original intent survives via the scoped WhatsApp expansion, not the
-    generic split: a bare phone allowlist entry matches the sender's JID."""
-    source = _source(Platform.WHATSAPP, "15550000001@s.whatsapp.net")
-    assert _principal_matches_allowlist(
-        source, "15550000001@s.whatsapp.net", {"15550000001"}
-    ) is True
-
-
-def test_whatsapp_device_suffix_jid_matches_bare_phone():
-    source = _source(Platform.WHATSAPP, "15550000001:47@s.whatsapp.net")
-    assert _principal_matches_allowlist(
-        source, "15550000001:47@s.whatsapp.net", {"15550000001"}
-    ) is True
-
-
-# ------------------------------------------------------------- full authz path
-
-def _make_runner(platform: Platform, config: GatewayConfig):
+def _make_runner(platform: Platform):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner.config = config
-    adapter = SimpleNamespace(send=AsyncMock())
-    runner.adapters = {platform: adapter}
+    runner.config = GatewayConfig(platforms={platform: PlatformConfig(enabled=True)})
+    runner.adapters = {platform: SimpleNamespace(send=AsyncMock())}
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
     runner.pairing_store._is_rate_limited.return_value = False
@@ -71,61 +41,35 @@ def _make_runner(platform: Platform, config: GatewayConfig):
     runner._update_prompts = {}
     runner.hooks = SimpleNamespace(dispatch=AsyncMock(return_value=None))
     runner._sessions = {}
-    return runner, adapter
+    return runner
 
 
-def test_email_allowlist_bare_localpart_rejects_foreign_domain(monkeypatch):
-    """End to end: EMAIL_ALLOWED_USERS=alice must not authorize alice@evil.example."""
-    for key in ("EMAIL_ALLOWED_USERS", "EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+# BlueBubbles registers no platform allowlist env and its adapter does no sender
+# gate, so GATEWAY_ALLOWED_USERS is the only enforcement on that path.
+@pytest.mark.parametrize(
+    ("platform", "env_var"),
+    [(Platform.EMAIL, "EMAIL_ALLOWED_USERS"), (Platform.BLUEBUBBLES, "GATEWAY_ALLOWED_USERS")],
+)
+def test_bare_localpart_entry_admits_no_foreign_domain(monkeypatch, platform, env_var):
+    for key in ("EMAIL_ALLOWED_USERS", "EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("EMAIL_ALLOWED_USERS", "alice")
+    monkeypatch.setenv(env_var, "alice,bob@corp.example")
+    runner = _make_runner(platform)
 
-    runner, _adapter = _make_runner(
-        Platform.EMAIL,
-        GatewayConfig(platforms={Platform.EMAIL: PlatformConfig(enabled=True)}),
-    )
-
-    assert runner._is_user_authorized(_source(Platform.EMAIL, "alice@evil.example")) is False
-    assert runner._is_user_authorized(_source(Platform.EMAIL, "mallory@other.example")) is False
+    assert runner._is_user_authorized(_source(platform, "alice@evil.example")) is False
+    assert runner._is_user_authorized(_source(platform, "bob@evil.example")) is False
+    # Positive control: a qualified entry still admits its exact sender.
+    assert runner._is_user_authorized(_source(platform, "bob@corp.example")) is True
 
 
-def test_global_allowlist_bare_localpart_rejects_foreign_domain(monkeypatch):
-    """The reachable widening: BlueBubbles registers no platform allowlist env,
-    so GATEWAY_ALLOWED_USERS is the only gate and the adapter does no sender
-    check of its own — an iMessage email handle is matched as-is. A bare
-    ``alice`` entry must not admit alice@evil.example."""
-    for key in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS"):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "alice")
-
-    runner, _adapter = _make_runner(
-        Platform.BLUEBUBBLES,
-        GatewayConfig(platforms={Platform.BLUEBUBBLES: PlatformConfig(enabled=True)}),
-    )
-
-    assert runner._is_user_authorized(
-        _source(Platform.BLUEBUBBLES, "alice@evil.example")
-    ) is False
-    assert runner._is_user_authorized(
-        _source(Platform.BLUEBUBBLES, "alice@alice.example")
-    ) is False
-
-
-def test_global_allowlist_qualified_entry_still_authorizes(monkeypatch):
-    """Positive control on the same path: a fully-qualified entry still admits
-    its exact sender, so the gate is not simply rejecting everything."""
-    for key in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS"):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "alice@corp.example")
-
-    runner, _adapter = _make_runner(
-        Platform.BLUEBUBBLES,
-        GatewayConfig(platforms={Platform.BLUEBUBBLES: PlatformConfig(enabled=True)}),
-    )
-
-    assert runner._is_user_authorized(
-        _source(Platform.BLUEBUBBLES, "alice@corp.example")
-    ) is True
-    assert runner._is_user_authorized(
-        _source(Platform.BLUEBUBBLES, "alice@evil.example")
-    ) is False
+@pytest.mark.parametrize(
+    ("platform", "user_id"),
+    [
+        (Platform.WHATSAPP, "15550000001@s.whatsapp.net"),
+        (Platform.WHATSAPP, "15550000001:47@s.whatsapp.net"),
+        (Platform.WHATSAPP_CLOUD, "15550000001@s.whatsapp.net"),
+    ],
+)
+def test_whatsapp_bare_phone_entry_still_matches_jid(platform, user_id):
+    """The original intent survives via the scoped WhatsApp expansion, not the generic split."""
+    assert _principal_matches_allowlist(_source(platform, user_id), user_id, {"15550000001"}) is True

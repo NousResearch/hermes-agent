@@ -60,6 +60,7 @@ class SkillsShSource(SkillSource):
 
     def __init__(self, auth: GitHubAuth):
         self.auth, self.github = auth, GitHubSource(auth=auth)
+        self.last_fetch_rejection: str = ""
 
     def trust_level_for(self, identifier: str) -> str:
         return self.github.trust_level_for(self._normalize_identifier(identifier))
@@ -94,11 +95,16 @@ class SkillsShSource(SkillSource):
         return results
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        self.last_fetch_rejection = ""
         canonical = self._normalize_identifier(identifier)
         detail = self._fetch_detail_page(canonical)
 
         def _relabel(github_id: Optional[str]) -> Optional[SkillBundle]:
             bundle = self.github.fetch(github_id) if github_id else None
+            if not bundle and self.github.last_fetch_rejection and not self.last_fetch_rejection:
+                # Preserve the first hard rejection across later candidate-path misses so
+                # the CLI does not downgrade a real refusal into a fake stale-index error.
+                self.last_fetch_rejection = self.github.last_fetch_rejection
             if bundle:
                 bundle.source, bundle.identifier = "skills.sh", self._wrap_identifier(canonical)
                 bundle.metadata.update(self._detail_to_metadata(canonical, detail))

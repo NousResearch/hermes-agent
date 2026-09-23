@@ -232,6 +232,9 @@ class GitHubSource(SkillSource):
         # repo -> skills.sh.json grouping map; None = fetched, no sidecar.
         self._skillsh_groupings: Dict[str, Optional[Dict[str, str]]] = {}
         self._rate_limited: bool = False
+        # Structured fetch refusal detail for callers that need to distinguish an
+        # existing-but-rejected bundle from a genuinely stale/missing upstream path.
+        self.last_fetch_rejection: str = ""
 
     @property
     def is_rate_limited(self) -> bool:  # whether the GitHub API rate limit was hit during operations
@@ -263,6 +266,7 @@ class GitHubSource(SkillSource):
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         """Download a skill; identifier format: "owner/repo/path/to/skill-dir"."""
+        self.last_fetch_rejection = ""
         if (split := _split_repo_id(identifier)) is None:
             return None
         repo, skill_path = split
@@ -277,6 +281,7 @@ class GitHubSource(SkillSource):
             return None
         referenced = _referenced_support_paths(skill_md)
         if referenced is None:
+            self.last_fetch_rejection = "the SKILL.md contains an unsafe referenced path"
             return None
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
         if tree is not None:
@@ -341,6 +346,7 @@ class GitHubSource(SkillSource):
                 rel_path = _validate_bundle_rel_path(rel_path)
             except ValueError:
                 logger.warning("Rejected unsafe file path in skill bundle: %s", item_path)
+                self.last_fetch_rejection = f"unsafe file path: {item_path}"
                 return None
             complete &= self._add_support_file(repo, item_path, rel_path, files, item_path, ref=ref)
         for rel_path in sorted(referenced):
@@ -352,6 +358,7 @@ class GitHubSource(SkillSource):
             # file.
             if rel_path in symlinked:
                 logger.warning("Rejected non-regular referenced file in skill bundle: %s%s", prefix, rel_path)
+                self.last_fetch_rejection = f"non-regular referenced file: {prefix}{rel_path}"
                 return None
             if rel_path not in files:
                 logger.warning(

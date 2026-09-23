@@ -199,7 +199,28 @@ class TestSkillsShSource:
         auth = MagicMock(spec=GitHubAuth)
         return SkillsShSource(auth=auth)
 
-    def test_sitemap_fetches_go_through_guarded_get_and_ask_for_gzip_only(self, monkeypatch):
+    def test_fetch_preserves_github_rejection_across_later_candidate_misses(self, monkeypatch):
+        source = self._source()
+        calls = iter([
+            ("reject", "non-regular referenced file: skills/demo/link.md"),
+            ("miss", ""),
+            ("miss", ""),
+        ])
+
+        def fake_fetch(_identifier):
+            kind, reason = next(calls)
+            source.github.last_fetch_rejection = reason
+            return None
+
+        monkeypatch.setattr(source.github, "fetch", fake_fetch)
+        monkeypatch.setattr(source, "_fetch_detail_page", lambda _canonical: None)
+        monkeypatch.setattr(source, "_candidate_identifiers", lambda _canonical: ["a", "b"])
+        monkeypatch.setattr(source, "_discover_identifier", lambda _canonical, detail=None: "c")
+
+        assert source.fetch("skills-sh/owner/repo/demo") is None
+        assert source.last_fetch_rejection == "non-regular referenced file: skills/demo/link.md"
+
+        def test_sitemap_fetches_go_through_guarded_get_and_ask_for_gzip_only(self, monkeypatch):
         """Sitemap hops use the hub's guarded GET *and* keep the explicit
         ``Accept-Encoding: gzip`` pin: skills.sh serves sitemaps brotli-compressed and
         httpx's optional brotlicffi backend has a streaming-decode bug on them, so the

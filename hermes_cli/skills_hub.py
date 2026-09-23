@@ -605,6 +605,14 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
     rate_limited = any(getattr(src, "is_rate_limited", False)
                        or getattr(getattr(src, "github", None), "is_rate_limited", False)
                        for src in sources)
+    rejection = getattr(source, "last_fetch_rejection", "") or getattr(
+        getattr(source, "github", None), "last_fetch_rejection", ""
+    )
+    if rejection:
+        c.print(f"[bold red]Error:[/] '{identifier}' exists upstream, but Hermes rejected its skill bundle.")
+        c.print(f"[dim]Reason: {rejection}. Fix the referenced files upstream and retry; "
+                "this is not a stale index entry.[/]\n")
+        return
     # Index hit but files gone: a stale index entry, not a user typo — name it so users stop
     # re-trying spellings (#3259). Only when no adapter was rate limited: a throttled fetch
     # also yields meta-without-bundle, and calling that "stale" would send users away from a

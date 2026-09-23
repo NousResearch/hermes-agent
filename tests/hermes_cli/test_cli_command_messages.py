@@ -31,6 +31,22 @@ def test_skill_fetch_failure_names_search_and_doctor():
     assert "from any source" not in out
 
 
+def test_skill_fetch_failure_reports_bundle_rejection_before_stale_index():
+    from hermes_cli.skills_hub import _print_fetch_failure
+    c, buf = _console()
+    source = SimpleNamespace(
+        last_fetch_rejection="non-regular referenced file: skills/demo/link.md",
+        source_id=lambda: "skills-sh",
+    )
+    _print_fetch_failure(
+        c, sources=[source], identifier="skills-sh/owner/repo/demo",
+        meta=SimpleNamespace(), source=source,
+    )
+    out = buf.getvalue()
+    assert "exists upstream" in out
+    assert "non-regular referenced file" in out
+    assert "Stale index entry" not in out
+
 def test_scan_block_message_explains_force_and_points_at_inspect():
     from hermes_cli.skills_hub import _scan_block_message
     result = SimpleNamespace(verdict="dangerous", trust_level="community", findings=[1, 2, 3])

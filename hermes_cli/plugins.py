@@ -1200,6 +1200,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # matches the key the registries store under (normcase on Windows).
         self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
+        # Observer dispatchers use a per-manager lifetime token, rotated on unload-all so an
+        # old queued event can never attach to a reloaded manager instance.
+        self._observer_dispatcher_scope = object()
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
@@ -1685,6 +1688,41 @@ def _attach_published_tui_host(manager: PluginManager) -> None:
         host = _published_tui_message_injector
     if host is not None and manager._tui_message_injector is None:
         manager._tui_message_injector = host
+
+
+def unload_plugin_manager_for_home(home: Path) -> bool:
+    """Unload and evict a profile's cached manager at profile delete/rename teardown."""
+    global _plugin_manager
+    try:
+        home_key = Path(home).expanduser().resolve()
+    except Exception:
+        home_key = Path(home).expanduser()
+
+    with _plugin_managers_lock:
+        manager = _plugin_managers_by_home.get(home_key)
+        if manager is None and _plugin_manager is not None:
+            manager_home = getattr(_plugin_manager, "home_path", None)
+            if manager_home is not None:
+                try:
+                    matches = Path(manager_home).expanduser().resolve() == home_key
+                except Exception:
+                    matches = Path(manager_home).expanduser() == home_key
+                if matches:
+                    manager = _plugin_manager
+        if manager is None:
+            return False
+
+        # Match the test reset's teardown order: evict directory-plugin modules, then dispose
+        # registrations while the manager still owns their inverses.
+        _clear_plugin_submodules(manager)
+        try:
+            manager.unload()
+        finally:
+            if _plugin_managers_by_home.get(home_key) is manager:
+                _plugin_managers_by_home.pop(home_key, None)
+            if _plugin_manager is manager:
+                _plugin_manager = None
+    return True
 
 
 def get_plugin_manager() -> PluginManager:

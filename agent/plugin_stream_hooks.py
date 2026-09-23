@@ -3,7 +3,7 @@
 Each registered hook callback gets its own bounded queue + daemon worker thread
 so plugin code never runs inline on the token path. Queues drop the oldest
 pending event when full; dispatchers for callbacks that are no longer
-registered are stopped lazily on the next lookup.
+registered are stopped lazily on the next lookup or at manager unload.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import contextvars
 import logging
 import queue
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -23,11 +24,12 @@ logger = logging.getLogger(__name__)
 # wait for plugin code: when full, enqueue drops the oldest pending event.
 _QUEUE_SIZE = 1024
 _STOP = object()
+_FALLBACK_SCOPE = object()
 
 
 @dataclass
 class _ConsumerDispatcher:
-    scope_key: int
+    scope_key: object
     hook_name: str
     callback: Callable[..., Any]
     events: "queue.Queue[_QueuedObserverEvent | object]"
@@ -41,7 +43,7 @@ class _QueuedObserverEvent:
 
 
 _dispatcher_lock = threading.Lock()
-_dispatchers: dict[tuple[int, str, int], _ConsumerDispatcher] = {}
+_dispatchers: dict[tuple[object, str, int], _ConsumerDispatcher] = {}
 
 
 def _callback_name(callback: Callable[..., Any]) -> str:
@@ -96,20 +98,80 @@ def _registered_callbacks(hook_name: str) -> tuple[Callable[..., Any], ...]:
         return ()
 
 
-def _active_manager_scope() -> int:
-    """Identify the active profile/plugin manager for dispatcher state."""
+def _active_plugin_manager():
+    """Return the manager for this context, or None when plugin lookup fails."""
     try:
         from hermes_cli import plugins
 
-        return id(plugins.get_plugin_manager())
+        return plugins.get_plugin_manager()
     except Exception:
-        # Discovery failures are fail-open for observers. A single fallback
-        # scope still keeps cleanup deterministic for callers without a plugin
-        # manager, while normal profile-aware paths use the manager identity.
-        return 0
+        return None
 
 
-def _stop_dispatcher(dispatcher: _ConsumerDispatcher, timeout: float = 1.0) -> None:
+def _active_manager_scope(manager: Any) -> object:
+    """Return the manager's unique observer lifetime token, not its recyclable ``id()``."""
+    if manager is None:
+        return _FALLBACK_SCOPE
+    # PluginManager rotates this opaque token at unload-all. The manager object
+    # fallback keeps older embedders/test doubles scoped without using id().
+    return getattr(manager, "_observer_dispatcher_scope", manager)
+
+
+def _same_callbacks(left: tuple[Callable[..., Any], ...], right: tuple[Callable[..., Any], ...]) -> bool:
+    return len(left) == len(right) and all(a is b for a, b in zip(left, right))
+
+
+@contextmanager
+def _registered_dispatch_scope(hook_name: str):
+    """Snapshot callbacks before taking the manager lock, then validate while holding it.
+
+    This preserves the existing lazy callback lookup without reversing the manager-registry lock
+    order. The lock remains held through dispatcher creation and enqueue, so unload either follows
+    a completed enqueue and retires it, or changes the lifetime token first and makes the stale
+    enqueue a no-op.
+    """
+    manager = _active_plugin_manager()
+    scope_key = _active_manager_scope(manager)
+    manager_callbacks = None
+    manager_hooks = getattr(manager, "_hooks", None)
+    if isinstance(manager_hooks, dict):
+        manager_callbacks = tuple(manager_hooks.get(hook_name, ()))
+    callbacks = _registered_callbacks(hook_name)
+    callbacks_from_manager = manager_callbacks is not None and _same_callbacks(
+        callbacks, manager_callbacks
+    )
+    manager_lock = getattr(manager, "_discovery_lock", None)
+    if manager_lock is None:
+        yield scope_key, callbacks, True
+        return
+
+    # Never make the observer producer wait behind a discovery/reload transaction. It is safe to
+    # drop this observation while the manager is busy; lifecycle teardown will retire the old queue.
+    if not manager_lock.acquire(blocking=False):
+        yield scope_key, callbacks, False
+        return
+    try:
+        still_current = _active_manager_scope(manager) is scope_key
+        if callbacks_from_manager:
+            current_hooks = getattr(manager, "_hooks", {})
+            still_current = still_current and _same_callbacks(
+                callbacks, tuple(current_hooks.get(hook_name, ()))
+            )
+        yield scope_key, callbacks, still_current
+    finally:
+        manager_lock.release()
+
+
+def _stop_dispatcher(
+    dispatcher: _ConsumerDispatcher, timeout: float = 1.0, *, discard_pending: bool = False
+) -> None:
+    if discard_pending:
+        while True:
+            try:
+                dispatcher.events.get_nowait()
+                dispatcher.events.task_done()
+            except queue.Empty:
+                break
     try:
         dispatcher.events.put_nowait(_STOP)
     except queue.Full:
@@ -122,13 +184,13 @@ def _stop_dispatcher(dispatcher: _ConsumerDispatcher, timeout: float = 1.0) -> N
             dispatcher.events.put_nowait(_STOP)
         except queue.Full:
             pass
-    if dispatcher.thread is not None:
+    if dispatcher.thread is not None and dispatcher.thread is not threading.current_thread():
         dispatcher.thread.join(timeout=timeout)
 
 
-def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
-    scope_key = _active_manager_scope()
-    callbacks = _registered_callbacks(hook_name)
+def _dispatchers_for_scope(
+    scope_key: object, hook_name: str, callbacks: tuple[Callable[..., Any], ...]
+) -> tuple[list[_ConsumerDispatcher], list[_ConsumerDispatcher]]:
     callback_ids = {id(callback) for callback in callbacks}
     stale: list[_ConsumerDispatcher] = []
     ready: list[_ConsumerDispatcher] = []
@@ -136,7 +198,7 @@ def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
         for key, dispatcher in list(_dispatchers.items()):
             key_scope, key_hook_name, callback_id = key
             if (
-                key_scope == scope_key
+                key_scope is scope_key
                 and key_hook_name == hook_name
                 and callback_id not in callback_ids
             ):
@@ -165,6 +227,15 @@ def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
                 _dispatchers[key] = dispatcher
             ready.append(dispatcher)
 
+    return ready, stale
+
+
+def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
+    with _registered_dispatch_scope(hook_name) as (scope_key, callbacks, still_current):
+        if not still_current:
+            return []
+        ready, stale = _dispatchers_for_scope(scope_key, hook_name, callbacks)
+
     for dispatcher in stale:
         _stop_dispatcher(dispatcher, timeout=0.2)
     return ready
@@ -181,34 +252,70 @@ def enqueue_plugin_observer_hook(hook_name: str, **payload: Any) -> bool:
     queued = False
     event_payload = dict(payload)
     event_context = contextvars.copy_context()
-    for dispatcher in _dispatchers_for(hook_name):
-        # A Context cannot be entered concurrently by two workers. Each
-        # consumer gets an independent copy of the originating enqueue
-        # context, while retaining the same event payload.
-        item = _QueuedObserverEvent(
-            payload=event_payload,
-            context=event_context.copy(),
-        )
-        try:
-            dispatcher.events.put_nowait(item)
-            queued = True
-            continue
-        except queue.Full:
-            try:
-                dispatcher.events.get_nowait()
-                dispatcher.events.task_done()
-            except queue.Empty:
-                pass
-        try:
-            dispatcher.events.put_nowait(item)
-            queued = True
-        except queue.Full:
-            logger.debug(
-                "plugin stream hook queue full after drop-oldest: %s callback=%s",
-                hook_name,
-                _callback_name(dispatcher.callback),
+    with _registered_dispatch_scope(hook_name) as (scope_key, callbacks, still_current):
+        if not still_current:
+            return False
+        dispatchers, stale = _dispatchers_for_scope(scope_key, hook_name, callbacks)
+        for dispatcher in dispatchers:
+            # A Context cannot be entered concurrently by two workers. Each
+            # consumer gets an independent copy of the originating enqueue
+            # context, while retaining the same event payload.
+            item = _QueuedObserverEvent(
+                payload=event_payload,
+                context=event_context.copy(),
             )
+            try:
+                dispatcher.events.put_nowait(item)
+                queued = True
+                continue
+            except queue.Full:
+                try:
+                    dispatcher.events.get_nowait()
+                    dispatcher.events.task_done()
+                except queue.Empty:
+                    pass
+            try:
+                dispatcher.events.put_nowait(item)
+                queued = True
+            except queue.Full:
+                logger.debug(
+                    "plugin stream hook queue full after drop-oldest: %s callback=%s",
+                    hook_name,
+                    _callback_name(dispatcher.callback),
+                )
+
+    for dispatcher in stale:
+        _stop_dispatcher(dispatcher, timeout=0.2)
     return queued
+
+
+def retire_plugin_observer_dispatchers(
+    manager: Any, *, unload_all: bool
+) -> list[_ConsumerDispatcher]:
+    """Retire dispatchers owned by a manager unload while its discovery lock is held.
+
+    Unload-all rotates the opaque lifetime token so an enqueue that captured the old generation
+    cannot attach to a reloaded manager. Targeted unload only retires callbacks no longer present.
+    This touches only the selected manager's scope; cached sibling profiles remain active.
+    """
+    scope_key = _active_manager_scope(manager)
+    manager_hooks = getattr(manager, "_hooks", {})
+    live_callback_ids = {
+        hook_name: {id(callback) for callback in callbacks}
+        for hook_name, callbacks in manager_hooks.items()
+    }
+    if unload_all:
+        manager._observer_dispatcher_scope = object()
+
+    stale: list[_ConsumerDispatcher] = []
+    with _dispatcher_lock:
+        for key, dispatcher in list(_dispatchers.items()):
+            key_scope, hook_name, callback_id = key
+            if key_scope is not scope_key:
+                continue
+            if unload_all or callback_id not in live_callback_ids.get(hook_name, set()):
+                stale.append(_dispatchers.pop(key))
+    return stale
 
 
 def enqueue_plugin_stream_hook(hook_name: str, **payload: Any) -> bool:

@@ -55,6 +55,7 @@ import {
   type DiagnosticAction,
   type KanbanAttachment,
   type KanbanEvent,
+  type KanbanRun,
   type KanbanTaskDetail,
   SEVERITY_TONE,
   type TaskEstimate
@@ -413,6 +414,37 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
 // `latest_summary` is just the newest non-null run summary. A reclaim writes an
 // administrative note into that slot; hide those (Runs still shows them).
 const isAdminSummary = (summary: string) => /^status changed to \w+ \(dashboard\/direct\)$/.test(summary)
+
+// Every dispatcher-spawned worker runs as a real, resumable Hermes session and
+// records its id as `worker_session_id` in the run's metadata. The REST layer
+// passes metadata through verbatim — SQLite stores it as a TEXT column, so it
+// arrives as a JSON string on some paths and an already-parsed object on
+// others. Tolerate both rather than assuming one.
+export function workerSessionId(run: KanbanRun): null | string {
+  const raw = run.metadata
+
+  if (!raw) {
+    return null
+  }
+
+  let parsed: unknown = raw
+
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return null
+  }
+
+  const id = (parsed as Record<string, unknown>).worker_session_id
+
+  return typeof id === 'string' && id.trim() ? id : null
+}
 
 function AttachmentsSection({
   attachments,
@@ -908,6 +940,7 @@ export function TaskDrawer({
                   <ul className="flex flex-col gap-1.5">
                     {detail.runs.map(run => {
                       const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
+                      const sessionId = workerSessionId(run)
 
                       return (
                         <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
@@ -920,6 +953,18 @@ export function TaskDrawer({
                               <span className="text-(--ui-text-quaternary)">
                                 {duration(run.started_at, run.ended_at)}
                               </span>
+                            )}
+                            {sessionId && (
+                              <Tip label={k.openTranscriptTip(sessionId)}>
+                                <button
+                                  className="flex shrink-0 items-center gap-1 rounded px-1 text-(--ui-text-tertiary) hover:bg-(--ui-bg-hover) hover:text-(--ui-text-primary)"
+                                  onClick={() => void host.openSession(sessionId, { intent: 'tab' })}
+                                  type="button"
+                                >
+                                  <Codicon name="comment-discussion" />
+                                  {k.openTranscript}
+                                </button>
+                              </Tip>
                             )}
                             <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
                               {ago(run.ended_at ?? run.started_at)}

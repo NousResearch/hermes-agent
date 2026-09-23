@@ -11,12 +11,16 @@ Covers:
 
 import asyncio
 import hashlib
+import json
+import os
+import sys
 import threading
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import web
+from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
@@ -26,6 +30,10 @@ from gateway.platforms.api_server import (
     _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
+)
+from gateway.platforms import api_server_runs
+from gateway.platforms.api_server_run_child import (
+    process_fingerprint, process_group_exited, terminate_verified_process, verified_process_alive,
 )
 from tools import approval as approval_mod
 from tools import approval_gateway_wait
@@ -103,8 +111,380 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/steer", adapter._handle_steer_run)
+    app.router.add_post("/v1/runs/{run_id}/prepare-stop", adapter._handle_prepare_stop_run)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
+    app.router.add_post("/v1/runs/{run_id}/heartbeat", adapter._handle_run_heartbeat)
     return app
+
+
+async def _wait_run(cli, run_id, predicate, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = await cli.get(f"/v1/runs/{run_id}")
+        assert response.status == 200
+        state = await response.json()
+        if predicate(state):
+            return state
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"run {run_id} did not reach expected execution state: {state}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+async def test_isolated_run_activity_stop_and_sibling_boundary(adapter, tmp_path):
+    _use_idempotency_db(adapter, tmp_path / "runs.db")
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_synthetic.py"
+    with patch.object(api_server_runs, "_isolated_run_command", return_value=[sys.executable, str(fixture)]):
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            ids = []
+            for number in (1, 2):
+                response = await cli.post("/v1/runs", json={"input": "long-tool", "session_id": f"review-{number}",
+                    "execution_mode": "isolated_process"}, headers={"Idempotency-Key": f"review-{number}"})
+                assert response.status == 202
+                ids.append((await response.json())["run_id"])
+            first, second = ids
+            states = [await _wait_run(cli, run_id, lambda s: s.get("activity_generation", 0) >= 2)
+                      for run_id in ids]
+            assert states[0]["execution_pid"] != states[1]["execution_pid"]
+            assert states[0]["execution_exited"] is False
+            assert states[1]["execution_exited"] is False
+            heartbeat = await cli.post(f"/v1/runs/{first}/heartbeat", json={})
+            assert heartbeat.status == 200
+            touched = await heartbeat.json()
+            assert touched["activity_generation"] > states[0]["activity_generation"]
+            second_after = await _wait_run(cli, second, lambda s: s["status"] == "running")
+            assert second_after["activity_generation"] == states[1]["activity_generation"]
+            wrong = await cli.post(f"/v1/runs/{first}/heartbeat", json={"timestamp": time.time()})
+            assert wrong.status == 400
+            raced = await cli.post(f"/v1/runs/{first}/prepare-stop", json={
+                "activity_generation": states[0]["activity_generation"]})
+            assert raced.status == 409
+            latest = await cli.get(f"/v1/runs/{first}")
+            generation = (await latest.json())["activity_generation"]
+            prepared = await cli.post(f"/v1/runs/{first}/prepare-stop", json={
+                "activity_generation": generation})
+            assert prepared.status == 200
+            assert (await prepared.json())["stop_prepared"] is True
+            parked_heartbeat = await cli.post(f"/v1/runs/{first}/heartbeat", json={})
+            assert parked_heartbeat.status == 409
+            stopped = await cli.post(f"/v1/runs/{first}/stop", json={})
+            assert stopped.status == 200
+            assert (await stopped.json())["execution_exited"] is True
+            assert (await _wait_run(cli, first, lambda s: s["execution_exited"]))["status"] == "cancelled"
+            late = await cli.post(f"/v1/runs/{first}/heartbeat", json={})
+            assert late.status == 409
+            surviving = await cli.get(f"/v1/runs/{second}")
+            assert (await surviving.json())["status"] == "running"
+            await cli.post(f"/v1/runs/{second}/stop", json={})
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+async def test_unverified_spawn_pidfd_never_receives_run_payload(adapter, tmp_path):
+    _use_idempotency_db(adapter, tmp_path / "runs.db")
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_synthetic.py"
+    with (patch.object(api_server_runs, "_isolated_run_command", return_value=[sys.executable, str(fixture)]),
+          patch.object(api_server_runs.signal, "pidfd_send_signal", side_effect=ProcessLookupError)):
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={
+                "input": "long-tool", "session_id": "review-no-pidfd-proof",
+                "execution_mode": "isolated_process"}, headers={"Idempotency-Key": "review-no-pidfd-proof"})
+            run_id = (await response.json())["run_id"]
+            state = await _wait_run(cli, run_id, lambda s: s["status"] == "failed")
+            assert state.get("activity_generation", 0) == 0
+            assert state.get("execution_pid") is None
+            assert state["execution_exited"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+async def test_terminal_execution_linger_is_stopped_after_restart(adapter, tmp_path):
+    path = tmp_path / "runs.db"
+    _use_idempotency_db(adapter, path)
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_synthetic.py"
+    with patch.object(api_server_runs, "_isolated_run_command", return_value=[sys.executable, str(fixture)]):
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={"input": "terminal-linger", "session_id": "review-linger",
+                "execution_mode": "isolated_process"}, headers={"Idempotency-Key": "review-linger"})
+            run_id = (await response.json())["run_id"]
+            state = await _wait_run(cli, run_id, lambda s: s["status"] == "completed")
+            assert state["execution_exited"] is False
+            restarted = _make_adapter()
+            _use_idempotency_db(restarted, path)
+            async with TestClient(TestServer(_create_runs_app(restarted))) as second_cli:
+                hydrated = await second_cli.get(f"/v1/runs/{run_id}")
+                assert (await hydrated.json())["execution_exited"] is False
+                stopped = await second_cli.post(f"/v1/runs/{run_id}/stop", json={})
+                assert stopped.status == 200
+                assert (await stopped.json())["execution_exited"] is True
+                assert (await _wait_run(second_cli, run_id, lambda s: s["execution_exited"]))["status"] in {
+                    "completed", "cancelled"}
+            restarted._run_idempotency_store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+@pytest.mark.live_system_guard_bypass
+async def test_gateway_crash_keeps_exact_run_recoverable(adapter, tmp_path):
+    import subprocess
+
+    db = tmp_path / "runs.db"
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_gateway.py"
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[2])}
+    controller = subprocess.Popen(
+        [sys.executable, str(fixture), str(db)], cwd=Path(__file__).parents[2],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    run_pid = 0
+    try:
+        port_text = await asyncio.wait_for(asyncio.to_thread(controller.stdout.readline), timeout=8)
+        assert port_text.strip().isdigit(), controller.stderr.read() if controller.poll() is not None else port_text
+        async with ClientSession() as cli:
+            base = f"http://127.0.0.1:{port_text.strip()}"
+            response = await cli.post(base + "/v1/runs", json={
+                "input": "long-tool", "session_id": "review-crash",
+                "execution_mode": "isolated_process"}, headers={"Idempotency-Key": "review-crash"})
+            assert response.status == 202
+            run_id = (await response.json())["run_id"]
+            for _ in range(100):
+                status = await cli.get(base + f"/v1/runs/{run_id}")
+                state = await status.json()
+                if state.get("activity_generation", 0) >= 2:
+                    break
+                await asyncio.sleep(0.05)
+            assert state.get("activity_generation", 0) >= 2
+            run_pid = state["execution_pid"]
+            run_started = state["execution_started"]
+        controller.kill()
+        await asyncio.to_thread(controller.wait, 3)
+        assert verified_process_alive(run_pid, run_started)
+
+        restarted = _make_adapter()
+        _use_idempotency_db(restarted, db)
+        async with TestClient(TestServer(_create_runs_app(restarted))) as cli:
+            response = await cli.get(f"/v1/runs/{run_id}")
+            state = await response.json()
+            assert state["execution_exited"] is False
+            assert state["controller_recovered_at"] >= state["last_activity_at"]
+            stopped = await cli.post(f"/v1/runs/{run_id}/stop", json={})
+            assert (await stopped.json())["execution_exited"] is True
+        restarted._run_idempotency_store.close()
+    finally:
+        if controller.poll() is None:
+            controller.kill()
+            controller.wait(timeout=3)
+        if run_pid and verified_process_alive(run_pid, run_started):
+            os.kill(run_pid, 9)
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+async def test_isolated_approval_is_redacted_in_status_and_events(adapter, tmp_path):
+    _use_idempotency_db(adapter, tmp_path / "runs.db")
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_synthetic.py"
+    with patch.object(api_server_runs, "_isolated_run_command", return_value=[sys.executable, str(fixture)]):
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={
+                "input": "approval-secret", "session_id": "review-approval",
+                "execution_mode": "isolated_process"}, headers={"Idempotency-Key": "review-approval"})
+            run_id = (await response.json())["run_id"]
+            state = await _wait_run(cli, run_id, lambda s: s["status"] == "waiting_for_approval")
+            assert "sk-test-secret-1234567890" not in json.dumps(state)
+            events = await cli.get(f"/v1/runs/{run_id}/events")
+            try:
+                payload = await asyncio.wait_for(events.content.readuntil(b"approval.request"), timeout=2)
+                payload += await asyncio.wait_for(events.content.readline(), timeout=2)
+                assert b"sk-test-secret-1234567890" not in payload
+            finally:
+                events.close()
+            await cli.post(f"/v1/runs/{run_id}/stop", json={})
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+async def test_real_isolated_child_uses_central_activity_hook(adapter, tmp_path, monkeypatch):
+    _use_idempotency_db(adapter, tmp_path / "runs.db")
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[2]))
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_agent_synthetic.py"
+    detached_pid_file = tmp_path / "detached.pid"
+    with patch.object(api_server_runs, "_isolated_run_command", return_value=[sys.executable, str(fixture)]):
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={"input": f"detached:{detached_pid_file}", "session_id": "review-real-child",
+                "execution_mode": "isolated_process"}, headers={"Idempotency-Key": "review-real-child"})
+            assert response.status == 202
+            run_id = (await response.json())["run_id"]
+            state = await _wait_run(cli, run_id, lambda s: s.get("activity_generation", 0) >= 3 or
+                                    s["status"] in {"failed", "interrupted"})
+            assert state["status"] == "running", state.get("error")
+            assert state["activity_phase"] == "active"
+            assert state["execution_exited"] is False
+            detached_pid = int(detached_pid_file.read_text(encoding="ascii"))
+            detached_started = process_fingerprint(detached_pid)
+            assert verified_process_alive(detached_pid, detached_started)
+            stopped = await cli.post(f"/v1/runs/{run_id}/stop", json={})
+            assert (await stopped.json())["execution_exited"] is True
+            assert not verified_process_alive(detached_pid, detached_started)
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+async def test_tool_subprocess_stdout_cannot_forge_run_activity_or_result(adapter, tmp_path, monkeypatch):
+    _use_idempotency_db(adapter, tmp_path / "runs.db")
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[2]))
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_agent_synthetic.py"
+    with patch.object(api_server_runs, "_isolated_run_command", return_value=[sys.executable, str(fixture)]):
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={"input": "spoof-output", "session_id": "review-spoof",
+                "execution_mode": "isolated_process"}, headers={"Idempotency-Key": "review-spoof"})
+            run_id = (await response.json())["run_id"]
+            state = await _wait_run(cli, run_id, lambda s: s["status"] == "running")
+            await asyncio.sleep(0.2)
+            state = await (await cli.get(f"/v1/runs/{run_id}")).json()
+            assert state["status"] == "running"
+            assert state["activity_generation"] == 0
+            assert state["execution_exited"] is False
+            stopped = await cli.post(f"/v1/runs/{run_id}/stop", json={})
+            assert (await stopped.json())["execution_exited"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+async def test_natural_terminal_failed_cleanup_retries_exact_descendant_after_restart(
+    adapter, tmp_path, monkeypatch
+):
+    path = tmp_path / "runs.db"
+    _use_idempotency_db(adapter, path)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[2]))
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_agent_synthetic.py"
+    pid_file = tmp_path / "detached.pid"
+    with patch.object(api_server_runs, "_isolated_run_command", return_value=[sys.executable, str(fixture)]):
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={
+                "input": f"natural-detached:{pid_file}", "session_id": "review-terminal-child",
+                "execution_mode": "isolated_process"}, headers={"Idempotency-Key": "review-terminal-child"})
+            assert response.status == 202
+            run_id = (await response.json())["run_id"]
+            state = await _wait_run(cli, run_id, lambda s: s["status"] == "completed"
+                                    and s.get("execution_descendants"), timeout=8)
+            detached_pid = int(pid_file.read_text(encoding="ascii"))
+            detached_started = process_fingerprint(detached_pid)
+            assert state["execution_exited"] is False
+            assert state["execution_descendants"] == [{"pid": detached_pid, "started": detached_started}]
+            assert verified_process_alive(detached_pid, detached_started)
+
+            restarted = _make_adapter()
+            _use_idempotency_db(restarted, path)
+            async with TestClient(TestServer(_create_runs_app(restarted))) as second_cli:
+                stopped = await second_cli.post(f"/v1/runs/{run_id}/stop", json={})
+                assert stopped.status == 200
+                assert (await stopped.json())["execution_exited"] is True
+                assert not verified_process_alive(detached_pid, detached_started)
+            restarted._run_idempotency_store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+@pytest.mark.live_system_guard_bypass
+async def test_term_timeout_kills_verified_detached_descendant(adapter, tmp_path, monkeypatch):
+    _use_idempotency_db(adapter, tmp_path / "runs.db")
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[2]))
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_synthetic.py"
+    pid_file = tmp_path / "detached.pid"
+    with patch.object(api_server_runs, "_isolated_run_command", return_value=[sys.executable, str(fixture)]):
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={
+                "input": f"term-ignore-detached:{pid_file}", "session_id": "review-kill",
+                "execution_mode": "isolated_process"}, headers={"Idempotency-Key": "review-kill"})
+            run_id = (await response.json())["run_id"]
+            await _wait_run(cli, run_id, lambda s: s.get("activity_generation", 0) >= 2 and pid_file.exists())
+            detached_pid = int(pid_file.read_text(encoding="ascii"))
+            detached_started = process_fingerprint(detached_pid)
+            assert verified_process_alive(detached_pid, detached_started)
+            stopped = await cli.post(f"/v1/runs/{run_id}/stop", json={})
+            assert stopped.status == 200
+            assert (await stopped.json())["execution_exited"] is True
+            assert not verified_process_alive(detached_pid, detached_started)
+
+
+@pytest.mark.asyncio
+@pytest.mark.linux_only
+@pytest.mark.live_system_guard_bypass
+async def test_parked_stop_never_resumes_agent_to_fork_after_snapshot(adapter, tmp_path):
+    _use_idempotency_db(adapter, tmp_path / "runs.db")
+    fixture = Path(__file__).parent / "fixtures" / "isolated_run_synthetic.py"
+    fork_pid_file = tmp_path / "forked-after-stop.pid"
+    with patch.object(api_server_runs, "_isolated_run_command", return_value=[sys.executable, str(fixture)]):
+        async with TestClient(TestServer(_create_runs_app(adapter))) as cli:
+            response = await cli.post("/v1/runs", json={
+                "input": f"fork-on-term:{fork_pid_file}", "session_id": "review-fork-on-term",
+                "execution_mode": "isolated_process"}, headers={"Idempotency-Key": "review-fork-on-term"})
+            run_id = (await response.json())["run_id"]
+            state = await _wait_run(cli, run_id, lambda s: s.get("activity_generation", 0) >= 1)
+            prepared = await cli.post(f"/v1/runs/{run_id}/prepare-stop", json={
+                "activity_generation": state["activity_generation"]})
+            assert prepared.status == 200
+            stopped = await cli.post(f"/v1/runs/{run_id}/stop", json={})
+            assert stopped.status == 200
+            assert (await stopped.json())["execution_exited"] is True
+            assert not fork_pid_file.exists()
+
+
+@pytest.mark.linux_only
+def test_isolated_process_identity_refuses_recycled_pid_and_escalates():
+    import subprocess
+
+    script = "import signal,time; signal.signal(signal.SIGTERM, lambda *_: time.sleep(5)); time.sleep(30)"
+    proc = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
+    try:
+        deadline = time.monotonic() + 2
+        started = 0
+        while not started and time.monotonic() < deadline:
+            started = process_fingerprint(proc.pid)
+            time.sleep(0.01)
+        assert started > 0
+        assert terminate_verified_process(proc.pid, started + 1, grace_seconds=0.1) is False
+        assert verified_process_alive(proc.pid, started)
+        assert terminate_verified_process(proc.pid, started, grace_seconds=0.2) is True
+        proc.wait(timeout=2)
+        assert process_group_exited(proc.pid)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+@pytest.mark.linux_only
+def test_isolated_process_fingerprint_survives_comm_with_spaces(tmp_path):
+    import subprocess
+    from gateway.platforms.api_server_run_child import terminate_snapshot_processes
+
+    marker = tmp_path / "rename"
+    script = ("import ctypes,pathlib,time,sys\n"
+              "lib=ctypes.CDLL(None)\nlib.prctl(15,b'first',0,0,0)\n"
+              "p=pathlib.Path(sys.argv[1])\n"
+              "while not p.exists():\n time.sleep(.01)\n"
+              "lib.prctl(15,b'helper with gap',0,0,0)\ntime.sleep(60)\n")
+    proc = subprocess.Popen([sys.executable, "-c", script, str(marker)], start_new_session=True)
+    try:
+        started = 0
+        for _ in range(100):
+            started = process_fingerprint(proc.pid)
+            if started:
+                break
+            time.sleep(0.01)
+        assert started > 0
+        marker.write_text("go", encoding="ascii")
+        for _ in range(100):
+            with open(f"/proc/{proc.pid}/comm", encoding="ascii") as source:
+                if "helper with" in source.read():
+                    break
+            time.sleep(0.01)
+        assert verified_process_alive(proc.pid, started)
+        assert terminate_snapshot_processes([{"pid": proc.pid, "started": started}]) is True
+        proc.wait(timeout=2)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
 
 
 def _make_slow_agent(**kwargs):
@@ -1449,6 +1829,11 @@ class TestRunIdempotency:
                 "run-done",
                 {"status": "completed"},
             )[0] == "created"
+            assert store.reserve(
+                "tenant", "terminal-live-key", "terminal-live-fingerprint",
+                "run-terminal-live", {"status": "completed", "execution_mode": "isolated_process",
+                                       "execution_exited": False},
+            )[0] == "created"
 
         after_retention = 100 + RunIdempotencyStore.RETENTION_SECONDS + 1
         with patch(
@@ -1460,11 +1845,15 @@ class TestRunIdempotency:
             done, done_record = store.lookup(
                 "tenant", "done-key", "done-fingerprint"
             )
+            terminal_live, terminal_live_record = store.lookup(
+                "tenant", "terminal-live-key", "terminal-live-fingerprint")
 
         assert active == "reused"
         assert active_record["run_id"] == "run-active"
         assert done == "missing"
         assert done_record is None
+        assert terminal_live == "reused"
+        assert terminal_live_record["run_id"] == "run-terminal-live"
         store.close()
 
     def test_room_terminal_receipt_survives_offline_home_until_grant_horizon(

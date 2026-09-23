@@ -81,6 +81,12 @@ class ActivityTrackingMixin:
         if force_persist:
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()
+        # HTTP Runs may attach a run-local observer.  The observer is on this
+        # agent instance only: delegated children never inherit its authority.
+        observer = getattr(self, "_run_activity_callback", None)
+        if callable(observer):
+            with suppress(Exception):
+                observer(desc)
 
     def _persist_session_activity_if_due(self) -> None:
         """Best-effort durable activity heartbeat for SessionDB consumers.

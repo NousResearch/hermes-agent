@@ -179,7 +179,9 @@ class RunIdempotencyStore:
         ).fetchall()
         for stale_scope, stale_key, stale_status in stale:
             try:
-                terminal = json.loads(stale_status).get("status") in TERMINAL_STATUSES
+                state = json.loads(stale_status)
+                terminal = state.get("status") in TERMINAL_STATUSES and (
+                    state.get("execution_mode") != "isolated_process" or state.get("execution_exited") is True)
             except Exception:
                 terminal = False
             if terminal:

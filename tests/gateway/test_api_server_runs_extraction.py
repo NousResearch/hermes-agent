@@ -176,7 +176,9 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("GET", "/v1/runs/{run_id}/events"),
         ("POST", "/v1/runs/{run_id}/approval"),
         ("POST", "/v1/runs/{run_id}/steer"),
+        ("POST", "/v1/runs/{run_id}/prepare-stop"),
         ("POST", "/v1/runs/{run_id}/stop"),
+        ("POST", "/v1/runs/{run_id}/heartbeat"),
     ]
     assert all(handler.__self__ is adapter for _, _, handler in room_routes)
     assert all(handler.__self__ is adapter for _, _, handler in run_routes)

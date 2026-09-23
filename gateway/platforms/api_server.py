@@ -19,6 +19,7 @@ from functools import wraps
 import logging
 import os
 import re
+import signal
 import sqlite3
 import sys
 import threading
@@ -64,8 +65,23 @@ class _ArtifactScopeFacade:
 _BROWSER_CONTROL_PROTOCOL_VERSION = 1
 
 # /v1/capabilities static feature flags (order is part of the JSON shape).
+def _isolated_run_supported() -> bool:
+    if sys.platform != "linux" or not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        return False
+    try:
+        fd = os.pidfd_open(os.getpid(), 0)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
+_RUN_ISOLATION_SUPPORTED = _isolated_run_supported()
 _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
+    "run_process_isolation": _RUN_ISOLATION_SUPPORTED,
+    "run_activity_heartbeat": _RUN_ISOLATION_SUPPORTED,
+    "run_prepare_stop": _RUN_ISOLATION_SUPPORTED,
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
@@ -85,6 +101,7 @@ _CAPABILITY_ENDPOINTS = (
     ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
+    ("run_heartbeat", ("POST", "/v1/runs/{run_id}/heartbeat")),
     ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
     ("session_create", ("POST", "/api/sessions")),
     ("session", ("GET", "/api/sessions/{session_id}")),
@@ -4110,7 +4127,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _handle_run_events = _run_route_delegate("_handle_run_events")
     _handle_run_approval = _run_route_delegate("_handle_run_approval")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
+    _handle_prepare_stop_run = _run_route_delegate("_handle_prepare_stop_run")
     _handle_stop_run = _run_route_delegate("_handle_stop_run")
+    _handle_run_heartbeat = _run_route_delegate("_handle_run_heartbeat")
 
     async def _sweep_orphaned_runs(self) -> None:
         return await _api_runs._sweep_orphaned_runs(self)

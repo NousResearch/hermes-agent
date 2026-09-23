@@ -5,6 +5,8 @@ import hashlib
 import json
 import logging
 import os
+import signal
+import sys
 import threading
 import time
 import uuid
@@ -25,6 +27,10 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.platforms.api_server_run_child import (
+    FRAME_PREFIX, owned_descendant_snapshot, process_fingerprint, process_group_exited,
+    resume_snapshot_processes, signal_verified_group, terminate_snapshot_processes, terminate_verified_process,
+    verified_process_alive)
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -175,6 +181,9 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
+    self._run_processes: dict[str, Any] = {}
+    self._run_activity_persisted: dict[str, float] = {}
+    self._run_approval_responses: dict[str, Any] = {}
     self._shutdown_interrupted_run_ids: set[str] = set()
     self._run_shutdown_requested_at: Optional[float] = None
     (
@@ -189,7 +198,9 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
-        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
+        ("POST", "/v1/runs/{run_id}/prepare-stop", self._handle_prepare_stop_run),
+        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
+        ("POST", "/v1/runs/{run_id}/heartbeat", self._handle_run_heartbeat)]
 
 
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
@@ -197,6 +208,25 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
         "supported": True,
         "durable": self._run_idempotency_store.durable,
         "retention_seconds": store_type.RETENTION_SECONDS}
+
+
+def _touch_run_activity(self, run_id: str, phase: str, *, force: bool = False) -> Dict[str, Any]:
+    """Stamp this run only; durable writes are throttled per run, not globally."""
+    if phase not in {"starting", "active", "tool_running", "model_wait", "waiting_for_approval"}:
+        raise ValueError("invalid run activity phase")
+    now = time.time()
+    status = self._run_statuses[run_id]
+    if (status.get("execution_exited") or status.get("stop_prepared")
+            or status.get("status") in TERMINAL_STATUSES):
+        raise ValueError("run execution has ended")
+    status["last_activity_at"] = now
+    status["activity_generation"] = int(status.get("activity_generation") or 0) + 1
+    status["activity_phase"] = phase
+    previous = self._run_activity_persisted.get(run_id, 0.0)
+    if run_id in self._run_idempotency_ids and (force or now - previous >= 10.0):
+        self._run_idempotency_store.update_status(run_id, status)
+        self._run_activity_persisted[run_id] = now
+    return status
 
 
 def _close_run_state(self) -> None:
@@ -226,7 +256,8 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {
-            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
+            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at",
+            "stop_prepared", "execution_descendants", "descendant_snapshot_verified"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -347,7 +378,10 @@ def _owner_alive(owner_pid: int, owner_started: int) -> bool:
 def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, Any] | None:
     """Hydrate a scoped run status and fail stale owners closed."""
     status = self._run_statuses.get(run_id)
-    if status is not None:
+    if status is not None and not (
+        status.get("execution_mode") == "isolated_process"
+        and run_id not in self._active_run_tasks and not status.get("execution_exited")
+    ):
         if run_id in self._run_idempotency_ids:
             scope = self._run_idempotency_scope(request)
             self._run_idempotency_store.extend_retention(scope, run_id, _room_retention_until(request))
@@ -358,7 +392,32 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
     if record is None:
         return None
     status = dict(record["status"])
-    if status.get("status") not in TERMINAL_STATUSES and not _owner_alive(
+    if status.get("execution_mode") == "isolated_process" and not status.get("execution_exited"):
+        pid = int(status.get("execution_pid") or 0)
+        started = int(status.get("execution_started") or 0)
+        if pid and verified_process_alive(pid, started) and not _owner_alive(
+            int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0)
+        ):
+            # The previous controller may have lost a throttled activity write.
+            # This is a separate soft-stale grace, never an activity heartbeat.
+            status.setdefault("controller_recovered_at", time.time())
+            self._run_idempotency_store.update_status(run_id, status)
+        elif pid and not verified_process_alive(pid, started):
+            if process_group_exited(pid) and (
+                status.get("detached_cleanup_verified") is True
+                or (status.get("descendant_snapshot_verified") is True
+                    and not any(verified_process_alive(int(row["pid"]), int(row["started"]))
+                                for row in status.get("execution_descendants", [])))
+            ):
+                status.update(execution_exited=True, execution_exited_at=time.time())
+                if status.get("status") not in TERMINAL_STATUSES:
+                    status.update(status="interrupted", error="The run process exited before a terminal receipt.")
+            else:
+                status.update(execution_exit_unverified=True)
+                if status.get("status") not in TERMINAL_STATUSES:
+                    status["status"] = "stopping"
+            self._run_idempotency_store.update_status(run_id, status)
+    elif status.get("status") not in TERMINAL_STATUSES and not _owner_alive(
         int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0)):
         status.update(
             status="interrupted", error="The gateway restarted before this run settled.",
@@ -453,6 +512,7 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    execution_mode: str = "shared_thread"
 
     @property
     def approval_session_key(self) -> str:
@@ -595,6 +655,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         ).encode()).hexdigest()
     raw_input = body.get("input")
+    execution_mode = body.get("execution_mode", "shared_thread")
+    if execution_mode not in {"shared_thread", "isolated_process"}:
+        return _json_error(_openai_error, "Invalid execution_mode", status=400)
+    if execution_mode == "isolated_process" and (not _api_server._RUN_ISOLATION_SUPPORTED or not idempotency_key):
+        return _json_error(
+            _openai_error, "isolated_process requires Linux pidfd support and an Idempotency-Key", status=400)
     if not raw_input:
         return _json_error(_openai_error, "Missing 'input' field", status=400)
     if isinstance(raw_input, str):
@@ -663,7 +729,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+        run_id, "queued", created_at=created_at, session_id=session_id,
+        model=body.get("model", self._model_name), execution_mode=execution_mode,
+        execution_exited=False if execution_mode == "isolated_process" else None)
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
@@ -685,17 +753,21 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author, execution_mode=execution_mode)
     self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
     if admitted is not None:
+        if execution_mode == "isolated_process":
+            self._set_run_status(run_id, "failed", error="Isolated run cannot attach to a live Bot Chat owner.")
+            return _json_error(_openai_error, "Isolated run cannot attach to a live Bot Chat owner", status=409)
         task = self._active_run_tasks[run_id] = asyncio.create_task(
             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
     else:
-        task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
+        executor = _execute_run_isolated if execution_mode == "isolated_process" else _execute_run
+        task = self._active_run_tasks[run_id] = asyncio.create_task(executor(self, launch, _api_server=_api_server))
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
@@ -954,6 +1026,232 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         _retire_live_run(self, run_id)
 
 
+def _isolated_run_command() -> list[str]:
+    return [sys.executable, "-m", "gateway.platforms.api_server_run_child"]
+
+
+async def _execute_run_isolated(self, run: _RunLaunch, *, _api_server) -> None:
+    """Execute a native run in its own process group and publish exit separately."""
+    run_id = run.run_id
+    proc = None
+    started = 0
+    run_pidfd = None
+    control_transport = None
+    control_read_fd = None
+    control_write_fd = None
+    terminal_seen = False
+    cleanup_verified = False
+    try:
+        if (run_id in self._stopping_run_ids or run_id in self._shutdown_interrupted_run_ids
+                or self._run_statuses[run_id].get("stop_prepared")):
+            self._set_run_status(run_id, "cancelled", execution_exited=True)
+            return
+        payload = {
+            "run_id": run_id, "session_id": run.session_id,
+            "user_message": run.user_message, "conversation_history": run.conversation_history,
+            "agent_kwargs": run.agent_kwargs, "request_profile": run.request_profile,
+            "browser_control_principal": run.browser_control_principal,
+            "browser_control_transport_family": run.browser_control_transport_family,
+            "run_store_path": self._run_idempotency_store._db_path,
+            "session_history_delivery": run.session_history_delivery, "turn_author": run.turn_author}
+        request_bytes = (json.dumps(payload) + "\n").encode()
+        control_read_fd, control_write_fd = os.pipe()
+        proc = await asyncio.create_subprocess_exec(
+            *_isolated_run_command(),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL, start_new_session=True,
+            pass_fds=(control_write_fd,),
+            env={**os.environ, "HERMES_RUN_CONTROL_FD": str(control_write_fd)})
+        try:
+            run_pidfd = os.pidfd_open(proc.pid, 0)
+        except OSError:
+            # No launch payload or agent authority has crossed this pipe.
+            # Closing stdin exits the unlaunched child without PID signaling.
+            proc.stdin.close()
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            self._set_run_status(run_id, "failed", error="Run process identity unavailable",
+                                 execution_exited=bool(proc.returncode is not None
+                                                       and process_group_exited(proc.pid)))
+            return
+        os.close(control_write_fd)
+        control_write_fd = None
+        control_reader = asyncio.StreamReader()
+        control_transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(control_reader),
+            os.fdopen(control_read_fd, "rb", buffering=0))
+        control_read_fd = None
+        self._run_processes[run_id] = proc
+        def spawned_child_live() -> bool:
+            if proc.returncode is not None:
+                return False
+            try:
+                signal.pidfd_send_signal(run_pidfd, 0, None, 0)
+            except OSError:
+                return False
+            return proc.returncode is None
+
+        for _ in range(20):
+            if not spawned_child_live():
+                break
+            candidate = process_fingerprint(proc.pid)
+            if not candidate or not spawned_child_live():
+                await asyncio.sleep(0.025)
+                continue
+            second = process_fingerprint(proc.pid)
+            if second == candidate and spawned_child_live():
+                started = candidate
+                break
+            await asyncio.sleep(0.025)
+        if not started or not spawned_child_live():
+            # No launch payload has been sent. Never authorize the numeric PID
+            # from a /proc lookup if the original pidfd has already exited.
+            if spawned_child_live():
+                with suppress(OSError):
+                    signal.pidfd_send_signal(run_pidfd, signal.SIGKILL, None, 0)
+            proc.stdin.close()
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            self._set_run_status(run_id, "failed", error="Run process identity unavailable",
+                                 execution_exited=bool(proc.returncode is not None
+                                                       and process_group_exited(proc.pid)))
+            return
+        if self._run_statuses[run_id].get("stop_prepared"):
+            # A queued run was parked while create_subprocess_exec yielded.
+            # Its child has received no launch payload or agent authority.
+            signal.pidfd_send_signal(run_pidfd, signal.SIGKILL, None, 0)
+            proc.stdin.close()
+            await proc.wait()
+            self._set_run_status(run_id, "cancelled", execution_exited=process_group_exited(proc.pid))
+            return
+        self._set_run_status(
+            run_id, "running", execution_pid=proc.pid, execution_started=started,
+            execution_exited=False, last_activity_at=time.time(), activity_generation=0,
+            activity_phase="starting")
+        proc.stdin.write(request_bytes)
+        await proc.stdin.drain()
+        callback = self._make_run_event_callback(run_id, asyncio.get_running_loop())
+        while line := await control_reader.readline():
+            if not line.startswith(FRAME_PREFIX.encode()):
+                continue
+            try:
+                frame = json.loads(line[len(FRAME_PREFIX):])
+            except (UnicodeError, ValueError):
+                continue
+            kind = frame.get("kind")
+            if kind == "activity":
+                if run_id not in self._stopping_run_ids and not self._run_statuses[run_id].get("stop_prepared"):
+                    with suppress(ValueError, KeyError):
+                        _touch_run_activity(self, run_id, frame.get("phase"))
+            elif kind == "tool_event":
+                fields = frame.get("fields") or {}
+                if isinstance(fields, dict):
+                    callback(frame.get("event_type", ""), **fields)
+            elif kind == "delta":
+                run.put_event(_run_event(run_id, "message.delta", delta=frame.get("delta")))
+                if (frame.get("delta") and run_id not in self._stopping_run_ids
+                        and not self._run_statuses[run_id].get("stop_prepared")):
+                    with suppress(ValueError, KeyError):
+                        _touch_run_activity(self, run_id, "model_wait")
+            elif kind == "interim":
+                run.put_event(_run_event(run_id, "message.interim", text=frame.get("text"),
+                                         **(frame.get("fields") or {})))
+            elif kind == "approval":
+                from gateway.run import _redact_approval_command
+                raw_event = frame.get("event") or {}
+                if not isinstance(raw_event, dict):
+                    continue
+                event = {key: _api_server.redact_sensitive_text(value, force=True)
+                         if isinstance(value, str) else value
+                         for key, value in raw_event.items()}
+                if "command" in event:
+                    event["command"] = _redact_approval_command(event["command"])
+                self._set_run_status(run_id, "waiting_for_approval",
+                                     last_event="approval.request", approval=event)
+                with suppress(ValueError, KeyError):
+                    _touch_run_activity(self, run_id, "waiting_for_approval", force=True)
+                run.put_event(_run_event(run_id, "approval.request", **event))
+            elif kind == "approval_response":
+                waiter = self._run_approval_responses.pop(frame.get("command_id"), None)
+                if waiter is not None and not waiter.done():
+                    waiter.set_result(int(frame.get("resolved") or 0))
+            elif kind == "cleanup":
+                cleanup_verified = frame.get("verified") is True
+                descendants = frame.get("descendants")
+                if not isinstance(descendants, list):
+                    descendants = []
+                self._set_run_status(run_id, self._run_statuses[run_id]["status"],
+                                     detached_cleanup_verified=cleanup_verified,
+                                     execution_descendants=descendants,
+                                     descendant_snapshot_verified=frame.get("snapshot_verified") is True)
+            elif kind == "result":
+                result = frame.get("result") if isinstance(frame.get("result"), dict) else {}
+                status, fields = terminal_run_status(result)
+                if run_id in self._stopping_run_ids:
+                    status, fields = "cancelled", {}
+                elif result.get("failed"):
+                    status = "failed"
+                    fields["error"] = _api_server._redact_api_error_text(result.get("error") or "agent run failed")
+                self._set_run_status(
+                    run_id, status, **fields, output=result.get("final_response", ""),
+                    usage=frame.get("usage"), runtime=frame.get("runtime"),
+                    last_event=f"run.{status}", execution_exited=False)
+                terminal_seen = True
+            elif kind == "error":
+                failure_status = "cancelled" if run_id in self._stopping_run_ids else "failed"
+                error_kind = str(frame.get("error") or "unknown")[:64]
+                self._set_run_status(run_id, failure_status, error=f"Run child failed ({error_kind})",
+                                     last_event=f"run.{failure_status}", execution_exited=False)
+                terminal_seen = True
+        await proc.wait()
+        current = self._run_statuses.get(run_id, {})
+        snapshot = current.get("execution_descendants")
+        exited = process_group_exited(proc.pid) and (
+            cleanup_verified or (current.get("descendant_snapshot_verified") is True
+                                 and isinstance(snapshot, list)
+                                 and not any(verified_process_alive(int(row["pid"]), int(row["started"]))
+                                             for row in snapshot)))
+        current = self._run_statuses.get(run_id, {})
+        status = current.get("status") if terminal_seen else (
+            "cancelled" if run_id in self._stopping_run_ids else "failed")
+        self._set_run_status(
+            run_id, status, execution_exited=exited,
+            execution_exited_at=time.time() if exited else None,
+            **({} if terminal_seen else {"error": "Run process exited without a terminal result"}))
+    except asyncio.CancelledError:
+        if proc is not None and proc.returncode is None and started:
+            await asyncio.to_thread(
+                terminate_verified_process, proc.pid, started)
+            await proc.wait()
+        raise
+    except Exception:
+        logger.exception("[api_server] isolated run %s failed", run_id)
+        current = self._run_statuses.get(run_id, {})
+        snapshot = current.get("execution_descendants")
+        cleanup_proved = (current.get("detached_cleanup_verified") is True
+                          or (current.get("descendant_snapshot_verified") is True
+                              and isinstance(snapshot, list)
+                              and not any(verified_process_alive(int(row["pid"]), int(row["started"]))
+                                          for row in snapshot)))
+        self._set_run_status(run_id, "failed", error="Run process controller failed",
+                             execution_exited=bool(proc and proc.returncode is not None
+                                                   and process_group_exited(proc.pid) and cleanup_proved))
+    finally:
+        if run_pidfd is not None:
+            os.close(run_pidfd)
+        if control_transport is not None:
+            control_transport.close()
+        for fd in (control_read_fd, control_write_fd):
+            if fd is not None:
+                with suppress(OSError):
+                    os.close(fd)
+        self._run_processes.pop(run_id, None)
+        self._run_activity_persisted.pop(run_id, None)
+        with suppress(Exception):
+            run.put_event(None)
+        _retire_live_run(self, run_id)
+
+
 def _unregister_approval_notify(approval_session_key: Optional[str]) -> None:
     """Best-effort release of a run's approval waiter (no-op without a key)."""
     with suppress(Exception):
@@ -1103,9 +1401,23 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
         if failed:
             return _json_error(_openai_error, message, code=code, status=status)
     try:
-        from tools.approval import resolve_gateway_approval
-        resolved = resolve_gateway_approval(
-            approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
+        proc = self._run_processes.get(run_id)
+        if proc is not None:
+            command_id = uuid.uuid4().hex
+            future = asyncio.get_running_loop().create_future()
+            self._run_approval_responses[command_id] = future
+            try:
+                proc.stdin.write((json.dumps({
+                    "kind": "approval", "choice": choice, "resolve_all": resolve_all,
+                    "request_id": request_id or None, "command_id": command_id}) + "\n").encode())
+                await proc.stdin.drain()
+                resolved = await asyncio.wait_for(future, timeout=3.0)
+            finally:
+                self._run_approval_responses.pop(command_id, None)
+        else:
+            from tools.approval import resolve_gateway_approval
+            resolved = resolve_gateway_approval(
+                approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
     except Exception as exc:
         logger.exception("[api_server] approval resolution failed for run %s", run_id)
         return _json_error(_openai_error, str(exc), status=500)
@@ -1160,6 +1472,57 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
+    if status.get("execution_mode") == "isolated_process":
+        if status.get("execution_exited"):
+            return web.json_response(status)
+        pid, started = int(status.get("execution_pid") or 0), int(status.get("execution_started") or 0)
+        if not verified_process_alive(pid, started):
+            descendants = status.get("execution_descendants", [])
+            descendants_exited = (isinstance(descendants, list)
+                                  and await asyncio.to_thread(terminate_snapshot_processes, descendants))
+            snapshot_proved = status.get("descendant_snapshot_verified") is True and descendants_exited
+            if process_group_exited(pid) and (status.get("detached_cleanup_verified") is True or snapshot_proved):
+                final_status = status.get("status") if status.get("status") in TERMINAL_STATUSES else "interrupted"
+                return web.json_response(self._set_run_status(
+                    run_id, final_status, execution_exited=True, execution_exited_at=time.time()))
+            return _json_error(
+                _openai_error, "Run execution identity is unverified", code="run_exit_unverified", status=409)
+        descendants = owned_descendant_snapshot(pid, started)
+        if descendants is None:
+            return _json_error(_openai_error, "Run process tree cannot be verified", status=409)
+        self._set_run_status(run_id, "stopping", last_event="run.stopping",
+                             execution_descendants=descendants, descendant_snapshot_verified=True)
+        try:
+            self._run_idempotency_store.update_status(run_id, self._run_statuses[run_id])
+        except Exception:
+            signal_verified_group(pid, started, signal.SIGCONT)
+            resume_snapshot_processes(descendants)
+            return _json_error(_openai_error, "Run process tree could not be persisted", status=503)
+        self._stopping_run_ids.add(run_id)
+        # Keep the verified tree parked across TERM/grace/KILL. Resuming an
+        # uncooperative run before escalation would let it fork outside the
+        # durable snapshot and falsely prove exit from the old member list.
+        terminated = await asyncio.to_thread(terminate_verified_process, pid, started)
+        descendants_exited = await asyncio.to_thread(terminate_snapshot_processes, descendants)
+        if task is not None and terminated:
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+        for _ in range(20):
+            if task is None:
+                self._run_statuses.pop(run_id, None)
+                status = self._durable_run_status(request, run_id) or status
+            else:
+                status = self._run_statuses.get(run_id, status)
+            if status.get("detached_cleanup_verified") is True or not terminated:
+                break
+            await asyncio.sleep(0.05)
+        exited = descendants_exited and process_group_exited(pid)
+        if exited:
+            self._set_run_status(run_id, "cancelled", last_event="run.cancelled",
+                                 execution_exited=True, execution_exited_at=time.time())
+        return web.json_response({
+            "run_id": run_id, "status": self._run_statuses[run_id]["status"],
+            "execution_exited": bool(exited)})
     if status.get("status") in TERMINAL_STATUSES:
         return web.json_response(status)
     if agent is None and task is None:
@@ -1175,6 +1538,93 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
         # run on the same session_id keeps its own); no-op if the run already finished.
         _api_server._reap_disconnected_agent_processes(agent, source="api_server_run_stop")
     return web.json_response({"run_id": run_id, "status": "stopping"})
+
+
+async def _handle_prepare_stop_run(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """Freeze the exact process at an observed activity generation before fencing its owner.
+
+    The freeze is durable. A controller crash leaves the run parked; the next
+    controller can finish fencing and call stop. It never admits new activity.
+    """
+    run_id, status, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission="stop", active_fallback=False)
+    if err is not None:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error(_api_server._openai_error, "Invalid JSON", status=400)
+    generation = body.get("activity_generation") if isinstance(body, dict) else None
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0 or len(body) != 1:
+        return _json_error(_api_server._openai_error, "Invalid activity generation", status=400)
+    if status.get("execution_mode") != "isolated_process" or status.get("execution_exited"):
+        return _json_error(_api_server._openai_error, "Run has no active process", status=409)
+    if status.get("stop_prepared"):
+        return web.json_response({"run_id": run_id, "stop_prepared": True,
+                                  "activity_generation": status.get("activity_generation")})
+    if status.get("status") not in {"running", "queued", "waiting_for_approval"}:
+        return _json_error(_api_server._openai_error, "Run is not active", status=409)
+    if status.get("activity_generation") != generation:
+        return _json_error(_api_server._openai_error, "Run activity changed", code="activity_changed", status=409)
+    pid, started = int(status.get("execution_pid") or 0), int(status.get("execution_started") or 0)
+    if status.get("status") == "queued" and not pid:
+        self._set_run_status(run_id, "queued", stop_prepared=True)
+        try:
+            self._run_idempotency_store.update_status(run_id, self._run_statuses[run_id])
+        except Exception:
+            self._set_run_status(run_id, "queued", stop_prepared=False)
+            return _json_error(_api_server._openai_error, "Run preparation could not be persisted", status=503)
+        return web.json_response({"run_id": run_id, "stop_prepared": True,
+                                  "activity_generation": generation})
+    descendants = owned_descendant_snapshot(pid, started)
+    if descendants is None:
+        return _json_error(_api_server._openai_error, "Run process tree cannot be verified", status=409)
+    # Drain frames already in the pipe before committing the freeze. A tool
+    # result that raced SIGSTOP invalidates the stale observation.
+    await asyncio.sleep(0.1)
+    current = self._run_statuses.get(run_id, status)
+    if current.get("activity_generation") != generation or current.get("status") in TERMINAL_STATUSES:
+        resume_snapshot_processes(descendants)
+        signal_verified_group(pid, started, signal.SIGCONT)
+        return _json_error(_api_server._openai_error, "Run activity changed", code="activity_changed", status=409)
+    self._set_run_status(run_id, current["status"], stop_prepared=True,
+                         execution_descendants=descendants, descendant_snapshot_verified=True)
+    try:
+        self._run_idempotency_store.update_status(run_id, self._run_statuses[run_id])
+    except Exception:
+        self._set_run_status(run_id, current["status"], stop_prepared=False)
+        resume_snapshot_processes(descendants)
+        signal_verified_group(pid, started, signal.SIGCONT)
+        return _json_error(_api_server._openai_error, "Run preparation could not be persisted", status=503)
+    return web.json_response({"run_id": run_id, "stop_prepared": True,
+                              "activity_generation": generation})
+
+
+async def _handle_run_heartbeat(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """Explicit activity for the exact live isolated run; no model timestamps."""
+    run_id, status, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission="status", active_fallback=False)
+    if err is not None:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error(_api_server._openai_error, "Invalid JSON", status=400)
+    if body != {}:
+        return _json_error(_api_server._openai_error, "Heartbeat takes no fields", status=400)
+    if (status.get("execution_mode") != "isolated_process"
+            or status.get("status") not in {"running", "waiting_for_approval"}
+            or status.get("stop_prepared")
+            or not verified_process_alive(
+                int(status.get("execution_pid") or 0), int(status.get("execution_started") or 0))):
+        return _json_error(_api_server._openai_error, "Run is not active", status=409)
+    try:
+        updated = _touch_run_activity(self, run_id, "active", force=True)
+    except (ValueError, KeyError):
+        return _json_error(_api_server._openai_error, "Run is not active", status=409)
+    return web.json_response({
+        "run_id": run_id, "activity_generation": updated["activity_generation"],
+        "last_activity_at": updated["last_activity_at"]})
 
 
 async def _sweep_orphaned_runs(self) -> None:

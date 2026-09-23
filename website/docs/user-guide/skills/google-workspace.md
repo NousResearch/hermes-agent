@@ -163,7 +163,22 @@ Returns the document title and full text content.
 
 ```bash
 $GAPI contacts list --max 20
+
+# Upcoming birthdays from Google Contacts (default: next 30 days)
+$GAPI contacts birthdays
+$GAPI contacts birthdays --days 365 --max 100
+
+# Named lookup searches the next year unless --days is specified
+$GAPI contacts birthdays --name "Ada"
 ```
+
+Use `contacts birthdays` instead of querying a Calendar named "Birthdays":
+Google Calendar's UI-managed birthday calendar is not always available via
+CalendarList or event APIs. A named query defaults to a year-long window, while
+the unnamed feed stays at 30 days. Each contact appears once, preferring the
+People API birthday marked primary. Results expose `birthday` as `DD.MM.YYYY`
+(or `DD.MM.` when the year is unavailable), `nextDate`, `daysUntil`, and an
+optional `turningAge`.
 
 ## Output Format
 
@@ -178,6 +193,7 @@ All commands return JSON. Key fields per service:
 | `calendar create` | `status`, `id`, `summary`, `htmlLink` |
 | `drive search` | `id`, `name`, `mimeType`, `modifiedTime`, `webViewLink` |
 | `contacts list` | `name`, `emails`, `phones` |
+| `contacts birthdays` | `name`, `birthday`, `nextDate`, `daysUntil`, `turningAge` (when known) |
 | `sheets get` | 2D array of cell values |
 
 ## Troubleshooting

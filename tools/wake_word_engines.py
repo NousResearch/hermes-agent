@@ -164,9 +164,23 @@ def _ensure_sherpa_model(root: Optional[Path] = None) -> Path:
     return target
 
 
+def _sherpa_tokenization_args(model_dir: Path) -> Dict[str, str]:
+    """Return ``text2token`` arguments compatible with the model vocabulary.
+
+    GigaSpeech ships a SentencePiece BPE model. WenetSpeech and other non-BPE
+    sherpa KWS models require ``cjkchar``; their vocabulary must not be
+    inspected to choose a tokenization mode.
+    """
+    bpe_model = model_dir / "bpe.model"
+    if bpe_model.exists():
+        return {"tokens_type": "bpe", "bpe_model": str(bpe_model)}
+
+    return {"tokens_type": "cjkchar"}
+
+
 class _SherpaKwsEngine(_Engine):
     """sherpa-onnx open-vocabulary keyword spotting — any typed phrase, zero training. ``wake_word.phrase``
-    is BPE-tokenized at runtime against the model's vocabulary: DETECTION config, not a cosmetic label."""
+    is tokenized at runtime against the model's vocabulary: DETECTION config, not a cosmetic label."""
 
     feature, section = "wake.sherpa", "sherpa"
     frame_length = 1280  # streaming zipformer accepts any chunk; match capture path.
@@ -188,8 +202,11 @@ class _SherpaKwsEngine(_Engine):
             for prof, p in ww.enrolled_profile_phrases().items():
                 phrase_map.setdefault(p.strip(), prof)
         phrases = list(phrase_map)
-        tokens = text2token([p.upper() for p in phrases], tokens=str(d / "tokens.txt"), tokens_type="bpe",
-                            bpe_model=str(d / "bpe.model"))
+        tokens = text2token(
+            [p.upper() for p in phrases],
+            tokens=str(d / "tokens.txt"),
+            **_sherpa_tokenization_args(d),
+        )
         # sherpa keyword entries reject spaces in the @display-name; underscore them and
         # map display → profile for match routing.
         self._display_to_profile: Dict[str, str] = {}

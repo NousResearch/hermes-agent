@@ -8,15 +8,31 @@ import { I18nProvider, useI18n } from '@/i18n'
 import { TRANSLATIONS } from '@/i18n/catalog'
 import { setRuntimeI18nLocale } from '@/i18n/runtime'
 import type { Locale } from '@/i18n/types'
-import { type CommandsCatalogLike, desktopSlashDescription, rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import {
+  type CommandsCatalogLike,
+  desktopSlashDescription,
+  rememberDesktopCommandsCatalog
+} from '@/lib/desktop-slash-commands'
 import { queryClient } from '@/lib/query-client'
 
 import { useSlashCompletions } from './use-slash-completions'
 
 const catalog: CommandsCatalogLike = {
   canon: { '/reset': '/new' },
-  categories: [{ name: 'Session', pairs: [['/new', 'Backend description'], ['/retry', 'Retry the last message']] }],
-  pairs: [['/new', 'Backend description'], ['/retry', 'Retry the last message'], ['/my-skill', 'Author-owned description']]
+  categories: [
+    {
+      name: 'Session',
+      pairs: [
+        ['/new', 'Backend description'],
+        ['/retry', 'Retry the last message']
+      ]
+    }
+  ],
+  pairs: [
+    ['/new', 'Backend description'],
+    ['/retry', 'Retry the last message'],
+    ['/my-skill', 'Author-owned description']
+  ]
 }
 
 afterEach(() => {
@@ -31,7 +47,17 @@ describe('desktop slash description localization', () => {
     for (const [locale, copy] of Object.entries(TRANSLATIONS)) {
       setRuntimeI18nLocale(locale as Locale)
 
-      for (const command of ['/new', '/save', '/retry', '/undo', '/title', '/branch', '/worktree', '/compress', '/stop']) {
+      for (const command of [
+        '/new',
+        '/save',
+        '/retry',
+        '/undo',
+        '/title',
+        '/branch',
+        '/worktree',
+        '/compress',
+        '/stop'
+      ]) {
         const expected = copy.composer.commandDescs[command]
         expect(expected, `${locale}: ${command}`).toBeTruthy()
         expect(desktopSlashDescription(command, 'backend')).toBe(expected)
@@ -41,7 +67,9 @@ describe('desktop slash description localization', () => {
         expect(copy.composer.commandDescs[command], `${locale}: ${command}`).toBeTruthy()
 
         if (locale !== 'en') {
-          expect(copy.composer.commandDescs[command], `${locale}: ${command}`).not.toBe(TRANSLATIONS.en.composer.commandDescs[command])
+          expect(copy.composer.commandDescs[command], `${locale}: ${command}`).not.toBe(
+            TRANSLATIONS.en.composer.commandDescs[command]
+          )
         }
       }
 
@@ -56,11 +84,21 @@ describe('desktop slash description localization', () => {
   })
 
   it('refreshes both cached bare and typed suggestions when the UI locale changes', async () => {
-    const request = vi.fn(async (method: string) => method === 'commands.catalog' ? catalog : {
-      items: [{ text: '/new', meta: 'Backend description', kind: 'command' }, { text: '/my-skill', meta: 'Author-owned description', kind: 'skill' }]
-    })
+    const request = vi.fn(async (method: string) =>
+      method === 'commands.catalog'
+        ? catalog
+        : {
+            items: [
+              { text: '/new', meta: 'Backend description', kind: 'command' },
+              { text: '/my-skill', meta: 'Author-owned description', kind: 'skill' }
+            ]
+          }
+    )
 
-    const api: { search?: (query: string) => readonly Unstable_TriggerItem[]; setLocale?: ReturnType<typeof useI18n>['setLocale'] } = {}
+    const api: {
+      search?: (query: string) => readonly Unstable_TriggerItem[]
+      setLocale?: ReturnType<typeof useI18n>['setLocale']
+    } = {}
 
     function Probe() {
       api.setLocale = useI18n().setLocale
@@ -69,17 +107,30 @@ describe('desktop slash description localization', () => {
       return null
     }
 
-    render(<I18nProvider configClient={null} initialLocale="en"><Probe /></I18nProvider>)
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <Probe />
+      </I18nProvider>
+    )
 
     for (const query of ['', 'ne']) {
       for (const locale of ['en', 'zh', 'ja', 'zh-hant', 'ar', 'ru', 'en'] as const) {
-        await act(async () => { await api.setLocale!(locale) })
-        await waitFor(() => {
-          const items = api.search!(query)
+        await act(async () => {
+          await api.setLocale!(locale)
+        })
+        await waitFor(
+          () => {
+            const items = api.search!(query)
 
-          expect(items.find(item => item.metadata?.command === '/new')?.description).toBe(TRANSLATIONS[locale].composer.commandDescs['/new'])
-          expect(items.find(item => item.metadata?.command === '/my-skill')?.description).toBe('Author-owned description')
-        }, { timeout: 2000 })
+            expect(items.find(item => item.metadata?.command === '/new')?.description).toBe(
+              TRANSLATIONS[locale].composer.commandDescs['/new']
+            )
+            expect(items.find(item => item.metadata?.command === '/my-skill')?.description).toBe(
+              'Author-owned description'
+            )
+          },
+          { timeout: 2000 }
+        )
       }
     }
 

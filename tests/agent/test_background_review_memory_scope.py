@@ -137,6 +137,9 @@ class TestConsolidationProposalSurfaces:
         from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
 
         store = self._store(tmp_path, monkeypatch)
+        # Staging for a background-review consolidation requires memory write
+        # approval ON; with it off the write is applied directly instead.
+        monkeypatch.setattr("tools.write_approval.write_approval_enabled", lambda subsystem: True)
         assert store.add("memory", "standing rule entry")["success"] is True
 
         token = set_current_write_origin("background_review")
@@ -173,6 +176,9 @@ class TestConsolidationProposalSurfaces:
         token = set_current_write_origin("background_review")
         try:
             add_raw = memory_tool(action="add", content="y" * 600, store=store)
+            # Enable approval so the consolidation replace is staged (not applied);
+            # the add above must still hit the budget rejection first (approval off).
+            monkeypatch.setattr("tools.write_approval.write_approval_enabled", lambda subsystem: True)
             replace_raw = memory_tool(
                 action="replace", old_text="seed entry one", content="merged entry", store=store)
         finally:
@@ -197,3 +203,27 @@ class TestConsolidationProposalSurfaces:
         ]
         actions = bg.summarize_background_review_actions(review_messages, [])
         assert any("staged for your approval" in a for a in actions)
+
+    def test_toggle_off_review_replace_applies_directly(self, tmp_path, monkeypatch):
+        """With memory write approval OFF (the default), a background-review
+        consolidation is not staged for approval — it applies straight to memory,
+        so it must actually land."""
+        import json
+
+        from tools.memory_tool import memory_tool
+        from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
+
+        store = self._store(tmp_path, monkeypatch)
+        assert store.add("memory", "seed entry")["success"] is True
+
+        token = set_current_write_origin("background_review")
+        try:
+            raw = memory_tool(
+                action="replace", old_text="seed entry", content="consolidated entry", store=store)
+        finally:
+            reset_current_write_origin(token)
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "staged" not in result, "toggle-off must not stage a background write"
+        assert "consolidated entry" in store._entries_for("memory")
+        assert "seed entry" not in store._entries_for("memory")

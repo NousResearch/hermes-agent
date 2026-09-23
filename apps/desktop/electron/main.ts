@@ -76,7 +76,6 @@ import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
-  shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
@@ -210,7 +209,7 @@ import {
   performFindAfterIndexingStarted,
   stopFind
 } from './find-in-page'
-import { createFirstRunSetupGate } from './first-run-setup-gate'
+import { createFirstRunBootRuntime } from './first-run-boot-runtime'
 import { registerFsIpc } from './fs-ipc'
 import {
   filenameFromContentDisposition,
@@ -1190,7 +1189,7 @@ const localBackendLifecycle = createLocalBackendLifecycle<ReturnType<typeof spaw
   },
   waitForExit: child => waitForBackendExit(child),
   cancelSetup: () => {
-    firstRunSetupGate?.resetForRetry()
+    firstRunBoot.resetExistingSetupGateForRetry()
     bootstrapAbortController?.abort()
   }
 })
@@ -1474,18 +1473,15 @@ const remoteHeaderSessions = new WeakSet<object>()
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
 let previewShortcutActive = false
 
-let bootProgressState = {
-  error: null,
+const firstRunBoot = createFirstRunBootRuntime({
+  activeRoot: ACTIVE_HERMES_ROOT,
   fakeMode: BOOT_FAKE_MODE,
-  isCloudBackendDown: false,
-  message: 'Waiting to start Hermes backend',
-  phase: 'idle',
-  progress: 0,
-  retryable: false,
-  running: false,
-  statusCode: null,
-  timestamp: Date.now()
-}
+  fakeStepMs: BOOT_FAKE_STEP_MS,
+  getMainWindow: () => mainWindow,
+  getRemoteReauthFailure: () => (remoteReauthFailure ? remoteReauthFailure.message : null),
+  log: rememberLog,
+  platform: process.platform
+})
 
 installCrashForensics({ flush: flushDesktopLogBufferSync, log: rememberLog })
 
@@ -1652,286 +1648,6 @@ function ensureWslWindowsFonts() {
   }
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function clampBootProgress(value) {
-  const numeric = Number(value)
-
-  if (!Number.isFinite(numeric)) {
-    return 0
-  }
-
-  return Math.max(0, Math.min(100, Math.round(numeric)))
-}
-
-function broadcastBootProgress() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:boot-progress', bootProgressState)
-}
-
-// Bootstrap-event broadcast channel + state. The bootstrap runner emits a
-// stream of events (manifest, stage, log, complete, failed) that the renderer
-// install overlay subscribes to. We also keep a running snapshot:
-//   - manifest: the stage list (rendered as a checklist in the overlay)
-//   - stages:   per-stage state ('pending' | 'running' | 'succeeded' |
-//               'skipped' | 'failed') keyed by stage name
-//   - active:   true while a bootstrap is in flight; false otherwise
-//   - error:    last 'failed' event's error message
-//   - log:      bounded ring buffer of the last 200 log lines for the
-//               "Show details" affordance in the overlay
-//
-// The snapshot is queryable via the hermes:bootstrap:get IPC handler so a
-// reloaded renderer (e.g. devtools reload during dev) recovers state.
-// Bootstrap log ring: bounded buffer so a long install (npm + playwright
-// downloads can emit thousands of lines) doesn't grow unbounded in memory
-// AND so the renderer's getBootstrapState() reply stays a reasonable size.
-// We keep enough to cover an entire failed stage's transcript so the
-// 'Copy output' button gives the user actually-actionable context, not
-// just the last few lines.
-const BOOTSTRAP_LOG_RING_MAX = 500
-
-let bootstrapState = {
-  active: false,
-  manifest: null,
-  stages: {},
-  error: null,
-  log: [],
-  startedAt: null,
-  completedAt: null,
-  setupChoice: null,
-  unsupportedPlatform: null
-}
-
-let firstRunSetupGate = null
-
-function broadcastBootstrapEvent(ev) {
-  if (ev.type === 'manifest') {
-    bootstrapState.manifest = ev
-    bootstrapState.active = true
-    bootstrapState.setupChoice = null
-    bootstrapState.startedAt = bootstrapState.startedAt || Date.now()
-    bootstrapState.stages = {}
-
-    for (const stage of ev.stages || []) {
-      bootstrapState.stages[stage.name] = { state: 'pending', json: null, durationMs: null, error: null }
-    }
-  } else if (ev.type === 'stage') {
-    bootstrapState.stages[ev.name] = {
-      state: ev.state,
-      durationMs: ev.durationMs ?? null,
-      json: ev.json ?? null,
-      error: ev.error ?? null
-    }
-  } else if (ev.type === 'log') {
-    bootstrapState.log.push({ ts: Date.now(), stage: ev.stage || null, line: ev.line, stream: ev.stream || 'stdout' })
-
-    if (bootstrapState.log.length > BOOTSTRAP_LOG_RING_MAX) {
-      bootstrapState.log.splice(0, bootstrapState.log.length - BOOTSTRAP_LOG_RING_MAX)
-    }
-  } else if (ev.type === 'complete') {
-    bootstrapState.active = false
-    bootstrapState.completedAt = Date.now()
-    bootstrapState.error = null
-    bootstrapState.unsupportedPlatform = null
-  } else if (ev.type === 'failed') {
-    bootstrapState.active = false
-    bootstrapState.error = ev.error || 'unknown error'
-    bootstrapState.setupChoice = null
-  } else if (ev.type === 'unsupported-platform') {
-    bootstrapState.active = false
-    bootstrapState.setupChoice = null
-    bootstrapState.unsupportedPlatform = {
-      platform: ev.platform,
-      activeRoot: ev.activeRoot,
-      installCommand: ev.installCommand,
-      docsUrl: ev.docsUrl
-    }
-  } else if (ev.type === 'setup-choice') {
-    bootstrapState.active = false
-    bootstrapState.error = null
-    bootstrapState.manifest = null
-    bootstrapState.stages = {}
-    bootstrapState.setupChoice = ev.active
-      ? {
-          platform: ev.platform,
-          activeRoot: ev.activeRoot
-        }
-      : null
-    bootstrapState.unsupportedPlatform = null
-  } else if (ev.type === 'dismissed') {
-    resetBootstrapSnapshot()
-  }
-
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:bootstrap:event', ev)
-}
-
-function getBootstrapState() {
-  return bootstrapState
-}
-
-function resetBootstrapSnapshot() {
-  bootstrapState = {
-    active: false,
-    manifest: null,
-    stages: {},
-    error: null,
-    log: [],
-    startedAt: null,
-    completedAt: null,
-    setupChoice: null,
-    unsupportedPlatform: null
-  }
-}
-
-function promptFirstRunSetupChoice(backend) {
-  broadcastBootstrapEvent({
-    type: 'setup-choice',
-    active: true,
-    platform: backend.platform || process.platform,
-    activeRoot: backend.activeRoot || ACTIVE_HERMES_ROOT
-  })
-}
-
-function hideFirstRunSetupChoice() {
-  if (bootstrapState.setupChoice) {
-    broadcastBootstrapEvent({ type: 'setup-choice', active: false })
-  }
-}
-
-function getFirstRunSetupGate() {
-  if (!firstRunSetupGate) {
-    firstRunSetupGate = createFirstRunSetupGate({
-      hideChoice: hideFirstRunSetupChoice,
-      log: rememberLog,
-      onStuck: (_backend, stuckAfterMs) => {
-        updateBootProgress(
-          {
-            error: null,
-            message: `Still waiting for first-run setup choice after ${Math.round(stuckAfterMs / 1000)} seconds`,
-            phase: 'bootstrap.choice',
-            progress: 12,
-            running: true
-          },
-          { allowDecrease: true }
-        )
-      },
-      promptChoice: promptFirstRunSetupChoice
-    })
-  }
-
-  return firstRunSetupGate
-}
-
-async function waitForFirstRunSetupChoice(backend) {
-  const gate = getFirstRunSetupGate()
-
-  if (!gate.shouldGate(backend)) {
-    return 'continue-local'
-  }
-
-  updateBootProgress(
-    {
-      error: null,
-      message: 'Waiting for first-run setup choice',
-      phase: 'bootstrap.choice',
-      progress: 12,
-      running: true
-    },
-    { allowDecrease: true }
-  )
-
-  return gate.wait(backend)
-}
-
-function continueFirstRunLocalBootstrap() {
-  getFirstRunSetupGate().continueLocal()
-}
-
-function abandonFirstRunSetupChoiceForRemoteApply() {
-  const gate = getFirstRunSetupGate()
-
-  if (!gate.hasWaiter()) {
-    return false
-  }
-
-  const resumedGatedConnection = gate.abandonForRemoteApply()
-
-  if (resumedGatedConnection) {
-    broadcastBootstrapEvent({ type: 'dismissed' })
-  }
-
-  return resumedGatedConnection
-}
-
-function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
-  // A latched reauth rejection owns the boot surface until a recovery path
-  // clears it; see shouldHoldBootProgressForReauth (#95701).
-  if (shouldHoldBootProgressForReauth(remoteReauthFailure ? remoteReauthFailure.message : null, update)) {
-    return
-  }
-
-  const nextProgressRaw =
-    typeof update.progress === 'number' ? clampBootProgress(update.progress) : bootProgressState.progress
-
-  const nextProgress = options.allowDecrease ? nextProgressRaw : Math.max(bootProgressState.progress, nextProgressRaw)
-
-  bootProgressState = {
-    ...bootProgressState,
-    ...update,
-    error: update.error === undefined ? bootProgressState.error : update.error,
-    fakeMode: BOOT_FAKE_MODE || Boolean(update.fakeMode),
-    progress: nextProgress,
-    // `retryable` rides with `error`: it survives updates that preserve the
-    // error and resets alongside a new/cleared error unless explicitly set.
-    retryable:
-      update.retryable === undefined
-        ? update.error === undefined && Boolean(bootProgressState.retryable)
-        : Boolean(update.retryable),
-    timestamp: Date.now()
-  }
-
-  if (update.message) {
-    rememberLog(`[boot] ${update.message}`)
-  }
-
-  broadcastBootProgress()
-}
-
-async function advanceBootProgress(phase, message, progress) {
-  updateBootProgress({
-    phase,
-    message,
-    progress,
-    running: true,
-    error: null
-  })
-
-  if (BOOT_FAKE_MODE) {
-    await sleep(BOOT_FAKE_STEP_MS)
-  }
-}
-
 function fileExists(filePath) {
   try {
     return fs.statSync(filePath).isFile()
@@ -2060,7 +1776,7 @@ async function waitForUpdateToFinish() {
         rememberLog(`[updates] update in progress (${reason}); deferring backend start until it finishes`)
       }
 
-      await advanceBootProgress(
+      await firstRunBoot.advanceBootProgress(
         'backend.update-wait',
         'An update is finishing — Hermes will start automatically when it completes…',
         12
@@ -2135,7 +1851,7 @@ async function waitForUpdateToFinish() {
   if (outcome === 'timeout') {
     rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
   } else if (relaunchIntoSwappedBundle()) {
-    await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
+    await firstRunBoot.advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a
     // backend; the failsafe below only runs if the exit somehow does not.
     await new Promise(resolve => setTimeout(resolve, BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS))
@@ -4959,7 +4675,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
   assertStillOwned()
 
   if (!backend.bootstrap) {
-    await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
+    await firstRunBoot.advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
     return backend
   }
@@ -4994,7 +4710,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
     // We emit a synthetic manifest with an empty stages list -- the real
     // manifest event will overwrite it once install.ps1 -Manifest returns.
     try {
-      broadcastBootstrapEvent({
+      firstRunBoot.broadcastBootstrapEvent({
         type: 'manifest',
         stages: [],
         protocolVersion: null
@@ -5030,7 +4746,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
         }
 
         try {
-          broadcastBootstrapEvent(ev)
+          firstRunBoot.broadcastBootstrapEvent(ev)
         } catch {
           void 0
         }
@@ -5110,7 +4826,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
 
   backend.command = getVenvPython(VENV_ROOT)
   backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
-  updateBootProgress({
+  firstRunBoot.updateBootProgress({
     phase: 'runtime.ready',
     message: 'Hermes runtime is ready',
     progress: 82,
@@ -10073,7 +9789,7 @@ async function fetchConnectionStatus(baseUrl, authMode, token, headers = {}) {
 }
 
 function resetBootProgressForReconnect() {
-  updateBootProgress(
+  firstRunBoot.updateBootProgress(
     {
       error: null,
       message: 'Restarting desktop connection',
@@ -12090,7 +11806,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // E2E: simulate a boot failure without breaking the real backend. The boot
   // progresses a few steps, then fails with the given error message.
   if (BOOT_FAKE_ERROR) {
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await firstRunBoot.advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     const error = new Error(BOOT_FAKE_ERROR) as any
     error.isBootstrapFailure = true
     bootstrapFailure = error
@@ -12134,14 +11850,18 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       // remotes and Apply invalidated this attempt), bail before probing.
       backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
+      await firstRunBoot.advanceBootProgress(
+        'backend.remote',
+        `Connecting to remote Hermes backend at ${remote.baseUrl}`,
+        24
+      )
       await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
       backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
-      updateBootProgress({
+      firstRunBoot.updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
         progress: 94,
@@ -12152,7 +11872,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
     }
 
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await firstRunBoot.advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
 
@@ -12193,7 +11913,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
       prepareLocalBackend: async () => {
-        await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+        await firstRunBoot.advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
         return resolveHermesBackend(backendArgs)
       },
@@ -12204,7 +11924,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
         return resolveRemoteBackend(primaryProfile, { primary: true })
       },
-      waitForDecision: waitForFirstRunSetupChoice,
+      waitForDecision: firstRunBoot.waitForFirstRunSetupChoice,
       // Mutual exclusion with an in-app update (#50238). Remote connections
       // return before this waiter; local starts park until the updater exits.
       waitForLocalStart: waitForUpdateToFinish
@@ -12231,7 +11951,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       setWslBridgeProfileState(primaryProfile, true)
       startAttachedBackendMonitor(attached)
 
-      updateBootProgress({
+      firstRunBoot.updateBootProgress({
         phase: 'backend.ready',
         message: 'Attached to the running Hermes backend',
         progress: 94,
@@ -12266,7 +11986,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
-    await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
+    await firstRunBoot.advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
     const profile = primaryProfileKey()
@@ -12374,7 +12094,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       }
 
       rememberLog(`Hermes backend failed to start: ${error.message}`)
-      updateBootProgress(
+      firstRunBoot.updateBootProgress(
         {
           error: error.message,
           message: `Hermes backend failed to start: ${error.message}`,
@@ -12409,7 +12129,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
       if (!backendReady) {
         const message = `Hermes backend exited before it became ready (${signal || code}).${primaryOutputTail.describe()}`
-        updateBootProgress(
+        firstRunBoot.updateBootProgress(
           {
             error: message,
             message,
@@ -12426,7 +12146,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       }
     })
 
-    await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
+    await firstRunBoot.advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     // Discover the ephemeral port the child bound to
@@ -12438,7 +12158,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     }
 
     const baseUrl = `http://127.0.0.1:${port}`
-    await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
+    await firstRunBoot.advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
@@ -12467,7 +12187,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       )
     }
 
-    updateBootProgress({
+    firstRunBoot.updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',
       progress: 94,
@@ -12560,7 +12280,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // rejection owns the transition into recovery (#95701).
     await waitForBackendExit(failedProcess)
 
-    updateBootProgress(
+    firstRunBoot.updateBootProgress(
       {
         error: message,
         isCloudBackendDown: isCloudBackendDown || undefined,
@@ -14187,7 +13907,7 @@ function createWindow() {
   mainWindow.webContents.once('did-finish-load', () => {
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
     // windows); no need to reapply it here.
-    broadcastBootProgress()
+    firstRunBoot.broadcastBootProgress()
     sendWindowStateChanged()
   })
 }
@@ -14566,8 +14286,8 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
-  getFirstRunSetupGate().resetForRetry()
-  resetBootstrapSnapshot()
+  firstRunBoot.getFirstRunSetupGate().resetForRetry()
+  firstRunBoot.resetBootstrapSnapshot()
 
   return { ok: true }
 })
@@ -14618,14 +14338,14 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
-  getFirstRunSetupGate().resetForRepair()
+  firstRunBoot.getFirstRunSetupGate().resetForRepair()
   resetHermesConnection()
 
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
-  continueFirstRunLocalBootstrap()
+  firstRunBoot.continueFirstRunLocalBootstrap()
 
   return { ok: true }
 })
@@ -14645,8 +14365,8 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 
   return { ok: false, cancelled: false }
 })
-ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
-ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
+ipcMain.handle('hermes:boot-progress:get', async () => firstRunBoot.getBootProgressState())
+ipcMain.handle('hermes:bootstrap:get', async () => firstRunBoot.getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
@@ -15566,7 +15286,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
             },
             mode: config.mode,
             notifyConnectionApplied: sendConnectionApplied,
-            resumeFirstRunRemote: abandonFirstRunSetupChoiceForRemoteApply,
+            resumeFirstRunRemote: firstRunBoot.abandonFirstRunSetupChoiceForRemoteApply,
             teardownPrimaryBackend: teardownPrimaryBackendAndWait
           }),
         scope,

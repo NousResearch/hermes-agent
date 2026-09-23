@@ -446,7 +446,12 @@ describe('PreviewPane console state', () => {
   })
 
   it('workspace edits reload a loopback dev page, never a site the tab browsed to', async () => {
-    const target = { kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' } as const
+    const target = {
+      kind: 'url',
+      label: 'Preview',
+      source: 'http://localhost:5174',
+      url: 'http://localhost:5174'
+    } as const
     const rendered = render(<PreviewPane reloadRequest={0} tabId="browser" target={target} />)
     const webview = rendered.container.querySelector('webview') as HTMLElement
     const reloadIgnoringCache = vi.fn()

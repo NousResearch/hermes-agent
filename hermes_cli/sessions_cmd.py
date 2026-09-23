@@ -547,27 +547,15 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
           f"to {exported_items[0][1] if n == 1 else output_dir}")
     if not args.delete_after_verified:
         return
+    # The file only proves it matches the dict it was written from. Whether the store still holds that history
+    # is decided inside delete_session's transaction (expected_display_messages), so no caller-side re-read.
     expected_messages = {}
     for data, exported_path, snapshots in exported_items:
         ok, reason = verify_export_file(exported_path, data)
-        # The file only proves it matches the dict it was written from; the delete removes what the store holds
-        # now, so re-count the store just before it (like the adoption retire loop, outside its transaction).
-        exported = len(data.get("messages") or [])
-        shown = sum(len(db.get_messages(sid, include_compacted=True))
-                    for sid in data.get("lineage_session_ids") or [data["id"]])
-        if ok and shown != exported:
-            ok, reason = False, (f"the session changed after it was exported ({shown} messages now, {exported} in "
-                                 "the file); run the export again")
         if not ok:
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
             return
-        for covered_id, snapshot in snapshots.items():
-            previous = expected_messages.get(covered_id)
-            if previous is not None and previous != snapshot:
-                print(f"Export verification failed; not deleting session '{data.get('id')}': "
-                      f"session '{covered_id}' changed while the export set was being built")
-                return
-            expected_messages[covered_id] = snapshot
+        expected_messages.update(snapshots)
     if not db.delete_session(
         resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids,
         expected_display_messages=expected_messages,

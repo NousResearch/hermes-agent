@@ -22,6 +22,7 @@ from gateway.restart import (
     LAUNCHD_STOP_CLEANUP_RESERVE_S,
     effective_stop_drain_timeout,
     effective_stop_watchdog_delay,
+    is_gateway_supervisor_process,
     launchd_service_label,
     read_launchd_exit_timeout_s,
     resolve_launchd_capped_drain,
@@ -29,7 +30,17 @@ from gateway.restart import (
 from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
 
 
-def test_capped_drain_fits_inside_launchd_budget_minus_reserve():
+@pytest.mark.parametrize(
+    "platform, label, expected",
+    [
+        ("darwin", "ai.hermes.gateway", 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S),
+        # App-coalition label (IDE integrated terminal) is not our job: no budget, drain unchanged.
+        ("darwin", "application.com.example.ide.123", 180.0),
+        # launchd is darwin-only (same predicate as control_socket): a leaked label elsewhere is ignored.
+        ("linux", "ai.hermes.gateway", 180.0),
+    ],
+)
+def test_capped_drain_fits_inside_launchd_budget_minus_reserve(platform, label, expected):
     # The incident shape: configured 180s, launchd clamps to 60s.
     assert resolve_launchd_capped_drain(180.0, 60.0) == 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S
     # Never extends a short drain; no launchd budget leaves the configured drain alone.
@@ -39,46 +50,37 @@ def test_capped_drain_fits_inside_launchd_budget_minus_reserve():
 
 def _read_budget(label):
     fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")  # noqa: E731
-    return read_launchd_exit_timeout_s(environ={"XPC_SERVICE_NAME": label}, uid=501, run=fake_run)
+    budget = read_launchd_exit_timeout_s(environ={"XPC_SERVICE_NAME": label}, uid=501, run=fake_run, platform=platform)
+    assert resolve_launchd_capped_drain(180.0, budget) == expected
 
 
-@pytest.mark.macos_only
-@pytest.mark.parametrize(
-    "label, expected",
-    [
-        ("ai.hermes.gateway", 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S),
-        # App-coalition label (IDE integrated terminal) is not our job: no budget, drain unchanged.
-        ("application.com.example.ide.123", 180.0),
-    ],
-)
-def test_launchd_reader_yields_a_budget_only_for_hermes_jobs(label, expected):
-    assert resolve_launchd_capped_drain(180.0, _read_budget(label)) == expected
-
-
-@pytest.mark.linux_only
-def test_launchd_label_leaked_onto_linux_is_ignored():
-    assert _read_budget("ai.hermes.gateway") is None
-
-
-def test_grandchild_resolves_label_from_wrapper_reexport(monkeypatch):
-    """Under the generated plist the gateway is a grandchild: launchd stamps XPC_SERVICE_NAME
-    only on the stderr-timestamp wrapper, the grandchild reads "0", and the wrapper re-exports
-    the job label as HERMES_LAUNCHD_LABEL so the drain cap still resolves its budget."""
-    monkeypatch.setattr(restart_mod.sys, "platform", "darwin")
+def test_grandchild_resolves_label_from_wrapper_reexport():
+    """Under the generated plist the gateway is a grandchild: launchd stamps XPC_SERVICE_NAME only on
+    the stderr-timestamp wrapper, the grandchild reads "0", and the wrapper forwards the job label as
+    HERMES_LAUNCHD_LABEL so the drain cap still resolves its budget. Platform is data, not the host."""
     grandchild_env = {"XPC_SERVICE_NAME": "0", LAUNCHD_LABEL_ENV: "ai.hermes.gateway"}
 
-    assert launchd_service_label(grandchild_env) == "ai.hermes.gateway"
-    # The re-export keeps the ai.hermes predicate: an app-coalition label is still not our job.
-    assert launchd_service_label({"XPC_SERVICE_NAME": "0", LAUNCHD_LABEL_ENV: "application.com.example.ide.123"}) is None
-    # No fallback at all (foreground start, or a wrapper older than the re-export) stays None.
-    assert launchd_service_label({"XPC_SERVICE_NAME": "0"}) is None
-    # A direct launchd child (no wrapper) keeps the XPC path.
-    assert launchd_service_label({"XPC_SERVICE_NAME": "ai.hermes.gateway"}) == "ai.hermes.gateway"
+    assert launchd_service_label(grandchild_env, platform="darwin") == "ai.hermes.gateway"
+    # The forwarded label keeps the ai.hermes predicate: an app-coalition label is still not our job.
+    assert launchd_service_label({"XPC_SERVICE_NAME": "0", LAUNCHD_LABEL_ENV: "application.com.example.ide.123"},
+                                 platform="darwin") is None
+    # No label at all (foreground start, or a wrapper older than the forward) stays None; so does linux.
+    assert launchd_service_label({"XPC_SERVICE_NAME": "0"}, platform="darwin") is None
+    assert launchd_service_label(grandchild_env, platform="linux") is None
 
     # End to end: the grandchild sizes its stop drain to the live ExitTimeOut.
     fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")  # noqa: E731
-    budget = read_launchd_exit_timeout_s(environ=grandchild_env, uid=501, run=fake_run)
+    budget = read_launchd_exit_timeout_s(environ=grandchild_env, uid=501, run=fake_run, platform="darwin")
     assert resolve_launchd_capped_drain(180.0, budget) == 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S
+
+
+def test_forwarded_label_marks_grandchild_supervised_for_every_reader():
+    """One seam: the restart route and the control-socket declaration see the same launchd identity
+    the drain cap does, so a grandchild is not 'manual' to one reader and 'launchd' to another."""
+    grandchild_env = {"XPC_SERVICE_NAME": "0", LAUNCHD_LABEL_ENV: "ai.hermes.gateway"}
+    assert is_gateway_supervisor_process(grandchild_env) is True
+    assert is_gateway_supervisor_process({"XPC_SERVICE_NAME": "0"}) is False
+    assert is_gateway_supervisor_process({"XPC_SERVICE_NAME": "0", LAUNCHD_LABEL_ENV: "application.com.x.1"}) is False
 
 
 def _runner(*, drain: float, launchd: float | None, by_signal: bool):

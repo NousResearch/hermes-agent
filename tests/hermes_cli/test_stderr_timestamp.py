@@ -13,6 +13,7 @@ from gateway.restart import (
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    LAUNCHD_LABEL_ENV,
 )
 from hermes_cli import stderr_timestamp
 
@@ -91,61 +92,31 @@ def test_prepare_skips_interactive_xpc_zero_even_for_gateway_argv():
 
 
 def test_child_launchd_label_env_exports_only_hermes_job_labels():
-    assert stderr_timestamp._child_launchd_label_env(_LAUNCHD_ENV) == {
-        stderr_timestamp.LAUNCHD_LABEL_ENV: "ai.hermes.gateway-butler"
-    }
-    # Interactive shells and the grandchild itself read "0": nothing to export.
-    assert stderr_timestamp._child_launchd_label_env({"PATH": "/usr/bin", "XPC_SERVICE_NAME": "0"}) == {}
-    assert stderr_timestamp._child_launchd_label_env({"PATH": "/usr/bin"}) == {}
-    # App-coalition labels (IDE integrated terminals) are not a Hermes job identity.
-    assert (
-        stderr_timestamp._child_launchd_label_env(
-            {"PATH": "/usr/bin", "XPC_SERVICE_NAME": "application.com.example.ide.123"}
-        )
-        == {}
-    )
+    assert stderr_timestamp._child_launchd_label_env(_LAUNCHD_ENV) == {LAUNCHD_LABEL_ENV: "ai.hermes.gateway-butler"}
+    # Interactive shells and the grandchild itself read "0": nothing to export. App-coalition labels
+    # (IDE integrated terminals) are not a Hermes job identity either.
+    for env in ({"PATH": "/usr/bin", "XPC_SERVICE_NAME": "0"}, {"PATH": "/usr/bin"},
+                {"PATH": "/usr/bin", "XPC_SERVICE_NAME": "application.com.example.ide.123"}):
+        assert stderr_timestamp._child_launchd_label_env(env) == {}
 
 
-def test_main_exports_launchd_label_to_child(tmp_path, monkeypatch):
-    """The gateway grandchild must resolve its job (drain cap) from HERMES_LAUNCHD_LABEL."""
-    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway-butler")
-    monkeypatch.delenv(stderr_timestamp.LAUNCHD_LABEL_ENV, raising=False)
-    log_path = tmp_path / "gateway.error.log"
+@pytest.mark.parametrize("xpc, expected", [("ai.hermes.gateway-butler", "ai.hermes.gateway-butler"), ("0", "unset")],
+                         ids=["launchd-job", "foreground-xpc-zero"])
+def test_main_forwards_launchd_label_to_child_only_under_launchd(tmp_path, monkeypatch, xpc, expected):
+    """The gateway grandchild must resolve its job (drain cap, restart route) from HERMES_LAUNCHD_LABEL;
+    a foreground/unsupervised start must not inherit a fabricated one."""
+    monkeypatch.setenv("XPC_SERVICE_NAME", xpc)
+    monkeypatch.delenv(LAUNCHD_LABEL_ENV, raising=False)
     marker_path = tmp_path / "label.txt"
     code = (
-        "import os\n"
-        f"from pathlib import Path\n"
-        f"Path({str(marker_path)!r}).write_text("
-        f"os.environ.get({stderr_timestamp.LAUNCHD_LABEL_ENV!r}, 'unset'), encoding='utf-8')\n"
+        "import os\nfrom pathlib import Path\n"
+        f"Path({str(marker_path)!r}).write_text(os.environ.get({LAUNCHD_LABEL_ENV!r}, 'unset'), encoding='utf-8')\n"
     )
 
-    rc = stderr_timestamp.main(
-        ["--error-log", str(log_path), "--", sys.executable, "-c", code]
-    )
+    rc = stderr_timestamp.main(["--error-log", str(tmp_path / "gateway.error.log"), "--", sys.executable, "-c", code])
 
     assert rc == 0
-    assert marker_path.read_text(encoding="utf-8") == "ai.hermes.gateway-butler"
-
-
-def test_main_does_not_fabricate_label_for_xpc_zero(tmp_path, monkeypatch):
-    """Foreground/unsupervised starts must not inherit a fabricated job label."""
-    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
-    monkeypatch.delenv(stderr_timestamp.LAUNCHD_LABEL_ENV, raising=False)
-    log_path = tmp_path / "gateway.error.log"
-    marker_path = tmp_path / "label.txt"
-    code = (
-        "import os\n"
-        f"from pathlib import Path\n"
-        f"Path({str(marker_path)!r}).write_text("
-        f"os.environ.get({stderr_timestamp.LAUNCHD_LABEL_ENV!r}, 'unset'), encoding='utf-8')\n"
-    )
-
-    rc = stderr_timestamp.main(
-        ["--error-log", str(log_path), "--", sys.executable, "-c", code]
-    )
-
-    assert rc == 0
-    assert marker_path.read_text(encoding="utf-8") == "unset"
+    assert marker_path.read_text(encoding="utf-8") == expected
 
 
 # The child is ``python -c <record argv>`` carrying a "gateway run" tail as inert data, which is

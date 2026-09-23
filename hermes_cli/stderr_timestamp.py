@@ -15,8 +15,6 @@ from typing import BinaryIO, Sequence, TextIO
 
 EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
 
-# gateway/restart.py reads this to size the stop drain to the job's live ExitTimeOut.
-LAUNCHD_LABEL_ENV = "HERMES_LAUNCHD_LABEL"
 
 _TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s|$)")
 
@@ -93,15 +91,15 @@ def _child_launchd_label_env(environ: Mapping[str, str] | None = None) -> dict[s
 
     launchd stamps ``XPC_SERVICE_NAME=<job label>`` only on this wrapper (its direct child; an
     interactive shell has none, the grandchild sees ``XPC_SERVICE_NAME=0``). Re-exporting the
-    label lets the gateway resolve its job without it (e.g. the stop-drain cap reading the
-    live ``ExitTimeOut`` in gateway/restart.py). Only ``ai.hermes.*`` labels are exported;
+    label lets the gateway resolve its job without it (the stop-drain cap reading the live
+    ``ExitTimeOut``, the exit-75 restart route, the control-socket supervisor declaration — all
+    via ``gateway.restart.launchd_job_label``). Only ``ai.hermes.*`` labels are exported;
     app-coalition labels are meaningless as a job identity.
     """
-    env = os.environ if environ is None else environ
-    label = str(env.get("XPC_SERVICE_NAME", "") or "").strip()
-    if not label.startswith("ai.hermes"):
-        return {}
-    return {LAUNCHD_LABEL_ENV: label}
+    from gateway.restart import LAUNCHD_LABEL_ENV, launchd_job_label
+
+    label = launchd_job_label(os.environ if environ is None else environ)
+    return {LAUNCHD_LABEL_ENV: label} if label else {}
 
 
 def _prepare_child_command(command: Sequence[str], environ: Mapping[str, str] | None = None) -> list[str]:

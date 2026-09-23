@@ -36,9 +36,8 @@ def map_fatal_config_exit_for_launchd(returncode: int) -> int:
 # environment (e.g. ``sudo env -i``).
 EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"
 
-# Re-exported by the stderr-timestamp launchd wrapper (hermes_cli/stderr_timestamp.py).
-# launchd stamps ``XPC_SERVICE_NAME`` only on the wrapper itself; the gateway grandchild
-# sees ``XPC_SERVICE_NAME=0`` and would otherwise be invisible to the drain cap.
+# Forwarded by the stderr-timestamp launchd wrapper (hermes_cli/stderr_timestamp.py) to the gateway
+# grandchild, which sees ``XPC_SERVICE_NAME=0``. Read only via :func:`launchd_job_label`.
 LAUNCHD_LABEL_ENV = "HERMES_LAUNCHD_LABEL"
 
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(DEFAULT_CONFIG["agent"]["restart_drain_timeout"])
@@ -89,32 +88,35 @@ def parse_launchd_exit_timeout(print_output: object) -> float | None:
     return float(match.group(1))
 
 
-def launchd_service_label(environ: Mapping[str, str] | None = None) -> str | None:
-    """Return this process's ``ai.hermes.*`` launchd job label, or ``None``.
+def launchd_job_label(environ: Mapping[str, str] | None = None) -> str | None:
+    """The ``ai.hermes.*`` launchd job label in *environ*, or ``None`` (no darwin gate).
 
-    Only labels of the gateway's own jobs count (same predicate as
-    :mod:`gateway.control_socket`). App-coalition labels
-    (``application.<bundle>…``, exported into IDE integrated terminals) also
-    populate ``XPC_SERVICE_NAME``, and ``launchctl print`` reports
-    ``exit timeout = 1`` for them — treating those as a budget would cap the
-    drain to 0 for a gateway Ctrl+C'd in such a terminal.
-
-    When this process is a launchd grandchild (the generated plist runs the
-    stderr-timestamp wrapper as the job process), ``XPC_SERVICE_NAME`` reads
-    ``"0"`` and the wrapper's re-exported ``HERMES_LAUNCHD_LABEL`` is used.
+    launchd stamps ``XPC_SERVICE_NAME`` only on the job process it spawns. The generated plist
+    runs the stderr-timestamp wrapper there, so the gateway grandchild reads ``XPC_SERVICE_NAME=0``
+    and finds its label only in the wrapper's re-export, ``HERMES_LAUNCHD_LABEL``. Both go through
+    the same ``ai.hermes`` predicate: app-coalition labels (``application.<bundle>…``, exported
+    into IDE integrated terminals) are not our job. ONE seam for every reader of launchd identity
+    (drain cap, restart route, control-socket supervisor declaration).
     """
-    if sys.platform != "darwin":
-        return None
     env = os.environ if environ is None else environ
-    label = str(env.get("XPC_SERVICE_NAME", "") or "").strip()
-    if not label.startswith("ai.hermes"):
-        # Under the generated launchd plist the gateway is a grandchild (the stderr-timestamp
-        # wrapper is the job process), so XPC_SERVICE_NAME reads "0" here; the wrapper
-        # re-exports the real job label for exactly this fallback.
-        label = str(env.get(LAUNCHD_LABEL_ENV, "") or "").strip()
-        if not label.startswith("ai.hermes"):
-            return None
-    return label
+    for var in ("XPC_SERVICE_NAME", LAUNCHD_LABEL_ENV):
+        label = str(env.get(var, "") or "").strip()
+        if label.startswith("ai.hermes"):
+            return label
+    return None
+
+
+def launchd_service_label(environ: Mapping[str, str] | None = None, *, platform: str = sys.platform) -> str | None:
+    """Return this process's ``ai.hermes.*`` launchd job label, or ``None`` off darwin.
+
+    ``launchctl print`` reports ``exit timeout = 1`` for app-coalition labels — treating those as
+    a budget would cap the drain to 0 for a gateway Ctrl+C'd in an IDE terminal, hence the
+    predicate in :func:`launchd_job_label`. ``platform`` is data so the mapping logic is testable
+    on any host.
+    """
+    if platform != "darwin":
+        return None
+    return launchd_job_label(environ)
 
 
 def read_launchd_exit_timeout_s(
@@ -123,15 +125,16 @@ def read_launchd_exit_timeout_s(
     environ: Mapping[str, str] | None = None,
     uid: int | None = None,
     run: Callable[..., "subprocess.CompletedProcess[str]"] = subprocess.run,
+    platform: str = sys.platform,
 ) -> float | None:
     """Live ``ExitTimeOut`` (seconds) launchd enforces for this gateway's job.
 
     Returns ``None`` — meaning "no launchd budget applies" — when the process
-    is not launchd-owned (non-darwin, or no ``ai.hermes`` ``XPC_SERVICE_NAME``), ``launchctl`` is missing
+    is not launchd-owned (non-darwin, or no ``ai.hermes`` job label — see :func:`launchd_job_label`), ``launchctl`` is missing
     or fails, or the print output carries no ``exit timeout`` line. Callers
     must treat ``None`` as fail-open: the configured drain stands unchanged.
     """
-    label = label or launchd_service_label(environ)
+    label = label or launchd_service_label(environ, platform=platform)
     if not label:
         return None
     if uid is None:
@@ -239,7 +242,8 @@ def is_gateway_supervisor_process(environ: Mapping[str, str] | None = None) -> b
     """Return whether this gateway process is owned by a supervisor that RESTARTS it.
 
     Selects the exit-75 restart route, so only markers of a manager with a restart policy count:
-    systemd ``INVOCATION_ID``, launchd ``XPC_SERVICE_NAME``, the s6 sentinel, or the explicit
+    systemd ``INVOCATION_ID``, launchd ``XPC_SERVICE_NAME`` (or the wrapper-forwarded
+    ``HERMES_LAUNCHD_LABEL`` the grandchild sees), the s6 sentinel, or the explicit
     ``--external-supervisor`` opt-in. The generalized ``HERMES_SUPERVISED_CHILD`` launcher marker is
     deliberately NOT read here: the Windows Scheduled-Task launcher sets it without a restart policy
     (#113670), and routing its ``/restart`` through exit 75 would leave the gateway dead.
@@ -247,6 +251,7 @@ def is_gateway_supervisor_process(environ: Mapping[str, str] | None = None) -> b
     env = os.environ if environ is None else environ
     xpc_service = env.get("XPC_SERVICE_NAME", "")
     return bool(env.get("INVOCATION_ID") or env.get("HERMES_S6_SUPERVISED_CHILD") or (xpc_service and xpc_service != "0")
+                or launchd_job_label(env)
                 or str(env.get(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "")).strip().lower() in _TRUTHY)
 
 

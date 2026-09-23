@@ -217,3 +217,54 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# _systemd_timeout_stop_us
+# ---------------------------------------------------------------------------
+
+class TestSystemdTimeoutStopUs:
+    """Issue #36755: a reachable user manager answers ``systemctl show`` with rc=0 and
+    compiled-in defaults (``TimeoutStopUSec=1min 30s``) for a unit it does not own, so a
+    system-level deployment would read a false 90s and warn about a stale unit. The
+    LoadState gate must skip the non-loaded manager and read the one that owns the unit."""
+
+    @staticmethod
+    def _show(stdout_by_flag):
+        def fake_run(cmd, **kwargs):
+            stdout = stdout_by_flag["user" if "--user" in cmd else "system"]
+            return subprocess.CompletedProcess(cmd, 0, stdout, "")
+        return fake_run
+
+    def test_not_found_user_unit_falls_through_to_loaded_system_unit(self, monkeypatch):
+        # The pre-gate bug: this first answer (90s default) would be returned as real.
+        monkeypatch.setattr(sf.subprocess, "run", self._show({
+            "user": "LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+            "system": "LoadState=loaded\nTimeoutStopUSec=4min\n",
+        }))
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 240 * 1_000_000
+
+    def test_loaded_user_unit_wins_without_consulting_system_manager(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, "LoadState=loaded\nTimeoutStopUSec=2min\n", "")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 120 * 1_000_000
+        assert len(calls) == 1 and "--user" in calls[0]
+
+    def test_no_loaded_manager_returns_none(self, monkeypatch):
+        monkeypatch.setattr(sf.subprocess, "run", self._show({
+            "user": "LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+            "system": "LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+        }))
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") is None
+
+    def test_missing_load_state_line_keeps_legacy_behaviour(self, monkeypatch):
+        # Old systemctl output without LoadState (or other managers) still parses.
+        monkeypatch.setattr(sf.subprocess, "run", self._show({
+            "user": "TimeoutStopUSec=3min\n", "system": ""}))
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 180 * 1_000_000

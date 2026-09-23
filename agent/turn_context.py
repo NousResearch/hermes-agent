@@ -238,43 +238,47 @@ def start_deferred_title_upgrade(agent: Any) -> None:
     start_title_upgrade(upgrade)
 
 
-def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> int:
+def reanchor_current_turn_user_idx(
+    messages: List[Any], user_message: Any, *, previous_message: Any = None,
+) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
 
-    Prefers the LAST user message whose content exactly matches this turn's text, else
-    the last user-originated turn; compaction handoffs are never the fallback.
-    Returns -1 when there is no user-originated message.
-
-    Compression replaces list entries with fresh copies (and may append a todo-snapshot user message or a
-    restored user turn AFTER the surviving copy of the current turn's message), so a pre-compression index
-    is meaningless. Prefer the LAST user message whose content exactly matches this turn's text — the
-    surviving copy in the common case — so the injection stamp and the #48677 persist override can't land on
-    a todo-snapshot or historical row. Fall back to the last *user-originated* turn when no exact match
-    survives (merge-summary-into-tail rewrites the content but the trackers still need a live anchor).
-    Compaction handoffs must never become the fallback anchor (#80622) — they are reference-only
-    scaffolding, not the active ask.
+    A surviving object or exact native row coordinate wins over equal text in a
+    later steering message. If that identity was lost, only a unique exact text
+    match can re-anchor the turn; ambiguous matches return -1. With no exact
+    match, retain the last user-originated fallback for rewritten summary tails.
+    Reference-only compaction handoffs never become that fallback (#80622).
     """
     from agent.context_compressor import user_originated_turn_view
 
+    previous_id = previous_message.get("_row_id") if isinstance(previous_message, dict) else None
+    identity_matches, text_matches = [], []
     fallback = -1
-    for i in range(len(messages) - 1, -1, -1):
-        msg = messages[i]
+    for i, msg in enumerate(messages):
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             continue
+        if msg is previous_message or (type(previous_id) is int and previous_id > 0
+                                       and type(msg.get("_row_id")) is int
+                                       and msg["_row_id"] == previous_id):
+            identity_matches.append(i)
         # Typed synthetic current events keep their persistence anchor when raw
         # content is unchanged; not eligible for the human-only fallback below.
         if msg.get("content") == user_message:
-            return i
+            text_matches.append(i)
+            continue
         live_view = user_originated_turn_view(msg)
         if live_view is None:
             continue
         if live_view.get("content") == user_message:
-            return i
+            text_matches.append(i)
         # Prefer a real human turn over a synthetic handoff / continuation marker
         # when the exact content was rewritten by merge-into-tail.
-        if fallback < 0:
-            fallback = i
-    return fallback
+        fallback = i
+    if len(identity_matches) == 1:
+        return identity_matches[0]
+    if identity_matches or len(text_matches) > 1:
+        return -1
+    return text_matches[0] if text_matches else fallback
 
 
 def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> Any:

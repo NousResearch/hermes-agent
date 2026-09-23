@@ -9,6 +9,7 @@ the ``pre_api_request`` hook and the debug dump. Nothing here imports
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 import logging
 from typing import Any
 
@@ -37,6 +38,50 @@ def _set_extra_header(api_kwargs: Any, key: str, value: str) -> None:
     _xh = dict(api_kwargs.get("extra_headers") or {})
     _xh[key] = value
     api_kwargs["extra_headers"] = _xh
+
+
+def _native_user_message(agent: Any, messages: Any, index: Any, user_message: Any,
+                         original_user_message: Any) -> Any:
+    """Export this turn's exact persisted row, including after compaction.
+
+    The loop owns the index. Text validates that coordinate; it never selects a
+    row. A task's initial row can persist its original input while a compressed
+    copy persists the API wrapper, so read the addressed native representation.
+    """
+    if (not isinstance(messages, list) or type(index) is not int
+            or not 0 <= index < len(messages) or user_message is None):
+        return None
+    row = messages[index]
+    if not isinstance(row, dict) or row.get("role") != "user":
+        return None
+    from agent.context_compressor import user_originated_turn_view
+
+    view = user_originated_turn_view(row)
+    if row.get("content") != user_message and not (
+            isinstance(view, dict) and view.get("content") == user_message):
+        return None
+    row_id = row.get("_row_id")
+    db = getattr(agent, "_session_db", None)
+    if type(row_id) is not int or row_id < 1 or db is None or not agent.session_id:
+        return None
+    try:
+        stored = db.get_messages(agent.session_id, after_id=row_id - 1, limit=1)
+    except Exception:
+        return None  # Missing provenance must not bypass the request middleware.
+    if not stored or stored[0].get("id") != row_id or stored[0].get("role") != "user":
+        return None
+    content = stored[0].get("content")
+    if content != original_user_message and content != row.get("content"):
+        from agent.session_persistence import _durable_content
+
+        # The native flush projects image blocks to transcript text. Validate
+        # that representation at the same coordinate without changing the wire.
+        if content is None or not any(
+            content == _durable_content(candidate)
+            for candidate in (original_user_message, row.get("content"))
+        ):
+            return None
+    return {"role": "user", "content": copy.deepcopy(content), "_row_id": row_id}
 
 
 def _fire_pre_api_request_hook(
@@ -94,6 +139,7 @@ def build_api_request(
     system_message: Any, messages: Any, original_user_message: Any, approx_tokens: Any,
     total_chars: Any, retry_count: Any, api_call_count: Any, api_request_id: Any,
     api_start_time: Any, effective_task_id: Any, turn_id: Any,
+    user_message: Any, current_turn_user_idx: Any,
 ) -> ApiRequestBuild:
     """Assemble the attempt's request in the original order (every mutation happens BEFORE
     middleware/hooks/debug dumps observe the payload)."""
@@ -145,6 +191,9 @@ def build_api_request(
             session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
             provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
             api_call_count=api_call_count,
+            native_user_message=_native_user_message(
+                agent, messages, current_turn_user_idx, user_message, original_user_message),
+            original_user_message=original_user_message,
         )
         api_kwargs = _llm_request_mw.payload
         _original_api_kwargs = _llm_request_mw.original_payload

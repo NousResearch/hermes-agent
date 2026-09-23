@@ -561,6 +561,10 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
         if (
             prev is not None and prev.get("role") == "user"
             and isinstance(msg, dict) and msg.get("role") == "user"
+            # Rows with exact native coordinates retain their separate ownership.
+            # The per-request API copy merges users for strict provider alternation.
+            and not any(type(row.get("_row_id")) is int and row["_row_id"] > 0
+                        for row in (prev, msg))
             # A summary carrier followed by a new user row is a deliberate durable shape after
             # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
             and split_user_originated_turn(prev)[0] is None

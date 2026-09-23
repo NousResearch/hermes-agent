@@ -206,3 +206,32 @@ class TestPostToolCompressionAttemptCap:
 
         assert len(first) == 3
         assert len(second) == 3
+
+
+def test_post_tool_compaction_reanchors_current_row_before_request_middleware(agent):
+    from agent import turn_api_request
+    seen = []
+    observe = turn_api_request._native_user_message
+
+    def capture(agent, messages, index, user_message, original_user_message):
+        seen.append((index, messages[index].get('content')))
+        return observe(agent, messages, index, user_message, original_user_message)
+
+    def compact(messages, system_message, **kwargs):
+        return list(messages[2:]), system_message
+
+    agent.client.chat.completions.create.side_effect = [_tool_response(0), _stop_response()]
+    with (
+        patch.object(agent, '_compress_context', side_effect=compact),
+        patch.object(turn_api_request, '_native_user_message', side_effect=capture),
+        patch.object(agent, '_persist_session'),
+        patch.object(agent, '_save_trajectory'),
+        patch.object(agent, '_cleanup_task_resources'),
+        patch('model_tools.handle_function_call', return_value='{"ok":true}'),
+    ):
+        result = agent.run_conversation('current work', conversation_history=[
+            {'role':'user', 'content':'earlier question'},
+            {'role':'assistant', 'content':'earlier answer'},
+        ])
+    assert result['completed'] is True
+    assert seen == [(2, 'current work'), (0, 'current work')]

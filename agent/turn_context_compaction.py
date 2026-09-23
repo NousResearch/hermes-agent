@@ -112,12 +112,12 @@ def _refund_api_call(agent: Any, api_call_count: int) -> int:
     return api_call_count
 
 
-def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
+def _reanchor(agent: Any, messages: List[Any], user_message: Any, *, previous_message: Any = None) -> int:
     """Compaction rebuilt ``messages``: re-anchor this turn's user index so the
     api_content stamp, injection site and persist-override row hit the same dict."""
     from agent.turn_context import reanchor_current_turn_user_idx
 
-    idx = reanchor_current_turn_user_idx(messages, user_message)
+    idx = reanchor_current_turn_user_idx(messages, user_message, previous_message=previous_message)
     agent._persist_user_message_idx = idx
     return idx
 

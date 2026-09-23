@@ -39,6 +39,7 @@ class ToolRoundVerdict:
     failed: Any
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
+    current_turn_user_idx: Any
     result: Optional[Dict[str, Any]] = None
 
 
@@ -47,7 +48,7 @@ def run_tool_round(
     conversation_history: Any, api_call_count: Any, effective_task_id: Any, user_message: Any,
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
-    truncated_tool_call_retries: Any,
+    truncated_tool_call_retries: Any, current_turn_user_idx: Any,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -61,6 +62,7 @@ def run_tool_round(
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
             truncated_tool_call_retries=truncated_tool_call_retries, result=result,
+            current_turn_user_idx=current_turn_user_idx,
         )
 
     if not agent.quiet_mode:
@@ -185,6 +187,9 @@ def run_tool_round(
     if {tc.function.name for tc in assistant_message.tool_calls} == {"execute_code"}:
         agent.iteration_budget.refund()
 
+    previous_user = (messages[current_turn_user_idx]
+                     if type(current_turn_user_idx) is int and 0 <= current_turn_user_idx < len(messages)
+                     else None)
     _ptc = compress_after_tool_results(
         agent, messages=messages, system_message=system_message, user_message=user_message,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
@@ -192,6 +197,10 @@ def run_tool_round(
         max_compression_attempts=max_compression_attempts, effective_task_id=effective_task_id,
         final_response=final_response, turn_exit_reason=_turn_exit_reason,
     )
+    if _ptc.messages is not messages:
+        # Post-tool compaction replaces the tail just like preflight compaction.
+        from agent.turn_context_compaction import _reanchor
+        current_turn_user_idx = _reanchor(agent, _ptc.messages, user_message, previous_message=previous_user)
     messages = _ptc.messages
     active_system_prompt = _ptc.active_system_prompt
     conversation_history = _ptc.conversation_history

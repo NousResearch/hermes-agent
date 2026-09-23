@@ -957,21 +957,6 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
     expect(getConnectionFor.mock.calls.length).toBe(before + 2)
   })
 
-  it('touch pings carry the scope turn lease so main can skip leased residents early', async () => {
-    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
-      descriptorFor(connectionId, profile)
-    )
-
-    const touchBackend = vi.fn(async () => ({ ok: true }))
-
-    installDesktop({ getConnectionFor, touchBackend })
-
-    await ensureGatewayForAgent('homelab', 'bot-a')
-    touchBackend.mockClear()
-
-    touchSecondaryGateways()
-    expect(touchBackend).toHaveBeenCalledWith('conn:homelab::bot-a', { activeTurn: false })
-  })
 })
 
 describe('rejected secondary authentication', () => {

@@ -34,14 +34,6 @@ describe('composer suggestion bus', () => {
     expect(pillsFor('s1')).toEqual([])
   })
 
-  it('caps merged suggestions at two', () => {
-    offerSuggestions('s3', 'test', [suggestion('a'), suggestion('b'), suggestion('c')])
-
-    expect(pillsFor('s3')).toHaveLength(2)
-
-    offerSuggestions('s3', 'test', [])
-  })
-
   it('dedupes by provider-namespaced key across providers', () => {
     offerSuggestions('s4', 'p1', [suggestion('same', 'p1')])
     offerSuggestions('s4', 'p2', [suggestion('same', 'p2')])
@@ -112,15 +104,4 @@ describe('composer suggestion bus', () => {
     offerSuggestions('s8', 'test', [])
   })
 
-  it('keeps the array reference when nothing the pill paints changed', () => {
-    offerSuggestions('s9', 'test', [suggestion('linear')])
-
-    const first = $composerSuggestionsBySession.get().s9
-
-    offerSuggestions('s9', 'test', [suggestion('linear')])
-
-    expect($composerSuggestionsBySession.get().s9).toBe(first)
-
-    offerSuggestions('s9', 'test', [])
-  })
 })

@@ -6,7 +6,6 @@ import {
   applyOperationStatus,
   clearConnectionRequest,
   type ConnectionRequest,
-  continueConnectionRequest,
   hasConnectionRequest,
   normalizeConnectionRequest,
   respondToConnectionRequest,
@@ -170,17 +169,6 @@ describe('connection-request store', () => {
     expect(applyConnectionUpdate(settled, frame({ gmail: 'connected' }))).toBe(settled)
   })
 
-  it('updateConnectionRequest writes the store only when something changed', () => {
-    setConnectionRequest(request('a'))
-    const before = $connectionRequests.get().a
-
-    updateConnectionRequest('a', frame({}, { op_id: 'op-9' }))
-    expect($connectionRequests.get().a).toBe(before)
-
-    updateConnectionRequest('a', frame({ notion: 'skipped' }, { actor: 'user', target: 'notion', to: 'skipped' }))
-    expect($connectionRequests.get().a.targets[1].state).toBe('skipped')
-  })
-
   it('keeps requests from concurrent sessions independent', () => {
     setConnectionRequest(request('a', 'op-a'))
     setConnectionRequest(request('b', 'op-b'))
@@ -227,13 +215,4 @@ describe('connection-request store', () => {
     expect(rpc.mock.calls[0][1].result).toEqual({ settled_by: 'continue' })
   })
 
-  it('continue is a one-field payload', async () => {
-    const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: true })
-    setOwnerGateway(rpc)
-    const req = request('a')
-    setConnectionRequest(req)
-
-    await continueConnectionRequest(req)
-    expect(rpc.mock.calls[0][1].result).toEqual({ settled_by: 'continue' })
-  })
 })

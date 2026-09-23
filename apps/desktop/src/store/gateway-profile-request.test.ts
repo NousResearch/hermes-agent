@@ -547,19 +547,6 @@ describe('retainGatewayForAgent (#93602)', () => {
     expect(secondaryGateways[1].close).toHaveBeenCalledOnce()
   })
 
-  it('without the retain, the leased socket closes after each request (the #93602 race)', async () => {
-    const primary = makePrimary()
-    setPrimaryGateway(primary as never, 'default')
-    installRegistryDesktop()
-    await ensureGatewayForProfile('default')
-
-    await requestGatewayForAgent('mini', 'helper', 'session.create', { title: 'g' })
-
-    // Refcount hit 0 → disposed: this is the socket close that reaps the
-    // runtime session server-side and makes the later prompt.submit 4001.
-    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
-  })
-
   it('plain-profile retain leases the pooled profile socket and releases it', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

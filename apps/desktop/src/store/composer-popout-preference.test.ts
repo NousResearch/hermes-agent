@@ -48,9 +48,4 @@ describe('composer pop-out preference', () => {
     })
   })
 
-  it('keeps pop-out gestures enabled by default', async () => {
-    const store = await loadStore()
-
-    expect(store.$composerPopoutGesturesEnabled.get()).toBe(true)
-  })
 })

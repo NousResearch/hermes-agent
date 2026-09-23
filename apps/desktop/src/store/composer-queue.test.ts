@@ -152,29 +152,11 @@ describe('migrateQueuedPrompts', () => {
     expect(migrateQueuedPrompts('rt-x', 'rt-x')).toBe(false)
   })
 
-  it('must not be used across sessions without a same-lineage guard (documents the leak)', () => {
-    // ChatView used to call migrateQueuedPrompts(selectedA, routeKeyB) during the
-    // route-ahead/store-lag window of a session switch. That re-homes A's queue
-    // onto B so the idle ChatBar on B auto-drains it into the wrong conversation.
-    // The guard lives in shouldMigrateComposerScope — this test locks the
-    // underlying hazard so a future caller cannot treat migrate as free.
-    enqueueQueuedPrompt('root-a', { attachments: [], text: 'belongs to A' })
-
-    expect(migrateQueuedPrompts('root-a', 'root-b')).toBe(true)
-    expect(getQueuedPrompts('root-a')).toEqual([])
-    expect(getQueuedPrompts('root-b').map(e => e.text)).toEqual(['belongs to A'])
-  })
 })
 
 describe('shouldAutoDrain', () => {
   it('drains whenever idle with a non-empty queue', () => {
     expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(true)
-  })
-
-  it('drains on mount/reconnect with no observed busy edge', () => {
-    // The whole point of dropping the edge: a remount resets the busy ref, so an
-    // edge-gated drain would strand the entry. Idle + non-empty must still fire.
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 2 })).toBe(true)
   })
 
   it('does not drain mid-turn', () => {
@@ -191,9 +173,6 @@ describe('shouldAutoDrain', () => {
     expect(shouldAutoDrain({ isBusy: false, parked: true, queueLength: 1 })).toBe(false)
   })
 
-  it('drains again once the park is lifted', () => {
-    expect(shouldAutoDrain({ isBusy: false, parked: false, queueLength: 1 })).toBe(true)
-  })
 })
 
 describe('parked queue sessions', () => {

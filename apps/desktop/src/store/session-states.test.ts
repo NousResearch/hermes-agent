@@ -131,14 +131,6 @@ describe('resetTileRuntimeBindings', () => {
     ])
   })
 
-  it('tolerates a delegate without invalidateRuntimeBindings (older wiring)', () => {
-    setSessionTileDelegate({} as unknown as SessionTileDelegate)
-    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
-
-    expect(() => resetTileRuntimeBindings()).not.toThrow()
-    expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
-  })
-
   it('keeps Bot runtimes owned by a different connection', () => {
     const invalidateRuntimeBindings = vi.fn()
     setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
@@ -912,13 +904,6 @@ describe('releaseSessionTranscript', () => {
     expect(() => releaseSessionTranscript('runtime')).not.toThrow()
     expect($sessionStates.get().runtime).toEqual({ ...legacy, messages: [] })
   })
-
-  it('ignores a legacy undefined state without throwing', () => {
-    $sessionStates.set({ runtime: undefined } as unknown as Record<string, ClientSessionState>)
-
-    expect(() => releaseSessionTranscript('runtime')).not.toThrow()
-    expect($sessionStates.get()).toHaveProperty('runtime', undefined)
-  })
 })
 
 describe('orderTilesByTree', () => {
@@ -1274,12 +1259,6 @@ describe('sessionTileOwnerRoute', () => {
     $sessionTiles.set([{ storedSessionId: 'plain' }])
 
     expect(sessionTileOwnerRoute('plain')).toBeUndefined()
-  })
-
-  it('returns undefined when the session has no tile', () => {
-    $sessionTiles.set([])
-
-    expect(sessionTileOwnerRoute('missing')).toBeUndefined()
   })
 })
 

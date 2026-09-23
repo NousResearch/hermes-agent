@@ -45,6 +45,7 @@ from agent.tool_dispatch_helpers import (
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
     _context_pruned_argument_paths,
+    _redact_context_pruned_arguments,
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
@@ -747,6 +748,9 @@ def _dispatch_authorized_once(
     if block_message is not None or guardrail_decision is not None:
         _advance_start_order()
         state.blocked = True
+        if block_error_type == _PRUNED_TOOL_ARGUMENTS_ERROR:
+            ref.args = _redact_context_pruned_arguments(ref.name, ref.args)
+            state.args = ref.args
         return _blocked_tool_result(
             agent,
             ref,
@@ -797,13 +801,14 @@ def _run_agent_tool_execution_middleware(
         block = _pruned_tool_arguments_block(function_name, args)
         if block is None:
             return None
-        state.args = args
+        safe_args = _redact_context_pruned_arguments(function_name, args)
+        state.args = safe_args
         state.blocked = True
         if begin_execution is not None:
             begin_execution()
         return _blocked_tool_result(
             agent,
-            _ToolCallRef(function_name, args, effective_task_id, tool_call_id, trace),
+            _ToolCallRef(function_name, safe_args, effective_task_id, tool_call_id, trace),
             block_message=block["message"],
             block_error_type=_PRUNED_TOOL_ARGUMENTS_ERROR,
             guardrail_decision=None,

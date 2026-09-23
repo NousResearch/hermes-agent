@@ -136,7 +136,10 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
 
 
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:
-    """Return True when a Docker sandbox exposes host paths through bind mounts."""
+    """Return whether Docker or Apple Container exposes user-selected host paths."""
+    if config.get("env_type") == "apple_container":
+        from tools.environments.apple_container_provider import apple_container_has_host_access
+        return apple_container_has_host_access(config)
     if config.get("env_type") != "docker":
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
@@ -361,7 +364,7 @@ def _resolve_container_alias(task_id: str) -> str:
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
     "docker_image", "modal_image", "singularity_image",
-    "daytona_image", "env_type",
+    "daytona_image", "apple_container_image", "env_type",
 })
 
 
@@ -501,6 +504,7 @@ _IMAGE_KEY_BY_BACKEND = {
     "singularity": "singularity_image",
     "modal": "modal_image",
     "daytona": "daytona_image",
+    "apple_container": "apple_container_image",
 }
 
 
@@ -667,9 +671,15 @@ def _get_env_config() -> Dict[str, Any]:
     else:
         docker_forward_env, docker_volumes, docker_env, docker_extra_args, docker_shm_size = [], [], {}, [], "1g"
 
+    apple_config = {}
+    if env_type == "apple_container":
+        from tools.environments.apple_container_provider import read_apple_container_config
+        apple_config = read_apple_container_config()
+
     cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
 
     return {
+        **apple_config,
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(_tenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": _tenv("TERMINAL_DOCKER_IMAGE", default_image),

@@ -96,7 +96,15 @@ const POSIX_ABSOLUTE_PATH_RE = /^\/(?!\/)/
 // (docker/ssh/singularity/modal/...) cannot see the desktop's host paths —
 // they must be crossed as bytes, like remote attachments. Mirrors the
 // container_backend set in tools/terminal_tool.py::_get_env_config.
-const CONTAINER_TERMINAL_BACKENDS = new Set(['docker', 'ssh', 'singularity', 'modal', 'daytona', 'vercel_sandbox'])
+const CONTAINER_TERMINAL_BACKENDS = new Set([
+  'docker',
+  'ssh',
+  'singularity',
+  'modal',
+  'daytona',
+  'vercel_sandbox',
+  'apple_container'
+])
 
 // `mode: local` means the gateway was launched locally, not necessarily that
 // Electron and the gateway share a filesystem. Windows Desktop can front a

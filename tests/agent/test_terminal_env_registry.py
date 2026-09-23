@@ -58,7 +58,7 @@ def test_register_and_get():
     reg.register_provider(p)
     assert reg.get_provider("testbox") is p
     assert reg.get_provider("TESTBOX") is p  # case-insensitive lookup
-    assert reg.plugin_backend_names() == ["testbox"]
+    assert "testbox" in reg.plugin_backend_names()
 
 
 def test_rejects_non_provider():
@@ -79,9 +79,10 @@ def test_rejects_builtin_names(reserved):
     class Shadow(_Provider):
         name = reserved
 
+    original = reg.get_provider(reserved)
     with pytest.raises(ValueError):
         reg.register_provider(Shadow())
-    assert reg.get_provider(reserved) is None
+    assert reg.get_provider(reserved) is original
 
 
 def test_reregistration_overwrites():

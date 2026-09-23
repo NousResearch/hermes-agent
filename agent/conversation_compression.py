@@ -3608,6 +3608,13 @@ class _CommitOutcome:
 
 
 def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbatim_tail: Optional[list]) -> Optional[int]:
+    """The in-place commit's cap; see :func:`held_archive_watermark`."""
+    return held_archive_watermark(agent._session_db, agent.session_id, watermark, messages, verbatim_tail)
+
+
+def held_archive_watermark(
+    session_db: Any, session_id: str, watermark: Optional[int], messages: list, verbatim_tail: Optional[list] = None,
+) -> Optional[int]:
     """The in-place archive watermark, capped at the newest durable row the compressor was handed.
 
     The lease watermark is the newest row in state.db, but a surface compacts the history it holds, and that
@@ -3644,7 +3651,7 @@ def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbat
     held = [rid for rid in ids if rid is not None]
     if not ids or ids[-1] is None or (newest_held := max(held)) >= watermark:
         return watermark
-    if agent._session_db.get_message_role(agent.session_id, newest_held) is None:
+    if session_db.get_message_role(session_id, newest_held) is None:
         return watermark
     return newest_held
 

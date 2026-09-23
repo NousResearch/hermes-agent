@@ -246,3 +246,26 @@ def test_patch_session_model_config_merge_and_delete(tmp_path: Path) -> None:
     db.patch_session_model_config(session_id, {})
 
 
+
+
+def test_prune_keeps_a_turn_another_surface_appended_after_load(tmp_path: Path) -> None:
+    """The prune commit rewrites the history this process holds. Another surface may have appended to the same
+    session since it was loaded (a Desktop session continued from Telegram); with no watermark the commit
+    archived that turn with the rest, as summarized away though no summary holds it. The display and search
+    still show it, but the model never sees it again."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_FOREIGN_TURN"
+    db.create_session(session_id, source="cli")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id, platform="cli")
+    _configure_pruning(agent)
+    held = db.get_resume_conversations(session_id)[0]  # what a resume restores: row ids included
+    foreign = "[from Telegram] the vault code is 7741"
+    db.append_message(session_id, "user", foreign)
+
+    _pruned, count = agent.context_compressor.prune_tool_results_only(held, current_tokens=120_000)
+
+    assert count >= 1
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live[-1] == foreign
+    assert sum(foreign in content for content in live) == 1

@@ -859,3 +859,29 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
     finally:
         legacy.close()
         db.close()
+
+
+def test_micro_compaction_keeps_a_turn_another_surface_appended_after_load(tmp_path):
+    """The micro-compaction commit rewrites the history this process holds. A turn another surface appended to
+    the same session since then was archived with the rest (no watermark), as summarized away though the rolling
+    summary never saw it. The display and search still show it, but the model never sees it again."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s", source="cli")
+    messages = _conversation(exchanges=8)
+    for msg in messages:
+        msg["_row_id"] = db.append_message("s", role=msg["role"], content=msg["content"])
+        msg[_DB_PERSISTED_MARKER] = True
+    foreign = "[from Telegram] the vault code is 7741"
+    db.append_message("s", "user", foreign)
+    cc = _compressor()
+    cc._session_db, cc._session_id = db, "s"
+
+    result = cc._micro_compact(messages)
+
+    assert len(_summary_markers(result)) == 1  # a pass ran
+    live = [str(m["content"]) for m in db.get_messages_as_conversation("s")]
+    assert live[-1] == foreign
+    assert sum(foreign in content for content in live) == 1

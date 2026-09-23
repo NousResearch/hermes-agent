@@ -3088,6 +3088,13 @@ export const en: Translations = {
     projectEmpty: 'No sessions yet',
     projectLoadFailed: 'Could not load sessions',
     noSessions: 'No sessions yet',
+    storageCorrupt: {
+      title: 'Session database is damaged',
+      body: (profiles: string) =>
+        `Hermes can't read all of the session history for ${profiles}. Chats missing from this list were not deleted; the file they are stored in is damaged.`,
+      action: 'Quit Hermes on this profile, then inspect the file without changing it, or restore a snapshot:',
+      guide: 'Recovery guide'
+    },
     noFilterMatches: 'No sessions match these filters',
     projects: {
       showAllSessions: 'Show all sessions',

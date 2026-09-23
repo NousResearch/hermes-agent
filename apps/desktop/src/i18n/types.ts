@@ -2609,6 +2609,12 @@ export interface Translations {
     projectEmpty: string
     projectLoadFailed: string
     noSessions: string
+    storageCorrupt: {
+      title: string
+      body: (profiles: string) => string
+      action: string
+      guide: string
+    }
     noFilterMatches: string
     projects: {
       showAllSessions: string

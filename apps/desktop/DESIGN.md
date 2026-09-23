@@ -358,6 +358,16 @@ so glass and message-bubble transparency do not reveal scrolling text.
   horizontal code/output boundaries may remain contained. Thinking previews
   follow new tokens only while near the bottom, preserving the user's reading
   position until they scroll back down.
+- **Transcript shape is a user setting, never a component branch.** Chat Layout
+  (Appearance) flips `<html>`'s `data-chat-bubbles="bubbles"` plus
+  `data-chat-bubble-tone`, and two `--chat-bubble-*` variables, all painted by
+  `store/chat-bubbles.ts`; every rule that answers them lives in `styles.css`.
+  No attribute (the default) is the document layout, so a user who never opens
+  the setting keeps exactly the paint they had. Bubbles reuse the existing
+  surfaces (`--ui-chat-bubble-background`, `--ui-stroke-tertiary`,
+  `--ui-bg-editor`, the `--user-bubble-keep` lever) and never clamp, clip, or
+  summarize: the prompt bubble keeps its sticky pin, its click-to-edit
+  composer, and its restore affordance, and a long message stays whole.
 - Composer status groups start collapsed except todos. Progress updates and queue
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain

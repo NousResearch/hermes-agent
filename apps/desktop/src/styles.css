@@ -1732,6 +1732,100 @@ body.guest-pointer-lock :is(webview, iframe) {
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 
+/* ------------------------------------------------------------ chat bubbles
+   Settings → Appearance → Chat Layout. The opt-in two-sided transcript: your
+   prompt on the right, the reply on the left, each with a small tail corner
+   pointing at its speaker. store/chat-bubbles.ts owns the state and paints one
+   root attribute plus two root variables, so this block is the ONLY place the
+   layout is defined — no component branches, no per-message props, and flipping
+   the setting repaints the whole transcript without a React render (the thread
+   virtualizes long conversations, which is why that matters).
+
+   Absent `data-chat-bubbles` = the document layout, so there is deliberately no
+   "document" rule here: a user who never opens the setting gets the paint they
+   always had, down to the byte.
+
+   Nothing here clamps or clips. A bubble is a surface, not a summary: a long
+   prompt or a long answer stays whole, and the user bubble keeps every
+   affordance it has in the document layout — it is still the button that opens
+   the inline edit composer, and that composer wears the same class, so it keeps
+   the same shape while being edited. (The one inherited cap is core's sticky
+   clamp on the pinned prompt, which releases the moment the prompt scrolls back
+   into its own place.) */
+
+:root[data-chat-bubbles='bubbles'] {
+  /* Fill families: Theme keeps the bubble the app already paints and mixes the
+     same seed toward the chat surface for the reply; Accent tints both from the
+     theme accent; Neutral keeps both on the neutral ladder. */
+  --chat-bubble-user-fill: var(--ui-chat-bubble-background);
+  --chat-bubble-reply-fill: color-mix(in srgb, var(--ui-chat-bubble-background) 64%, var(--ui-bg-editor));
+}
+
+:root[data-chat-bubbles='bubbles'][data-chat-bubble-tone='accent'] {
+  --chat-bubble-user-fill: color-mix(in srgb, var(--ui-accent) 16%, var(--ui-bg-editor));
+  --chat-bubble-reply-fill: color-mix(in srgb, var(--ui-accent) 7%, var(--ui-bg-editor));
+}
+
+:root[data-chat-bubbles='bubbles'][data-chat-bubble-tone='neutral'] {
+  --chat-bubble-user-fill: color-mix(in srgb, var(--ui-base) 9%, var(--ui-bg-editor));
+  --chat-bubble-reply-fill: color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-editor));
+}
+
+/* Your prompt: sized to its content, parked on the right, tail bottom-right.
+   The root stays the full-bleed sticky column it is — the pin is an affordance
+   of its own; only the bubble inside it moves and narrows.
+
+   Scoped to the bubble class, never to the root or to `data-role="user"`:
+   background-process notifications and agent-to-agent deliveries arrive on that
+   role (they are not human prompts) and share the root, so an `align-items` on
+   the root would shove a notification to the right edge too. `margin-left: auto`
+   on the bubble alone right-aligns the prompt inside the untouched column. */
+:root[data-chat-bubbles='bubbles'] .composer-human-message {
+  width: fit-content;
+  max-width: min(82%, 42rem);
+  margin-left: auto;
+  /* The fill lever is shared with the standalone Message Bubble row (see
+     store/user-bubble-transparency.ts): one transparency, applied once here —
+     hence the raw seed token above rather than --dt-user-bubble, which already
+     carries that lever. */
+  background-color: color-mix(in srgb, var(--chat-bubble-user-fill) var(--user-bubble-keep, 100%), transparent);
+  border-radius: var(--chat-bubble-radius, 1.125rem) var(--chat-bubble-radius, 1.125rem)
+    var(--chat-bubble-tail, 0.3125rem) var(--chat-bubble-radius, 1.125rem);
+}
+
+/* Hermes's reply: tail top-left, on its own surface, so the two speakers differ
+   by shape AND tone instead of by alignment alone. */
+:root[data-chat-bubbles='bubbles'] [data-slot='aui_assistant-message-root'] {
+  width: fit-content;
+  max-width: min(88%, 48rem);
+  align-self: flex-start;
+  box-sizing: border-box;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: var(--chat-bubble-tail, 0.3125rem) var(--chat-bubble-radius, 1.125rem)
+    var(--chat-bubble-radius, 1.125rem) var(--chat-bubble-radius, 1.125rem);
+  background-color: color-mix(in srgb, var(--chat-bubble-reply-fill) var(--user-bubble-keep, 100%), transparent);
+}
+
+/* Core indents reply prose by --message-text-indent so prose and tool rows share
+   one left edge in a full-width column. Inside a bubble the padding owns that
+   gutter, or the text floats off the bubble's own edge. */
+:root[data-chat-bubbles='bubbles']
+  [data-slot='aui_assistant-message-root']
+  [data-slot='aui_assistant-message-content'] {
+  padding-left: 0;
+}
+
+/* A row that only carries approval/activity scaffolding is not a message, so it
+   keeps the flat full-width shape instead of growing a bubble around one line. */
+:root[data-chat-bubbles='bubbles'] [data-slot='aui_assistant-message-root'][data-approval-activity-only] {
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  border-color: transparent;
+  background-color: transparent;
+}
+
 /* Stick-to-bottom owns scrollTop while following. Once escaped, native anchoring
    is safe and keeps sticky human edits from shoving the viewport; data-editing
    enables that path before React swaps in the inline editor. */

@@ -13,6 +13,7 @@ export type AppearanceSubpageId = (typeof APPEARANCE_SUBPAGES)[number]['id']
 const SETTING_SUBPAGES: Readonly<Record<string, AppearanceSubpageId>> = {
   'appearance.app-actions': 'window-layout',
   'appearance.backdrop': 'window-layout',
+  'appearance.chat-bubbles': 'chat-display',
   'appearance.embeds': 'chat-display',
   'appearance.hide-code-diffs': 'chat-display',
   'appearance.hide-thread-timeline': 'chat-display',

@@ -233,6 +233,26 @@ export function SectionHeadingSkeleton() {
   )
 }
 
+interface ControlRowProps {
+  children: ReactNode
+  label: string
+}
+
+/**
+ * A labelled control inside a row's sub-panel (Window Translucency's tint /
+ * fade / frost / area, Chat Layout's corners / color / fill). Short label on
+ * the left, control on the right — the shape the settings page uses whenever a
+ * row's `below` needs more than one control.
+ */
+export function ControlRow({ children, label }: ControlRowProps) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{label}</span>
+      {children}
+    </div>
+  )
+}
+
 export function ListRowSkeleton({ wide = false }: { wide?: boolean }) {
   return (
     <div className="@container">

@@ -190,6 +190,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.chatBubblesDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.chatBubbles}`,
+      keywords: ['bubble', 'bubbles', 'layout', 'chat', 'align', 'alignment', 'left', 'right', 'corner', 'radius'],
+      label: appearance.chatBubblesTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.chatBubbles, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.backdropDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.backdrop}`,

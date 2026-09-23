@@ -72,6 +72,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { appearanceSubpageForSetting, type AppearanceSubpageId } from './appearance-subpages'
+import { ChatBubbleSetting } from './chat-bubble-setting'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
@@ -879,6 +880,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               title={a.userBubbleTitle}
             />
           )}
+
+          {/* Chat Layout sits in the same subpage as the bubble lever above: in
+              the document layout that lever means "your one bubble", with
+              bubbles on it means "the bubbles", so the shape control belongs
+              beside it. */}
+          {show('chat-display') && <ChatBubbleSetting />}
 
           {show('window-layout') && (
             <ListRow

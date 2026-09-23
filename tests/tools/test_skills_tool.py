@@ -1206,23 +1206,39 @@ class TestCrossRootIdenticalCopiesResolve:
         assert "Ambiguous skill name 'sdlc-review'" in result["error"]
         assert len(result["matches"]) == 2
 
-    def test_identical_skill_md_with_drifted_support_files_still_refuses(self, tmp_path):
-        """A stale profile copy whose SKILL.md is unchanged but whose scripts drifted from the
-        mount is a different skill: collapsing it would serve and run the stale support files."""
+    def test_identical_copies_still_resolve_when_one_side_has_incidental_files(self, tmp_path):
+        """A copy that IS the same skill resolves even when its own scripts left machine-local
+        files behind (``__pycache__``, ``.DS_Store``): counting those as content would restore the
+        refusal and re-kill the workers this collapse exists to keep alive."""
         local_dir, mount = self._two_roots_with_one_skill(
             tmp_path, local_body="IDENTICAL COPY", mount_body="IDENTICAL COPY")
-        for root, script in ((local_dir, "echo stale"), (mount, "echo current")):
-            scripts = root / "devops" / "sdlc-review" / "scripts"
-            scripts.mkdir()
-            (scripts / "run.sh").write_text(script)
+        cached = local_dir / "devops" / "sdlc-review" / "scripts" / "__pycache__"
+        cached.mkdir(parents=True)
+        (cached / "helper.cpython-312.pyc").write_bytes(b"\x00\x01cached")
+        (local_dir / "devops" / "sdlc-review" / ".DS_Store").write_bytes(b"\x00finder")
 
         p1, p2 = self._patch_dirs(local_dir, [mount])
         with p1, p2:
             result = json.loads(skill_view("sdlc-review"))
 
-        assert result["success"] is False, result
-        assert "Ambiguous skill name 'sdlc-review'" in result["error"]
-        assert len(result["matches"]) == 2
+        assert result["success"] is True, result
+        assert result["skill_dir"] == str(local_dir / "devops" / "sdlc-review")
+
+    def test_legacy_flat_copy_of_the_same_skill_still_resolves(self, tmp_path):
+        """A migrated-but-uncleaned tree holds ``<root>/x.md`` beside ``<root>/x/SKILL.md``. Both
+        are the same skill, so the SKILL.md copy wins by rank instead of the pair refusing."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        _make_skill(local_dir, "arxiv", body="IDENTICAL COPY")
+        (local_dir / "arxiv.md").write_text(
+            (local_dir / "arxiv" / "SKILL.md").read_text(), encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir)
+        with p1, p2:
+            result = json.loads(skill_view("arxiv"))
+
+        assert result["success"] is True, result
+        assert Path(result["path"]).parts == ("arxiv", "SKILL.md")
 
     def test_one_differing_copy_among_identical_ones_still_refuses(self, tmp_path):
         """All candidates must be provably the same skill: a third, differing copy keeps the

@@ -9,6 +9,7 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 from __future__ import annotations
 
 import contextvars
+import collections.abc
 import copy
 import gzip
 import json
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 from hermes_cli import __version__ as _HERMES_VERSION
+import hermes_cli.models_catalog_static as _models_catalog_static
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.models_catalog_static import (
     CANONICAL_PROVIDERS,
@@ -703,7 +705,49 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
 # ---------------------------------------------------------------------------
 
 # All provider IDs and aliases valid on the left of the ``provider:model`` syntax.
-_KNOWN_PROVIDER_NAMES: set[str] = set(_PROVIDER_LABELS) | set(_PROVIDER_ALIASES) | {"openrouter", "custom"}
+class _LazyKnownProviderNames(collections.abc.Set):
+    """Set of known provider names whose first read triggers plugin discovery.
+
+    Deliberately NOT a ``set`` subclass. CPython's ``set_update_internal``
+    takes a ``PyAnySet_Check`` fast path that copies a real set's hash table
+    directly, so ``set(x)`` / ``frozenset(x)`` / ``s.update(x)`` / ``s | x``
+    NEVER call a subclass's ``__iter__`` — the lazy trigger would be silently
+    skipped and the copy would miss every plugin provider. ``dict`` does not
+    have this problem: ``dict_merge`` checks that ``tp_iter`` is unchanged.
+    """
+
+    __slots__ = ("_names",)
+
+    def __init__(self, names) -> None:
+        self._names: set[str] = set(names)
+
+    def _get(self) -> set[str]:
+        _models_catalog_static._ensure_canonical_extended()
+        return self._names
+
+    def __contains__(self, item) -> bool:
+        return item in self._get()
+
+    def __iter__(self):
+        return iter(self._get())
+
+    def __len__(self) -> int:
+        return len(self._get())
+
+    def __repr__(self) -> str:
+        return repr(self._get())
+
+    def add(self, item: str) -> None:
+        self._names.add(item)
+
+    def copy(self) -> set[str]:
+        return set(self._get())
+
+
+_KNOWN_PROVIDER_NAMES: collections.abc.Set[str] = _LazyKnownProviderNames(
+    set(dict.keys(_PROVIDER_LABELS)) | set(_PROVIDER_ALIASES) | {"openrouter", "custom"}
+)
+_models_catalog_static._KNOWN_PROVIDER_NAMES_HOOK = _KNOWN_PROVIDER_NAMES.add
 
 
 _CONFIG_ERRORS = (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError)

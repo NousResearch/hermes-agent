@@ -13,7 +13,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import AbstractSet, Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
 
 import yaml
@@ -67,18 +67,64 @@ def _resolve_requests_verify(base_url: str = "") -> bool | str:
     return True
 
 
-# Snapshot for callers inspecting this constant; prefix routing queries the registry live.
+#
+# Built LAZILY on first read: ``providers.list_providers()`` imports every
+# model-provider plugin, and plugins routinely import ``hermes_cli.models``
+# (which imports this module) at their own import time.  Materialising this
+# set during import ran plugin discovery inside a partially-initialised
+# import chain, so those plugins raised ``ImportError: cannot import name
+# ... from partially initialized module``.
 try:
     from providers import list_providers as _list_providers
 except Exception:
     def _list_providers():
         return []
 
-_PROVIDER_PREFIXES: frozenset[str] = frozenset(
-    value.lower()
-    for profile in _list_providers()
-    for value in (profile.name, *profile.aliases)
-)
+
+class _LazyProviderPrefixes(AbstractSet):
+    """Set of provider names+aliases, materialised on first read."""
+
+    __slots__ = ("_resolved",)
+
+    def __init__(self) -> None:
+        self._resolved: frozenset[str] | None = None
+
+    def _get(self) -> frozenset[str]:
+        if self._resolved is None:
+            try:
+                from providers import discovery_in_progress
+                if discovery_in_progress():
+                    # Registry is half-populated (a plugin being imported by
+                    # discovery is reading us). Serve what exists, cache
+                    # nothing, so the first read after discovery is complete.
+                    return frozenset()
+            except Exception:
+                pass
+            try:
+                self._resolved = frozenset(
+                    value.lower()
+                    for profile in _list_providers()
+                    for value in (profile.name, *profile.aliases)
+                )
+            except Exception:
+                return frozenset()
+        return self._resolved
+
+    def __contains__(self, item) -> bool:
+        return item in self._get()
+
+    def __iter__(self):
+        return iter(self._get())
+
+    def __len__(self) -> int:
+        return len(self._get())
+
+    def __repr__(self) -> str:
+        return repr(self._get())
+
+
+_PROVIDER_PREFIXES: AbstractSet[str] = _LazyProviderPrefixes()
+
 _OLLAMA_TAG_PATTERN = re.compile(r"^(\d+\.?\d*b|latest|stable|q\d|fp?\d|instruct|chat|coder|vision|text)", re.IGNORECASE)
 # Tailscale CGNAT (RFC 6598): `ipaddress.is_private` excludes it, yet Ollama
 # reached over Tailscale must count as local (timeout auto-bumps).
@@ -500,14 +546,82 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "ollama.com": "ollama-cloud",
 }
 
-# Auto-extend with provider-profile hostnames not already mapped.
-try:
-    for _pp in _list_providers():
-        _host = _pp.get_hostname()
-        if _host and _host not in _URL_TO_PROVIDER:
-            _URL_TO_PROVIDER[_host] = _pp.name
-except Exception:
-    pass
+#
+# LAZY (first read), for the same reason as _PROVIDER_PREFIXES above: calling
+# _list_providers() at import time imports every model-provider plugin while
+# this module (and whatever imported it) is still partially initialised.
+_url_map_extended = False
+
+
+def _extend_url_map_from_plugins() -> None:
+    global _url_map_extended
+    if _url_map_extended:
+        return
+    try:
+        from providers import discovery_in_progress
+        if discovery_in_progress():
+            # Registry half-populated; serve the current map without latching.
+            return
+    except Exception:
+        pass
+    _url_map_extended = True
+    try:
+        for _pp in _list_providers():
+            _host = _pp.get_hostname()
+            if _host and not dict.__contains__(_URL_TO_PROVIDER, _host):
+                dict.__setitem__(_URL_TO_PROVIDER, _host, _pp.name)
+    except Exception:
+        pass
+
+
+class _LazyUrlToProvider(dict):
+    """``dict`` whose first read folds in plugin-derived hostnames."""
+
+    __slots__ = ()
+
+    def __iter__(self):
+        _extend_url_map_from_plugins()
+        return dict.__iter__(self)
+
+    def __len__(self):
+        _extend_url_map_from_plugins()
+        return dict.__len__(self)
+
+    def __getitem__(self, key):
+        _extend_url_map_from_plugins()
+        return dict.__getitem__(self, key)
+
+    def __contains__(self, key):
+        _extend_url_map_from_plugins()
+        return dict.__contains__(self, key)
+
+    def __repr__(self):
+        _extend_url_map_from_plugins()
+        return dict.__repr__(self)
+
+    def get(self, key, default=None):
+        _extend_url_map_from_plugins()
+        return dict.get(self, key, default)
+
+    def keys(self):
+        _extend_url_map_from_plugins()
+        return dict.keys(self)
+
+    def values(self):
+        _extend_url_map_from_plugins()
+        return dict.values(self)
+
+    def items(self):
+        _extend_url_map_from_plugins()
+        return dict.items(self)
+
+    def copy(self):
+        _extend_url_map_from_plugins()
+        return dict(dict.items(self))
+
+
+_URL_TO_PROVIDER = _LazyUrlToProvider(_URL_TO_PROVIDER)
+
 
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:

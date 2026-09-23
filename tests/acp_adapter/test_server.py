@@ -748,3 +748,51 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+def test_replayed_history_re_emits_plan_updates_for_the_registered_tool_name():
+    """A resumed session must replay its plan, not just live turns.
+
+    ``_history_replay_updates`` keyed the plan channel on the literal ``todo``.
+    e16ad33a9d renamed the tool to ``todo_list``, so transcript rows written
+    since carry the new name and the equality never holds: reopening a session
+    in an editor replays the conversation with its plan silently missing, which
+    is the same defect the live path had, one file over.
+
+    The name comes from the registry so a future rename fails here too.
+    """
+    import json
+
+    from acp_adapter.server import _history_replay_updates
+    from tools.registry import registry
+    import tools.todo_tool  # noqa: F401  — registers the tool
+
+    tool_name = next(
+        name for name in registry.get_all_tool_names() if name.startswith("todo")
+    )
+
+    todos = [{"content": "ship it", "status": "in_progress"}]
+    history = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "function": {"name": tool_name, "arguments": json.dumps({"todos": todos})},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "tool_name": tool_name,
+            "content": json.dumps({"todos": todos}),
+        },
+    ]
+
+    updates = list(_history_replay_updates(history))
+
+    assert any(type(u).__name__ == "AgentPlanUpdate" for u in updates), (
+        f"replaying a {tool_name} call must re-emit its plan; "
+        f"got {[type(u).__name__ for u in updates]}"
+    )

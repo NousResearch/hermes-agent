@@ -152,6 +152,36 @@ class TestStepCallback:
         assert [entry.status for entry in plan.entries] == ["completed", "in_progress", "completed"]
         assert [entry.priority for entry in plan.entries] == ["medium", "medium", "medium"]
 
+    def test_plan_update_uses_the_registered_tool_name(self, mock_conn, event_loop_fixture):
+        """The plan channel must key off the name the runtime actually emits.
+
+        ``todo`` was the registered name until e16ad33a9d renamed it to
+        ``todo_list``; the ACP adapter was not updated, so every native plan
+        update stopped firing. Sourcing the name from the registry rather than
+        a literal keeps this test honest through a future rename.
+        """
+        from collections import deque
+
+        from tools.registry import registry
+        import tools.todo_tool  # noqa: F401  — registers the tool
+
+        tool_name = next(
+            name for name in registry.get_all_tool_names() if name.startswith("todo")
+        )
+
+        tool_call_ids = {tool_name: deque(["tc-todo"])}
+        loop = event_loop_fixture
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
+        todo_result = '{"todos":[{"id":"a","content":"Do the thing","status":"pending"}]}'
+
+        with patch("acp_adapter.events._send_update") as mock_send:
+            cb(1, [{"name": tool_name, "result": todo_result}])
+
+        updates = [call.args[3] for call in mock_send.call_args_list]
+        assert "plan" in [getattr(update, "session_update", None) for update in updates], (
+            f"no plan update emitted for the registered tool name {tool_name!r}"
+        )
+
 
 
 

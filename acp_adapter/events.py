@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 # as terminal entries so the client's full-list replacement doesn't drop them.
 _PLAN_STATUS = {"pending": "pending", "in_progress": "in_progress", "completed": "completed", "cancelled": "completed"}
 
+# Tool names whose result carries todo state. ``todo`` was the registered name
+# until e16ad33a9d renamed it to ``todo_list``; both are accepted so a session
+# replayed from an older transcript still produces a plan, and so a future
+# rename degrades to "no plan" rather than silently breaking the channel.
+_PLAN_TOOL_NAMES = frozenset({"todo_list", "todo"})
+
 
 def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
     """Translate Hermes' todo tool result into ACP's native plan update.
@@ -291,7 +297,7 @@ def make_step_cb(
                 ))
                 if not queue:
                     tool_call_ids.pop(tool_name, None)
-            if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
+            if tool_name in _PLAN_TOOL_NAMES and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
                 _send_update(conn, session_id, loop, plan_update)
 
     return _step

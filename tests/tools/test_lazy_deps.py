@@ -326,12 +326,9 @@ class TestRefreshActiveFeatures:
 
 
 class TestInstallSpecs:
-    def test_uv_tier_runs_from_the_checkout_so_exclude_newer_applies(self, monkeypatch, tmp_path):
-        """uv reads ``[tool.uv] exclude-newer`` from the cwd project only; a plugin-dep install launched from
-        $HOME or a gateway service must still run under the checkout's quarantine, so the uv invocation
-        carries the checkout root as cwd (#L1-3 of the 2026-09 plugin audit)."""
+    @staticmethod
+    def _capture_uv(monkeypatch):
         import subprocess
-        from pathlib import Path
 
         calls = []
 
@@ -343,17 +340,47 @@ class TestInstallSpecs:
         monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
         monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
         monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **kw: None)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        return calls
+
+    def test_plugin_dependency_installs_do_not_inherit_hermes_exclude_newer(self, monkeypatch, tmp_path):
+        """Plugins follow their own dependency-security policy (maintainer ruling): a plugin's
+        ``python_dependencies`` install must not resolve under the checkout's ``[tool.uv] exclude-newer``
+        quarantine, from any cwd — so uv runs with ``--no-config`` and never from the checkout root."""
+        from pathlib import Path
+
+        calls = self._capture_uv(monkeypatch)
+        project_root = Path(ld.__file__).resolve().parent.parent
+        monkeypatch.chdir(project_root)
+
+        result = ld.install_specs(["hindsight-client>=0.10.1,<1"], constraints=["httpx>=0.28,<1"])
+
+        assert result.ok
+        (cmd, kw), = calls
+        assert cmd[:3] == ["/fake/uv", "pip", "install"]
+        assert "--no-config" in cmd
+        assert kw.get("cwd") is None
+        assert "--constraint" in cmd  # core ranges still bound the plugin's resolution
+
+    def test_hermes_own_lazy_installs_keep_the_checkout_quarantine(self, monkeypatch, tmp_path):
+        """Hermes's OWN optional deps (LAZY_DEPS via ``ensure``) stay under the 14-day quarantine even when
+        launched from ``$HOME`` or a service: the uv tier runs from the checkout root with its config."""
+        from pathlib import Path
+
+        calls = self._capture_uv(monkeypatch)
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setitem(ld.LAZY_DEPS, "core.probe", ("requests>=2.32,<3",))
+        monkeypatch.setattr(ld, "feature_missing", lambda feature: ("requests>=2.32,<3",) if not calls else ())
+        monkeypatch.setattr(ld, "_unsupported_feature_reason", lambda feature: "")
         project_root = Path(ld.__file__).resolve().parent.parent
         assert (project_root / "pyproject.toml").is_file()
 
-        result = ld._venv_pip_install(("requests==2.32.0",))
+        ld.ensure("core.probe", prompt=False)
 
-        assert result.success
         (cmd, kw), = calls
         assert cmd[:3] == ["/fake/uv", "pip", "install"]
+        assert "--no-config" not in cmd
         assert kw.get("cwd") == str(project_root)
-
 
     def test_blank_specs_are_ignored(self, monkeypatch):
         monkeypatch.setattr(

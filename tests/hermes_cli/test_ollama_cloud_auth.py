@@ -243,7 +243,7 @@ class TestSwitchModelDirectAliasOverride:
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
 
         monkeypatch.setattr(ms, "resolve_alias",
-            lambda raw, prov: ("custom", "qwen3.5:397b", "qwen"))
+            lambda raw, prov, *_: ("custom", "qwen3.5:397b", "qwen"))
 
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -270,7 +270,7 @@ class TestSwitchModelDirectAliasOverride:
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
         monkeypatch.setattr(ms, "resolve_alias",
-            lambda raw, prov: ("custom", "local-model", "local"))
+            lambda raw, prov, *_: ("custom", "local-model", "local"))
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
@@ -360,6 +360,41 @@ class TestSwitchModelDirectAliasOverride:
 
         assert result.success, result.error_message
         assert result.target_provider == "custom:corp-llm"
+        assert result.resolved_via_alias == "corp-alias"
+        assert result.base_url == "https://corp.example.com/v2"
+        assert result.api_key == "sk-corp-alias"
+
+    def test_implicit_switch_prefers_alias_of_current_legacy_custom_provider(self, monkeypatch):
+        """Without --provider the current provider still owns a shared model id: on
+        ``custom:corp-llm`` the alias naming ``corp-llm`` wins over another provider's alias."""
+        import os
+        from pathlib import Path
+
+        import hermes_cli.model_switch as ms
+        from hermes_cli.config import load_config
+        from hermes_cli.model_switch import DirectAlias
+
+        (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+            "model:\n  provider: custom:corp-llm\n  default: old-model\n"
+            "providers:\n  provider-a:\n    base_url: https://api-a.example.com/v1\n"
+            "custom_providers:\n  - name: corp-llm\n"
+            "    base_url: https://corp.example.com/v1\n    api_key: sk-corp\n")
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {
+            "a-alias": DirectAlias("shared-model", "provider-a", "https://alias-host.example.com/v1",
+                                   api_key="sk-alias-host"),
+            "corp-alias": DirectAlias("shared-model", "corp-llm", "https://corp.example.com/v2",
+                                      api_key="sk-corp-alias"),
+        })
+        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
+            lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
+        cfg = load_config()
+
+        result = ms.switch_model(
+            "shared-model", "custom:corp-llm", "old-model",
+            current_base_url="https://corp.example.com/v1", current_api_key="sk-corp",
+            user_providers=cfg["providers"], custom_providers=cfg.get("custom_providers"))
+
+        assert result.success, result.error_message
         assert result.resolved_via_alias == "corp-alias"
         assert result.base_url == "https://corp.example.com/v2"
         assert result.api_key == "sk-corp-alias"

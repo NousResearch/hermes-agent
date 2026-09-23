@@ -855,12 +855,14 @@ def get_authenticated_provider_slugs(
 
 
 def _resolve_alias_fallback(
-    raw_input: str, authenticated_providers: list[str] = ()) -> Optional[tuple[str, str, str]]:
+    raw_input: str, authenticated_providers: list[str] = (), user_providers: Optional[dict] = None,
+    custom_providers: Optional[list] = None) -> Optional[tuple[str, str, str]]:
     """Resolve an alias on the user's authenticated providers (``("openrouter", "nous")`` when none given).
 
     AmbiguousAliasError propagates: the alias exists on this provider, the user just has to
     choose — trying the next provider would silently switch them somewhere they didn't ask for."""
-    results = (resolve_alias(raw_input, p) for p in authenticated_providers or ("openrouter", "nous"))
+    results = (resolve_alias(raw_input, p, user_providers, custom_providers)
+               for p in authenticated_providers or ("openrouter", "nous"))
     return next((r for r in results if r is not None), None)
 
 
@@ -1267,7 +1269,7 @@ def _route_alias_fallback(st: _Switch, key: str) -> Optional[ModelSwitchResult]:
         current_provider=st.current_provider, user_providers=st.user_providers, custom_providers=st.custom_providers,
     )
     try:
-        fallback_result = _resolve_alias_fallback(st.raw_input, authed)
+        fallback_result = _resolve_alias_fallback(st.raw_input, authed, st.user_providers, st.custom_providers)
     except AmbiguousAliasError as err:
         return st.fail(_ambiguous_alias_message(err))
     if fallback_result is None:
@@ -1359,7 +1361,7 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
         st.target_provider, st.new_model, st.resolved_alias = "moa", moa_match, ""
     else:
         try:
-            alias_result = resolve_alias(raw_input, current_provider)
+            alias_result = resolve_alias(raw_input, current_provider, st.user_providers, st.custom_providers)
         except AmbiguousAliasError as err:
             return st.fail(_ambiguous_alias_message(err))
         if alias_result is not None:

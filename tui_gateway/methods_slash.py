@@ -55,6 +55,67 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
     return format_dispatch_note(result, arg or "")
 
 
+def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> str:
+    """Dispatch /refine against the live session's agent: spawn the background
+    memory/skills review directly instead of forking the isolated slash worker."""
+    if session is None:
+        return "Refine unavailable (no session)."
+    if session.get("running"):
+        return "Agent is running — wait for the turn to finish, then /refine."
+    if _session_uses_compute_host(session):
+        command = "/refine" + (f" {arg}" if arg.strip() else "")
+        try:
+            ack = _send_compute_host_control(
+                sid,
+                route_name="slash.refine",
+                command=command,
+                wait=True,
+            )
+        except Exception as exc:
+            return f"compute-host slash.refine failed: {exc}"
+        if ack.get("type") in {"control.error", "error"}:
+            return str(ack.get("message") or "compute-host slash.refine failed")
+        _apply_compute_host_metadata_mirror(session, ack)
+        return str(ack.get("output") or "")
+    agent = session.get("agent")
+    if agent is None:
+        return "Nothing to refine yet — send a message first."
+
+    snapshot = []
+    transcript_ref = str(session.get("session_key") or "")
+    if transcript_ref:
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    snapshot = db.get_messages_as_conversation(
+                        transcript_ref, include_ancestors=True
+                    )
+        except Exception:
+            logger.debug("failed to load persisted /refine transcript", exc_info=True)
+    if not snapshot:
+        with session["history_lock"]:
+            snapshot = list(session.get("history", []))
+    if not snapshot:
+        return "Nothing to refine yet — the conversation is empty."
+
+    review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
+    try:
+        agent._spawn_background_review(
+            messages_snapshot=list(snapshot),
+            review_memory=True,
+            review_skills=review_skills,
+            focus=arg.strip() or None,
+            explicit=True,
+        )
+    except Exception as exc:
+        return f"/refine failed to start: {exc}"
+    tail = f" (focus: {arg.strip()})" if arg.strip() else ""
+    return (
+        f"⚗ Reviewing this conversation in the background{tail} — "
+        "any memory/skill updates will be reported when done."
+    )
+
+
 def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
     agent = session.get("agent")
     usage = _session_usage_snapshot(session)
@@ -213,6 +274,7 @@ _LIVE_SLASH_OUTPUT = {
     "review": (None, _format_live_review_output),
     "history": ("No conversation history yet.", _format_live_history_output),
     "prompt": (_NO_AGENT, _format_live_prompt_output),
+    "refine": (None, _format_live_refine_output),
     "status": (None, _format_live_status_output),
     "context": ("Conversation is empty (no messages yet).", _format_live_context_output),
     "tools": ("No tools available.", _format_live_tools_output),

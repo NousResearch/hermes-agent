@@ -1707,10 +1707,23 @@ class GatewayAdapterLifecycleMixin:
         is consulted while allowlist reads stay under the transport home.
 
         Without this an inline-button caller approved only in the routed profile's pairing store was denied
-        (#86296), because the adapter's callback source was never route-stamped.
+        (#86296), because the adapter's callback source was never route-stamped. A secondary-owned bot's
+        callback runs outside the profile runtime scope (built at configure time, invoked from the
+        adapter's event loop), so it re-enters the owning profile's scope per call — the gate's scoped
+        env read otherwise falls back to os.environ (the default profile's env) and denies the
+        secondary's own allowlisted callers (#120639).
         """
         from gateway.run import get_hermes_home
         transport_home = Path(get_hermes_home()) if self._multiplex_on() and profile_name is None else None
+        # Prebuild the secondary's secret scope at configure time so entering it per callback never
+        # touches the adapter event loop with file IO; an unresolvable profile home keeps the
+        # credential-reads-fail-closed behavior of every other secondary handler.
+        secondary_scope = None
+        if profile_name:
+            profile_home = self._routed_profile_home(profile_name)
+            if profile_home is not UNRESOLVED_PROFILE_HOME:
+                from agent.secret_scope import build_profile_secret_scope
+                secondary_scope = (profile_home, build_profile_secret_scope(profile_home))
 
         def check(
             user_id: str, chat_type: Optional[str] = None, chat_id: Optional[str] = None, *,
@@ -1731,7 +1744,13 @@ class GatewayAdapterLifecycleMixin:
             if adapter is not None:
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
-                return self._is_user_authorized(source)
+                if secondary_scope is None:
+                    return self._is_user_authorized(source)
+                # The cold-path message handler authorizes under ``_profile_runtime_scope``; a
+                # callback must read the same allowlist scope, not ambient os.environ.
+                from gateway.run import _profile_runtime_scope
+                with _profile_runtime_scope(secondary_scope[0], secondary_scope[1]):
+                    return self._is_user_authorized(source)
             # Canonicalize FIRST (callback sources never went through ``build_source``): the routed
             # profile's pairing store is consulted, allowlists read under the transport home.
             if self._canonicalize(source, primary_home=transport_home) is None:

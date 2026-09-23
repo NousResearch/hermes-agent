@@ -110,6 +110,25 @@ def test_bot_sender_reaches_allow_bots_policy_through_callback(mux_home):
         assert tg._is_user_authorized_from_message(msg(4343, False)) is False
 
 
+def test_secondary_owned_callback_reads_own_profile_allowlist(mux_home):
+    """#120639: a secondary profile's own bot authorizes inline-button callers
+    against the OWNING profile's allowlist — the same ``.env`` scope the
+    cold-path message handler reads — even though the callback fires outside
+    any profile runtime scope, straight off the adapter's event loop."""
+    runner = _runner(mux_home)
+    (mux_home / "profiles" / "secondary" / ".env").write_text("TELEGRAM_ALLOWED_USERS=555\n")
+    tg = _telegram(runner)
+    tg._hermes_profile_name = "secondary"
+    runner._profile_adapters = {"secondary": {Platform.TELEGRAM: tg}}
+    tg.set_authorization_check(
+        runner._make_adapter_auth_check(Platform.TELEGRAM, profile_name="secondary")
+    )
+
+    # No ambient profile scope: the adapter event loop invokes the callback bare.
+    assert tg._is_callback_user_authorized("555", chat_id="111", chat_type="private") is True
+    assert tg._is_callback_user_authorized("999", chat_id="111", chat_type="private") is False
+
+
 def test_slack_interactive_auth_prefers_wired_profile_check(mux_home, monkeypatch):
     """#72657: a multiplexed Slack adapter's button gate resolves through the
     wired ``_make_adapter_auth_check`` for its own profile; the DEFAULT

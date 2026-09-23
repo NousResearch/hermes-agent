@@ -1,12 +1,12 @@
 """Regression for #120169: updater probes must not strand venv holders."""
 
 import subprocess
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import update_cmd, update_cmd_deps, update_cmd_windows
+from hermes_cli import main as cli_main
+from hermes_cli import update_cmd_deps, update_cmd_windows
 
 
 def test_pip_probe_and_bootstrap_are_bounded_and_fail_closed(tmp_path):
@@ -20,7 +20,7 @@ def test_pip_probe_and_bootstrap_are_bounded_and_fail_closed(tmp_path):
             return subprocess.CompletedProcess(argv, 1, "", "pip missing")
         return None
 
-    with patch.object(update_cmd, "PROJECT_ROOT", tmp_path), patch.object(
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
         update_cmd_deps, "bounded_probe_run", side_effect=run
     ):
         with pytest.raises(subprocess.TimeoutExpired):
@@ -30,7 +30,7 @@ def test_pip_probe_and_bootstrap_are_bounded_and_fail_closed(tmp_path):
     ]
     assert all(kwargs["timeout"] > 0 and kwargs["raise_on_spawn_failure"] for _, kwargs in calls)
 
-    with patch.object(update_cmd, "PROJECT_ROOT", tmp_path), patch.object(
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
         update_cmd_deps, "bounded_probe_run", return_value=None
     ) as bounded:
         with pytest.raises(subprocess.TimeoutExpired):
@@ -43,7 +43,7 @@ def test_refusal_identifies_only_exact_pip_probe_from_this_venv(tmp_path):
     own = f'C:\\runtime\\python.exe "{pip}" --version'
     foreign = 'C:\\runtime\\python.exe C:\\other\\venv\\Scripts\\pip.exe --version'
     extra = own + " --other"
-    with patch.object(update_cmd, "PROJECT_ROOT", tmp_path):
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path):
         message = update_cmd_windows._format_venv_python_holders_message([
             (100, "python.exe", own), (101, "python.exe", foreign), (102, "python.exe", extra)
         ])

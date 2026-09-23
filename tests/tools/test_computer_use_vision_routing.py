@@ -190,6 +190,7 @@ class TestModuleSurface:
 
     @pytest.mark.parametrize("name", [
         "_explicit_aux_vision_override",
+        "_profile_vetoes_tool_result_media",
         "_provider_accepts_multimodal_tool_result",
     ])
     def test_internal_helpers_are_addressable(self, name):
@@ -198,6 +199,39 @@ class TestModuleSurface:
 
         assert hasattr(vision_routing, name)
         assert callable(getattr(vision_routing, name))
+
+
+class TestProfileVetoOutranksUserDeclaredVision:
+    """``model.supports_vision`` describes the model's eyes; ``supports_vision_tool_messages=False`` describes
+    the provider's tool-result transport. Declaring the first says nothing about the second, so the veto has to
+    survive the override — otherwise the multimodal envelope 400s every turn and the image never lands in
+    context at all (#89981, the xiaomi/MiMo "text is not set" loop)."""
+
+    def test_user_declared_true_does_not_defeat_the_profile_veto(self):
+        from tools.computer_use import vision_routing
+
+        cfg = {"model": {"supports_vision": True}}
+        with patch("agent.image_routing._supports_vision_override", return_value=True), \
+             patch("tools.vision_tools._profile_rejects_tool_media", return_value=True):
+            assert vision_routing.should_route_capture_to_aux_vision("xiaomi", "mimo-v2.5", cfg) is True
+
+    def test_user_declared_true_still_wins_without_a_veto(self):
+        """The escape hatch is intact: with no transport veto, a declared True keeps the native envelope even
+        when the catalog has never heard of the model."""
+        from tools.computer_use import vision_routing
+
+        cfg = {"model": {"supports_vision": True}}
+        with patch("agent.image_routing._supports_vision_override", return_value=True), \
+             patch("tools.vision_tools._profile_rejects_tool_media", return_value=False), \
+             patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert vision_routing.should_route_capture_to_aux_vision("custom-vlm", "my-local-vlm", cfg) is False
+
+    def test_user_declared_false_is_unchanged(self):
+        from tools.computer_use import vision_routing
+
+        cfg = {"model": {"supports_vision": False}}
+        with patch("agent.image_routing._supports_vision_override", return_value=False):
+            assert vision_routing.should_route_capture_to_aux_vision("anthropic", "claude-opus-4", cfg) is True
 
 
 class TestGateAgreementWithVisionAnalyze:

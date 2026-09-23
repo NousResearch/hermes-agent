@@ -6,11 +6,13 @@ decides: multimodal envelope, or pre-analyse via aux vision so the main model on
 Decision order (mirrors ``vision_analyze``):
 1. ``auxiliary.vision`` explicitly configured (provider not ""/"auto", or model / base_url set) → aux routing; users
    who pay for a vision model want it used.
-2. User-declared ``supports_vision`` for the active route (escape hatch for custom/local VLMs absent from models.dev)
+2. The provider profile's ``supports_vision_tool_messages=False`` veto → aux routing, even against a user-declared
+   ``supports_vision: true``: that setting describes the MODEL's eyes, never the provider's tool-result transport.
+3. User-declared ``supports_vision`` for the active route (escape hatch for custom/local VLMs absent from models.dev)
    → honour it (True → multimodal).
-3. The shared ``vision_analyze`` gate (profile veto, then provider tool-result media OR catalog vision) says yes →
+4. The shared ``vision_analyze`` gate (profile veto, then provider tool-result media OR catalog vision) says yes →
    multimodal — the same predicate, so the lane never depends on which tool asked.
-4. Everything else (non-vision model, provider rejecting multimodal tool results, lookup failure) → aux routing.
+5. Everything else (non-vision model, provider rejecting multimodal tool results, lookup failure) → aux routing.
 
 Fails *closed* toward aux routing when metadata is missing or ambiguous: a screenshot sent to a model that cannot read
 it is a hard failure, while aux routing costs one extra LLM call and yields a usable description.
@@ -55,6 +57,19 @@ def _provider_accepts_multimodal_tool_result(provider: str, model: str, cfg: Opt
         return None
     return bool(_accepts_tool_result_images(provider, model, cfg))
 
+def _profile_vetoes_tool_result_media(provider: str, model: str) -> bool:
+    """The provider profile's hard ``supports_vision_tool_messages=False`` veto (#89981: xiaomi/MiMo answers a
+    list-type tool-result with 400 "text is not set"). False on import failure — the veto only ever adds aux
+    routing, so an unavailable lookup must not invent one."""
+    if not provider:
+        return False
+    try:
+        from tools.vision_tools import _profile_rejects_tool_media
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use vision_routing: profile veto lookup failed: %s", exc)
+        return False
+    return bool(_profile_rejects_tool_media(provider, model))
+
 def should_route_capture_to_aux_vision(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
     """True iff the screenshot should be pre-analysed via aux vision; False keeps the multimodal envelope. *provider* is
     the lower-case canonical id, *model* the slug sent to the provider, *cfg* the loaded ``config.yaml`` dict (or None).
@@ -67,8 +82,15 @@ def should_route_capture_to_aux_vision(provider: str, model: str, cfg: Optional[
     if _explicit_aux_vision_override(cfg):
         return True
     user_declared = _lookup_user_declared_supports_vision(provider, model, cfg)
-    if isinstance(user_declared, bool):  # True → multimodal, False → aux
-        return not user_declared
+    if user_declared is False:
+        return True
+    # The profile veto is about TRANSPORT, ``supports_vision`` about the model's eyes. A user who declares the
+    # latter has said nothing about the former, so the veto outranks the override: otherwise the envelope 400s
+    # every turn and the image never enters context at all (#89981).
+    if _profile_vetoes_tool_result_media(provider, model):
+        return True
+    if user_declared is True:
+        return False
     # The shared gate already folds the capability lookup in; demanding a second `is True` here made
     # the two lanes disagree for whitelisted providers whose model the catalog does not know.
     return not _provider_accepts_multimodal_tool_result(provider, model, cfg)

@@ -2,7 +2,9 @@
 
 Real: ``InProcessCronScheduler.start`` (the gateway's ticker loop: startup recovery, tick, heartbeat
 bookkeeping), ``cron.scheduler.tick`` / due scan / pending slots / fire claims + heartbeat /
-executions ledger / delivery routing / ``mark_job_run``, a second OS process sharing HERMES_HOME.
+executions ledger / delivery routing / ``mark_job_run``, a second OS process sharing HERMES_HOME
+(its ticker races the in-process one for every tick; the tick lock admits one). Fire-claim
+contention between two OS processes is ``test_two_replicas_contend_for_every_fire``.
 Fake: the agent (``cron.scheduler.run_job``) and the platform wire (``_send_to_platform``), which
 record what they were handed. Time: one file-backed virtual clock (see ``_cron_clock``).
 
@@ -29,6 +31,7 @@ import dataclasses
 import math
 import os
 import sys
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -40,6 +43,7 @@ import pytest
 croniter_mod = pytest.importorskip("croniter")
 
 from tests.e2e.core.delivery import _cron_clock as H  # noqa: E402
+from tests.e2e.core.delivery._pending_fixes import expect_gap  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="flock/SIGKILL multi-process soak is Linux-only")
@@ -56,7 +60,7 @@ class Scenario:
     hermes_tz: Optional[str]
     process_tz: str
     start: date  # DST day is always start + 9
-    child: bool = False  # two-process contention + SIGKILL/restart mid-run
+    child: bool = False  # a second ticker process + SIGKILL/restart mid-run
     days: int = 30
 
 
@@ -71,15 +75,18 @@ SCENARIOS = [
     Scenario("newyork_on_shanghai_fall", "America/New_York", "Asia/Shanghai",
              date(2026, 10, 23), child=True),
 ]
-KNOWN_BUG = [
-    # #119969 (fix: PR #119970): with NO timezone configured the next occurrence is computed in
-    # the base time's fixed UTC offset, so a DST process zone fires 09:00 at 10:00 local on the
-    # spring-forward day. Strict: the day the fix lands this XPASSes and the mark must go.
-    pytest.param(Scenario("unset_on_newyork_spring", None, "America/New_York",
-                          date(2026, 2, 27), days=12),
-                 marks=pytest.mark.xfail(strict=True, reason="#119969 no-tz DST fixed offset"),
-                 id="unset_on_newyork_spring"),
-]
+# Scenario id -> (fix PR, gap). Strict xfail only while the PR's probe still reproduces the defect
+# (see _pending_fixes); once the fix is in the tree the scenario must pass.
+GAPS = {
+    # the due gate compares same-zone wall clocks: a slot in the repeated fall-back hour fires up
+    # to an hour early
+    "newyork_on_shanghai_fall": (120314, "cron DST fall-back early fire (fixed by #120314)"),
+    # #119969: with NO timezone configured the next occurrence keeps the base time's fixed UTC
+    # offset, so a DST process zone fires 09:00 at 10:00 local after spring-forward
+    "unset_on_newyork_spring": (119970, "#119969 no-tz DST fixed offset (fixed by #119970)"),
+}
+SCENARIOS.append(Scenario("unset_on_newyork_spring", None, "America/New_York", date(2026, 2, 27),
+                          days=12))
 
 
 def _iso(ts: float) -> str:
@@ -439,7 +446,7 @@ class Soak:
         self.at(L(13, 7, 30, 5), "down")  # 09:00 missed by 45 min -> fires late, once
         self.at(L(13, 9, 45, 20), "up")
         if self.child is not None:
-            self.at(L(15, 0, 0), "child_up")  # two processes contend for every fire
+            self.at(L(15, 0, 0), "child_up")  # both tickers tick every instant; the tick lock admits one
             self.at(L(17, 2, 0, 5), "solo_child")
             self.at(L(17, 2, 30), "child_kill_run", "gap-0230")
             self.at(L(17, 3, 10, 20), "up")  # gateway restart: startup recovery
@@ -571,20 +578,98 @@ def _run_scenario(sc: Scenario, soak_env) -> Dict[str, int]:
     return soak.final_checks()
 
 
-# Red until #120314 lands: the due gate compares same-zone wall clocks, so a slot in the repeated
-# fall-back hour fires up to an hour early. Delete with #120314.
-UNLANDED_FIX = {"newyork_on_shanghai_fall": "fixed by #120314"}
-
-
-@pytest.mark.parametrize("sc", [
-    pytest.param(s, id=s.id, marks=[pytest.mark.xfail(strict=True, reason=UNLANDED_FIX[s.id])]
-                 if s.id in UNLANDED_FIX else []) for s in SCENARIOS])
-def test_cron_virtual_clock_soak(sc, soak_env):
+@pytest.mark.parametrize("sc", [pytest.param(s, id=s.id) for s in SCENARIOS])
+def test_cron_virtual_clock_soak(sc, soak_env, request):
+    if sc.id in GAPS:
+        expect_gap(request, *GAPS[sc.id])
     stats = _run_scenario(sc, soak_env)
     print(f"C13 {sc.id}: {stats}")
-    assert stats["executions"] > 60
+    assert sc.days < 30 or stats["executions"] > 60
 
 
-@pytest.mark.parametrize("sc", KNOWN_BUG)
-def test_cron_virtual_clock_soak_known_dst_bug(sc, soak_env):
-    _run_scenario(sc, soak_env)
+# --- two replicas, one store: the fire claim decides every fire ---------------------------------
+
+REPLICA_ROUNDS = 12
+
+
+def test_two_replicas_contend_for_every_fire(soak_env):
+    """Two external-provider replicas (this process + a second OS process) receive the same fire
+    for every due occurrence and call the real ``fire_due`` at once (a barrier parks each inside
+    ``claim_job_for_fire`` until both are there). The winner's run is held open, so the loser
+    always meets a live claim. Per round: exactly one replica claims, exactly one run starts for
+    that slot and is delivered once, the loser's attempt is recorded as not acquired, and the
+    store re-arms to a later slot, so no occurrence is fired twice or skipped."""
+    tmp_path, hermes_home, monkeypatch = soak_env
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    (hermes_home / "config.yaml").write_text(
+        "platforms:\n  telegram:\n    enabled: true\n    token: fake-soak-token\n", encoding="utf-8")
+    control = H.Control(tmp_path / "control").ensure()
+    import cron.jobs as jobs
+
+    monkeypatch.setattr(jobs, "record_ticker_heartbeat", lambda **_kw: None)
+    clock = H.VirtualClock(control.clock_file)
+    H.install(clock, control, monkeypatch.setattr)
+    H.install_claim_barrier(control, monkeypatch.setattr)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    clock.set(datetime(2026, 3, 1, 0, 0, 30, tzinfo=UTC).timestamp())
+    names = {}
+    for name, schedule in (("hourly", "0 * * * *"), ("every-45m", "every 45m")):
+        names[name] = jobs.create_job(prompt=f"replica {name}", schedule=schedule, name=name,
+                                      deliver="telegram:2000")["id"]
+    provider = H.replica_scheduler()
+    peer = H.ReplicaHost(control, env, REPO_ROOT)
+    peer.start()
+    fired = []
+    try:
+        for rnd in range(1, REPLICA_ROUNDS + 1):
+            slot, name = min((datetime.fromisoformat(jobs.get_job(i)["next_run_at"]).timestamp(), n)
+                             for n, i in names.items())  # the next due occurrence of either job
+            job_id = names[name]
+            assert slot > clock.now_ts(), f"round {rnd} {name}: slot {_iso(slot)} already passed"
+            clock.set(slot + 5)  # the fire arrives 5 s after its slot at both replicas
+            hold = control.hold_file(name)
+            hold.write_text("1", encoding="utf-8")
+            mine: Dict[str, bool] = {}
+
+            def fire_here(job_id=job_id, rnd=rnd):
+                mine["won"] = H.fire_as_replica(provider, job_id, rnd)
+
+            t = threading.Thread(target=fire_here)
+            t.start()
+            peer.request(rnd, job_id)
+
+            def both_claimed():
+                return [c for c in H.read_jsonl(control.claims) if c["round"] == rnd][1:]
+
+            H.wait_until(both_claimed, f"round {rnd}: both replicas' claim outcome")
+            entered = control.gates / f"{name}.entered"
+            H.wait_until(entered.exists, f"round {rnd}: the winner's run to start")
+            hold.unlink()
+            t.join(timeout=H.DEADLINE_SECONDS)
+            assert not t.is_alive(), f"round {rnd}: in-process replica never finished"
+            outcomes = sorted([mine["won"], peer.result(rnd)])
+            entered.unlink()
+            claims = [c for c in H.read_jsonl(control.claims) if c["round"] == rnd]
+            assert sorted(c["pid"] for c in claims) == sorted([os.getpid(), peer.pid]), claims
+            assert sorted(c["won"] for c in claims) == [False, True], f"round {rnd}: {claims}"
+            assert outcomes == [False, True], f"round {rnd}: fire_due results {outcomes}"
+            starts = [r for r in H.read_jsonl(control.runs) if r["event"] == "start"]
+            fired.append((name, slot, next(c["pid"] for c in claims if c["won"])))
+            assert len(starts) == rnd, f"round {rnd} {name}: {len(starts)} runs started for {rnd} fires"
+            assert datetime.fromisoformat(starts[-1]["instant"]).timestamp() == slot, starts[-1]
+            nxt = datetime.fromisoformat(jobs.get_job(job_id)["next_run_at"]).timestamp()
+            assert nxt > clock.now_ts(), f"round {rnd} {name}: not re-armed past now ({_iso(nxt)})"
+    finally:
+        peer.stop()
+    rows = H.ledger_rows(hermes_home)
+    sink = H.read_jsonl(control.sink)
+    starts = {r["exec"] for r in H.read_jsonl(control.runs) if r["event"] == "start"}
+    won = [r for r in rows if r["id"] in starts]
+    lost = [r for r in rows if r["id"] not in starts]
+    assert len(won) == len(lost) == REPLICA_ROUNDS, (len(won), len(lost), rows)
+    assert all((r["status"], r["delivery_outcome"]) == ("completed", "delivered") for r in won), won
+    assert all(r["status"] == "failed" and "not acquired" in (r["error"] or "") for r in lost), lost
+    assert sorted(s["exec"] for s in sink if s["ok"]) == sorted(starts), sink
+    print(f"C13 replicas: winners by pid {[(n, pid) for n, _, pid in fired]}")

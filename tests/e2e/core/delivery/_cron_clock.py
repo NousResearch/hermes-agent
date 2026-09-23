@@ -19,7 +19,13 @@ What is virtual and what stays real:
 
 ``SchedulerHost`` runs the real ticker loop in a thread with a stepping ``stop_event``; running
 this file as a script runs the same loop in a separate OS process (``ChildHost``), stepped via
-files, so two processes can contend for one ``HERMES_HOME`` and one can be SIGKILLed mid-run.
+files, so two processes can share one ``HERMES_HOME`` and one can be SIGKILLed mid-run. Two
+tickers never contend for a FIRE: the tick lock admits one per instant and the winner advances
+``next_run_at`` before it releases. Fire-claim contention is the external-provider path
+(``CronScheduler.fire_due``, "exactly one of N replicas runs a job"): ``ReplicaHost`` runs a
+replica in a second process, and ``install_claim_barrier`` parks each replica's
+``claim_job_for_fire`` until every replica of the round is inside it, so the store CAS, not
+timing, decides every fire.
 """
 
 from __future__ import annotations
@@ -97,9 +103,11 @@ class Control:
         self.behaviors = self.root / "behaviors.json"
         self.gates = self.root / "gates"
         self.child = self.root / "child"
+        self.replica = self.root / "replica"
+        self.claims = self.root / "claims.jsonl"
 
     def ensure(self) -> "Control":
-        for d in (self.root, self.gates, self.child):
+        for d in (self.root, self.gates, self.child, self.replica):
             d.mkdir(parents=True, exist_ok=True)
         if not self.behaviors.exists():
             self.set_behaviors({})
@@ -440,7 +448,7 @@ class ChildHost:
     def kill(self) -> None:
         """SIGKILL: the process dies with whatever it had in flight (a crash, not a drain)."""
         if self.proc is not None and self.proc.poll() is None:
-            os.kill(self.proc.pid, signal.SIGKILL)
+            os.kill(self.proc.pid, signal.SIGKILL)  # windows-footgun: ok (POSIX-only harness)
             self.proc.wait(timeout=DEADLINE_SECONDS)
 
     def stop(self) -> None:
@@ -461,6 +469,124 @@ def tick_together(hosts: Iterable[Any]) -> None:
         host.release()
     for host in live:
         host.wait_idle()
+
+
+# --- external-provider replicas contending for one fire ----------------------------------------
+
+_CLAIM_ROUND: List[Optional[int]] = [None]  # one round in flight per process at a time
+
+
+def replica_scheduler():
+    """A minimal external ``CronScheduler``: the base class's real ``fire_due`` (store CAS claim,
+    audit attempt, shared ``run_one_job``) is the whole firing path; nothing ticks."""
+    from cron.scheduler_provider import CronScheduler
+
+    class ReplicaScheduler(CronScheduler):
+        @property
+        def name(self) -> str:
+            return "replica"
+
+        def start(self, stop_event, **_kwargs) -> None:
+            stop_event.wait()
+
+    return ReplicaScheduler()
+
+
+def install_claim_barrier(control: Control, setattr_fn=setattr, parties: int = 2) -> None:
+    """Wrap ``cron.jobs.claim_job_for_fire`` (``claim_fire`` imports it at call time): each call
+    waits until ``parties`` replicas have entered the claim for the current round, then runs the
+    REAL claim and logs who won. It only delays, never changes a decision."""
+    import cron.jobs as jobs
+
+    real = jobs.claim_job_for_fire
+
+    def claim(job_id, **kwargs):
+        rnd = _CLAIM_ROUND[0]
+        (control.replica / f"arrived-{rnd}-{os.getpid()}").touch()
+        wait_until(lambda: len(list(control.replica.glob(f"arrived-{rnd}-*"))) >= parties,
+                   f"{parties} replicas inside the fire claim of round {rnd}")
+        result = real(job_id, **kwargs)
+        _append_jsonl(control.claims, {"round": rnd, "pid": os.getpid(), "job_id": job_id,
+                                       "won": bool(result)})
+        return result
+
+    setattr_fn(jobs, "claim_job_for_fire", claim)
+
+
+def fire_as_replica(provider, job_id: str, rnd: int) -> bool:
+    _CLAIM_ROUND[0] = rnd
+    return provider.fire_due(job_id)
+
+
+class ReplicaHost:
+    """A second replica in its own OS process: fires ``req-<n>.json`` requests in order and
+    answers ``res-<n>.json`` with whether its ``fire_due`` claimed the fire."""
+
+    def __init__(self, control: Control, env: Dict[str, str], repo_root: Path):
+        self.control, self.env, self.repo_root = control, env, repo_root
+        self.proc: Optional[subprocess.Popen] = None
+
+    @property
+    def pid(self) -> Optional[int]:
+        return self.proc.pid if self.proc is not None else None
+
+    def _check(self) -> None:
+        if self.proc.poll() is not None:
+            tail = (self.control.replica / "stderr.log").read_text(encoding="utf-8")[-4000:]
+            raise AssertionError(f"replica exited rc={self.proc.returncode}:\n{tail}")
+
+    def start(self) -> None:
+        log = open(self.control.replica / "stderr.log", "a", encoding="utf-8")  # noqa: SIM115
+        self.proc = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), str(self.control.root), "replica"],
+            cwd=str(self.repo_root), env=self.env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+        log.close()
+
+        def ready():
+            self._check()
+            return (self.control.replica / "ready").exists()
+
+        wait_until(ready, "replica process ready", timeout=180.0)
+
+    def request(self, rnd: int, job_id: str) -> None:
+        _atomic_write(self.control.replica / f"req-{rnd}.json", json.dumps({"job_id": job_id}))
+
+    def result(self, rnd: int) -> bool:
+        path = self.control.replica / f"res-{rnd}.json"
+
+        def done():
+            self._check()
+            return path.exists()
+
+        wait_until(done, f"replica result for round {rnd}")
+        return json.loads(path.read_text(encoding="utf-8"))["won"]
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            (self.control.replica / "stop").write_text("1", encoding="utf-8")
+            try:
+                self.proc.wait(timeout=DEADLINE_SECONDS)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=DEADLINE_SECONDS)
+
+
+def _replica_main(control: Control) -> None:
+    install(VirtualClock(control.clock_file), control)
+    install_claim_barrier(control)
+    provider = replica_scheduler()
+    (control.replica / "ready").touch()
+    rnd = 0
+    while True:
+        rnd += 1
+        req = control.replica / f"req-{rnd}.json"
+        deadline = _real_time.monotonic() + HOLD_DEADLINE_SECONDS
+        while not req.exists():
+            if (control.replica / "stop").exists() or _real_time.monotonic() >= deadline:
+                return
+            _real_time.sleep(POLL_SECONDS)
+        won = fire_as_replica(provider, json.loads(req.read_text(encoding="utf-8"))["job_id"], rnd)
+        _atomic_write(control.replica / f"res-{rnd}.json", json.dumps({"won": won}))
 
 
 # --- ledger / store readers ------------------------------------------------------------------
@@ -500,6 +626,9 @@ def _child_main(control_root: str) -> None:
     InProcessCronScheduler().start(_FileGate(control), interval=60)
 
 
-if __name__ == "__main__":  # child ticker process
+if __name__ == "__main__":  # child ticker (or replica) process
     sys.path.insert(0, os.getcwd())
-    _child_main(sys.argv[1])
+    if sys.argv[2:] == ["replica"]:
+        _replica_main(Control(Path(sys.argv[1])))
+    else:
+        _child_main(sys.argv[1])

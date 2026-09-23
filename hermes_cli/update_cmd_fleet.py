@@ -439,7 +439,7 @@ def _needs_sudo(scope: str) -> bool:
     )
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
+def _restart_systemd_gateway_units_best_effort(failed: list, listings, external_pids: set[int] | None = None) -> None:
     """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
     answered = set()
     for scope, scope_cmd, result in listings:
@@ -449,6 +449,13 @@ def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
             continue
 
         def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
+            if external_pids and _service_unit_supports_graceful_sigusr1_restart(svc_name):
+                show = _systemctl(_cmd + ["show", svc_name, "--property=MainPID", "--value"], timeout=5)
+                try:
+                    if int((show.stdout or "").strip() or 0) in external_pids:
+                        return
+                except ValueError:
+                    pass
             manage_cmd = list(_cmd) + ["--no-ask-password"]
             if _needs_sudo(_scope):
                 manage_cmd = ["sudo", "-n"] + manage_cmd
@@ -466,21 +473,21 @@ def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
 
 
 def _live_fleet_current_rows() -> list[dict] | None:
-    """The fleet matrix when the probe finds at least one gateway and every row is ``current``
-    at the checkout SHA (identity known); ``None`` on any unknown/stale/down row or a failed
+    """The fleet matrix when each owned gateway is ``current`` at the checkout SHA;
+    ``None`` on any unknown/stale/down owned row or a failed
     probe (restart)."""
     checkout_sha = _current_checkout_sha()
     if not checkout_sha:
         return None
     try:
-        from hermes_cli.update_receipt import collect_fleet_versions
+        from hermes_cli.update_receipt import collect_fleet_versions, row_is_external
         fleet = collect_fleet_versions()
     except Exception as exc:
         logger.debug("Pending fleet restart: fleet probe failed: %s", exc)
         return None
     if not fleet or _fleet_covered_gateways(fleet) is None:
         return None
-    if all(row.get("state") == "current" and str(row.get("code_sha")) == checkout_sha for row in fleet):
+    if all(row_is_external(row) or (row.get("state") == "current" and str(row.get("code_sha")) == checkout_sha) for row in fleet):
         return fleet
     return None
 
@@ -523,6 +530,9 @@ def _run_pending_fleet_restart() -> bool:
 
     failed: list = []
     try:
+        from hermes_cli.update_inventory import collect_runtime_inventory
+        # Re-inventory when the marker is consumed: the pre-swap ownership may be stale.
+        external_pids = _verified_external_gateway_pids(collect_runtime_inventory())
         # Snapshot before stopping: Restart=no units can disappear from list-units on a clean exit.
         systemd_listings = list(_systemd_gateway_unit_listings()) if supports_systemd_services() else None
         # Stop old processes before supervisor recovery, never its freshly verified workers.
@@ -531,20 +541,21 @@ def _run_pending_fleet_restart() -> bool:
                 leftover = list(find_gateway_pids(all_profiles=True))
             except Exception:
                 leftover = list(pids or [])
-            if leftover:
+            if any(pid not in external_pids for pid in leftover):
                 with _best_effort('Pending fleet restart: PID stop failed: %s'):
-                    kill_gateway_processes(all_profiles=True)
+                    kill_gateway_processes(all_profiles=True, exclude_pids=external_pids)
                     _wait_for_gateway_exit(timeout=5.0, force_after=None)
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
         if systemd_listings is not None:
-            _restart_systemd_gateway_units_best_effort(failed, systemd_listings)
+            _restart_systemd_gateway_units_best_effort(failed, systemd_listings, external_pids=external_pids)
         # --- Launchd services (macOS) --- Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
         # invoking profile's — parity with the systemd branch above (#41403). Per-label TimeoutExpired
         # isolation happens inside.
         if is_macos():
             try:
-                _restart_macos_launchd_gateways([], failed, 45.0, require_supervision=True)
+                _restart_macos_launchd_gateways([], failed, 45.0, require_supervision=True,
+                                                external_pids=external_pids)
             except Exception as exc:
                 logger.debug("Pending fleet restart: launchd failed: %s", exc)
                 failed.append("launchd")
@@ -552,7 +563,11 @@ def _run_pending_fleet_restart() -> bool:
             try:
                 from hermes_cli import gateway_windows
                 if gateway_windows.is_installed():
-                    gateway_windows.restart()
+                    from hermes_cli.gateway import find_windows_gateway_services
+                    if any(service.gateway_pid in external_pids for service in find_windows_gateway_services()):
+                        failed.append("windows-gateway (external service ownership)")
+                    else:
+                        gateway_windows.restart()
             except Exception as exc:
                 logger.debug("Pending fleet restart: Windows failed: %s", exc)
                 failed.append("windows-gateway")
@@ -1821,7 +1836,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 failed_units=restart.failed_or_stale_units,
                 # The pre-swap plan may have been written by an older updater without code-root
                 # ownership. A live post-swap fleet row can still prove the same PID is external.
-                external_gateway_pids={
+                external_gateway_pids=_verified_external_gateway_pids(_pre_update_plan) | {
                     row["pid"] for row in (_fleet_snapshot or [])
                     if row.get("state") == "external" and isinstance(row.get("pid"), int)
                 },

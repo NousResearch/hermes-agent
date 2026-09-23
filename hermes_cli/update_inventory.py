@@ -419,8 +419,6 @@ def match_runtime_outcomes(
         def _outcome(r: RuntimeRecord) -> str:
             if r.kind == "gateway" and r.pid in killed:
                 return "stopped"
-            if r.kind == "gateway" and (r.detail.get("code_root") or r.pid in (external_gateway_pids or set())):
-                return "external"
             killed_here = r.pid is not None and r.pid in killed
             if r.kind in _SERVE_KINDS:
                 if killed_here:
@@ -446,7 +444,11 @@ def match_runtime_outcomes(
                 return "stopped"
             if _gateway_named_in(r, failed_set):
                 return "failed"
-            return "restarted" if _gateway_named_in(r, restarted_set) else "unaccounted"
+            if _gateway_named_in(r, restarted_set):
+                return "restarted"
+            # The pre-swap root is only a hint. The process may have moved to this checkout
+            # before restart; only a still-live post-swap proof can discharge its debt.
+            return "external" if r.pid in (external_gateway_pids or set()) else "unaccounted"
 
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):

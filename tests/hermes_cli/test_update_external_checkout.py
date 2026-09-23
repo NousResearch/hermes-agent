@@ -150,6 +150,7 @@ def test_plan_reconciliation_skips_only_proven_external_gateway(tmp_path, monkey
     outcomes = update_inventory.match_runtime_outcomes(
         restored, restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
         externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        external_gateway_pids={42},
     )
     assert [(row["profile"], row["outcome"]) for row in outcomes] == [
         ("default", "restarted"), ("work", "external"),
@@ -186,6 +187,62 @@ def test_unknown_gateway_checkout_remains_restart_debt(tmp_path, monkeypatch):
     )
     assert outcomes[0]["outcome"] == "unaccounted"
     assert update_inventory.report_unaccounted_runtimes(outcomes) is True
+
+
+def test_external_plan_transition_uses_observed_restart_result(tmp_path):
+    plan = update_inventory.UpdatePlan(runtimes=[update_inventory.RuntimeRecord(
+        kind="gateway", profile="work", pid=42, supervisor="launchd",
+        detail={"code_root": str(tmp_path / "old-checkout")},
+    )])
+    common = dict(relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+                  stale_serve_pids=None)
+    for services, failures, external, expected in [
+        (["ai.hermes.gateway-work"], [], {42}, "restarted"),
+        ([], ["ai.hermes.gateway-work"], {42}, "failed"),
+        ([], [], set(), "unaccounted"),
+        ([], [], {42}, "external"),
+    ]:
+        rows = update_inventory.match_runtime_outcomes(
+            plan, restarted_services=services, failed_units=failures,
+            external_gateway_pids=external, **common,
+        )
+        assert rows[0]["outcome"] == expected
+
+
+def test_pending_restart_excludes_freshly_verified_foreign_gateway(monkeypatch):
+    import hermes_cli.gateway as gateway
+
+    plan = update_inventory.UpdatePlan(runtimes=[update_inventory.RuntimeRecord(
+        kind="gateway", profile="work", pid=22, detail={"code_root": "external"},
+    )])
+    monkeypatch.setattr(update_inventory, "collect_runtime_inventory", lambda: plan)
+    monkeypatch.setattr(update_cmd_fleet, "_verified_external_gateway_pids", lambda _plan: {22})
+    monkeypatch.setattr(update_cmd_fleet, "_live_fleet_current_rows", lambda: None)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_kw: [11, 22])
+    excluded = []
+    monkeypatch.setattr(gateway, "kill_gateway_processes", lambda **kw: excluded.append(kw["exclude_pids"]))
+    monkeypatch.setattr(gateway, "_wait_for_gateway_exit", lambda **_kw: True)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    assert update_cmd_fleet._run_pending_fleet_restart() is True
+    assert excluded == [{22}]
+
+
+def test_pending_systemd_restart_skips_foreign_main_pid(monkeypatch):
+    from types import SimpleNamespace
+
+    listings = [(scope, cmd, SimpleNamespace(returncode=0,
+                 stdout="hermes-gateway-work.service loaded active running\n" if scope == "user" else ""))
+                for scope, cmd in update_cmd_fleet._SYSTEMD_SCOPES]
+    restarted = []
+    monkeypatch.setattr(update_cmd_fleet, "_systemctl", lambda *_a, **_kw: SimpleNamespace(stdout="22"))
+    monkeypatch.setattr(update_cmd_fleet, "_systemctl_reset_and_restart",
+                        lambda *_a, **_kw: restarted.append(True))
+    failed = []
+    update_cmd_fleet._restart_systemd_gateway_units_best_effort(failed, listings, external_pids={22})
+    assert failed == []
+    assert restarted == []
 
 
 def test_external_gateway_is_not_a_manual_restart_target(tmp_path, monkeypatch):
@@ -246,6 +303,7 @@ def test_external_gateway_is_not_a_manual_restart_target(tmp_path, monkeypatch):
         outcomes = update_inventory.match_runtime_outcomes(
             plan, restarted_services=[], relaunched_profiles=[],
             externally_supervised_profiles=[], killed_pids=outcome.killed_pids, failed_units=[],
+            external_gateway_pids=external_pids,
         )
         assert [(row["profile"], row["outcome"]) for row in outcomes] == [("work", "external")]
         # A missing ownership proof must not exempt this process from the restart sweep.

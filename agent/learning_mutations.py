@@ -56,11 +56,43 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     return path, chunks, local
 
 
-def _write_memory(path: Path, chunks: list[str]) -> None:
-    """Atomic temp-file + rename via the memory tool, so a concurrent reader
-    never sees a half-written file (and the §-join stays single-sourced)."""
-    from tools.memory_tool import MemoryStore
-    MemoryStore._write_file(path, [c.strip() for c in chunks if c.strip()])
+def _memory_target(source: str) -> str:
+    """Journey's node-id source -> the memory tool's target name."""
+    return "user" if source == "profile" else "memory"
+
+
+def _apply_memory_mutation(node_id: str, apply_change, done: str) -> dict[str, Any]:
+    """Run a Journey memory edit/delete through ``MemoryStore._mutate``.
+
+    Journey used to read the file, change one entry and write the WHOLE file back with no
+    lock and no drift check. Two losses followed. A memory the agent stored in between —
+    an ordinary ``memory_tool`` add during a live turn — was dropped by the stale rewrite,
+    with no ``.bak`` and nothing to restore it from. And a file edited outside the tool was
+    rewritten rather than snapshotted and refused, which is exactly what the drift guard
+    exists to prevent (#26045). ``_mutate`` holds the same cross-process lock the memory
+    tool takes, re-reads under it, and keeps that guard.
+
+    The entry is identified by its TEXT, captured from the graph the user clicked: under the
+    lock the list may have shifted, and an index from the stale view would hit a different
+    entry. When that text is gone, the mutation refuses instead of guessing.
+    """
+    from tools.memory_tool import load_on_disk_store
+
+    source, _ = _parse_memory_id(node_id)
+    path, chunks, local = _locate_memory(node_id)
+    expected = chunks[local]
+
+    def _mutate(entries: list[str], _limit: int):
+        try:
+            index = entries.index(expected)
+        except ValueError:
+            return {"success": False, "error": "memory node id is stale — refresh the graph"}
+        return apply_change(list(entries), index)
+
+    result = load_on_disk_store()._mutate(_memory_target(source), _mutate)
+    if result.get("success"):
+        return {"ok": True, "message": f"{done} {path.name}"}
+    return {"ok": False, "message": str(result.get("error") or "memory write failed")}
 
 
 def _clear_skill_cache() -> None:
@@ -125,10 +157,11 @@ def _delete_skill(name: str) -> dict[str, Any]:
 
 
 def _delete_memory(node_id: str) -> dict[str, Any]:
-    path, chunks, local = _locate_memory(node_id)
-    del chunks[local]
-    _write_memory(path, chunks)
-    return {"ok": True, "message": f"deleted memory from {path.name}"}
+    def _apply(entries: list[str], index: int):
+        del entries[index]
+        return entries, "deleted"
+
+    return _apply_memory_mutation(node_id, _apply, "deleted memory from")
 
 
 # ── Edit ────────────────────────────────────────────────────────────────────
@@ -151,7 +184,8 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
     body = content.strip()
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
-    path, chunks, local = _locate_memory(node_id)
-    chunks[local] = body
-    _write_memory(path, chunks)
-    return {"ok": True, "message": f"updated memory in {path.name}"}
+    def _apply(entries: list[str], index: int):
+        entries[index] = body
+        return entries, "updated"
+
+    return _apply_memory_mutation(node_id, _apply, "updated memory in")

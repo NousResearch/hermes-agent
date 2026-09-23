@@ -16,7 +16,9 @@ export function createEventDeduper(intervalMs = DEDUPE_INTERVAL_MS) {
 
   return function isDuplicate(key: string, now = Date.now()): boolean {
     for (const [k, at] of lastSeenAt) {
-      if (now - at >= intervalMs) {
+      // Date.now() can move backwards after a host clock correction. Treat a
+      // future claim as stale rather than suppressing events until catch-up.
+      if (now < at || now - at >= intervalMs) {
         lastSeenAt.delete(k)
       }
     }

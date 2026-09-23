@@ -1182,6 +1182,10 @@ describe('usePromptActions exec fallback error reporting', () => {
       }
 
       if (method === 'command.dispatch') {
+        // Byte-for-byte what tui_gateway/methods_tools.py `command.dispatch`
+        // answers for a command it does not route — the middle word is BUNDLE.
+        // Asserting a string the gateway never emits made this guard look
+        // tested while the real message slipped past it.
         throw new Error('not a quick/plugin/bundle/skill command: debug')
       }
 
@@ -1206,7 +1210,42 @@ describe('usePromptActions exec fallback error reporting', () => {
     // the worker timeout is what actually went wrong (#44456).
     const texts = renderedSeedTexts(seeds)
     expect(texts.some(text => text.includes('slash worker timed out'))).toBe(true)
-    expect(texts.some(text => text.includes('skill command'))).toBe(false)
+    expect(texts.some(text => text.includes('not a quick/plugin/bundle/skill command'))).toBe(false)
+  })
+
+  it('still masks the older "quick/plugin/skill" wording from a pre-bundle gateway', async () => {
+    // The desktop and its backend update independently, so a fixed client can
+    // meet a gateway that predates the `bundle` segment. Both wordings have to
+    // stay masked — this is the compat half of the regex.
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('slash worker exited before answering')
+      }
+
+      if (method === 'command.dispatch') {
+        throw new Error('not a quick/plugin/skill command: debug')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/debug')
+
+    const texts = renderedSeedTexts(seeds)
+    expect(texts.some(text => text.includes('slash worker exited before answering'))).toBe(true)
+    expect(texts.some(text => text.includes('not a quick/plugin/skill command'))).toBe(false)
   })
 
   it('falls back to slash.exec when an older gateway lacks a dedicated RPC', async () => {
@@ -1270,6 +1309,94 @@ describe('usePromptActions exec fallback error reporting', () => {
 
     const texts = renderedSeedTexts(seeds)
     expect(texts.some(text => text.includes('quick command failed with exit code 1'))).toBe(true)
+  })
+})
+
+// `/skills` is `cli_only` + `desktop="settings"` in the Python registry, so the
+// desktop resolved the WHOLE command to its sidebar surface: `/skills pending`
+// answered "… is managed from the desktop sidebar", and since the app has no
+// write-approval UI anywhere, a staged skill write could not be reviewed,
+// approved or rejected from the desktop at all. The gateway serves those
+// subcommands (`command.dispatch` → hermes_cli/write_approval_commands.py), so
+// the write-approval invocations must reach the slash worker.
+describe('usePromptActions /skills write approval routing', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('sends every write-approval subcommand to the gateway with the full invocation', async () => {
+    const seeds: Record<string, unknown>[] = []
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return { output: 'Pending skill writes (1):\n  9f2c1a  create skill gif-search' } as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    for (const invocation of ['/skills pending', '/skills approve 9f2c1a', '/skills approval on']) {
+      await handle!.submitText(invocation)
+    }
+
+    expect(calls.map(call => call.method)).toEqual(['slash.exec', 'slash.exec', 'slash.exec'])
+    expect(calls.map(call => call.params?.command)).toEqual([
+      'skills pending',
+      'skills approve 9f2c1a',
+      'skills approval on'
+    ])
+
+    const texts = renderedSeedTexts(seeds)
+    expect(texts.some(text => text.includes('Pending skill writes'))).toBe(true)
+    // The sidebar refusal is exactly what used to swallow the command.
+    expect(texts.some(text => text.includes('desktop sidebar'))).toBe(false)
+  })
+
+  it('leaves the bare command and the sidebar-owned subcommands off the wire', async () => {
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    // `/skills` itself is still the sidebar's (skill management has a UI there),
+    // and `/skills search` is not a write-approval subcommand — only the review
+    // surface is missing from the app, and only that gets forwarded.
+    await handle!.submitText('/skills')
+    await handle!.submitText('/skills search gif')
+
+    expect(requestGateway).not.toHaveBeenCalled()
+
+    const texts = renderedSeedTexts(seeds)
+    expect(texts.some(text => text.includes('desktop sidebar'))).toBe(true)
   })
 })
 

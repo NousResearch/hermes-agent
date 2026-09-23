@@ -12,9 +12,9 @@ import {
   type DesktopActionId,
   type DesktopCommandSurface,
   type DesktopPickerId,
+  desktopSlashInvocationSurface,
   desktopSlashUnavailableMessage,
-  isDesktopSlashCommand,
-  resolveDesktopCommand
+  isDesktopSlashCommand
 } from '@/lib/desktop-slash-commands'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
@@ -264,7 +264,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
 
-        if (!isDesktopSlashCommand(name)) {
+        if (!isDesktopSlashCommand(name, arg)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
 
           return
@@ -1234,7 +1234,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
 
         const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }
-        const surface = resolveDesktopCommand(`/${name}`)?.surface
+        // Resolve the INVOCATION, not just the name: a command the desktop owns
+        // for its management surface can still delegate individual subcommands to
+        // the backend (`/skills pending` — see desktopSlashInvocationSurface).
+        const surface = desktopSlashInvocationSurface(`/${name}`, arg)
 
         switch (surface?.kind) {
           case 'unavailable': {

@@ -369,6 +369,78 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
 
 
+def _compressed_args(field: str) -> dict:
+    """Generate the current model-visible prune marker through the real compressor."""
+    from agent.context_compressor import _COMPRESSION_MARKER_PREFIX, _truncate_tool_call_args_json
+
+    raw = json.dumps({field: "z" * 2000})
+    parsed = json.loads(_truncate_tool_call_args_json(raw))
+    assert _COMPRESSION_MARKER_PREFIX in parsed[field]
+    return parsed
+
+
+def test_context_pruned_effectful_call_blocks_before_plugins_and_dispatch():
+    agent = _make_agent("mcp_write")
+    args = _compressed_args("body")
+    tc = _mock_tool_call("mcp_write", json.dumps(args, ensure_ascii=False), "c-pruned-current")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks") as plugin,
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    plugin.assert_not_called()
+    dispatch.assert_not_called()
+    payload = json.loads(messages[0]["content"])
+    assert payload["error"] == "suspected_pruned_tool_arguments"
+    assert payload["argument_paths"] == ["$.body"]
+    assert "Recover the exact content from its durable source" in payload["message"]
+
+
+def test_plugin_modified_args_are_rechecked_for_context_prune_markers():
+    agent = _make_agent("mcp_write")
+    pruned = _compressed_args("body")
+    tc = _mock_tool_call("mcp_write", json.dumps({"body": "complete"}), "c-pruned-plugin")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks", return_value=(None, pruned)) as plugin,
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    plugin.assert_called_once()
+    dispatch.assert_not_called()
+    payload = json.loads(messages[0]["content"])
+    assert payload["error"] == "suspected_pruned_tool_arguments"
+    assert payload["argument_paths"] == ["$.body"]
+
+
+def test_read_only_tool_may_quote_current_context_prune_marker():
+    agent = _make_agent("web_search")
+    args = _compressed_args("query")
+    tc = _mock_tool_call("web_search", json.dumps(args, ensure_ascii=False), "c-pruned-read")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("model_tools.handle_function_call", return_value=json.dumps({"ok": True})) as dispatch:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    dispatch.assert_called_once()
+
+
+def test_legacy_pruned_tail_is_guarded_only_for_historical_sized_effectful_values():
+    from agent.tool_dispatch_helpers import _context_pruned_argument_paths
+
+    assert _context_pruned_argument_paths("mcp_write", {"body": "x" * 201 + "...[truncated]"}) == ["$.body"]
+    assert _context_pruned_argument_paths("mcp_write", {"body": "literal ...[truncated]"}) == []
+    assert _context_pruned_argument_paths("web_search", {"query": "x" * 201 + "...[truncated]"}) == []
+
+
 def test_default_run_conversation_warns_without_guardrail_halt():
     agent = _make_agent("web_search", max_iterations=10)
     same_args = {"query": "same"}

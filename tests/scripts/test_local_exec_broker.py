@@ -1723,6 +1723,28 @@ def test_broker_process_kill_preserves_buffered_stdout_for_caller():
 
 
 @pytest.mark.linux_only
+def test_local_environment_kills_broker_handle_through_lease(monkeypatch):
+    from tools.environments import local as local_module
+    from tools.environments.local import LocalEnvironment, _BrokerProcessHandle
+
+    conn, peer = socket.socketpair()
+    stdout_r, stdout_w = os.pipe()
+    os.close(stdout_w)
+    handle = _BrokerProcessHandle(conn, 123, stdout_r, None)
+    monkeypatch.setattr(
+        local_module,
+        "_kill_process_group_posix",
+        lambda _proc: pytest.fail("broker handles must not use PID-based teardown"),
+    )
+    try:
+        LocalEnvironment.__new__(LocalEnvironment)._kill_process(handle)
+        assert handle.poll() == -signal.SIGKILL
+    finally:
+        peer.close()
+        handle.stdout.close()
+
+
+@pytest.mark.linux_only
 @pytest.mark.parametrize(
     "remainder",
     (

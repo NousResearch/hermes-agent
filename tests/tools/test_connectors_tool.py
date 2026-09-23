@@ -22,6 +22,7 @@ class FakeClient:
         return [
             {"connector": "gmail", "enabled": True, "connected": False},
             {"connector": "linear", "enabled": True, "connected": True},
+            {"connector": "googlecalendar", "enabled": True, "connected": False},
         ]
 
     def connections(self, connectors, *, reinitiate=False):
@@ -51,6 +52,22 @@ def test_status_lists_and_filters_connectors():
     )
     assert out["connectors"] == [
         {"connector": "gmail", "enabled": True, "connected": False}
+    ]
+
+
+def test_status_names_unknown_connectors_and_suggests_close_matches():
+    client = FakeClient()
+    out = json.loads(
+        manage_connections(
+            {"action": "status", "connectors": ["google-calendar", "slack"]},
+            client_factory=lambda: client,
+        )
+    )
+
+    assert out["connectors"] == []
+    assert out["unknown"] == [
+        {"name": "google-calendar", "did_you_mean": "googlecalendar"},
+        {"name": "slack"},
     ]
 
 

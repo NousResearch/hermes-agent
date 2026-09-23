@@ -1,5 +1,5 @@
-"""Alias for hermes_extractive_engine for backwards compatibility."""
-from .hermes_extractive_engine import (
+"""Alias for tameru.transcript for backwards compatibility."""
+from .transcript import (
     apply_extractive_tool_prune,
     last_user_text,
     MIN_TOOL_CHARS,

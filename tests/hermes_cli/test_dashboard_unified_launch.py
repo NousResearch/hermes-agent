@@ -17,6 +17,30 @@ def main_mod():
     return main_mod
 
 
+@pytest.fixture(autouse=True)
+def _block_real_dashboard_spawn(monkeypatch):
+    """Never let these tests spawn a real dashboard process.
+
+    cmd_dashboard's profile reroute re-execs via ``os.execvpe`` on POSIX but
+    via ``subprocess.Popen`` on Windows (execvpe does not truly replace the
+    process there — see main.py). Tests below monkeypatch only ``execvpe``,
+    so on Windows the reroute escaped the mock and launched a REAL machine
+    dashboard pinned to the REAL machine root. That child's bootstrap then
+    quarantined the live venv's hermes.exe/hermes-gateway.exe entry-point
+    shims, deleting the developer's working ``hermes`` command — observed
+    on a full-suite run on Windows (2026-07-02).
+    """
+    import hermes_cli.main as main_mod
+
+    def _no_real_spawn(*args, **kwargs):
+        raise AssertionError(
+            "test attempted to spawn a real process via subprocess.Popen — "
+            "the Windows reexec branch must be mocked, not executed"
+        )
+
+    monkeypatch.setattr(main_mod.subprocess, "Popen", _no_real_spawn)
+
+
 def _args(**kw):
     defaults = dict(
         status=False, stop=False, host="127.0.0.1", port=9119,
@@ -44,6 +68,15 @@ class TestUnifiedDashboardRouting:
 
         monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
 
+        # Windows takes the subprocess.Popen reexec branch instead of
+        # execvpe — record it into the same list so the assertions below
+        # hold on every platform (and no real process is ever spawned).
+        def fake_popen(argv, env=None, **kwargs):
+            execs.append((argv[0], argv, env))
+            return types.SimpleNamespace(wait=lambda: 0)
+
+        monkeypatch.setattr(main_mod.subprocess, "Popen", fake_popen)
+
         with pytest.raises(SystemExit):
             main_mod.cmd_dashboard(_args())
 
@@ -61,6 +94,48 @@ class TestUnifiedDashboardRouting:
         from hermes_constants import get_default_hermes_root
         assert env.get("HERMES_HOME") == str(get_default_hermes_root())
 
+    def test_reexec_pins_docker_machine_root(self, main_mod, monkeypatch):
+        """In the Docker layout (HERMES_HOME=/opt/data, profiles under
+        /opt/data/profiles/<name>) the reroute must pin the child to the
+        machine root /opt/data — NOT drop HERMES_HOME.
+
+        Dropping it makes the child fall back to $HOME/.hermes
+        (= /opt/data/.hermes), an empty auto-seeded home, so the dashboard
+        shows only the default profile and the .install_method stamp is
+        missing (which also misfires the Docker update-button guard).
+        Regression test for the support report.
+        """
+        monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/oracle")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "oracle"
+        )
+        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
+        execs = []
+
+        def fake_exec(exe, argv, env):
+            execs.append((exe, argv, env))
+            raise SystemExit(0)
+
+        monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
+
+        def fake_popen(argv, env=None, **kwargs):
+            execs.append((argv[0], argv, env))
+            return types.SimpleNamespace(wait=lambda: 0)
+
+        monkeypatch.setattr(main_mod.subprocess, "Popen", fake_popen)
+
+        with pytest.raises(SystemExit):
+            main_mod.cmd_dashboard(_args())
+
+        assert len(execs) == 1
+        _exe, _argv, env = execs[0]
+        # get_default_hermes_root() strips the trailing profiles/<name>, so the
+        # child binds /opt/data — where the real default/oracle/saga profiles
+        # and the .install_method stamp actually live. Compare via Path so the
+        # separator rendering matches on Windows dev machines too (the Docker
+        # layout itself is POSIX-only, but the stripping semantics are not).
+        from pathlib import Path
+        assert env.get("HERMES_HOME") == str(Path("/opt/data"))
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
         """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT

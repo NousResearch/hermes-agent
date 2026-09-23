@@ -3261,8 +3261,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Deliver an oversized final edit: edit ``message_id`` with chunk 1, send chunks 2..N as
         replies to the previous. Returns ``message_id=<last-id>`` + ``continuation_message_ids``.
-        A continuation failure still reports success plus ``partial_overflow`` so the consumer
-        delivers the tail; only a first-chunk edit failure returns ``success=False``."""
+        A continuation failure returns ``success=False`` plus the ``partial_overflow`` contract
+        (Telegram's edit-overflow path sets the same keys) so the stream consumer's failure
+        handler arms the fallback and delivers the missing tail — reporting success there would
+        mark the undelivered tail as fully delivered."""
         formatted = self.format_message(content)
         chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
         if len(chunks) <= 1:
@@ -3305,13 +3307,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         self.name, delivered, len(chunks), retry_err,
                     )
                     last_id = continuation_ids[-1] if continuation_ids else message_id
+                    # Partial delivery: do NOT report success — the consumer would treat it
+                    # as final delivery and suppress the missing tail. The ``partial_overflow``
+                    # keys (incl. ``delivered_prefix``, the landed chunks minus the ``(n/N)``
+                    # indicators) mirror Telegram's edit-overflow contract the consumer reads.
+                    delivered_prefix = "".join(
+                        re.sub(r" \(\d+/\d+\)$", "", c) for c in chunks[:delivered])
                     return SendResult(
-                        success=True,
+                        success=False,
                         message_id=last_id,
+                        error="overflow_continuation_failed",
+                        retryable=True,
                         continuation_message_ids=tuple(continuation_ids),
                         raw_response={
                             "partial_overflow": True, "delivered_chunks": delivered,
                             "total_chunks": len(chunks), "last_message_id": last_id,
+                            "delivered_prefix": delivered_prefix,
                             "continuation_message_ids": tuple(continuation_ids),
                         },
                     )

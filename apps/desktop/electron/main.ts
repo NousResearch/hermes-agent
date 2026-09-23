@@ -130,6 +130,7 @@ import { createDesktopRuntimeDiscovery } from './desktop-runtime-discovery'
 import { createDesktopShellRuntime } from './desktop-shell-runtime'
 import { createDesktopStartupContext } from './desktop-startup-context'
 import { createDesktopUpdateCheckRuntime } from './desktop-update-check-runtime'
+import { createDesktopUpdateWindowRequest } from './desktop-update-window-request'
 import { createDesktopWindowAssembly } from './desktop-window-assembly'
 import { createDesktopWindowEventsRuntime } from './desktop-window-events-runtime'
 import { registerDesktopWindowIpcRuntime } from './desktop-window-ipc-runtime'
@@ -975,29 +976,11 @@ const { showPluginCompatNoticeOnce } = createDesktopPluginCompatNoticeRuntime({
   rememberLog
 })
 
+const updateWindowRequest = createDesktopUpdateWindowRequest({ getMainWindow: () => mainWindow })
+
+// Earlier factories capture this declaration before the request owner exists.
 function sendOpenUpdatesRequested() {
-  // The renderer mounts its open-updates listener in the same effect pass that
-  // signals deep-link readiness. Before that (e.g. a boot-time dialog answered
-  // before the window is up) queue the request; 'hermes:deep-link-ready' flushes it.
-  if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
-    _pendingOpenUpdates = true
-
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:open-updates')
-
-  if (!mainWindow.isVisible()) {
-    mainWindow.show()
-  }
-
-  mainWindow.focus()
+  return updateWindowRequest.sendOpenUpdatesRequested()
 }
 
 const {
@@ -1525,7 +1508,7 @@ const windows = createDesktopWindowAssembly({
   WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, alreadyHasNoSandbox,
   attachRendererConsoleCapture, backendShutdown, bindWindowChromeEvents,
   buildNoSandboxRelaunchArgs, chatWindowWebPreferences,
-  clearRendererReadyForDeepLink: () => { _rendererReadyForDeepLink = false },
+  clearRendererReadyForDeepLink: () => updateWindowRequest.setRendererReadyForDeepLink(false),
   computeWindowOptions, connectDesktopProfileRoute, desktopProfilePreferences,
   exitAfterBackendShutdown, fallbackMarker, firstRunBoot,
   installWindowRendererLifecycle, loadRendererLoadErrorPage,
@@ -1970,9 +1953,6 @@ registerDesktopOperationsIpc({
 })
 
 const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
-let _rendererReadyForDeepLink = false
-// Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
-let _pendingOpenUpdates = false
 
 function handleDeepLink(url) {
   desktopAppLifecycle.handleDeepLink(url)
@@ -1987,8 +1967,8 @@ const { desktopAppLifecycle, isPrimaryInstance } = installDesktopMainLifecycle({
   enableBasicPasswordStoreEncryption,
   getIsQuittingForHandoff: () => isQuittingForHandoff,
   getMainWindow: () => mainWindow,
-  getPendingOpenUpdates: () => _pendingOpenUpdates,
-  getRendererReadyForDeepLink: () => _rendererReadyForDeepLink,
+  getPendingOpenUpdates: updateWindowRequest.getPendingOpenUpdates,
+  getRendererReadyForDeepLink: updateWindowRequest.getRendererReadyForDeepLink,
   installDownloadHandling, installApplicationMenuAfterFirstWindow,
   installCommandScreenshot, installEmbedReferer, installHudModifierTap,
   installMediaPermissions, installWindowsSystemCaTrust, keepAwake,
@@ -1997,8 +1977,8 @@ const { desktopAppLifecycle, isPrimaryInstance } = installDesktopMainLifecycle({
   resolveRendererIndex, resumeManagedSshRecoveries,
   sendOpenUpdatesRequested, setActiveGatewayProfile,
   setF12Blocked: blocked => { f12Blocked = blocked },
-  setPendingOpenUpdates: pending => { _pendingOpenUpdates = pending },
-  setRendererReadyForDeepLink: ready => { _rendererReadyForDeepLink = ready },
+  setPendingOpenUpdates: updateWindowRequest.setPendingOpenUpdates,
+  setRendererReadyForDeepLink: updateWindowRequest.setRendererReadyForDeepLink,
   setWslBridgeProfileState, BrowserWindow, dialog,
   activeWorkByWebContents, backendConnectionState,
   backendQuitNeedsWait,

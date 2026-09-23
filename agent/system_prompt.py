@@ -637,6 +637,18 @@ def _post_workspace_parts(agent: Any) -> List[str]:
     return parts
 
 
+def _session_artifacts_part(agent: Any) -> str:
+    path = getattr(agent, "session_artifacts_dir", "")
+    if not path:
+        return ""
+    return (
+        f"Session artifacts directory: {path}\n"
+        "Use $HERMES_SESSION_ARTIFACTS_DIR for session deliverables such as reports, plans, "
+        "one-off scripts, scraped data, screenshots, and diffs. Create it when first needed; "
+        "keep files that belong to an existing project in that project's working tree."
+    )
+
+
 def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -> List[str]:
     """Project context files (AGENTS.md etc.) for the context tier. TERMINAL_CWD
     when set (gateway); None lets discovery fall back to the launch dir.  The
@@ -675,6 +687,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _help_guidance_slot = len(stable_parts)
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
     stable_parts.extend(_guidance_parts(agent))
+    stable_parts.append(_session_artifacts_part(agent))
     skills_prompt = _skills_prompt(agent)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).

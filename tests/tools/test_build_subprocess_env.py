@@ -37,6 +37,18 @@ def test_scrub_on_forwards_extra_like_sanitize_extra_env(monkeypatch):
     assert "ANTHROPIC_API_KEY" not in env2
 
 
+def test_build_subprocess_env_injects_session_artifacts_dir(tmp_path):
+    """The session-scoped artifacts location reaches each terminal child."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    artifacts = tmp_path / "artifacts"
+    tokens = set_session_vars(artifacts_dir=str(artifacts))
+    try:
+        assert build_subprocess_env(base={})["HERMES_SESSION_ARTIFACTS_DIR"] == str(artifacts)
+    finally:
+        clear_session_vars(tokens)
+
+
 # ---------------------------------------------------------------------------
 # Unit: no-scrub path preserves content exactly
 # ---------------------------------------------------------------------------

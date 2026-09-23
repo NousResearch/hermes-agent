@@ -35,14 +35,14 @@ _SESSION_VARS = (
     _SESSION_PLATFORM, _SESSION_SOURCE, _SESSION_CHAT_ID, _SESSION_CHAT_TYPE,
     _SESSION_CHAT_NAME, _SESSION_THREAD_ID, _SESSION_USER_ID, _SESSION_USER_ID_ALT,
     _SESSION_USER_NAME, _SESSION_SCOPE_ID, _SESSION_KEY, _SESSION_ID,
-    _SESSION_UI_SESSION_ID, _SESSION_MESSAGE_ID, _SESSION_PROFILE,
+    _SESSION_UI_SESSION_ID, _SESSION_MESSAGE_ID, _SESSION_PROFILE, _SESSION_ARTIFACTS_DIR,
     _BROWSER_CONTROL_PRINCIPAL, _BROWSER_CONTROL_TRANSPORT_FAMILY, _CRON_SESSION, _SESSION_PARENT_CHAT_ID,
 ) = tuple(ContextVar(name, default=_UNSET) for name in (
     "HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE", "HERMES_SESSION_CHAT_ID",
     "HERMES_SESSION_CHAT_TYPE", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_USER_ID", "HERMES_SESSION_USER_ID_ALT", "HERMES_SESSION_USER_NAME",
     "HERMES_SESSION_SCOPE_ID", "HERMES_SESSION_KEY", "HERMES_SESSION_ID",
-    "HERMES_UI_SESSION_ID", "HERMES_SESSION_MESSAGE_ID", "HERMES_SESSION_PROFILE",
+    "HERMES_UI_SESSION_ID", "HERMES_SESSION_MESSAGE_ID", "HERMES_SESSION_PROFILE", "HERMES_SESSION_ARTIFACTS_DIR",
     "HERMES_BROWSER_CONTROL_PRINCIPAL", "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY",
     "HERMES_CRON_SESSION", "HERMES_SESSION_PARENT_CHAT_ID",
 ))
@@ -119,7 +119,7 @@ def set_session_vars(
     message_id: str = "", profile: str = "", browser_control_principal: str = "",
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
-    session_history_delivery: str | None = None,
+    session_history_delivery: str | None = None, artifacts_dir: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -134,7 +134,7 @@ def set_session_vars(
     _session_context_engaged = True
     values = (
         platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
-        user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
+        user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile, artifacts_dir,
         browser_control_principal, browser_control_transport_family, cron_session, parent_chat_id,
     )
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
@@ -177,6 +177,21 @@ def get_session_env(name: str, default: str = "") -> str:
     if var is not None and (value := var.get()) is not _UNSET:
         return value
     return os.getenv(name, default)
+
+
+def set_session_artifacts_dir(artifacts_dir: str) -> None:
+    """Publish a resolved artifacts directory without changing session identity."""
+    _SESSION_ARTIFACTS_DIR.set(artifacts_dir)
+    try:
+        from agent.delegation_context import is_delegated_child_context
+        if is_delegated_child_context():
+            return
+    except Exception:
+        pass
+    if artifacts_dir:
+        os.environ["HERMES_SESSION_ARTIFACTS_DIR"] = artifacts_dir
+    else:
+        os.environ.pop("HERMES_SESSION_ARTIFACTS_DIR", None)
 
 
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/

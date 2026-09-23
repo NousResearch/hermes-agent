@@ -123,6 +123,14 @@ def test_memory_guidance_respects_available_writes(stores, names, monkeypatch, t
         assert "never target='memory'" in prompt
 
 
+def test_artifacts_directory_guidance_is_rendered_for_configured_session():
+    agent = _make_agent(session_artifacts_dir="/tmp/hermes-artifacts")
+
+    prompt = build_system_prompt(agent)
+    assert "HERMES_SESSION_ARTIFACTS_DIR" in prompt
+    assert "/tmp/hermes-artifacts" in prompt
+
+
 class TestContextFileCwd:
     def test_none_when_terminal_cwd_unset(self, monkeypatch):
         # Unset → None, so discovery falls back to the launch dir inside

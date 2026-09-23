@@ -513,6 +513,18 @@ class SessionMessagesMixin:
             role = msg.get("role", "unknown")
             tool_calls = _parse_tool_calls(msg.get("tool_calls"))
             message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
+            origin_row_id = msg.get("_row_id")
+            origin_display = None
+            if isinstance(origin_row_id, int) and not isinstance(origin_row_id, bool) and origin_row_id > 0:
+                # A compaction copy remains the same display event even when pruning rewrites mutable
+                # tool payloads. Row ids are database-global, but the session predicate is load-bearing:
+                # callers may carry an ancestor/foreign stamp that must not reorder this session.
+                origin_display = conn.execute(
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                    "display_kind, display_metadata, display_identity, display_order FROM messages "
+                    "WHERE id = ? AND session_id = ?",
+                    (origin_row_id, session_id),
+                ).fetchone()
             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
             # Keep the caller's live row aligned with the durable identity. Rows created without an explicit
@@ -522,6 +534,15 @@ class SessionMessagesMixin:
             msg["timestamp"] = message_timestamp
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
+                if origin_display is not None:
+                    origin_identity = origin_display["display_identity"] or self._display_identity(
+                        self._display_dedupe_key(origin_display))
+                    origin_order = (origin_display["display_order"]
+                                    if origin_display["display_order"] is not None else origin_display["id"])
+                    conn.execute(
+                        "UPDATE messages SET display_identity = ?, display_order = ? WHERE id = ?",
+                        (origin_identity, origin_order, cur.lastrowid),
+                    )
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
@@ -813,17 +834,19 @@ class SessionMessagesMixin:
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
         the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``."""
-        seen: Dict[Tuple[Any, ...], Any] = {}
-        first_id: Dict[Tuple[Any, ...], int] = {}
+        seen: Dict[Any, Any] = {}
+        first_order: Dict[Any, int] = {}
         for row in rows:
-            key = self._display_dedupe_key(row)
+            # Current stores persist the logical event identity/order. Payload-derived fallback is only
+            # for legacy/read-only rows that predate the display index.
+            key = row["display_identity"] or self._display_identity(self._display_dedupe_key(row))
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row
-            first_id[key] = min(first_id.get(key, row["id"]), row["id"])
-        # Order by the logical message's FIRST row, not the chosen representative's: a protected-tail
-        # copy in a newer generation has a higher id than messages emitted after the original.
-        return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
+            order = row["display_order"] if row["display_order"] is not None else row["id"]
+            first_order[key] = min(first_order.get(key, order), order)
+        # Order by the event's durable origin, not the chosen representative's fresh row id.
+        return [seen[key] for key in sorted(seen, key=first_order.__getitem__)]
 
     def _ensure_display_order(self, session_id: str) -> bool:
         """Backfill one legacy session once, preserving the pre-index display identity exactly."""

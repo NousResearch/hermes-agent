@@ -21,6 +21,8 @@ that must NOT grow with it: the model-fed projection stays compressed, and
 soft-deleted Undo/Rewind rows stay hidden.
 """
 
+import json
+
 import pytest
 
 from hermes_state import SessionDB
@@ -76,6 +78,78 @@ class TestDisplayProjectionParity:
         )
 
         assert _texts(warm) == _texts(_rest_display(db, sid))
+
+    def test_payload_pruning_keeps_carried_rows_at_their_display_origin(self, db):
+        sid = "pruned-payload"
+        db.create_session(sid, source="desktop")
+        db.append_messages_batch(sid, [
+            {
+                "role": "assistant", "content": "Earlier progress", "timestamp": 101.0,
+                "tool_calls": [{"id": "stable-call", "type": "function", "function": {
+                    "name": "demo_tool", "arguments": json.dumps({"value": "L" * 4_000})}}],
+            },
+            {
+                "role": "tool", "content": "R" * 5_000, "tool_call_id": "stable-call",
+                "tool_name": "demo_tool", "timestamp": 102.0,
+            },
+            {"role": "assistant", "content": "Later answer", "timestamp": 200.0},
+        ])
+        history = db.get_messages_as_conversation(sid, include_row_ids=True)
+        history[0]["tool_calls"][0]["function"]["arguments"] = json.dumps({"value": "short"})
+        history[1]["content"] = "short result"
+
+        db.archive_and_compact(sid, history)
+
+        visible = db.get_messages_as_conversation(sid, include_row_ids=True, include_compacted=True)
+        assert [message["content"] for message in visible if message["role"] == "assistant"] == [
+            "Earlier progress", "Later answer",
+        ]
+
+    def test_payload_pruning_keeps_completed_assistant_at_its_display_origin(self, db):
+        sid = "completed-assistant"
+        db.create_session(sid, source="desktop")
+        tool_calls = [{"id": "stable-call", "type": "function", "function": {
+            "name": "demo_tool", "arguments": json.dumps({"value": "L" * 4_000})}}]
+        origin_id = db.append_message(
+            sid, "assistant", "", tool_calls=tool_calls, timestamp=101.0)
+        db.append_message(
+            sid, "tool", "R" * 5_000, tool_call_id="stable-call",
+            tool_name="demo_tool", timestamp=102.0)
+        db.append_message(sid, "assistant", "Later answer", timestamp=200.0)
+
+        db.append_messages_batch(sid, [{
+            "role": "assistant", "content": "Earlier progress", "timestamp": 101.0,
+            "tool_calls": tool_calls, "_row_id": origin_id,
+        }])
+        origin_display = db._read_one(
+            "SELECT display_identity, display_order FROM messages WHERE id = ?", (origin_id,))
+        assert origin_display["display_identity"] is None
+        assert origin_display["display_order"] is None
+
+        history = db.get_messages_as_conversation(sid, include_row_ids=True)
+        history[0]["tool_calls"][0]["function"]["arguments"] = json.dumps({"value": "short"})
+        history[1]["content"] = "short result"
+
+        db.archive_and_compact(sid, history)
+
+        visible = db.get_messages_as_conversation(sid, include_row_ids=True, include_compacted=True)
+        assert [message["content"] for message in visible if message["role"] == "assistant"] == [
+            "Earlier progress", "Later answer",
+        ]
+
+    def test_foreign_row_stamp_cannot_reorder_a_session(self, db):
+        db.create_session("foreign", source="desktop")
+        foreign_id = db.append_message("foreign", "assistant", "foreign origin", timestamp=1.0)
+        db.create_session("target", source="desktop")
+        db.append_message("target", "assistant", "target original", timestamp=2.0)
+
+        db.archive_and_compact("target", [
+            {"role": "assistant", "content": "new event", "timestamp": 3.0, "_row_id": foreign_id},
+        ])
+
+        assert [message["content"] for message in db.get_messages("target", include_compacted=True)] == [
+            "target original", "new event",
+        ]
 
     def test_pre_compaction_turns_survive_in_the_resume_transcript(self, db):
         """The user's own first turn is still there after several compactions."""

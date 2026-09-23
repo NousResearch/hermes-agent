@@ -139,6 +139,34 @@ test('captures a coherent inventory revision and routes Git through the inspecte
   assert.ok(gitCalls[0].includes('rev-parse HEAD'))
 })
 
+test('an empty registered SSH fleet is known empty, while an unreachable registered source remains unknown', async () => {
+  const base = {
+    nowMono: () => 23,
+    git: async () => '',
+    reviewManifestPath: path.join(os.tmpdir(), 'managed-rollout-missing-review.json'),
+    assuranceRoot: path.join(os.tmpdir(), 'managed-rollout-missing-assurance')
+  }
+
+  const empty = createManagedRolloutProductionAdapters({
+    ...base,
+    listSources: () => [],
+    inspectSource: async () => {throw new Error('must-not-probe')}
+  })
+
+  const known = await empty.inventoryReader.capture()
+  assert.deepEqual(known?.observations, [])
+  assert.equal(known?.capturedMono, 23)
+  assert.match(known?.inventoryRevision || '', /^[0-9a-f]{64}$/)
+
+  const unavailable = createManagedRolloutProductionAdapters({
+    ...base,
+    listSources: () => [source(CONNECTION_A, INSTALL_A)],
+    inspectSource: async () => null
+  })
+
+  assert.equal(await unavailable.inventoryReader.capture(), null)
+})
+
 test('consolidates multiple configured connections to one installation with deterministic alias ownership', async () => {
   const sources = [source(CONNECTION_B, INSTALL_A), source(CONNECTION_A, INSTALL_A)]
 

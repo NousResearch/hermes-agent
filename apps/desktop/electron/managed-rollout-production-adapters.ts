@@ -205,18 +205,17 @@ export function createManagedRolloutProductionAdapters(
   const inventoryReader: TrustedInventoryReader = {
     capture: async (): Promise<TrustedInventorySnapshot | null> => {
       repositoryOwners.clear()
+      const sources = options.listSources().filter(source => source.kind === 'ssh')
 
       const inspected = await Promise.all(
-        options.listSources()
-          .filter(source => source.kind === 'ssh')
-          .map(async source => ({ source, inspection: await options.inspectSource(source).catch(() => null) }))
+        sources.map(async source => ({ source, inspection: await options.inspectSource(source).catch(() => null) }))
       )
 
       const usable = inspected.filter(
         (item): item is { source: ProductionSource; inspection: ProductionInventoryInspection } => item.inspection !== null
       )
 
-      if (usable.length === 0) {return null}
+      if (sources.length > 0 && usable.length === 0) {return null}
 
       const observations = usable.map(({ source, inspection }) => {
         const root = canonicalCodeRoot(inspection.codeRoot)

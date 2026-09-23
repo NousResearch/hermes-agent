@@ -7500,7 +7500,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "title: a short topic name, 1–6 words "
             "message: the complete plain-text request"
         )
-        if normalized == boilerplate:
+        if normalized == boilerplate or re.fullmatch(
+            rf"[A-Za-z][A-Za-z0-9 _-]{{0,64}} via Becky: {re.escape(boilerplate)}",
+            normalized,
+        ):
             return OneShotResult(schema_version="1", disposition="ignored", event=None)
 
         config = getattr(self, "_becky_loops_config", None)

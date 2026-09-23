@@ -343,3 +343,33 @@ def test_requeue_skips_non_managed(monkeypatch):
             {"task_cfg": {"defer": "auto"}, "focus": None,
              "_requeue_attempts": 1})
     assert calls["enqueued"] == []
+
+
+def test_deferred_review_dispatches_in_the_enqueuing_profile(tmp_path):
+    """A turn serving a non-default profile runs under a context-local HERMES_HOME override. Its
+    deferred review is dispatched later from the queue's own thread, which starts with an empty
+    context: the review must still see the session's profile, or its MEMORY.md / skill writes land
+    in the process default profile."""
+    from agent.review_idle_queue import ReviewIdleQueue
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    dispatched = threading.Event()
+    seen = {}
+
+    class _Agent:
+        def _spawn_background_review_now(self, **kwargs):
+            seen["home"] = str(get_hermes_home())
+            dispatched.set()
+
+    q = ReviewIdleQueue()
+    q._server_idle = lambda: True
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        q.enqueue(_Agent(), "work-session", {"task_cfg": {"defer_max_age_s": 0.001}})
+    finally:
+        reset_hermes_home_override(token)
+
+    assert dispatched.wait(10), "deferred review never dispatched"
+    assert seen["home"] == str(profile_home)

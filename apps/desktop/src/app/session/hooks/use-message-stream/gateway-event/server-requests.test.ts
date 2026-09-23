@@ -19,7 +19,12 @@ const deps = {
 function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string) {
   const respond = vi.fn()
   const fail = vi.fn()
-  const handled = handleServerRequest({ fail, id: 'srq-1', method, params, profile: 'default', respond }, deps, activeSessionId)
+
+  const handled = handleServerRequest(
+    { fail, id: 'srq-1', method, params, profile: 'default', respond },
+    deps,
+    activeSessionId
+  )
 
   return { fail, handled, respond }
 }
@@ -83,7 +88,11 @@ describe('preview action request routing', () => {
   })
 
   it('leaves a scoped action request unanswered in a window showing another session', () => {
-    const { handled, respond, fail } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-b')
+    const { handled, respond, fail } = deliver(
+      'preview.act',
+      { action: 'elements', session_id: 'session-a' },
+      'session-b'
+    )
 
     expect(handled).toBe(true)
     expect(respond).not.toHaveBeenCalled()
@@ -103,7 +112,7 @@ describe('preview action request routing', () => {
     }
   })
 
-  it('answers pane reads for a session hosted in one of this window\'s tiles', async () => {
+  it("answers pane reads for a session hosted in one of this window's tiles", async () => {
     // The tile session is not the active one, but this window hosts it: its
     // panes are here, so an 'ignore' would stall the tool until its deadline.
     $sessionTiles.set([{ runtimeId: 'session-a', storedSessionId: 'stored-a' } as never])

@@ -43,6 +43,7 @@ monorepo/                   (git root, cwd = packages/webapp/)
         └── AGENTS.md      ← Loaded last (most specific, takes precedence)
 ```
 
+<!-- no-tmp: ok — explains why /tmp is never trusted -->
 Outside a git repository, only the working directory itself is checked — parents are never consulted, so an `AGENTS.md` planted in `/tmp` or `$HOME` can't leak into unrelated sessions.
 
 ### Progressive Subdirectory Discovery

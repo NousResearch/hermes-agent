@@ -150,17 +150,30 @@ def _sync_codex_pool_entries(
         _clear_pool_entry_status(entry)
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
-    """Save Codex OAuth tokens (singleton AND ``credential_pool`` aliases) to the active auth store.
+def _save_codex_tokens(
+    tokens: Dict[str, str], last_refresh: str = None, label: str = None, *,
+    set_active: bool = True, write_through: bool = False,
+) -> None:
+    """Save Codex OAuth tokens to the auth store the grant was resolved FROM.
 
-    Codex refresh tokens are single-use with rotation-family reuse detection, so the pool rows that
-    alias the singleton must rotate with it or the next process replays the consumed token and
-    OpenAI revokes the whole family (#87503).
+    Codex refresh tokens are single-use with rotation-family reuse detection. A profile without its
+    own ``providers.openai-codex`` block reads root's grant via the fallback, so a refresh under that
+    profile must rotate ROOT's chain — singleton AND ``credential_pool`` entries — or root keeps the
+    consumed refresh token, the next process replays it and OpenAI revokes the whole family
+    (#87503). Root-only write-back: a profile copy would shadow root and disable the write-through
+    on the next refresh (#74339). Mirrors the xAI source-aware save.
+
+    Only a token REFRESH passes ``write_through=True``: a fresh login or import under a profile
+    is the profile's own grant and must not overwrite the root account it was borrowing.
+    ``set_active=False`` stores credentials for a side tool (image gen) without making Codex the
+    active inference provider.
     """
-    from hermes_cli.auth import _provider_state_transaction, _save_auth_store, _store_provider_state, _utc_now_z
+    from hermes_cli.auth import (
+        _auth_file_path, _load_auth_store, _provider_state_transaction, _same_path,
+        _save_auth_store, _store_provider_state, _utc_now_z)
     if last_refresh is None:
         last_refresh = _utc_now_z()
-    with _provider_state_transaction("openai-codex") as (auth_store, state, _source_path):
+    with _provider_state_transaction("openai-codex") as (auth_store, state, source_path):
         state = dict(state) if state else {}
         # Capture the previous singleton tokens BEFORE overwriting: the pool sync uses them to
         # tell legacy singleton-aliases (refresh) from independent ``auth add`` accounts (keep).
@@ -169,19 +182,32 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode="chatgpt")
         if label and str(label).strip():
             state["label"] = str(label).strip()
-        _store_provider_state(auth_store, "openai-codex", state, set_active=True)
+        target_store, target_path = auth_store, None
+        if write_through and source_path is not None and not _same_path(source_path, _auth_file_path()):
+            # Root-borrowed grant: the transaction already holds root's lock, so write the rotated
+            # chain into ROOT's store (never set_active — a refresh is not a provider choice).
+            target_store, target_path, set_active = _load_auth_store(source_path), source_path, False
+        _store_provider_state(target_store, "openai-codex", state, set_active=set_active)
         _sync_codex_pool_entries(
-            auth_store, tokens, last_refresh, previous_singleton_tokens=previous_singleton_tokens)
-        _save_auth_store(auth_store)
+            target_store, tokens, last_refresh, previous_singleton_tokens=previous_singleton_tokens)
+        _save_auth_store(target_store, target_path=target_path)
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
+def _recover_codex_tokens_from_cli(
+        reason: str, observed_access_token: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Adopt a valid Codex CLI token pair into Hermes auth, if available.
 
     Automatic adoption only; the interactive import offer in ``_login_openai_codex`` asks first and is
-    not subject to ``auth.adopt_external_logins``."""
+    not subject to ``auth.adopt_external_logins``.
+
+    ``observed_access_token`` is the singleton access_token (or None) the caller saw when it decided
+    the credential needs repair. Recovery repairs THAT credential and nothing else (#73667): a Codex
+    Desktop/CLI login into another ChatGPT workspace must not replace it silently, and a concurrent
+    explicit re-auth must not be overwritten, so the save is a compare-and-swap under the store lock.
+    """
+    from agent.credential_pool import _codex_principal_identity
     from agent.credential_sources import adopt_external_logins_enabled
-    from hermes_cli.auth import _import_codex_cli_tokens, _save_codex_tokens
+    from hermes_cli.auth import _import_codex_cli_tokens, _provider_state_transaction, _save_codex_tokens
     if not adopt_external_logins_enabled():
         return None
     imported = _import_codex_cli_tokens()
@@ -190,8 +216,22 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
     if not (imported and _stripped(imported.get("access_token"))
             and _stripped(imported.get("refresh_token"))):
         return None
-    logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
-    _save_codex_tokens(imported)
+    observed = _stripped(observed_access_token) or None
+    with _provider_state_transaction("openai-codex") as (_store, state, _source):
+        stored = (state or {}).get("tokens")
+        stored = stored if isinstance(stored, dict) else {}
+        if (_stripped(stored.get("access_token")) or None) != observed:
+            logger.info("Codex CLI recovery skipped (%s): the credential was re-authenticated meanwhile.", reason)
+            return None
+        known = _codex_principal_identity(observed)
+        if known and _codex_principal_identity(imported["access_token"]) not in (None, known):
+            logger.warning(
+                "Codex CLI recovery refused (%s): the Codex CLI login belongs to a different ChatGPT "
+                "workspace than the Hermes credential. Run `%s` to re-authenticate it.",
+                reason, _codex_relogin_command())
+            return None
+        logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
+        _save_codex_tokens(imported)  # nested: the per-path lock is reentrant
     return dict(imported)
 
 
@@ -444,10 +484,10 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
     """Refresh Codex access token using the refresh token.
 
     The whole re-read -> endpoint POST -> write-back runs inside the SOURCE store's transaction:
-    two processes of one profile otherwise both submit the same single-use refresh token and OpenAI
-    revokes the family. A waiter that finds the store already rotated by its peer adopts the stored
-    pair instead of replaying the consumed token. The lock waits out a full endpoint timeout so the
-    waiter adopts, not times out.
+    two profiles borrowing the same root grant otherwise both submit the same single-use refresh
+    token (each holds only its own profile lock) and OpenAI revokes the family. A waiter that
+    finds root already rotated by its peer adopts the stored pair instead of replaying the
+    consumed token. Both locks wait out a full endpoint timeout so the waiter adopts, not times out.
     """
     from hermes_cli.auth import _provider_state_transaction, _save_codex_tokens, refresh_codex_oauth_pure
     lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), float(timeout_seconds) + 5.0)
@@ -472,15 +512,16 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
             if not getattr(exc, "relogin_required", False):
                 raise
             imported = _recover_codex_tokens_from_cli(
-                f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}")
+                f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}",
+                observed_access_token=stored_at or None)
             if not imported:
                 raise
             return imported
         updated_tokens = {
             **tokens, "access_token": refreshed["access_token"],
             "refresh_token": refreshed["refresh_token"]}
-        # Nested transaction: the per-path lock is reentrant, and it re-reads under the held lock.
-        _save_codex_tokens(updated_tokens)
+        # Nested transaction: the per-path lock is reentrant, and it re-reads under the held locks.
+        _save_codex_tokens(updated_tokens, write_through=True)
     return updated_tokens
 
 
@@ -531,16 +572,28 @@ def resolve_codex_runtime_credentials(
         _read_codex_tokens)
     read_error: Optional[AuthError] = None
     data = None
+    observed: Optional[str] = None
     try:
-        # A read-only report takes no store lock: ``_save_auth_store`` replaces auth.json
-        # atomically, and materialising ``auth.lock`` is itself a write a diagnostic must not make.
-        data = _read_codex_tokens(_lock=not read_only)
+        if read_only:
+            # A read-only report takes no store lock: ``_save_auth_store`` replaces auth.json
+            # atomically, and materialising ``auth.lock`` is itself a write a diagnostic must not
+            # make. No recovery follows a read-only read, so no observed token is needed.
+            data = _read_codex_tokens(_lock=False)
+        else:
+            with _auth_store_lock():
+                # Observe the singleton in the same locked snapshot the read validates, so recovery
+                # can compare-and-swap against exactly the credential it is repairing (#73667).
+                from hermes_cli.auth import _load_auth_store, _load_provider_state
+                raw = (_load_provider_state(_load_auth_store(), "openai-codex") or {}).get("tokens")
+                observed = raw.get("access_token") if isinstance(raw, dict) else None
+                data = _read_codex_tokens(_lock=False)
     except AuthError as exc:
         read_error = exc
         if not read_only and exc.relogin_required and exc.code in {
             "codex_auth_missing_access_token", "codex_auth_missing_refresh_token",
             "codex_auth_invalid_shape"}:
-            imported = _recover_codex_tokens_from_cli(str(exc.code or "auth_error"))
+            imported = _recover_codex_tokens_from_cli(
+                str(exc.code or "auth_error"), observed_access_token=observed)
             if imported:
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
     if data is None:
@@ -556,8 +609,9 @@ def resolve_codex_runtime_credentials(
         if pool_rate_limit:
             # Before surfacing the persisted cooldown, ask the usage endpoint whether the quota
             # reset early (banked reset redeemed, plan upgraded): ``last_error_reset_at`` can be
-            # days in the future while the account is already usable again.
-            if _probe_codex_pool_entry_quota_restored(pool_rate_limit):
+            # days in the future while the account is already usable again. Never from a
+            # read-only caller: the picker fingerprint resolves on every cache-only read.
+            if not read_only and _probe_codex_pool_entry_quota_restored(pool_rate_limit):
                 logger.info("Codex quota restored upstream — clearing stale pool cooldown(s).")
                 clear_codex_pool_quota_cooldowns()
                 pool_token = _pool_codex_access_token()
@@ -760,11 +814,15 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     rate-limited entry does (a redeemed banked reset restores the whole account; a still-exhausted
     entry just re-freezes with fresh metadata on its next 429).
     """
+    from agent.credential_pool import _borrowed_single_use_pool_root, _profile_owns_pool_provider
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
     cleared = 0
     try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
+        # Same owner rule as ``persist_pool_entries``: a profile with no Codex rows of its own
+        # borrows the global-root pool, so the cooldown must clear where the rows actually live.
+        target = None if _profile_owns_pool_provider("openai-codex") else _borrowed_single_use_pool_root()
+        with _auth_store_lock(target_path=target):
+            auth_store = _load_auth_store(target)
             for entry in _codex_pool_dicts(_pool_entries(auth_store, "openai-codex")):
                 if access_token and str(entry.get("access_token") or "") != access_token:
                     continue
@@ -772,7 +830,7 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
                     _clear_pool_entry_status(entry)
                     cleared += 1
             if cleared:
-                _save_auth_store(auth_store)
+                _save_auth_store(auth_store, target_path=target)
     except Exception:
         logger.debug("Failed to clear Codex pool quota cooldowns", exc_info=True)
     return cleared
@@ -785,7 +843,10 @@ def _codex_pool_dicts(entries: Optional[List[Any]]) -> Iterator[Dict[str, Any]]:
 
 
 def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
-    """Return metadata for a pool-only Codex credential in quota cooldown."""
+    """Return metadata for a pool-only Codex credential in quota cooldown.
+
+    Reads through ``read_credential_pool`` so a named profile with no Codex rows of its own sees
+    the global-root pool (the per-provider fallback every other pool read uses)."""
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     from agent.credential_pool import _parse_absolute_timestamp
     try:
@@ -817,7 +878,8 @@ def _pool_entries(auth_store: Dict[str, Any], provider_id: str) -> Optional[List
 def _pool_codex_access_token() -> str:
     """First non-empty pool access_token not in an exhaustion cooldown window, else "".
 
-    Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds.
+    Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
+    through ``read_credential_pool`` so a profile inherits the global-root pool (#34143).
     """
     from agent.credential_pool import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
@@ -836,12 +898,14 @@ def _pool_codex_access_token() -> str:
 
 
 def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool = False) -> None:
-    """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
+    """OpenAI Codex login: device code by default, browser PKCE when opted in (``--browser`` /
+    ``auth.codex_login_flow``). Tokens stored in ~/.hermes/auth.json."""
     from hermes_cli.auth import (
-        _codex_access_token_is_expiring, _codex_device_code_login, _import_codex_cli_tokens,
+        _codex_access_token_is_expiring, _import_codex_cli_tokens,
         _offer_existing_oauth_credentials, _print_login_success, _prompt_yes_no, _save_codex_tokens,
         _update_config_for_provider, resolve_codex_runtime_credentials)
-    del args, pconfig  # kept for parity with other provider login helpers
+    from hermes_cli.auth_codex_browser import codex_oauth_login
+    del pconfig  # kept for parity with other provider login helpers
     if not force_new_login:
         if _offer_existing_oauth_credentials(
             "openai-codex", resolve=resolve_codex_runtime_credentials,
@@ -863,12 +927,10 @@ def _login_openai_codex(args, pconfig: ProviderConfig, *, force_new_login: bool 
                 print(f"  Config updated: {config_path} (model.provider=openai-codex)")
                 return
 
-    # Run a fresh device code flow — Hermes gets its own OAuth session
+    # Run a fresh OAuth flow — Hermes gets its own session (device code unless the user opted in
+    # to the browser flow).
     print()
-    print("Signing in to OpenAI Codex...")
-    print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
-    print()
-    creds = _codex_device_code_login()
+    creds = codex_oauth_login(args)
     _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
     config_path = _update_config_for_provider(
         "openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))

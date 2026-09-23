@@ -606,6 +606,16 @@ def _browser_status() -> None:
                "   /browser disconnect   — revert to default")
 
 
+# /browser subcommand word → handler(cli, rest); ``rest`` is the raw (case-preserved)
+# remainder of the line. Adding a subcommand is one row here plus a usage line.
+_BROWSER_SUBCOMMANDS = {
+    "use": lambda cli, rest: _browser_use(cli, rest.lower() or "on"),
+    "connect": lambda cli, rest: _browser_connect(cli, rest or DEFAULT_BROWSER_CDP_URL),
+    "disconnect": lambda cli, rest: _browser_disconnect(cli),
+    "status": lambda cli, rest: _browser_status(),
+}
+
+
 class CLICommandsMixin:
     """Mixin holding the interactive-CLI slash-command handlers."""
 
@@ -1388,7 +1398,9 @@ class CLICommandsMixin:
             return _cp("  No conversation to branch — send a message first.")
         if not self._session_db:
             return _cp(_db_unavailable_line())
-        branch_name = _command_arg(cmd_original)
+        # CLI has no threads: always in place; strip the gateway's ``--here`` so it is never a title.
+        from gateway.slash_commands_branch_thread import parse_branch_args
+        _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
         new_session_id = mint_session_id(now)
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(
@@ -1969,6 +1981,7 @@ class CLICommandsMixin:
                     **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode",
                                                    "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
+                    side_agent=True,
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
@@ -2148,24 +2161,21 @@ class CLICommandsMixin:
 
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status|use — manage the live Chromium-family CDP connection."""
-        sub = _command_arg(cmd).lower() or "status"
-        if sub == "use" or sub.startswith("use "):
-            _browser_use(self, sub.split(None, 1)[1].strip() if " " in sub else "on")
-        elif sub.startswith("connect"):
-            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
-            url = connect_parts[2].strip() if len(connect_parts) > 2 else DEFAULT_BROWSER_CDP_URL
-            _browser_connect(self, url)
-        elif sub == "disconnect":
-            _browser_disconnect(self)
-        elif sub == "status":
-            _browser_status()
-        else:
+        # The subcommand word is matched case-insensitively; the raw argument keeps
+        # its case because a CDP URL's path segment is case-sensitive.
+        parts = _command_arg(cmd).split(None, 1)
+        word = parts[0].lower() if parts else "status"
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        handler = _BROWSER_SUBCOMMANDS.get(word)
+        if handler is None:
             _say_block(
                 "Usage: /browser connect|disconnect|status|use", "",
                 "   connect      Connect browser tools to your live Chromium-family browser session",
                 "   disconnect   Revert to default browser backend",
                 "   status       Show current browser mode",
                 "   use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools")
+            return
+        handler(self, rest.strip())
 
     # ---- /heartbeat, /refine, /review -----------------------------------------------------
     def _session_manager(self, getter, label: str):
@@ -2563,11 +2573,13 @@ class CLICommandsMixin:
         """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
         scope unless --global) and thinking display toggles (always saved)."""
         from cli import CLI_CONFIG, _parse_reasoning_config
+        from agent.reasoning_effort import effort_display_label
         raw = _command_arg(cmd)
+        _route = (getattr(self, "provider", None), getattr(self, "model", None))
         if not raw:  # show current state
             rc = self.reasoning_config
             level = ("medium (default)" if rc is None else "none (disabled)"
-                     if rc.get("enabled") is False else rc.get("effort", "medium"))
+                     if rc.get("enabled") is False else effort_display_label(rc.get("effort", "medium"), *_route))
             display_state = "on ✓" if self.show_reasoning else "off"
             full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             return _cp(_accent_line(f"Reasoning effort:  {level}"),
@@ -2602,7 +2614,8 @@ class CLICommandsMixin:
             if not isinstance(CLI_CONFIG.get("agent"), dict):
                 CLI_CONFIG["agent"] = {}
             CLI_CONFIG["agent"]["reasoning_effort"] = arg
-        _cp(_accent_line(f"✓ Reasoning effort set to '{arg}' {_scope_outcome(explicit_global, saved)}"))
+        _cp(_accent_line(f"✓ Reasoning effort set to '{effort_display_label(arg, *_route)}' "
+                         f"{_scope_outcome(explicit_global, saved)}"))
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy [status|queue|steer|interrupt] — what Enter does while Hermes is working."""

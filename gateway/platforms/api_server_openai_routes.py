@@ -88,6 +88,50 @@ def _message_item(text: Any) -> Dict[str, Any]:
             "content": [{"type": "output_text", "text": text}]}
 
 
+def _cap_text(text: str, keep: int) -> str:
+    """Head of ``text`` plus a marker saying how much was cut (the Responses truncation rule)."""
+    return text[:keep] + "...[" + str(len(text) - keep) + " more chars]"
+
+
+def _cap_history_tool_outputs(history: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
+    """Copy of ``history`` with tool outputs and string tool-call arguments longer than
+    ``max_chars`` cut down. Only tool rows and ``tool_calls`` blobs change; user/assistant text
+    is left alone, and the agent's own transcript rows are never mutated (rows are copied).
+    Opt-in via gateway.api_server.history_tool_output_max_chars: a single stored snapshot
+    embeds the full cumulative history, so a few large tool outputs pushed one
+    response_store.db write to ~677 KB (#82513)."""
+    if max_chars <= 0:
+        return history
+    out: List[Dict[str, Any]] = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        content = msg.get("content")
+        if msg.get("role") == "tool" and isinstance(content, str) and len(content) > max_chars:
+            msg = {**msg, "content": _cap_text(content, max_chars)}
+        tool_calls = msg.get("tool_calls")
+        if msg.get("role") == "assistant" and isinstance(tool_calls, list):
+            capped_calls = []
+            for call in tool_calls:
+                fn = call.get("function") if isinstance(call, dict) else None
+                raw = fn.get("arguments") if isinstance(fn, dict) else None
+                if isinstance(raw, str) and len(raw) > max_chars:
+                    try:
+                        args = json.loads(raw)
+                    except ValueError:
+                        args = None
+                    if isinstance(args, dict):
+                        for k, v in args.items():
+                            if isinstance(v, str) and len(v) > max_chars:
+                                args[k] = _cap_text(v, max_chars)
+                        call = {**call, "function": {**fn, "arguments": json.dumps(args)}}
+                capped_calls.append(call)
+            msg = {**msg, "tool_calls": capped_calls}
+        out.append(msg)
+    return out
+
+
 def _reasoning_item(text: str) -> Dict[str, Any]:
     """Completed Responses ``reasoning`` output item (same shape the SSE writer closes with)."""
     return {"id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning", "status": "completed",
@@ -141,7 +185,7 @@ def _trim_tool_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if isinstance(first, dict) and first.get("type") == "input_text":
                     text = first.get("text", "")
                     if len(text) > 1000:
-                        first["text"] = text[:500] + "...[" + str(len(text) - 500) + " more chars]"
+                        first["text"] = _cap_text(text, 500)
                         item["output"] = [first]
     return items
 
@@ -291,6 +335,20 @@ class _ResponsesStream:
         await self.write_event("response.output_item.done", {
             "type": "response.output_item.done", "output_index": rs["output_index"], "item": item})
 
+    async def emit_commentary(self, text: str) -> None:
+        """Mid-turn assistant commentary as its own completed ``message`` item carrying
+        ``"phase": "commentary"`` — never appended to ``final_text_parts``, so the final answer
+        item stays clean (#67580). Closes any open reasoning item first so a reasoning item
+        never straddles a message item."""
+        await self.close_reasoning_item()
+        item = {"id": f"msg_{uuid.uuid4().hex[:24]}", "status": "completed", "phase": "commentary",
+                **_message_item(text)}
+        idx = self.output_index
+        self.output_index += 1
+        self.emitted_items.append({"phase": "commentary", **_message_item(text)})
+        for event in ("response.output_item.added", "response.output_item.done"):
+            await self.write_event(event, {"type": event, "output_index": idx, "item": item})
+
     async def emit_tool_started(self, payload: Dict[str, Any]) -> None:
         """function_call ``output_item.added``; the agent's tool_call_id beats a generated call id."""
         await self.close_reasoning_item()
@@ -336,17 +394,29 @@ class _ResponsesStream:
         for event in ("response.output_item.added", "response.output_item.done"):
             await self.write_event(event, {"type": event, "output_index": idx, "item": output_item})
 
+    async def emit_status(self, payload: Dict[str, Any]) -> None:
+        """Lifecycle/warning status (provider wait, auto-recovery countdown, fallback switch) as a
+        ``hermes.status`` custom event; not a Responses output item."""
+        await self.response.write(self._api._sse_frame(payload, event="hermes.status"))
+
+    # queue tag -> (method name, payload adapter)
+    _TAG_HANDLERS = {
+        "__tool_started__": ("emit_tool_started", lambda p: p),
+        "__tool_completed__": ("emit_tool_completed", lambda p: p),
+        "__commentary__": ("emit_commentary", lambda p: p["text"]),
+        "__reasoning__": ("emit_reasoning_delta", lambda p: p),
+        "__status__": ("emit_status", lambda p: p),
+    }
+
     async def dispatch(self, item: Any) -> None:
-        """Route one queue item: tool tuples emit immediately, strings are batched, others dropped."""
+        """Route one queue item: tagged tuples emit immediately, strings are batched, others dropped."""
         if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
             tag, payload = item
             await self.flush_batch()
-            if tag == "__tool_started__":
-                await self.emit_tool_started(payload)
-            elif tag == "__tool_completed__":
-                await self.emit_tool_completed(payload)
-            elif tag == "__reasoning__":
-                await self.emit_reasoning_delta(payload)
+            handler = self._TAG_HANDLERS.get(tag)
+            if handler is not None:
+                method, adapt = handler
+                await getattr(self, method)(adapt(payload))
         elif isinstance(item, str):
             self._batch_buf.append(item)
             if self._batch_timer is None:
@@ -432,7 +502,8 @@ class _ResponsesStream:
         env = self.terminal_envelope("completed", self._final_items())
         result = self.result
         full_history = self.adapter._build_response_conversation_history(
-            self.conversation_history, self.user_message, result, self.final_response_text)
+            self.conversation_history, self.user_message, result, self.final_response_text,
+            tool_output_max_chars=self.adapter._history_tool_output_max_chars)
         # Transcript substitution for result["_compressed"] happens in the history builder; only
         # a compression-rotated session_id is propagated so chaining resumes the child session.
         sid = result.get("session_id") if isinstance(result, dict) else None
@@ -480,10 +551,17 @@ class OpenAICompatRoutesMixin:
             # keep them distinct from answer text.
             if text:
                 stream_q.put_threadsafe(("__reasoning__", text))
+        def _on_status(kind, message=None):
+            # Lifecycle/warning status (provider wait, auto-recovery countdown, fallback switch) as a
+            # ``hermes.status`` event, so a client sees why the stream is silent instead of a dead socket.
+            from gateway.platforms.api_server import _redact_api_error_text
+            text = _redact_api_error_text(message if message is not None else kind or "").strip()
+            if text:
+                stream_q.put_threadsafe(("__status__", {"kind": str(kind), "text": text}))
         agent_ref = [None]
         agent_task = asyncio.ensure_future(self._run_agent(
-            stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning, agent_ref=agent_ref,
-            **run_kwargs))
+            stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning, status_callback=_on_status,
+            agent_ref=agent_ref, **run_kwargs))
         agent_task.add_done_callback(lambda _fut: stream_q.put_nowait(None))
         return agent_task, agent_ref
 
@@ -762,6 +840,8 @@ class OpenAICompatRoutesMixin:
                     # DeepSeek-style ``delta.reasoning_content`` (#99552), the field Open WebUI,
                     # opencode and the Vercel AI SDK render as a thinking block.
                     await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
+                elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__status__":
+                    await response.write(_sse_frame(delta[1], event="hermes.status"))
                 else:
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
@@ -982,10 +1062,16 @@ class OpenAICompatRoutesMixin:
                 _stream_q.put_threadsafe(("__tool_completed__", {
                     "tool_call_id": tool_call_id, "name": function_name,
                     "arguments": function_args or {}, "result": function_result}))
+
+            def _on_commentary(text, *, already_streamed: bool = False):
+                # Already-streamed text went out as output_text.delta of the final item; a second
+                # copy as a commentary item would duplicate it.
+                if not already_streamed and isinstance(text, str) and text.strip():
+                    _stream_q.put_threadsafe(("__commentary__", {"text": text}))
             agent_task, agent_ref = self._spawn_stream_agent(
                 _stream_q, tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start, tool_complete_callback=_on_tool_complete,
-                **run_kwargs)
+                interim_assistant_callback=_on_commentary, **run_kwargs)
             return await self._write_sse_responses(
                 request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}",
                 model=body.get("model", self._model_name), created_at=int(time.time()),
@@ -1010,7 +1096,8 @@ class OpenAICompatRoutesMixin:
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
         full_history = self._build_response_conversation_history(
-            conversation_history, user_message, result, final_response)
+            conversation_history, user_message, result, final_response,
+            tool_output_max_chars=self._history_tool_output_max_chars)
         # _run_agent's effective session id carries compression rotations; storing it keeps
         # previous_response_id chaining off the pre-rotation session (else compression re-fires).
         _result_sid = result.get("session_id") if isinstance(result, dict) else None
@@ -1062,12 +1149,15 @@ class OpenAICompatRoutesMixin:
     @staticmethod
     def _build_response_conversation_history(
         conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any],
-        final_response: Any) -> List[Dict[str, Any]]:
+        final_response: Any, *, tool_output_max_chars: int = 0) -> List[Dict[str, Any]]:
         """Build the stored Responses transcript without duplicating history.
 
         A compressed transcript (``result["_compressed"]``) shares no input-history prefix, so
         turn-start detection fails; prepending the uncompressed history would bloat the stored
         context and re-trigger compression every request — it is stored as-is instead.
+
+        ``tool_output_max_chars`` > 0 caps tool outputs / tool-call argument blobs in the
+        stored copy (gateway.api_server.history_tool_output_max_chars; 0 = store verbatim).
         """
         from gateway.platforms.api_server import APIServerAdapter
         prior = list(conversation_history)
@@ -1078,25 +1168,20 @@ class OpenAICompatRoutesMixin:
                 conversation_history, user_message, result)
             # turn_start == 0: compression rewrote the transcript or agent_messages is turn-only.
             if turn_start or result.get("_compressed"):
-                return list(agent_messages)
-            return prior + [current_user] + agent_messages
-        return prior + [current_user, {"role": "assistant", "content": final_response}]
+                history = list(agent_messages)
+            else:
+                history = prior + [current_user] + agent_messages
+        else:
+            history = prior + [current_user, {"role": "assistant", "content": final_response}]
+        return _cap_history_tool_outputs(history, tool_output_max_chars)
 
     @staticmethod
     def _response_messages_turn_start_index(
         conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any],
     ) -> int:
-        """Detect transcript-shaped result["messages"] and return turn start."""
-        agent_messages = result.get("messages") if isinstance(result, dict) else None
-        if not isinstance(agent_messages, list) or not agent_messages:
-            return 0
-        prior = list(conversation_history)
-        expected_prefix = prior + [{"role": "user", "content": user_message}]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
-            return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
-            return len(prior)
-        return 0
+        """Index where this turn starts in a transcript-shaped result["messages"] (0 = all)."""
+        from gateway.platforms.api_server_turn_boundary import response_turn_start_index
+        return response_turn_start_index(conversation_history, user_message, result)
 
     @classmethod
     def _turn_transcript_messages(

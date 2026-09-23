@@ -47,13 +47,13 @@ def test_idle_proof_reads_the_real_cron_and_human_input_ledgers():
     assert idle_proof()["idle"] is True
 
     with scheduler._running_lock:
-        scheduler._running_job_ids.add("idle-proof-live-job")
+        scheduler._running_job_ids.add(scheduler._inflight_key("idle-proof-live-job"))
     try:
         # The busy verdict names the ledger and the job, so a backend that will not retire is diagnosable.
         assert idle_proof() == {"idle": False, "reason": "turn_in_flight", "detail": "cron:idle-proof-live-job"}
     finally:
         with scheduler._running_lock:
-            scheduler._running_job_ids.discard("idle-proof-live-job")
+            scheduler._running_job_ids.discard(scheduler._inflight_key("idle-proof-live-job"))
 
     from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -129,7 +129,7 @@ def _spawn_desktop_child(tmp_path: Path, name: str, *, busy: bool) -> subprocess
     hold = (
         "import cron.scheduler as s\n"
         "with s._running_lock:\n"
-        "    s._running_job_ids.add('live-idle-proof-job')\n"
+        "    s._running_job_ids.add(s._inflight_key('live-idle-proof-job'))\n"
     ) if busy else ""
     code = (
         hold
@@ -183,6 +183,18 @@ def _probe(port: int, token: str | None = TOKEN) -> tuple[int, dict]:
         return exc.code, {}
 
 
+def _await_verdict(port: int, accept, timeout: float = 60.0) -> tuple[tuple[int, dict], list]:
+    """Probe until ``accept(verdict)`` or the deadline; returns the last verdict and every one seen."""
+    deadline = time.monotonic() + timeout
+    seen: list[tuple[int, dict]] = []
+    while True:
+        verdict = _probe(port)
+        seen.append(verdict)
+        if accept(verdict) or time.monotonic() >= deadline:
+            return verdict, seen
+        time.sleep(0.2)
+
+
 @pytestmark_live
 def test_live_pooled_children_prove_idle_or_busy_over_the_desktop_probe(tmp_path):
     """Three real children at the Desktop's pool cap; exactly one is busy. The Desktop's probe
@@ -201,13 +213,20 @@ def test_live_pooled_children_prove_idle_or_busy_over_the_desktop_probe(tmp_path
             ready_line = next(l for l in lines if "HERMES_BACKEND_READY" in l)
             ports[name] = int(ready_line.strip().rsplit("port=", 1)[1])
 
+        # READY precedes quiescence: the desktop child's cron ticker runs its first tick right at
+        # start and holds retirement admission through the whole scan (``retirement_admission``),
+        # which on a loaded runner outlasts the first probe. A resident is "provably idle" once that
+        # startup work drains, so poll until the verdict settles instead of sampling once.
         verdicts = {name: _probe_settled(port, lambda b: b.get("idle") is True)
                     for name, port in ports.items() if name != "cron-busy"}
-        verdicts["cron-busy"] = _probe_settled(ports["cron-busy"], lambda b: str(b.get("detail", "")).startswith("cron:"))
+        verdicts["cron-busy"], busy_seen = _await_verdict(
+            ports["cron-busy"], lambda v: str(v[1].get("detail", "")).startswith("cron:"))
         assert verdicts["resident-a"] == (200, {"ok": True, "idle": True, "reason": None}), verdicts
         assert verdicts["resident-b"] == (200, {"ok": True, "idle": True, "reason": None}), verdicts
         assert verdicts["cron-busy"] == (200, {
             "ok": True, "idle": False, "reason": "turn_in_flight", "detail": "cron:live-idle-proof-job"}), verdicts
+        # Whatever startup work shadowed the cron ledger, the busy child never once claimed idle.
+        assert all(body.get("idle") is False for _status, body in busy_seen), busy_seen
 
         status, body = _probe(ports["resident-a"], token=None)
         assert status == 401 and "idle" not in body

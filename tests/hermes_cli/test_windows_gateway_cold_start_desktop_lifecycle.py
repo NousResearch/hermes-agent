@@ -253,7 +253,7 @@ def _running_beta_pause_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main, "_venv_launcher_ancestors", lambda pids: [])
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, timeout: set())
     monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex: [(n, h) for n, h in homes.items() if n in ("default", "beta")])
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex, **_kw: [(n, h) for n, h in homes.items() if n in ("default", "beta")])
     monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: homes[name])
     # Resume side.
     monkeypatch.setattr(cli_main, "_refresh_windows_gateway_launchers", lambda: None)

@@ -49,8 +49,9 @@ class FailoverReason(enum.Enum):
     image_corrupt = "image_corrupt"       # Provider can't decode image bytes — strip and retry (shrinking won't help)
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
-    content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
+    content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
     model_entitlement = "model_entitlement"  # This account cannot use the requested model — rotate credential (model-scoped), else fall back
+    incomplete_response = "incomplete_response"  # Codex/Responses turn stuck emitting reasoning only (no answer, no tool call) after replay + nudge — hand to a different provider
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     role_alternation = "role_alternation"  # Strict chat template rejected adjacent same-role messages — merge them for this destination and retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
@@ -135,6 +136,8 @@ _BILLING_ERROR_CODES = frozenset({
     # terminal for this credential until limits are raised.
     "credit_balance_exhausted", "organization_spend_limit_exceeded",
     "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
+    # Nous paid model behind an empty credit balance arrives as a 404 (#115702).
+    "insufficient_credits_for_paid_model",
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
@@ -155,6 +158,8 @@ _OVERLOADED_PATTERNS = (
     "service may be temporarily overloaded", "server is overloaded", "server overloaded",
     "server overload", "server_overload",
     "service overloaded", "service is overloaded", "upstream overloaded", "currently overloaded",
+    # CommandCode's 429 body for an unavailable upstream model — the key is healthy (#117111).
+    "upstream model provider is temporarily unavailable. please try again in a moment.",
     "at capacity", "over capacity",
 )
 
@@ -340,13 +345,15 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = (
 # Per-prompt safety-filter blocks: deterministic for the unchanged request, so
 # fallback immediately. Each phrase is verbatim from one provider (Codex cyber
 # flags #18028, OpenAI moderation, Anthropic safety, Azure token, MiniMax
-# #32421) — never a generic word like "policy" that collides with billing/auth.
+# #32421, CommandCode gateway moderation #115218) — never a generic word like
+# "policy" that collides with billing/auth.
 # "content_filter" deliberately excludes the space variant seen in echoed config.
 _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "flagged for possible cybersecurity risk", "trusted access for cyber",
     "violates our usage policies", "violates openai's usage policies", "your request was flagged by",
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
+    "content exists risk",
 )
 
 # Auth patterns (non-status-code signals).
@@ -478,13 +485,16 @@ _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 # rejects sampling params for reasoning-first models with the contraction ("This model doesn't
 # support the temperature field", xAI Grok) and inference-profile Claude with "`temperature` is
 # deprecated for this model" (#111043); strict pydantic gateways (Fireworks) name the unknown
-# field as "extra inputs are not permitted" (#109774). Shared with the auxiliary retry ladder
+# field as "extra inputs are not permitted" (#109774). Enum-rejecting aggregators (commandcode.ai)
+# say "Invalid option: expected one of ..." with no "unsupported" anywhere, naming the field only
+# in the structured 'param' tail (#115277). Shared with the auxiliary retry ladder
 # (``agent.auxiliary_client._is_unsupported_parameter_error``).
 UNSUPPORTED_PARAM_MARKERS = (
     "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
     "doesn't support", "is deprecated for this model",
     "unknown parameter", "unrecognized request argument", "unrecognized parameter",
     "invalid parameter", "extra inputs are not permitted",
+    "invalid option: expected one of",
 )
 
 # Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.
@@ -494,6 +504,16 @@ UNSUPPORTED_PARAM_MARKERS = (
 _REASONING_FIELD_TOKEN = re.compile(
     r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
     r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+)
+
+# Structured rejection of a reasoning field, read from the stringified body: OpenAI-style
+# ``param`` naming a reasoning field (``reasoning_effort`` on chat, ``reasoning.effort`` on
+# Responses) or an ``invalid_reasoning_effort`` code. Custom Responses relays send this with NO
+# message at all (#100536), so no wording rule can match it — and without a match the message-less
+# 400 fell through to the generic large-session overflow heuristic and started compression.
+_REASONING_PARAM_REJECTION = re.compile(
+    r"""['"]param['"]\s*:\s*['"](?:reasoning(?:[._]effort)?|thinking(?:_config|_budget)?|enable_thinking)['"]"""
+    r"""|invalid_reasoning_effort"""
 )
 
 
@@ -523,13 +543,17 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     request argument supplied: reasoning_effort", #112781) or a standalone "unsupported" next to the
     field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none' unsupported;
     use minimal|low|medium|high|xhigh", #114460). The route default is the right answer for such a
-    model, so both the main loop and the auxiliary ladder retry once without the disable.
+    model, so both the main loop and the auxiliary ladder retry once without the disable. A body
+    whose structured ``param``/code names the reasoning field (``'param': 'reasoning.effort'``,
+    ``invalid_reasoning_effort``, #100536) is a rejection whatever the message says — even none.
 
     Known trade-off: a 400 about a thinking *state* ("Function calling is not supported when
     thinking is enabled") also matches — the marker sits right next to the token, so no proximity
     rule separates it from the forward wordings. Cost is one dropped-disable retry before the
     spent path takes the fallback chain; the auxiliary ladder already treated it this way."""
     msg = (error_msg or "").lower()
+    if _REASONING_PARAM_REJECTION.search(msg):
+        return True
     token = _REASONING_FIELD_TOKEN.search(msg)
     if token is None:
         return False
@@ -682,6 +706,60 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
     return verdict
 
 
+def _profile_verdict(c: _Ctx) -> Optional[Verdict]:
+    """The current provider's own ``ProviderProfile.classify_api_error`` verdict, or None.
+
+    A ``kind: model-provider`` plugin never enters the PluginManager hook lifecycle, so without this a
+    vendor-specific body (a 403 ``quota_exhausted`` that is billing, not auth) could only be corrected by
+    shipping a second plugin component. Scoped to the provider that produced the error; no name table."""
+    if not c.provider_slug:
+        return None
+    try:
+        from providers import get_provider_profile
+        hook = getattr(get_provider_profile(c.provider_slug), "classify_api_error", None)
+        if not callable(hook):
+            return None
+        result = hook(c.error, status_code=c.status_code, error_code=c.error_code, message=c.msg,
+                      body=c.body, model=c.model)
+    except Exception as exc:
+        logger.debug("Provider profile error classification failed for %s: %s", c.provider_slug, exc)
+        return None
+    if not isinstance(result, dict):
+        return None
+    reason = result.get("reason")
+    if isinstance(reason, str):
+        try:
+            reason = FailoverReason(reason.strip().lower())
+        except ValueError:
+            return None
+    if not isinstance(reason, FailoverReason):
+        return None
+    hints = {k: bool(result[k]) for k in _HINT_FLAGS if k in result}
+    # turn_api_error walks the fallback chain only for non-retryable verdicts outside
+    # RETRYABLE_CLIENT_REASONS; the built-in terminal verdicts (billing, auth, model_not_found …) pin
+    # retryable=False, the rate-limit family stays retryable and reaches fallback after backoff. Give
+    # a hook that asks for fallback the built-in default for its reason, so it cascades like one.
+    if hints.get("should_fallback") and "retryable" not in hints and reason not in RETRYABLE_CLIENT_REASONS:
+        hints["retryable"] = False
+    verdict = _v(reason, **hints)
+    if isinstance(result.get("error_context"), dict):
+        verdict["error_context"] = result["error_context"]
+    logger.info("API error classified by provider profile: %s (provider=%s, status=%s)",
+                reason.value, c.provider, c.status_code)
+    return verdict
+
+
+_HINT_FLAGS = ("retryable", "should_compress", "should_rotate_credential", "should_fallback")
+
+# Reasons the retry loop keeps retrying (with backoff) even though the verdict may also carry
+# ``should_fallback``: the cascade for these runs after the backoff budget, not immediately.
+RETRYABLE_CLIENT_REASONS = frozenset({
+    FailoverReason.rate_limit, FailoverReason.upstream_rate_limit, FailoverReason.overloaded,
+    FailoverReason.context_overflow, FailoverReason.payload_too_large, FailoverReason.long_context_tier,
+    FailoverReason.thinking_signature,
+})
+
+
 # A welcome-host 403 that spells one of these out is a safety block or a billing wall, not the
 # tier refusing. The free-tier refusal phrases are left OUT: on the free route they mean exactly
 # "the tier refused", and an anonymous session has no credits to check.
@@ -768,9 +846,12 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # retry loop strips them. Exclude the Qwen/vLLM "No user query found" error
     # local engines wrap as "Unable to generate parser for this template" —
     # that is a poisoned transcript (→ format_error), not a grammar problem.
+    # Strict OpenAI-compatible schema validators reject regex lookaround in ``pattern``
+    # with a different sentence ("Invalid JSON schema: regex lookaround is not supported",
+    # #42631); same recovery — strip ``pattern``/``format`` and retry once.
     grammar_hit = "error parsing grammar" in msg or "json-schema-to-grammar" in msg or (
         "unable to generate parser" in msg and "template" in msg
-    )
+    ) or ("invalid json schema" in msg and "regex lookaround" in msg and "not supported" in msg)
     if status == 400 and grammar_hit and _NO_USER_QUERY_SIGNAL not in msg:
         return _v(_R.llama_cpp_grammar_pattern)
     # xAI Grok entitlement as an SSE ``type=error`` frame: no status, matches no
@@ -856,11 +937,11 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
     return _STATUS_HANDLERS[status](c) if status in _STATUS_HANDLERS else default
 
 
-# Stage order: plugin hooks → provider-specific special cases → HTTP status →
-# MoA shapes → structured error code → message patterns → SSL → disconnect +
+# Stage order: plugin hooks → the provider's own profile hook → provider-specific special cases →
+# HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 
@@ -936,6 +1017,10 @@ def _status_403(c: _Ctx) -> Verdict:
 
 
 def _status_404(c: _Ctx) -> Verdict:
+    # Structured billing code first, as in _status_429: this handler always returns,
+    # so _by_error_code never sees it; a bare "Not Found" message has nothing to match.
+    if c.code in _BILLING_ERROR_CODES:
+        return _V_BILLING
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict
@@ -1254,12 +1339,18 @@ def _build_error_msg(error: Exception, body: Any) -> str:
 
 
 def _body_message_candidates(body: dict) -> Iterator[Any]:
-    """Body message fields in priority order (OpenAI, flat, litellm/Bedrock proxy shapes)."""
+    """Body message fields in priority order (OpenAI, flat, litellm/Bedrock proxy, FastAPI shapes)."""
     yield _error_obj(body).get("message")
     yield body.get("message")
     yield body.get("errorMessage")
     args = body.get("errorArgs")
     yield args.get("reason") if isinstance(args, dict) else None
+    # FastAPI/Starlette relays and the Codex gateway answer {"detail": "..."} (or a nested
+    # OpenAI-ish object); without it a descriptive rejection reads as a bare 400 and the
+    # large-session heuristic sends it into compression (#81558). A list here is pydantic's
+    # validation shape, read by _oversized_message_content_rejection.
+    detail = body.get("detail")
+    yield detail.get("message") if isinstance(detail, dict) else detail if isinstance(detail, str) else None
 
 
 def _from_cause_chain(error: Exception, pick: Callable[[Any], Any], default: Any) -> Any:

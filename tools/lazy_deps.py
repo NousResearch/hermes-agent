@@ -11,6 +11,7 @@ package can only add modules, never shadow core; PyPI-by-name specs only (``_spe
 
 from __future__ import annotations
 
+import configparser
 import contextlib
 import logging
 import os
@@ -106,11 +107,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.2.0",),
-    "memory.hindsight": ("hindsight-client==0.6.1",),
+    # Plugin-owned SDKs mirror the range their plugin.yaml declares instead of an exact pin: an exact pin
+    # made _is_satisfied() reject every newer compatible release, so `hermes update` (and the hindsight
+    # plugin's own >=_MIN_CLIENT_VERSION auto-upgrade) kept downgrading a working 0.9.x client to 0.6.1
+    # and broke embedded daemons whose DB a newer client had migrated (#86992, #39424, #98407).
+    "memory.hindsight": ("hindsight-client>=0.6.1,<1",),
     # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
     # install on the sealed Docker image (durable-target only).
     "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai==2.0.10",),
+    "memory.mem0": ("mem0ai>=2.0.10,<3",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
@@ -184,7 +189,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.acp": ("agent-client-protocol==0.9.0",),
     "tool.dashboard": (
         "fastapi==0.133.1",
-        "uvicorn[standard]==0.41.0",
+        "uvicorn==0.41.0",
         "starlette==1.3.1",
         "python-multipart==0.0.32",  # FastAPI UploadFile/Form streaming uploads
     ),
@@ -422,6 +427,54 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
+def _pip_config_candidates(env: dict[str, str]) -> list[Path]:
+    """pip's config files, lowest precedence first, as ``pip._internal.configuration`` ranks them:
+    global, then user (skipped entirely when ``PIP_CONFIG_FILE`` names an existing file), then the
+    venv's ``sys.prefix`` site file, then ``PIP_CONFIG_FILE`` itself on top. ``RawConfigParser.read``
+    applies them in order, so the last file wins. ``PIP_CONFIG_FILE=os.devnull`` disables all of them."""
+    explicit = env.get("PIP_CONFIG_FILE", "")
+    if explicit == os.devnull:
+        return []
+    home = Path.home()
+    if sys.platform == "win32":
+        name = "pip.ini"
+        global_files = [Path(env.get("ProgramData") or r"C:\ProgramData") / "pip" / name]
+        user_files = [home / "pip" / name, Path(env.get("APPDATA") or home / "AppData" / "Roaming") / "pip" / name]
+    elif sys.platform == "darwin":
+        name = "pip.conf"
+        global_files = [Path("/Library/Application Support/pip") / name]
+        app_support = home / "Library" / "Application Support" / "pip"
+        user_files = [home / ".pip" / name, (app_support if app_support.is_dir() else home / ".config" / "pip") / name]
+    else:
+        name = "pip.conf"
+        xdg_dirs = (env.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(os.pathsep)
+        global_files = [Path(d) / "pip" / name for d in xdg_dirs if d] + [Path("/etc") / name]
+        user_files = [home / ".pip" / name, Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "pip" / name]
+    explicit_files = [Path(explicit)] if explicit else []
+    if explicit_files and explicit_files[0].is_file():
+        user_files = []
+    return global_files + user_files + [Path(sys.prefix) / name] + explicit_files
+
+
+def _pip_conf_index_url(env: dict[str, str]) -> Optional[str]:
+    """Read pip's configured index-url so uv can use the same mirror.
+
+    uv does not read ``pip.conf`` — without this bridge a user whose pip is
+    mirrored (common behind restricted networks) watches every lazy install
+    hit the default pypi.org and time out (#95608).
+    """
+    # Raw: pip does not interpolate, and mirror URLs carry percent-encoded credentials.
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read(str(p) for p in _pip_config_candidates(env))
+        if not parser.has_section("global"):
+            return None
+        return parser.get("global", "index-url", fallback="").strip() or None
+    except configparser.Error as e:
+        logger.debug("Could not read pip.conf for index-url: %s", e)
+        return None
+
+
 def _installed_dist_roots(spec: str, target: Optional[Path]) -> set[Path]:
     """Package dirs a freshly installed *spec* owns, from the dist's file list (``python-telegram-bot``
     ships ``telegram``; some ship several)."""
@@ -477,6 +530,15 @@ def _warm_installed_bytecode(specs: tuple[str, ...], target: Optional[Path]) -> 
 def _run_installer(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     # _SUBPROCESS_KW carries stdin=DEVNULL  # noqa: subprocess-stdin
     return subprocess.run(cmd, **_SUBPROCESS_KW, creationflags=windows_hide_flags(), **kw)
+
+
+def _uv_policy_cwd() -> Optional[str]:
+    """Directory uv must run from so the checkout's ``[tool.uv]`` policy (``exclude-newer`` quarantine and its
+    per-package exceptions) applies: uv reads it from the *current directory's* project only, so a lazy or
+    plugin install launched from ``$HOME``, a gateway service or the Desktop backend was never quarantined.
+    ``None`` (inherit cwd) when this is not a source checkout."""
+    root = Path(__file__).resolve().parent.parent
+    return str(root) if (root / "pyproject.toml").is_file() else None
 
 
 def _uv_binary() -> Optional[str]:
@@ -543,8 +605,15 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
         # import would recompile the backend AND its transitives (_warm_installed_bytecode is the
         # belt-and-braces pass for the spec's own roots on any tier).
         if uv_bin := _uv_binary():
+            # Bridge pip's index unless any uv index knob is set; PIP_INDEX_URL beats pip.conf, as in
+            # pip (see _pip_conf_index_url for why uv needs this at all).
+            if not any(uv_env.get(k) for k in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")):
+                pip_index_url = (uv_env.get("PIP_INDEX_URL") or "").strip() or _pip_conf_index_url(uv_env)
+                if pip_index_url:
+                    uv_env["UV_INDEX_URL"] = pip_index_url
             try:
-                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs], timeout=timeout, env=uv_env)
+                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs],
+                                   timeout=timeout, env=uv_env, cwd=_uv_policy_cwd())
                 if r.returncode != 0:
                     logger.debug("uv pip install failed: %s", r.stderr)
                 # A uv resolver failure is authoritative: falling through to pip would discard uv
@@ -552,7 +621,14 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
                 return _finish(r)
             except subprocess.TimeoutExpired as e:
                 logger.debug("uv invocation failed: %s", e)
-                return _InstallResult(False, "", f"uv pip install timed out: {e}")
+                # Actionable context for the #95608 shape: a 300s stall with
+                # no feedback, then silence. The failure string flows into
+                # FeatureUnavailable, which callers surface as warnings.
+                hint = (
+                    f"uv pip install timed out after {timeout}s. If your network needs a package "
+                    "mirror, set index-url in pip.conf (bridged to uv automatically) or UV_INDEX_URL."
+                )
+                return _InstallResult(False, "", hint)
             except FileNotFoundError as e:  # uv vanished between lookup and spawn; it never evaluated the requirements
                 logger.debug("uv invocation failed: %s", e)
         # Tier 2: python -m pip (ensurepip bootstrap if needed)

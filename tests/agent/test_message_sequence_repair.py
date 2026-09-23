@@ -1494,3 +1494,91 @@ def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
     ]
     out = sanitize_api_messages(list(messages))
     assert [m.get("role") for m in out] == ["user"]
+
+
+# ── persist-marker contract: in-place mutations of stamped live dicts ──────
+#
+# ``_DB_PERSISTED_MARKER`` asserts the whole durable row (content, tool_calls,
+# reasoning sidecars) is already in session.db. Repair passes that mutate a
+# stamped survivor in place must pop it, or the flush scan identity-skips the
+# dict forever and the DB keeps the pre-repair row (silent live/DB divergence
+# on resume) — the same contract the micro-compaction defrag/merge sites honor.
+
+from agent.context_compressor import _DB_PERSISTED_MARKER
+
+
+def test_repair_user_merge_pops_persist_marker_on_stamped_survivor():
+    """Two adjacent stamped user rows (an interrupted turn's flushed prompt plus
+    the next turn's prompt) merge in place; the survivor must lose its marker so
+    the merged text reaches session.db instead of the pre-merge row."""
+    agent = _bare_agent()
+    stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
+    messages = [stamped, {"role": "user", "content": "second"}]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    assert messages[0]["content"] == "first\n\nsecond"
+    assert _DB_PERSISTED_MARKER not in messages[0]
+
+
+
+def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():
+    agent = _bare_agent()
+    stamped = {"role": "assistant", "content": "first reply", _DB_PERSISTED_MARKER: True}
+    messages = [
+        {"role": "user", "content": "Q1"},
+        stamped,
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert messages[1]["content"] == "first reply\nsecond reply"
+    assert _DB_PERSISTED_MARKER not in messages[1]
+
+
+
+def test_repair_prune_unanswered_tool_calls_pops_persist_marker():
+    """Pass 2 rewrites ``msg["tool_calls"]`` in place on a stamped assistant
+    row; the marker must go or the DB keeps the unpruned call list."""
+    agent = _bare_agent()
+    stamped = {
+        "role": "assistant", "content": "calling tools",
+        "tool_calls": [
+            {"id": "t1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "t2", "type": "function", "function": {"name": "g", "arguments": "{}"}},
+        ],
+        _DB_PERSISTED_MARKER: True,
+    }
+    messages = [
+        {"role": "user", "content": "Q1"},
+        stamped,
+        {"role": "tool", "tool_call_id": "t1", "content": "out1"},
+        {"role": "user", "content": "next"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    surviving = next(m for m in messages if m is stamped)
+    assert [tc["id"] for tc in surviving["tool_calls"]] == ["t1"]
+    assert _DB_PERSISTED_MARKER not in surviving
+
+
+def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
+    """``repair_message_sequence_with_cursor`` must clear the bounded flush-scan
+    snapshot when a repair popped a marker inside it, per the marker contract."""
+    agent = _bare_agent()
+    stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
+    messages = [stamped, {"role": "user", "content": "second"}]
+    agent._last_flushed_db_idx = 2
+    agent._db_flush_scan_prefix = messages[:]
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 1
+    assert _DB_PERSISTED_MARKER not in messages[0]
+    assert agent._db_flush_scan_prefix is None

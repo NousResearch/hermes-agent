@@ -13,6 +13,7 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from agent.error_classifier import FailoverReason
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
@@ -65,7 +66,13 @@ def _codex_finish_reason(response: Any) -> str:
 
 def _derive_finish_reason(agent: Any, response: Any, messages: Any) -> str:
     if agent.api_mode == "codex_responses":
-        return _codex_finish_reason(response)
+        finish_reason = _codex_finish_reason(response)
+        # A function_call cut off by max_output_tokens is not a text turn to continue: the
+        # Codex incomplete path would replay the partial and re-hit the same cap. Route it
+        # to the length path so the same call is retried with a boosted budget (#91770).
+        if finish_reason == "incomplete" and agent._get_transport().normalize_response(response).tool_calls:
+            return "length"
+        return finish_reason
     transport = agent._get_transport()
     if agent.api_mode == "anthropic_messages":
         return transport.response_finish_reason(response)
@@ -236,7 +243,9 @@ def retry_invalid_response(
     else jittered backoff that preserves a pending redirect."""
     from agent.conversation_loop import _arm_fallback_restart
     from agent.retry_utils import jittered_backoff
-    from agent.turn_recovery import describe_invalid_response, interruptible_backoff_sleep
+    from agent.turn_recovery import (
+        classify_codex_soft_failure, describe_invalid_response, interruptible_backoff_sleep,
+    )
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> InvalidResponseVerdict:
         return InvalidResponseVerdict(
@@ -255,6 +264,20 @@ def retry_invalid_response(
     )
     # Retry status is buffered and only surfaced if every retry+fallback exhausts.
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
+
+    # Codex reports quota exhaustion as HTTP 200 ``status=failed`` — the SDK never raises, so the
+    # exception path's credential-pool rotation never sees it. Same-provider recovery for the
+    # pool-recoverable reasons FIRST (a healthy sibling account beats burning cross-provider
+    # fallback); content-policy and other failures keep the fallback/retry path (#24159).
+    _soft, _soft_ctx = classify_codex_soft_failure(agent, response)
+    if _soft is not None and (_soft.reason in (FailoverReason.rate_limit, FailoverReason.billing) or _soft.is_auth):
+        _recovered, _retry.has_retried_429 = agent._recover_with_credential_pool(
+            status_code=None, has_retried_429=_retry.has_retried_429, classified_reason=_soft.reason,
+            error_context=_soft_ctx, billing_unverified=_soft.billing_unverified,
+        )
+        if _recovered:
+            agent._buffer_diagnostic_status(f"🔄 Codex soft failure ({_soft.reason.value}) — switched to the next pool credential, retrying...")
+            return _verdict("continue")
     retry_count += 1
 
     # Eager fallback: empty/malformed responses often mean rate limiting.

@@ -122,6 +122,16 @@ class TestManifestParsing:
         assert e.auth.type == "none"
         assert e.install is None
         assert e.suggest is None
+        assert e.connector_slug is None
+
+    def test_connector_slug_metadata_reaches_the_catalog_payload(self, catalog_dir):
+        from hermes_cli.mcp_catalog import _parse_manifest
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        path = _write_manifest(catalog_dir, "demo", _basic_manifest(connector_slug="demo-connector"))
+        entry = _parse_manifest(path)
+
+        assert _catalog_entry_json(entry, False, False)["connector_slug"] == "demo-connector"
 
     def test_suggest_block_parsed_and_normalized(self, catalog_dir):
         _write_manifest(
@@ -222,7 +232,8 @@ class TestManifestParsing:
                 "type": "api_key",
                 "env": [
                     {"name": "DEMO_KEY", "prompt": "API key", "secret": True},
-                    {"name": "DEMO_URL", "prompt": "Base URL", "secret": False, "required": False},
+                    {"name": "DEMO_URL", "prompt": "Base URL", "secret": False,
+                     "required": False, "default": "https://demo.example"},
                 ],
             }
         )
@@ -236,6 +247,7 @@ class TestManifestParsing:
         assert e.auth.env[0].secret is True
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
+        assert e.auth.env[1].default == "https://demo.example"
 
     def test_http_api_key_builds_bearer_headers_template(self, catalog_dir):
         body = _basic_manifest(
@@ -620,6 +632,11 @@ class TestInstall:
         assert get_env_value("DEMO_CLIENT_SECRET") == "val-for-secret"
         raw = get_config_path().read_text(encoding="utf-8")
         assert "${DEMO_CLIENT_SECRET}" in raw and "val-for-secret" not in raw
+        # Non-secret client id is inlined into config.yaml (not .env, not a ref):
+        # .env stays secrets-only.
+        assert get_env_value("DEMO_CLIENT_ID") is None
+        assert "${DEMO_CLIENT_ID}" not in raw
+        assert "val-for-id" in raw
 
         # A ``${VAR}`` the manifest never declares would reach the token endpoint as a literal
         # placeholder (invalid_client): rejected at parse time, like the api_key header contract.
@@ -653,6 +670,22 @@ class TestUninstall:
         from hermes_cli.mcp_catalog import uninstall_entry
 
         assert uninstall_entry("nonexistent") is False
+
+    def test_uninstall_removes_read_only_git_clone(self, monkeypatch):
+        """Loose objects are read-only in a clone: the purge must clear that, not abort (#117176)."""
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "remove_server", lambda name: False)
+        clone = mc._install_root() / "demo"
+        obj_dir = clone / ".git" / "objects" / "4b"
+        obj_dir.mkdir(parents=True)
+        obj = obj_dir / "825dc642cb6eb9a060e54bf8d69288fbee4904"
+        obj.write_text("blob", encoding="utf-8")
+        obj.chmod(0o444)
+        obj_dir.chmod(0o555)
+
+        assert mc.uninstall_entry("demo") is True
+        assert not clone.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -952,6 +985,17 @@ class TestShippedCatalog:
             assert ref and ref.group(1) in declared, (key, cfg["oauth"][key])
         # Asana matches the registered redirect URL exactly; the callback must be pinned.
         assert cfg["oauth"]["redirect_host"] and cfg["oauth"]["redirect_port"]
+
+    def test_manifest_connector_slugs_are_valid_and_unique(self, monkeypatch):
+        from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
+
+        source_catalog = Path(__file__).parents[2] / "optional-mcps"
+        monkeypatch.setattr("hermes_cli.mcp_catalog._catalog_root", lambda: source_catalog)
+        slugs = [entry.connector_slug for entry in list_catalog() if entry.connector_slug is not None]
+
+        assert catalog_diagnostics() == []
+        assert slugs
+        assert len(slugs) == len(set(slugs))
 
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.

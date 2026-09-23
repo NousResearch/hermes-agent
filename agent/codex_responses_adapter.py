@@ -12,7 +12,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
 
-from agent.message_sanitization import deterministic_call_id
+from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_cli.route_identity import normalize_route_base_url
 
@@ -102,7 +102,6 @@ _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 # input[].id / function names longer than this are a non-retryable 400 ("string too
 # long"). Codex message ids can run 400+ chars; Hermes ``msg_...`` ids stay under the cap.
 _MAX_RESPONSES_ITEM_ID_LENGTH = 64
-_VALID_RESPONSES_FN_NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 
 # Provider-executed built-in tools: declared by ``type`` alone, run server-side,
 # reported via the ``*_call`` output items below; preflight passes them through.
@@ -286,18 +285,6 @@ def _clamp_responses_call_id(call_id: str) -> str:
     if len(call_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
         return call_id
     return f"call_{hashlib.sha256(call_id.encode('utf-8', errors='replace')).hexdigest()[:32]}"
-
-
-def _sanitize_replayed_fn_name(name: str) -> str:
-    """Coerce a *replayed* ``function_call.name`` to ``^[a-zA-Z0-9_-]{1,64}$`` (an invalid stored
-    name 400s every later turn). Invalid runs collapse to ``_``; all-invalid → "fn". Apply ONLY to
-    replayed items, never live tool definitions (schema names must match the dispatch registry)."""
-    if not isinstance(name, str):
-        return "fn"
-    if _VALID_RESPONSES_FN_NAME_RE.fullmatch(name):
-        return name
-    coerced = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_-]", "_", name.strip())).strip("_")
-    return coerced[:64] or "fn"
 
 
 def _canonical_call_id_from_fc(response_item_id: Any) -> Optional[str]:
@@ -520,7 +507,7 @@ def _replay_tool_call_items(
         replayed.append({
             "type": "function_call",
             "call_id": wire_ids.for_call(call_id) if wire_ids else _clamp_responses_call_id(call_id),
-            "name": _sanitize_replayed_fn_name(fn_name), "arguments": _coerce_arguments(arguments),
+            "name": coerce_tool_name(fn_name, fallback="fn"), "arguments": _coerce_arguments(arguments),
         })
     return replayed
 
@@ -768,7 +755,7 @@ def _preflight_function_call(item: Dict[str, Any], idx: int, ctx: _PreflightCtx)
     if not _nonblank(name):
         raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
     return {
-        "type": "function_call", "call_id": call_id.strip(), "name": _sanitize_replayed_fn_name(name),
+        "type": "function_call", "call_id": call_id.strip(), "name": coerce_tool_name(name, fallback="fn"),
         "arguments": ctx.sanitize_text(_coerce_arguments(item.get("arguments", "{}"))),
     }
 
@@ -916,6 +903,8 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
     ("reasoning", lambda v: isinstance(v, dict), None),
     ("include", lambda v: isinstance(v, list), None),
     ("service_tier", _nonblank, str.strip),
+    # Responses text controls (verbosity, structured-output format).
+    ("text", lambda v: isinstance(v, dict) and bool(v), None),
     ("max_output_tokens", lambda v: isinstance(v, (int, float)) and v > 0, int),
     ("timeout", lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < float("inf"), float),
     ("temperature", lambda v: isinstance(v, (int, float)), float),

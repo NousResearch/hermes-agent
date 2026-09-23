@@ -378,11 +378,13 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     # fits) and would death-loop on the same 400. Fail fast.
     if is_output_cap_error(error_msg):
         return st.fail_turn(
-            "max_tokens exceeds the provider's output cap for this model. "
-            "Lower model.max_tokens in config.yaml.",
+            "The requested output length exceeds the provider's output cap for this model, "
+            "and the error did not state the allowed limit.",
             notices=(
-                "❌ The provider rejected the request because max_tokens exceeds its output cap for this model.",
-                "   💡 Lower model.max_tokens in your config.yaml to at or below the model's max-output limit. "
+                "❌ The provider rejected the request because the requested output length exceeds its "
+                "output cap for this model, and the error did not state the allowed limit.",
+                "   💡 Hermes has no user setting for the output cap — check the endpoint's default max output "
+                "(completion) tokens for this model on the server or proxy. "
                 "(This is an output-cap error, not a context overflow — compression cannot fix it.)",
             ),
             log=(

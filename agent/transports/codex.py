@@ -80,7 +80,11 @@ _PERPLEXITY_RESERVED_TOOL_NAMES = (
     "people_search",
     "finance_search",
 )
+# xAI and OpenAI Responses (api.openai.com and the ChatGPT Codex backend) reserve ``tool_search``
+# for their native Tool Search ("Function 'tool_search.tool_search' not allowed in reserved
+# namespace 'tool_search'", #83122 / #95003).
 _XAI_RESERVED_TOOL_NAMES = ("tool_search",)
+_OPENAI_RESPONSES_HOSTS = frozenset({"api.openai.com", "chatgpt.com"})
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 
 # Reverse map used ONLY when normalize_response runs on a transport that never
@@ -171,11 +175,52 @@ def _xai_prefers_native_web_search() -> bool:
         return True
 
 
-def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_responses: bool) -> tuple[Any, dict[str, str]]:
+def _reserves_tool_search(params: dict[str, Any], is_xai_responses: bool) -> bool:
+    """True when the Responses endpoint owns the ``tool_search`` namespace (xAI, OpenAI, ChatGPT Codex)."""
+    if is_xai_responses or params.get("is_codex_backend") is True:
+        return True
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() in _OPENAI_RESPONSES_HOSTS
+    except Exception:
+        return False
+
+
+def _openai_prefers_native_web_search() -> bool:
+    """True when the active web-search backend selects OpenAI's server-side ``web_search``.
+
+    Same contract as :func:`_xai_prefers_native_web_search` with one deliberate
+    difference: it fails CLOSED (False). A resolution failure must leave the client-side
+    Hermes tool in place rather than swap in a built-in the endpoint might reject.
+
+    Only consulted for the Codex backend (``chatgpt.com/backend-api/codex``); a custom
+    OpenAI-compatible endpoint does not implement the server-side tool.
+    """
+    try:
+        from agent.web_search_registry import get_active_search_provider
+
+        provider = get_active_search_provider()
+        if provider is not None:
+            return getattr(provider, "name", None) == "openai-native"
+
+        from tools.web_tools import _get_search_backend
+
+        return (_get_search_backend() or "").strip().lower() == "openai-native"
+    except Exception:  # noqa: BLE001 — a probe failure must not change the request shape
+        return False
+
+
+def _alias_wire_tools(
+    response_tools: Any, params: dict[str, Any], is_xai_responses: bool, is_codex_backend: bool = False,
+) -> tuple[Any, dict[str, str]]:
     """Apply provider-reserved tool-name aliasing; returns ``(tools, {alias: original})`` for THIS request.
 
     xAI: a client ``web_search`` collides with Grok's native search — native mode
     swaps it 1:1 for the built-in, client mode keeps Hermes dispatch under an alias.
+
+    OpenAI Codex: the Responses endpoint carries the same collision, so the backend
+    selection drives the same 1:1 swap (``web.search_backend: openai-native``).
     """
     wire_aliases: dict[str, str] = {}
 
@@ -190,6 +235,13 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
                 {**t, "name": _XAI_CLIENT_WEB_SEARCH_ALIAS} if is_client_web_search(t) else t for t in response_tools
             ]
             wire_aliases[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
+    # OpenAI Codex: the Responses endpoint exposes the same server-executed ``web_search``,
+    # and a client-side function of that name collides with it the same way. Unlike xAI there
+    # is no alias fallback: when the user has not selected ``openai-native`` we leave the
+    # client tool untouched, so an endpoint that cannot host the built-in never breaks.
+    if is_codex_backend and response_tools and any(is_client_web_search(t) for t in response_tools):
+        if _openai_prefers_native_web_search():
+            response_tools = [t for t in response_tools if not is_client_web_search(t)] + [{"type": "web_search"}]
     # OpenCode Responses backends reserve web_search / search_files as function names (HTTP 400 "custom
     # function name 'X' is reserved", #85589). Alias them on the wire; normalize_response maps them back.
     if response_tools and _is_opencode_responses_backend(params):
@@ -214,7 +266,7 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
     # request emits is recorded here and stashed on the transport, so the reverse rewrite in
     # ``normalize_response`` applies only to aliases that were actually sent (never to a real tool that
     # merely shares an alias-shaped name).
-    if is_xai_responses and response_tools:
+    if response_tools and _reserves_tool_search(params, is_xai_responses):
         response_tools, _xai_aliases = _alias_reserved_tools(response_tools, _XAI_RESERVED_TOOL_NAMES)
         wire_aliases.update(_xai_aliases)
     return response_tools, wire_aliases
@@ -646,7 +698,9 @@ class ResponsesApiTransport(ProviderTransport):
         native_compaction_active = _native_compaction_active(context_management)
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
-        response_tools, self._last_wire_aliases = _alias_wire_tools(self.convert_tools(tools), params, is_xai_responses)
+        response_tools, self._last_wire_aliases = _alias_wire_tools(
+            self.convert_tools(tools), params, is_xai_responses, is_codex_backend,
+        )
 
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
@@ -690,6 +744,11 @@ class ResponsesApiTransport(ProviderTransport):
             replay_encrypted_reasoning=replay_encrypted_reasoning,
             is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
         ))
+        # agent.text_verbosity -> top-level ``text.verbosity`` (#20203). Unset sends nothing;
+        # xAI's /responses rejects unknown top-level fields, same as service_tier below.
+        text_verbosity = params.get("text_verbosity")
+        if text_verbosity and not is_xai_responses:
+            kwargs["text"] = {"verbosity": text_verbosity}
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model

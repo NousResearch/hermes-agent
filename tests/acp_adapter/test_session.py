@@ -46,7 +46,7 @@ class TestCreateSession:
             captured["task_id"] = task_id
             captured["overrides"] = overrides
 
-        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr("hermes_platform.host.runtime._wsl_detected", True)
         monkeypatch.setattr(
             "tools.terminal_tool.register_task_env_overrides",
             fake_register_task_env_overrides,
@@ -142,6 +142,36 @@ class TestCreateSession:
         assert (seen[0]["enabled_toolsets"], seen[0]["disabled_toolsets"]) == (["hermes-acp", "mcp-cfg-server"], None)
         assert (seen[1]["enabled_toolsets"], seen[1]["disabled_toolsets"]) == (["hermes-acp", "mcp-acp-server"], ["browser"])
 
+    def test_make_agent_surfaces_the_provider_resolution_failure(self, monkeypatch):
+        """#91090: when ``resolve_runtime_provider`` fails, the bare-AIAgent fallback dies with the
+        first-run "No LLM provider configured" text; the operator must get the swallowed cause
+        instead. The fallback still stands when the bare build succeeds."""
+        def _no_creds(**_kw):
+            raise RuntimeError("No Codex credentials stored. Run `hermes auth add openai-codex`")
+
+        class BareFails:
+            def __init__(self, **kwargs):
+                raise RuntimeError("No LLM provider configured. Run `hermes setup`")
+
+        class BareWorks:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m", "provider": "openai-codex"}})
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _no_creds)
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        manager = SessionManager(db=None)
+
+        monkeypatch.setattr("run_agent.AIAgent", BareFails)
+        with pytest.raises(RuntimeError, match="No Codex credentials stored") as exc:
+            manager._make_agent(session_id="rebuilt", cwd=".", requested_provider="openai-codex")
+        assert "No LLM provider configured" in str(exc.value.__cause__)
+
+        monkeypatch.setattr("run_agent.AIAgent", BareWorks)
+        assert "provider" not in manager._make_agent(session_id="fresh", cwd=".").kwargs
+
+
     def test_make_agent_forwards_resolved_credential_pool(self, monkeypatch):
         """#70292: the provider-scoped credential pool selected by resolve_runtime_provider reaches the
         ACP agent by identity, so a long-lived session can refresh/rotate on 401 instead of needing a restart."""
@@ -174,7 +204,7 @@ class TestCreateSession:
 
 class TestWslCwdTranslation:
     def test_translate_acp_cwd_converts_windows_drive_path_when_wsl(self, monkeypatch):
-        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr("hermes_platform.host.runtime._wsl_detected", True)
 
         assert acp_session._translate_acp_cwd(r"E:\Projects\AI\paperclip") == "/mnt/e/Projects/AI/paperclip"
 
@@ -183,7 +213,7 @@ class TestWslCwdTranslation:
 
 
     def test_fork_session_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
-        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr("hermes_platform.host.runtime._wsl_detected", True)
         original = manager.create_session(cwd="/tmp/base")
 
         forked = manager.fork_session(original.session_id, cwd=r"D:\work\project")
@@ -192,7 +222,7 @@ class TestWslCwdTranslation:
         assert forked.cwd == "/mnt/d/work/project"
 
     def test_update_cwd_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
-        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr("hermes_platform.host.runtime._wsl_detected", True)
         state = manager.create_session(cwd="/tmp/old")
 
         updated = manager.update_cwd(state.session_id, cwd=r"C:\Users\foo\project")

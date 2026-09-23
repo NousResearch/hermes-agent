@@ -72,6 +72,7 @@ class TestFailoverReason:
             "provider_policy_blocked",
             "content_policy_blocked",
             "model_entitlement",
+            "incomplete_response",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
@@ -744,6 +745,38 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.should_compress is False
 
+    def test_400_content_exists_risk_commandcode_moderation(self):
+        # CommandCode gateway (OpenAI-compatible aggregator fronting DeepSeek)
+        # rejects filtered prompts with HTTP 400 "Content Exists Risk" and a
+        # nested param envelope marking isRetryable=false — deterministic for
+        # the unchanged request, so the recovery is the fallback chain, not a
+        # same-provider retry. Without the pattern the 400 fell through to
+        # format_error and the surfaced copy blamed a malformed request. See
+        # #115218.
+        body = {
+            "error": {
+                "message": "Content Exists Risk",
+                "type": "AI_APICallError",
+                "param": {
+                    "error": "Content Exists Risk", "statusCode": 400,
+                    "name": "AI_APICallError", "message": "Content Exists Risk",
+                    "isRetryable": False, "type": "AI_APICallError",
+                },
+            }
+        }
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'Content Exists Risk'}}",
+            status_code=400,
+            body=body,
+        )
+        result = classify_api_error(
+            e, provider="commandcode", model="deepseek/deepseek-v4.1-flash"
+        )
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_compress is False
+
 
 
 
@@ -926,12 +959,16 @@ class TestClassifyApiError:
 
     def test_reasoning_field_rejection_is_reasoning_mandatory(self):
         """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'
-        unsupported; use ...", #114460) or forward ("Unrecognized request argument supplied:
-        reasoning_effort") — takes the drop-the-disable rung, not the format_error abort; a
-        model-id segment (kimi-k2-thinking) stays route gating."""
+        unsupported; use ...", #114460), forward ("Unrecognized request argument supplied:
+        reasoning_effort"), or an enum rejection whose only field name sits in the structured
+        'param' tail (commandcode.ai, #115277) — takes the drop-the-disable rung, not the
+        format_error abort; a model-id segment (kimi-k2-thinking) stays route gating."""
         for msg in (
             "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
             "Unrecognized request argument supplied: reasoning_effort",
+            "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
+            "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
+            "'param': 'reasoning_effort'}}",
         ):
             result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
             assert result.reason == FailoverReason.reasoning_mandatory, msg
@@ -941,6 +978,28 @@ class TestClassifyApiError:
             provider="custom", model="kimi-k2-thinking",
         )
         assert gated.reason != FailoverReason.reasoning_mandatory
+
+    def test_structured_invalid_reasoning_effort_400_never_compresses(self):
+        """A custom Responses relay rejects an unsupported ``reasoning.effort`` with a message-less
+        structured 400 (``param`` + ``error_code: invalid_reasoning_effort``, #100536). No wording rule
+        can match it; before, the empty message fell to the large-session overflow heuristic and the
+        loop compressed a tiny conversation. Now it is a reasoning-field rejection with
+        ``should_compress`` off on every session size; a genuine context-window 400 still compresses."""
+        body = {"error": {"param": "reasoning.effort", "error_code": "invalid_reasoning_effort", "retryable": False}}
+        for approx_tokens, num_messages in ((77, 3), (90000, 100)):
+            result = classify_api_error(
+                MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body),
+                provider="custom", model="m", approx_tokens=approx_tokens, context_length=200000,
+                num_messages=num_messages,
+            )
+            assert result.reason == FailoverReason.reasoning_mandatory, approx_tokens
+            assert result.should_compress is False
+        overflow = classify_api_error(
+            MockAPIError("This model's maximum context length is 128000 tokens. Please reduce the length "
+                         "of the messages.", status_code=400),
+            provider="custom", model="m", approx_tokens=77, num_messages=3,
+        )
+        assert overflow.reason == FailoverReason.context_overflow and overflow.should_compress is True
 
     def test_openai_unsupported_none_effort_body_is_reasoning_mandatory(self):
         """OpenAI's real 400 for ``reasoning.effort: none`` on a model whose ladder has no ``none`` (o3/o4-mini,
@@ -967,6 +1026,55 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.llama_cpp_grammar_pattern
         assert result.retryable is True
         assert result.should_compress is False
+
+    def test_openai_regex_lookaround_rejection_strips_pattern_and_retries(self):
+        """Strict OpenAI-compatible endpoints reject ``pattern`` lookaround with a 400 (#42631).
+        Driven through the production path (classifier → ``recover_after_classification``):
+        the lookaround ``pattern`` must be stripped from ``agent.tools`` and the turn retried."""
+        from agent.turn_recovery import recover_after_classification
+        from agent.turn_retry_state import TurnRetryState
+
+        class _Agent:
+            log_prefix = ""
+            api_mode = "chat_completions"
+            provider = "custom"
+            model = "gpt-5.5"
+            base_url = "http://relay.example/v1"
+            tools = [{
+                "type": "function",
+                "function": {
+                    "name": "send",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"email": {"type": "string", "pattern": r"^(?!no-reply).+@.+$"}},
+                    },
+                },
+            }]
+
+            def _recover_with_credential_pool(self, **kwargs):
+                return False, False
+
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+
+        e = MockAPIError(
+            "Invalid JSON schema: regex lookaround is not supported. Found at $.properties.email.pattern.",
+            status_code=400,
+        )
+        classified = classify_api_error(e, provider="custom", model="gpt-5.5")
+        assert classified.reason == FailoverReason.llama_cpp_grammar_pattern
+        agent = _Agent()
+        retry_now, _ = recover_after_classification(
+            agent, e, classified, TurnRetryState(),
+            status_code=400, error_context=None, messages=[], api_messages=[],
+        )
+        assert retry_now is True
+        assert "pattern" not in agent.tools[0]["function"]["parameters"]["properties"]["email"]
+        # A generic schema 400 without the lookaround sentence stays a plain client error.
+        other = classify_api_error(
+            MockAPIError("Invalid JSON schema: regex syntax error in pattern", status_code=400), provider="custom"
+        )
+        assert other.reason != FailoverReason.llama_cpp_grammar_pattern
 
     def test_qwen_apply_prompt_template_no_user_query_not_llama_cpp_grammar(self):
         """Local engines wrap Qwen raise_exception as applyPromptTemplate 400.
@@ -1131,6 +1239,28 @@ class TestClassifyApiError:
             "Malformed message array 400" in r.getMessage()
             for r in caplog.records
         ), "Expected a distinct warning identifying the malformed-body 400"
+
+    def test_400_top_level_detail_body_is_not_a_bare_400_on_large_session(self):
+        """FastAPI-style ``{"detail": "..."}`` bodies (Codex gateway, Starlette relays) →
+        the descriptive text is read, so the large-session heuristic does not route a
+        model entitlement/retirement rejection into compression (#81558, #106475).
+        ``str(error)`` is the SDK's ``Error code: 400 - {...}`` form, exactly as on the wire.
+        Salvaged from #100783 (@i-Hun)."""
+        detail = "The 'gpt-5.5-codex' model is not supported when using Codex with a ChatGPT account."
+        large = dict(provider="openai-codex", model="gpt-5.5-codex",
+                     approx_tokens=109_962, context_length=272_000, num_messages=223)
+        for body in ({"detail": detail}, {"detail": {"message": detail}}):
+            e = MockAPIError(f"Error code: 400 - {body!r}", status_code=400, body=body)
+            result = classify_api_error(e, **large)  # type: ignore[arg-type]
+            assert result.reason is not FailoverReason.context_overflow, body
+            assert result.should_compress is False
+            assert result.should_fallback is True
+            assert result.message == detail
+        # Control: the genuinely bare body the heuristic exists for still compresses.
+        bare = classify_api_error(
+            MockAPIError("Error code: 400 - {'error': {'message': 'Error'}}", status_code=400,
+                         body={"error": {"message": "Error"}}), **large)  # type: ignore[arg-type]
+        assert bare.reason is FailoverReason.context_overflow
 
 
     # ── Peer closed + large session ──
@@ -1547,6 +1677,47 @@ class TestOpenRouterUpstreamRateLimit:
             },
         )
         result = classify_api_error(e, provider="openrouter", model="deepseek/deepseek-v4-flash")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+
+class TestCommandCodeUpstreamUnavailable:
+    """An explicit upstream outage is not a credential rate limit."""
+
+    @pytest.mark.parametrize(
+        ("provider", "status_code"),
+        [
+            ("commandcode", 429),
+            ("commandcode-anthropic", 429),
+            ("commandcode", None),
+            ("other-gateway", 429),
+        ],
+    )
+    def test_upstream_unavailable_keeps_credential_healthy(self, provider, status_code):
+        e = MockAPIError(
+            "Upstream model provider is temporarily unavailable. Please try again in a moment.",
+            status_code=status_code,
+        )
+
+        result = classify_api_error(e, provider=provider, model="deepseek/deepseek-v4-flash")
+
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Rate limit exceeded: 200 requests per minute",
+            "Upstream model provider is temporarily unavailable because this account is rate limited.",
+        ],
+    )
+    def test_non_outage_rate_limits_still_rotate_credential(self, message):
+        e = MockAPIError(message, status_code=429)
+
+        result = classify_api_error(
+            e, provider="commandcode", model="deepseek/deepseek-v4-flash"
+        )
+
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
 

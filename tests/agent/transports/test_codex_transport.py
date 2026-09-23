@@ -1048,6 +1048,89 @@ class TestCodexBuildKwargs:
             for t in tools
         )
 
+    # --- OpenAI Codex native web-search swap ---
+    # The Codex Responses endpoint exposes the same server-executed
+    # ``web_search`` built-in as xAI, so selecting the ``openai-native``
+    # backend performs the same 1:1 swap. Unlike xAI there is no alias path:
+    # an unselected or non-Codex request keeps the client-side function, so a
+    # custom OpenAI-compatible endpoint never receives a tool it cannot host.
+
+    def test_openai_native_swaps_client_web_search_for_builtin(self, transport, monkeypatch):
+        """Selecting ``openai-native`` replaces the client ``web_search``
+        function with the provider-executed built-in. ``web_extract`` is a
+        separate capability and must survive — native search covers search only.
+        """
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: True)
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Find current prices."}],
+            tools=[
+                {"type": "function", "function": {
+                    "name": "read_file", "description": "Read a file.",
+                    "parameters": {"type": "object",
+                                   "properties": {"path": {"type": "string"}}}}},
+                {"type": "function", "function": {
+                    "name": "web_search", "description": "Search the web.",
+                    "parameters": {"type": "object",
+                                   "properties": {"query": {"type": "string"}}}}},
+                {"type": "function", "function": {
+                    "name": "web_extract", "description": "Extract a page.",
+                    "parameters": {"type": "object",
+                                   "properties": {"url": {"type": "string"}}}}},
+            ],
+            is_codex_backend=True,
+        )
+        tools = kw.get("tools", [])
+        assert any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "web_search" not in names
+        assert "read_file" in names
+        assert "web_extract" in names
+
+    def test_openai_native_not_selected_keeps_client_web_search(self, transport, monkeypatch):
+        """A Codex turn that has not selected ``openai-native`` keeps Hermes
+        dispatch — the built-in must never be granted additively."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: False)
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Find current prices."}],
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_codex_backend=True,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "web_search" in names
+
+    def test_openai_native_ignored_on_non_codex_transport(self, transport, monkeypatch):
+        """The provider-executed built-in only exists on
+        ``chatgpt.com/backend-api/codex``. A custom OpenAI-compatible endpoint
+        must keep the client tool even when the search backend says native.
+        """
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: True)
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Find current prices."}],
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_codex_backend=False,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "web_search" in names
+
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
     # on grok-4 / grok-4-fast / grok-3 / grok-code-fast / grok-4.20-0309-*.
@@ -1302,13 +1385,23 @@ class TestXaiReservedToolSearchAlias:
         assert "tool_describe" in names
         assert "read_file" in names
 
-    def test_non_xai_backend_keeps_tool_search_name(self, transport):
+    def test_openai_responses_aliases_reserved_tool_search(self, transport):
+        """OpenAI Responses reserves the ``tool_search`` namespace for its native Tool Search (#83122):
+        both the ChatGPT Codex backend and api.openai.com get the bridge under ``hermes_tool_search``."""
+        for extra in ({"is_codex_backend": True}, {"base_url": "https://api.openai.com/v1"}):
+            kw = transport.build_kwargs(
+                model="gpt-5.4", messages=[{"role": "user", "content": "hi"}], tools=list(self._TOOLS), **extra,
+            )
+            names = self._names(kw)
+            assert "hermes_tool_search" in names and "tool_search" not in names, extra
+            assert transport._last_wire_aliases == {"hermes_tool_search": "tool_search"}
+
+    def test_other_responses_backend_keeps_tool_search_name(self, transport):
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "hi"}],
             tools=list(self._TOOLS),
-            is_codex_backend=True,
-            base_url="https://api.openai.com/v1",
+            base_url="https://responses-proxy.example.invalid/v1",
         )
         names = self._names(kw)
         assert "tool_search" in names
@@ -1865,6 +1958,26 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+def test_text_verbosity_reaches_responses_body_only_when_configured(transport):
+    """``agent.text_verbosity`` maps to top-level ``text.verbosity`` on Responses routes (#20203).
+
+    Unset/empty sends nothing (never flips the provider default), xAI never gets it
+    (its /responses rejects unknown top-level fields), and the chat_completions
+    transport has no such field at all.
+    """
+    from agent.transports import chat_completions  # noqa: F401  (registers the sibling)
+
+    msgs = [{"role": "user", "content": "hi"}]
+    assert transport.build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")["text"] == {"verbosity": "low"}
+    for unset in (None, ""):
+        assert "text" not in transport.build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity=unset)
+    assert "text" not in transport.build_kwargs(
+        model="grok-4", messages=msgs, text_verbosity="low", is_xai_responses=True, base_url="https://api.x.ai/v1",
+    )
+    chat = get_transport("chat_completions").build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")
+    assert "text" not in chat and "text" not in (chat.get("extra_body") or {})
 
 
 class TestOpenAIReasoningWireProjection:

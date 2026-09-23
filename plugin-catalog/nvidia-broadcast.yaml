@@ -1,0 +1,24 @@
+name: nvidia-broadcast
+repo: https://github.com/NousResearch/hermes-nvidia
+sha: 5023f3a4ea5e1b55679090c598b39f04cf4aa848
+subdir: nvidia-broadcast
+description: "NVIDIA Broadcast control through its local MCP gateway: camera, microphone and speaker
+  effects, Studio Voice profiles, device selection, camera resolution, and effects on local media files.
+  Requires NVIDIA Broadcast 2.3 or newer on Windows (2.2 and older have no gateway); the install is
+  refused when the app is absent, and the tools appear while NVIDIA Broadcast is running in the user's
+  desktop session. Disclosure: the tools change live audio and video effects on this machine; nothing
+  leaves loopback."
+title: NVIDIA Broadcast
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/NousResearch/hermes-nvidia/tree/main/nvidia-broadcast
+version: "0.1.0"
+platforms: [windows]
+onboarding: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -394,11 +394,7 @@ class GatewayModelCommandsMixin:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
         is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
         from hermes_cli.model_switch_providers import list_picker_providers
-        try:  # off-loop: listing can hit a synchronous HTTP fetch on a stale cache
-            # Offload blocking provider-listing (can fall through to a synchronous urllib HTTP fetch on a
-            # stale cache) off the event loop so the gateway doesn't freeze. See #41289.
-            # Offload blocking provider-listing off the event loop so the gateway doesn't freeze on a
-            # stale-cache HTTP fetch. See #41289.
+        try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(
                 list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
             )
@@ -426,6 +422,10 @@ class GatewayModelCommandsMixin:
             current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
+            # Chat `/model` is a read path: catalogs come from the disk cache and stale ones warm
+            # in the background, and only the selected custom endpoint is probed live, so one
+            # degraded provider can't stall the reply (#74003). Mirrors the GUI read path.
+            non_blocking_catalogs=True, probe_custom_providers=False, probe_current_custom_provider=True,
         )
         adapter = self._delivery_adapter_for(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
@@ -447,7 +447,7 @@ class GatewayModelCommandsMixin:
                 return None  # Picker sent — adapter handles the response
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or "unknown", provider=get_label(ctx.current_provider)), ""]
-        try:  # off-loop: listing can hit a stale-cache HTTP fetch
+        try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(list_authenticated_providers, max_models=5, **listing_kwargs)
             lines.extend(_model_provider_listing_lines(providers))
         except Exception:
@@ -718,12 +718,25 @@ class GatewayModelCommandsMixin:
         if raw_args:  # typed path — same applier the picker uses
             return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
         rc = self._reasoning_config
+        # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
+        # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
+        from agent.reasoning_effort import effort_display_label
+        from gateway.run import _load_gateway_config
+        _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
+        _model_cfg = {}
+        with contextlib.suppress(Exception):  # fail-open on config read errors, like /model does
+            _model_cfg = _load_gateway_config(config_path=self.config_path).get("model", {}) or {}
+        _route = (
+            _session_route.get("provider") or _model_cfg.get("provider"),
+            _session_model or _model_cfg.get("default") or _model_cfg.get("model"),
+        )
         if rc is None:
             level, current_effort = t("gateway.reasoning.level_default"), "medium"
         elif rc.get("enabled") is False:
             level, current_effort = t("gateway.reasoning.level_disabled"), "none"
         else:
-            level = current_effort = rc.get("effort", "medium")
+            current_effort = rc.get("effort", "medium")
+            level = effort_display_label(current_effort, *_route)
         display_state = t("gateway.reasoning.display_on") if self._show_reasoning else t("gateway.reasoning.display_off")
         has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
@@ -737,7 +750,8 @@ class GatewayModelCommandsMixin:
             title=t("gateway.reasoning.picker_title", level=level, scope=scope, display=display_state),
             choices=[
                 {"value": "none", "label": t("gateway.reasoning.choice_none"), "is_current": current_effort == "none"},
-                *({"value": lv, "label": lv, "is_current": lv == current_effort} for lv in VALID_REASONING_EFFORTS),
+                *({"value": lv, "label": effort_display_label(lv, *_route), "is_current": lv == current_effort}
+                  for lv in VALID_REASONING_EFFORTS),
                 *({"value": v, "label": t(f"gateway.reasoning.choice_{v}"), "is_current": False}
                   for v in ("reset", "show", "hide")),
             ],

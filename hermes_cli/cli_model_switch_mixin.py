@@ -60,7 +60,18 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
         return None
-    return stored_model, provider, base_url, (runtime.get("api_mode") or None), provider_changed
+    api_mode = runtime.get("api_mode") or None
+    # A row's api_mode/base_url were written for whichever model the session last ran. Providers that
+    # pick the wire per model (OpenCode Zen/Go, Copilot, Nous) re-derive both from the stored model, or a
+    # resumed opencode-go session keeps a MiniMax-era anthropic_messages route for a chat_completions
+    # model (#96066) — the CLI/oneshot twin of tui_gateway's _rederive_per_model_route.
+    from hermes_cli.model_switch import model_derived_api_mode
+    derived = model_derived_api_mode(provider or "", stored_model)
+    if derived is not None:
+        from hermes_cli.models import normalize_opencode_base_url
+        api_mode = derived
+        base_url = normalize_opencode_base_url(provider, api_mode, base_url) or None
+    return stored_model, provider, base_url, api_mode, provider_changed
 
 
 def _heal_bare_custom_provider(provider, *, base_url, model):
@@ -141,7 +152,9 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             raise
         ctx = None
     if ctx:
-        _cprint(f"    Context: {ctx:,} tokens")
+        from agent.context_pin import context_pin_suffix
+        _cprint(f"    Context: {ctx:,} tokens"
+                f"{context_pin_suffix(ctx, getattr(agent, '_config_context_length', None) if agent else None)}")
     if mi:
         if mi.max_output:
             _cprint(f"    Max output: {mi.max_output:,} tokens")
@@ -356,9 +369,10 @@ class CLIModelSwitchMixin:
 
         # 2. Replace untouched default with a Codex model
         if self._model_is_default:
-            fallback_model = "gpt-5.3-codex"
+            from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+
+            fallback_model = DEFAULT_CODEX_MODELS[0]
             try:
-                from hermes_cli.codex_models import get_codex_model_ids
                 available = get_codex_model_ids(access_token=self.api_key if self.api_key else None)
                 if available:
                     fallback_model = available[0]

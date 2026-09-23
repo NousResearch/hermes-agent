@@ -9,6 +9,7 @@ trailing "Provider said:" / "Details:" line.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
@@ -124,6 +125,23 @@ def exit_reason_failure(turn_exit_reason: Any) -> Optional[ExitFailure]:
         if reason.startswith(prefix):
             return ExitFailure(code, retryable, fails_turn)
     return None
+
+
+def is_max_iteration_handoff(result: Any) -> bool:
+    """A non-failed, non-interrupted ``max_iterations_reached(N/N)`` result that still carries a
+    summary. ``completed`` is False because the work did not finish in that turn, but the turn
+    itself is a resumable boundary — not a failure — so cron delivers the summary and an active
+    ``/goal`` may judge it (#102213). Provider/API failures never match (cf. #63180)."""
+    if not isinstance(result, dict):
+        return False
+    if result.get("failed") is True or result.get("interrupted") is True:
+        return False
+    if result.get("completed") is not False:
+        return False
+    reason = result.get("turn_exit_reason")
+    if not (isinstance(reason, str) and reason.startswith("max_iterations_reached(")):
+        return False
+    return bool(str(result.get("final_response") or "").strip())
 
 
 # ---- chat copy tables -----------------------------------------------------------------------
@@ -321,6 +339,19 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, rese
         f"{lead} — {situation} To avoid this in future, "
         f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
     )
+
+
+def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
+    """One chat/CLI line naming when the provider says the limit lifts (#98852): the Retry-After
+    / ``resets_at`` the loop already honours for backoff, shown to the user instead of a bare
+    "wait a minute". Local wall-clock time plus the remaining wait; empty once it has passed."""
+    now = time.time() if now is None else now
+    remaining = int(resets_at - now)
+    if remaining <= 0:
+        return ""
+    hours, minutes = divmod((remaining + 59) // 60, 60)
+    wait = f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+    return f"Limit resets at {time.strftime('%H:%M', time.localtime(resets_at))} (in {wait})."
 
 
 def oauth_relogin_command(provider: Any) -> str:

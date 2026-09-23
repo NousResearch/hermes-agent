@@ -87,6 +87,10 @@ export interface ErrorSurface {
   /** Free-tier codes: the backend's own plain sentence for this failure (it
    *  names the wait, the model, the way forward). Shown as the card body. */
   message?: string
+  /** Epoch seconds when the provider said its limit lifts (Retry-After header /
+   *  `resets_at` body field on a 429). Rendered as "Limit resets at HH:mm" next
+   *  to Retry. Absent when the provider named no reset or on older backends. */
+  resetsAt?: number
 }
 
 /** Validate a wire payload into an ErrorSurface, or null when absent/garbled. */
@@ -104,6 +108,7 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
     model?: unknown
     provider?: unknown
     provider_label?: unknown
+    resets_at?: unknown
     retryable?: unknown
   }
 
@@ -122,8 +127,66 @@ export function parseErrorSurface(value: unknown): ErrorSurface | null {
     ...(raw.auth_kind === 'oauth' || raw.auth_kind === 'api_key' ? { authKind: raw.auth_kind } : {}),
     ...(typeof raw.provider_label === 'string' && raw.provider_label ? { providerLabel: raw.provider_label } : {}),
     ...(typeof raw.api_key_env === 'string' && raw.api_key_env ? { apiKeyEnv: raw.api_key_env } : {}),
-    ...(typeof raw.message === 'string' && raw.message.trim() ? { message: raw.message.trim() } : {})
+    ...(typeof raw.message === 'string' && raw.message.trim() ? { message: raw.message.trim() } : {}),
+    ...(typeof raw.resets_at === 'number' && Number.isFinite(raw.resets_at) && raw.resets_at > 0
+      ? { resetsAt: raw.resets_at }
+      : {})
   }
+}
+
+/** "HH:mm" for a provider reset moment, in the user's local clock. */
+export function formatResetClock(resetsAt: number): string {
+  const at = new Date(resetsAt * 1000)
+
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+}
+
+/** "HH:mm (in 1h 05m)" for a provider reset moment, or null once it has passed
+ *  (a Retry then simply works, so the hint disappears). `now` is injectable for tests. */
+export function formatLimitReset(resetsAt: number | undefined, now: number = Date.now()): null | string {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) {
+    return null
+  }
+
+  const remainingMinutes = Math.ceil((resetsAt * 1000 - now) / 60_000)
+
+  if (remainingMinutes <= 0) {
+    return null
+  }
+
+  const hours = Math.floor(remainingMinutes / 60)
+  const minutes = remainingMinutes % 60
+  const wait = hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes}m`
+
+  return `${formatResetClock(resetsAt)} (in ${wait})`
+}
+
+/** Browsers clamp `setTimeout` delays to a signed 32-bit millisecond count and
+ *  fire anything larger immediately — a reset that far out gets no schedule
+ *  button at all rather than an instant (and pointless) retry. */
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1
+
+/** Milliseconds until the card may fire its one scheduled retry, or null when
+ *  the reset already passed (Retry works now) or is too far out to time. */
+export function scheduledRetryDelayMs(resetsAt: number | undefined, now: number = Date.now()): null | number {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) {
+    return null
+  }
+
+  const delay = resetsAt * 1000 - now
+
+  return delay > 0 && delay <= MAX_TIMER_DELAY_MS ? delay : null
+}
+
+/** "12m 03s" / "1h 05m 03s" for the live countdown on a scheduled retry. */
+export function formatCountdown(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const tail = `${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`
+
+  return hours > 0 ? `${hours}h ${tail}` : tail.replace(/^0/, '')
 }
 
 /** True when the Nous free tier refused or could not serve the turn: the way
@@ -186,7 +249,9 @@ export interface ErrorRecoveryPlan {
   signInAgain: boolean
   /** Open the free-tier sign-in dialog (free_tier_* codes): signing in is free and lifts the refusal. */
   signInFreeTier: boolean
-  /** Settings → Models deep link. */
+  /** Open the live session model menu (switches THIS session via
+   *  model.switch); Settings → Models deep link fallback when no chat surface
+   *  is on screen. */
   switchProvider: boolean
 }
 
@@ -252,6 +317,7 @@ export function formatErrorDiagnostics(input: {
     input.surface ? `layer: ${input.surface.layer}` : null,
     input.surface ? `code: ${input.surface.code}` : null,
     input.surface ? `retryable: ${input.surface.retryable}` : null,
+    input.surface?.resetsAt ? `resets_at: ${new Date(input.surface.resetsAt * 1000).toISOString()}` : null,
     provider ? `provider: ${provider}` : null,
     model ? `model: ${model}` : null,
     input.appVersion ? `app: ${input.appVersion}` : null,

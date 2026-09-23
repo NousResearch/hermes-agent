@@ -2,11 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.message_sanitization import coerce_tool_name
 from agent.codex_responses_adapter import (
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
     _classify_responses_issuer,
-    _sanitize_replayed_fn_name,
     _format_responses_error,
     _normalize_codex_response,
     _neutralize_harmony_tokens,
@@ -493,27 +493,27 @@ def test_chat_messages_to_responses_input_keeps_short_call_id():
     assert output["call_id"] == "call_abc123"
 
 
-def test_sanitize_replayed_fn_name_valid_passthrough():
+def test_coerce_tool_name_valid_passthrough():
     """Valid names pass through unchanged (identity — cache-prefix safe)."""
     for name in ("web_search", "exec-command", "a1_B2-c3", "x" * 64):
-        assert _sanitize_replayed_fn_name(name) == name
+        assert coerce_tool_name(name) == name
 
 
-def test_sanitize_replayed_fn_name_coerces_invalid_chars():
-    assert _sanitize_replayed_fn_name("exec.command") == "exec_command"
-    assert _sanitize_replayed_fn_name("run shell cmd") == "run_shell_cmd"
-    assert _sanitize_replayed_fn_name("weird..__name") == "weird_name"
-    assert _sanitize_replayed_fn_name("  tool!  ") == "tool"
+def test_coerce_tool_name_coerces_invalid_chars():
+    assert coerce_tool_name("exec.command") == "exec_command"
+    assert coerce_tool_name("run shell cmd") == "run_shell_cmd"
+    assert coerce_tool_name("weird..__name") == "weird_name"
+    assert coerce_tool_name("  tool!  ") == "tool"
 
 
-def test_sanitize_replayed_fn_name_degenerate_inputs():
+def test_coerce_tool_name_degenerate_inputs():
     """All-invalid / non-string names degrade to a placeholder, never empty —
     an empty name would trade the API 400 for a preflight ValueError."""
-    assert _sanitize_replayed_fn_name("") == "fn"
-    assert _sanitize_replayed_fn_name("...") == "fn"
-    assert _sanitize_replayed_fn_name("日本語") == "fn"
-    assert _sanitize_replayed_fn_name(None) == "fn"
-    assert len(_sanitize_replayed_fn_name("a." * 100)) <= 64
+    assert coerce_tool_name("", fallback="fn") == "fn"
+    assert coerce_tool_name("...", fallback="fn") == "fn"
+    assert coerce_tool_name("日本語", fallback="fn") == "fn"
+    assert coerce_tool_name(None, fallback="fn") == "fn"
+    assert len(coerce_tool_name("a." * 100)) <= 64
 
 
 def test_chat_messages_to_responses_input_sanitizes_replayed_fn_name():
@@ -984,3 +984,18 @@ def _xai_reasoning_only_response(reasoning_text):
             )
         ],
     )
+
+def test_codex_preflight_passes_text_verbosity_through():
+    """The preflight whitelist must let the Responses ``text`` block reach the wire (#20203).
+
+    Before it was allowed, ``text.verbosity`` died inside Hermes with
+    "unsupported field(s): text" before the request ever left the process.
+    """
+    kwargs = {
+        "model": "gpt-5.1", "instructions": "system", "store": False,
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "text": {"verbosity": "low"},
+    }
+    assert _preflight_codex_api_kwargs(dict(kwargs))["text"] == {"verbosity": "low"}
+    # An empty block is dropped, like the other optional fields, instead of rejected.
+    assert "text" not in _preflight_codex_api_kwargs({**kwargs, "text": {}})

@@ -158,7 +158,11 @@ def _resolve_openrouter_runtime(
     if is_openrouter_context:
         candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"), get_secret_str("OPENAI_API_KEY")]
     else:
+        # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
+        # rung is what a bare ``provider: custom`` block relies on (#67453).
+        from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for
         candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
+                      (_model_cfg_key_env_for(model_cfg, base_url) if use_config_base_url else ""),
                       *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "")
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"

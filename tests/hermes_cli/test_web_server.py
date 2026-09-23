@@ -1246,6 +1246,33 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["session_id"] == "cyc-b"
 
+    def test_latest_descendant_never_resumes_into_a_subagent_or_branch_child(self):
+        """#115092: after a ws_orphan_reap the dashboard resumes the predecessor's newest descendant. A
+        subagent run (``_delegate_from``) or a /branch fork (``_branched_from``) is its own conversation and
+        never listed as a continuation, so following it parks the user's chat in a hidden row; only
+        compression continuations are followed."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="primary", source="tui")
+            db.create_session(session_id="primary-sub", source="tui", parent_session_id="primary",
+                              model_config={"_delegate_from": "primary"})
+            db.create_session(session_id="primary-fork", source="tui", parent_session_id="primary",
+                              model_config={"_branched_from": "primary"})
+            db.end_session("primary", "ws_orphan_reap")
+            assert self.client.get("/api/sessions/primary/latest-descendant").json()["session_id"] == "primary"
+
+            db._conn.execute("UPDATE sessions SET end_reason='compression' WHERE id='primary'")
+            db._conn.commit()
+            db.create_session(session_id="primary-cont", source="tui", parent_session_id="primary")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/primary/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "primary-cont"
+
 
 
 
@@ -2060,6 +2087,146 @@ class TestWebServerEndpoints:
         assert get_env_value(env_var) == "sk-super-secret"
         assert "sk-super-secret" not in yaml.safe_dump(cfg)
 
+
+    def test_custom_endpoint_save_pins_api_mode_and_resolves_reasoning_alias(self):
+        """Desktop's Custom Endpoints form pins the transport and keeps alias metadata (#93622).
+
+        A Responses-only host 404s on the runtime's Chat Completions default, so the chosen
+        ``api_mode`` must land on the providers entry and read back; a discovered reasoning
+        alias resolves to its canonical model + ``agent.reasoning_overrides`` instead of being
+        saved as a literal upstream model id.
+        """
+        from hermes_cli.config import load_config
+
+        response = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "custom-responses", "name": "custom-responses",
+                "base_url": "https://responses-gateway.example.com/v1",
+                "model": "gpt-5.6-sol-high", "api_mode": "codex_responses", "make_default": True,
+                "models": ["gpt-5.6-sol", "gpt-5.6-sol-high"],
+                "model_details": [
+                    {"id": "gpt-5.6-sol"},
+                    {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
+                ],
+            },
+        )
+        assert response.status_code == 200
+        row = next(e for e in response.json()["endpoints"] if e["id"] == "custom-responses")
+        assert row["api_mode"] == "codex_responses"
+        assert row["model"] == "gpt-5.6-sol"
+
+        cfg = load_config()
+        entry = cfg["providers"]["custom-responses"]
+        assert entry["api_mode"] == "codex_responses"
+        assert entry["model"] == "gpt-5.6-sol"
+        assert entry["models"]["gpt-5.6-sol-high"] == {"canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"}
+        assert cfg["model"]["default"] == "gpt-5.6-sol"
+        assert cfg["agent"]["reasoning_overrides"]["gpt-5.6-sol"] == "high"
+
+        # An older UI payload (no api_mode) leaves the pinned transport alone; "" clears it.
+        self.client.post("/api/providers/custom-endpoints", json={
+            "id": "custom-responses", "name": "custom-responses",
+            "base_url": "https://responses-gateway.example.com/v1", "model": "gpt-5.6-sol"})
+        assert load_config()["providers"]["custom-responses"]["api_mode"] == "codex_responses"
+        self.client.post("/api/providers/custom-endpoints", json={
+            "id": "custom-responses", "name": "custom-responses", "api_mode": "",
+            "base_url": "https://responses-gateway.example.com/v1", "model": "gpt-5.6-sol"})
+        listed = self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
+        assert next(e for e in listed if e["id"] == "custom-responses")["api_mode"] == ""
+        assert "api_mode" not in load_config()["providers"]["custom-responses"]
+
+    def test_custom_endpoint_validate_keeps_model_alias_metadata(self, monkeypatch):
+        """``validate`` returns the bare id list older clients read AND ``model_details`` with
+        the ``canonical_model`` / ``reasoning_effort`` a gateway advertises (#93622)."""
+        import contextlib
+
+        from hermes_cli.web_routers import config_env
+
+        class FakeResp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [
+                    {"id": "gpt-5.6-sol", "object": "model"},
+                    {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
+                ]}
+
+        class FakeClient:
+            async def get(self, url, headers=None):
+                return FakeResp()
+
+            async def post(self, url, json=None, headers=None):
+                return FakeResp()
+
+        @contextlib.asynccontextmanager
+        async def fake_probe_client(url, timeout):
+            yield FakeClient()
+
+        monkeypatch.setattr(config_env, "_endpoint_probe_client", fake_probe_client)
+        body = self.client.post("/api/providers/custom-endpoints/validate", json={
+            "name": "x", "base_url": "https://responses-gateway.example.com/v1", "model": ""}).json()
+        assert body["ok"] is True
+        assert body["models"] == ["gpt-5.6-sol", "gpt-5.6-sol-high"]
+        assert body["model_details"] == [
+            {"id": "gpt-5.6-sol"},
+            {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
+        ]
+
+    @staticmethod
+    def _responses_only_host(monkeypatch, posted):
+        """A gateway that lists models on GET /models and serves POST /responses but 404s
+        POST /chat/completions — the #93622 reporter's host."""
+        import contextlib
+
+        from hermes_cli.web_routers import config_env
+
+        class Resp:
+            def __init__(self, status):
+                self.status_code, self.is_success = status, status < 400
+
+            def json(self):
+                return {"data": [{"id": "gpt-5.6-sol"}]}
+
+        class Client:
+            async def get(self, url, headers=None):
+                return Resp(200)
+
+            async def post(self, url, json=None, headers=None):
+                posted.append((url, json))
+                return Resp(400 if url.endswith("/responses") else 404)
+
+        @contextlib.asynccontextmanager
+        async def probe_client(url, timeout):
+            yield Client()
+
+        monkeypatch.setattr(config_env, "_endpoint_probe_client", probe_client)
+
+    def test_custom_endpoint_validate_fails_when_the_transport_route_is_missing(self, monkeypatch):
+        """Test must exercise the leg the runtime will use: a Responses-only host answers /models
+        fine, so validation also POSTs the resolved transport's route and fails on 404 (#93622)."""
+        posted = []
+        self._responses_only_host(monkeypatch, posted)
+        for api_mode in ("", "chat_completions"):  # auto-detect resolves to chat_completions here
+            body = self.client.post("/api/providers/custom-endpoints/validate", json={
+                "name": "x", "base_url": "https://gw.example.com/v1", "model": "", "api_mode": api_mode}).json()
+            assert body["ok"] is False and body["reachable"] is True
+            assert body["transport_checked"] == "chat_completions"
+            assert "/chat/completions" in body["message"] and "Chat Completions" in body["message"]
+            assert body["models"] == ["gpt-5.6-sol"], "discovered models still returned so the user can re-pick"
+        assert posted[-1][0] == "https://gw.example.com/v1/chat/completions"
+        assert posted[-1][1]["model"] == "gpt-5.6-sol" and posted[-1][1]["max_tokens"] == 1
+
+    def test_custom_endpoint_validate_passes_when_the_pinned_transport_is_served(self, monkeypatch):
+        posted = []
+        self._responses_only_host(monkeypatch, posted)
+        body = self.client.post("/api/providers/custom-endpoints/validate", json={
+            "name": "x", "base_url": "https://gw.example.com/v1", "model": "", "api_mode": "codex_responses"}).json()
+        assert body["ok"] is True and body["message"] == ""
+        assert body["transport_checked"] == "codex_responses"
+        assert posted == [("https://gw.example.com/v1/responses",
+                           {"model": "gpt-5.6-sol", "input": "hi", "max_output_tokens": 16})]
 
     def test_custom_endpoint_save_leaves_a_hand_written_env_ref_alone(self, monkeypatch):
         """``api_key: ${MY_KEY}`` is already safe — don't copy it elsewhere.
@@ -5226,6 +5393,10 @@ class TestValidateProviderCredential:
                 captured["headers"] = headers
                 return _Resp()
 
+            async def post(self, url, *args, json=None, headers=None, **kwargs):
+                captured["posted"] = url
+                return _Resp()
+
         monkeypatch.setattr("httpx.AsyncClient", _Client)
 
         response = self.client.post(
@@ -5243,6 +5414,9 @@ class TestValidateProviderCredential:
             "reachable": True,
             "message": "",
             "models": ["local-model"],
+            "resolved_base_url": "http://localhost:8000/v1",
+            "model_details": [{"id": "local-model"}],
+            "transport_checked": "chat_completions",
         }
         assert captured == {
             "url": "http://localhost:8000/v1/models",
@@ -5250,6 +5424,7 @@ class TestValidateProviderCredential:
                 "Accept": "application/json",
                 "Authorization": "Bearer local-secret",
             },
+            "posted": "http://localhost:8000/v1/chat/completions",
         }
 
 

@@ -17,6 +17,7 @@ from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
+from hermes_platform.host import runtime as host_runtime
 from hermes_cli.clipboard import (
     save_clipboard_image,
     has_clipboard_image,
@@ -34,6 +35,8 @@ from hermes_cli.clipboard import (
     _windows_save,
     _windows_has_image,
     _convert_to_png,
+    _pipe_to_file,
+    _probe,
 )
 from cli import _should_auto_attach_clipboard_image_on_paste
 
@@ -54,6 +57,26 @@ class TestSaveClipboardImage:
             with patch("hermes_cli.clipboard._linux_save", return_value=False):
                 save_clipboard_image(dest)
         assert dest.parent.exists()
+
+
+class TestClipboardChildStdin:
+    def test_probe_uses_devnull_stdin(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert _probe(["clipboard-tool"], 3, lambda result: result.returncode == 0)
+        assert mock_run.call_args.kwargs["stdin"] == subprocess.DEVNULL
+
+    def test_pipe_to_file_uses_devnull_stdin(self, tmp_path):
+        dest = tmp_path / "out.png"
+
+        def fake_run(_argv, **kwargs):
+            assert kwargs["stdin"] == subprocess.DEVNULL
+            kwargs["stdout"].write(FAKE_PNG)
+            return MagicMock(returncode=0)
+
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            assert _pipe_to_file(["clipboard-tool"], dest) is True
+        assert dest.read_bytes() == FAKE_PNG
 
 
 # ── macOS ────────────────────────────────────────────────────────────────
@@ -151,18 +174,14 @@ class TestMacosClipboardFileUrl:
 
 class TestIsWsl:
     def setup_method(self):
-        # _is_wsl is hermes_constants.is_wsl; reset the function's own module
-        # globals so this stays stable even if hermes_constants was imported
-        # through a different module object earlier in a large xdist run.
-        import hermes_constants
-        hermes_constants._wsl_detected = None
+        # Reset the cache in the module that owns _is_wsl.
+        host_runtime._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None
 
     def teardown_method(self):
         # Reset again after the test so we don't leak a cached value
         # (True/False) into whichever test the xdist worker runs next.
-        import hermes_constants
-        hermes_constants._wsl_detected = None
+        host_runtime._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None
 
     @pytest.mark.parametrize("content, expected", [
@@ -242,7 +261,10 @@ class TestWaylandHasImage:
 class TestWaylandSave:
     def test_png_extraction(self, tmp_path):
         dest = tmp_path / "out.png"
+        calls = []
+
         def fake_run(cmd, **kw):
+            calls.append(kw)
             if "--list-types" in cmd:
                 return MagicMock(stdout="image/png\ntext/plain\n", returncode=0)
             # Extract call — write fake data to stdout file
@@ -252,6 +274,7 @@ class TestWaylandSave:
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _wayland_save(dest) is True
         assert dest.stat().st_size > 0
+        assert all(kwargs["stdin"] == subprocess.DEVNULL for kwargs in calls)
 
 
     def test_prefers_png_over_bmp(self, tmp_path):
@@ -317,8 +340,7 @@ class TestLinuxSave:
     """Test that _linux_save dispatches correctly to WSL → Wayland → X11."""
 
     def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._wsl_detected = None
+        host_runtime._wsl_detected = None
 
     def test_wsl_tried_first(self, tmp_path):
         dest = tmp_path / "out.png"
@@ -432,8 +454,7 @@ class TestConvertToPng:
 
 class TestHasClipboardImage:
     def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._wsl_detected = None
+        host_runtime._wsl_detected = None
 
     @pytest.mark.macos_only
     def test_macos_dispatch(self):

@@ -118,7 +118,9 @@ class TestCodexCloudflareHeaders:
             status_code = 200
 
             def json(self):
-                return {"models": []}
+                # Non-empty so the newest-client request is accepted and each site makes one call
+                # (an empty answer would legitimately trigger the 0.0.0 sentinel fallback).
+                return {"models": [{"slug": "gpt-5.5", "visibility": "list"}]}
 
         class _FakeHttp:
             @staticmethod

@@ -1436,7 +1436,7 @@ _BACKOFF_POLICY_NOTES = {
 # reaches fallback/surface. Non-interactive callers may opt out via
 # ``compute_error_backoff(..., interactive=False)`` to honour full parks.
 _INTERACTIVE_SLEEP_CAP_S = 300.0
-_INTERACTIVE_CAPPED_POLICIES = frozenset({"console_go_overload_long", "rate_limit_park"})
+_INTERACTIVE_CAPPED_POLICIES = frozenset({"console_go_overload_long", "rate_limit_park", "retry_after"})
 
 
 def reset_hint(api_error: Exception) -> str:
@@ -1483,7 +1483,7 @@ def compute_error_backoff(
     if _retry_after is not None:
         _retry_after = min(_retry_after, RETRY_AFTER_CAP_S)
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
-    _backoff_policy = None
+    _backoff_policy = "retry_after" if _retry_after is not None else None
     _adaptive = is_rate_limited or is_zai_coding_overload or is_console_go_overload
     if _adaptive and _retry_after is None:
         # A structured reset parks the turn until the provider's own window
@@ -1505,16 +1505,19 @@ def compute_error_backoff(
             wait_time, _backoff_policy = adaptive_rate_limit_backoff(
                 retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
             )
-        if interactive and _backoff_policy in _INTERACTIVE_CAPPED_POLICIES and wait_time > _INTERACTIVE_SLEEP_CAP_S:
-            # Interactive guard: never block a user-facing turn on one 3600s
-            # sleep. The capped sleep is interruptible; the loop then re-enters
-            # and the reduced Console Go ceiling still drives fallback/surface.
-            logger.info(
-                "Capping interactive %s wait %.0fs → %.0fs (attempt %s/%s) %s",
-                _backoff_policy, wait_time, _INTERACTIVE_SLEEP_CAP_S,
-                retry_count, max_retries, agent._client_log_context(),
-            )
-            wait_time = _INTERACTIVE_SLEEP_CAP_S
+    if interactive and _backoff_policy in _INTERACTIVE_CAPPED_POLICIES and wait_time > _INTERACTIVE_SLEEP_CAP_S:
+        # Interactive guard: never block a user-facing turn on one long
+        # sleep (3600s park, 600s Retry-After, long Console Go rung). The
+        # capped sleep is interruptible; the loop then re-enters and the
+        # reduced Console Go ceiling still drives fallback/surface. Single
+        # cap site: it covers the Retry-After path above as well as the
+        # ladder/park paths (the policy tag is what gates it, not the branch).
+        logger.info(
+            "Capping interactive %s wait %.0fs → %.0fs (attempt %s/%s) %s",
+            _backoff_policy, wait_time, _INTERACTIVE_SLEEP_CAP_S,
+            retry_count, max_retries, agent._client_log_context(),
+        )
+        wait_time = _INTERACTIVE_SLEEP_CAP_S
     _reset = reset_hint(api_error) if _adaptive else ""
     _free_busy = is_rate_limited and on_free_model(agent, base_url)
     _wait_reason = ("The free model is busy" if _free_busy

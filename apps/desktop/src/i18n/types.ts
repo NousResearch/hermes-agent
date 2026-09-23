@@ -3801,6 +3801,8 @@ export interface Translations {
     changeCwdTitle: string
     remotePickerTitle: string
     remotePickerDescription: string
+    remotePickerPathLabel: string
+    remotePickerPathPlaceholder: string
     remotePickerSelect: string
     folderTip: (cwd: string) => string
     openFolder: string

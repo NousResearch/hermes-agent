@@ -19,7 +19,6 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
-  type MenuItemConstructorOptions,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
@@ -76,7 +75,6 @@ import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
-  shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
@@ -90,13 +88,6 @@ import {
 } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
-import {
-  BROWSER_WINDOW_HEIGHT,
-  BROWSER_WINDOW_MIN_HEIGHT,
-  BROWSER_WINDOW_MIN_WIDTH,
-  BROWSER_WINDOW_WIDTH,
-  buildBrowserWindowUrl
-} from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
@@ -175,15 +166,16 @@ import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
-import { formatDesktopLogLine } from './desktop-log-line'
+import { createDesktopLogRuntime, rotateLogIfNeededSync } from './desktop-log-runtime'
+import { createDesktopNativeChromeRuntime } from './desktop-native-chrome-runtime'
 import {
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
   type DesktopProfileRoute,
-  resolveDesktopConnectionRequest,
-  resolveDesktopWindowLaunch
+  resolveDesktopConnectionRequest
 } from './desktop-profile'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
+import { createDesktopSecondaryWindowRuntime } from './desktop-secondary-window-runtime'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -203,7 +195,6 @@ import {
   terminalScriptExtension,
   tuiResumeArgs
 } from './external-terminal'
-import { type FaviconIo, resolveFavicon } from './favicon'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import {
   installFindShortcut,
@@ -211,7 +202,7 @@ import {
   performFindAfterIndexingStarted,
   stopFind
 } from './find-in-page'
-import { createFirstRunSetupGate } from './first-run-setup-gate'
+import { createFirstRunBootRuntime } from './first-run-boot-runtime'
 import { registerFsIpc } from './fs-ipc'
 import {
   filenameFromContentDisposition,
@@ -244,7 +235,6 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
-  homeRelativeAttachmentCandidates,
   readFileDataUrlForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
@@ -275,12 +265,10 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
-import { isAuthWall, resolveLinkTitle } from './link-title-wall'
-import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { createLinkMetadataRuntime } from './link-metadata-runtime'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
-import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -302,8 +290,8 @@ import {
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
-import { createMinimizeToTray } from './minimize-to-tray'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
+import { createNativeAppearanceController } from './native-appearance-controller'
 import { oauthSessionIsLive, resolveJsonBody, resolveReadinessProbeAuth } from './native-auth-decisions'
 import {
   nativeRefreshUrl,
@@ -352,6 +340,13 @@ import { createKeepAwake } from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
+import {
+  createPreviewTargetRuntime,
+  looksBinary,
+  PREVIEW_LANGUAGE_BY_EXT,
+  registerPreviewTargetIpc,
+  TEXT_PREVIEW_MAX_BYTES
+} from './preview-target-runtime'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
@@ -417,15 +412,7 @@ import {
   writeSecretStoragePolicy
 } from './secret-storage-policy'
 import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
-import {
-  buildInstanceWindowUrl,
-  buildSessionWindowUrl,
-  chatWindowWebPreferences,
-  createSessionWindowRegistry,
-  instanceWindowBounds,
-  SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
-} from './session-windows'
+import { chatWindowWebPreferences } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -434,20 +421,8 @@ import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
-import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
-import {
-  backgroundMaterialFor,
-  defaultTranslucencyState,
-  glassActive,
-  glassSupportedOn,
-  normalizeState as normalizeTranslucency,
-  opacityNeedsSetting,
-  translucencySupportedOn,
-  vibrancyFor as vibrancyForTranslucency,
-  windowBackingOptions,
-  windowOpacityFor,
-  windowOpacityOptions
-} from './translucency'
+import { nativeOverlayWidth as computeNativeOverlayWidth } from './titlebar-overlay-width'
+import { glassSupportedOn, translucencySupportedOn } from './translucency'
 import {
   branchTipApiUrl,
   cacheIsFresh,
@@ -538,6 +513,14 @@ import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
+import {
+  DEFAULT_ZOOM_LEVEL,
+  installZoomReassertOnNavigation,
+  installZoomReassertOnWindowEvents,
+  percentToZoomLevel,
+  zoomLevelToPercent,
+  zoomWiringForWindowKind
+} from './zoom'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -979,8 +962,11 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
-const DESKTOP_LOG_FLUSH_MS = 120
-const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
+
+// Native appearance receives rememberLog during module evaluation, so the
+// logging runtime must be created before that controller.
+const { hermesLog, flushDesktopLogBufferSync, rememberLog, startChromiumLogWatcher, stopDesktopLogFlushTimer } =
+  createDesktopLogRuntime(DESKTOP_LOG_PATH)
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
 // (version-skew crash -> backend exits instantly -> renderer keeps hitting
 // Retry) appends the full bootstrap transcript every attempt and grows without
@@ -1057,254 +1043,18 @@ const APP_ICON_PATHS = appIconCandidates({
   unpackedPathFor
 })
 
-let rendererTitleBarTheme = null
-
-// Force the NATIVE window appearance (vibrancy material, titlebar, the
-// pre-first-paint window background) to follow the APP theme instead of the
-// OS appearance. With `vibrancy` set, macOS paints an NSVisualEffectView that
-// tracks the window's effective appearance and ignores `backgroundColor` —
-// so a dark-themed app on a light-mode Mac flashes a white material on every
-// new window until the renderer covers it. The renderer reports its mode via
-// 'hermes:native-theme' ('dark' | 'light' | 'system'); we pin
-// nativeTheme.themeSource to it and persist the value so cold launches paint
-// correctly before the renderer has even loaded.
-const NATIVE_THEME_CONFIG_PATH = path.join(app.getPath('userData'), 'native-theme.json')
-const THEME_SOURCES = new Set(['dark', 'light', 'system'])
-
-function readPersistedThemeSource() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(NATIVE_THEME_CONFIG_PATH, 'utf8'))
-
-    if (parsed && THEME_SOURCES.has(parsed.themeSource)) {
-      return parsed.themeSource
-    }
-  } catch {
-    // Missing / malformed → follow the OS like a fresh install.
-  }
-
-  return 'system'
-}
-
-function writePersistedThemeSource(mode) {
-  try {
-    fs.mkdirSync(path.dirname(NATIVE_THEME_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(NATIVE_THEME_CONFIG_PATH, JSON.stringify({ themeSource: mode }, null, 2), 'utf8')
-  } catch (error) {
-    rememberLog(`[theme] write native theme failed: ${error.message}`)
-  }
-}
-
-nativeTheme.themeSource = readPersistedThemeSource()
-
-// Window translucency (see-through window). One lever, 0–100; 0 = off (the
-// default). Two modes share the lever (see electron/translucency.ts and
-// store/translucency): 'clear' maps it to the native window opacity so the
-// desktop shows through the whole window; 'glass' keeps the window opaque
-// and lets the renderer thin its surfaces over a platform material instead
-// — a matte blur with full-contrast text. macOS uses vibrancy; Windows 11
-// uses DWM acrylic/mica/tabbed. Persisted so a cold launch applies it at
-// window creation, before the renderer reports its value.
-// macOS + Windows only; `setOpacity` is a no-op on Linux.
-const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucency.json')
-
-function readPersistedTranslucency() {
-  try {
-    return normalizeTranslucency(JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')), GLASS_SUPPORTED)
-  } catch {
-    // Nothing persisted yet — a first launch. Glass ships on, so the FIRST
-    // window has to be created with the glass backing already: a window born
-    // opaque cannot reliably be swapped to glass afterwards (see
-    // windowBackingOptions). nativeTheme is the only appearance signal main
-    // has this early; the renderer's first resolved send corrects it.
-    return defaultTranslucencyState(nativeTheme.shouldUseDarkColors ? 'dark' : 'light', GLASS_SUPPORTED, IS_WINDOWS)
-  }
-}
-
-function writePersistedTranslucency(state) {
-  try {
-    fs.mkdirSync(path.dirname(TRANSLUCENCY_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(TRANSLUCENCY_CONFIG_PATH, JSON.stringify(state, null, 2), 'utf8')
-  } catch (error) {
-    rememberLog(`[translucency] write failed: ${error.message}`)
-  }
-}
-
-let translucencyState = readPersistedTranslucency()
-
-// Chat windows whose webContents backing follows translucency (primary,
-// instance peers, session windows). The HUD / pet overlay / quick entry /
-// wake indicator are `transparent: true` windows that own their backgrounds —
-// painting a themed backing onto them would turn them into opaque rectangles.
-const translucencyBackedWindows = new WeakSet()
-
-// Set a live window's native opacity, but only when the state asks it to fade
-// — or when the window is already faded and is on its way back to opaque. The
-// window's own opacity is the record of whether that door was ever opened; see
-// opacityNeedsSetting for why it matters that it stays shut.
-function applyWindowOpacity(win) {
-  const opacity = windowOpacityFor(translucencyState)
-
-  if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
-    win.setOpacity(opacity)
-  }
-}
-
-// Re-apply translucency to a live window (runtime toggle, no recreation).
-// Opacity goes through applyWindowOpacity, which knows when the call is worth
-// making at all. The backing swap is the glass half: Chromium composites the
-// page against the window backing BEFORE the OS composites the window, so
-// glass needs the backing dropped for the platform material to reach it, and
-// every other state needs the opaque themed backing (anti-flash, and it is
-// what makes clear mode fade to the desktop instead of to black).
-//
-// `changed` says which native properties actually need touching. Dragging the
-// intensity slider emits ~100 updates, and in glass mode NONE of them change
-// anything native — the tint is painted by the renderer and windowOpacityFor
-// answers off `fade`, not `intensity`, there. Re-issuing setVibrancy on every
-// tick restarts its 150ms animation before macOS can settle the material,
-// which reads as jank and flattens the frost levels into each other. Windows
-// setBackgroundMaterial is instantaneous but still skipped on tint-only ticks.
-// The glass Fade lever is the one glass drag that does reach main, and it
-// costs exactly what a Clear drag costs: one setOpacity.
-//
-// CAUTION (measured, macOS 26 / Electron 40): a runtime
-// setBackgroundColor('#00000000') is silently LOST on a window whose
-// compositor hasn't been up for a few seconds — including calls from
-// 'ready-to-show' and 'did-finish-load'. Cold launches therefore must not
-// rely on this path: windows are BORN with the right backing
-// (windowBackingOptions at each creation site). This path only has to cover
-// live toggles from Settings, where the window is long settled.
-function applyWindowTranslucency(win, changed = { backing: true, material: true, opacity: true }) {
-  if (!win || win.isDestroyed()) {
-    return
-  }
-
-  try {
-    // Backing swap + material are scoped to registered chat windows (see
-    // translucencyBackedWindows above).
-    if (translucencyBackedWindows.has(win)) {
-      if (changed.backing && typeof win.setBackgroundColor === 'function') {
-        win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
-      }
-
-      if (changed.material) {
-        // Glass frost level = the platform material. Animate the macOS hop so
-        // a deliberate frost switch feels continuous — which only works if we
-        // don't re-issue it on unrelated updates. Windows has no equivalent
-        // animation option; setBackgroundMaterial is instantaneous.
-        if (IS_MAC && typeof win.setVibrancy === 'function') {
-          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
-        }
-
-        if (IS_WINDOWS && GLASS_SUPPORTED && typeof win.setBackgroundMaterial === 'function') {
-          win.setBackgroundMaterial(backgroundMaterialFor(translucencyState))
-        }
-      }
-    }
-
-    if (changed.opacity) {
-      applyWindowOpacity(win)
-    }
-  } catch (error) {
-    rememberLog(`[translucency] apply failed: ${error.message}`)
-  }
-}
-
-// Constructor options every chat window shares for its translucency surface:
-// the platform material, the webContents backing, and a native opacity only if
-// the state actually fades — all under the CURRENT state. Glass omits
-// backgroundColor so the material shows from the first frame (Electron hands a
-// translucent window a transparent default backing, and runtime swaps are lost
-// early in a window's life — see applyWindowTranslucency); otherwise the opaque
-// themed anti-flash backing.
-//
-// Call sites also register the window in translucencyBackedWindows so a live
-// toggle can re-apply. The HUD, pet overlay, quick entry and wake indicator
-// are `transparent: true` windows that own their backgrounds and are
-// deliberately not chat windows.
-function chatWindowSurfaceOptions() {
-  return {
-    vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
-    // Pin the material to its ACTIVE appearance: several NSVisualEffectView
-    // materials collapse to a shared inactive look when the window blurs
-    // (measured on macOS 26: sidebar, popover and under-window composited
-    // pixel-identically once unfocused), which would quietly erase the
-    // user's frost choice whenever they click elsewhere. Only observable
-    // under glass — everywhere else the page buries the material.
-    visualEffectState: IS_MAC ? ('active' as const) : undefined,
-    // NOT `transparent: true` on Windows. The backdrop material already makes
-    // the window translucent on its own: `IsTranslucent` answers yes off
-    // `background_material_` alone, which is what gives the page its transparent
-    // default backing, and `SetBackgroundMaterial` flips widget translucency
-    // live, so a Clear→Glass toggle needs no recreate either way. Its one gate
-    // is a frameless window, and `titleBarStyle: 'hidden'` already makes
-    // `has_frame()` false here.
-    //
-    // What `transparent` adds on top is permanent and unwanted: it pins the
-    // widget to kTranslucent for the window's whole life, so even glass-OFF
-    // windows pay a DirectComposition redraw per frame (electron#39895), and it
-    // opts into the documented transparent-window limits — including that a
-    // RESIZABLE transparent window is unsupported and breaks (electron#48421).
-    // Every chat window is resizable.
-    backgroundMaterial: IS_WINDOWS && GLASS_SUPPORTED ? backgroundMaterialFor(translucencyState) : undefined,
-    ...windowOpacityOptions(translucencyState),
-    ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
-  }
-}
-
-function isHexColor(value) {
-  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
-}
-
-// Background color to paint a window with BEFORE its renderer loads, so a new
-// (or reopened) window doesn't flash white/light in dark mode. Prefer the theme
-// the renderer last reported; fall back to the OS preference on first launch.
-function getWindowBackgroundColor() {
-  if (rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.background)) {
-    return rendererTitleBarTheme.background
-  }
-
-  return nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f7f7'
-}
-
-// Transparent WCO — renderer chrome shows through. rgba(0,0,0,0) can fall back
-// to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
-const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
-
-// WSLg returns false: the RDP host paints nothing for a frameless window and
-// Electron's own overlay drifts its hit-region under RAIL, so the renderer
-// paints its own min/max/close (wslg-window-controls.tsx) over the
-// hermes:window-control IPC channel. See titleBarOverlayOptions.
-function getTitleBarOverlayOptions() {
-  return titleBarOverlayOptions({
-    platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
-    darwinMajor: DARWIN_MAJOR,
-    titlebarHeight: TITLEBAR_HEIGHT,
-    color: TITLEBAR_OVERLAY_COLOR,
-    foreground:
-      rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
-    dark: nativeTheme.shouldUseDarkColors
-  })
-}
-
-// Push refreshed overlay options to a live window after a theme/appearance
-// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
-// returns false; the try/catch additionally guards builds where
-// setTitleBarOverlay isn't supported.
-function applyTitleBarOverlay(win) {
-  const options = getTitleBarOverlayOptions()
-
-  if (!options || typeof options !== 'object') {
-    return
-  }
-
-  try {
-    win?.setTitleBarOverlay?.(options)
-  } catch {
-    // Overlay not supported on this platform/build — leave the frameless
-    // titlebar as-is.
-  }
-}
+const appearance = createNativeAppearanceController({
+  userDataDir: app.getPath('userData'),
+  nativeTheme,
+  getAllWindows: () => BrowserWindow.getAllWindows(),
+  log: rememberLog,
+  isMac: IS_MAC,
+  isWindows: IS_WINDOWS,
+  isWsl: IS_WSL,
+  darwinMajor: DARWIN_MAJOR,
+  glassSupported: GLASS_SUPPORTED,
+  titlebarHeight: TITLEBAR_HEIGHT
+})
 
 const MEDIA_MIME_TYPES = {
   '.avi': 'video/x-msvideo',
@@ -1326,98 +1076,6 @@ const MEDIA_MIME_TYPES = {
   '.wav': 'audio/wav',
   '.webm': 'video/webm',
   '.webp': 'image/webp'
-}
-
-const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
-const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
-const PREVIEW_WATCH_DEBOUNCE_MS = 120
-const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
-const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
-
-const PREVIEW_LANGUAGE_BY_EXT = {
-  '.c': 'c',
-  '.conf': 'ini',
-  '.cpp': 'cpp',
-  '.css': 'css',
-  '.csv': 'csv',
-  '.go': 'go',
-  '.graphql': 'graphql',
-  '.h': 'c',
-  '.hpp': 'cpp',
-  '.html': 'html',
-  '.java': 'java',
-  '.js': 'javascript',
-  '.json': 'json',
-  '.jsx': 'jsx',
-  '.kt': 'kotlin',
-  '.lua': 'lua',
-  '.md': 'markdown',
-  '.mjs': 'javascript',
-  '.py': 'python',
-  '.rb': 'ruby',
-  '.rs': 'rust',
-  '.sh': 'shell',
-  '.sql': 'sql',
-  '.svg': 'xml',
-  '.toml': 'toml',
-  '.ts': 'typescript',
-  '.tsx': 'tsx',
-  '.txt': 'text',
-  '.xml': 'xml',
-  '.yaml': 'yaml',
-  '.yml': 'yaml',
-  '.zsh': 'shell'
-}
-
-function looksBinary(buffer) {
-  if (!buffer.length) {
-    return false
-  }
-
-  let suspicious = 0
-
-  for (const byte of buffer) {
-    if (byte === 0) {
-      return true
-    }
-
-    // Allow common whitespace controls: tab, LF, CR.
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-      suspicious += 1
-    }
-  }
-
-  return suspicious / buffer.length > 0.12
-}
-
-function previewFileMetadata(filePath, mimeType) {
-  let byteSize = 0
-  let binary = false
-
-  try {
-    const stat = fs.statSync(filePath)
-    byteSize = stat.size
-
-    if (!mimeType.startsWith('image/')) {
-      const fd = fs.openSync(filePath, 'r')
-
-      try {
-        const sample = Buffer.alloc(Math.min(byteSize, 4096))
-        const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0)
-        binary = looksBinary(sample.subarray(0, bytesRead))
-      } finally {
-        fs.closeSync(fd)
-      }
-    }
-  } catch {
-    // Metadata is best-effort; the read handlers surface hard errors later.
-  }
-
-  return {
-    binary,
-    byteSize,
-    large: byteSize > TEXT_PREVIEW_MAX_BYTES
-  }
 }
 
 app.setName(APP_NAME)
@@ -1523,7 +1181,7 @@ const localBackendLifecycle = createLocalBackendLifecycle<ReturnType<typeof spaw
   },
   waitForExit: child => waitForBackendExit(child),
   cancelSetup: () => {
-    firstRunSetupGate?.resetForRetry()
+    firstRunBoot.resetExistingSetupGateForRetry()
     bootstrapAbortController?.abort()
   }
 })
@@ -1619,15 +1277,6 @@ function persistPoolLimits(limits) {
     rememberLog(`[pool-limits] write failed: ${error.message}`)
   }
 }
-
-// rememberLog() state. Declared here, before the top-level
-// readPersistedPoolLimits() call below, because that call logs during module
-// evaluation; declaring these later crashed launch with `undefined.push` in
-// the packaged build (esbuild lowers the TDZ to undefined instead of throwing).
-const hermesLog: string[] = []
-let desktopLogBuffer = ''
-let desktopLogFlushTimer = null
-let desktopLogFlushPromise = Promise.resolve()
 
 let poolLimits = readPersistedPoolLimits()
 // Hard cap on local backends that are starting OR running (the LRU eviction
@@ -1814,177 +1463,17 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 const remoteHeaderSessions = new WeakSet<object>()
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const previewWatchers = new Map()
 let previewShortcutActive = false
-let nativeThemeListenerInstalled = false
 
-let bootProgressState = {
-  error: null,
+const firstRunBoot = createFirstRunBootRuntime({
+  activeRoot: ACTIVE_HERMES_ROOT,
   fakeMode: BOOT_FAKE_MODE,
-  isCloudBackendDown: false,
-  message: 'Waiting to start Hermes backend',
-  phase: 'idle',
-  progress: 0,
-  retryable: false,
-  running: false,
-  statusCode: null,
-  timestamp: Date.now()
-}
-
-// Chromium owns its --log-file for the life of the process, so the startup
-// reclaim above cannot bound a shell that stays up for days writing errors.
-// Poll and truncate in place; renaming would leave Chromium appending to the
-// renamed inode. Unref'd so it never holds the process open.
-function startChromiumLogWatcher(file) {
-  const io = {
-    size: f => {
-      try {
-        return fs.statSync(f).size
-      } catch {
-        return null // Not created yet — nothing has been logged.
-      }
-    },
-    truncate: f => fs.truncateSync(f, 0)
-  }
-
-  const timer = setInterval(() => {
-    try {
-      if (reclaimActiveLogIfOversized(file, io)) {
-        rememberLog(`[diagnostics] truncated oversized Chromium log ${file}`)
-      }
-    } catch {
-      // Best-effort — an unbounded log beats a crashed shell.
-    }
-  }, ACTIVE_LOG_POLL_MS)
-
-  timer.unref?.()
-}
-
-function rotateLogIfNeededSync(base) {
-  let size
-
-  try {
-    size = fs.statSync(base).size
-  } catch {
-    return // No live file yet — the append (re)creates it.
-  }
-
-  for (const [op, src, dst] of planLogRotation(size, base)) {
-    try {
-      if (op === 'rm') {
-        fs.rmSync(src, { force: true })
-      } else {
-        fs.renameSync(src, dst)
-      }
-    } catch {
-      // Best-effort — logging must never block startup/shutdown.
-    }
-  }
-}
-
-async function rotateDesktopLogIfNeededAsync() {
-  let size
-
-  try {
-    size = (await fs.promises.stat(DESKTOP_LOG_PATH)).size
-  } catch {
-    return // No live file yet — the append (re)creates it.
-  }
-
-  for (const [op, src, dst] of planLogRotation(size, DESKTOP_LOG_PATH)) {
-    try {
-      if (op === 'rm') {
-        await fs.promises.rm(src, { force: true })
-      } else {
-        await fs.promises.rename(src, dst)
-      }
-    } catch {
-      // Best-effort — logging must never crash the shell.
-    }
-  }
-}
-
-function flushDesktopLogBufferSync() {
-  if (!desktopLogBuffer) {
-    return
-  }
-
-  const chunk = desktopLogBuffer
-  desktopLogBuffer = ''
-
-  try {
-    fs.mkdirSync(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
-    rotateLogIfNeededSync(DESKTOP_LOG_PATH)
-    fs.appendFileSync(DESKTOP_LOG_PATH, chunk)
-  } catch {
-    // Logging must never block app startup/shutdown.
-  }
-}
-
-function flushDesktopLogBufferAsync() {
-  if (!desktopLogBuffer) {
-    return desktopLogFlushPromise
-  }
-
-  const chunk = desktopLogBuffer
-  desktopLogBuffer = ''
-
-  desktopLogFlushPromise = desktopLogFlushPromise
-    .then(async () => {
-      await fs.promises.mkdir(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
-      await rotateDesktopLogIfNeededAsync()
-      await fs.promises.appendFile(DESKTOP_LOG_PATH, chunk)
-    })
-    .catch(() => {
-      // Logging must never crash the desktop shell.
-    })
-
-  return desktopLogFlushPromise
-}
-
-function scheduleDesktopLogFlush() {
-  if (desktopLogFlushTimer) {
-    return
-  }
-
-  desktopLogFlushTimer = setTimeout(() => {
-    desktopLogFlushTimer = null
-    void flushDesktopLogBufferAsync()
-  }, DESKTOP_LOG_FLUSH_MS)
-}
-
-function rememberLog(chunk) {
-  const text = String(chunk || '').trim()
-
-  if (!text) {
-    return
-  }
-
-  // One timestamp per chunk: lines arriving in the same event happened
-  // at the same moment.  ISO-8601 UTC, matching agent.log/gateway.log.
-  const stamp = new Date().toISOString()
-  const lines = text.split(/\r?\n/).map(line => formatDesktopLogLine(line, stamp))
-  hermesLog.push(...lines)
-
-  if (hermesLog.length > 300) {
-    hermesLog.splice(0, hermesLog.length - 300)
-  }
-
-  desktopLogBuffer += `${lines.join('\n')}\n`
-
-  if (desktopLogBuffer.length >= DESKTOP_LOG_BUFFER_MAX_CHARS) {
-    if (desktopLogFlushTimer) {
-      clearTimeout(desktopLogFlushTimer)
-      desktopLogFlushTimer = null
-    }
-
-    void flushDesktopLogBufferAsync()
-
-    return
-  }
-
-  scheduleDesktopLogFlush()
-}
+  fakeStepMs: BOOT_FAKE_STEP_MS,
+  getMainWindow: () => mainWindow,
+  getRemoteReauthFailure: () => (remoteReauthFailure ? remoteReauthFailure.message : null),
+  log: rememberLog,
+  platform: process.platform
+})
 
 installCrashForensics({ flush: flushDesktopLogBufferSync, log: rememberLog })
 
@@ -2151,286 +1640,6 @@ function ensureWslWindowsFonts() {
   }
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function clampBootProgress(value) {
-  const numeric = Number(value)
-
-  if (!Number.isFinite(numeric)) {
-    return 0
-  }
-
-  return Math.max(0, Math.min(100, Math.round(numeric)))
-}
-
-function broadcastBootProgress() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:boot-progress', bootProgressState)
-}
-
-// Bootstrap-event broadcast channel + state. The bootstrap runner emits a
-// stream of events (manifest, stage, log, complete, failed) that the renderer
-// install overlay subscribes to. We also keep a running snapshot:
-//   - manifest: the stage list (rendered as a checklist in the overlay)
-//   - stages:   per-stage state ('pending' | 'running' | 'succeeded' |
-//               'skipped' | 'failed') keyed by stage name
-//   - active:   true while a bootstrap is in flight; false otherwise
-//   - error:    last 'failed' event's error message
-//   - log:      bounded ring buffer of the last 200 log lines for the
-//               "Show details" affordance in the overlay
-//
-// The snapshot is queryable via the hermes:bootstrap:get IPC handler so a
-// reloaded renderer (e.g. devtools reload during dev) recovers state.
-// Bootstrap log ring: bounded buffer so a long install (npm + playwright
-// downloads can emit thousands of lines) doesn't grow unbounded in memory
-// AND so the renderer's getBootstrapState() reply stays a reasonable size.
-// We keep enough to cover an entire failed stage's transcript so the
-// 'Copy output' button gives the user actually-actionable context, not
-// just the last few lines.
-const BOOTSTRAP_LOG_RING_MAX = 500
-
-let bootstrapState = {
-  active: false,
-  manifest: null,
-  stages: {},
-  error: null,
-  log: [],
-  startedAt: null,
-  completedAt: null,
-  setupChoice: null,
-  unsupportedPlatform: null
-}
-
-let firstRunSetupGate = null
-
-function broadcastBootstrapEvent(ev) {
-  if (ev.type === 'manifest') {
-    bootstrapState.manifest = ev
-    bootstrapState.active = true
-    bootstrapState.setupChoice = null
-    bootstrapState.startedAt = bootstrapState.startedAt || Date.now()
-    bootstrapState.stages = {}
-
-    for (const stage of ev.stages || []) {
-      bootstrapState.stages[stage.name] = { state: 'pending', json: null, durationMs: null, error: null }
-    }
-  } else if (ev.type === 'stage') {
-    bootstrapState.stages[ev.name] = {
-      state: ev.state,
-      durationMs: ev.durationMs ?? null,
-      json: ev.json ?? null,
-      error: ev.error ?? null
-    }
-  } else if (ev.type === 'log') {
-    bootstrapState.log.push({ ts: Date.now(), stage: ev.stage || null, line: ev.line, stream: ev.stream || 'stdout' })
-
-    if (bootstrapState.log.length > BOOTSTRAP_LOG_RING_MAX) {
-      bootstrapState.log.splice(0, bootstrapState.log.length - BOOTSTRAP_LOG_RING_MAX)
-    }
-  } else if (ev.type === 'complete') {
-    bootstrapState.active = false
-    bootstrapState.completedAt = Date.now()
-    bootstrapState.error = null
-    bootstrapState.unsupportedPlatform = null
-  } else if (ev.type === 'failed') {
-    bootstrapState.active = false
-    bootstrapState.error = ev.error || 'unknown error'
-    bootstrapState.setupChoice = null
-  } else if (ev.type === 'unsupported-platform') {
-    bootstrapState.active = false
-    bootstrapState.setupChoice = null
-    bootstrapState.unsupportedPlatform = {
-      platform: ev.platform,
-      activeRoot: ev.activeRoot,
-      installCommand: ev.installCommand,
-      docsUrl: ev.docsUrl
-    }
-  } else if (ev.type === 'setup-choice') {
-    bootstrapState.active = false
-    bootstrapState.error = null
-    bootstrapState.manifest = null
-    bootstrapState.stages = {}
-    bootstrapState.setupChoice = ev.active
-      ? {
-          platform: ev.platform,
-          activeRoot: ev.activeRoot
-        }
-      : null
-    bootstrapState.unsupportedPlatform = null
-  } else if (ev.type === 'dismissed') {
-    resetBootstrapSnapshot()
-  }
-
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:bootstrap:event', ev)
-}
-
-function getBootstrapState() {
-  return bootstrapState
-}
-
-function resetBootstrapSnapshot() {
-  bootstrapState = {
-    active: false,
-    manifest: null,
-    stages: {},
-    error: null,
-    log: [],
-    startedAt: null,
-    completedAt: null,
-    setupChoice: null,
-    unsupportedPlatform: null
-  }
-}
-
-function promptFirstRunSetupChoice(backend) {
-  broadcastBootstrapEvent({
-    type: 'setup-choice',
-    active: true,
-    platform: backend.platform || process.platform,
-    activeRoot: backend.activeRoot || ACTIVE_HERMES_ROOT
-  })
-}
-
-function hideFirstRunSetupChoice() {
-  if (bootstrapState.setupChoice) {
-    broadcastBootstrapEvent({ type: 'setup-choice', active: false })
-  }
-}
-
-function getFirstRunSetupGate() {
-  if (!firstRunSetupGate) {
-    firstRunSetupGate = createFirstRunSetupGate({
-      hideChoice: hideFirstRunSetupChoice,
-      log: rememberLog,
-      onStuck: (_backend, stuckAfterMs) => {
-        updateBootProgress(
-          {
-            error: null,
-            message: `Still waiting for first-run setup choice after ${Math.round(stuckAfterMs / 1000)} seconds`,
-            phase: 'bootstrap.choice',
-            progress: 12,
-            running: true
-          },
-          { allowDecrease: true }
-        )
-      },
-      promptChoice: promptFirstRunSetupChoice
-    })
-  }
-
-  return firstRunSetupGate
-}
-
-async function waitForFirstRunSetupChoice(backend) {
-  const gate = getFirstRunSetupGate()
-
-  if (!gate.shouldGate(backend)) {
-    return 'continue-local'
-  }
-
-  updateBootProgress(
-    {
-      error: null,
-      message: 'Waiting for first-run setup choice',
-      phase: 'bootstrap.choice',
-      progress: 12,
-      running: true
-    },
-    { allowDecrease: true }
-  )
-
-  return gate.wait(backend)
-}
-
-function continueFirstRunLocalBootstrap() {
-  getFirstRunSetupGate().continueLocal()
-}
-
-function abandonFirstRunSetupChoiceForRemoteApply() {
-  const gate = getFirstRunSetupGate()
-
-  if (!gate.hasWaiter()) {
-    return false
-  }
-
-  const resumedGatedConnection = gate.abandonForRemoteApply()
-
-  if (resumedGatedConnection) {
-    broadcastBootstrapEvent({ type: 'dismissed' })
-  }
-
-  return resumedGatedConnection
-}
-
-function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
-  // A latched reauth rejection owns the boot surface until a recovery path
-  // clears it; see shouldHoldBootProgressForReauth (#95701).
-  if (shouldHoldBootProgressForReauth(remoteReauthFailure ? remoteReauthFailure.message : null, update)) {
-    return
-  }
-
-  const nextProgressRaw =
-    typeof update.progress === 'number' ? clampBootProgress(update.progress) : bootProgressState.progress
-
-  const nextProgress = options.allowDecrease ? nextProgressRaw : Math.max(bootProgressState.progress, nextProgressRaw)
-
-  bootProgressState = {
-    ...bootProgressState,
-    ...update,
-    error: update.error === undefined ? bootProgressState.error : update.error,
-    fakeMode: BOOT_FAKE_MODE || Boolean(update.fakeMode),
-    progress: nextProgress,
-    // `retryable` rides with `error`: it survives updates that preserve the
-    // error and resets alongside a new/cleared error unless explicitly set.
-    retryable:
-      update.retryable === undefined
-        ? update.error === undefined && Boolean(bootProgressState.retryable)
-        : Boolean(update.retryable),
-    timestamp: Date.now()
-  }
-
-  if (update.message) {
-    rememberLog(`[boot] ${update.message}`)
-  }
-
-  broadcastBootProgress()
-}
-
-async function advanceBootProgress(phase, message, progress) {
-  updateBootProgress({
-    phase,
-    message,
-    progress,
-    running: true,
-    error: null
-  })
-
-  if (BOOT_FAKE_MODE) {
-    await sleep(BOOT_FAKE_STEP_MS)
-  }
-}
-
 function fileExists(filePath) {
   try {
     return fs.statSync(filePath).isFile()
@@ -2559,7 +1768,7 @@ async function waitForUpdateToFinish() {
         rememberLog(`[updates] update in progress (${reason}); deferring backend start until it finishes`)
       }
 
-      await advanceBootProgress(
+      await firstRunBoot.advanceBootProgress(
         'backend.update-wait',
         'An update is finishing — Hermes will start automatically when it completes…',
         12
@@ -2634,7 +1843,7 @@ async function waitForUpdateToFinish() {
   if (outcome === 'timeout') {
     rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
   } else if (relaunchIntoSwappedBundle()) {
-    await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
+    await firstRunBoot.advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a
     // backend; the failsafe below only runs if the exit somehow does not.
     await new Promise(resolve => setTimeout(resolve, BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS))
@@ -5458,7 +4667,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
   assertStillOwned()
 
   if (!backend.bootstrap) {
-    await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
+    await firstRunBoot.advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
     return backend
   }
@@ -5493,7 +4702,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
     // We emit a synthetic manifest with an empty stages list -- the real
     // manifest event will overwrite it once install.ps1 -Manifest returns.
     try {
-      broadcastBootstrapEvent({
+      firstRunBoot.broadcastBootstrapEvent({
         type: 'manifest',
         stages: [],
         protocolVersion: null
@@ -5529,7 +4738,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
         }
 
         try {
-          broadcastBootstrapEvent(ev)
+          firstRunBoot.broadcastBootstrapEvent(ev)
         } catch {
           void 0
         }
@@ -5609,7 +4818,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
 
   backend.command = getVenvPython(VENV_ROOT)
   backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
-  updateBootProgress({
+  firstRunBoot.updateBootProgress({
     phase: 'runtime.ready',
     message: 'Hermes runtime is ready',
     progress: 82,
@@ -5965,478 +5174,8 @@ function filenameFromUrl(rawUrl, fallback = 'image') {
   }
 }
 
-// Link title resolution — curl (tier 1) → hidden BrowserWindow (tier 2).
-const titleCache = new Map()
-const titleInflight = new Map()
-const TITLE_CACHE_LIMIT = 500
-const TITLE_BYTE_BUDGET = 96 * 1024
-const TITLE_TIMEOUT_MS = 5000
-const TITLE_MAX_REDIRECTS = 3
-
-// Browser-shaped UA — many bot-walled sites (GetYourGuide, Cloudflare-protected
-// pages) refuse anything that doesn't look like a real Chrome.
-const TITLE_USER_AGENT =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
-
-const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" }
-
-// Tier-2 renderer fallback config. Only invoked when curl came back with no
-// usable title and no sign-in wall (electron/link-title-wall.ts) — keeps
-// cold/CDN-cached pages on the cheap path.
-const RENDER_TITLE_MAX_CONCURRENT = 2
-const RENDER_TITLE_TIMEOUT_MS = 8000
-const RENDER_TITLE_GRACE_MS = 700
-
-// Resource types we cancel before the network even fires — keeps the hidden
-// renderer fast and cuts third-party tracking noise.
-const RENDER_TITLE_BLOCKED_RESOURCES = new Set([
-  'cspReport',
-  'font',
-  'imageset',
-  'media',
-  'object',
-  'ping',
-  'stylesheet'
-])
-
-let linkTitleSession = null
 let oauthSession = null
-let renderTitleInFlight = 0
-const renderTitleQueue = []
-
-function canonicalTitleCacheKey(rawUrl) {
-  const value = String(rawUrl || '').trim()
-
-  if (!value) {
-    return ''
-  }
-
-  try {
-    const url = new URL(value)
-    const host = url.hostname.replace(/^www\./i, '').toLowerCase()
-    const pathname = url.pathname === '/' ? '/' : url.pathname.replace(/\/+$/, '') || '/'
-
-    return `${host}${pathname}${url.search || ''}`
-  } catch {
-    return value
-  }
-}
-
-function cacheTitle(key, title) {
-  if (titleCache.size >= TITLE_CACHE_LIMIT) {
-    titleCache.delete(titleCache.keys().next().value)
-  }
-
-  titleCache.set(key, title)
-}
-
-function decodeHtmlEntities(value) {
-  return value
-    .replace(/&(amp|lt|gt|quot|apos|nbsp|#39);/gi, (_, k) => HTML_ENTITIES[k.toLowerCase()] ?? '')
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16) || 32))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10) || 32))
-}
-
-function parseHtmlTitle(html) {
-  const raw = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
-
-  return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
-}
-
-// `--write-out` trailer: `\n<mark><url_effective>` after the body.
-const URL_EFFECTIVE_MARK = 'hermes-url-effective:'
-const URL_EFFECTIVE_TAIL_BYTES = 4096
-
-function splitUrlEffective(stdout: string): { effectiveUrl: string; html: string } {
-  const at = stdout.lastIndexOf(`\n${URL_EFFECTIVE_MARK}`)
-
-  if (at < 0) {
-    return { effectiveUrl: '', html: stdout }
-  }
-
-  return {
-    effectiveUrl: stdout.slice(at + 1 + URL_EFFECTIVE_MARK.length).trim(),
-    html: stdout.slice(0, at)
-  }
-}
-
-function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
-  return new Promise(resolve => {
-    const url = String(rawUrl || '').trim()
-
-    if (!url) {
-      return resolve({ authWall: false, title: '' })
-    }
-
-    const args = [
-      '--silent',
-      '--show-error',
-      '--location',
-      '--max-redirs',
-      String(TITLE_MAX_REDIRECTS),
-      '--max-time',
-      String(Math.max(2, Math.ceil(TITLE_TIMEOUT_MS / 1000))),
-      '--connect-timeout',
-      '4',
-      '--user-agent',
-      TITLE_USER_AGENT,
-      '--header',
-      'Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
-      '--header',
-      'Accept-Language: en-US,en;q=0.7',
-      '--header',
-      'Accept-Encoding: identity',
-      '--raw',
-      // Arrival URL after redirects, on its own line after the body: a sign-in
-      // wall is proven from where curl landed even when the page has no markup id.
-      '--write-out',
-      `\n${URL_EFFECTIVE_MARK}%{url_effective}`,
-      url
-    ]
-
-    const child = spawn('curl', args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'ignore'] }))
-    const chunks: Buffer[] = []
-    // The last bytes of stdout, kept past the body budget so the `--write-out`
-    // arrival URL survives a body larger than TITLE_BYTE_BUDGET.
-    let tail = Buffer.alloc(0)
-    let bytes = 0
-
-    child.stdout.on('data', chunk => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-      tail = Buffer.concat([tail, buffer]).subarray(-URL_EFFECTIVE_TAIL_BYTES)
-
-      if (bytes >= TITLE_BYTE_BUDGET) {
-        return
-      }
-
-      const remaining = TITLE_BYTE_BUDGET - bytes
-      const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
-      chunks.push(next)
-      bytes += next.length
-    })
-
-    child.on('error', () => resolve({ authWall: false, title: '' }))
-    child.on('close', () => {
-      if (!chunks.length) {
-        return resolve({ authWall: false, title: '' })
-      }
-
-      const body = Buffer.concat(chunks)
-
-      // The trailer is inside `body` unless the budget cut it off; then it is in `tail`.
-      const { effectiveUrl, html } = splitUrlEffective(
-        (bytes >= TITLE_BYTE_BUDGET ? Buffer.concat([body, tail]) : body).toString('utf8')
-      )
-
-      const title = parseHtmlTitle(html)
-
-      // A sign-in wall answers the cookieless title partition, and tier 2 must
-      // never load it: the wall asks the OS for a passkey.
-      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), title })
-    })
-  })
-}
-
-function getLinkTitleSession() {
-  if (linkTitleSession || !app.isReady()) {
-    return linkTitleSession
-  }
-
-  linkTitleSession = session.fromPartition('hermes:link-titles', { cache: false })
-  linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
-  })
-  guardLinkTitleSession(linkTitleSession)
-
-  return linkTitleSession
-}
-
-function dequeueRenderTitle() {
-  while (renderTitleInFlight < RENDER_TITLE_MAX_CONCURRENT && renderTitleQueue.length) {
-    const item = renderTitleQueue.shift()
-    renderTitleInFlight += 1
-    runRenderTitleJob(item.url).then(title => {
-      renderTitleInFlight -= 1
-      item.resolve(title)
-      dequeueRenderTitle()
-    })
-  }
-}
-
-function runRenderTitleJob(rawUrl) {
-  return new Promise(resolve => {
-    if (!app.isReady()) {
-      return resolve('')
-    }
-
-    const partitionSession = getLinkTitleSession()
-
-    if (!partitionSession) {
-      return resolve('')
-    }
-
-    let settled = false
-    let window = null
-    let hardTimer = null
-    let graceTimer = null
-
-    const finish = title => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-
-      if (hardTimer) {
-        clearTimeout(hardTimer)
-      }
-
-      if (graceTimer) {
-        clearTimeout(graceTimer)
-      }
-
-      const value = (title || '').replace(/\s+/g, ' ').trim()
-
-      try {
-        if (window && !window.isDestroyed()) {
-          window.destroy()
-        }
-      } catch {
-        // BrowserWindow may already be torn down; ignore.
-      }
-
-      resolve(value)
-    }
-
-    try {
-      window = createLinkTitleWindow(BrowserWindow, partitionSession)
-    } catch {
-      return finish('')
-    }
-
-    const finishWithTitle = () => finish(readLinkTitleWindowTitle(window))
-
-    const scheduleGrace = () => {
-      if (graceTimer) {
-        clearTimeout(graceTimer)
-      }
-
-      graceTimer = setTimeout(finishWithTitle, RENDER_TITLE_GRACE_MS)
-    }
-
-    hardTimer = setTimeout(finishWithTitle, RENDER_TITLE_TIMEOUT_MS)
-
-    window.webContents.setUserAgent(TITLE_USER_AGENT)
-    window.webContents.on('page-title-updated', scheduleGrace)
-    window.webContents.on('did-finish-load', scheduleGrace)
-    window.webContents.on('did-fail-load', (_event, _code, _desc, _validatedURL, isMainFrame) => {
-      if (isMainFrame) {
-        finish('')
-      }
-    })
-
-    window
-      .loadURL(rawUrl, {
-        httpReferrer: 'https://www.google.com/',
-        userAgent: TITLE_USER_AGENT
-      })
-      .catch(() => finish(''))
-  })
-}
-
-function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
-  return new Promise(resolve => {
-    renderTitleQueue.push({ resolve, url: rawUrl })
-    dequeueRenderTitle()
-  })
-}
-
-// Tier ladder (curl → hidden renderer) and its sign-in-wall rule live in
-// electron/link-title-wall.ts; main.ts only supplies the two tiers' I/O.
-function fetchLinkTitle(rawUrl) {
-  const url = String(rawUrl || '').trim()
-  const key = canonicalTitleCacheKey(url)
-
-  if (!key) {
-    return Promise.resolve('')
-  }
-
-  if (titleCache.has(key)) {
-    return Promise.resolve(titleCache.get(key))
-  }
-
-  if (titleInflight.has(key)) {
-    return Promise.resolve(titleInflight.get(key))
-  }
-
-  const pending = resolveLinkTitle({
-    curl: () => fetchHtmlTitleWithCurl(url),
-    renderer: () => fetchHtmlTitleWithRenderer(url),
-    url
-  }).then(clean => {
-    cacheTitle(key, clean)
-    titleInflight.delete(key)
-
-    return clean
-  })
-
-  titleInflight.set(key, pending)
-
-  return pending
-}
-
-// ─── Favicon resolution ──────────────────────────────────────────────────────
-// The ladder itself is electron/favicon.ts; this is its I/O, its cache, and
-// the one rule that belongs to the app rather than the algorithm: one icon
-// per host. A connector's mark doesn't vary by path, and hosting the cache on
-// the host key means Linear's docs page and Linear's MCP endpoint cost one
-// lookup between them.
-
-const FAVICON_CACHE_PATH = path.join(app.getPath('userData'), 'favicon-cache.json')
-const FAVICON_CACHE_LIMIT = 400
-const FAVICON_TTL_MS = 30 * 24 * 60 * 60 * 1000
-// A miss is cheap to re-check and expensive to be wrong about (a site that
-// was behind a captcha yesterday has a logo today), so it expires fast.
-const FAVICON_MISS_TTL_MS = 12 * 60 * 60 * 1000
-const FAVICON_TIMEOUT_MS = 6000
-const FAVICON_MAX_BYTES = 256 * 1024
-const FAVICON_WRITE_DEBOUNCE_MS = 3000
-
-let faviconCache: Map<string, { at: number; icon: string }> | null = null
-let faviconWriteTimer: null | ReturnType<typeof setTimeout> = null
-const faviconInflight = new Map<string, Promise<string>>()
-
-function faviconCacheKey(rawUrl: string): string {
-  try {
-    return new URL(rawUrl).hostname.replace(/^www\./i, '').toLowerCase()
-  } catch {
-    return ''
-  }
-}
-
-function loadFaviconCache(): Map<string, { at: number; icon: string }> {
-  if (faviconCache) {
-    return faviconCache
-  }
-
-  faviconCache = new Map()
-
-  try {
-    const raw = JSON.parse(fs.readFileSync(FAVICON_CACHE_PATH, 'utf8'))
-
-    for (const [host, entry] of Object.entries(raw?.icons ?? {})) {
-      const at = Number((entry as { at?: number })?.at)
-      const icon = String((entry as { icon?: string })?.icon ?? '')
-
-      if (Number.isFinite(at) && Date.now() - at < (icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {
-        faviconCache.set(host, { at, icon })
-      }
-    }
-  } catch {
-    // No cache yet, or it's unreadable — resolving again is the whole cost.
-  }
-
-  return faviconCache
-}
-
-function saveFaviconCacheSoon() {
-  if (faviconWriteTimer) {
-    return
-  }
-
-  faviconWriteTimer = setTimeout(() => {
-    faviconWriteTimer = null
-
-    try {
-      const icons = Object.fromEntries(loadFaviconCache())
-
-      fs.writeFileSync(FAVICON_CACHE_PATH, JSON.stringify({ icons }), 'utf8')
-    } catch {
-      // Cache is an optimization; failing to persist it costs one refetch.
-    }
-  }, FAVICON_WRITE_DEBOUNCE_MS)
-
-  faviconWriteTimer.unref?.()
-}
-
-async function faviconFetch(url: string, accept: string) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FAVICON_TIMEOUT_MS)
-
-  try {
-    return await electronNet.fetch(url, {
-      // Same browser-shaped identity the title fetcher uses: a plain Electron
-      // UA gets a challenge page from anything behind a bot wall.
-      headers: { Accept: accept, 'Accept-Language': 'en-US,en;q=0.7', 'User-Agent': TITLE_USER_AGENT },
-      redirect: 'follow',
-      signal: controller.signal
-    })
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-const faviconIo: FaviconIo = {
-  fetchImage: async url => {
-    const response = await faviconFetch(url, 'image/avif,image/webp,image/svg+xml,image/*;q=0.8,*/*;q=0.5')
-
-    if (!response.ok) {
-      return null
-    }
-
-    const buffer = await response.arrayBuffer()
-
-    if (buffer.byteLength === 0 || buffer.byteLength > FAVICON_MAX_BYTES) {
-      return null
-    }
-
-    return { bytes: new Uint8Array(buffer), mime: response.headers.get('content-type') ?? '' }
-  },
-  fetchText: async url => {
-    const response = await faviconFetch(url, 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5')
-
-    return response.ok ? (await response.text()).slice(0, TITLE_BYTE_BUDGET * 2) : ''
-  }
-}
-
-function resolveFaviconCached(rawUrl: string): Promise<string> {
-  const key = faviconCacheKey(String(rawUrl || '').trim())
-
-  if (!key) {
-    return Promise.resolve('')
-  }
-
-  const cache = loadFaviconCache()
-  const hit = cache.get(key)
-
-  if (hit && Date.now() - hit.at < (hit.icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {
-    return Promise.resolve(hit.icon)
-  }
-
-  const inflight = faviconInflight.get(key)
-
-  if (inflight) {
-    return inflight
-  }
-
-  const pending = resolveFavicon(rawUrl, faviconIo)
-    .catch(() => '')
-    .then(icon => {
-      if (cache.size >= FAVICON_CACHE_LIMIT) {
-        cache.delete(cache.keys().next().value)
-      }
-
-      cache.set(key, { at: Date.now(), icon })
-      saveFaviconCacheSoon()
-      faviconInflight.delete(key)
-
-      return icon
-    })
-
-  faviconInflight.set(key, pending)
-
-  return pending
-}
+const { fetchLinkTitle, resolveFaviconCached } = createLinkMetadataRuntime()
 
 async function resourceBufferFromUrl(rawUrl) {
   if (!rawUrl) {
@@ -6556,205 +5295,17 @@ async function writeComposerImage(buffer, ext = '.png', name = '') {
   return filePath
 }
 
-function previewLabelForUrl(url) {
-  return `${url.host}${url.pathname === '/' ? '' : url.pathname}`
-}
+const previewTargetRuntime = createPreviewTargetRuntime({
+  app,
+  directoryExists,
+  fileExists,
+  getMainWindow: () => mainWindow,
+  hermesHome: HERMES_HOME,
+  mimeTypeForPath,
+  resolveHermesCwd
+})
 
-function expandUserPath(filePath) {
-  const value = String(filePath || '').trim()
-
-  if (value === '~') {
-    return app.getPath('home')
-  }
-
-  if (value.startsWith(`~${path.sep}`) || value.startsWith('~/')) {
-    return path.join(app.getPath('home'), value.slice(2))
-  }
-
-  return value
-}
-
-async function previewFileTarget(rawTarget, baseDir) {
-  const raw = String(rawTarget || '').trim()
-  const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
-
-  let resolved = resolveRequestedPathForIpc(/^file:/i.test(raw) ? raw : expandUserPath(raw), {
-    baseDir: base,
-    purpose: 'Preview target'
-  })
-
-  // Attachment references stored in chat history are frequently HOME-relative
-  // (e.g. "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
-  // ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to the
-  // agent's working directory. The primary resolution above only tries
-  // `base` (the working dir), so such a ref never exists there and the
-  // preview/download 404s even though the file is present on disk (#115609).
-  if (!fileExists(resolved) && !directoryExists(resolved)) {
-    for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), HERMES_HOME)) {
-      if (fileExists(candidate)) {
-        resolved = candidate
-
-        break
-      }
-    }
-  }
-
-  if (directoryExists(resolved)) {
-    resolved = path.join(resolved, 'index.html')
-  }
-
-  const ext = path.extname(resolved).toLowerCase()
-
-  if (!fileExists(resolved)) {
-    return null
-  }
-
-  ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))
-
-  const mimeType = mimeTypeForPath(resolved)
-  const metadata = previewFileMetadata(resolved, mimeType)
-  const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
-  const isImage = mimeType.startsWith('image/')
-  const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : metadata.binary ? 'binary' : 'text'
-
-  return {
-    binary: metadata.binary,
-    byteSize: metadata.byteSize,
-    kind: 'file',
-    large: metadata.large,
-    label: path.basename(resolved),
-    language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
-    mimeType,
-    path: resolved,
-    previewKind,
-    source: raw,
-    url: pathToFileURL(resolved).toString()
-  }
-}
-
-function previewUrlTarget(rawTarget) {
-  const raw = String(rawTarget || '').trim()
-  const url = new URL(raw)
-
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    return null
-  }
-
-  if (!LOCAL_PREVIEW_HOSTS.has(url.hostname.toLowerCase())) {
-    return null
-  }
-
-  if (url.hostname === '0.0.0.0') {
-    url.hostname = '127.0.0.1'
-  }
-
-  return {
-    kind: 'url',
-    label: previewLabelForUrl(url),
-    source: raw,
-    url: url.toString()
-  }
-}
-
-async function normalizePreviewTarget(rawTarget, baseDir) {
-  const raw = String(rawTarget || '').trim()
-
-  if (!raw) {
-    return null
-  }
-
-  try {
-    if (/^https?:\/\//i.test(raw)) {
-      return previewUrlTarget(raw)
-    }
-
-    return await previewFileTarget(raw, baseDir)
-  } catch {
-    return null
-  }
-}
-
-async function filePathFromPreviewUrl(rawUrl) {
-  const { resolvedPath } = await resolveReadableFileForIpc(String(rawUrl || ''), { purpose: 'Preview file' })
-
-  return resolvedPath
-}
-
-function sendPreviewFileChanged(payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:preview-file-changed', payload)
-}
-
-async function watchPreviewFile(rawUrl) {
-  const filePath = await filePathFromPreviewUrl(rawUrl)
-  const watchDir = path.dirname(filePath)
-  const targetName = path.basename(filePath)
-  const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
-
-  const watcher = fs.watch(watchDir, (_eventType, filename) => {
-    const changedName = filename ? path.basename(String(filename)) : ''
-
-    if (changedName && changedName !== targetName) {
-      return
-    }
-
-    if (timer) {
-      clearTimeout(timer)
-    }
-
-    timer = setTimeout(() => {
-      timer = null
-
-      if (!fileExists(filePath)) {
-        return
-      }
-
-      sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
-  })
-
-  previewWatchers.set(id, {
-    close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      watcher.close()
-    }
-  })
-
-  return { id, path: filePath }
-}
-
-function stopPreviewFileWatch(id) {
-  const watcher = previewWatchers.get(id)
-
-  if (!watcher) {
-    return false
-  }
-
-  watcher.close()
-  previewWatchers.delete(id)
-
-  return true
-}
-
-function closePreviewWatchers() {
-  for (const id of previewWatchers.keys()) {
-    stopPreviewFileWatch(id)
-  }
-}
+const { expandUserPath } = previewTargetRuntime
 
 function requestOptionsWithHeaders(options: any = {}, headers = {}) {
   return {
@@ -6764,45 +5315,6 @@ function requestOptionsWithHeaders(options: any = {}, headers = {}) {
       ...(options.headers || {})
     }
   }
-}
-
-/** Watch a DIRECTORY for entry churn (folders appearing/vanishing) — the
- *  disk-plugin door's "new plugin folder" signal, replacing the renderer's 5s
- *  readdir poll. Same registry + change channel as the preview file watchers
- *  (the renderer reconciles on any tick; per-file edits stay on their own
- *  watches), so stopPreviewFileWatch/closePreviewWatchers manage these too. */
-function watchDirectory(rawDir) {
-  const watchDir = path.resolve(String(rawDir || ''))
-
-  if (!fs.existsSync(watchDir) || !fs.statSync(watchDir).isDirectory()) {
-    throw new Error(`Not a directory: ${watchDir}`)
-  }
-
-  const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
-
-  const watcher = fs.watch(watchDir, () => {
-    if (timer) {
-      clearTimeout(timer)
-    }
-
-    timer = setTimeout(() => {
-      timer = null
-      sendPreviewFileChanged({ id, path: watchDir, url: pathToFileURL(watchDir).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
-  })
-
-  previewWatchers.set(id, {
-    close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      watcher.close()
-    }
-  })
-
-  return { id, path: watchDir }
 }
 
 // Best-effort read of a gateway's advertised auth providers, cached per base
@@ -7254,489 +5766,35 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
   webContents.send('hermes:window-state-changed', state)
 }
 
-function buildApplicationMenu() {
-  const template: MenuItemConstructorOptions[] = []
-
-  const checkForUpdatesItem = {
-    label: 'Check for Updates…',
-    click: () => sendOpenUpdatesRequested()
-  }
-
-  if (IS_MAC) {
-    template.push({
-      label: APP_NAME,
-      submenu: [
-        { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
-        checkForUpdatesItem,
-        { type: 'separator' },
-        { role: 'services' },
-        { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        { role: 'quit' }
-      ]
-    })
-  }
-
-  template.push({
-    label: 'File',
-    submenu: [
-      // No accelerator: ⌘⇧N is a rebindable renderer keybind (session.newWindow);
-      // a menu accelerator would fight the rebind panel and (on macOS) be
-      // swallowed before the renderer sees it. Here purely for discoverability.
-      { click: () => createInstanceWindow(), label: 'New Window' },
-      // Same no-accelerator rationale: ⌘O is the rebindable renderer keybind
-      // (workspace.openFolder). Clicking runs the same open-folder-as-project
-      // flow through the renderer.
-      { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
-      { type: 'separator' },
-      IS_MAC
-        ? {
-            // NO accelerator: on macOS a registered ⌘W is consumed by the OS
-            // menu before the web contents ever sees it (and registerAccelerator
-            // false is a no-op on mac — electron#18295). Leaving it off lets the
-            // `before-input-event` handler below intercept ⌘W and route it to the
-            // renderer's close-active-tab. Clicking the item still closes the tab
-            // (or window) via the same request.
-            click: () => sendClosePreviewRequested(),
-            label: 'Close'
-          }
-        : { role: 'quit' }
-    ]
-  })
-  template.push({
-    label: 'Edit',
-    submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
-      { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      // ⌘⇧V is only wired up by this item existing: an accelerator with no menu
-      // entry is never translated into an editor command, so the chord was a
-      // no-op in every input in the app. The composer inserts plain text on
-      // every paste anyway, so this is the same result as ⌘V there — it's the
-      // terminal, preview, and other editable surfaces that need the strip.
-      { role: 'pasteAndMatchStyle' },
-      { role: 'delete' },
-      { role: 'selectAll' },
-      ...(IS_MAC
-        ? ([
-            { type: 'separator' },
-            {
-              label: 'Substitutions',
-              submenu: [{ role: 'showSubstitutions' }, { type: 'separator' }, { role: 'toggleTextReplacement' }]
-            }
-          ] satisfies MenuItemConstructorOptions[])
-        : [])
-    ]
-  })
-  template.push({
-    label: 'View',
-    submenu: [
-      // Not `role: 'reload'`: that hard-reloads the RENDERER (every pane, the
-      // whole shell) and a focused in-app browser needs ⌘R to mean "reload
-      // this page", the way it does in every other browser. ⇧⌘R
-      // (`forceReload`) below stays the unconditional escape hatch.
-      //
-      // No accelerator: ⌘R is claimed in `installPreviewShortcut`, which works
-      // on every platform (this menu exists only on macOS). Declaring it here
-      // too would fire the item and the input hook for one keypress.
-      { click: () => sendPreviewNavCommand('reload'), label: 'Reload' },
-      { role: 'forceReload' },
-      {
-        label: 'Toggle Developer Tools',
-        accelerator: process.platform === 'darwin' ? 'Alt+Cmd+I' : 'Ctrl+Shift+I',
-        click: (_menuItem, browserWindow) => toggleDevTools(browserWindow || mainWindow)
-      },
-      { type: 'separator' },
-      {
-        label: 'Actual Size',
-        accelerator: 'CommandOrControl+0',
-        click: () => {
-          setAndPersistZoomLevel(mainWindow, DEFAULT_ZOOM_LEVEL)
-        }
-      },
-      {
-        label: 'Zoom In',
-        accelerator: 'CommandOrControl+Plus',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + ZOOM_STEP)
-          }
-        }
-      },
-      {
-        label: 'Zoom Out',
-        accelerator: 'CommandOrControl+-',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - ZOOM_STEP)
-          }
-        }
-      },
-      { type: 'separator' },
-      { role: 'togglefullscreen' }
-    ]
-  })
-  template.push({
-    label: 'Window',
-    submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
-  })
-  template.push({
-    label: 'Help',
-    role: 'help',
-    submenu: [checkForUpdatesItem]
-  })
-
-  return Menu.buildFromTemplate(template)
-}
-
-function toggleDevTools(window) {
-  // DevTools is enabled in packaged builds so users can diagnose renderer
-  // issues without needing a dev build. Trade-off: tiny attack surface
-  // increase versus a much better support story when WS connection or
-  // CSP issues surface in the field.
-  const { webContents } = window
-
-  if (webContents.isDevToolsOpened()) {
-    webContents.closeDevTools()
-  } else {
-    webContents.openDevTools({ mode: 'detach' })
-  }
-}
-
-function installDevToolsShortcut(window) {
-  // Only Ctrl+Shift+I (or Cmd+Opt+I on Mac) opens DevTools.
-  // F12 is explicitly blocked so Chromium's built-in handler doesn't open it.
-  window.webContents.on('before-input-event', (event, input) => {
-    const key = input.key.toLowerCase()
-
-    // F12 opens DevTools by default; block only when the user disabled it.
-    if (input.key === 'F12') {
-      if (f12Blocked) {
-        event.preventDefault()
-
-        return
-      }
-      // Not blocked — fall through to open DevTools.
-    }
-
-    const isInspectShortcut =
-      input.key === 'F12' ||
-      (IS_MAC && input.meta && input.alt && key === 'i') ||
-      (!IS_MAC && input.control && input.shift && key === 'i')
-
-    if (!isInspectShortcut) {
-      return
-    }
-
-    event.preventDefault()
-    toggleDevTools(window)
-  })
-}
-
-function installPreviewShortcut(window) {
-  window.webContents.on('before-input-event', (event, input) => {
-    const key = String(input.key || '').toLowerCase()
-    const accel = (IS_MAC ? input.meta : input.control) && !input.alt
-    const isCloseTabShortcut = key === 'w' && accel && !input.shift
-
-    // Always claim ⌘W here (the File>Close item deliberately has no
-    // accelerator, so nothing else does). The renderer decides tab-vs-window
-    // — no `previewShortcutActive` gate, so it works for every closeable tab.
-    if (isCloseTabShortcut) {
-      event.preventDefault()
-
-      // ⌘W in the HUD is "leave HUD mode", not "close a tab in the app
-      // window". Routing it to the main renderer closed the app's tab out
-      // from under the user while the HUD stayed put; routing it through the
-      // HUD's own close path hands the session back like the exit button.
-      if (hudWindow && !hudWindow.isDestroyed() && window === hudWindow) {
-        closeHudWindow()
-
-        return
-      }
-
-      sendClosePreviewRequested()
-
-      return
-    }
-
-    // ⌘R rides here rather than on the View menu item for the same reason:
-    // the application menu only exists on macOS (it is set to null elsewhere,
-    // see #77845), so a menu accelerator would leave Windows and Linux with no
-    // way to reload a page at all. ⇧⌘R is left alone — that is `forceReload`,
-    // the unconditional whole-window escape hatch.
-    if (key === 'r' && accel && !input.shift) {
-      event.preventDefault()
-      sendPreviewNavCommand('reload')
-    }
-  })
-}
-
-// Zoom level is persisted in the renderer's own localStorage (per-origin,
-// survives reloads/restarts) rather than a main-process JSON file. The main
-// process owns setZoomLevel, so we mirror each change into localStorage and
-// read it back on did-finish-load to re-apply after reloads or crash recovery.
-import {
-  applyZoomLevel,
-  DEFAULT_ZOOM_LEVEL,
-  installZoomReassertOnNavigation,
-  installZoomReassertOnWindowEvents,
-  percentToZoomLevel,
-  ZOOM_STEP,
-  ZOOM_STORAGE_KEY,
-  zoomLevelToPercent,
-  zoomWiringForWindowKind
-} from './zoom'
-
-function setAndPersistZoomLevel(window, zoomLevel) {
-  if (!window || window.isDestroyed()) {
-    return
-  }
-
-  // Apply + notify in one funnel so the settings UI stays in sync, including
-  // changes made via the keyboard shortcuts or the View menu.
-  const next = applyZoomLevel(window.webContents, zoomLevel)
-
-  // Primary store: main-process JSON (survives crash recovery — #56726).
-  writeZoomState(next)
-  // Secondary mirror: renderer localStorage (legacy store; kept in sync so a
-  // downgrade or JSON read failure still finds a sane value).
-  window.webContents
-    .executeJavaScript(
-      `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {
-      void 0
-    }`
-    )
-    .catch(error => rememberLog(`[zoom] persist failed: ${error?.message || error}`))
-}
-
-function restorePersistedZoomLevel(window) {
-  if (!window || window.isDestroyed()) {
-    return
-  }
-
-  // Prefer the JSON file — it survives crash recovery wiping Electron's
-  // cache/storage folders (#56726). applyZoomLevel notifies the renderer so
-  // the Appearance UI Scale control stays in sync.
-  const saved = readZoomState()
-
-  if (saved != null) {
-    // Drift-guard: skip when this window already shows the persisted level.
-    // Blindly re-applying on every resize/move would race the compositor's
-    // surface reconfigure during a Wayland resize storm (Cosmic tiled mode
-    // fires one whenever a new session window opens — #84818) and keep the
-    // renderer notification stream churning for no gain. The settle-verify
-    // chain in installZoomReassertOnWindowEvents re-applies only when the
-    // window actually drifted from the persisted level.
-    const current = window.webContents?.getZoomLevel?.()
-
-    if (current != null && Math.abs(current - saved) < 1e-9) {
-      return
-    }
-
-    applyZoomLevel(window.webContents, saved)
-
-    return
-  }
-
-  // No JSON yet: paint the shipped default immediately so a fresh install
-  // doesn't flash Chromium 100%, then try localStorage for pre-JSON installs
-  // and overwrite if a legacy value is there.
-  applyZoomLevel(window.webContents, DEFAULT_ZOOM_LEVEL)
-
-  window.webContents
-    .executeJavaScript(
-      `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
-    )
-    .then(stored => {
-      if (!window || window.isDestroyed()) {
-        return
-      }
-
-      const level = stored == null ? DEFAULT_ZOOM_LEVEL : Number(stored)
-      const applied = applyZoomLevel(window.webContents, level)
-      writeZoomState(applied)
-    })
-    .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
-}
-
-function installZoomShortcuts(window) {
-  // Override Ctrl/Cmd + +/-/0 with half Chromium's default zoom step (ZOOM_STEP
-  // is 0.1 vs Chromium's 0.2). The menu items handle this on macOS (where the
-  // menu is always present), but on Linux/Windows the menu is null and
-  // Chromium's default handler would use the full 0.2 step, so we intercept
-  // here for consistency. Ctrl/Cmd+0 resets to DEFAULT_ZOOM_LEVEL, not Chromium 0.
-  window.webContents.on('before-input-event', (event, input) => {
-    const mod = IS_MAC ? input.meta : input.control
-
-    if (!mod || input.alt) {
-      return
-    }
-
-    const key = input.key
-
-    if (key === '0') {
-      if (input.shift) {
-        return // Ctrl/Cmd+Shift+0 is not a zoom chord — leave it alone
-      }
-
-      event.preventDefault()
-      setAndPersistZoomLevel(window, DEFAULT_ZOOM_LEVEL)
-    } else if (key === '=' || key === '+') {
-      // Zoom-in must accept the shift modifier: on US layouts Plus is
-      // physically Shift+=, so Cmd+Plus arrives as Cmd+Shift+'+' (or '='
-      // depending on platform). The old blanket shift guard silently
-      // dropped keyboard zoom-in on macOS (#43517).
-      event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
-    } else if (key === '-') {
-      if (input.shift) {
-        return // Shift+'-' is '_' territory on most layouts, not zoom-out
-      }
-
-      event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
-    }
-  })
-
-  // Ctrl/Cmd + mouse wheel — the standard desktop/browser zoom gesture
-  // (#40295). Chromium surfaces it as the main-process 'zoom-changed' event
-  // (wheel events are DOM-side, so before-input-event never sees them).
-  // Route through the same persist+notify funnel as the keyboard shortcuts
-  // so wheel zoom survives restarts and the settings Scale control stays in
-  // sync, and use the same half step for consistency.
-  window.webContents.on('zoom-changed', (event, zoomDirection) => {
-    event.preventDefault()
-    const delta = zoomDirection === 'in' ? ZOOM_STEP : -ZOOM_STEP
-    setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + delta)
-  })
-}
-
-/**
- * The custom (renderer) context menu's main-process half.
- *
- * The app popups no native menus: the renderer owns the menu UI so labels
- * are translated with the rest of the app. Main keeps only what Chromium
- * reports here and the renderer cannot see:
- *  - spell-check facts (misspelled word + suggestions) — forwarded so the
- *    renderer appends them to its already-open menu,
- *  - the gesture coordinates — kept for copyImageAt, which needs them.
- */
-const lastContextMenuPoint = new Map<number, { x: number; y: number }>()
-
-function installContextMenuBridge(window: BrowserWindow) {
-  window.webContents.on('context-menu', (_event, params) => {
-    lastContextMenuPoint.set(window.webContents.id, { x: params.x, y: params.y })
-
-    const suggestions = Array.isArray(params.dictionarySuggestions) ? params.dictionarySuggestions : []
-
-    if (params.isEditable && params.misspelledWord) {
-      window.webContents.send('hermes:context-menu-spellcheck', {
-        misspelledWord: params.misspelledWord,
-        suggestions
-      })
-    }
-  })
-}
-
-// Microphone and camera capture. The voice composer drives mic access and
-// renderer features (e.g. desktop plugins) can drive camera access, both
-// through getUserMedia, which Chromium gates behind these two session hooks.
-//
-// The naive `details.mediaTypes.includes('audio')` check works on macOS but
-// breaks on Windows: Chromium frequently fires the request with an empty or
-// undefined `mediaTypes`, so a strict check denies it and getUserMedia throws
-// NotAllowedError. We therefore allow the capture permissions and treat absent
-// metadata as allowed.
-//
-// Granting here is not the last gate: the OS still applies its own capture
-// permission (macOS TCC prompts on first use, per the NSMicrophone/NSCamera
-// usage strings), so the user keeps a real allow/deny and can revoke it in
-// System Settings afterwards.
-function isMediaCapturePermission(permission, details) {
-  // HTML5 video/audio fullscreen asks the request handler for 'fullscreen'
-  // and the check handler for 'automatic-fullscreen'. Both must be allowed
-  // or the native fullscreen button on <video controls> does nothing.
-  if (permission === 'fullscreen' || permission === 'automatic-fullscreen') {
-    return true
-  }
-
-  if (permission === 'audioCapture' || permission === 'videoCapture') {
-    return true
-  }
-
-  if (permission !== 'media') {
-    return false
-  }
-
-  const mediaTypes = details?.mediaTypes
-
-  // Windows: mediaTypes is often empty for a capture request. Don't deny on
-  // missing metadata.
-  if (!Array.isArray(mediaTypes) || mediaTypes.length === 0) {
-    return true
-  }
-
-  return mediaTypes.includes('audio') || mediaTypes.includes('video')
-}
-
-// Chromium-initiated downloads (renderer anchor/blob downloads, drag-outs)
-// land here. Without a handler the OS save dialog opens with the process cwd
-// as the default directory (win-unpacked in packaged installs) and whatever
-// extensionless name the anchor carried. Route every download to the user's
-// Downloads directory and guarantee a MIME-derived extension.
-function installDownloadHandling() {
-  session.defaultSession.on('will-download', (_event, item) => {
-    const suggested = item.getFilename() || 'download'
-    const hasExtension = Boolean(path.extname(suggested))
-    const extension = hasExtension ? '' : extensionForMimeType(item.getMimeType())
-    const filename = `${suggested}${extension}`
-
-    try {
-      item.setSaveDialogOptions({
-        title: 'Save File',
-        defaultPath: path.join(app.getPath('downloads'), filename),
-        filters:
-          extension || /^image\//i.test(item.getMimeType() || '')
-            ? [
-                { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
-                { name: 'All Files', extensions: ['*'] }
-              ]
-            : undefined
-      })
-    } catch {
-      // No Downloads directory to offer — keep Chromium's default prompt.
-    }
-  })
-}
-
-function installMediaPermissions() {
-  // Async request handler: the prompt-style path (most platforms).
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    callback(isMediaCapturePermission(permission, details))
-  })
-
-  // Synchronous check handler: Chromium consults this for getUserMedia on
-  // Windows in addition to (or instead of) the request handler. Without it,
-  // the check defaults to false and capture is denied before the request
-  // handler ever runs.
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    return (
-      permission === 'media' ||
-      (permission as string) === 'automatic-fullscreen' ||
-      permission === ('audioCapture' as any) /* todo: is this needed? */ ||
-      permission === ('videoCapture' as any)
-    )
-  })
-}
+const {
+  buildApplicationMenu,
+  installDevToolsShortcut,
+  installPreviewShortcut,
+  setAndPersistZoomLevel,
+  restorePersistedZoomLevel,
+  installZoomShortcuts,
+  lastContextMenuPoint,
+  installContextMenuBridge,
+  installDownloadHandling,
+  installMediaPermissions
+} = createDesktopNativeChromeRuntime({
+  APP_NAME,
+  IS_MAC,
+  closeHudWindow,
+  extensionForMimeType,
+  getCreateInstanceWindow: () => createInstanceWindow,
+  getF12Blocked: () => f12Blocked,
+  getHudWindow: () => hudWindow,
+  getMainWindow: () => mainWindow,
+  readZoomState,
+  rememberLog,
+  sendClosePreviewRequested,
+  sendOpenFolderRequested,
+  sendOpenUpdatesRequested,
+  sendPreviewNavCommand,
+  showAboutPanelFresh,
+  writeZoomState
+})
 
 // ---------------------------------------------------------------------------
 // OAuth remote-gateway auth.
@@ -11269,7 +9327,7 @@ async function fetchConnectionStatus(baseUrl, authMode, token, headers = {}) {
 }
 
 function resetBootProgressForReconnect() {
-  updateBootProgress(
+  firstRunBoot.updateBootProgress(
     {
       error: null,
       message: 'Restarting desktop connection',
@@ -13286,7 +11344,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // E2E: simulate a boot failure without breaking the real backend. The boot
   // progresses a few steps, then fails with the given error message.
   if (BOOT_FAKE_ERROR) {
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await firstRunBoot.advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     const error = new Error(BOOT_FAKE_ERROR) as any
     error.isBootstrapFailure = true
     bootstrapFailure = error
@@ -13330,14 +11388,18 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       // remotes and Apply invalidated this attempt), bail before probing.
       backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
+      await firstRunBoot.advanceBootProgress(
+        'backend.remote',
+        `Connecting to remote Hermes backend at ${remote.baseUrl}`,
+        24
+      )
       await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
       backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
-      updateBootProgress({
+      firstRunBoot.updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
         progress: 94,
@@ -13348,7 +11410,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
     }
 
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await firstRunBoot.advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
 
@@ -13389,7 +11451,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
       prepareLocalBackend: async () => {
-        await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+        await firstRunBoot.advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
         return resolveHermesBackend(backendArgs)
       },
@@ -13400,7 +11462,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
         return resolveRemoteBackend(primaryProfile, { primary: true })
       },
-      waitForDecision: waitForFirstRunSetupChoice,
+      waitForDecision: firstRunBoot.waitForFirstRunSetupChoice,
       // Mutual exclusion with an in-app update (#50238). Remote connections
       // return before this waiter; local starts park until the updater exits.
       waitForLocalStart: waitForUpdateToFinish
@@ -13427,7 +11489,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       setWslBridgeProfileState(primaryProfile, true)
       startAttachedBackendMonitor(attached)
 
-      updateBootProgress({
+      firstRunBoot.updateBootProgress({
         phase: 'backend.ready',
         message: 'Attached to the running Hermes backend',
         progress: 94,
@@ -13462,7 +11524,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
-    await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
+    await firstRunBoot.advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
     const profile = primaryProfileKey()
@@ -13570,7 +11632,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       }
 
       rememberLog(`Hermes backend failed to start: ${error.message}`)
-      updateBootProgress(
+      firstRunBoot.updateBootProgress(
         {
           error: error.message,
           message: `Hermes backend failed to start: ${error.message}`,
@@ -13605,7 +11667,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
       if (!backendReady) {
         const message = `Hermes backend exited before it became ready (${signal || code}).${primaryOutputTail.describe()}`
-        updateBootProgress(
+        firstRunBoot.updateBootProgress(
           {
             error: message,
             message,
@@ -13622,7 +11684,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       }
     })
 
-    await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
+    await firstRunBoot.advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     // Discover the ephemeral port the child bound to
@@ -13634,7 +11696,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     }
 
     const baseUrl = `http://127.0.0.1:${port}`
-    await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
+    await firstRunBoot.advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
@@ -13663,7 +11725,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       )
     }
 
-    updateBootProgress({
+    firstRunBoot.updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',
       progress: 94,
@@ -13756,7 +11818,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // rejection owns the transition into recovery (#95701).
     await waitForBackendExit(failedProcess)
 
-    updateBootProgress(
+    firstRunBoot.updateBootProgress(
       {
         error: message,
         isCloudBackendDown: isCloudBackendDown || undefined,
@@ -13898,305 +11960,34 @@ function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onReve
   return controller
 }
 
-// Secondary "session windows" — one extra OS window per chat so a user can
-// work with multiple chats side by side. The registry guarantees one window
-// per sessionId (re-opening focuses the existing window) and self-cleans on
-// close. The primary mainWindow is never tracked here. Pure logic + the URL
-// builder live in session-windows.ts so they stay unit-testable.
-const sessionWindows = createSessionWindowRegistry()
-
-const minimizeToTray = createMinimizeToTray({
-  preferencesPath: path.join(app.getPath('userData'), 'minimize-to-tray.json'),
-  getIconPath: getAppIconPath,
-  restoreMainWindow: () => ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow }),
-  isQuittingForHandoff: () => isQuittingForHandoff,
-  log: rememberLog
-})
-
-function focusWindow(win) {
-  if (!win || win.isDestroyed()) {
-    return
-  }
-
-  if (win.isMinimized()) {
-    win.restore()
-  }
-
-  if (!win.isVisible()) {
-    win.show()
-  }
-
-  win.focus()
-}
-
-function spawnSecondaryWindow({
-  sessionId,
-  profile,
-  watch
-}: { sessionId?: string; profile?: null | string; watch?: boolean } = {}) {
-  const icon = getAppIconPath()
-
-  const win = new BrowserWindow({
-    width: SESSION_WINDOW_MIN_WIDTH,
-    height: SESSION_WINDOW_MIN_HEIGHT,
-    minWidth: SESSION_WINDOW_MIN_WIDTH,
-    minHeight: SESSION_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    ...chatWindowSurfaceOptions(),
-    icon,
-    // Don't show until the renderer's first themed paint is ready. macOS
-    // `vibrancy` ignores `backgroundColor` and paints a translucent OS
-    // material (which follows the OS appearance, not the app theme), so a
-    // dark-themed app on a light-mode Mac flashes white until the renderer
-    // covers it. ready-to-show fires after the boot-time paint in
-    // themes/context.tsx, so the window appears already themed.
-    show: false,
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+const { minimizeToTray, focusWindow, createSessionWindow, createBrowserWindow, createInstanceWindow } =
+  createDesktopSecondaryWindowRuntime({
+    DEV_SERVER,
+    IS_MAC,
+    PRELOAD_PATH,
+    RENDERER_RELOAD_MAX,
+    RENDERER_RELOAD_WINDOW_MS,
+    WINDOW_BUTTON_POSITION,
+    appearance,
+    createWindow,
+    ensureMainWindow,
+    getAppIconPath,
+    getIsQuittingForHandoff: () => isQuittingForHandoff,
+    getMainWindow: () => mainWindow,
+    getStreamThrottle: () => streamThrottle,
+    getWindowConnectionRoutes: () => windowConnectionRoutes,
+    loadWindowUrl,
+    primaryProfileKey,
+    readWindowState,
+    recordWindowConnectionRoute,
+    rememberLog,
+    rendererReloadTimesRef,
+    resolveRendererIndex,
+    sendWindowStateChanged,
+    validateDesktopProfileRoute,
+    wireCommonWindowHandlers,
+    wireWindowReveal
   })
-
-  // Chat-surface registration: applyWindowTranslucency swaps this window's
-  // backing between opaque-themed and alpha-0 when glass toggles.
-  minimizeToTray.registerWindow(win)
-  translucencyBackedWindows.add(win)
-
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
-
-  wireWindowReveal(win)
-
-  bindWindowChromeEvents(win, sendWindowStateChanged)
-
-  streamThrottle.register(win)
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
-  attachRendererConsoleCapture(win, 'session-window', rememberLog)
-
-  // Renderer lifecycle diagnostics + recovery (#81290): a dead session-window
-  // renderer used to log nothing and stay black; now it logs with its window
-  // kind and reloads under the shared crash-loop budget, exactly like the
-  // primary window, without touching any other window.
-  installWindowRendererLifecycle(win, {
-    kind: 'secondary',
-    callbacks: {
-      log: rememberLog,
-      reload: () => {
-        win.webContents.reload()
-      }
-    },
-    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
-    reloadMax: RENDERER_RELOAD_MAX,
-    recentReloadTimesRef: rendererReloadTimesRef
-  })
-
-  loadWindowUrl(
-    win,
-    buildSessionWindowUrl(sessionId, {
-      devServer: DEV_SERVER,
-      profile,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
-      watch
-    }),
-    'Session window'
-  )
-
-  return win
-}
-
-// Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { profile = null, watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, profile, watch }))
-}
-
-// Popped-out in-app Browser: same webview + address bar as a docked Browser
-// tab, in its own OS window. One window per tab id (re-open focuses); closing
-// it tells the other renderers so they can dock the tab again.
-const browserWindows = createSessionWindowRegistry()
-
-function notifyBrowserPopoutClosed(tabId) {
-  if (typeof tabId !== 'string' || !tabId) {
-    return
-  }
-
-  for (const other of BrowserWindow.getAllWindows()) {
-    if (!other.isDestroyed()) {
-      other.webContents.send('hermes:browser-popout:closed', tabId)
-    }
-  }
-}
-
-function spawnBrowserWindow(tabId) {
-  const icon = getAppIconPath()
-
-  const win = new BrowserWindow({
-    width: BROWSER_WINDOW_WIDTH,
-    height: BROWSER_WINDOW_HEIGHT,
-    minWidth: BROWSER_WINDOW_MIN_WIDTH,
-    minHeight: BROWSER_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    ...chatWindowSurfaceOptions(),
-    icon,
-    show: false,
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
-  })
-
-  translucencyBackedWindows.add(win)
-
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
-
-  wireWindowReveal(win)
-
-  bindWindowChromeEvents(win, sendWindowStateChanged)
-
-  streamThrottle.register(win)
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
-  attachRendererConsoleCapture(win, 'browser-window', rememberLog)
-
-  installWindowRendererLifecycle(win, {
-    kind: 'browser',
-    callbacks: {
-      log: rememberLog,
-      reload: () => {
-        win.webContents.reload()
-      }
-    },
-    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
-    reloadMax: RENDERER_RELOAD_MAX,
-    recentReloadTimesRef: rendererReloadTimesRef
-  })
-
-  minimizeToTray.registerWindow(win)
-  win.on('closed', () => notifyBrowserPopoutClosed(tabId))
-
-  loadWindowUrl(
-    win,
-    buildBrowserWindowUrl(tabId, {
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
-    }),
-    'Browser window'
-  )
-
-  return win
-}
-
-function createBrowserWindow(tabId) {
-  return browserWindows.openOrFocus(tabId, () => spawnBrowserWindow(tabId))
-}
-
-// Additional full "instance" windows — peers of the primary that render the
-// COMPLETE app (sidebar, routing, its own draft) against the shared backend, so
-// a user can run multiple GUI windows at once (⌘⇧N / the "New Window" palette
-// command). Unlike the compact session windows they carry no `?win` flag; a
-// separate `peer=1` marker prevents them from replaying app-launch source
-// restoration after joining that shared backend. The primary mainWindow stays
-// the notification / deep-link / pet-overlay anchor and
-// is NOT tracked here. The set holds a strong reference so an open peer isn't
-// garbage-collected, and drops it on close.
-const instanceWindows = new Set<any>()
-
-// Cascade a new instance off whichever window spawned it so it doesn't land
-// exactly on top of its source. Falls back to the persisted primary geometry
-// when there's no live source window (e.g. all windows closed on macOS). The
-// pure cascade math lives in session-windows.ts (instanceWindowBounds).
-function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow) {
-  const displays = screen.getAllDisplays()
-  const fallback = computeWindowOptions(readWindowState(), displays)
-  const base = source && !source.isDestroyed() ? source.getBounds() : null
-
-  return instanceWindowBounds(base, fallback, displays)
-}
-
-// Open a new full-chrome instance window. Mirrors createWindow()'s window
-// options (shared chatWindowWebPreferences + streamThrottle registration so a
-// streamed answer never stalls in the background) but is a peer, not the
-// primary: it never overwrites mainWindow or re-homes the source. Its renderer
-// joins the requested pooled backend through its own connection/profile route.
-function createInstanceWindow(
-  options?: DesktopProfileRoute,
-  source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
-) {
-  const route = resolveDesktopWindowLaunch(
-    options,
-    source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
-    { connectionId: null, profile: primaryProfileKey() }
-  )
-
-  validateDesktopProfileRoute(route)
-  const icon = getAppIconPath()
-
-  const win = new BrowserWindow({
-    ...nextInstanceBounds(source),
-    minWidth: WINDOW_MIN_WIDTH,
-    minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    ...chatWindowSurfaceOptions(),
-    icon,
-    show: false,
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
-  })
-
-  instanceWindows.add(win)
-  minimizeToTray.registerWindow(win)
-  recordWindowConnectionRoute(win.webContents, { ...route, registryScoped: route.connectionId !== null })
-
-  // Chat-surface registration: see applyWindowTranslucency.
-  translucencyBackedWindows.add(win)
-
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
-
-  wireWindowReveal(win)
-
-  bindWindowChromeEvents(win, sendWindowStateChanged)
-
-  streamThrottle.register(win)
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
-
-  // Renderer lifecycle diagnostics + recovery (#81290), same policy as the
-  // primary and session windows: a crashed instance renderer logs with its
-  // window kind and reloads under the shared crash-loop budget.
-  installWindowRendererLifecycle(win, {
-    kind: 'instance',
-    callbacks: {
-      log: rememberLog,
-      reload: () => {
-        win.webContents.reload()
-      }
-    },
-    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
-    reloadMax: RENDERER_RELOAD_MAX,
-    recentReloadTimesRef: rendererReloadTimesRef
-  })
-
-  win.on('closed', () => {
-    instanceWindows.delete(win)
-  })
-
-  attachRendererConsoleCapture(win, 'instance', rememberLog)
-  loadWindowUrl(
-    win,
-    buildInstanceWindowUrl({
-      ...route,
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
-    }),
-    'Instance window'
-  )
-
-  return win
-}
 
 // A macOS-only ambient wake cue. It is deliberately a gateway-less helper
 // window: the active renderer owns voice state and sends only the visual phase.
@@ -15128,9 +12919,9 @@ function createWindow() {
     // to paint native min/max/close in the top-right of the renderer; on
     // macOS it just reserves a content inset alongside the traffic lights.
     titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
+    titleBarOverlay: appearance.getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    ...chatWindowSurfaceOptions(),
+    ...appearance.chatWindowSurfaceOptions(),
     icon,
     // Hidden until the first themed paint so macOS `vibrancy` (which ignores
     // `backgroundColor` and follows the OS appearance) can't flash a light
@@ -15156,7 +12947,7 @@ function createWindow() {
   }
 
   // Chat-surface registration: see applyWindowTranslucency.
-  translucencyBackedWindows.add(mainWindow)
+  appearance.registerChatWindow(mainWindow)
 
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -15167,14 +12958,7 @@ function createWindow() {
   }
 
   if (!IS_MAC) {
-    if (!nativeThemeListenerInstalled) {
-      nativeThemeListenerInstalled = true
-      nativeTheme.on('updated', () => {
-        for (const win of BrowserWindow.getAllWindows()) {
-          applyTitleBarOverlay(win)
-        }
-      })
-    }
+    appearance.installNativeThemeListener()
   }
 
   if (savedWindowState?.isMaximized) {
@@ -15390,7 +13174,7 @@ function createWindow() {
   mainWindow.webContents.once('did-finish-load', () => {
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
     // windows); no need to reapply it here.
-    broadcastBootProgress()
+    firstRunBoot.broadcastBootProgress()
     sendWindowStateChanged()
   })
 }
@@ -15735,7 +13519,7 @@ registerPetOverlayIpc({
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
 const hudIpc = registerHudIpc({
   isMac: IS_MAC,
-  getTranslucencyState: () => translucencyState,
+  getTranslucencyState: appearance.getTranslucencyState,
   getHudWindow: () => hudWindow,
   openHudWindow,
   closeHudWindow,
@@ -15769,8 +13553,8 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
-  getFirstRunSetupGate().resetForRetry()
-  resetBootstrapSnapshot()
+  firstRunBoot.getFirstRunSetupGate().resetForRetry()
+  firstRunBoot.resetBootstrapSnapshot()
 
   return { ok: true }
 })
@@ -15821,14 +13605,14 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
-  getFirstRunSetupGate().resetForRepair()
+  firstRunBoot.getFirstRunSetupGate().resetForRepair()
   resetHermesConnection()
 
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
-  continueFirstRunLocalBootstrap()
+  firstRunBoot.continueFirstRunLocalBootstrap()
 
   return { ok: true }
 })
@@ -15848,8 +13632,8 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 
   return { ok: false, cancelled: false }
 })
-ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
-ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
+ipcMain.handle('hermes:boot-progress:get', async () => firstRunBoot.getBootProgressState())
+ipcMain.handle('hermes:bootstrap:get', async () => firstRunBoot.getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
@@ -16769,7 +14553,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
             },
             mode: config.mode,
             notifyConnectionApplied: sendConnectionApplied,
-            resumeFirstRunRemote: abandonFirstRunSetupChoiceForRemoteApply,
+            resumeFirstRunRemote: firstRunBoot.abandonFirstRunSetupChoiceForRemoteApply,
             teardownPrimaryBackend: teardownPrimaryBackendAndWait
           }),
         scope,
@@ -17638,15 +15422,7 @@ ipcMain.handle('hermes:saveClipboardImage', async () => {
   return ''
 })
 
-ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
-  normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '')
-)
-
-ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(String(url || '')))
-
-ipcMain.handle('hermes:watchDirectory', (_event, dir) => watchDirectory(String(dir || '')))
-
-ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
+registerPreviewTargetIpc(ipcMain, previewTargetRuntime)
 
 // Each renderer reports the turns it has in flight; the quit guard reads the
 // merged picture. Keyed by webContents id so a closed window stops counting.
@@ -17675,68 +15451,9 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   updateStreamThrottleFromActiveWork()
 })
 
-ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
-  if (!payload || !isHexColor(payload.background) || !isHexColor(payload.foreground)) {
-    return
-  }
-
-  rendererTitleBarTheme = {
-    background: payload.background,
-    foreground: payload.foreground
-  }
-
-  // Repaint the native (Windows/Linux) titlebar overlay on every open chat
-  // window, not just the primary — instance peers and session windows share the
-  // one app theme. applyTitleBarOverlay no-ops on the frameless pet overlay.
-  for (const win of BrowserWindow.getAllWindows()) {
-    applyTitleBarOverlay(win)
-  }
-})
-
-// Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).
-ipcMain.on('hermes:native-theme', (_event, mode) => {
-  if (!THEME_SOURCES.has(mode)) {
-    return
-  }
-
-  if (nativeTheme.themeSource !== mode) {
-    nativeTheme.themeSource = mode
-    writePersistedThemeSource(mode)
-  }
-})
-
-// See-through window translucency. Persist + re-apply to every open window at
-// runtime (no recreation, so caching/sessions are untouched).
-//
-// The intensity slider is a HOT path: ~100 updates per drag. Two things make
-// that cheap. Native work is diffed, so an intensity-only change under glass
-// touches nothing (it's painted by the renderer). And the disk write is
-// coalesced onto a trailing timer, because writePersistedTranslucency is a
-// synchronous writeFileSync and doing one per tick blocks the main process
-// mid-drag. Only a cold launch reads that file, so it just has to be correct
-// once the hand comes off the slider.
-let translucencyWriteTimer = null
-
-function scheduleTranslucencyWrite() {
-  if (translucencyWriteTimer) {
-    clearTimeout(translucencyWriteTimer)
-  }
-
-  translucencyWriteTimer = setTimeout(() => {
-    translucencyWriteTimer = null
-    writePersistedTranslucency(translucencyState)
-  }, 250)
-}
-
-// Flush a pending write before the process can exit, so a quit landing inside
-// the debounce window doesn't lose the setting.
-app.on('before-quit', () => {
-  if (translucencyWriteTimer) {
-    clearTimeout(translucencyWriteTimer)
-    translucencyWriteTimer = null
-    writePersistedTranslucency(translucencyState)
-  }
-})
+ipcMain.on('hermes:titlebar-theme', (_event, payload) => appearance.setTitleBarTheme(payload))
+ipcMain.on('hermes:native-theme', (_event, mode) => appearance.setNativeTheme(mode))
+app.on('before-quit', () => appearance.flushTranslucencyWrite())
 
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
@@ -17772,43 +15489,7 @@ ipcMain.on('hermes:launch-flags', event => {
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {
-  const next = normalizeTranslucency(payload, GLASS_SUPPORTED)
-  const previous = translucencyState
-
-  if (
-    next.intensity === previous.intensity &&
-    next.fade === previous.fade &&
-    next.mode === previous.mode &&
-    next.material === previous.material &&
-    next.scope === previous.scope
-  ) {
-    return
-  }
-
-  translucencyState = next
-
-  // Which native properties actually moved. `scope` is renderer-only (which
-  // surfaces thin), so it never appears here.
-  const changed = {
-    // The backing follows whether glass is ON, not the intensity behind it.
-    backing: glassActive(previous) !== glassActive(next),
-    material: vibrancyForTranslucency(previous) !== vibrancyForTranslucency(next),
-    opacity: windowOpacityFor(previous) !== windowOpacityFor(next)
-  }
-
-  scheduleTranslucencyWrite()
-
-  // The HUD's frost reads the same setting but answers on its own terms (see
-  // hudFrostFor) — and it is a transparent window, so it is deliberately not
-  // in the chat fan-out below. It self-diffs, so an unrelated change costs
-  // nothing native.
-  hudIpc.applyHudFrost()
-
-  if (changed.backing || changed.material || changed.opacity) {
-    for (const win of BrowserWindow.getAllWindows()) {
-      applyWindowTranslucency(win, changed)
-    }
-  }
+  appearance.setTranslucency(payload, () => hudIpc.applyHudFrost())
 })
 
 // Keep-awake: hold the machine awake for long/overnight runs. Main owns the one
@@ -18974,13 +16655,9 @@ app.on('before-quit', event => {
     }
   }
 
-  if (desktopLogFlushTimer) {
-    clearTimeout(desktopLogFlushTimer)
-    desktopLogFlushTimer = null
-  }
-
+  stopDesktopLogFlushTimer()
   flushDesktopLogBufferSync()
-  closePreviewWatchers()
+  previewTargetRuntime.closePreviewWatchers()
 
   // Kill open PTYs before environment teardown to avoid the node-pty#904
   // ThreadSafeFunction SIGABRT race.

@@ -34,7 +34,8 @@ import {
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
-  toBranchMessages
+  toBranchMessages,
+  toBranchSeedPayloads
 } from './utils'
 
 const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
@@ -287,6 +288,79 @@ describe('toBranchMessages', () => {
     expect(out.map(b => b.source.id)).toEqual(['u', 'a'])
     expect(out[0]).toMatchObject({ content: 'hi', role: 'user' })
   })
+
+  it('full mode keeps tool roles and empty assistant tool-call turns', () => {
+    const toolAssistant = {
+      id: 'a-tool',
+      role: 'assistant' as const,
+      parts: [{ type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}' }]
+    } as ChatMessage
+    const toolResult = {
+      id: 't',
+      role: 'tool' as const,
+      parts: [{ type: 'text' as const, text: 'file.txt' }],
+      toolCallId: 'call-1'
+    } as ChatMessage
+
+    const spine = toBranchMessages([msg('u', 'user', 'run ls'), toolAssistant, toolResult, msg('a', 'assistant', 'done')])
+    const full = toBranchMessages(
+      [msg('u', 'user', 'run ls'), toolAssistant, toolResult, msg('a', 'assistant', 'done')],
+      'full'
+    )
+
+    expect(spine.map(b => b.source.id)).toEqual(['u', 'a'])
+    expect(full.map(b => b.source.id)).toEqual(['u', 'a-tool', 't', 'a'])
+    expect(full.some(b => b.role === 'tool')).toBe(true)
+  })
+})
+
+describe('toBranchSeedPayloads', () => {
+  it('full mode serializes assistant tool_calls and tool results', () => {
+    const toolAssistant = {
+      id: 'a-tool',
+      role: 'assistant' as const,
+      parts: [
+        {
+          type: 'tool-call' as const,
+          toolCallId: 'call-1',
+          toolName: 'terminal',
+          args: { command: 'ls' },
+          argsText: '{"command":"ls"}',
+          result: 'file.txt'
+        }
+      ]
+    } as ChatMessage
+
+    const payloads = toBranchSeedPayloads(toBranchMessages([msg('u', 'user', 'run ls'), toolAssistant], 'full'), 'full')
+
+    expect(payloads).toEqual([
+      { role: 'user', content: 'run ls' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'terminal', arguments: '{"command":"ls"}' }
+          }
+        ]
+      },
+      { role: 'tool', content: 'file.txt', tool_call_id: 'call-1', tool_name: 'terminal' }
+    ])
+  })
+
+  it('full mode drops a trailing assistant-with-tool_calls that has no results', () => {
+    const toolAssistant = {
+      id: 'a-tool',
+      role: 'assistant' as const,
+      parts: [{ type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}' }]
+    } as ChatMessage
+
+    const payloads = toBranchSeedPayloads(toBranchMessages([msg('u', 'user', 'run ls'), toolAssistant], 'full'), 'full')
+
+    expect(payloads).toEqual([{ role: 'user', content: 'run ls' }])
+  })
 })
 
 describe('selectBranchMessages', () => {
@@ -327,6 +401,26 @@ describe('selectBranchMessages', () => {
       'latest question',
       'latest answer'
     ])
+  })
+
+  it('full mode includes following tool rows so a mid-thread click does not sever pairs', () => {
+    const toolAssistant = {
+      id: 'a-tool',
+      role: 'assistant' as const,
+      parts: [{ type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '{}' }]
+    } as ChatMessage
+    const toolResult = {
+      id: 't',
+      role: 'tool' as const,
+      parts: [{ type: 'text' as const, text: 'file.txt' }]
+    } as ChatMessage
+    const later = msg('later', 'user', 'next question')
+    const local = [msg('u', 'user', 'run ls'), toolAssistant, toolResult, later]
+
+    const prefix = selectBranchMessages(local, null, 'a-tool', 'full')
+
+    expect(prefix.map(message => message.source.id)).toEqual(['u', 'a-tool', 't'])
+    expect(prefix.some(message => message.role === 'tool')).toBe(true)
   })
 })
 

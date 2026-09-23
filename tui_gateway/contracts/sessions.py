@@ -343,6 +343,7 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    branch_mode: str | None = None  # spine (default) | full — optional per-call override of session.branch_mode
 
 
 class SessionBranchResult(Result):

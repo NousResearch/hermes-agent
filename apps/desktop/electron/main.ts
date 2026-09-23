@@ -416,7 +416,12 @@ import {
   type SecretStoragePolicy,
   writeSecretStoragePolicy
 } from './secret-storage-policy'
-import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
+import {
+  describeGitExitFailure,
+  describeGitSpawnFailure,
+  GIT_UNUSABLE,
+  selectRunnableBinary
+} from './select-runnable-binary'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -3484,6 +3489,12 @@ async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
   const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
 
   if (target.code !== 0 || !targetSha) {
+    const local = describeGitExitFailure(target.stderr)
+
+    if (local) {
+      return { error: GIT_UNUSABLE, message: local }
+    }
+
     return { error: 'fetch-failed', message: firstLine(target.stderr) || 'git ls-remote failed.' }
   }
 

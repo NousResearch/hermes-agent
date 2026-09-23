@@ -14,10 +14,10 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.19.6`:
+# On macOS, `npx -y apple-mail-mcp@2.19.14`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.19.6 — i.e. the bytes npx resolved are the bytes pinned here;
-#   - returns a full `tools/list` of 51 tools, every one carrying a description;
+#     2.19.14 — i.e. the bytes npx resolved are the bytes pinned here;
+#   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
@@ -26,36 +26,47 @@ source: https://github.com/sweetrb/apple-mail-mcp
 #
 # Earlier pins, both ahead of the >=2-week age policy: 2.17.6 (2026-09-03,
 # fast-uri security fix: 4 high-severity GHSAs reachable via ajv's JSON-schema
-# validation on every tool call) and 2.17.10 (2026-09-10: on a
+# validation on every tool call), 2.17.10 (2026-09-10: on a
 # British/Australian/Irish Mac, which says "Not authorised", `doctor` and
 # `health-check` reported `permissions: ok` on a genuine TCC refusal —
-# sweetrb/apple-mail-mcp#218).
+# sweetrb/apple-mail-mcp#218), and 2.19.6 (2026-09-14, see the release notes
+# for that range if needed — superseded below).
 #
-# 2.19.6 is re-pinned on the same footing. The releases since 2.19.0 fix
-# defects in tools that ARE in default_enabled below, most reported against
-# real migrated mailboxes by @j5pu (sweetrb/apple-mail-mcp#226, #229, #234):
-#   - `get-thread` threw `RangeError: Invalid time value` for any thread with
-#     a member whose date could not be parsed, and `search-messages` /
-#     `list-messages` threw the same for any AppleScript-backed row whose
-#     arrival date Mail.app could not parse (2.19.5). One such message fails
-#     the whole call.
-#   - `get-message` over IMAP returned an empty `rfcMessageId` for every
-#     message (2.19.0).
-#   - IMAP list/search rows reported the `Date:` header as `dateReceived`
-#     (2.19.2); an unparseable AppleScript date was replaced with the current
-#     date (2.19.3); `Date:` headers with non-English month abbreviations did
-#     not parse (2.19.4); `get-message` could report a `dateSent` years after
-#     arrival, and IMAP rows dropped legacy-locale dates the server could not
-#     parse (2.19.6).
-# The one tool added in that range, `get-message-headers` (2.19.0), stays out
-# of default_enabled. 2.18.0 and 2.18.1 land only on send/mutation tools that
-# are disabled below.
+# 2.19.14 is re-pinned on the same footing. Two more defects landed in
+# default_enabled tools since 2.19.6, both reported against a real
+# `j5pu@icloud.com` mailbox (sweetrb/apple-mail-mcp#246):
+#   - `list-messages`/`search-messages` could report a search-result total
+#     that exceeded the mailbox's own real message count (traced to a bug in
+#     the vendored `imapflow` dependency's `ESEARCH` response handling, which
+#     can fabricate a huge match count from a stale cached `exists` value),
+#     and page into ids that were never real, silently returning zero results
+#     past offset 0. The two tools now cross-check the search-derived total
+#     against a fresh `STATUS` call before trusting it, and fail loud instead
+#     of returning a fabricated total (2.19.11).
+#   - When that new guard trips, the resulting "IMAP list failed in every
+#     requested mailbox" error discarded the actual underlying IMAP failure
+#     reason before it reached the caller — exactly what happened to @j5pu
+#     immediately after upgrading, leaving them (and us) unable to diagnose
+#     why their INBOX started failing outright. `list-messages`/
+#     `search-messages` now include the real per-mailbox error text in both
+#     the all-failed exception and the partial-failure note (2.19.14).
+#     mail#246 is REOPENED pending @j5pu's reply with that new detail — the
+#     underlying INBOX-access problem on their account is not yet understood.
+# 2.19.7-2.19.10 and 2.19.13 land only on tools outside default_enabled
+# (dateSent parity on the AppleScript rows, a send/create-draft
+# retry-duplication fix, a search `body` parameter, the new
+# `get-message-rfc822` tool, and a reply/forward saved-draft window-close
+# fix) — capability additions and write-tool fixes, not defects in
+# default_enabled tools, so they don't independently justify a re-pin under
+# this catalog's defect-only carve-out; they ride along because 2.19.11 and
+# 2.19.14 do. 2.18.0 and 2.18.1 land only on send/mutation tools that are
+# disabled below.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.19.6"
+    - "apple-mail-mcp@2.19.14"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

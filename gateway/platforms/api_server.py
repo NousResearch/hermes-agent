@@ -688,7 +688,7 @@ async def _abandon_agent_task(
     if agent is not None:
         with suppress(Exception):
             # The abandoning client/server is the issuer, not the user (#112647).
-            request_hard_interrupt(agent, reason, tool_reason=reason.lower())
+            request_hard_interrupt(agent, reason, tool_reason=reason.lower(), stop_kind="client_disconnect")
         _reap_disconnected_agent_processes(agent, source=reap_source)
     if not agent_task.done():
         agent_task.cancel()

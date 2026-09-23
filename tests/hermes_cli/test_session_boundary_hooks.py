@@ -77,7 +77,11 @@ def test_interrupted_session_end_helper_emits_observer_shape(mock_invoke_hook):
 
     cli_mod._emit_interrupted_session_end(cli, reason="keyboard_interrupt")
 
-    mock_agent.interrupt.assert_called_once_with("keyboard interrupt")
+    # SIGINT-driven interrupt now carries stop_kind="user_stop" so the
+    # turn finalizer can phrase the closing message as a deliberate stop.
+    mock_agent.interrupt.assert_called_once_with(
+        "keyboard interrupt", stop_kind="user_stop"
+    )
     assert cli.session_id == "agent-session-id"
     mock_invoke_hook.assert_called_once()
     call = mock_invoke_hook.call_args
@@ -105,3 +109,24 @@ def test_hook_errors_are_caught(mock_invoke_hook):
     # This should not raise
     results = mgr.invoke_hook("on_session_finalize", session_id="test", platform="cli")
     assert results == []
+
+
+def test_signal_interrupt_stamps_user_stop(monkeypatch):
+    """The LIVE SIGINT interrupt (issued while the turn is still running,
+    before KeyboardInterrupt unwinds it) must carry stop_kind="user_stop",
+    so any surface whose finalizer does run classifies it as a deliberate
+    stop instead of falling into the redirect-suppression branch (#84236
+    follow-up — the post-mortem emit alone stamps it too late for the
+    finalizer to ever see)."""
+    import hermes_cli.cli_single_query as cli_sq
+
+    seen = {}
+
+    def _fake(agent, message=None, *, stop_kind=None, tool_reason=None):
+        seen.update(message=message, stop_kind=stop_kind)
+        return True
+
+    monkeypatch.setattr(cli_sq, "request_hard_interrupt", _fake)
+    monkeypatch.setenv("HERMES_SIGTERM_GRACE", "0")
+    cli_sq._interrupt_agent_for_signal(SimpleNamespace(), 2)
+    assert seen == {"message": "received signal 2", "stop_kind": "user_stop"}

@@ -195,7 +195,7 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
         return
 
     with suppress(Exception):
-        agent.interrupt(reason.replace("_", " "))
+        agent.interrupt(reason.replace("_", " "), stop_kind="user_stop")
 
     if session_id in _cli()._handed_off_session_ids:  # gateway owns the lifecycle now
         return

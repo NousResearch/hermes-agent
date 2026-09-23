@@ -41,7 +41,7 @@ def _interrupt_agent_for_signal(agent, signum) -> None:
     from cli import _float_env
     try:
         if agent is not None:
-            request_hard_interrupt(agent, f"received signal {signum}")
+            request_hard_interrupt(agent, f"received signal {signum}", stop_kind="user_stop")
             _grace = _float_env("HERMES_SIGTERM_GRACE", 1.5)
             if _grace > 0:
                 time.sleep(_grace)

@@ -711,8 +711,3 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
         for model in models[:3]
     }
     assert large_row["featured_models"] == models
-
-
-class _FakeInfo:
-    def __init__(self, release_date: str) -> None:
-        self.release_date = release_date

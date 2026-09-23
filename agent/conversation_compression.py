@@ -1256,6 +1256,29 @@ def run_compress_context_with_progress_timeout(
         )
         if settled:
             handled_exit = True
+            # The deadline is visible to the worker as well as the host. A cooperative summary call can
+            # observe it, unwind, and return the unchanged snapshot just BEFORE future.result() times out.
+            # Treat that settled no-op exactly like the host-side stall path; otherwise whether the
+            # deterministic fallback runs depends on a thread-scheduling race at the deadline.
+            result_messages = result[0] if isinstance(result, tuple) and result else None
+            if stall_fallback and fence.deadline_exceeded and result_messages is messages:
+                if on_timeout_cause is not None:
+                    with _swallow('compress_context timeout-cause callback failed', exc_info=True):
+                        on_timeout_cause(True, fence.progress_observed)
+                recovered = _retry_compression_on_fallback_chain(
+                    worker=fallback_worker or worker, messages=messages,
+                    system_prompt_fallback=system_prompt_fallback,
+                    idle_timeout_seconds=idle, total_ceiling_seconds=ceiling,
+                    on_commit_overrun=on_commit_overrun, on_timeout_cause=on_timeout_cause,
+                    telemetry_agent=telemetry_agent, new_fence=new_fence,
+                    escalate_deterministic=escalate_deterministic,
+                )
+                if recovered is not None:
+                    return recovered
+                if on_timeout is not None:
+                    waited = time.monotonic() - wait_started
+                    with _swallow('compress_context timeout callback failed', exc_info=True):
+                        on_timeout(idle, waited, fence.seconds_since_progress())
             return result
 
         # F6: a not-yet-started future must not linger as a stale queued job.
@@ -1282,6 +1305,27 @@ def run_compress_context_with_progress_timeout(
                 future, ceiling=ceiling, wait_started=wait_started, on_commit_overrun=on_commit_overrun
             )
             handled_exit = True
+            # The cancelled worker can race the host into its commit section while unwinding a stalled
+            # summary.  When that commit is only the unchanged snapshot, returning it here skips the
+            # stall-fallback ladder entirely (the over-window first-stall test then flakes).  The worker is
+            # settled and its lease is free at this point, so retry exactly as the pre-commit cancel path
+            # does.  A real compression result remains authoritative and returns immediately.
+            result_messages = result[0] if isinstance(result, tuple) and result else None
+            if stall_fallback and result_messages is messages:
+                recovered = _retry_compression_on_fallback_chain(
+                    worker=fallback_worker or worker, messages=messages,
+                    system_prompt_fallback=system_prompt_fallback,
+                    idle_timeout_seconds=idle, total_ceiling_seconds=ceiling,
+                    on_commit_overrun=on_commit_overrun, on_timeout_cause=on_timeout_cause,
+                    telemetry_agent=telemetry_agent, new_fence=new_fence,
+                    escalate_deterministic=escalate_deterministic,
+                )
+                if recovered is not None:
+                    return recovered
+                if on_timeout is not None:
+                    waited = time.monotonic() - wait_started
+                    with _swallow('compress_context timeout callback failed', exc_info=True):
+                        on_timeout(idle, waited, fence.seconds_since_progress())
             return result
 
         # Idle-timeout: cancel won pre-commit. Also free the worker's durable lease via

@@ -1458,15 +1458,9 @@ class TestQuickSnapshot:
             lambda msg, *a, **kw: restored_log.append(msg % a if a else msg) or real_info(msg, *a, **kw),
         )
 
-        restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is False
+        assert not any(line.startswith("Restored ") for line in restored_log)
 
-        manifest = json.loads(
-            (backup_mod._quick_snapshot_root(hermes_home) / snap_id / "manifest.json").read_text()
-        )
-        non_db = [rel for rel in manifest.get("files", {}) if not rel.endswith(".db")]
-        summary = [line for line in restored_log if line.startswith("Restored ")]
-        assert summary, restored_log
-        assert summary[-1].startswith(f"Restored {len(non_db)} files"), summary[-1]
 
     def test_restore_state_db_live_connection(self, hermes_home):
         """Restoring state.db must update data visible through a live connection.
@@ -1502,6 +1496,26 @@ class TestQuickSnapshot:
             f"Live connection still sees {len(rows_after)} rows after restore "
             f"(expected 1); the extra row 's2' should have been reverted."
         )
+
+
+    def test_snapshot_restore_command_prints_refuse_not_success(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        from hermes_cli.backup import create_quick_snapshot
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        monkeypatch.setattr(
+            "hermes_cli.backup.restore_quick_snapshot", lambda *a, **k: False
+        )
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home", lambda: hermes_home
+        )
+        CLICommandsMixin()._handle_snapshot_command(f"/snapshot restore {snap_id}")
+        out = capsys.readouterr().out
+        assert "Restored state from" not in out
+        assert "Restore failed or was refused" in out
+        assert "Snapshot not found" not in out
 
 
 

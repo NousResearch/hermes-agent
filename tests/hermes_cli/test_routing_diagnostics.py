@@ -105,3 +105,75 @@ def test_cli_reconcile_records_an_auditable_replay_authorization(tmp_path):
         "approval_ref": "operator:test",
         "reason": "verified no external effect",
     }
+
+
+def test_receipt_cli_distinguishes_selection_from_observed_outcomes(tmp_path, monkeypatch):
+    from agent.managed_route_runtime import resolve_route
+    from agent.model_selection_store import activate_policy, append_outcome, get_receipt, publish_policy
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    policy = {
+        "schema_version": 1, "policy_id": "inspection", "revision": 1,
+        "approval_ref": "test-only",
+        "routes": [{
+            "route_id": "selected", "route_revision": 1, "provider": "custom",
+            "model": "selected-model", "endpoint": "http://127.0.0.1:1/v1",
+            "maker": "fixture", "model_family": "fixture", "status": "approved",
+            "allowed_roles": ["builder"], "capabilities": [],
+            "verified_input_budget": 200000, "allowed_reasoning": ["high"],
+            "qualifications": ["deep"], "assessment": "fixture", "evidence": ["fixture:only"],
+        }],
+        "rankings": {"builder": {"deep": ["selected"]}},
+    }
+    publish_policy(home, policy, approval_ref="test-only")
+    activate_policy(home, "inspection", 1)
+    kb.init_db()
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="inspect receipt", assignee="builder")
+    resolution = resolve_route(home, "inspection", {
+        "schema_version": 1, "role": "builder", "execution_kind": "kanban",
+        "execution_id": task_id, "attempt_id": "1", "task_class": "cross-component",
+        "required_capabilities": [], "input_tokens": 1000, "reserve_tokens": 8192,
+        "reasoning": "high",
+        "provenance": {"frozen_sha": "", "verified_by": "test", "complete": True,
+                       "contributors": []},
+    }, now=1)
+    receipt_id = resolution["receipt_id"]
+    original = get_receipt(home, receipt_id)
+    with kbc.connect_closing() as conn:
+        conn.execute("UPDATE tasks SET routing_receipt_id=? WHERE id=?", (receipt_id, task_id))
+        conn.commit()
+    env = dict(os.environ, HOME=str(tmp_path))
+
+    def run(action, identity, as_json):
+        proc = subprocess.run([
+            sys.executable, "-m", "hermes_cli.main", "kanban", "routing", action, identity,
+            *(["--json"] if as_json else []),
+        ], env=env, capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        return proc.stdout
+
+    for action, identity in [("receipt", receipt_id), ("receipt-for-task", task_id)]:
+        result = json.loads(run(action, identity, True))
+        assert all(
+            event["kind"] == "routing_selected"
+            for event in result["outcomes"]
+        )
+        assert "observed: unknown" in run(action, identity, False)
+
+    append_outcome(home, receipt_id, "routing_started", {
+        "actual_provider": "custom", "actual_model": "observed-model",
+    })
+    for action, identity in [("receipt", receipt_id), ("receipt-for-task", task_id)]:
+        result = json.loads(run(action, identity, True))
+        assert result["outcomes"][-1]["payload"]["actual_model"] == "observed-model"
+        text = run(action, identity, False)
+        assert "selected-model" in text
+        assert "observed: custom/observed-model" in text
+    assert get_receipt(home, receipt_id) == original

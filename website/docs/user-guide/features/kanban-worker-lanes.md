@@ -224,7 +224,16 @@ Key properties, so operators know what this does and doesn't do:
 - **Every decision is a receipt**, inspectable via `hermes kanban routing receipt` /
   `receipt-for-task` — the selected route, rejection reasons for alternates considered,
   and (once a run starts) the actually observed provider/model identity for comparison.
-  Receipts never contain prompts, credentials, or task text.
+  Text output labels these appended records `observed: provider/model`, with the
+  event kind and sequence; before any runtime identity is recorded it says
+  `observed: unknown (no runtime identity recorded)`. With `--json`, both commands
+  include an `outcomes` array of append-only events (`seq`, `kind`, `payload`,
+  `created_at`). `receipt` retains decision fields at the top level;
+  `receipt-for-task` places the immutable decision under `decision` beside
+  `receipt_id` and `outcomes`. A recorded startup identity is not proof of a
+  successful provider response: inspect subsequent health events separately.
+  Neither command rewrites the selected route to match observations. Receipts
+  never contain prompts, credentials, or task text.
 - **Failure is closed, not silently unmanaged.** A missing/invalid receipt, a stale
   worker build, or a routing decision that can't be resolved fails the attempt through
   the normal Kanban breaker/re-queue path — it does not fall back to an unmanaged

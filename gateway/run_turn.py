@@ -85,6 +85,20 @@ _UNEXPECTED_SILENCE_REPLY = (
     "⚠️ The model returned only a silence marker for a message that needed a reply. "
     "Try again or rephrase."
 )
+_SHARED_CHAT_TYPES = frozenset({"group", "channel", "thread", "forum"})
+
+
+def _allows_intentional_silence(display_kind: Any, source: Any) -> bool:
+    """Allow machinery and shared-chat turns to end without an outbound message.
+
+    Direct messages keep the visible fallback so a model cannot silently drop a request that was
+    addressed only to it. Shared chats honor the documented ``NO_REPLY`` delivery contract; the
+    model decides whether a particular turn warrants silence before returning that exact token.
+    """
+    return (
+        is_machinery_display_kind(display_kind)
+        or getattr(source, "chat_type", None) in _SHARED_CHAT_TYPES
+    )
 
 
 def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
@@ -1514,9 +1528,9 @@ class GatewayTurnMixin:
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
-        # opened the chain: an internal follow-up may go silent, a human one must not.
+        # opened the chain: machinery and group turns may go silent; a direct human turn must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        if _intentional_silence and not _allows_intentional_silence(_silence_kind, source):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -3692,7 +3706,7 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+            if _allows_intentional_silence(turn_ctx.persist_user_display_kind, turn_ctx.source):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",

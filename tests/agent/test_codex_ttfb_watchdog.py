@@ -343,6 +343,50 @@ def test_idle_phase_policy_is_narrow_and_preserves_operator_overrides(
     assert watchdogs.est_tokens == input_chars // 4
     assert watchdogs.idle_enabled is idle_enabled
     assert watchdogs.idle_requires_progress is requires_progress
+    assert (watchdogs.progress_timeout > 0) is requires_progress
+
+
+@pytest.mark.parametrize("mode", ["lifecycle_only", "reasoning_then_answer"])
+def test_large_codex_first_progress_deadline_is_attempt_local(tmp_path, monkeypatch, mode):
+    """Lifecycle chatter cannot extend the first-progress budget; reasoning arms idle instead."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    original = h._resolve_nonstream_watchdogs
+
+    def resolve(agent, kwargs):
+        wd = original(agent, kwargs)
+        wd.progress_timeout = 0.7
+        wd.idle_timeout = 0.7
+        return wd
+
+    monkeypatch.setattr(h, "_resolve_nonstream_watchdogs", resolve)
+    closes = []
+
+    def stream_attempt():
+        yield SimpleNamespace(type="response.created")
+        time.sleep(0.45)
+        yield SimpleNamespace(type="response.in_progress")
+        if mode == "reasoning_then_answer":
+            time.sleep(0.45)  # Past the first-progress deadline if it were not disarmed.
+            yield SimpleNamespace(type="response.reasoning_text.delta", delta="thinking")
+            yield SimpleNamespace(type="response.output_text.delta", delta="done")
+            yield SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed", id="resp-ok", usage=None))
+        else:
+            while getattr(agent, "_active_codex_stream_request_token", None) is not None:
+                time.sleep(0.02)
+            raise ConnectionError("retired lifecycle-only stream")
+
+    _install_codex_event_stream(agent, monkeypatch, stream_attempt, closes)
+    if mode == "lifecycle_only":
+        with pytest.raises(TimeoutError, match="no substantive model progress"):
+            h.interruptible_api_call(agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004})
+        assert "codex_progress_kill" in closes
+    else:
+        response = h.interruptible_api_call(agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004})
+        assert response.output_text == "done"
+        assert "codex_progress_kill" not in closes
 
 
 @pytest.mark.parametrize(

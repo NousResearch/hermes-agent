@@ -32,6 +32,7 @@ class _NonStreamRequest:
                 token=self.codex_token,
                 lock=h.threading.Lock(),
                 last_event_ts=None,
+                first_event_ts=None,
                 last_progress_ts=None,
                 retry_started_ts=None,
                 phase_aware=self.wd.idle_requires_progress,
@@ -121,14 +122,14 @@ class _NonStreamRequest:
     def _codex_watchdog_snapshot(self):
         state = self.codex_watchdog_state
         if state is None:  # non-codex request: no watchdog reads these
-            return (None, None, None)
+            return (None, None, None, None)
         with state.lock:
-            return state.last_event_ts, state.last_progress_ts, state.retry_started_ts
+            return state.last_event_ts, state.first_event_ts, state.last_progress_ts, state.retry_started_ts
 
     def _emit_wait_notice(self, elapsed: float, *, heartbeat: bool = True) -> None:
         wd = self.wd
         try:
-            last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
+            last_event_ts, first_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
             activity_ts = retry_started_ts if retry_started_ts is not None else last_event_ts
             # Only undo a notice this request owns, promptly rather than at the
             # next heartbeat: reasoning callbacks do not reset the CLI spinner.
@@ -150,10 +151,11 @@ class _NonStreamRequest:
             if retry_started_ts is not None:
                 phase = "reconnect"
             elif last_event_ts is not None:
-                phase = "post_event"
+                phase = "pre_progress" if wd.progress_timeout and last_progress_ts is None else "post_event"
             watchdog = wn.codex_watchdog_deadline(stale_timeout=wd.stale_timeout,
                 ttfb_enabled=wd.ttfb_enabled, ttfb_timeout=wd.ttfb_timeout,
                 last_event_ts=last_event_ts, last_progress_ts=last_progress_ts,
+                first_event_ts=first_event_ts, progress_timeout=wd.progress_timeout,
                 retry_started_ts=retry_started_ts,
                 call_start=self.call_start, idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout,
                 idle_requires_progress=wd.idle_requires_progress,
@@ -211,6 +213,21 @@ class _NonStreamRequest:
             f"Codex stream produced no SSE events for {int(event_stale_elapsed)}s "
             f"after {arm_point} (threshold: {int(wd.idle_timeout)}s)")
 
+    def _progress_kill(self, elapsed: float) -> None:
+        """Lifecycle frames arrived, but this physical attempt never made model progress."""
+        agent, wd = self.agent, self.wd
+        h.logger.warning("Codex stream produced lifecycle events but no substantive model progress "
+            "for %.0fs (threshold %.0fs, model=%s, context=~%s tokens). Reconnecting.",
+            elapsed, wd.progress_timeout, self._model(), f"{wd.est_tokens:,}")
+        agent._buffer_diagnostic_status(
+            f"⚠️ Codex stream opened but made no model progress for {int(elapsed)}s "
+            f"(model: {self._model()}). Reconnecting.")
+        self._abort_request("codex_progress_kill")
+        agent._touch_activity(f"codex stream killed after {int(elapsed)}s without model progress")
+        self._await_worker_after_kill(
+            f"Codex stream produced no substantive model progress for {int(elapsed)}s "
+            f"(progress threshold: {int(wd.progress_timeout)}s)")
+
     def _stale_kill(self, elapsed: float) -> None:
         """No response within the stale timeout: kill and count toward the
         circuit breaker (#58962, see ``_stale_streak``)."""
@@ -226,7 +243,7 @@ class _NonStreamRequest:
 
     def _interrupt(self, elapsed: float) -> None:
         agent = self.agent
-        last_event_ts, _, _ = self._codex_watchdog_snapshot()
+        last_event_ts, _, _, _ = self._codex_watchdog_snapshot()
         h._record_interrupted_provider_wait(agent, elapsed,
             response_started=self.wd.codex and last_event_ts is not None
         )
@@ -247,6 +264,7 @@ class _NonStreamRequest:
             # call on this agent can't be misread as the first event for this one.
             with self.codex_watchdog_state.lock:
                 self.codex_watchdog_state.last_event_ts = None
+                self.codex_watchdog_state.first_event_ts = None
                 self.codex_watchdog_state.last_progress_ts = None
                 self.codex_watchdog_state.retry_started_ts = None
         agent._touch_activity("waiting for non-streaming API response")
@@ -262,7 +280,7 @@ class _NonStreamRequest:
             now = h.time.time()
             elapsed = now - self.call_start
             self._emit_wait_notice(elapsed, heartbeat=poll_count % 100 == 0)
-            last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
+            last_event_ts, first_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
             retry_ttfb_elapsed = now - retry_started_ts if retry_started_ts is not None else None
             if wd.ttfb_enabled and retry_ttfb_elapsed is not None and retry_ttfb_elapsed > wd.ttfb_timeout:
                 self._ttfb_kill(retry_ttfb_elapsed)
@@ -270,6 +288,10 @@ class _NonStreamRequest:
             if (retry_started_ts is None and wd.ttfb_enabled
                     and elapsed > wd.ttfb_timeout and last_event_ts is None):
                 self._ttfb_kill(elapsed)
+                break
+            if (retry_started_ts is None and wd.progress_timeout > 0 and first_event_ts is not None
+                    and last_progress_ts is None and now - first_event_ts > wd.progress_timeout):
+                self._progress_kill(now - first_event_ts)
                 break
             idle_elapsed = now - last_event_ts if last_event_ts is not None else None
             if (retry_started_ts is None and wd.idle_enabled and idle_elapsed is not None

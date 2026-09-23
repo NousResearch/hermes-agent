@@ -23,6 +23,7 @@ _PHASE_TEXT = {
     "first_event": "{n}s waiting for the first provider event",
     "reconnect": "{n}s waiting for the first provider event after reconnect",
     "post_event": "provider stream active; {n}s without stream events",
+    "pre_progress": "provider stream open; {n}s without substantive model progress",
     # Chat-completions streaming path
     "first_chunk": "{n}s waiting for the first stream chunk",
     "post_chunk": "stream open; {n}s without stream output",
@@ -43,7 +44,8 @@ def wait_notice_text(model: str, silence_secs: float, phase: str,
 def codex_watchdog_deadline(*, stale_timeout: float, ttfb_enabled: bool, ttfb_timeout: float,
     last_event_ts: Optional[float], last_progress_ts: Optional[float],
     retry_started_ts: Optional[float], call_start: float, idle_enabled: bool,
-    idle_timeout: float, idle_requires_progress: bool, elapsed: float) -> Optional[tuple[str, float]]:
+    idle_timeout: float, idle_requires_progress: bool, elapsed: float,
+    first_event_ts: Optional[float] = None, progress_timeout: float = 0.0) -> Optional[tuple[str, float]]:
     """Earliest enabled Codex watchdog as ``(label, seconds_until_it_fires)``; None when
     none applies (disabled/infinite, or its deadline already passed)."""
     deadlines: list[tuple[str, float]] = []
@@ -55,6 +57,8 @@ def codex_watchdog_deadline(*, stale_timeout: float, ttfb_enabled: bool, ttfb_ti
     elif last_event_ts is None:
         if ttfb_enabled and math.isfinite(ttfb_timeout):
             deadlines.append(("TTFB", ttfb_timeout))
+    elif progress_timeout > 0 and first_event_ts is not None and last_progress_ts is None:
+        deadlines.append(("first progress", max(0.0, first_event_ts - call_start) + progress_timeout))
     elif (not idle_requires_progress or last_progress_ts is not None) and idle_enabled and math.isfinite(idle_timeout):
         deadlines.append(("stream idle", max(0.0, last_event_ts - call_start) + idle_timeout))
     if not deadlines:

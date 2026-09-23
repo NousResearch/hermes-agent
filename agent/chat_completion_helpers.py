@@ -1124,6 +1124,7 @@ class _NonStreamWatchdogs:
     idle_enabled: bool
     idle_timeout: float
     idle_requires_progress: bool
+    progress_timeout: float = 0.0
 
 
 def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs:
@@ -1209,12 +1210,15 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     # default for unset AND unparseable values, so both count as implicit.
     idle_explicit = env_float("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", -1.0) != -1.0
     idle_timeout = env_float("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_default)
+    progress_gated = codex and openai_codex_backend and codex_floor > 0 and not idle_explicit
     return _NonStreamWatchdogs(stale_timeout=stale_timeout, codex=codex, est_tokens=est_tokens,
         ttfb_enabled=ttfb_enabled, ttfb_timeout=ttfb_timeout, idle_enabled=codex and idle_timeout > 0,
         idle_timeout=idle_timeout,
-        idle_requires_progress=(
-            codex and openai_codex_backend and codex_floor > 0 and not idle_explicit
-        ))
+        idle_requires_progress=progress_gated,
+        # Lifecycle frames satisfy TTFB but cannot arm the post-progress idle detector.
+        # Give silent reasoning the established high-effort budget, measured once
+        # from the first event rather than restarted by each lifecycle frame.
+        progress_timeout=HIGH_EFFORT_SILENCE_FLOOR_SECONDS if progress_gated else 0.0)
 
 
 def _codex_silent_hang_hint(agent, api_kwargs: dict) -> Optional[str]:

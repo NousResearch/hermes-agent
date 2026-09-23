@@ -60,6 +60,7 @@ import {
   retireLocalProfileGateways,
   type SpawnPriority
 } from '@/store/gateway'
+import { revealFileInTree } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -738,6 +739,12 @@ export const host = {
     syncWorkspaceRoute(to)
   },
 
+  /** Open the file-browser pane and reveal + select `path` in the workspace
+   *  tree (expanding ancestor folders, scrolling it into view) — the same
+   *  door the sidebar's "Reveal in file tree" command uses. Paths outside the
+   *  active workspace's cwd are safely ignored by the tree, so callers can
+   *  link any absolute path without worrying about arbitrary system files. */
+  revealFileInTree: (path: string): void => revealFileInTree(path),
   /** Pre-dial a profile's gateway socket in the background — pool-only, no
    *  activation, no navigation, no scope change. Delegates to
    *  prewarmProfileBackend so plugin surfaces get the SAME pool-saturation

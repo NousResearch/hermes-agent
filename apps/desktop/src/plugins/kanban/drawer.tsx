@@ -49,6 +49,7 @@ import {
   uploadAttachment,
   useKanbanScope
 } from './api'
+import { LinkifiedFilePath } from './filepath-links'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -402,7 +403,9 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           </Button>
         </div>
       ) : body ? (
-        <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{body}</p>
+        <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">
+          <LinkifiedFilePath text={body} />
+        </p>
       ) : (
         <p className="text-[0.8125rem] text-(--ui-text-quaternary)">{k.noDescription}</p>
       )}
@@ -862,7 +865,9 @@ export function TaskDrawer({
                       <span className="ml-2 text-[0.625rem] text-(--ui-text-quaternary)">
                         {ago(comment.created_at)}
                       </span>
-                      <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
+                      <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">
+                        <LinkifiedFilePath text={comment.body} />
+                      </p>
                     </li>
                   ))}
                 </ul>

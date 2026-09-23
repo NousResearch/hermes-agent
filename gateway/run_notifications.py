@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional, cast
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionEntry, SessionSource
+from gateway.session import SessionEntry, SessionSource, build_session_key
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
 
 # Log-record parity with the origin module.
@@ -96,6 +96,47 @@ _DURABLE_CLAIM_OPS = {
     "defer": ("defer_completion_delivery", "Could not defer unadmitted completion claim"),
     "complete": ("complete_completion_delivery", "Could not acknowledge durable completion claim"),
 }
+
+
+def _strip_session_key_suffix(value: str, token: str) -> str:
+    """Remove a trailing ``:{token}`` slot when *value* still has a chat_id in front of it."""
+    if not token or not value:
+        return value
+    suffix = f":{token}"
+    if value.endswith(suffix) and len(value) > len(suffix):
+        return value[:-len(suffix)]
+    return value
+
+
+def _chat_id_from_session_key(session_key: str, source: SessionSource) -> Optional[str]:
+    """Recover chat_id from a durable ``agent:`` key when colon-split truncated it.
+
+    Prefix is ``:{platform}:{chat_type}:``. Slack ``scope_id`` is skipped when present
+    on *source*. The user and thread slots already on *source* are stripped from the
+    right in the same order ``build_session_key`` appends them.
+    """
+    platform = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+    chat_type = str(source.chat_type or "")
+    if not session_key or not platform or not chat_type:
+        return None
+    marker = f":{platform}:{chat_type}:"
+    idx = session_key.find(marker)
+    if idx < 0:
+        return None
+    rest = session_key[idx + len(marker):]
+    if platform == Platform.SLACK.value and source.scope_id:
+        scope_prefix = f"{source.scope_id}:"
+        if rest.startswith(scope_prefix):
+            rest = rest[len(scope_prefix):]
+    user_id = str(source.user_id or "").strip()
+    thread_id = str(source.thread_id or "").strip()
+    if source.chat_type == "dm":
+        rest = _strip_session_key_suffix(rest, thread_id)
+        rest = _strip_session_key_suffix(rest, user_id)
+    else:
+        rest = _strip_session_key_suffix(rest, user_id)
+        rest = _strip_session_key_suffix(rest, thread_id)
+    return rest or None
 
 
 def _raw_process_event_session_id(evt: dict) -> str:
@@ -1156,10 +1197,40 @@ class GatewayNotificationsMixin:
                 "without scope_id; scoped relay egress may be declined by "
                 "the connector's tenant guard (user_id fallback only).", platform_name, chat_id, chat_type,
             )
-        return SessionSource(
+        source = SessionSource(
             platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=_opt("thread_id"),
             user_id=_opt("user_id"), user_name=_opt("user_name"), scope_id=scope_id, profile=profile,
         )
+        if session_key.startswith("agent:"):
+            return self._align_process_event_source(source, session_key)
+        return source
+
+    def _process_event_source_key(self, source: SessionSource) -> str:
+        """Session key for a reconstructed process-event source, using runner isolation flags."""
+        return build_session_key(
+            source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            profile=source.profile,
+        )
+
+    def _align_process_event_source(self, source: SessionSource, session_key: str) -> SessionSource:
+        """Restore a colon-bearing chat_id when fallback reconstruction does not round-trip.
+
+        ``_parse_session_key`` takes the first colon-split token as chat_id. Webhook
+        delivery keys embed ``webhook:{route}:{delivery}``. Keep the durable
+        ``session_key`` as the identity; only replace chat_id when the repaired
+        source rebuilds that exact key.
+        """
+        if self._process_event_source_key(source) == session_key:
+            return source
+        recovered = _chat_id_from_session_key(session_key, source)
+        if not recovered or recovered == source.chat_id:
+            return source
+        repaired = dataclasses.replace(source, chat_id=recovered)
+        if self._process_event_source_key(repaired) == session_key:
+            return repaired
+        return source
 
     async def _drain_watch_notifications(self, completion_queue) -> None:
         """Consume queued watch events and inject them when notifications are enabled.

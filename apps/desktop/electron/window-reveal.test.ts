@@ -2,12 +2,17 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { createWindowRevealController } from './window-reveal'
+import {
+  createWindowRevealController,
+  isTerminalFailedLoadBeforeReveal,
+  isTerminalRendererGoneBeforeReveal
+} from './window-reveal'
 
 function createHarness({ visible = false }: { visible?: boolean } = {}) {
   let destroyed = false
   let isVisible = visible
   let revealCalls = 0
+  let failureCalls = 0
   let showCalls = 0
   let scheduledCallback: (() => void) | null = null
   let scheduledDelay: number | null = null
@@ -25,6 +30,9 @@ function createHarness({ visible = false }: { visible?: boolean } = {}) {
     {
       onRevealed: () => {
         revealCalls += 1
+      },
+      onFailed: () => {
+        failureCalls += 1
       },
       setTimer: (callback, delay) => {
         scheduledCallback = callback
@@ -45,6 +53,9 @@ function createHarness({ visible = false }: { visible?: boolean } = {}) {
     },
     get clearCalls() {
       return clearCalls
+    },
+    get failureCalls() {
+      return failureCalls
     },
     get revealCalls() {
       return revealCalls
@@ -114,7 +125,9 @@ test('dispose cancels a pending fallback and prevents a late reveal', () => {
   harness.controller.dispose()
   scheduledCallback?.()
 
+  assert.equal(harness.controller.fail(), false)
   assert.equal(harness.clearCalls, 1)
+  assert.equal(harness.failureCalls, 0)
   assert.equal(harness.showCalls, 0)
   assert.equal(harness.revealCalls, 0)
 })
@@ -124,9 +137,58 @@ test('does not reveal a destroyed window', () => {
 
   harness.destroy()
 
+  assert.equal(harness.controller.fail(), false)
   assert.equal(harness.controller.reveal(), false)
+  assert.equal(harness.failureCalls, 0)
   harness.controller.scheduleFallback()
   assert.equal(harness.scheduledCallback, null)
+})
+
+test('a hidden pre-reveal failure cancels fallback and settles exactly once', () => {
+  const harness = createHarness()
+
+  harness.controller.scheduleFallback()
+  const scheduledCallback = harness.scheduledCallback
+
+  assert.equal(harness.controller.fail(), true)
+  assert.equal(harness.clearCalls, 1)
+  assert.equal(harness.failureCalls, 1)
+  assert.equal(harness.controller.fail(), false)
+  assert.equal(harness.controller.reveal(), false)
+  scheduledCallback?.()
+
+  assert.equal(harness.failureCalls, 1)
+  assert.equal(harness.showCalls, 0)
+  assert.equal(harness.revealCalls, 0)
+})
+
+test('pre-reveal failure does not destroy a visible or already-revealed window', () => {
+  const visible = createHarness({ visible: true })
+
+  assert.equal(visible.controller.fail(), false)
+  assert.equal(visible.failureCalls, 0)
+
+  const revealed = createHarness()
+
+  assert.equal(revealed.controller.reveal(), true)
+  assert.equal(revealed.controller.fail(), false)
+  assert.equal(revealed.failureCalls, 0)
+})
+
+test('only main-frame non-ERR_ABORTED load failures are terminal before reveal', () => {
+  assert.equal(isTerminalFailedLoadBeforeReveal(-6, true), true)
+  assert.equal(isTerminalFailedLoadBeforeReveal(-3, true), false)
+  assert.equal(isTerminalFailedLoadBeforeReveal(-6, false), false)
+})
+
+test('only renderer failure exits are terminal before reveal', () => {
+  for (const reason of ['abnormal-exit', 'crashed', 'oom', 'launch-failed', 'integrity-failure', 'memory-eviction']) {
+    assert.equal(isTerminalRendererGoneBeforeReveal(reason), true, reason)
+  }
+
+  for (const reason of [undefined, 'clean-exit', 'killed', 'unknown']) {
+    assert.equal(isTerminalRendererGoneBeforeReveal(reason), false, String(reason))
+  }
 })
 
 // The pet overlay reveals with showInactive() and the HUD with show() + focus(),

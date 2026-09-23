@@ -17,6 +17,27 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+@doctor_check("Approval mode check skipped", "({e})")
+def _check_approval_mode(should_fix: bool, f: Finding) -> None:
+    """Surface the effective approval guard setting without changing it.
+
+    The guard owns normalization and hosted-room policy precedence, so doctor
+    reads the same effective value instead of inspecting ``config.yaml``.
+    """
+    from tools.approval_context import _get_approval_mode
+
+    mode = _get_approval_mode()
+    if mode != "off":
+        check_ok(f"Approval mode: {mode}")
+        return
+
+    check_warn("Approval mode is off", "(dangerous commands run without confirmation)")
+    check_info("Run '/approvals manual' or '/approvals smart' to restore approval prompts")
+    f.manual_issues.append(
+        "Approval prompts are disabled for dangerous commands. Run '/approvals manual' or '/approvals smart' to restore them."
+    )
+
+
 # Legacy config keys still read for back-compat: warn-only with the modern replacement, never auto-migrated
 # (migrations live in config.py). (section, key, replacement)
 _DEPRECATED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (

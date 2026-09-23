@@ -8,6 +8,7 @@ gate in :mod:`tools.approval`.
 import contextvars
 import logging
 import os
+import threading
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
@@ -239,19 +240,20 @@ def _get_approval_mode() -> str:
 def _get_approval_timeout() -> int:
     """Read ``approvals.timeout`` (default 300s: gateway push notifications may
     not be seen for minutes; 60s failed closed before Telegram taps landed).
-    Clamped to ``agent.deadline.MAX_SAFE_TIMEOUT_S`` (~1 year): a larger value
-    overflows ``time_t`` inside ``Thread.join`` / ``Lock.acquire`` on macOS and
-    crashed every parallel tool batch; clamping at the single config-read site
-    keeps every consumer platform-safe at once."""
+    Clamped to ``agent.deadline.MAX_SAFE_TIMEOUT_S``: larger values overflow
+    platform waits inside ``Thread.join`` / ``Lock.acquire``. Clamping at the
+    single config-read site keeps every consumer platform-safe at once."""
     try:
         raw = int(_get_approval_config().get("timeout", 300))
-    except (ValueError, TypeError):
+    except (OverflowError, ValueError, TypeError):
         return 300
     try:
         from agent.deadline import MAX_SAFE_TIMEOUT_S
         safe_cap = int(MAX_SAFE_TIMEOUT_S)
     except Exception:
-        safe_cap = 365 * 24 * 3600  # fail CLOSED: the raw value would re-open the overflow
+        # Keep the fallback safe even when the canonical deadline module cannot
+        # import by applying the same one-year/runtime-ceiling relationship.
+        safe_cap = int(min(365 * 24 * 3600, threading.TIMEOUT_MAX))
     if raw > safe_cap:
         logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", raw, safe_cap)
     return min(raw, safe_cap)

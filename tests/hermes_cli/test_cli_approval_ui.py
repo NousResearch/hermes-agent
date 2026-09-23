@@ -67,6 +67,31 @@ def _make_background_cli_stub():
 
 
 class TestCliApprovalUi:
+    def test_non_finite_timeout_uses_canonical_fallback(self):
+        cli = _make_cli_stub()
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm /tmp/example", "delete file")
+
+        with patch(
+            "tools.approval_context._get_approval_config",
+            return_value={"timeout": float("inf")},
+        ):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._approval_state is not None
+            assert cli._approval_deadline > time.monotonic() + 250
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+
+        assert result["value"] == "deny"
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}

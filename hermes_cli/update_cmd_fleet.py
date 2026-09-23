@@ -1202,7 +1202,7 @@ def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
     print("    hermes gateway status")
 
 
-def _drain_or_signal_gateway_for_update(pid: int, drain_budget: float, label: str) -> bool:
+def _drain_or_signal_gateway_for_update(pid: int, drain_budget: float, label: str, *, deferred_self_restart_pids: set[int] | None = None) -> bool:
     """Three-way triage (shared by systemd and bare-process paths) for handing a
     running gateway over to new code. Returns True when signalled/stopped.
 
@@ -1227,7 +1227,10 @@ def _drain_or_signal_gateway_for_update(pid: int, drain_budget: float, label: st
             "process tree — signalling restart and letting the gateway "
             "drain itself (avoids the cron-update deadlock, #100179)"
         )
-        return _request_gateway_self_restart(pid)
+        accepted = _request_gateway_self_restart(pid)
+        if accepted and deferred_self_restart_pids is not None:
+            deferred_self_restart_pids.add(pid)
+        return accepted
     if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
         print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
         _escalate_wedged_gateway(pid)
@@ -1495,6 +1498,9 @@ class _GatewayRestartOutcome:
     relaunched_profiles: list
     externally_supervised_profiles: list
     killed_pids: set
+    #: Gateways that accepted a self-restart while hosting this updater. Their old
+    #: process cannot exit until the updater returns, so a stale fleet row is expected.
+    deferred_self_restart_pids: set = field(default_factory=set)
     #: Gateways stopped with NO successor (no profile mapping / relaunch could not be armed);
     #: the summary tells the user to restart them by hand, so the fleet probe must not expect
     #: a row for them.
@@ -1562,7 +1568,12 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         # SIGUSR1 drain first, SIGTERM fallback if unsupported/over budget — the watcher
         # relaunches either way. The helper announces its choice first because a silent
         # full-budget wait reads as a hung update.
-        if not _drain_or_signal_gateway_for_update(pid, _drain_budget, proc.profile):
+        if not _drain_or_signal_gateway_for_update(
+            pid,
+            _drain_budget,
+            proc.profile,
+            deferred_self_restart_pids=out.deferred_self_restart_pids,
+        ):
             with suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, _signal.SIGTERM)
         # Wait ≤5s for exit: Telegram keeps the old getUpdates session ~30s; a new gateway
@@ -1929,6 +1940,25 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
         )
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
+        deferred = restart.deferred_self_restart_pids
+        deferred_rows = [
+            row for row in _fleet_snapshot
+            if row.get("pid") in deferred and row.get("state") == "stale"
+        ]
+        if deferred_rows:
+            # Persist the deferred state too: leaving these rows as stale would make the
+            # next update reconstruct a restart debt that cannot discharge until this
+            # updater returns (#119597).
+            deferred_ids = {id(row) for row in deferred_rows}
+            _fleet_snapshot = [
+                ({**row, "state": "pending_self_restart"} if id(row) in deferred_ids else row)
+                for row in _fleet_snapshot
+            ]
+            for row in deferred_rows:
+                print(
+                    f"  ↻ {row.get('profile')} (pid {row.get('pid')}): restart pending "
+                    "until this update process exits"
+                )
         if print_fleet_version_matrix(_fleet_snapshot):
             restart.incomplete = True
             # A proven-stale survivor must not keep running (its ticker yields every tick and

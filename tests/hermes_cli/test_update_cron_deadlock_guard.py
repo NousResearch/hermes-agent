@@ -141,8 +141,12 @@ class TestDrainOrSignalTriage:
         from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
 
         calls = self._patched(monkeypatch, ancestor=True, wedged=False)
-        assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc") is True
+        deferred = set()
+        assert _drain_or_signal_gateway_for_update(
+            1234, 900.0, "svc", deferred_self_restart_pids=deferred
+        ) is True
         assert calls["self_restart"] == [1234]
+        assert deferred == {1234}
         assert calls["drain"] == [], "drain-waiting on an ancestor IS the deadlock"
         assert calls["escalate"] == []
 
@@ -165,3 +169,18 @@ class TestDrainOrSignalTriage:
         assert calls["drain"] == [(1234, 900.0)]
         assert calls["self_restart"] == []
         assert calls["escalate"] == []
+
+
+    def test_failed_ancestor_restart_is_not_marked_deferred(self, monkeypatch):
+        """A refused self-restart must remain fail-closed, never exempted later."""
+        from hermes_cli import gateway as gw
+        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+
+        monkeypatch.setattr(gw, "_is_pid_ancestor_of_current_process", lambda pid: True)
+        monkeypatch.setattr(gw, "_request_gateway_self_restart", lambda pid: False)
+        deferred = set()
+
+        assert _drain_or_signal_gateway_for_update(
+            1234, 900.0, "svc", deferred_self_restart_pids=deferred
+        ) is False
+        assert deferred == set()

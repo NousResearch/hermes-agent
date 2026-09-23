@@ -805,3 +805,47 @@ describe('session-owner calls for a profile on the shared local host backend (#1
     expect(primary.request).not.toHaveBeenCalled()
   })
 })
+
+describe('MCP OAuth profile propagation', () => {
+  it.each(['primary', 'secondary'])('keeps the owner in every OAuth payload on a %s remote route', async topology => {
+    const { mcpOAuthRpc } = await import('@/api/mcp')
+    const { setApiRequestConnection, setApiRequestProfile } = await import('@/api/client')
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'research')
+    setPrimaryGatewayConnection({ connectionId: 'remote-memory', mode: 'remote' })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({
+        connectionId,
+        profile,
+        port: 9119,
+        sharedRemote: false
+      })),
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true, wsUrl: 'ws://memory.invalid/api/ws' })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+
+    try {
+      for (const profile of ['research', 'support', 'research']) {
+        const connectionId = topology === 'primary' ? 'remote-memory' : 'secondary-memory'
+        const rpc = mcpOAuthRpc({ connectionId, profile })
+        setApiRequestConnection('unrelated-connection')
+        setApiRequestProfile('unrelated-profile')
+
+        for (const action of ['start', 'callback', 'poll', 'cancel'] as const) {
+          const params = {
+            name: 'reports',
+            session_id: 'test-flow',
+            ...(action === 'start' ? {} : { profile: 'stale-profile' })
+          }
+
+          const result = await rpc(action, params)
+          expect(result).toEqual({ method: `mcp.servers.oauth.${action}`, params: { ...params, profile } })
+          expect(params.profile).toBe(action === 'start' ? undefined : 'stale-profile')
+        }
+      }
+    } finally {
+      setApiRequestConnection(null)
+      setApiRequestProfile(null)
+    }
+  })
+})

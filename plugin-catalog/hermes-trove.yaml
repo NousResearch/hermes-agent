@@ -1,7 +1,13 @@
 name: hermes-trove
 repo: https://github.com/misterdas/hermes-trove
 sha: 69c673eeb2fcbaf12e9b88451ad1f627a88bc930
-description: DAG-based context engine that never loses a message — full-text search, semantic recall, assertion-backed evidence compilation, and pre-answer sufficiency gating
+description: >-
+  DAG-based context engine that never loses a message — full-text search, semantic recall,
+  assertion-backed evidence compilation, and pre-answer sufficiency gating Disclosure — replaces
+  the context engine and stores every turn's full raw transcript in HERMES_HOME/trove.db with
+  secret redaction OFF by default; with TROVE_EMBEDDING_PROVIDER=voyage, transcript text is sent
+  to Voyage AI for embeddings; as a fallback it reads private AIAgent attributes read-only via
+  frame inspection. No other network egress.
 maintainer: misterdas
 tier: community
 category: general

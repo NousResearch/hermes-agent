@@ -878,6 +878,10 @@ class ClientLifecycleMixin:
             or base_url_host_matches(getattr(self, "_anthropic_base_url", "") or "", "azure.com")
         ):
             return False
+        # Pool recovery has already selected the credential that owns this session.  Resolving again
+        # here can select an earlier singleton or pool entry and undo that rotation before the request.
+        if getattr(self, "_credential_pool", None) is not None and getattr(self, "_credential_pool_entry_id", None):
+            return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
             new_token = resolve_anthropic_token(model=self.model)

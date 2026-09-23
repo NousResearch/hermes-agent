@@ -15,8 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
-    compression_skipped_due_to_lock, context_compression_timed_out,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_attempt_was_housekeeping,
+    compression_blocked_transiently, compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression, ensure_compression_feasibility_checked,
 )
 from agent.turn_context import _review_fork_first_request_pending
@@ -158,7 +158,9 @@ def run_preflight_compression(
             v._turn_exit_reason = "context_compression_timeout"
             return _done("break")
         if v.messages is _pre_api_input and (
-            compression_skipped_due_to_lock(agent) or compression_blocked_transiently(agent)
+            compression_skipped_due_to_lock(agent)
+            or compression_blocked_transiently(agent)
+            or compression_attempt_was_housekeeping(agent)
         ):
             # Temporary DEFER (lock held / cooldown), not evidence about compressibility:
             # refund the attempt, leave the progress blocker unarmed and proceed.
@@ -315,7 +317,9 @@ def compress_after_tool_results(
         messages, active_system_prompt = agent._compress_context(
             messages, system_message, approx_tokens=_real_tokens, task_id=effective_task_id
         )
-        if messages is _post_tool_input and compression_skipped_due_to_lock(agent):
+        if messages is _post_tool_input and (
+            compression_skipped_due_to_lock(agent) or compression_attempt_was_housekeeping(agent)
+        ):
             # Lock-skip no-op is a temporary defer, not evidence about compressibility:
             # refund so a lock-loser loop doesn't burn the budget toward exhausted.
             # #69870 lock-skip / #97488 transient-block: this pass no-oped for a TEMPORARY reason (another

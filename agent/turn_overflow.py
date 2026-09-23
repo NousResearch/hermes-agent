@@ -17,8 +17,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import (
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
-    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, compression_blocked_transiently,
-    compression_skipped_due_to_lock, context_compression_timed_out,
+    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, compression_attempt_was_housekeeping,
+    compression_blocked_transiently, compression_skipped_due_to_lock, context_compression_timed_out,
 )
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
@@ -163,6 +163,9 @@ class _Recovery(OverflowVerdict):
             before, self.system_message, approx_tokens=request_tokens,
             task_id=self.effective_task_id, bypass_cooldown=True, trigger="overflow",
         )
+        if self.messages is before and compression_attempt_was_housekeeping(agent):
+            # Same-count noop/sanitized is not evidence the transcript cannot shrink.
+            self.compression_attempts -= 1
         if self.messages is before:
             deferred = None
             if compression_skipped_due_to_lock(agent):

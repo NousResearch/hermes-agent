@@ -1536,6 +1536,17 @@ def compression_skipped_due_to_lock(agent: Any) -> bool:
     return _sig is True or isinstance(_sig, str)
 
 
+def compression_attempt_was_housekeeping(agent: Any) -> bool:
+    """True when this pass did not summarize and must not spend the attempt budget.
+
+    A context engine can return ``noop`` or ``sanitized`` with the same message
+    count (tool-stub cleanup, boundary cooldown). That is not a summary. Counting
+    it toward ``max_compression_attempts`` locks the rest of the turn out while
+    the provider prompt is still over the threshold.
+    """
+    return getattr(agent, "_compression_attempt_noop", None) is True
+
+
 def _get_context_compression_timeout_state(
     agent: Any, *, create: bool
 ) -> Optional[Tuple[Any, Optional[threading.local]]]:
@@ -3555,6 +3566,32 @@ def _candidate_rejected(
     """
     # Aborted compression returns input unchanged: surface the error, skip rotation
     # (no session ended); auto-compress callers detect no-op via equal lengths.
+    # Same-count noop/sanitized is housekeeping, not a summary boundary. Committing
+    # it rewrites the session and rebuilds the system prompt (cache break) and the
+    # caller spends one of the few attempts for the turn. A later real summary
+    # (status compacted, or fewer messages) still commits.
+    _status = getattr(agent.context_compressor, "_last_compression_status", None)
+    if (
+        isinstance(_status, str)
+        and _status in {"noop", "sanitized"}
+        and len(compressed) >= len(messages_before_compression)
+    ):
+        if messages != messages_before_compression:
+            messages[:] = copy.deepcopy(messages_before_compression)
+        agent._compression_attempt_noop = True
+        with contextlib.suppress(Exception):
+            agent.context_compressor._last_compression_made_progress = False
+            agent.context_compressor.awaiting_real_usage_after_compression = False
+        logger.info(
+            "Compression pass did not summarize (session=%s, status=%s, messages=%d); "
+            "leaving the transcript in place",
+            agent.session_id or "none",
+            _status,
+            len(messages_before_compression),
+        )
+        _emit_aborted_attempt_telemetry(agent, attempt_started_at, "housekeeping_noop")
+        return True
+
     if getattr(agent.context_compressor, "_last_compress_aborted", False):
         _summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         _err = _summary_error or "unknown error"
@@ -4002,6 +4039,7 @@ def _begin_compression_attempt(
     agent._last_compression_attempt_recorded = True
     agent._last_compression_attempt_in_place = None
     agent._compression_skipped_due_to_lock = None
+    agent._compression_attempt_noop = None
     # Clear the lock-skip signal at the VERY TOP, before the codex route and the breaker gates below can
     # early-return (per-attempt state rule, #58630/#69853). A stale ``True``/holder value from a prior
     # lock-skip must never make a later breaker/codex no-op look like lock contention to the automatic-path

@@ -216,6 +216,29 @@ with a warning; its lifecycle verbs and the `--all` variants retain their
 whole-host behavior. A separately running `--force` gateway retains its own
 process lifecycle.
 
+The dashboard and Desktop **Stop** / **Start** buttons for a served profile do the
+same thing: Stop parks it (`/api/gateway/stop?profile=coder` spawns
+`hermes -p coder gateway stop`), Start unparks it while a host gateway is live,
+and `/api/status` lists `parked_profiles`. Start on a named profile that is
+*not* parked still answers `409` — it would need a gateway of its own.
+
+#### Parked vs `gateway.standalone: true`
+
+The two never apply to the same profile at the same time, and neither one
+implies the other:
+
+| Profile | Host serves it | `-p X gateway stop` | `-p X gateway start` |
+|---|---|---|---|
+| Served (default case) | yes | parks it (marker + `unserve-profile`) | already served |
+| Parked (`gateway.parked` exists) | no, until unparked | already parked | unparks (marker removed + `serve-profile`) |
+| Standalone (`gateway.standalone: true`) | never | stops **its own** gateway process; writes no marker | starts its own gateway |
+
+`gateway.standalone` wins: the host never writes `gateway.parked` for a
+standalone profile and never serves it, parked or not, so `stop` and `start` on
+that profile keep their per-process meaning. Parking is the multiplex-native way
+to take one profile offline — it is what closes the "per-profile stop/restart"
+gap the [temporary shim](#temporary-gatewaystandalone-true) was kept open for.
+
 ### No new per-profile gateways
 
 By default, one host gateway serves every profile, and a named profile does
@@ -258,9 +281,11 @@ The dashboard's **Start** button for a named profile returns the same refusal.
 
 :::warning Temporary backwards compatibility, not a topology we keep
 Multiplex-only is the direction: one gateway per host serves every profile. The
-switch landed before every gap was closed — per-profile stop/restart, the
-WhatsApp bridge and relay on secondary profiles, and dashboard scoping are the
-open ones — and fleets that relied on per-profile gateways lost them overnight.
+switch landed before every gap was closed — the WhatsApp bridge and relay on
+secondary profiles, and dashboard scoping are the open ones; per-profile
+stop/start/restart is closed by
+[parking](#stopping-one-profile-without-stopping-the-host) — and fleets that
+relied on per-profile gateways lost them overnight.
 `gateway.standalone: true` exists so those fleets keep working **while those
 gaps are fixed**. It will be removed once they are, with a release-notes notice
 ahead of time; every surface that prints it says so. Do not build new setups on
@@ -325,10 +350,11 @@ refuses before touching a service manager, preventing a permanently failed
 systemd unit or a launchd respawn loop. Use the per-profile `stop`, `start`, and
 `restart` commands above to manage a satellite inside the host. `hermes gateway
 stop` on the default profile still takes every served profile offline.
-The dashboard and Desktop app retain host-level controls: for a served profile the "Start" and
-"Stop" gateway actions answer `409` with the same explanation (rendered as an inline
-notice on the System page), and "Restart" restarts the multiplexer (the process that
-actually serves the profile) instead of spawning a `-p coder gateway restart` that
+The dashboard and Desktop app follow the CLI: for a served profile the "Stop" action
+parks it and "Start" unparks it (see above); "Start" on an unparked named profile
+answers `409` with the same explanation (rendered as an inline notice on the System
+page). "Restart" restarts the multiplexer (the process that actually serves the
+profile) instead of spawning a `-p coder gateway restart` that
 could only fail. Because that restart reconnects every bot on the device, both apps
 first ask *"Restart the shared gateway? All bots on this device reconnect: default,
 coder, research"* (the list is the running gateway's `served_profiles`) and report

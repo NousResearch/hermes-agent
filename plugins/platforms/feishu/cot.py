@@ -319,8 +319,8 @@ class FeishuCOTRun:
         self._event_lock = threading.RLock()
         self._timestamp_lock = threading.Lock()
         self._last_timestamp = 0
-        self._active_step: str | None = f"step-start-{self.run_id}"
-        self._active_step_name = "Agent 正在执行"
+        self._active_step: str | None = None
+        self._active_step_name: str | None = None
         self._tool_summaries: dict[str, str] = {}
         self._disabled = False
         self._append_event(
@@ -330,10 +330,6 @@ class FeishuCOTRun:
                 "runId": self.run_id,
                 "input": {"query": _safe_text(input_preview, COT_TEXT_MAX)},
             },
-        )
-        self._append_event(
-            "STEP_STARTED",
-            {"stepId": self._active_step, "stepName": self._active_step_name},
         )
 
     def _timestamp(self) -> int:

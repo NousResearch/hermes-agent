@@ -109,7 +109,7 @@ async def test_brief_cot_uses_origin_and_omits_args_and_output():
         for event in events
         if event["event_type"] == "STEP_STARTED"
     ]
-    assert step_names == ["Agent 正在执行", "理解用户问题", "分析工具结果"]
+    assert step_names == ["理解用户问题", "分析工具结果"]
     assert "TOOL_CALL_START" in kinds
     assert "TOOL_CALL_END" in kinds
     assert "TOOL_CALL_RESULT" in kinds
@@ -250,7 +250,6 @@ async def test_cot_flushes_one_batch_after_interval_then_flushes_before_complete
     first_update = next(body for method, _, body in transport.calls if method == "PUT")
     assert [event["event_type"] for event in first_update["events"]] == [
         "RUN_STARTED",
-        "STEP_STARTED",
         "TOOL_CALL_START",
         "TOOL_CALL_END",
     ]

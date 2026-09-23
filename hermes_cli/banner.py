@@ -227,20 +227,53 @@ def _is_full_sha(value: Optional[str]) -> bool:
 # credential spends 5,000/hour instead. Resolution reuses the ladder Skills Hub and the desktop
 # app already use (GITHUB_TOKEN/GH_TOKEN -> gh CLI -> GitHub App -> anonymous); any failure leaves
 # the request anonymous and the credential itself is never logged.
-_update_github_auth = None            # process-wide: GitHubAuth caches its resolved credential
+_update_github_auth = None            # resolver memo: rebuilt whenever the credential scope changes
+_update_github_auth_key = None         # the scope key the memo above was built for
 _update_github_401_warned = False     # one 401 log line per process, never naming the token
 
 
+def _github_credential_key() -> tuple:
+    """Identity of the credentials the *current* secret scope resolves to.
+
+    ``agent.secret_scope`` holds the active scope in a ContextVar that the multiplexed gateway
+    rebinds per routed profile, and ``GitHubAuth`` memoises whichever token it resolves first.
+    Keying our own memo on this identity means a profile switch — or a rotated ``GITHUB_TOKEN`` —
+    builds a fresh resolver instead of reusing the previous profile's credential. Anything that
+    cannot be read degrades to ``None``, which just means resolution happens anonymously.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, get_secret
+    except Exception:
+        return (None, None, None)
+    scope: Any = None
+    pat: Any = None
+    gh_token: Any = None
+    try:
+        scope = current_secret_scope()
+    except Exception:
+        pass
+    try:
+        pat = get_secret("GITHUB_TOKEN")
+        gh_token = get_secret("GH_TOKEN")
+    except Exception:
+        pass
+    return (scope, pat, gh_token)
+
+
 def _github_auth() -> Any:
-    """The process-wide ``GitHubAuth``, or None when it cannot be constructed."""
-    global _update_github_auth
-    if _update_github_auth is None:
-        try:
-            from tools.skills_hub_github import GitHubAuth
-            _update_github_auth = GitHubAuth()
-        except Exception as exc:      # environmental (missing module/import cycle) -> stay anonymous
-            logger.debug("Update check credential resolution unavailable: %s", exc)
-            return None
+    """``GitHubAuth`` for the current credential scope, or None when it cannot be constructed."""
+    global _update_github_auth, _update_github_auth_key
+    key = _github_credential_key()
+    if _update_github_auth is not None and _update_github_auth_key == key:
+        return _update_github_auth
+    try:
+        from tools.skills_hub_github import GitHubAuth
+        _update_github_auth = GitHubAuth()
+    except Exception as exc:      # environmental (missing module/import cycle) -> stay anonymous
+        logger.debug("Update check credential resolution unavailable: %s", exc)
+        _update_github_auth = None
+        return None
+    _update_github_auth_key = key
     return _update_github_auth
 
 

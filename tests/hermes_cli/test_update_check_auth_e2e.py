@@ -136,27 +136,42 @@ def test_profile_secret_scope_is_honoured_and_restored(temp_home):
     """The check reads credentials through the profile scope, not the ambient env.
 
     Two homes in sequence (A -> B -> A): each scope's token must appear on the header while it
-    is installed, and A must be back once B is popped — the property multiplexed gateways rely on.
+    is installed, and A must be back once B is popped — the property multiplexed gateways rely
+    on. Nothing here resets ``banner``'s memo by hand: a scope change alone must swap the
+    credential, or one routed profile could send the previous profile's token.
     """
     _write_env(temp_home, GITHUB_TOKEN="ghp_ambient_env")
     load_hermes_dotenv(hermes_home=temp_home, load_external_secrets=False)
 
     token_a = set_secret_scope({"GITHUB_TOKEN": "ghp_profile_a"})
     try:
-        banner._update_github_auth = None  # fresh resolution under scope A
         assert "ghp_profile_a" in _authorization({"headers": banner._github_api_headers(ACCEPT_SHA)})
+        resolver_a = banner._github_auth()
+        assert banner._github_auth() is resolver_a, "an unchanged scope must not re-resolve"
 
         token_b = set_secret_scope({"GITHUB_TOKEN": "ghp_profile_b"})
         try:
-            banner._update_github_auth = None  # fresh resolution under scope B
             assert "ghp_profile_b" in _authorization({"headers": banner._github_api_headers(ACCEPT_SHA)})
+            assert banner._github_auth() is not resolver_a, "scope B must get its own resolver"
         finally:
             reset_secret_scope(token_b)
 
-        banner._update_github_auth = None  # back under scope A
         assert "ghp_profile_a" in _authorization({"headers": banner._github_api_headers(ACCEPT_SHA)})
+        assert banner._github_auth() is not resolver_a, "returning to A must not reuse B's resolver"
     finally:
         reset_secret_scope(token_a)
+
+
+def test_rotated_token_rebuilds_the_resolver(temp_home):
+    """A ``GITHUB_TOKEN`` rotated in place (same scope object) must be picked up, not memoised."""
+    secrets = {"GITHUB_TOKEN": "ghp_first"}
+    token = set_secret_scope(secrets)
+    try:
+        assert "ghp_first" in _authorization({"headers": banner._github_api_headers(ACCEPT_SHA)})
+        secrets["GITHUB_TOKEN"] = "ghp_second"
+        assert "ghp_second" in _authorization({"headers": banner._github_api_headers(ACCEPT_SHA)})
+    finally:
+        reset_secret_scope(token)
 
 
 # --- the other rungs of the ladder ----------------------------------------------------------------

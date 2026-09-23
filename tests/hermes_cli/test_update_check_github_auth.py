@@ -185,8 +185,8 @@ def test_anonymous_source_produces_a_single_request(reset_auth_cache, monkeypatc
     assert "Authorization" not in calls[0].headers
 
 
-def test_credential_resolution_is_cached_per_process(reset_auth_cache, monkeypatch):
-    """``GitHubAuth`` is constructed once per process: the resolution is cached."""
+def test_credential_resolution_is_cached_while_the_scope_is_unchanged(reset_auth_cache, monkeypatch):
+    """``GitHubAuth`` is constructed once per credential scope: an unchanged scope reuses it."""
     constructions = []
 
     class _Counting:
@@ -200,8 +200,37 @@ def test_credential_resolution_is_cached_per_process(reset_auth_cache, monkeypat
             return {"Authorization": "token FAKE"}
 
     monkeypatch.setattr("tools.skills_hub_github.GitHubAuth", _Counting)
+    monkeypatch.setattr(banner, "_github_credential_key", lambda: ("scope-a", "ghp_a", None))
     banner._update_github_auth = None
 
     assert banner._github_auth() is not None
     assert banner._github_auth() is not None
     assert len(constructions) == 1
+
+
+def test_changed_credential_scope_rebuilds_the_resolver(reset_auth_cache, monkeypatch):
+    """A profile switch (or a rotated PAT) must not keep serving the earlier credential."""
+    constructions = []
+    state = {"token": "ghp_scope_a"}
+
+    class _Recording:
+        def __init__(self):
+            constructions.append(self)
+
+        def auth_method(self):
+            return "pat"
+
+        def get_headers(self):
+            return {"Authorization": f"token {state['token']}"}
+
+    monkeypatch.setattr("tools.skills_hub_github.GitHubAuth", _Recording)
+    monkeypatch.setattr(banner, "_github_credential_key", lambda: ("scope", state["token"], None))
+    banner._update_github_auth = None
+
+    accept = "application/vnd.github.sha"
+    assert "ghp_scope_a" in banner._github_api_headers(accept)["Authorization"]
+    assert len(constructions) == 1
+
+    state["token"] = "ghp_scope_b"
+    assert "ghp_scope_b" in banner._github_api_headers(accept)["Authorization"]
+    assert len(constructions) == 2, "the changed scope must build a fresh resolver"

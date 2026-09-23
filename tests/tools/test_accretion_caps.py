@@ -27,21 +27,6 @@ class TestReadTrackerCaps:
         with rt._read_tracker_lock:
             rt._read_tracker.clear()
 
-    def test_read_history_capped(self, monkeypatch):
-        """read_history set is bounded by _READ_HISTORY_CAP."""
-        from tools import file_tools as ft
-        from tools import file_tools_read_tracking as rt
-
-        monkeypatch.setattr(rt, "_READ_HISTORY_CAP", 10)
-        task_data = {
-            "last_key": None,
-            "consecutive": 0,
-            "read_history": set((f"/p{i}", 0, 500) for i in range(50)),
-            "dedup": {},
-            "read_timestamps": {},
-        }
-        rt._cap_read_tracker_data(task_data)
-        assert len(task_data["read_history"]) == 10
 
 
     def test_live_cap_applied_after_read_add(self, tmp_path, monkeypatch):

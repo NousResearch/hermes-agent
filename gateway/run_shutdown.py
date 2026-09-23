@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager, nullcontext, suppress
+from contextvars import Context
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -1635,7 +1636,9 @@ class GatewayShutdownMixin:
         # self._restart_task: a bare asyncio.create_task() keeps only a weak reference, so the event loop
         # may garbage-collect a still-pending task mid-flight. The cancel loop in _stop_impl explicitly
         # skips _restart_task for the same reason it skips _stop_task.
-        self._restart_task = asyncio.create_task(_run_restart())
+        # Empty Context: /restart is handled inside the requester's profile scope, and a copied context
+        # would run the HOST restart as that profile (watcher HERMES_HOME, stop()'s flushes).
+        self._restart_task = Context().run(lambda: asyncio.create_task(_run_restart()))
         return True
 
     def _start_systemd_watchdog(self) -> bool:

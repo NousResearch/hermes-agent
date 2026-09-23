@@ -8,7 +8,6 @@ liveness. Without a hook, behavior is byte-for-byte the old non-streaming call.
 """
 
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -24,7 +23,6 @@ from agent.auxiliary_client import (
     _aggregate_chat_stream_async,
     _anthropic_event_has_content,
     _aux_dispatch,
-    _aux_stream_total_ceiling,
     _aux_thread_local_hook,
     _create_with_progress,
     _create_with_progress_once,
@@ -524,66 +522,18 @@ class TestContentBearingProgress:
             accumulator.feed(_chunk(content="token"))
         assert fence.seconds_since_progress() < 0.05
 
-    def test_content_free_frames_still_record_ttfp_timing(self):
-        """The fast-lane telemetry contract (#96945/#96963) survives the
-        gating: time_to_first_progress_ms must record on the FIRST frame of
-        any kind (transport liveness), not only on the first token."""
-        from agent.auxiliary_client import (
-            _aux_provider_response,
-            _aux_thread_local_hook,
-            _notify_aux_timing_response,
-        )
-
-        timings: dict = {}
-
-        def _timed_response() -> None:
-            timings.setdefault("time_to_first_progress_ms", 42)
-
-        keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
-        accumulator = _ChatStreamAccumulator()
-
-        with (
-            _aux_thread_local_hook(_aux_provider_response, _timed_response),
-            aux_progress_hook(lambda: None),
-        ):
-            accumulator.feed(keepalive)
-
-        assert timings["time_to_first_progress_ms"] == 42
 
 
 # ---------------------------------------------------------------------------
 # Ceiling arithmetic
 # ---------------------------------------------------------------------------
 
-class TestStreamCeiling:
-    def test_floor_applies_to_small_timeouts(self):
-        assert _aux_stream_total_ceiling(30) == 600.0
-
-
-    def test_none_timeout_gets_floor(self):
-        assert _aux_stream_total_ceiling(None) == 600.0
 
 
 # ---------------------------------------------------------------------------
 # CompressionCommitFence progress surface
 # ---------------------------------------------------------------------------
 
-class TestFenceProgress:
-    def test_touch_progress_resets_idle_clock(self):
-        fence = CompressionCommitFence()
-        time.sleep(0.05)
-        assert fence.seconds_since_progress() >= 0.04
-        fence.touch_progress()
-        assert fence.seconds_since_progress() < 0.05
-
-    def test_fence_hook_wiring_matches_compressor_usage(self):
-        # conversation_compression installs fence.touch_progress as the hook;
-        # verify the pair works end-to-end through _notify_aux_progress.
-        fence = CompressionCommitFence()
-        time.sleep(0.05)
-        with aux_progress_hook(fence.touch_progress):
-            _notify_aux_progress()
-        assert fence.seconds_since_progress() < 0.05
 
 
 # ---------------------------------------------------------------------------

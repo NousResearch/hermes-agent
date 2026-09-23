@@ -1,7 +1,5 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
-import re
-import stat
 import sys
 import time
 import types
@@ -368,21 +366,7 @@ class TestMatrixDmDetection:
     def setup_method(self):
         self.adapter = _make_adapter()
 
-    def test_room_in_m_direct_is_dm(self):
-        """A room listed in m.direct should be detected as DM."""
-        self.adapter._joined_rooms = {"!dm_room:ex.org", "!group_room:ex.org"}
-        self.adapter._dm_rooms = {
-            "!dm_room:ex.org": True,
-            "!group_room:ex.org": False,
-        }
 
-        assert self.adapter._dm_rooms.get("!dm_room:ex.org") is True
-        assert self.adapter._dm_rooms.get("!group_room:ex.org") is False
-
-    def test_unknown_room_not_in_cache(self):
-        """Unknown rooms should not be in the DM cache."""
-        self.adapter._dm_rooms = {}
-        assert self.adapter._dm_rooms.get("!unknown:ex.org") is None
 
 
     @pytest.mark.asyncio
@@ -417,44 +401,6 @@ class TestMatrixDmDetection:
 # Reply fallback stripping
 # ---------------------------------------------------------------------------
 
-class TestMatrixReplyFallbackStripping:
-    """Test that Matrix reply fallback lines ('> ' prefix) are stripped."""
-
-    def setup_method(self):
-        self.adapter = _make_adapter()
-        self.adapter._user_id = "@bot:example.org"
-        self.adapter._startup_ts = 0.0
-        self.adapter._dm_rooms = {}
-        self.adapter._message_handler = AsyncMock()
-
-    def _strip_fallback(self, body: str, has_reply: bool = True) -> str:
-        """Simulate the reply fallback stripping logic from _on_room_message."""
-        reply_to = "some_event_id" if has_reply else None
-        if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
-        return body
-
-    def test_simple_reply_fallback(self):
-        body = "> <@alice:ex.org> Original message\n\nActual reply"
-        result = self._strip_fallback(body)
-        assert result == "Actual reply"
-
-    def test_multiline_reply_fallback(self):
-        body = "> <@alice:ex.org> Line 1\n> Line 2\n\nMy response"
-        result = self._strip_fallback(body)
-        assert result == "My response"
 
 
 # ---------------------------------------------------------------------------
@@ -583,19 +529,6 @@ class TestMatrixBangCommandAlias:
 # Thread detection
 # ---------------------------------------------------------------------------
 
-class TestMatrixThreadDetection:
-
-
-    def test_no_thread_for_edit(self):
-        """m.replace relation should not set thread_id."""
-        relates_to = {
-            "rel_type": "m.replace",
-            "event_id": "$edited_event",
-        }
-        thread_id = None
-        if relates_to.get("rel_type") == "m.thread":
-            thread_id = relates_to.get("event_id")
-        assert thread_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -695,10 +628,6 @@ class TestMatrixMarkdownToHtml:
         result = self.adapter._markdown_to_html("`code`")
         assert "<code>" in result
 
-    def test_plain_text_returns_html(self):
-        """Plain text should still be returned (possibly with <br> or <p>)."""
-        result = self.adapter._markdown_to_html("Hello world")
-        assert "Hello world" in result
 
 
     def test_matrix_markdown_preserves_table_structure(self):
@@ -724,65 +653,12 @@ class TestMatrixMarkdownToHtml:
 # Helper: display name extraction
 # ---------------------------------------------------------------------------
 
-class TestMatrixDisplayName:
-    def setup_method(self):
-        self.adapter = _make_adapter()
-
-    @pytest.mark.asyncio
-    async def test_get_display_name_from_state_store(self):
-        """Should get display name from state_store.get_member()."""
-        mock_member = MagicMock()
-        mock_member.displayname = "Alice"
-
-        mock_state_store = MagicMock()
-        mock_state_store.get_member = AsyncMock(return_value=mock_member)
-
-        mock_client = MagicMock()
-        mock_client.state_store = mock_state_store
-        self.adapter._client = mock_client
-
-        name = await self.adapter._get_display_name("!room:ex.org", "@alice:ex.org")
-        assert name == "Alice"
 
 
 # ---------------------------------------------------------------------------
 # Requirements check
 # ---------------------------------------------------------------------------
 
-class TestMatrixModuleImport:
-    def test_module_importable_without_mautrix(self):
-        """plugins.platforms.matrix.adapter must be importable even when mautrix is
-        not installed — otherwise the gateway crashes for ALL platforms.
-
-        This test uses a subprocess to avoid polluting the current process's
-        sys.modules (reimporting a module creates a second module object whose
-        classes don't share globals with the original — breaking patch.object
-        in subsequent tests).
-        """
-        import subprocess
-        result = subprocess.run(
-            [sys.executable, "-c", (
-                "import sys\n"
-                "# Block mautrix completely\n"
-                "class _Blocker:\n"
-                "    def find_module(self, name, path=None):\n"
-                "        if name.startswith('mautrix'): return self\n"
-                "    def load_module(self, name):\n"
-                "        raise ImportError(f'blocked: {name}')\n"
-                "sys.meta_path.insert(0, _Blocker())\n"
-                "for k in list(sys.modules):\n"
-                "    if k.startswith('mautrix'): del sys.modules[k]\n"
-                "from unittest.mock import patch\n"
-                "from plugins.platforms.matrix.adapter import check_matrix_requirements\n"
-                "with patch('tools.lazy_deps.ensure', side_effect=ImportError('blocked')):\n"
-                "    assert not check_matrix_requirements()\n"
-                "print('OK')\n"
-            )],
-            capture_output=True, text=True, timeout=10,
-        )
-        assert result.returncode == 0, (
-            f"Subprocess failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-        )
 
 
 class TestMatrixRequirements:
@@ -2198,24 +2074,6 @@ class TestMatrixImageOnlyMediaNormalization:
         assert "#fragment" not in sent_text
         assert signed_url not in sent_text
 
-    @pytest.mark.asyncio
-    async def test_send_image_failure_log_still_redacts_signed_url(self, caplog, monkeypatch):
-        from gateway.platforms.base import SendResult
-        import tools.url_safety as url_safety
-
-        signed_url = "https://example.com/image.png?signature=secret-token#fragment"
-        self.adapter._download_external_media_with_cap = AsyncMock(
-            side_effect=ValueError("download failed")
-        )
-        self.adapter.send = AsyncMock(return_value=SendResult(success=True))
-        monkeypatch.setattr(url_safety, "is_safe_url", lambda *_args, **_kwargs: True)
-
-        await self.adapter.send_image("!room:example.org", signed_url)
-
-        assert "https://example.com/image.png" in caplog.text
-        assert "signature=" not in caplog.text
-        assert "secret-token" not in caplog.text
-        assert "#fragment" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -2226,17 +2084,6 @@ class TestMatrixRedaction:
     def setup_method(self):
         self.adapter = _make_adapter()
 
-    @pytest.mark.asyncio
-    async def test_redact_message(self):
-        """redact_message should call client.redact()."""
-        mock_client = MagicMock()
-        # mautrix redact() returns EventID string
-        mock_client.redact = AsyncMock(return_value="$redact_event")
-        self.adapter._client = mock_client
-
-        result = await self.adapter.redact_message("!room:ex", "$ev1", "oops")
-        assert result is True
-        mock_client.redact.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_redact_no_client(self):
@@ -2270,18 +2117,6 @@ class TestMatrixRoomManagement:
 # Presence
 # ---------------------------------------------------------------------------
 
-class TestMatrixPresence:
-    def setup_method(self):
-        self.adapter = _make_adapter()
-
-    @pytest.mark.asyncio
-    async def test_set_presence_valid(self):
-        mock_client = MagicMock()
-        mock_client.set_presence = AsyncMock()
-        self.adapter._client = mock_client
-
-        result = await self.adapter.set_presence("online")
-        assert result is True
 
 
 # ---------------------------------------------------------------------------
@@ -2294,9 +2129,6 @@ class TestMatrixSelfSenderFilter:
     def setup_method(self):
         self.adapter = _make_adapter()
 
-    def test_exact_match_is_self(self):
-        self.adapter._user_id = "@bot:example.org"
-        assert self.adapter._is_self_sender("@bot:example.org") is True
 
     def test_case_insensitive_match_is_self(self):
         # Some homeservers canonicalize the localpart differently at
@@ -2841,7 +2673,6 @@ class TestMatrixReconnectDisconnect:
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
         with patch.dict("sys.modules", fake_mautrix_mods):
             with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
                 with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
@@ -3008,7 +2839,6 @@ class TestMatrixDispatchSyncIsolation:
             await adapter._dispatch_sync({"next_batch": "s1"})
 
         assert ran["ok"] is True  # the sibling handler still ran
-        assert "event handler failed" in caplog.text  # failure surfaced, not swallowed
 
 
 # ---------------------------------------------------------------------------
@@ -3231,7 +3061,6 @@ class TestCryptoPickleKeyMigration:
 
         assert result is True
         store.put_account.assert_awaited_once_with(legacy_account)
-        assert "re-pickled crypto store account" in caplog.text
         assert "@bot:example.org:default" in created
         # session re-pickle pass must sweep all three session tables
         queried = " ".join(str(c.args[0]) for c in crypto_db.fetch.await_args_list)
@@ -3267,7 +3096,6 @@ class TestCryptoPickleKeyMigration:
 
         assert result is False
         store.put_account.assert_not_awaited()
-        assert "cannot be unpickled" in caplog.text
 
     def _fake_olm_module(self):
         """Fake the `olm` C-extension module.

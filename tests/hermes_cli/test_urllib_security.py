@@ -16,7 +16,6 @@ import pytest
 from hermes_cli.urllib_security import (
     SafeCredentialRedirectHandler,
     open_credentialed_url,
-    url_origin,
 )
 
 
@@ -443,6 +442,7 @@ def test_resolved_https_context_prefers_configured_ca_bundle(monkeypatch, tmp_pa
     assert seen == [str(ca_bundle)]
 
 
+@pytest.mark.macos_only
 def test_resolved_https_context_uses_certifi_on_macos(monkeypatch):
     import certifi
     import hermes_cli.urllib_security as urllib_security
@@ -455,7 +455,6 @@ def test_resolved_https_context_uses_certifi_on_macos(monkeypatch):
         seen.append(cafile)
         return expected_context
 
-    monkeypatch.setattr(urllib_security.sys, "platform", "darwin")
     monkeypatch.setattr(certifi, "where", lambda: "/certifi/cacert.pem")
     monkeypatch.setattr(ssl, "create_default_context", create_default_context)
 
@@ -463,6 +462,7 @@ def test_resolved_https_context_uses_certifi_on_macos(monkeypatch):
     assert seen == ["/certifi/cacert.pem"]
 
 
+@pytest.mark.macos_only
 def test_invalid_ca_bundle_falls_back_to_certifi_on_macos(monkeypatch, tmp_path):
     import certifi
     import hermes_cli.urllib_security as urllib_security
@@ -477,7 +477,6 @@ def test_invalid_ca_bundle_falls_back_to_certifi_on_macos(monkeypatch, tmp_path)
         return expected_context
 
     monkeypatch.setenv("HERMES_CA_BUNDLE", str(missing_bundle))
-    monkeypatch.setattr(urllib_security.sys, "platform", "darwin")
     monkeypatch.setattr(certifi, "where", lambda: "/certifi/cacert.pem")
     monkeypatch.setattr(ssl, "create_default_context", create_default_context)
 
@@ -485,11 +484,11 @@ def test_invalid_ca_bundle_falls_back_to_certifi_on_macos(monkeypatch, tmp_path)
     assert seen == ["/certifi/cacert.pem"]
 
 
+@pytest.mark.linux_only
 def test_resolved_https_context_keeps_stdlib_default_off_macos(monkeypatch):
     import hermes_cli.urllib_security as urllib_security
 
     _clear_ca_bundle_env(monkeypatch)
-    monkeypatch.setattr(urllib_security.sys, "platform", "linux")
 
     assert urllib_security._resolved_https_context() is None
 

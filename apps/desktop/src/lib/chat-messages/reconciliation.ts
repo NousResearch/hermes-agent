@@ -177,6 +177,12 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
   })
 }
 
+interface PreservedRun {
+  after?: string
+  before?: string
+  rows: ChatMessage[]
+}
+
 export function preserveLocalAssistantErrors(
   nextMessages: ChatMessage[],
   currentMessages: ChatMessage[]
@@ -256,11 +262,51 @@ export function preserveLocalAssistantErrors(
     return mergedNextMessages
   }
 
-  const preserved = currentMessages
-    .filter(message => preserveIds.has(message.id))
-    .map(message => ({ ...message, pending: false }))
+  // Put each run of kept rows back after the refreshed row that preceded it
+  // locally instead of below newer turns. When the refresh already fills that
+  // gap with the same role/text sequence, the turn was stored under new ids.
+  // A run with no refreshed successor stays trailing. #118002
+  const label = (message: ChatMessage) => `${message.role}:${normalize(chatMessageText(message))}`
+  const runs: PreservedRun[] = []
+  let anchor: string | undefined
 
-  return [...mergedNextMessages, ...preserved]
+  for (const message of currentMessages) {
+    const open = runs.at(-1)?.after === anchor ? runs.at(-1) : undefined
+
+    if (existingIds.has(message.id)) {
+      if (open) {
+        open.before = message.id
+      }
+
+      anchor = message.id
+    } else if (preserveIds.has(message.id)) {
+      const kept = { ...message, pending: false }
+
+      if (open) {
+        open.rows.push(kept)
+      } else {
+        runs.push({ after: anchor, rows: [kept] })
+      }
+    }
+  }
+
+  const indexOf = (id?: string) => mergedNextMessages.findIndex(message => message.id === id)
+  const keptAfter = new Map<string | undefined, ChatMessage[]>()
+
+  for (const { after, before, rows } of runs) {
+    const gap = before === undefined ? [] : mergedNextMessages.slice(indexOf(after) + 1, indexOf(before))
+
+    if (gap.length && gap.map(label).join('\n') === rows.map(label).join('\n')) {
+      continue
+    }
+
+    keptAfter.set(after, [...(keptAfter.get(after) ?? []), ...rows])
+  }
+
+  return [
+    ...mergedNextMessages.flatMap(message => [message, ...(keptAfter.get(message.id) ?? [])]),
+    ...(keptAfter.get(undefined) ?? [])
+  ]
 }
 
 export function branchGroupForUser(userMessage: ChatMessage): string {

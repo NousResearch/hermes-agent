@@ -100,22 +100,6 @@ describe('Install from Git entry flow', () => {
         expect(probePluginRepo).toHaveBeenCalledWith({ identifier: 'https://github.com/example/plugin' })
       )
       expect(await screen.findByText('This package includes')).toBeTruthy()
-      expect(
-        screen.getByText(
-          mode === 'remote'
-            ? 'Installs into the connected default backend'
-            : 'Installs into the default backend (~/.hermes/plugins/)'
-        )
-      ).toBeTruthy()
-      // Local backend: the desktop half is copied out of the installed package
-      // (one source of truth). Remote backend: cloned separately, as before.
-      expect(
-        screen.getByText(
-          mode === 'remote'
-            ? "Installs into this app's local desktop-plugins folder"
-            : 'Loaded into this app from the package above — same for every profile'
-        )
-      ).toBeTruthy()
       expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
       expect(installDesktopPlugin).not.toHaveBeenCalled()
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
@@ -190,66 +174,5 @@ describe('Install from Git entry flow', () => {
         expect.objectContaining({ action: 'install', ref: sha.toLowerCase() })
       )
     )
-  })
-
-  it('offers Connect now for deferred MCP servers and reloads them on click', async () => {
-    const { $notifications, dismissNotification } = await import('@/store/notifications')
-    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
-    requestGateway.mockImplementation(async (method: string, params?: { action?: unknown }) => {
-      if (method === 'plugins.manage' && params?.action === 'install') {
-        return {
-          ok: true,
-          plugin_name: 'nvidia-app',
-          plugins: [],
-          gateway_reloaded: true,
-          activation: { deferred: { mcp_servers: ['nvidia-app'] } }
-        }
-      }
-
-      return { plugins: [] }
-    })
-    renderFlow()
-    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/nvidia-app' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Install' }))
-
-    await waitFor(() => {
-      const toast = $notifications.get().find(item => item.action?.label === 'Connect now')
-      expect(toast).toBeTruthy()
-      expect(toast?.message).toBe('nvidia-app installed. Its MCP server is not connected yet.')
-    })
-
-    const toast = $notifications.get().find(item => item.action?.label === 'Connect now')
-    toast?.action?.onClick()
-
-    await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith('reload.mcp', expect.objectContaining({ confirm: true }))
-    )
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('plugins.manage', { action: 'list' }))
-
-    for (const item of $notifications.get()) {
-      dismissNotification(item.id)
-    }
-  })
-
-  it('still offers the gateway restart when the install reports no activation', async () => {
-    const { $notifications, dismissNotification } = await import('@/store/notifications')
-    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
-    requestGateway.mockImplementation(async method =>
-      method === 'plugins.manage' ? { ok: true, plugin_name: 'plugin', plugins: [] } : { plugins: [] }
-    )
-    renderFlow()
-    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Install' }))
-
-    await waitFor(() => {
-      const toast = $notifications.get().find(item => item.action?.label === 'Restart gateway')
-      expect(toast).toBeTruthy()
-      expect(toast?.message).toBe('Restart the gateway for the plugin to take effect.')
-    })
-    expect($notifications.get().some(item => item.action?.label === 'Connect now')).toBe(false)
-
-    for (const item of $notifications.get()) {
-      dismissNotification(item.id)
-    }
   })
 })

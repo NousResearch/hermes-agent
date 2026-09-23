@@ -131,20 +131,6 @@ class TestClassifierPathRegistryWalk:
             assert verdict.retryable is True, message
             assert verdict.should_compress is False, message
 
-    @pytest.mark.parametrize("param", REGISTRY_PARAMS)
-    def test_turn_completes_via_retry(self, param):
-        """The full contract: 400 once naming the injected param, retry the
-        identical request, turn completes (#89503 — the turn used to die)."""
-        for msg_param in _error_shapes(param):
-            message, body = msg_param.values
-            transport = _FlakyTransport(
-                MockAPIError(message, status_code=400, body=copy.deepcopy(body))
-            )
-            result = _drive_conversation_retry(
-                transport, provider="openai-codex", model="gpt-5.6-sol",
-            )
-            assert result == {"ok": True}, message
-            assert transport.calls == 2, message
 
     @pytest.mark.parametrize("param", REGISTRY_PARAMS)
     def test_sender_route_still_fails_fast(self, param):

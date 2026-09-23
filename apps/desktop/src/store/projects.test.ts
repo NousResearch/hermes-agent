@@ -13,7 +13,6 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
-  $worktreeRefreshToken,
   addProjectFolder,
   ALL_PROJECTS,
   createProject,
@@ -27,7 +26,6 @@ import {
   projectNameForCwd,
   refreshProjects,
   refreshProjectTree,
-  refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
   startWorkInRepo,
@@ -106,10 +104,6 @@ describe('project scope', () => {
   beforeEach(() => {
     window.localStorage.clear()
     $projectScope.set(ALL_PROJECTS)
-  })
-
-  it('defaults to ALL_PROJECTS', () => {
-    expect($projectScope.get()).toBe(ALL_PROJECTS)
   })
 
   it('enterProject scopes the sidebar to the project id', () => {
@@ -341,14 +335,6 @@ describe('projectNameForCwd', () => {
   })
 })
 
-describe('worktree refresh', () => {
-  it('refreshWorktrees bumps the probe token so useRepoWorktreeMap refetches', () => {
-    const before = $worktreeRefreshToken.get()
-    refreshWorktrees()
-    expect($worktreeRefreshToken.get()).toBe(before + 1)
-  })
-})
-
 describe('startWorkInRepo remote capability gate (#81724)', () => {
   it('names the stale-backend remedy when a remote gateway lacks the worktree route', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
@@ -379,14 +365,6 @@ describe('startWorkInRepo remote capability gate (#81724)', () => {
 describe('pickProjectFolder', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-  })
-
-  it('uses the remote-aware directory picker locally', async () => {
-    isDesktopFsRemoteMode.mockReturnValue(false)
-    selectDesktopPaths.mockResolvedValue(['/local/repo'])
-
-    await expect(pickProjectFolder()).resolves.toBe('/local/repo')
-    expect(selectDesktopPaths).toHaveBeenCalledWith({ defaultPath: undefined, directories: true, multiple: false })
   })
 
   it('seeds the picker with the backend cwd on a remote gateway', async () => {

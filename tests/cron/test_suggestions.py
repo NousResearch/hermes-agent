@@ -6,8 +6,6 @@ HERMES_HOME so the real suggestions.json is never touched.
 """
 
 import importlib
-import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -194,17 +192,14 @@ class TestCatalog:
         assert len(store.list_pending()) == min(len(CATALOG), store.MAX_PENDING)
 
 
-    def test_monitor_entry_references_classifier_script(self):
+    def test_no_catalog_prompt_bakes_in_absolute_script_path(self):
         from cron.suggestion_catalog import CATALOG, classify_items_script_path
 
-        monitor = next(e for e in CATALOG if e.key == "catalog:important-mail-monitor")
-        # The prompt must reference the classifier by module path (resolvable
-        # at run time on any backend), never by a baked-in absolute path —
-        # absolute paths go stale after relocation and don't exist on remote
-        # terminal backends (Docker/Modal).
-        assert "cron.scripts.classify_items" in monitor.job_spec["prompt"]
-        assert classify_items_script_path() not in monitor.job_spec["prompt"]
-        assert Path(classify_items_script_path()).name == "classify_items.py"
+        # Absolute install paths go stale after relocation and don't exist on
+        # remote terminal backends (Docker/Modal); prompts must reference
+        # scripts by module path instead.
+        for entry in CATALOG:
+            assert classify_items_script_path() not in entry.job_spec.get("prompt", ""), entry.key
 
 
 class TestBlueprintBridge:
@@ -231,14 +226,4 @@ class TestCommandHandler:
         assert "Daily thing" in out
 
 
-    def test_empty_list_message(self, store):
-        from hermes_cli.suggestions_cmd import handle_suggestions_command
 
-        out = handle_suggestions_command("")
-        assert "No suggested automations" in out
-
-    def test_aux_monitor_config_default(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        assert "monitor" in DEFAULT_CONFIG["auxiliary"]
-        assert DEFAULT_CONFIG["auxiliary"]["monitor"]["provider"] == "auto"

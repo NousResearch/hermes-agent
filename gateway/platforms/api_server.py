@@ -122,6 +122,7 @@ from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -1192,7 +1193,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
-        self._response_store = ResponseStore()
+        from hermes_constants import get_hermes_home
+        self._response_store = ResponseStore()  # this home's; a /p/<profile>/ route gets its own
+        self._response_store_home = str(get_hermes_home())
+        self._response_stores: Dict[str, ResponseStore] = {}
+        self._response_store_lock = threading.Lock()
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
@@ -1214,6 +1219,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Every agent inside _run_agent() for shutdown interrupt, keyed by id() (the strong ref
         # keeps the id() from recycling); distinct from the run_id-keyed _active_run_agents.
         self._shutdown_interruptible_agents: Dict[int, Any] = {}
+        # One memory provider per session across requests (this surface rebuilds the agent per turn).
+        self._memory_sessions = ApiServerMemorySessions()
         self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
@@ -1701,6 +1708,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if len(raw) > self._MAX_SESSION_HEADER_LEN:
             return None, _invalid_request("Session key too long")
         return raw, None
+
+    # -- Responses state ----------------------------------------------------------------
+
+    def _current_response_store(self) -> "ResponseStore":
+        """Responses state of the routed profile's home. Conversation names are client-chosen, so one
+        shared store let any profile's key read, chain onto and overwrite another's (#84253)."""
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+        if str(home) == self._response_store_home:
+            return self._response_store
+        with self._response_store_lock:
+            store = self._response_stores.get(str(home))
+            if store is None:
+                store = self._response_stores[str(home)] = ResponseStore(db_path=str(home / "response_store.db"))
+            return store
 
     # -- Session DB -------------------------------------------------------------------
 
@@ -2236,7 +2258,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
-            "gateway_session_key": gateway_session_key}
+            "gateway_session_key": gateway_session_key,
+            # The session's provider from the previous request, so its queued recall reaches this turn
+            # (#120116); checked back in by the turn's finally.
+            "memory_manager": self._memory_sessions.checkout(session_id)}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
@@ -4034,6 +4059,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     if agent is not None:
                         _clear_turn_process_ownership(agent)
                         self._shutdown_interruptible_agents.pop(id(agent), None)
+                        self._memory_sessions.checkin(agent)
                         # Bind the declared key to the row the turn actually ended on
                         # (agent.session_id carries a mid-turn rotation). Opt-in per route.
                         # Record the declared conversation on the row the turn actually ended on —
@@ -4282,12 +4308,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         files, #37011).
         """
         self._mark_disconnected()
-        if self._response_store is not None:
+        # getattr: disconnect() tolerates bare __new__ fixtures (pinned in test_api_server_run_idempotency).
+        routed = getattr(self, "_response_stores", {})
+        stores = [s for s in (getattr(self, "_response_store", None), *list(routed.values())) if s is not None]
+        routed.clear()
+        for store in stores:
             try:
-                self._response_store.close()
+                store.close()
             except Exception:
                 logger.debug("Failed to close response store for %s", self.name, exc_info=True)
         _api_runs._close_run_state(self)
+        with suppress(Exception):
+            await asyncio.to_thread(self._memory_sessions.close_all)
         try:
             if self._site:
                 await self._site.stop()

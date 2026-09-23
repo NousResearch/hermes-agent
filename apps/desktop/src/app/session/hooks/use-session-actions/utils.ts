@@ -731,6 +731,17 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
+    // Same for a reply whose completion receipt proved persistence: compaction
+    // can re-insert it under a newer id, so absence here is not loss. #117867
+    if (
+      isPendingAssistant &&
+      message.durableComplete === true &&
+      message.rowId !== undefined &&
+      message.rowId <= lastStoredRowId
+    ) {
+      continue
+    }
+
     if (
       isOptimisticUser &&
       latestAuthoritativeUser &&

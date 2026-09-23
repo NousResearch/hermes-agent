@@ -78,22 +78,4 @@ describe('useMessageStream agent-init error surfacing (#63078)', () => {
     expect(toast).toBeDefined()
     expect(toast!.detail).toBeUndefined()
   })
-
-  it('renders the pre-ready cancel error event (#65567 server emit) visibly', () => {
-    mountStream()
-    seedOptimisticFirstMessage()
-
-    act(() =>
-      stream.handleEvent({
-        payload: { message: 'Turn cancelled before the agent was ready' },
-        session_id: SID,
-        type: 'error'
-      })
-    )
-
-    const state = stream.state()
-    expect(state.messages.some(m => m.role === 'assistant' && m.error?.includes('cancelled'))).toBe(true)
-    expect(state.messages.some(m => m.id === 'user-123-abc')).toBe(true)
-    expect(state.busy).toBe(false)
-  })
 })

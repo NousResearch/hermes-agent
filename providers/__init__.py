@@ -288,9 +288,9 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
         except Exception:
             return False
         try:
-            import yaml
+            from utils import fast_safe_load
 
-            data = yaml.safe_load(text)
+            data = fast_safe_load(text)
             if isinstance(data, dict):
                 return str(data.get("kind", "")).strip() == "model-provider"
         except Exception:

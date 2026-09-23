@@ -743,7 +743,16 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
 
     agent_names = {r["name"] for r in rows}
     orphan_dashboard = [_strip_dashboard_manifest(p) for p in dashboard_list if str(p["name"]) not in agent_names]
-    memory_providers = _discover_memory_provider_statuses()
+    # ``_discover_memory_provider_statuses`` reads provider credentials through ``get_secret``
+    # (mem0's ``get_config_schema``/``is_available``). Under multiplexing an unscoped read raises
+    # ``UnscopedSecretError``; ``probe_availability`` swallows it and the provider renders
+    # "unavailable" in the dashboard with no user-visible error. This hub is built for the
+    # dashboard's own (launch) profile, so bind its scope explicitly — a no-op on single-profile
+    # hosts.
+    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+
+    with launch_profile_scope_if_multiplexed():
+        memory_providers = _discover_memory_provider_statuses()
     try:
         context_engines = [{"name": n, "description": desc} for n, desc in _discover_context_engines()]
     except Exception:

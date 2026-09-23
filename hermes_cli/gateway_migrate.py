@@ -114,6 +114,9 @@ class MigrationPlan:
     interrupted: bool = False
     blockers: list[str] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
+    # Profiles that authored `gateway.standalone: true`: they keep their own gateway and are neither
+    # a blocker nor a fold target — the plan names them so the operator knows they were left alone.
+    standalone_by_config: tuple[str, ...] = ()
 
     @property
     def secondaries(self) -> list[ProfileGateway]:
@@ -140,6 +143,11 @@ class MigrationPlan:
         return [p for p in self.secondaries if p.has_gateway]
 
     @property
+    def expected_served_names(self) -> set[str]:
+        from hermes_cli.profiles import profile_is_parked
+        return {p.name for p in self.profiles if p.is_default or not profile_is_parked(p.home)}
+
+    @property
     def blocked(self) -> bool:
         return bool(self.blockers)
 
@@ -160,6 +168,7 @@ class MigrationPlan:
         return {
             "default_home": str(self.default_home),
             "profiles": [p.to_dict() for p in self.profiles],
+            "standalone_by_config": list(self.standalone_by_config),
             "multiplex_flag_on": self.multiplex_flag_on,
             "live_served": self.live_served,
             "already_multiplexed": self.already_multiplexed,
@@ -212,7 +221,7 @@ def _default_home() -> Path:
 
 def _profile_homes() -> list[tuple[str, Path]]:
     from hermes_cli.profiles import profiles_to_serve
-    return list(profiles_to_serve(multiplex=True))
+    return list(profiles_to_serve(multiplex=True, include_parked=True))
 
 
 def _live_gateway_pid(home: Path) -> Optional[int]:
@@ -557,6 +566,11 @@ def build_migration_plan() -> MigrationPlan:
         live_served=recorded_served_profiles(default_home),
         manifest=_read_manifest(default_home),
     )
+    from hermes_cli.profiles import profiles_to_serve
+    foldable = {name for name, _home in _profile_homes()}
+    plan.standalone_by_config = tuple(
+        name for name, _home in profiles_to_serve(True, include_standalone=True)
+        if name != "default" and name not in foldable)
     plan.interrupted = plan.multiplex_flag_on and _manifest_not_yet_served(plan.manifest, plan.live_served)
     if len(plan.profiles) < 2:
         plan.notices.append("Only one profile exists: nothing to multiplex.")
@@ -609,6 +623,11 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     lines = [head, f"  default home: {plan.default_home}", "", "  profile      gateway pid   service"]
     for p in plan.profiles:
         lines.append(f"  {p.name:<12} {str(p.pid or '-'):<13} {p.service_label()}")
+    if plan.standalone_by_config:
+        lines.append(f"  Standalone by config (gateway.standalone: true), left alone: "
+                     f"{', '.join(plan.standalone_by_config)}")
+        lines.append("    (temporary compatibility shim; remove the key and re-run once the gaps it "
+                     "covers for you are fixed)")
     lines.append("")
     if plan.already_multiplexed:
         lines.append("  ✓ The default gateway is already multiplexing"
@@ -636,7 +655,7 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     # which is the mechanism ``apply_migration`` picks — printing this plan's guess contradicted it.
     target = _resume_target(plan)[0] if plan.manifest is not None else plan.target_service_kind()
     lines.append(f"  - default: {'restart' if plan.default.has_gateway else 'start'} the gateway"
-                 + (f" via {target[0]}" if target else " (detached)") + f", verify it serves {len(plan.profiles)} profiles")
+                 + (f" via {target[0]}" if target else " (detached)") + f", verify it serves {len(plan.expected_served_names)} profiles")
     lines.append(f"  - record the previous state in {plan.default_home / MANIFEST_NAME} "
                  f"(used to undo a FAILED apply, and to resume this command after a crash)")
     if signalled:
@@ -741,14 +760,16 @@ def _read_manifest(default_home: Path) -> Optional[dict]:
 
 def _manifest_not_yet_served(manifest: Optional[dict], live_served: Optional[list[str]]) -> bool:
     """The postcondition ``apply_migration`` waits for, re-derived from live state: a LIVE default that
-    recorded serving every profile the manifest migrated. Anything less — no live gateway, an
+    recorded serving every unparked profile the manifest migrated. Anything less — no live gateway, an
     installed-but-dead unit (``systemd_install`` writes the unit before the start that can still fail),
     a standalone default never restarted — is a half-applied migration, not "already multiplexed".
     Profiles created after the migration are not in the manifest, so they cannot flag it as interrupted."""
     if manifest is None:
         return False
+    from hermes_cli.profiles import profile_is_parked
     recs = [r for r in (manifest.get("default"), *(_manifest_secondaries(manifest) or [])) if isinstance(r, dict)]
-    migrated = {str(r.get("profile") or "default") for r in recs} | {"default"}
+    migrated = {str(r.get("profile") or "default") for r in recs
+                if not r.get("home") or not profile_is_parked(Path(r["home"]))} | {"default"}
     return not migrated <= set(live_served or [])
 
 
@@ -950,7 +971,7 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
             print(f"  Re-run {MIGRATE_COMMAND} to resume from the manifest.")
         return False
 
-    expected = {p.name for p in plan.profiles}
+    expected = plan.expected_served_names
     served = _wait_for_served(plan.default_home, expected, served_wait)
     if served is not None and expected <= set(served):
         # Manifest present == migration UNFINISHED. That is the whole resume/half-migrated signal

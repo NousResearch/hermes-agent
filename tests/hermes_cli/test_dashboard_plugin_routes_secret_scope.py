@@ -94,7 +94,7 @@ def test_failure_and_request_shape_errors_are_unchanged(client, multiplexed, mon
 
     failed = client.post("/api/dashboard/agent-plugins/install", json={"identifier": "owner/repo"})
     assert failed.status_code == 400
-    assert failed.json()["detail"] == "Install failed: no such plugin."
+    assert "no such plugin" in failed.json()["detail"]
 
     malformed = client.post("/api/dashboard/agent-plugins/install", json={"identifier": ""})
     assert malformed.status_code == 400

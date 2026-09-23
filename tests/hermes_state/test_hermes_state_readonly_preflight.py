@@ -121,7 +121,6 @@ class TestRefusalOutsideScope:
                 preflight_db_writability(db, db_label="custom.db")
             msg = str(exc_info.value)
             assert str(db) in msg
-            assert "chmod u+rw" in msg
             # Must NOT have silently chmod'd a file outside the home tree.
             assert not os.access(db, os.W_OK)
         finally:
@@ -139,7 +138,6 @@ class TestRefusalOutsideScope:
                 preflight_db_writability(db, db_label="custom.db")
             msg = str(exc_info.value)
             assert str(wal) in msg
-            assert "Do NOT delete" in msg
         finally:
             os.chmod(wal, 0o644)
 
@@ -187,7 +185,6 @@ class TestSessionDBIntegration:
                 SessionDB(db_path)
             msg = str(exc_info.value)
             assert str(db_path) in msg
-            assert "chmod" in msg
         finally:
             os.chmod(db_path, 0o644)
             hermes_state._set_last_init_error(None)

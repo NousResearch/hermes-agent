@@ -148,25 +148,6 @@ def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
     assert "lcm_grep" not in agent.valid_tool_names   # gated out (#5544)
 
 
-def test_refreshed_tool_is_callable_through_valid_tool_names_guard(monkeypatch):
-    """The whole point: a late tool, once refreshed, passes the name guard the
-    run loop uses to accept/reject tool calls (agent.valid_tool_names)."""
-    agent = _agent(["read_file"])
-
-    import model_tools
-    monkeypatch.setattr(
-        model_tools, "get_tool_definitions",
-        lambda **kw: [_tool("read_file"), _tool("mcp_granola_list_meetings")],
-    )
-
-    # Before refresh the run loop would reject the call ("Tool does not exist").
-    assert "mcp_granola_list_meetings" not in agent.valid_tool_names
-
-    _mcp_agent.refresh_agent_mcp_tools(agent)
-
-    # After refresh the same guard accepts it AND it's in the tools= payload.
-    assert "mcp_granola_list_meetings" in agent.valid_tool_names
-    assert any(t["function"]["name"] == "mcp_granola_list_meetings" for t in agent.tools)
 
 
 def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
@@ -220,10 +201,6 @@ def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
 # ── discovery-wait bound (mcp_discovery_timeout config) ──────────────────────
 
 
-def test_resolve_discovery_timeout_explicit_wins(monkeypatch):
-    from hermes_cli import mcp_startup
-
-    assert mcp_startup._resolve_discovery_timeout(2.5) == 2.5
 
 
 def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):

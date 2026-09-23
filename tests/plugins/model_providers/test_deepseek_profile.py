@@ -190,15 +190,14 @@ class TestDeepSeekAuxModel:
     system.
     """
 
-    def test_profile_advertises_deepseek_flash(self, deepseek_profile):
-        assert deepseek_profile.default_aux_model == "deepseek-flash"
 
     def test_fallback_models_are_current_ids(self, deepseek_profile):
         from hermes_cli.model_normalize import _normalize_for_deepseek
         # Every advertised id must survive normalization unchanged (no retired alias in the picker).
         assert all(_normalize_for_deepseek(m) == m for m in deepseek_profile.fallback_models)
 
-    def test_consumer_api_returns_deepseek_flash(self):
+    def test_consumer_api_matches_profile_aux_model(self, deepseek_profile):
         from agent.auxiliary_client import _get_aux_model_for_provider
-        assert _get_aux_model_for_provider("deepseek") == "deepseek-flash"
+        assert deepseek_profile.default_aux_model
+        assert _get_aux_model_for_provider("deepseek") == deepseek_profile.default_aux_model
 

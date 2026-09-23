@@ -289,6 +289,44 @@ def _mcp_reload_confirm_required() -> bool:
         return True
 
 
+def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: str = "") -> None:
+    """Rebuild live sessions' cached tool snapshots from the registry and push session.info (agents
+    never re-read the registry). The MCP pool is process-global, so refreshing only the requester
+    would leave sibling sessions on stale tools until /new — and a request without a resolvable
+    session_id (desktop passes ``activeSessionId ?? undefined``) would refresh nothing while still
+    answering "reloaded". ``enabled_override`` re-resolves toolsets so a server enabled this session
+    (config or a just-installed plugin) is in the session's ``tool_call`` scope.
+
+    ``home``: only sessions of that profile home (a session with no ``profile_home`` belongs to the
+    launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``note``: queued
+    for each session's next turn on the one-shot turn-note channel (``agent/turn_context.py``)."""
+    from hermes_constants import hermes_home_key
+    want = hermes_home_key(home) if home is not None else None
+    with _sessions_lock:
+        live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None and (
+            want is None or hermes_home_key(sess.get("profile_home") or get_process_hermes_home()) == want)]
+    refresh = _tools_mod("tools.mcp_tool_agent").refresh_agent_mcp_tools
+    for sid, sess in live:
+        agent = sess["agent"]
+        try:
+            with _session_profile_runtime_scope(sess):
+                enabled = _load_enabled_toolsets(getattr(agent, "platform", None))
+                refresh(agent, enabled_override=enabled, quiet_mode=True, preserve_prefix=preserve_prefix)
+        except Exception as _exc:
+            logger.warning("Failed to refresh cached agent tools (session %s): %s", sid, _exc)
+        if note:
+            prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
+            agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
+        _emit("session.info", sid, _session_info(agent, sess))
+
+
+def refresh_plugin_sessions(home, note: str) -> None:
+    """A plugin just went live in ``home``: append its MCP tools to that profile's open chats (deferred
+    behind tool_search, so the model-facing tool array is unchanged) and queue ``note`` for their next
+    turn. Called by ``hermes_cli.plugins_activation_live``."""
+    _refresh_live_sessions(home, preserve_prefix=True, note=note)
+
+
 @_rpc("reload.mcp", 5015)
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
@@ -315,22 +353,8 @@ def _(rid, params: dict) -> dict:
     req_rev = str(params.get("rev") or "")
 
     def _refresh_session_agent() -> None:
-        """Rebuild EVERY live session's cached tool snapshot + push session.info (agents never
-        re-read the registry). The MCP pool is process-global, so refreshing only the requester
-        would leave sibling sessions on stale tools until /new — and a request without a
-        resolvable session_id (desktop passes ``activeSessionId ?? undefined``) would refresh
-        nothing while still answering "reloaded". Runs under _mcp_reload_lock so a concurrent
-        reload can't tear the registry down mid-refresh."""
-        with _sessions_lock:
-            live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None]
-        for sid, sess in live:
-            agent = sess["agent"]
-            try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
-                with _session_profile_runtime_scope(sess):
-                    _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
-            except Exception as _exc:
-                logger.warning("Failed to refresh cached agent tools after /reload-mcp (session %s): %s", sid, _exc)
-            _emit("session.info", sid, _session_info(agent, sess))
+        """Runs under _mcp_reload_lock so a concurrent reload can't tear the registry down mid-refresh."""
+        _refresh_live_sessions()
 
     def _do_full_reload() -> None:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
@@ -1558,7 +1582,10 @@ def _ensure_plugin_activation_listener() -> None:
 
 
 def _with_activation(result: dict, name: str) -> dict:
-    """Prefer the summary this process's listener captured over the core's own copy."""
+    """Fill ``activation`` from this process's listener when the core returned none (the core's own
+    copy carries ``live_now``, which the listener's load-time summary cannot)."""
+    if result.get("activation"):
+        return result
     for key in (name, result.get("plugin_name"), result.get("name")):
         if key and key in _plugin_activations:
             result["activation"] = _plugin_activations[key]
@@ -1669,7 +1696,12 @@ def _plugins_settings(rid, params):
     return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
 
 
-_PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
+def _plugins_onboarding(rid, params):
+    """Catalog plugins curated for the onboarding card that this OS runs, each with its app state."""
+    return _ok(rid, {"onboarding": _tools_mod("hermes_cli.plugin_catalog_presence").onboarding_entries()})
+
+
+_PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "toggle": _plugins_toggle, "install": _plugins_install,
                     "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
 
 

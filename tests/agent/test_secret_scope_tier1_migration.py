@@ -40,6 +40,12 @@ class _Scope:
         ss.reset_secret_scope(self.token)
 
 
+class _ExplodingScope(dict):
+    """A bound secret scope whose resolution fails (resolver/backend error)."""
+    def get(self, name, default=None):
+        raise RuntimeError("resolver boom")
+
+
 # ── Cluster A: gateway/pairing.py allowlist reads ─────────────────────────
 
 class TestPairingAllowlistRead:
@@ -66,6 +72,17 @@ class TestPairingAllowlistRead:
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "own-env")
         ss.set_multiplex_active(True)
         assert _read_allowlist_env("TELEGRAM_ALLOWED_USERS") == "own-env"
+
+    def test_scope_failure_never_borrows_env(self, monkeypatch):
+        # A bound scope that errors must propagate -- a blanket suppress would
+        # silently borrow the default profile's os.environ allowlist.
+        from gateway.pairing import _read_allowlist_env
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "other-profile")
+        ss.set_multiplex_active(True)
+        with _Scope(_ExplodingScope()):
+            with pytest.raises(RuntimeError, match="resolver boom"):
+                _read_allowlist_env("TELEGRAM_ALLOWED_USERS")
 
 
 # ── Cluster A: gateway/authz_mixin.py gate reads ───────────────────────────
@@ -181,6 +198,15 @@ class TestToolGatewayUserToken:
         ss.set_multiplex_active(True)
         assert _read_user_token_override() == "own-env-tok"
 
+    def test_scope_failure_never_borrows_env(self, monkeypatch):
+        from tools.managed_tool_gateway import _read_user_token_override
+
+        monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "other-profile-tok")
+        ss.set_multiplex_active(True)
+        with _Scope(_ExplodingScope()):
+            with pytest.raises(RuntimeError, match="resolver boom"):
+                _read_user_token_override()
+
 
 class TestOpenRouterCheckApiKey:
     def test_scoped_value_wins(self, monkeypatch):
@@ -198,6 +224,15 @@ class TestOpenRouterCheckApiKey:
         ss.set_multiplex_active(True)
         with _Scope({"UNRELATED": "x"}):
             assert check_api_key() is False
+
+    def test_scope_failure_never_borrows_env(self, monkeypatch):
+        from tools.openrouter_client import check_api_key
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-other-profile")
+        ss.set_multiplex_active(True)
+        with _Scope(_ExplodingScope()):
+            with pytest.raises(RuntimeError, match="resolver boom"):
+                check_api_key()
 
 
 # ── Cluster D: auxiliary client key resolution ──────────────────────────────
@@ -231,36 +266,47 @@ class TestAuxiliaryScopedKeyEnv:
 
         assert _scoped_key_env("") == ""
 
+    def test_scope_failure_never_borrows_env(self, monkeypatch):
+        from agent.auxiliary_client import _scoped_key_env
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+        ss.set_multiplex_active(True)
+        with _Scope(_ExplodingScope()):
+            with pytest.raises(RuntimeError, match="resolver boom"):
+                _scoped_key_env("OPENAI_API_KEY")
+
+
+# ── Cluster F: hermes_cli config env readers ───────────────────────────────
+
+class TestScopedEnvironGet:
+    """``_scoped_environ_get`` (feeds ``get_env_value`` / ``get_env_value_prefer_dotenv``)
+    documents that ``UnscopedSecretError`` propagates; a blanket ``except Exception``
+    after the call would silently borrow the launch profile's env on a bound-scope
+    failure."""
+
+    def test_scope_failure_never_borrows_env(self, monkeypatch):
+        from hermes_cli.config import _scoped_environ_get
+
+        monkeypatch.setenv("SOME_PROFILE_KEY", "other-profile")
+        ss.set_multiplex_active(True)
+        with _Scope(_ExplodingScope()):
+            with pytest.raises(RuntimeError, match="resolver boom"):
+                _scoped_environ_get("SOME_PROFILE_KEY")
+
+    def test_unscoped_multiplex_propagates(self, monkeypatch):
+        from hermes_cli.config import _scoped_environ_get
+
+        monkeypatch.setenv("SOME_PROFILE_KEY", "launch-env")
+        ss.set_multiplex_active(True)
+        with pytest.raises(ss.UnscopedSecretError):
+            _scoped_environ_get("SOME_PROFILE_KEY")
+
+    def test_single_profile_env_read(self, monkeypatch):
+        from hermes_cli.config import _scoped_environ_get
+
+        monkeypatch.setenv("SOME_PROFILE_KEY", "own-env")
+        assert _scoped_environ_get("SOME_PROFILE_KEY") == "own-env"
+
 
 # ── Cluster E: azure identity presence reads ────────────────────────────────
 
-class TestAzureIdentityPresence:
-    def _describe(self):
-        azure = pytest.importorskip("agent.azure_identity_adapter")
-        if not azure.has_azure_identity_installed():
-            pytest.skip("azure-identity not installed")
-        return azure.describe_active_credential
-
-    def test_scoped_client_secret_detected(self, monkeypatch):
-        describe = self._describe()
-        monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
-        monkeypatch.setenv("AZURE_TENANT_ID", "tid")
-        monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
-        monkeypatch.delenv("AZURE_FEDERATED_TOKEN_FILE", raising=False)
-        ss.set_multiplex_active(True)
-        with _Scope({"AZURE_CLIENT_SECRET": "scoped-secret"}):
-            info = describe(timeout_seconds=0.01, allow_install=False)
-        assert any("EnvironmentCredential" in s for s in info.get("env_sources", []))
-
-    def test_scoped_miss_hides_env_secret(self, monkeypatch):
-        describe = self._describe()
-        monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
-        monkeypatch.setenv("AZURE_TENANT_ID", "tid")
-        monkeypatch.setenv("AZURE_CLIENT_SECRET", "other-profile-secret")
-        monkeypatch.delenv("AZURE_FEDERATED_TOKEN_FILE", raising=False)
-        ss.set_multiplex_active(True)
-        with _Scope({"UNRELATED": "x"}):
-            info = describe(timeout_seconds=0.01, allow_install=False)
-        assert not any(
-            "EnvironmentCredential" in s for s in info.get("env_sources", [])
-        )

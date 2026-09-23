@@ -274,3 +274,14 @@ class TestAtomicRoundtripYamlSave:
         atomic_roundtrip_yaml_save(config_path, {"model": {"default": "updated-model"}})
 
         assert chown_calls == [(config_path, 345, 678)]
+
+    def test_keeps_long_space_containing_key_on_one_line(self, config_path):
+        """Regression for #120682: a folded plain mapping key is invalid YAML."""
+        from utils import atomic_roundtrip_yaml_save
+
+        key = "a config key with spaces that is deliberately longer than ruamel's default output width threshold"
+        atomic_roundtrip_yaml_save(config_path, {key: "enabled"})
+
+        text = config_path.read_text(encoding="utf-8")
+        assert f"{key}: enabled" in text
+        assert yaml.safe_load(text) == {key: "enabled"}

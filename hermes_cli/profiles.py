@@ -1799,8 +1799,12 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
     """Disable and remove systemd/launchd service for a profile."""
     import platform as _platform
 
-    # HERMES_HOME is set temporarily so _profile_suffix resolves the service name.
+    # The service name follows get_hermes_home(): bind the override (the seam a multiplexed
+    # dashboard/tui-gateway process reads) and mirror the env for identity-file readers, so a
+    # DELETE from a multi-profile dashboard names THIS profile's unit, never the host's bare one.
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     old_home = os.environ.get("HERMES_HOME")
+    home_token = set_hermes_home_override(str(profile_dir))
     try:
         os.environ["HERMES_HOME"] = str(profile_dir)
         from hermes_cli.gateway import get_service_name, get_launchd_plist_path, user_systemd_unit_dir
@@ -1827,6 +1831,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:
+        reset_hermes_home_override(home_token)
         os.environ.pop("HERMES_HOME", None)
         if old_home is not None:
             os.environ["HERMES_HOME"] = old_home

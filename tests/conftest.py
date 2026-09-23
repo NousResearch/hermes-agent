@@ -572,9 +572,8 @@ def _hermetic_environment(tmp_path, monkeypatch):
     secret_scope_mod = sys.modules.get("agent.secret_scope")
     if secret_scope_mod is not None and hasattr(secret_scope_mod, "_MULTIPLEX_ACTIVE"):
         monkeypatch.setattr(secret_scope_mod, "_MULTIPLEX_ACTIVE", False)
-    hermes_constants_mod = sys.modules.get("hermes_constants")
-    if hermes_constants_mod is not None and hasattr(hermes_constants_mod, "_PINNED_PROCESS_HOME"):
-        monkeypatch.setattr(hermes_constants_mod, "_PINNED_PROCESS_HOME", None)
+    if secret_scope_mod is not None and hasattr(secret_scope_mod, "_AUTO_PINNED_HOME"):
+        monkeypatch.setattr(secret_scope_mod, "_AUTO_PINNED_HOME", None)
     launch_policy_mod = sys.modules.get("tui_gateway.launch_profile_policy")
     if launch_policy_mod is not None and hasattr(launch_policy_mod, "_snapshot"):
         monkeypatch.setattr(launch_policy_mod, "_snapshot", None)

@@ -190,6 +190,10 @@ def pin_process_hermes_home(path: str | Path | None) -> None:
     _PINNED_PROCESS_HERMES_HOME = None if path is None else str(path)
 
 
+def process_hermes_home_is_pinned() -> bool:
+    return _PINNED_PROCESS_HERMES_HOME is not None
+
+
 def get_routing_process_hermes_home() -> Path:
     """Launch home for routed-profile decisions: the pinned home, else :func:`get_process_hermes_home`."""
     pinned = _PINNED_PROCESS_HERMES_HOME

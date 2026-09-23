@@ -166,6 +166,8 @@ export const en: Translations = {
     searchPlaceholder: "Search message content...",
     noSessions: "No sessions yet",
     noSessionsInFilter: "No sessions in this filter",
+    loadWhat: "sessions",
+    searchWhat: "session search results",
     noMatch: "No sessions match your search",
     startConversation: "Start a conversation to see it here",
     noMessages: "No messages",

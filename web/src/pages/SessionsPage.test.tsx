@@ -61,6 +61,11 @@ async function renderSessionsPage(rows: Record<string, unknown>[]) {
     limit,
     offset: 0,
   }));
+  await mountSessionsPage();
+  await waitFor(() => Boolean(button("Delete session")));
+}
+
+async function mountSessionsPage() {
   const [{ default: SessionsPage }, { I18nProvider }, { SystemActionsProvider }, { ProfileProvider }, { PageHeaderProvider }] =
     await Promise.all([
       import("./SessionsPage"),
@@ -87,7 +92,6 @@ async function renderSessionsPage(rows: Record<string, unknown>[]) {
       </I18nProvider>,
     ),
   );
-  await waitFor(() => Boolean(button("Delete session")));
 }
 
 beforeEach(() => {
@@ -185,3 +189,52 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
     expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-worker", "worker");
   });
 });
+
+const ROW = {
+  id: "sid-alpha", profile: "default", source: "cli", model: null, title: "Alpha", started_at: 1, ended_at: null,
+  last_active: 1, is_active: false, message_count: 2, tool_call_count: 0, input_tokens: 1, output_tokens: 1,
+  preview: "alpha",
+};
+const alert = () => document.querySelector('[role="alert"]');
+const retry = () => Array.from(alert()?.querySelectorAll("button") ?? []).find((b) => /retry/i.test(b.textContent ?? ""));
+
+describe("SessionsPage load failures", () => {
+  it("says the list failed to load, with Retry, instead of claiming there are no sessions", async () => {
+    // 503: the store is busy, not gone — the backend says so, and the page must not read it as an empty history.
+    const busy = "Session store is busy (disk I/O or lock). Retry; the list was not cleared.";
+    apiMocks.getSessions.mockImplementation(async (limit: number) => {
+      if (limit >= 50) return { sessions: [], total: 0, limit, offset: 0 };
+      throw new Error(busy);
+    });
+    await mountSessionsPage();
+    await waitFor(() => Boolean(alert()));
+    expect(alert()?.textContent).toContain(busy);
+    expect(document.body.textContent).not.toContain("No sessions yet");
+
+    apiMocks.getSessions.mockImplementation(async (limit: number) => ({
+      sessions: limit >= 50 ? [] : [ROW], total: limit >= 50 ? 0 : 1, limit, offset: 0,
+    }));
+    await act(async () => click(retry() ?? null));
+    await waitFor(() => Boolean(button("Delete session")));
+    expect(alert()).toBeNull();
+  });
+
+  it("says a search failed instead of listing every session as a match", async () => {
+    apiMocks.searchSessions.mockRejectedValue(new Error("Search failed"));
+    await renderSessionsPage([ROW]);
+
+    const search = document.querySelector<HTMLInputElement>('input[placeholder]');
+    if (!search) throw new Error("search input not rendered");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "zebra-quux");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await waitFor(() => Boolean(alert()));
+    expect(alert()?.textContent).toContain("Search failed");
+    expect(button("Delete session")).toBeNull();
+
+    await act(async () => click(retry() ?? null));
+    await waitFor(() => apiMocks.searchSessions.mock.calls.length === 2);
+  });
+});
+

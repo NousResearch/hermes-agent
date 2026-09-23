@@ -960,6 +960,29 @@ def test_normalize_codex_response_failed_includes_code_in_error():
         _normalize_codex_response(response)
 
 
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_codex_failed_response_with_output_routes_to_fallback(status):
+    from agent.transports.codex import ResponsesApiTransport
+    from agent.turn_recovery import validate_response_shape
+
+    transport = ResponsesApiTransport()
+    response = SimpleNamespace(
+        status=status,
+        output=[SimpleNamespace(type="reasoning", summary=[])],
+        output_text="",
+        error={"code": "upstream_error", "message": "Request failed"},
+        incomplete_details=None,
+    )
+    agent = SimpleNamespace(
+        api_mode="codex_responses", _get_transport=lambda: transport,
+        _client_log_context=lambda: "",
+    )
+
+    invalid, details = validate_response_shape(agent, response)
+    assert invalid
+    assert any(f"response.status={status}" in detail for detail in details)
+
+
 # ---------------------------------------------------------------------------
 # Reasoning-channel answer salvage (xAI grok) — grok-4.x on the xAI
 # /v1/responses surface sometimes emits its final answer inside the

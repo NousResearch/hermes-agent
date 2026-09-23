@@ -71,7 +71,7 @@ class TestGatewayWebSocket:
     async def test_event_received_and_forwarded(self):
         """Server pushes event -> adapter calls handle_message with correct MessageEvent."""
         async with FakeHAServer() as server:
-            adapter = _adapter_for(server)
+            adapter = _adapter_for(server, watch_all=True)
             adapter.handle_message = AsyncMock()
 
             await adapter.connect()
@@ -261,6 +261,19 @@ class TestSendNotification:
             notif = server.received_notifications[0]
             assert notif["title"] == "Hermes Agent"
             assert notif["message"] == "Test notification from agent"
+            assert notif["notification_id"] == "hermes_agent"
+
+    @pytest.mark.asyncio
+    async def test_send_notification_uses_configured_notification_id(self):
+        """Adapter send() can reuse one HA persistent notification instead of piling up."""
+        async with FakeHAServer() as server:
+            adapter = _adapter_for(server, notification_id="hermes_agent_homeassistant_events")
+
+            result = await adapter.send("ha_events", "Test notification from agent")
+
+            assert result.success is True
+            notif = server.received_notifications[0]
+            assert notif["notification_id"] == "hermes_agent_homeassistant_events"
 
     @pytest.mark.asyncio
     async def test_send_auth_failure(self):

@@ -22,6 +22,7 @@ import {
   parseCompare,
   rateLimitFromHeaders,
   resolveBehindLocally,
+  resolveGitHubTip,
   UPDATE_CHECK_FAILURE_TTL_MS,
   UPDATE_CHECK_TTL_MS
 } from './update-api-check'
@@ -43,6 +44,54 @@ test('cache serves a passive check for 24h, but not once HEAD or the branch chan
   const failed = { ...cached, status: { error: 'fetch-failed' } }
   assert.equal(cacheIsFresh(failed, { branch: 'main', currentSha: SHA_A, now: UPDATE_CHECK_FAILURE_TTL_MS - 1 }), true)
   assert.equal(cacheIsFresh(failed, { branch: 'main', currentSha: SHA_A, now: 2 * HOUR }), false)
+})
+
+test('a rate-limited GitHub API tip check falls back to one anonymous HTTPS ls-remote', async () => {
+  const calls: string[][] = []
+  const rateLimit = Object.assign(new Error('HTTP 403'), { statusCode: 403, rateLimitRemaining: 0 })
+  const sha = 'c'.repeat(40)
+
+  const result = await resolveGitHubTip({
+    slug: 'nousresearch/hermes-agent',
+    branch: 'main',
+    fetchTip: async () => { throw rateLimit },
+    runGit: async args => {
+      calls.push(args)
+
+      return { code: 0, stdout: `${sha}\trefs/heads/main\n`, stderr: '' }
+    }
+  })
+
+  assert.equal(result, sha)
+  assert.deepEqual(calls, [[
+    '-c', 'credential.helper=', 'ls-remote',
+    'https://github.com/nousresearch/hermes-agent.git', 'refs/heads/main'
+  ]])
+})
+
+test('GitHub tip fallback is limited to real rate limits and preserves an error when git fails', async () => {
+  let gitCalls = 0
+
+  const runGit = async () => {
+    gitCalls += 1
+
+    return { code: 128, stdout: '', stderr: 'network unavailable' }
+  }
+
+  const plain403 = Object.assign(new Error('HTTP 403'), { statusCode: 403, rateLimitRemaining: 57 })
+
+  await assert.rejects(resolveGitHubTip({
+    slug: 'nousresearch/hermes-agent', branch: 'main',
+    fetchTip: async () => { throw plain403 }, runGit
+  }), error => error === plain403)
+  assert.equal(gitCalls, 0)
+
+  const limited = Object.assign(new Error('HTTP 403'), { statusCode: 403, rateLimitRemaining: 0 })
+  await assert.rejects(resolveGitHubTip({
+    slug: 'nousresearch/hermes-agent', branch: 'main',
+    fetchTip: async () => { throw limited }, runGit
+  }), error => error === limited)
+  assert.equal(gitCalls, 1)
 })
 
 test('compare payload maps to the behind count and a newest-first commit list; malformed = null', () => {

@@ -40,6 +40,53 @@ export function branchTipApiUrl(slug: string, branch: string): string {
   return `https://api.github.com/repos/${slug}/commits/${encodeURIComponent(branch)}`
 }
 
+/**
+ * A shared proxy can exhaust GitHub's anonymous API budget even when this
+ * desktop checked only once today. In that one case, ask the public HTTPS Git
+ * remote for its tip without fetching a pack or invoking SSH credentials.
+ * The normal path remains API-only; the caller's on-disk cache limits this
+ * fallback to one passive attempt per day after success.
+ */
+export async function resolveGitHubTip({
+  slug,
+  branch,
+  fetchTip,
+  runGit
+}: {
+  slug: string
+  branch: string
+  fetchTip: () => Promise<unknown>
+  runGit: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>
+}): Promise<string> {
+  try {
+    return String(await fetchTip()).trim()
+  } catch (error) {
+    const failure = error as UpdateCheckFailure
+
+    if ((failure?.statusCode !== 403 && failure?.statusCode !== 429) || failure.rateLimitRemaining !== 0) {
+      throw error
+    }
+
+    const ref = `refs/heads/${branch}`
+    const remote = `https://github.com/${slug}.git`
+    let result
+
+    try {
+      result = await runGit(['-c', 'credential.helper=', 'ls-remote', remote, ref])
+    } catch {
+      throw error
+    }
+
+    const [sha, returnedRef] = result.stdout.trim().split(/\s+/)
+
+    if (result.code !== 0 || !/^[0-9a-f]{40}$/i.test(sha || '') || returnedRef !== ref) {
+      throw error
+    }
+
+    return sha
+  }
+}
+
 export function compareApiUrl(slug: string, currentSha: string, targetSha: string): string {
   return `https://api.github.com/repos/${slug}/compare/${currentSha}...${targetSha}`
 }

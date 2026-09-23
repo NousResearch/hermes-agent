@@ -735,11 +735,16 @@ export const sessionCommands: SlashCommand[] = [
 
         const rows: [string, string][] = [
           ['Model', r.model ?? ''],
-          ['Input tokens', f(r.input)],
-          ['Output tokens', f(r.output)],
-          ['Total tokens', f(r.total)],
-          ['API calls', f(r.calls)]
+          ['Fresh input tokens', f(r.input)]
         ]
+
+        if (r.cache_read) {
+          rows.push(['Cache read tokens', f(r.cache_read)])
+        }
+        if (r.cache_write) {
+          rows.push(['Cache write tokens', f(r.cache_write)])
+        }
+        rows.push(['Output tokens', f(r.output)], ['Total tokens', f(r.total)], ['API calls', f(r.calls)])
 
         const sections: PanelSection[] = [{ rows }]
 

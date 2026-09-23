@@ -2004,6 +2004,11 @@ def _get_usage(agent) -> dict:
         # agent/conversation_loop.py.
         _prompt_total = int(getattr(agent, "session_prompt_tokens", 0) or 0)
         _cache_read = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
+        _cache_write = int(getattr(agent, "session_cache_write_tokens", 0) or 0)
+        if _cache_read > 0:
+            usage["cache_read"] = _cache_read
+        if _cache_write > 0:
+            usage["cache_write"] = _cache_write
         if _prompt_total > 0 and _cache_read > 0:
             usage["cache_hit_pct"] = max(0, min(100, round(_cache_read / _prompt_total * 100)))
     with contextlib.suppress(Exception):  # a status-bar readout must never break usage reporting

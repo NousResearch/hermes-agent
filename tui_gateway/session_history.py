@@ -3,8 +3,6 @@ turn tracking and turn-failure detail. Bodies are rebound onto server.py's globa
 
 from __future__ import annotations
 
-import base64
-import binascii
 import re
 
 from .method_ctx import bind_module
@@ -156,6 +154,8 @@ def _user_image_display_text(content: Any) -> str | None:
             return None
         projected = text
 
+    import base64
+    import binascii
     from pathlib import Path
     from fastapi import HTTPException
     from hermes_cli.web_routers.files import _fs_regular_file

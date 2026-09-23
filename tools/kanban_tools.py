@@ -886,10 +886,47 @@ def _store_attachment(board, tid, filename, data, content_type) -> str:
         return _ok(task_id=tid, attachment_id=att_id, size=len(data))
 
 
+def _read_workspace_attachment(path: str) -> tuple[bytes, str]:
+    """Read a regular file that stays inside the task workspace after resolve.
+
+    A symlink that escapes the workspace is refused. The shell attach command
+    stays fenced; this is the in-process door so the model does not retype bytes.
+    """
+    from pathlib import Path
+    workspace = (os.environ.get("HERMES_KANBAN_WORKSPACE") or "").strip()
+    if not workspace:
+        raise _Reject("path attach requires HERMES_KANBAN_WORKSPACE")
+    root = Path(workspace).expanduser().resolve()
+    src = Path(path).expanduser()
+    if not src.is_absolute():
+        src = root / src
+    try:
+        resolved = src.resolve()
+    except OSError as exc:
+        raise _Reject(f"path could not be resolved: {exc}") from exc
+    if not resolved.is_relative_to(root):
+        raise _Reject("path is outside the task workspace")
+    if not resolved.is_file():
+        raise _Reject("path is not a file")
+    from hermes_cli import kanban_db as kb
+    size = resolved.stat().st_size
+    if size > kb.KANBAN_ATTACHMENT_MAX_BYTES:
+        raise _Reject(
+            f"attachment exceeds {kb.KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit")
+    return resolved.read_bytes(), resolved.name
+
+
 @_kanban_handler("kanban_attach")
 def _handle_attach(args: dict, **kw) -> str:
-    """Attach an inline (base64) file to a task."""
+    """Attach a workspace file by path, or a small inline base64 payload."""
     tid = _worker_guard("kanban_attach", args)
+    raw_path = str(args.get("path") or "").strip()
+    if raw_path:
+        data, leaf = _read_workspace_attachment(raw_path)
+        filename = str(args.get("filename") or "").strip() or leaf
+        return _store_attachment(args.get("board"), tid, filename, data, args.get("content_type"))
+    if not str(args.get("content_base64") or "").strip():
+        raise _Reject("pass path to a file inside the task workspace, or content_base64")
     filename = _require_text(args, "filename")
     content_b64 = _require_text(args, "content_base64")
     import base64

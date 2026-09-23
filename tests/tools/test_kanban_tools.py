@@ -1235,6 +1235,61 @@ def test_attach_url_rejects_non_http_scheme(worker_env):
     assert "scheme" in d["error"]
 
 
+def test_attach_path_reads_workspace_file(worker_env, monkeypatch, tmp_path):
+    """A file already written in the workspace is pinned without retyping it."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    workspace = tmp_path / "job"
+    workspace.mkdir()
+    report = workspace / "review.md"
+    report.write_text("the review\nDONE\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+
+    out = kt._handle_attach({"path": "review.md"})
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    conn = kbc.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+    finally:
+        conn.close()
+    assert len(atts) == 1
+    assert atts[0].filename == "review.md"
+    assert Path(atts[0].stored_path).read_text(encoding="utf-8") == "the review\nDONE\n"
+
+
+def test_attach_path_refuses_outside_workspace(worker_env, monkeypatch, tmp_path):
+    from tools import kanban_tools as kt
+
+    workspace = tmp_path / "job"
+    workspace.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("no", encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    out = kt._handle_attach({"path": str(outside)})
+    d = json.loads(out)
+    assert "outside the task workspace" in d.get("error", ""), out
+
+
+def test_attach_path_refuses_symlink_escape(worker_env, monkeypatch, tmp_path):
+    from tools import kanban_tools as kt
+
+    workspace = tmp_path / "job"
+    workspace.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("no", encoding="utf-8")
+    link = workspace / "leak.txt"
+    link.symlink_to(outside)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    out = kt._handle_attach({"path": "leak.txt"})
+    d = json.loads(out)
+    assert "outside the task workspace" in d.get("error", ""), out
+
+
 # ---------------------------------------------------------------------------
 # kanban_attach_url — SSRF guard (tools/url_safety.is_safe_url per hop)
 # ---------------------------------------------------------------------------

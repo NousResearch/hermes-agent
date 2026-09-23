@@ -701,6 +701,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
+        will_retry = not _next_failure_will_trip(conn, tid)
         with _kb.write_txn(conn):
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
@@ -718,6 +719,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "limit_seconds": limit,
                     "sigkill": killed,
                     "retry_status": retry_status,
+                    "will_retry": will_retry,
                 }
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
@@ -1331,6 +1333,26 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
                 **hook_fields,
             )
     return sweep.crashed
+
+
+def _next_failure_will_trip(conn: sqlite3.Connection, task_id: str, *, failure_limit: Optional[int] = None) -> bool:
+    """Whether the next non-success attempt spends the card's retry allowance.
+
+    Read before the timeout event is written, so the notice can say whether a
+    retry will actually happen. Matches ``_record_task_failure``: a per-task
+    ``max_retries`` wins over the dispatcher default.
+    """
+    if failure_limit is None:
+        failure_limit = DEFAULT_FAILURE_LIMIT
+    row = conn.execute(
+        "SELECT consecutive_failures, max_retries FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    task_override = _kb._row_get(row, "max_retries")
+    effective = int(task_override) if task_override is not None else int(failure_limit)
+    return int(row["consecutive_failures"]) + 1 >= effective
 
 
 def _record_task_failure(

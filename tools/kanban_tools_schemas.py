@@ -310,26 +310,34 @@ KANBAN_COMMENT_SCHEMA = _schema(
 KANBAN_ATTACH_SCHEMA = _schema(
     "kanban_attach",
     (
-        "Attach a file to a task by passing its bytes inline (base64). "
-        "Use for genuine file artifacts the next worker or a human should "
-        "be able to download — generated reports, images, exports. The "
-        "file is stored as a real attachment (not a comment link) under "
-        "the task's attachments dir, capped at 25 MB. Prefer "
-        "kanban_attach_url when you only have a URL."
+        "Attach a file the worker already wrote, by path. The path must stay "
+        "inside the task workspace. Hermes reads the bytes itself. Do not "
+        "retype the file as base64. content_base64 remains only for a small "
+        "inline file when no workspace path exists. 25 MB cap. "
+        "kanban_attach_url is for a public http(s) URL, never a local address."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
         "filename": _prop("string", (
                 "File name to store it under (e.g. 'report.pdf'). "
-                "Directory components are stripped; only the leaf is kept."
+                "Directory components are stripped; only the leaf is kept. "
+                "Defaults to the path's leaf when path is set."
+        )),
+        "path": _prop("string", (
+                "File already written inside the task workspace. Absolute, or "
+                "relative to that workspace. Preferred over content_base64."
         )),
         "content_base64": {
             "type": "string",
-            "description": "The file contents, base64-encoded. Max 25 MB decoded.",
+            "description": (
+                "Inline file contents, base64-encoded. Use only when path is "
+                "not available. Max 25 MB decoded. Do not retype a file that "
+                "is already on disk."
+            ),
         },
         "content_type": _prop("string", "Optional MIME type (e.g. 'application/pdf')."),
     },
-    ["filename", "content_base64"],
+    [],
 )
 
 KANBAN_ATTACH_URL_SCHEMA = _schema(

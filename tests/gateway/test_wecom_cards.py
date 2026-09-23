@@ -62,7 +62,31 @@ class TestApprovalCard:
         assert len(card["button_list"]) == 2
         keys = [b["key"] for b in card["button_list"]]
         assert keys == ["once", "deny"]
+        # Regression: base.py's descriptive labels ("Allow Session") don't fit a WeCom button
+        # (3-per-row ⇒ ~3 CJK chars), so the card uses short forms instead of a cut label.
+        assert [b["text"] for b in card["button_list"]] == ["仅一次", "拒绝"]
+        assert all(len(b["text"]) <= 3 for b in card["button_list"])
         assert card["task_id"] == task_id
+
+    def test_approval_buttons_use_short_labels_for_every_choice(self, monkeypatch):
+        """All four tiers must stay distinguishable on a 3-per-row button line."""
+        adapter = _make_adapter(monkeypatch)
+        captured = {}
+        adapter._find_active_turn_for_chat = lambda *a: False
+
+        async def _fake_send(chat_id, body, *, reply_req_id=None, is_control=False):
+            captured["body"] = body
+            return SendResult(success=True, message_id="m1", raw_response=body)
+
+        adapter._send_card = _fake_send
+        asyncio.run(adapter._send_exec_approval_prompt(ExecApprovalPrompt(
+            chat_id="zhangsan", session_key="sess-1", text="approve?",
+            actions=[("Allow Once", "once", ""), ("Allow Session", "session", ""),
+                     ("Always Allow", "always", ""), ("Deny", "deny", "")],
+            command="rm -rf /tmp/x", description="dangerous command", smart_denied=False)))
+        texts = [b["text"] for b in captured["body"]["button_list"]]
+        assert texts == ["仅一次", "本会话", "永久", "拒绝"]
+        assert len(set(texts)) == 4  # every tier reads differently
 
     def test_group_chat_falls_back_to_text(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

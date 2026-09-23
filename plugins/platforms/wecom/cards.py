@@ -64,6 +64,17 @@ _APPROVAL_TAP_LABELS = {
     "deny": "❌ 已拒绝",
 }
 
+# Button text for the approval card's choices. base.py's action labels are descriptive
+# ("Allow Session"), but WeCom renders a button on a 3-per-row line in ~6 ASCII chars (≈3 CJK),
+# so the adapter's own labels already get cut ("Allow Sess") and the client would ellipsise them
+# further ("Allow…") — leaving four indistinguishable buttons. Keep to 2-3 CJK chars.
+_APPROVAL_CHOICE_LABELS = {
+    "once": "仅一次",
+    "session": "本会话",
+    "always": "永久",
+    "deny": "拒绝",
+}
+
 
 class WeComCardMixin:
     """Template-card interactivity for WeComAdapter (DM-only; groups keep text flows)."""
@@ -239,7 +250,8 @@ class WeComCardMixin:
             "session_key": prompt.session_key, "chat_id": chat_id,
             "desc": self._truncate_preview(str(prompt.description or ""), 100),
         })
-        buttons = [{"text": label, "key": choice} for label, choice, _ in prompt.actions]
+        buttons = [{"text": _APPROVAL_CHOICE_LABELS.get(choice, label), "key": choice}
+                   for label, choice, _ in prompt.actions]
         card = self._button_interaction_card(
             title="⚠️ 命令审批", desc=self._truncate_preview(str(prompt.description or ""), 100),
             sub_title=self._truncate_preview(str(prompt.command or ""), 100),

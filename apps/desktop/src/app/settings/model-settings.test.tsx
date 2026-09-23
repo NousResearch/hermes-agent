@@ -4,11 +4,14 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
+import { stubResizeObserver } from '@/test/jsdom'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
-// them to let the dropdown open in tests.
+// them to let the dropdown open in tests. The searchable selects (cmdk Command)
+// also need ResizeObserver to measure their CommandList.
 beforeAll(() => {
+  stubResizeObserver()
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.hasPointerCapture = vi.fn(() => false)
   Element.prototype.releasePointerCapture = vi.fn()
@@ -468,6 +471,32 @@ describe('ModelSettings', () => {
     // The row shows where the pinned task actually points.
     expect(screen.getByText(/http:\/\/byron\.local:11434\/v1/)).toBeTruthy()
   })
+
+  it('filters the main model list by search and applies the picked model', async () => {
+    await renderModelSettings()
+
+    // Combobox order on load: provider, then model.
+    const modelSelect = (await screen.findAllByRole('combobox'))[1]
+    fireEvent.click(modelSelect)
+
+    fireEvent.change(await screen.findByPlaceholderText('Search models…'), {
+      target: { value: 'mini' }
+    })
+
+    // The search hides the non-matching model; the match stays selectable.
+    expect(screen.queryByRole('option', { name: 'hermes-4' })).toBeNull()
+    expect(screen.getByRole('option', { name: 'hermes-4-mini' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('option', { name: 'hermes-4-mini' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'hermes-4-mini',
+        provider: 'nous',
+        scope: 'main'
+      })
+    )  })
 })
 
 describe('ModelSettings MoA preset editor', () => {

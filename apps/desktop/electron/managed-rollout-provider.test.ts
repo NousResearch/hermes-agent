@@ -409,6 +409,10 @@ test('runs an injected trusted rollout without exposing the launch capability', 
     assert.ok(facts.includes('authorization-committed'))
     assert.ok(facts.includes('handoff-accepted'))
     assert.ok(facts.includes('detached-intent'))
+    assert.match(
+      dependencies.journal.read(started.id as string).facts.find(fact => fact.kind === 'detached-intent')?.basis || '',
+      /remote launch remains unverified/
+    )
     assert.ok(facts.includes('terminal-receipt'))
     assert.ok(facts.includes('settlement-validated'))
     const snapshot = await provider.get(started.id as string) as Record<string, unknown>

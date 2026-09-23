@@ -1096,7 +1096,7 @@ export function createManagedRolloutProvider(
             [event('handoff-accepted', authorization.installId)],
             [
               fact('handoff-accepted', runtime.id, authorization.installId, authorization.correlationId, isoNow(now), 'managed SSH service accepted the correlated handoff'),
-              fact('detached-intent', runtime.id, authorization.installId, authorization.correlationId, isoNow(now), 'managed SSH update was detached after service admission')
+              fact('detached-intent', runtime.id, authorization.installId, authorization.correlationId, isoNow(now), 'local intent for detached managed SSH dispatch; remote launch remains unverified')
             ]
           )
 

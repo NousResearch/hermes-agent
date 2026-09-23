@@ -349,9 +349,22 @@ _MEMORY_ROUTING_BLOCK = (
     "target, that store is the only one enabled — use it and skip the other.\n\n"
 )
 
+# Consent beats recall: a fact the user asked NOT to save is not a memory candidate at all —
+# writing it anyway (or recording "the user asked not to save this" as the fact itself) leaks
+# the very thing they declined to share (#116788).
+_MEMORY_CONSENT_BLOCK = (
+    "CONSENT overrides everything else: when the user asked you NOT to save something — "
+    "'don't save this', 'please don't remember that', 'keep this out of my profile' — never "
+    "write that fact to either store, and do not record the request itself as a memory entry "
+    "either; that entry would persist the sensitive fact under a layer of indirection. "
+    "Respecting the request in this session is the correct handling — there is nothing to "
+    "save.\n\n"
+)
+
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
     "Memory has " + _MEMORY_ROUTING_BLOCK +
+    _MEMORY_CONSENT_BLOCK +
     "If something stands out, save it once, in the right store, using the memory tool with the "
     "matching target. If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
@@ -502,7 +515,7 @@ _SKILL_REVIEW_PROMPT = (
 
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
-    "**Memory**: " + _MEMORY_ROUTING_BLOCK +
+    "**Memory**: " + _MEMORY_ROUTING_BLOCK + _MEMORY_CONSENT_BLOCK +
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
     "outcome.\n\n"

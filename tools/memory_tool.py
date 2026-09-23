@@ -7,6 +7,7 @@ Single `memory` tool: add/replace/remove or a batch `operations` list."""
 import copy
 import json
 import logging
+import re
 from contextvars import ContextVar
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -134,22 +135,48 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
 
 _BG_DELETE_ACTIONS = ("replace", "remove")
 
+# Unattended adds whose own text signals a no-save request are staged like deletes (#116788):
+# the reviewer sometimes writes the consent request into the very fact it then proposes
+# ("... but asked NOT to save that to memory"). That self-report is the only consent signal
+# visible without a model call, so matching it fails safe — a benign false positive merely
+# stages the add for approval instead of applying it. Plain adds stay available: they are all
+# the review prompts ask for, and the prompt now carries an explicit no-save rule.
+_BG_NO_SAVE_RE = re.compile(
+    r"\b(?:"
+    r"ask(?:ed|s|ing)?(?:\s+\w+){0,2}?\s+not\s+to\s+(?:save|store|keep|remember)"
+    r"|request(?:ed|s|ing)?(?:\s+\w+){0,2}?\s+not\s+to\s+(?:save|store|keep|remember)"
+    r"|not\s+to\s+(?:save|store)\s+(?:it|this|that)"
+    r"|(?:do(?:es)?\s+not|don['’]t|never)\s+(?:save|store|remember)\s+(?:this|that|it)"
+    r")\b",
+    re.IGNORECASE)
+
+
+def _consent_sensitive_add(action, content) -> bool:
+    return action == "add" and bool(content) and bool(_BG_NO_SAVE_RE.search(content))
+
 
 def _background_delete_gate(action, operations, target="memory", content=None, old_text=None) -> Optional[str]:
-    """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
-    single or inside a batch — are never applied unattended. The op is staged in the pending
-    store instead of merely denied: the fork's own review summary is never published back, so
-    a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    """Fail-closed operation gate for unattended background-review forks (#105921): plain
+    ``add`` stays available (it is all any review prompt asks for), while ``replace``/
+    ``remove`` — single or inside a batch — are never applied unattended. An ``add`` whose own
+    text records a user no-save request is staged the same way (#116788): the original near-miss
+    proposed exactly such a self-reporting fact, so the prompt rule alone is not trusted to
+    stop it. The op is staged in the pending store instead of merely denied: the fork's own
+    review summary is never published back, so a plain denial would drop the consolidation
+    request with no surfacing path at all. A staging failure fails closed to a plain denial."""
     from tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
         return None
-    hit = action in _BG_DELETE_ACTIONS or any(
+    delete_hit = action in _BG_DELETE_ACTIONS or any(
         isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS for op in (operations or []))
-    if not hit:
+    consent_hit = _consent_sensitive_add(action, content) or any(
+        isinstance(op, dict) and _consent_sensitive_add(op.get("action"), op.get("content"))
+        for op in (operations or []))
+    if not delete_hit and not consent_hit:
         return None
+    reason = ("delete memory entries" if delete_hit else
+              "persist a fact the user asked not to save")
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
                {"action": action, "target": target, "content": content, "old_text": old_text})
@@ -164,7 +191,7 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
             origin=wa.current_origin())
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
+            "message": (f"Background review may not {reason} unattended. The proposed "
                         f"{'batch' if operations is not None else action} was staged for your approval — "
                         "review it with /memory pending (approve to apply, discard to drop)."),
         }, ensure_ascii=False)
@@ -172,7 +199,8 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
         return tool_error(
             "Background review may not delete memory entries ('replace'/'remove', including in a "
-            "batch); 'add' is still available.", success=False)
+            "batch) nor persist a fact the user asked not to save; plain 'add' is still available.",
+            success=False)
 
 
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,

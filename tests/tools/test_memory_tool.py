@@ -993,3 +993,105 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+# =========================================================================
+# Background-review consent gate (#116788)
+# =========================================================================
+
+class TestBackgroundReviewConsentGate:
+    """An unattended background-review fork must not persist a fact the user asked not to
+    save — even when the reviewer's own proposed text records the no-save request (the
+    #116788 near-miss shape). The add is staged for approval exactly like a background
+    delete, so a consent-violating write can no longer apply with no human in the loop."""
+
+    def test_consent_self_reporting_add_staged_not_applied(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                action="add", target="user",
+                content=("User is accessibility-minded (visual impairment) but asked NOT to "
+                         "save that to memory"),
+                store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["staged"] is True
+        assert result["proposal_staged"] is True
+        assert result["pending_id"]
+        assert "asked not to save" in result["message"]
+        # Fail-closed: the sensitive fact never lands in the profile.
+        assert ("User is accessibility-minded (visual impairment) but asked NOT to save that "
+                "to memory") not in store._entries_for("user")
+        # The proposal itself landed in the pending store for the user to approve or discard.
+        from tools.write_approval import MEMORY, get_pending
+        record = get_pending(MEMORY, result["pending_id"])
+        assert record["payload"]["action"] == "add"
+        assert record["payload"]["target"] == "user"
+        assert record["origin"] == "background_review"
+
+    @pytest.mark.parametrize("content", [
+        "User asked me not to remember their location",
+        "User requested not to store this medical detail",
+        "don't save that preference",
+        "never remember this incident",
+        "asked us politely not to keep the diagnosis on file",
+        "do not remember it",
+    ])
+    def test_no_save_phrasings_staged(self, store, tmp_path, monkeypatch, content):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(action="add", content=content, store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["proposal_staged"] is True
+        assert content not in store._entries_for("memory")
+
+    def test_plain_add_still_applies_in_background_review(self, store):
+        # A benign fact without a no-save signal keeps applying unattended — the gate must
+        # not throttle ordinary background memory accumulation.
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                action="add", content="User prefers concise summaries", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "staged" not in result
+        assert "User prefers concise summaries" in store._entries_for("memory")
+
+    def test_batch_with_consent_add_staged_whole_batch(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "add", "content": "User asked not to save their health details"},
+                {"action": "add", "content": "an ordinary fact"},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["proposal_staged"] is True
+        # Atomic: the batch is only a proposal — its ordinary add must not land either.
+        assert "an ordinary fact" not in store._entries_for("memory")
+
+    def test_foreground_consent_add_unaffected(self, store):
+        # A supervised turn may deliberately record a no-save request as its own fact; the
+        # gate only stands watch over unattended forks.
+        result = json.loads(memory_tool(
+            action="add", content="User asked not to save their phone number anywhere", store=store))
+        assert result["success"] is True
+        assert "User asked not to save their phone number anywhere" in store._entries_for("memory")
+
+    def test_attended_review_add_unaffected(self, store):
+        from tools.skill_provenance import reset_review_attended, set_review_attended
+        token = set_current_write_origin("background_review")
+        att = set_review_attended(True)
+        try:
+            result = json.loads(memory_tool(
+                action="add", content="User asked not to save their home address", store=store))
+        finally:
+            reset_review_attended(att)
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "User asked not to save their home address" in store._entries_for("memory")

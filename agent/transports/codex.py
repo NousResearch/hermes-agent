@@ -8,14 +8,15 @@ import hashlib
 import json
 import logging
 import re
+import uuid
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
     CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
-    # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
-    codex_supported_efforts,
+    # per-model — GPT-5.6 and GPT-6 Luna/Sol accept "max"; "minimal"/"ultra" stay off the wire.
+    codex_supported_efforts, is_gpt6_model,
 )
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
@@ -369,8 +370,30 @@ def _is_openai_api_origin(base_url: Any) -> bool:
 
 
 def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
-    """Astra on the canonical API origin only."""
-    return is_astra_model(model) and _is_openai_api_origin(base_url)
+    """GPT-6 on the canonical API origin only.
+
+    OpenAI documents ``configuration_update`` for the GPT-6 family in standard,
+    single-agent Responses requests. Exact-origin matching keeps compatible proxies
+    fail-closed unless they opt in through route capabilities.
+    """
+    return is_gpt6_model(model) and _is_openai_api_origin(base_url)
+
+
+_CHATGPT_EFFORT_UPDATE_MODELS = (
+    "gpt-6-astra", "gpt-6-luna", "gpt-6-terra", "gpt-6-sol",
+    "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol",
+)
+
+
+def _supports_reasoning_effort_updates(model: Any, params: dict[str, Any]) -> bool:
+    """Fail-closed gate for Responses ``configuration_update`` items."""
+    capabilities = params.get("capabilities")
+    if isinstance(capabilities, dict) and "reasoning_effort_updates" in capabilities:
+        return capabilities.get("reasoning_effort_updates") is True
+    slug = str(model or "").strip().lower().rsplit("/", 1)[-1]
+    if params.get("is_codex_backend") is True:
+        return any(slug == family or slug.startswith(f"{family}-") for family in _CHATGPT_EFFORT_UPDATE_MODELS)
+    return _is_official_openai_responses_route(model, params.get("base_url"))
 
 
 def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
@@ -392,13 +415,50 @@ def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: boo
     return codex_supported_efforts(str(model or ""))
 
 
+def _prepare_reasoning_effort_updates(
+    messages: list[dict[str, Any]], model: str, params: dict[str, Any],
+) -> tuple[list[dict[str, Any]], Optional[str], bool]:
+    """Select the active marker lineage and project its efforts onto this route's vocabulary."""
+    from agent.effort_updates import (
+        EFFORT_UPDATE_KEY, effort_update, requested_effort, resolve_effort_updates, strip_effort_updates,
+    )
+
+    if not _supports_reasoning_effort_updates(model, params):
+        return strip_effort_updates(messages), None, False
+    current = requested_effort(params.get("reasoning_config"))
+    selected, baseline = resolve_effort_updates(messages, current)
+    if baseline is None:
+        return selected, None, False
+    supported = _codex_efforts_for_route(
+        model, params.get("base_url"), is_codex_backend=params.get("is_codex_backend") is True,
+    )
+    if not supported:
+        return strip_effort_updates(selected), None, False
+
+    prepared: list[dict[str, Any]] = []
+    has_wire_updates = False
+    for message in selected:
+        update = effort_update(message)
+        if update is None:
+            prepared.append(message)
+            continue
+        normalized = dict(update)
+        normalized["effort"] = clamp_effort(update["effort"], supported)
+        normalized["previous"] = clamp_effort(update["previous"], supported)
+        has_wire_updates = has_wire_updates or (
+            not bool(normalized.get("reset")) and normalized["effort"] != normalized["previous"]
+        )
+        prepared.append({**message, EFFORT_UPDATE_KEY: normalized})
+    return prepared, clamp_effort(baseline, supported), has_wire_updates
+
+
 def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
     """Astra's official-API contract, applied AFTER ``request_overrides`` so an override can't put a
     rejected field back on the wire: ``reasoning.effort`` is ``low..max`` only (``none``/``minimal``
     400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side
     (``prompt_cache_options.ttl`` accepts only its ``30m`` default, so nothing is sent for it and the
     pre-5.6 ``prompt_cache_retention`` knob is dropped)."""
-    if not _is_official_openai_responses_route(model, base_url):
+    if not (is_astra_model(model) and _is_openai_api_origin(base_url)):
         return
     reasoning = kwargs.get("reasoning")
     if isinstance(reasoning, dict):
@@ -640,6 +700,7 @@ class ResponsesApiTransport(ProviderTransport):
             current_issuer_kind=self._resolve_issuer_kind(kwargs),
             current_issuer_model=self._last_issuer_model,
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
+            replay_configuration_updates=bool(kwargs.get("replay_configuration_updates", False)),
         )
 
     def convert_tools(self, tools: Optional[list[dict[str, Any]]]) -> Any:
@@ -664,8 +725,8 @@ class ResponsesApiTransport(ProviderTransport):
         drives the Codex ``session_id`` header, and is the cache-scope fallback when no ``cache_scope_id``
         is given cache_scope_id: str | None — rotation-stable logical scope id (compression-lineage root;
         see agent/prompt_cache_scope.py). Preferred over session_id when deriving the prompt_cache_key
-        content hash and the xAI x-grok-conv-id header; the Codex x-client-request-id header mirrors the
-        resulting body key. Keeps the cache warm across context-compression session rotation (#79017)
+        content hash and the xAI x-grok-conv-id header. Keeps the cache warm across
+        context-compression session rotation (#79017)
         max_tokens: int | None — max_output_tokens timeout: float | None — per-request timeout forwarded to
         the SDK request_overrides: dict | None — extra kwargs merged in provider: str | None — provider name
         for backend-specific logic base_url: str | None — endpoint URL base_url_hostname: str | None —
@@ -693,11 +754,17 @@ class ResponsesApiTransport(ProviderTransport):
         # multi-item rejection happens on resource-level hosts too.
         if replay_encrypted_reasoning and _is_azure_responses(params):
             payload_messages = _newest_reasoning_only(payload_messages)
+        payload_messages, marker_baseline, has_effort_updates = _prepare_reasoning_effort_updates(
+            payload_messages, model, params,
+        )
         # One predicate decides whether context_management goes out AND whether the converter may replay a checkpoint.
-        context_management = params.get("context_management")
+        # OpenAI does not permit configuration updates with automatic compaction.
+        context_management = None if has_effort_updates else params.get("context_management")
         native_compaction_active = _native_compaction_active(context_management)
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
+        if marker_baseline is not None and reasoning_enabled:
+            reasoning_effort = marker_baseline
         response_tools, self._last_wire_aliases = _alias_wire_tools(
             self.convert_tools(tools), params, is_xai_responses, is_codex_backend,
         )
@@ -715,6 +782,7 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
                 is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
+                replay_configuration_updates=_supports_reasoning_effort_updates(model, params),
             ),
             "store": False,
         }
@@ -752,6 +820,12 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
+        if marker_baseline is not None and reasoning_enabled:
+            reasoning = kwargs.get("reasoning")
+            if not isinstance(reasoning, dict):
+                reasoning = {}
+                kwargs["reasoning"] = reasoning
+            reasoning["effort"] = marker_baseline
 
         _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
@@ -775,10 +849,12 @@ class ResponsesApiTransport(ProviderTransport):
 
         if is_codex_backend:
             # SDK kwarg -> HTTP headers. ``session_id`` = raw physical id (transcript
-            # identity); ``x-client-request-id`` mirrors the body cache key so both agree.
+            # identity). ``x-client-request-id`` is request identity, not cache affinity:
+            # Codex clients mint a fresh UUID for every call while ``prompt_cache_key``
+            # remains stable across turns.
             headers = {
                 "session_id": str(session_id) if session_id else None,
-                "x-client-request-id": kwargs.get("prompt_cache_key") or _bounded_prompt_cache_key(_cache_scope),
+                "x-client-request-id": str(uuid.uuid4()),
             }
             headers = {k: v for k, v in headers.items() if v}
             if headers:

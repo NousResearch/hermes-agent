@@ -50,7 +50,10 @@ def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
     `scheduled_task_drift` needs the exact characters back (#116193)."""
     monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "utf-8")
     task = f"Hermes_Test_{os.getpid()}"
-    marker = "Zo\u00eb"  # ë: one byte in every Western OEM/ANSI code page, invalid as a lone UTF-8 byte
+    # cp936 can encode this marker, unlike the previous ë marker.  The live
+    # query still verifies that schtasks' ANSI output round-trips in UTF-8 mode.
+    marker = "方舟"
+    assert marker.encode("cp936").decode("cp936") == marker
     created = subprocess.run(
         ["schtasks", "/Create", "/F", "/TN", task, "/SC", "ONLOGON", "/TR", f'wscript.exe //B "C:\\{marker}\\x.vbs"'],
         capture_output=True, timeout=30,

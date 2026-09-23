@@ -496,6 +496,8 @@ export interface PaginatedSessions {
   /** Per-profile read failures from the cross-profile aggregator (e.g. a locked
    *  or corrupt state.db). Present only on `/api/profiles/sessions`. */
   errors?: Array<{ profile: string; error: string }>
+  /** `{profile: 'corrupt'}` for each listed profile whose state.db is structurally damaged. */
+  storage?: Record<string, 'corrupt'>
 }
 
 export interface SessionCreateResponse {

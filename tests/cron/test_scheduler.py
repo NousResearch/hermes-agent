@@ -1083,7 +1083,9 @@ class TestRunJobConfigEnvVarExpansion:
         Regression for Daily Focus Kickoff 2026-08-11: xai-oauth token refresh
         raised httpx.ConnectError ([Errno 8] nodename nor servname provided)
         and the scheduler only tried fallbacks on AuthError, so the job died
-        before XAI_API_KEY / Anthropic could rescue it.
+        before XAI_API_KEY / Anthropic could rescue it. The job follows the
+        main model (unpinned): a pinned job never walks the global chain
+        (#100437, tests/cron/test_cron_pinned_job_fallback.py).
         """
         import httpx
 
@@ -1102,8 +1104,6 @@ class TestRunJobConfigEnvVarExpansion:
             "id": "dns-fallback",
             "name": "dns fallback",
             "prompt": "hi",
-            "provider": "xai-oauth",
-            "model": "grok-4.5",
         }
         fake_db = MagicMock()
         requested = []
@@ -1135,14 +1135,15 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True, error
         assert error is None
-        assert requested == ["xai-oauth", "xai"]
+        assert requested == [None, "xai"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "xai"
         assert kwargs["model"] == "grok-4.5"
 
 
     def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
-        """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT."""
+        """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT (unpinned job:
+        a pinned one does not walk the global chain, #100437)."""
         from hermes_cli.auth import AuthError
 
         (tmp_path / "config.yaml").write_text(
@@ -1159,15 +1160,13 @@ class TestRunJobConfigEnvVarExpansion:
             "id": "auth-fallback",
             "name": "auth fallback",
             "prompt": "hi",
-            "provider": "openai-codex",
-            "model": "gpt-5.6-sol",
         }
         fake_db = MagicMock()
         requested = []
 
         def resolve_runtime(**kwargs):
             requested.append(kwargs.get("requested"))
-            if kwargs.get("requested") == "openai-codex":
+            if kwargs.get("requested") in (None, "openai-codex"):
                 raise AuthError("No Codex credentials stored")
             assert kwargs["requested"] == "openrouter"
             assert kwargs["target_model"] == "z-ai/glm-5.2"
@@ -1189,7 +1188,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True
         assert error is None
-        assert requested == ["openai-codex", "openrouter"]
+        assert requested == [None, "openrouter"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
         assert kwargs["model"] == "z-ai/glm-5.2"

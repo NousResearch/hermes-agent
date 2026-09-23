@@ -41,7 +41,7 @@ def test_unit_transaction_budget_preserves_scope_and_health(monkeypatch, gracefu
         assert not failed
         assert sum("restart" in cmd for cmd, _ in calls) == 1
         return
-    monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a: True)
+    monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a, **kw: True)
     health = iter([False, True] if retry else [True])
     monkeypatch.setattr(fleet, "_wait_for_service_active", lambda *a, **kw: next(health))
     name = "hermes-gateway-test" if graceful else "hermes-serve-test"
@@ -97,7 +97,7 @@ def test_fleet_restart_repairs_a_system_unit_that_cannot_park_on_exit_78(monkeyp
     refreshed = []
     monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: refreshed.append(system))
     monkeypatch.setattr(fleet, "_systemctl", lambda cmd, *, timeout: subprocess.CompletedProcess(cmd, 0, "active", ""))
-    monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a: True)
+    monkeypatch.setattr(fleet, "_drain_or_signal_gateway_for_update", lambda *a, **kw: True)
     monkeypatch.setattr(fleet, "_wait_for_service_active", lambda *a, **kw: True)
 
     for name in ("hermes-gateway", "hermes-gateway-ops"):

@@ -377,7 +377,7 @@ export const sessionApprovalRequest = (sessionId: string | null) =>
 /** A session's sudo card, else the app-level one (a Bot Screen package install is raised with no
  *  session: it belongs to the connection, not to a turn, so whichever chat is focused shows it). */
 export const sessionSudoRequest = (sessionId: string | null) =>
-  computed(sudo.$all, all => all[keyFor(sessionId)] ?? (sessionId ? all[keyFor(null)] ?? null : null))
+  computed(sudo.$all, all => all[keyFor(sessionId)] ?? (sessionId ? (all[keyFor(null)] ?? null) : null))
 export const sessionSecretRequest = (sessionId: string | null) =>
   computed(secret.$all, all => all[keyFor(sessionId)] ?? null)
 

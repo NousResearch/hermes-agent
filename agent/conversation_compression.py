@@ -3622,6 +3622,19 @@ def _commit_compaction(
                 # Tail rows tagged by compress() are archived as superseded duplicates, not
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
                 tail_count = sum(1 for m in compressed if id(m) in _tail_tagged_ids)
+                # The rewind takes the newest `tail_count` durable rows as the tail's originals, so a tail row
+                # with none (this turn's user row, which the CLI and gateway persist after preflight; unflushed
+                # scaffolding) would flag a summarized row superseded instead: gone from display and search.
+                # Only while a turn holds the session: between turns (manual /compress, gateway hygiene) the
+                # anchor is the last turn's, and the rows it points at are durable, just unmarked.
+                _turn_idx = getattr(agent, "_persist_user_message_idx", None)
+                if (getattr(agent, "_active_session_turn_lease_holder", None) is not None
+                        and isinstance(_turn_idx, int) and 0 <= _turn_idx < len(messages)):
+                    from agent.context_compressor import _DB_PERSISTED_MARKER
+                    tail_count -= sum(
+                        1 for m in messages[max(_turn_idx, len(messages) - tail_count):]
+                        if isinstance(m, dict) and not m.get(_DB_PERSISTED_MARKER)
+                        and not isinstance(m.get("_row_id"), int))
                 persisted = compressed
                 if verbatim_tail:
                     # The kept exchanges are durable rows under the watermark, so the archive below covers

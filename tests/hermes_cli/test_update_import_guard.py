@@ -399,3 +399,30 @@ def test_hint_fires_for_each_first_party_root(modname):
     assert partial_update_hint(exc), f"expected guidance for {modname}"
 
 
+def test_import_probe_sees_a_stale_editable_finder_instead_of_the_checkout_cwd(monkeypatch, tmp_path):
+    """``-c`` puts the checkout cwd on sys.path[0], so a venv whose editable finder cannot resolve a
+    new top-level package still probed green — the exact state that crash-loops a gateway started
+    from ``/`` (#119466). With an editable install present the probe runs under ``-P`` and reports
+    the first-party ModuleNotFoundError; a venv WITHOUT an editable install keeps the cwd path."""
+    (tmp_path / "hermes_probe_pkg").mkdir()
+    (tmp_path / "hermes_probe_pkg" / "__init__.py").write_text("")
+    venv = tmp_path / "venv"
+    python = venv / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_probe_pkg",))
+    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("hermes_probe_pkg",))
+    monkeypatch.setattr(update_cmd_deps, "project_venv_dir", lambda root: venv)
+    monkeypatch.setattr(update_cmd_deps, "_editable_finder_files", lambda v: [])
+
+    assert update_cmd_deps._critical_module_import_failures(tmp_path) == {}  # dev checkout: cwd vouches
+
+    site = venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    site.mkdir(parents=True)
+    finder = site / "__editable___hermes_agent_0_21_0_finder.py"
+    finder.write_text("MAPPING = {}\n", encoding="utf-8")  # stale: no hermes_probe_pkg
+    monkeypatch.setattr(update_cmd_deps, "_editable_finder_files", lambda v: [finder])
+
+    failures = update_cmd_deps._critical_module_import_failures(tmp_path)
+    assert set(failures) == {"hermes_probe_pkg"}
+    assert failures["hermes_probe_pkg"][0] == "ModuleNotFoundError"

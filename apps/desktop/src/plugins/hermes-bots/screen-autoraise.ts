@@ -70,7 +70,8 @@ export function botForEvent(roster: RosterRow[], event: Pick<RpcEvent, 'connecti
     const botProfile = route ? route.targetProfile || route.profile : bot.name
     const expected = route?.connectionId ?? null
     const actual = event.connectionId ?? null
-    const sameSource = expected === actual || (expected === 'local' && actual === null) || (expected === null && actual === 'local')
+    const sameSource =
+      expected === actual || (expected === 'local' && actual === null) || (expected === null && actual === 'local')
 
     if (sameSource && botProfile === profile) {
       return bot

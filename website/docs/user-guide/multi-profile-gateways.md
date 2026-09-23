@@ -68,8 +68,8 @@ The model above runs **one process per profile**. The alternative is a
 launched it — becomes the sole inbound process and serves messages for *every*
 profile on the box.
 
-Because there is only ever one of them, the lifecycle verbs target that process
-rather than "this profile's gateway":
+The default profile's lifecycle verbs target that process. Named profiles can
+stop or restart just their own bots without stopping the host:
 
 - `hermes -p <name> gateway run` while it is live **attaches** instead of
   starting a second process: it prints the host gateway's PID and served set and
@@ -178,8 +178,66 @@ credentials, and routes each inbound message to the profile it belongs to. Each
 turn resolves the routed profile's config, skills, memory, SOUL, **and provider
 keys** — credentials are never shared across profiles.
 
-You do **not** run `hermes gateway start` for the secondary profiles — the
-default gateway serves them. See the contract changes below.
+The host automatically serves unparked secondary profiles. Use `gateway start`
+on a parked profile to bring it back online.
+
+### Stopping one profile without stopping the host
+
+For a named profile served by the host multiplexer:
+
+```bash
+hermes -p coder gateway stop     # park coder; other profiles keep running
+hermes -p coder gateway start    # unpark coder and serve it again
+hermes -p coder gateway restart  # reconnect coder with its current configuration
+```
+
+`stop` writes `gateway.parked` in the profile home before asking the host to stop
+that profile's adapters and exclude its cron jobs from subsequent ticks. The
+marker persists across host restarts. Its contents are ignored; an empty file
+is sufficient. Provisioning can pre-create
+`<profiles-root>/coder/gateway.parked` so an installed profile stays offline.
+Parking does not delete the profile, its sessions, or its scheduled jobs.
+
+`start` removes the marker, then asks a running host to serve the profile.
+Without a running host it removes the marker and follows the normal start
+path; start the host from the default profile if prompted. `restart` unserves
+and serves the profile without writing a parked marker, re-reading its config.
+These operations do not terminate work already dispatched by a cron tick.
+
+The host also rescans every 30 seconds: adding the marker by hand unserves the
+profile; removing it by hand makes it eligible again. If the control socket
+does not confirm the request, the CLI says so and the next rescan applies the
+marker state. Adapter teardown or connection can take additional time.
+`hermes -p coder gateway status` reports
+`parked (hermes -p coder gateway start)` while the marker exists.
+
+The launch profile cannot be unserved. The default profile's marker is ignored
+with a warning; its lifecycle verbs and the `--all` variants retain their
+whole-host behavior. A separately running `--force` gateway retains its own
+process lifecycle.
+
+The dashboard and Desktop **Stop** / **Start** buttons for a served profile do the
+same thing: Stop parks it (`/api/gateway/stop?profile=coder` spawns
+`hermes -p coder gateway stop`), Start unparks it while a host gateway is live,
+and `/api/status` lists `parked_profiles`. Start on a named profile that is
+*not* parked still answers `409` — it would need a gateway of its own.
+
+#### Parked vs `gateway.standalone: true`
+
+The two never apply to the same profile at the same time, and neither one
+implies the other:
+
+| Profile | Host serves it | `-p X gateway stop` | `-p X gateway start` |
+|---|---|---|---|
+| Served (default case) | yes | parks it (marker + `unserve-profile`) | already served |
+| Parked (`gateway.parked` exists) | no, until unparked | already parked | unparks (marker removed + `serve-profile`) |
+| Standalone (`gateway.standalone: true`) | never | stops **its own** gateway process; writes no marker | starts its own gateway |
+
+`gateway.standalone` wins: the host never writes `gateway.parked` for a
+standalone profile and never serves it, parked or not, so `stop` and `start` on
+that profile keep their per-process meaning. Parking is the multiplex-native way
+to take one profile offline — it is what closes the "per-profile stop/restart"
+gap the [temporary shim](#temporary-gatewaystandalone-true) was kept open for.
 
 ### No new per-profile gateways
 
@@ -223,9 +281,11 @@ The dashboard's **Start** button for a named profile returns the same refusal.
 
 :::warning Temporary backwards compatibility, not a topology we keep
 Multiplex-only is the direction: one gateway per host serves every profile. The
-switch landed before every gap was closed — per-profile stop/restart, the
-WhatsApp bridge and relay on secondary profiles, and dashboard scoping are the
-open ones — and fleets that relied on per-profile gateways lost them overnight.
+switch landed before every gap was closed — the WhatsApp bridge and relay on
+secondary profiles, and dashboard scoping are the open ones; per-profile
+stop/start/restart is closed by
+[parking](#stopping-one-profile-without-stopping-the-host) — and fleets that
+relied on per-profile gateways lost them overnight.
 `gateway.standalone: true` exists so those fleets keep working **while those
 gaps are fixed**. It will be removed once they are, with a release-notes notice
 ahead of time; every surface that prints it says so. Do not build new setups on
@@ -284,24 +344,17 @@ gateway on a blocked host.
 
 #### 1. Secondary profiles must not start their own gateway
 
-With a multiplexer running, a named-profile `hermes gateway run`, `start`,
-`install` or `restart` is a **hard error** (exit code 78), pointing you back at
-the multiplexer:
-
-```
-The default gateway is running as a profile multiplexer and already serves
-profile 'coder'. ...
-```
-
-The refusal happens in the CLI before any service manager is touched, so a served
-profile never ends up with a permanently failed systemd unit or a launchd respawn
-loop. `hermes -p coder gateway stop` refuses the same way (exit 78) when coder has no
-gateway of its own — there is nothing to stop but the multiplexer, which
-`hermes gateway stop` on the default profile takes down for every served profile.
-The dashboard and Desktop app follow the CLI: for a served profile the "Start" and
-"Stop" gateway actions answer `409` with the same explanation (rendered as an inline
-notice on the System page), and "Restart" restarts the multiplexer (the process that
-actually serves the profile) instead of spawning a `-p coder gateway restart` that
+With a multiplexer running, a named profile's `gateway run` attaches to it;
+`gateway install` refuses to create another process (exit code 78). The CLI
+refuses before touching a service manager, preventing a permanently failed
+systemd unit or a launchd respawn loop. Use the per-profile `stop`, `start`, and
+`restart` commands above to manage a satellite inside the host. `hermes gateway
+stop` on the default profile still takes every served profile offline.
+The dashboard and Desktop app follow the CLI: for a served profile the "Stop" action
+parks it and "Start" unparks it (see above); "Start" on an unparked named profile
+answers `409` with the same explanation (rendered as an inline notice on the System
+page). "Restart" restarts the multiplexer (the process that actually serves the
+profile) instead of spawning a `-p coder gateway restart` that
 could only fail. Because that restart reconnects every bot on the device, both apps
 first ask *"Restart the shared gateway? All bots on this device reconnect: default,
 coder, research"* (the list is the running gateway's `served_profiles`) and report
@@ -327,7 +380,7 @@ separate process opts out with `gateway.standalone: true` (see
 (accepted by `run`, `start`, `install` and `restart`) only where a boundary
 blocks the fold. The cross-profile
 lifecycle wrapper script earlier on this page is therefore **not** used in
-multiplex mode — you only manage the default gateway.
+multiplex mode — manage the host or its named profiles directly.
 
 #### 2. HTTP-inbound platforms are reached via a `/p/<profile>/` URL prefix
 
@@ -621,6 +674,7 @@ profile and never shares with the default or any sibling:
 | Dashboard actions (`hermes -p <name> …` spawned by the Desktop/dashboard) | A scrubbed child env pinned to that profile's `HERMES_HOME` | The child loads its own `.env`; the dashboard profile's tokens and ports are not inherited |
 | Every child that acts for a served profile (slash worker, Bot Chat delivery, A2A forward, `key_cmd` helper, browser driver) | That profile's own `.env` + secret sources over a credential-scrubbed base — with or without `gateway.multiplex_profiles` (the Desktop/dashboard `?profile=` route counts) | Absent from the child — a key that reached the launch process only through systemd / Compose / the shell is never inherited by another profile's child |
 | Authorization gates in a child spawned for another profile (`*_ALLOWED_USERS` / `*_ALLOWED_CHANNELS` / `*_IGNORED_CHANNELS` / `*_ALLOW_ALL_USERS` / `*_ALLOW_BOTS`, `GATEWAY_ALLOW*`) — dashboard `hermes -p <name>` actions, kanban workers, Bot Chat delivery, the post-update per-profile `gateway restart` | The child's own `.env` / `config.yaml`, loaded by the child itself | Closed (the adapter's documented default) — a gate exported into the spawning process by a unit file or the shell is dropped before the child starts, so profile B never enforces profile A's channel or user list; a same-profile child keeps it |
+| Routed-profile detection in an embedding host that mirrors the served profile into the live `HERMES_HOME` env var for legacy readers (Hermes WebUI) | The launch home the host pinned with `hermes_constants.pin_process_hermes_home()`; MCP connection keys, the launch-env strip for a served profile's children, the bridged allow-all seed and the `terminal.*` env-bridge guard all compare against it | Without a pin the live env var is the launch home, exactly as before — a host that never mutates `HERMES_HOME` needs nothing |
 | The launch (default) profile's own credentials in a `hermes serve` / dashboard process that also serves another profile | Its `.env` + secret sources over the process env **frozen the moment the first other profile is served**; not re-read afterwards | A credential rotated only in the process env (`systemctl set-environment`, a refreshed `op run` wrapper that did not re-exec) is not picked up until the process restarts — put rotating keys in `.env` or a secret source, or restart after rotating |
 | Cron `.env` tuning (`HERMES_CRON_TIMEOUT`, `HERMES_MODEL` fallback, `HERMES_CRON_MAX_PARALLEL`, prefill file), worker / Bot Chat child env | The profile's own `.env`; children never inherit the default profile's `.env` settings or bridged `TERMINAL_*` policy | Cron defaults / model refusal, exactly as a standalone `hermes -p <name> gateway run` |
 | Kanban workers and notifications for a profile's tasks | The assignee's `.env` + `config.yaml` (toolset pin, terminal backend, media policy, display language) | — |

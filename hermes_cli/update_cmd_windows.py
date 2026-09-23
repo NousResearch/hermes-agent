@@ -991,6 +991,7 @@ def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> 
         from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
         active = get_active_profile_name() or "default"
         cold: dict[str, str] = {}
+        # An activation list, not inventory: parked profiles stay offline.
         for name, home in profiles_to_serve(multiplex=True, include_standalone=True):
             if name in running_profiles or (name == active and token.get("cold_start_if_installed")):
                 continue

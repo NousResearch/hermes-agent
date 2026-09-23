@@ -619,6 +619,24 @@ describe('reconcileResumeMessages', () => {
 })
 
 describe('preserveLocalPendingTurnMessages', () => {
+  it('does not re-append a durably completed reply that compaction re-inserted under a new row id', () => {
+    const previous = [
+      msg('u1', 'user', 'q1', { rowId: 11340 }),
+      msg('a1', 'assistant', 'r1', { rowId: 11345, durableComplete: true }),
+      msg('user-9-x', 'user', 'q2', { rowId: 11350 }),
+      msg('assistant-stream-9-0', 'assistant', 'r2', { pending: false, rowId: 11359, durableComplete: true })
+    ]
+
+    const next = [
+      msg('s-u1', 'user', 'q1', { rowId: 11440 }),
+      msg('s-a1', 'assistant', 'r1', { rowId: 11444 }),
+      msg('s-u2', 'user', 'q2', { rowId: 11450 }),
+      msg('s-a2', 'assistant', 'r2', { rowId: 11459 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toEqual(next)
+  })
+
   it('does not append acknowledged local history after a shifted newest page', () => {
     const previous = [
       msg('user-first', 'user', 'Original request', { timestamp: 1 }),

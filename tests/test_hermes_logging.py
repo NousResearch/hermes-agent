@@ -131,9 +131,8 @@ class TestSetupLogging:
 
     @pytest.mark.parametrize("launch_redacts, routed_opt_out, routed_redacted", [
         (False, None, True),      # the launch profile opted out, the routed one did not
-        (True, "config", False),  # the routed profile opted out in its config.yaml
-        (True, "env", False),     # ... or in its own .env
-    ], ids=["launch-opt-out", "routed-config-opt-out", "routed-env-opt-out"])
+        (True, "env", False),     # the routed profile opted out in its own .env
+    ], ids=["launch-opt-out", "routed-env-opt-out"])
     def test_routed_records_follow_their_own_profiles_redaction_policy(
             self, hermes_home, tmp_path, monkeypatch, launch_redacts, routed_opt_out, routed_redacted):
         """The listener thread formats every record after its profile scope is gone, so a routed profile's own

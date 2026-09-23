@@ -500,7 +500,11 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         return True
     if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
         origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
-        if deferred is None:
+        if is_delegation and deferred is None:
+            # Its durable row remains pending until a resumed owner can prove the session-key lineage.
+            queue.put(evt)
+            time.sleep(0.1)
+        elif deferred is None:
             (logger.warning if is_delegation else logger.debug)(
                 "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
                 evt_type, origin, key, sid)

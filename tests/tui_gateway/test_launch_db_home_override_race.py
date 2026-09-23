@@ -223,3 +223,47 @@ def test_foreign_profile_poller_requeues_event_owned_through_another_profiles_li
         with server._sessions_lock:
             server._sessions.clear()
             server._sessions.update(saved)
+
+
+def test_detached_owner_delegation_is_retained_for_resume_when_another_poller_drains():
+    """An unowned delegation completion must wait for its durable owner to resume.
+
+    The draining session cannot prove ownership, so it must not dispatch the
+    payload.  Keeping it on the shared queue lets a later resumed owner claim
+    it through the existing durable session-key route.
+    """
+    import queue
+    from types import SimpleNamespace
+
+    completion_queue = queue.Queue()
+    registry = SimpleNamespace(completion_queue=completion_queue)
+    detached_event = {
+        "type": "async_delegation",
+        "origin_ui_session_id": "detached-ui",
+        "session_key": "durable-owner",
+        "delegation_id": "deleg-detached-owner",
+        "results": [],
+    }
+    draining_session = {"session_key": "other-session"}
+
+    assert server._notif_handle_event(
+        "other-ui", draining_session, detached_event, set(), registry,
+        lambda _event: (_ for _ in ()).throw(AssertionError("unowned event dispatched")), None,
+    ) is True
+    assert completion_queue.get_nowait() == detached_event
+
+
+def test_detached_owner_ordinary_completion_remains_fail_closed():
+    """Only durable delegation completions may wait for a resumed owner."""
+    import queue
+    from types import SimpleNamespace
+
+    completion_queue = queue.Queue()
+    registry = SimpleNamespace(completion_queue=completion_queue)
+    unowned_completion = {"type": "completion", "session_key": "durable-owner"}
+
+    assert server._notif_handle_event(
+        "other-ui", {"session_key": "other-session"}, unowned_completion, set(), registry,
+        lambda _event: (_ for _ in ()).throw(AssertionError("unowned event dispatched")), None,
+    ) is True
+    assert completion_queue.empty()

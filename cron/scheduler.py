@@ -46,6 +46,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
+from agent.turn_failure_copy import is_max_iteration_handoff
 
 logger = logging.getLogger(__name__)
 
@@ -1983,12 +1984,7 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     # Raise so the except handler below builds the proper failure tuple. (issue #17855)
     turn_exit_reason = str(result.get("turn_exit_reason") or "")
     final_response_text = (result.get("final_response") or "").strip()
-    max_iteration_summary = (
-        result.get("failed") is not True
-        and result.get("completed") is False
-        and turn_exit_reason.startswith("max_iterations_reached(")
-        and bool(final_response_text)
-    )
+    max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
     if max_iteration_summary:
@@ -3151,7 +3147,8 @@ def _run_one_job_body(
 
         # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
         # resolve credentials, so the scope must span delivery too (reset in the outer finally).
-        _scope_token = set_secret_scope(build_profile_secret_scope(_get_hermes_home()))
+        _scope_token = set_secret_scope(
+            build_profile_secret_scope(_get_hermes_home()), profile_home=str(_get_hermes_home()))
         # Same for terminal policy (gateway/run.py _profile_runtime_scope): else the ticker reads
         # process-global TERMINAL_* env a concurrent profile pinned. Resolution failure installs a
         # refusal scope — terminal execution raises instead of using the launch process's policy.
@@ -3488,7 +3485,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     profile_home = _get_hermes_home().resolve()
     hydrate_profile_secret_sources(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
     try:
         worker_env = strip_launch_profile_env(build_subprocess_env(
             scrub_secrets=multiplex_active,
@@ -3665,13 +3662,14 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_hermes_home_override,
     )
 
-    home_token = set_hermes_home_override(profile_home)
     previous_multiplex = is_multiplex_active()
-    multiplex_active = bool(payload.get("multiplex_active", False))
-    set_multiplex_active(multiplex_active)
-    hydrate_profile_secret_sources(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    home_token = secret_token = None
     try:
+        home_token = set_hermes_home_override(profile_home)
+        multiplex_active = bool(payload.get("multiplex_active", False))
+        set_multiplex_active(multiplex_active)
+        hydrate_profile_secret_sources(profile_home)
+        secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
         with use_cron_store(profile_home):
             if adopt_claimed_execution(execution_id) is None:
                 logger.error(
@@ -3720,9 +3718,11 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                 with contextlib.suppress(OSError):
                     ack_path.with_suffix(".stderr").unlink(missing_ok=True)
     finally:
-        reset_secret_scope(secret_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
         set_multiplex_active(previous_multiplex)
-        reset_hermes_home_override(home_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
 
 
 def _notify_provider_jobs_changed() -> None:

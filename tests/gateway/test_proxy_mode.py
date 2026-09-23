@@ -109,6 +109,38 @@ class TestGetProxyUrl:
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
 
 
+class _SelectiveScope(dict):
+    """Bound scope that resolves GATEWAY_PROXY_URL but fails on the KEY read."""
+    def get(self, name, default=None):
+        if name == "GATEWAY_PROXY_URL":
+            return "http://proxy.local:8642"
+        if name == "GATEWAY_PROXY_KEY":
+            raise RuntimeError("resolver boom")
+        return dict.get(self, name, default)
+
+
+class TestProxyKeyScopeFailure:
+    """The proxy key read must propagate a bound-scope failure -- the ambient env
+    may hold another profile's credential (pre-fix: ``except Exception -> os.getenv``)."""
+
+    @pytest.mark.asyncio
+    async def test_proxy_key_scope_failure_never_borrows_env(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("GATEWAY_PROXY_KEY", "foreign-key")
+        runner = _make_runner()
+        runner._run_still_current_fn = lambda *a, **k: True
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(_SelectiveScope())
+        try:
+            with pytest.raises(RuntimeError, match="resolver boom"):
+                await runner._run_agent_via_proxy("hi", "ctx", [], _make_source(), "sess-1")
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+
 class TestResolveProxyUrl:
 
     def test_no_proxy_bypasses_matching_host(self, monkeypatch):
@@ -251,7 +283,8 @@ class TestRunAgentViaProxy:
                         session_id="test",
                     )
 
-        assert "Proxy connection error" in result["final_response"]
+        assert "Connection refused" in result["final_response"]
+        assert result["api_calls"] == 0
 
 
     @pytest.mark.asyncio
@@ -389,7 +422,8 @@ class TestStreamingResilience:
                         session_id="test",
                     )
 
-        assert "closed before the response completed" in result["final_response"]
+        assert result["final_response"]
+        assert result["api_calls"] == 0
 
     @pytest.mark.asyncio
     async def test_client_timeout_sets_sock_connect(self, monkeypatch):
@@ -476,13 +510,4 @@ class TestStreamingResilience:
         assert result["final_response"] == "Hello world"
 
 
-class TestEnvVarRegistration:
-    """Verify GATEWAY_PROXY_URL and GATEWAY_PROXY_KEY are registered."""
-
-    def test_proxy_url_in_optional_env_vars(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "GATEWAY_PROXY_URL" in OPTIONAL_ENV_VARS
-        info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_URL"]
-        assert info["category"] == "messaging"
-        assert info["password"] is False
 

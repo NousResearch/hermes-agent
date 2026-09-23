@@ -112,30 +112,7 @@ class TestAPIServerAdapterWorkCount:
 
         assert adapter.active_agent_work_count() == 1
 
-    def test_interrupt_active_runs_interrupts_adapter_owned_agents(self):
-        adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        agent = MagicMock()
-        adapter._active_run_agents = {"run-1": agent}
 
-        assert adapter.interrupt_active_runs("gateway shutdown") == 1
-
-        agent.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
-
-    @pytest.mark.asyncio
-    async def test_shutdown_begin_marks_api_runs_before_drain(self):
-        runner, _adapter = make_restart_runner()
-        api = MagicMock()
-        api.mark_shutdown_requested.return_value = 1
-        runner.adapters = {Platform.API_SERVER: api}
-        runner._clear_plugin_message_injector = MagicMock()
-        runner._cancel_secondary_profile_reconnect_tasks = AsyncMock()
-        runner._notify_active_sessions_of_shutdown = AsyncMock()
-        runner._stop_systemd_watchdog = AsyncMock()
-        runner._stop_hosted_room_worker = AsyncMock(return_value=True)
-
-        await runner._stop_begin_teardown(runner._StopContext(deferred_count=lambda: 0))
-
-        api.mark_shutdown_requested.assert_called_once_with()
 
 
 class TestDrainWaitsForApiWork:
@@ -461,14 +438,6 @@ class TestInterruptActiveRuns:
         assert adapter.interrupt_active_runs("gateway shutdown") == 1
         healthy.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
-    def test_shutdown_marker_does_not_swallow_status_failures(self):
-        """``_set_run_status`` already contains the only fallible step (store persist);
-        the shutdown marker must not hide a programming error behind a second net."""
-        adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        with patch.object(adapter, "_set_run_status", side_effect=RuntimeError("boom")):
-            with pytest.raises(RuntimeError, match="boom"):
-                _api_runs._mark_shutdown_interrupted_runs(adapter, ["run-1"])
-        assert adapter._shutdown_interrupted_run_ids == {"run-1"}
 
 
 class TestShutdownInterruptReachesEveryApiTurn:

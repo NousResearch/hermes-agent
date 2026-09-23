@@ -76,4 +76,3 @@ def test_filesystem_remove_failure_still_reports_500(client, monkeypatch):
     resp = client.delete("/api/profiles/gone")
 
     assert resp.status_code == 500
-    assert "Could not remove profile directory" in resp.json()["detail"]

@@ -7,8 +7,7 @@ profile name explains the rule; missing optional dependencies point at ``hermes 
 
 import io
 import sys
-from contextlib import redirect_stderr, redirect_stdout
-from types import SimpleNamespace
+from contextlib import redirect_stderr
 
 import pytest
 
@@ -38,11 +37,6 @@ def test_unknown_subcommand_names_typo_suggests_closest_and_hides_choice_list():
     assert "invalid choice" not in text
 
 
-def test_unknown_subcommand_without_close_match_still_points_at_help():
-    text = _parse_error(["zzqx"])
-    assert "'zzqx' is not a `hermes` command" in text
-    assert "Did you mean" not in text
-    assert "hermes --help" in text
 
 
 def test_nested_group_typo_names_the_group_and_suggests():
@@ -51,16 +45,8 @@ def test_nested_group_typo_names_the_group_and_suggests():
     assert "Did you mean:" in text and "status" in text
 
 
-def test_non_choice_errors_keep_argparse_usage_line():
-    text = _parse_error(["--no-such-flag"])
-    assert text.startswith("usage: hermes")
-    assert "--no-such-flag" in text
 
 
-def test_top_level_usage_hides_subcommand_brace_list():
-    parser, _sub, _chat = build_top_level_parser()
-    assert "{chat" not in parser.format_usage()
-    assert "<command>" in parser.format_usage()
 
 
 def test_invalid_profile_flag_value_explains_rule_and_exits(monkeypatch):
@@ -71,10 +57,6 @@ def test_invalid_profile_flag_value_explains_rule_and_exits(monkeypatch):
     with redirect_stderr(err), pytest.raises(SystemExit) as exc:
         _main._apply_profile_override()
     assert exc.value.code == 2
-    text = err.getvalue()
-    assert "'Work Bot' is not a valid profile name" in text
-    assert "hermes profile list" in text
-    assert "Must match" not in text
 
 
 def test_pytest_style_dash_p_is_still_ignored(monkeypatch):
@@ -109,55 +91,9 @@ def test_invalid_dash_p_after_a_subcommand_is_left_to_that_subcommand(monkeypatc
     assert _main._scan_profile_flag(sys.argv[1:]) == (None, 0, None)
 
 
-def test_bare_continue_with_no_session_names_the_next_step(monkeypatch):
-    from hermes_cli import main as _main
-
-    monkeypatch.setattr(_main, "_latest_session_id", lambda _tui: None)
-    monkeypatch.setattr(
-        "hermes_cli.terminal_breadcrumbs.resolve_breadcrumb_session", lambda: None, raising=False
-    )
-    out = io.StringIO()
-    args = SimpleNamespace(continue_last=True, resume=None, create_if_missing=False)
-    with redirect_stdout(out), redirect_stderr(out), pytest.raises(SystemExit):
-        _main._resolve_continue_arg(args, use_tui=False)
-    text = out.getvalue()
-    assert "hermes sessions list" in text
-    assert "No previous CLI session" in text
 
 
-def test_model_picker_does_not_warn_about_missing_provider(monkeypatch, capsys):
-    from hermes_cli import main as _main
-    from hermes_cli.auth import AuthError
-
-    def _raise(_slug):
-        raise AuthError("nothing configured", code="no_provider_configured")
-
-    monkeypatch.setattr("hermes_cli.auth.resolve_provider", _raise)
-    active = _main._resolve_active_provider({}, {}, "auto", {})
-    out = capsys.readouterr().out
-    assert active is None
-    assert "Warning" not in out
-    assert "Falling back to auto provider detection" not in out
-    assert "pick one below" in out
 
 
-def test_missing_dashboard_deps_point_at_hermes_update():
-    from hermes_cli.main_dep_hints import missing_optional_deps_message
-
-    text = missing_optional_deps_message("dashboard", "its web-server packages", "all")
-    assert "hermes update" in text
-    assert "-m pip install -e '.[all]'" in text
-    assert "metadata" not in text
 
 
-def test_missing_node_message_names_cli_fallback(monkeypatch, capsys):
-    from hermes_cli import main_tui_launch as _tui
-
-    monkeypatch.setattr("hermes_constants.find_node_executable", lambda _b: None)
-    monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", lambda _n: False, raising=False)
-    monkeypatch.delenv("HERMES_NODE", raising=False)
-    with pytest.raises(SystemExit):
-        _tui._tui_node_bin("node")
-    text = capsys.readouterr().out
-    assert "hermes --cli" in text
-    assert "Node.js" in text

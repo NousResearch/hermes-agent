@@ -334,6 +334,7 @@ export const zhHant = defineLocale({
       gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',
       gatewayManagedUpdatesEmpty: '請在已儲存的連線中新增 SSH 連線，即可在此管理更新。',
       keyboardShortcuts: '按鍵繫結',
+      hudGesture: 'HUD 手勢',
       screenCapture: '螢幕擷取',
       notificationAlerts: '桌面通知',
       notificationSounds: '聲音',
@@ -347,10 +348,15 @@ export const zhHant = defineLocale({
       billingPlans: '方案'
     },
     plugins: {
+      openFolder: '開啟桌面外掛資料夾',
       installModal: {
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
-        repoPlaceholder: 'https://github.com/owner/repo'
+        repoPlaceholder: 'https://github.com/owner/repo',
+        toolsConnected: n => `已連線 ${n} 個工具`,
+        skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就緒` : `${names.length} 個技能已就緒`),
+        nextChat: '更多工具將在下一次聊天中可用',
+        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`
       }
     },
     closeSettings: '關閉設定',
@@ -663,7 +669,8 @@ export const zhHant = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
-      modelContextLength: '僅覆寫主聊天模型偵測到的上下文視窗（以 token 計）。保留 0 會使用所選模型偵測到的值。不影響輔助模型/MoA 模型。',
+      modelContextLength:
+        '僅覆寫主聊天模型偵測到的上下文視窗（以 token 計）。保留 0 會使用所選模型偵測到的值。不影響輔助模型/MoA 模型。',
       fallbackProviders: '備用模型',
       toolsets: '已啟用工具集',
       timezone: '時區',
@@ -997,6 +1004,10 @@ export const zhHant = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      minimizeToTrayTitle: '最小化至系統匣',
+      minimizeToTrayDesc:
+        '最小化視窗或關閉主視窗時，將其隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。透過系統匣選單中的「結束 Hermes」或 Cmd+Q 結束。預設關閉，僅適用於此裝置。',
+      minimizeToTrayUnavailable: '系統匣無法使用。視窗將正常最小化和關閉。關閉此選項後重新開啟即可重試。',
       none: '無',
       noneParen: '(無)',
       builtinOnly: '僅內建',
@@ -1015,6 +1026,15 @@ export const zhHant = defineLocale({
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
       showOptions: '顯示選項'
+    },
+    hudModifier: {
+      title: '輕按叫出 HUD',
+      description:
+        '在 Mac 上按下並放開 ⌘ + Option，在 Windows/Linux 上按下並放開 Ctrl + Alt，即可從任何應用程式將 HUD 帶到前景。預設關閉，僅適用於此裝置。',
+      permission: '請在系統設定 → 隱私權與安全性 → 輸入監控中允許 Hermes，然後重試。此手勢不會記錄按鍵或擷取畫面。',
+      unavailable: 'HUD 手勢輔助程式無法啟動或意外停止。請重試或重新啟動 Hermes。Hermes 內原有的 HUD 快速鍵仍可使用。',
+      missingHelper: '此 Hermes 安裝缺少 HUD 手勢輔助程式。請更新或重新安裝 Hermes，然後重試。',
+      unsupportedSession: '此桌面工作階段不支援全域修飾鍵輕按事件。Linux 需要 X11；不支援 Wayland。'
     },
     screenshot: {
       enabledTitle: '螢幕截圖快速鍵',
@@ -1189,36 +1209,20 @@ export const zhHant = defineLocale({
     },
     mcp: {
       loading: '正在載入 MCP 伺服器...',
-      failedLoad: 'MCP 設定載入失敗',
-      nameRequiredTitle: '需要名稱',
-      nameRequiredMessage: '請為此 MCP 伺服器提供設定鍵。',
-      objectRequired: '伺服器設定必須是 JSON 物件',
       invalidJson: 'MCP JSON 無效',
       saveFailed: '儲存失敗',
       removeFailed: '移除失敗',
-      gatewayUnavailableTitle: '閘道不可用',
-      gatewayUnavailableMessage: '重新載入 MCP 前請先重新連線閘道。',
-      reloadedTitle: 'MCP 工具已重新載入',
-      reloadedMessage: '新的工具 Schema 將套用至後續回合。',
       reloadFailed: 'MCP 重新載入失敗',
       savedTitle: 'MCP 伺服器已儲存',
       savedMessage: name => `${name} 會在 MCP 重新載入後生效。`,
-      newServer: '新伺服器',
-      reload: '重新載入 MCP',
-      reloading: '重新載入中...',
-      emptyTitle: '沒有 MCP 伺服器',
-      emptyDesc: '新增 stdio 或 HTTP 伺服器以公開 MCP 工具。',
       disabled: '已停用',
-      editServer: '編輯伺服器',
       name: '名稱',
       serverJson: '伺服器 JSON',
       remove: '移除',
-      saveServer: '儲存伺服器',
       capabilitySummary: (tools, prompts, resources) =>
         `已啟用 ${[`${tools} 個工具`, ...(prompts ? [`${prompts} 個提示`] : []), ...(resources ? [`${resources} 個資源`] : [])].join('、')}`,
       costTokens: tokens => `每次呼叫約 ${tokens} token`,
       usage30d: uses => `30 天內 ${uses} 次呼叫`,
-      unusedPill: '未使用',
       statusConnecting: '連線中…',
       statusNeedsAuth: '需要驗證',
       statusError: '錯誤',
@@ -1226,11 +1230,7 @@ export const zhHant = defineLocale({
       allServers: '所有伺服器',
       authenticatedTitle: '已驗證',
       authenticatedMessage: (server, count) => `${server}：${count} 個工具`,
-      waitingForBrowser: '等待瀏覽器…',
       authenticate: '驗證',
-      unsavedConnect: '未儲存 — 儲存 mcp.json 以連線。',
-      enableTool: tool => `啟用 ${tool}`,
-      disableTool: tool => `停用 ${tool}`,
       noOutput: '尚無輸出。',
       deepLinkTitle: '新增 MCP 伺服器？',
       deepLinkDescription: '一個連結要求將此 MCP 伺服器加入 Hermes。請檢查下方的完整設定——它來自該連結，而非 Hermes。',
@@ -1243,12 +1243,7 @@ export const zhHant = defineLocale({
       deepLinkErrorConfig: '連結中的設定不是有效的 base64 編碼 JSON。',
       deepLinkErrorShape: '設定必須是包含字串 `url` 或 `command` 欄位的 JSON 物件。',
       deepLinkErrorUrl: '僅允許 http:// 和 https:// 伺服器網址。',
-      deepLinkErrorTooLarge: '設定內容超過 32KB 上限。',
-      importButton: '匯入',
-      importPlaceholder: '貼上 mcp.json 片段、npx/docker 指令、claude mcp add 指令、URL 或 Cursor 連結…',
-      importNoMatch: '貼上的文字中未識別到伺服器設定。',
-      importConfirm: '加入 mcp.json',
-      importConfirmMany: count => `將 ${count} 個伺服器加入 mcp.json`
+      deepLinkErrorTooLarge: '設定內容超過 32KB 上限。'
     },
     model: {
       loading: '正在載入模型設定...',
@@ -1510,8 +1505,10 @@ export const zhHant = defineLocale({
         failedSelect: backend => `選擇 ${backend} 失敗`,
         needsSetupHint: '此後端已選取但尚未完成設定——在設定完成前命令將會失敗。',
         needsSetupConfirmTitle: backend => `仍要選擇 ${backend} 嗎？`,
-        needsSetupConfirmDescription: detail => `${detail} 此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。`,
-        needsSetupConfirmDescriptionGeneric: '此後端尚未完成設定。此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。',
+        needsSetupConfirmDescription: detail =>
+          `${detail} 此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。`,
+        needsSetupConfirmDescriptionGeneric:
+          '此後端尚未完成設定。此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。',
         needsSetupConfirmAction: '仍然選擇'
       },
       browserRealProfile: {
@@ -1540,7 +1537,6 @@ export const zhHant = defineLocale({
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
-    tabMcp: 'MCP',
     all: '全部',
     searchSkills: '搜尋技能...',
     searchToolsets: '搜尋工具集...',
@@ -2586,6 +2582,8 @@ export const zhHant = defineLocale({
   },
 
   statusStack: {
+    hideStack: '隱藏狀態面板',
+    showStack: '顯示狀態面板',
     agents: '代理',
     background: count => `${count} 個背景任務`,
     goalActive: '目標進行中',
@@ -3260,6 +3258,20 @@ export const zhHant = defineLocale({
     }
   },
 
+  interfaceMode: {
+    title: '介面模式',
+    hint: '只改變顯示的內容，不改變 Hermes 的能力。',
+    sessionNote: '由簡潔模式設定。此處的變更僅在本次工作階段內生效；切換到進階模式即可保留為你的設定。',
+    simple: {
+      label: '簡潔',
+      description: '用於與 Hermes 對話。只有側邊欄和聊天；沒有終端機、檔案或差異面板。'
+    },
+    advanced: {
+      label: '進階',
+      description: '面向開發者。終端機、檔案、差異、狀態列和版面配置，按你的設定顯示。'
+    }
+  },
+
   zones: {
     showTabStrip: '顯示分頁',
     hideTabStrip: '隱藏分頁',
@@ -3330,6 +3342,29 @@ export const zhHant = defineLocale({
   },
 
   assistant: {
+    catalogInstall: {
+      preparing: '正在準備安裝…',
+      install: '安裝',
+      advanced: '進階',
+      skip: '略過',
+      installing: '正在安裝…',
+      installed: '已安裝',
+      notInstalled: '未安裝',
+      failed: '失敗',
+      showNames: '顯示名稱',
+      hideNames: '隱藏名稱',
+      skill: name => `技能 ${name}`,
+      kind: { plugin: '外掛', skill: '技能' },
+      tier: { official: '官方', community: '社群' },
+      targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
+      sendFailed: '無法傳送你的回覆，請再試一次。',
+      commitLabel: '提交',
+      subdirLabel: '資料夾',
+      securityHeading: '安全性',
+      scan: { passed: '掃描通過', warnings: '掃描發現警告', failed: '掃描未通過' },
+      requirementsLabel: '需求',
+      credentialsHeading: '憑證'
+    },
     thread: {
       loadingSession: '正在載入工作階段',
       showEarlier: '顯示較早的訊息',
@@ -3527,6 +3562,7 @@ export const zhHant = defineLocale({
     sudoTitle: '管理員密碼',
     sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
     sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
+    sudoInstallDesc: 'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',

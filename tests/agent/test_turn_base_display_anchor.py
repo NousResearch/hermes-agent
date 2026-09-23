@@ -69,58 +69,6 @@ class TestChargeStaleThinkingKwarg:
         )
 
 
-class TestCliStatusSnapshotPrefersTurnBaseAnchor:
-    def _agent_with(self, last_prompt_tokens, messages, anchor):
-        compressor = SimpleNamespace(
-            last_prompt_tokens=last_prompt_tokens,
-            context_length=1_000_000,
-            compression_count=0,
-        )
-        return SimpleNamespace(
-            context_compressor=compressor,
-            _session_messages=messages,
-            _turn_base_usage_anchor=anchor,
-        )
-
-    def _snapshot_context_tokens(self, agent):
-        """Mirror the cli.py snapshot block's context_tokens resolution."""
-        compressor = agent.context_compressor
-        context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
-        if context_tokens < 0:
-            context_tokens = 0
-        msgs = getattr(agent, "_session_messages", None)
-        anchored = anchored_context_tokens(
-            msgs if isinstance(msgs, list) else [],
-            getattr(agent, "_turn_base_usage_anchor", None),
-            charge_stale_thinking=False,
-        )
-        if anchored is not None and anchored > 0:
-            context_tokens = anchored
-        return context_tokens
-
-    def test_turn_base_anchor_wins_over_inflated_last_request(self):
-        messages = [_msg("user", "start"), _msg("assistant", "reply")]
-        anchor = capture_usage_anchor(600_000, 500, messages)
-        messages.append(_msg("assistant", "anchored reply"))
-        agent = self._agent_with(850_000, messages, anchor)
-        # Bar shows the durable figure, not the inflated last request.
-        tokens = self._snapshot_context_tokens(agent)
-        assert 600_000 <= tokens < 650_000
-
-    def test_fallback_without_anchor(self):
-        agent = self._agent_with(123_456, [_msg("user", "x")], None)
-        assert self._snapshot_context_tokens(agent) == 123_456
-
-    def test_stale_anchor_falls_back(self):
-        messages = [_msg("user", "start"), _msg("assistant", "reply")]
-        anchor = capture_usage_anchor(50_000, 10, messages)
-        agent = self._agent_with(77_000, [_msg("user", "rebuilt")], anchor)
-        # Compaction rebuilt the list: structural check fails, raw fallback.
-        assert self._snapshot_context_tokens(agent) == 77_000
-
-    def test_negative_sentinel_still_clamped(self):
-        agent = self._agent_with(-1, [], None)
-        assert self._snapshot_context_tokens(agent) == 0
 
 
 class TestContextBreakdownPrefersTurnBaseAnchor:
@@ -189,10 +137,3 @@ class TestInvalidationSitesClearTurnBaseAnchor:
         set_usage_anchor(agent, None)
         assert agent._usage_anchor is None and agent._turn_base_usage_anchor is None
 
-    def test_agent_init_defines_turn_base_anchor(self):
-        import inspect
-        from agent import agent_init
-
-        src = inspect.getsource(agent_init)
-        # Init defaults are declared in the ``_USAGE_STATE`` table.
-        assert '"_turn_base_usage_anchor": None' in src

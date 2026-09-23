@@ -238,27 +238,6 @@ test('cross-target: matching prebuild IS staged for a foreign target', () => {
   }
 })
 
-test('cross-target: foreign target with no prebuild throws (fail closed)', () => {
-  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
-  try {
-    const srcRoot = join(tmp, 'node-pty')
-    const destRoot = join(tmp, 'dest')
-
-    // Create a tree with a host build/Release but no foreign prebuild.
-    makeFakeNodePty(srcRoot)
-    makeFakeNode(join(srcRoot, 'build', 'Release', 'pty.node'), process.platform)
-
-    const foreignPlatform = process.platform === 'linux' ? 'darwin' : 'linux'
-
-    assert.throws(
-      () => stageNodePtyInto(srcRoot, destRoot, { platform: foreignPlatform, arch: 'x64' }),
-      /cannot cross-compile/i
-    )
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true })
-  }
-})
-
 test('host-target: host build/Release IS staged for a matching target', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {

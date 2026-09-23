@@ -66,8 +66,9 @@ is documented as a known limitation at the end of this document.
   only source for launch keys with no `.env` to rebuild from (systemd
   `Environment=`, `op run`, Compose) — a key injected or rotated after the
   freeze is invisible for the process lifetime. A genuinely single-profile
-  host never activates, and neither does one that pinned
-  `gateway.multiplex_profiles: false`; an unreadable `profiles/` directory
+  host never activates; `gateway.multiplex_profiles: false` is retired and
+  deliberately NOT consulted here (honouring it would serve a second profile
+  with the launch profile's credentials); an unreadable `profiles/` directory
   fails closed (it activates) and logs a WARNING.
 - With the guard armed the **launch profile is a tenant too**: a body with no
   routed profile binds `launch_profile_scope_if_multiplexed()` rather than

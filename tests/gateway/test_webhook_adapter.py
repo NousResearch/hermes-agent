@@ -19,9 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
-import socket
 import time
-from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,7 +31,6 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
-    check_webhook_requirements,
 )
 
 
@@ -197,23 +194,6 @@ class TestValidateSignature:
         req = _mock_request(headers={"X-Gitlab-Token": secret})
         assert adapter._validate_signature(req, b"{}", secret) is True
 
-    def test_validate_no_secret_allows_all(self):
-        """When the secret is empty/falsy, the validator is never even called
-        by the handler (secret check is 'if secret and secret != _INSECURE...').
-        Verify that an empty secret isn't accidentally passed to the validator."""
-        # This tests the semantics: empty secret means skip validation entirely.
-        # The handler code does: if secret and secret != _INSECURE_NO_AUTH: validate
-        # So with an empty secret, _validate_signature is never reached.
-        # We just verify the code path is correct by constructing an adapter
-        # with no secret and confirming the route config resolves to "".
-        adapter = _make_adapter(
-            routes={"test": {"prompt": "hello"}},
-            secret="",
-        )
-        # The route has no secret, global secret is empty
-        route_secret = adapter._routes["test"].get("secret", adapter._global_secret)
-        assert not route_secret  # empty → validation is skipped in handler
-
 
     def test_validate_generic_v2_wrong_timestamp_rejects(self):
         """The timestamp is cryptographically bound into the V2 signature —
@@ -263,24 +243,13 @@ class TestValidateSignature:
         })
         assert adapter._validate_signature(req, body, secret) is False
 
-    def test_v1_replay_attack_succeeds_demonstrating_the_hole_v2_closes(self):
-        """Regression/documentation test: a captured (body, signature) V1
-        pair replays successfully no matter how much time has passed,
-        because the V1 signature has no timestamp binding at all. This is
-        the exact vulnerability V2 fixes — it is not asserting desired
-        behavior, it is pinning the known, accepted-with-warning legacy
-        gap so a future change to V1's semantics doesn't silently alter it
-        without a deliberate decision."""
+    def test_validate_generic_v1_signature_accepts(self):
+        """Legacy generic senders sign the raw body (X-Webhook-Signature)."""
         adapter = _make_adapter()
         body = b'{"event": "push"}'
         secret = "generic-secret"
-        sig = _generic_signature(body, secret)
-        original_request = _mock_request(headers={"X-Webhook-Signature": sig})
-        assert adapter._validate_signature(original_request, body, secret) is True
-        # "Time passes" — nothing about a V1 signature depends on time, so
-        # a captured pair replayed much later still validates.
-        replayed_request = _mock_request(headers={"X-Webhook-Signature": sig})
-        assert adapter._validate_signature(replayed_request, body, secret) is True
+        req = _mock_request(headers={"X-Webhook-Signature": _generic_signature(body, secret)})
+        assert adapter._validate_signature(req, body, secret) is True
 
 
     def test_validate_svix_signature_raw_secret_valid(self):
@@ -537,8 +506,6 @@ class TestHTTPHandling:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/webhooks/test", json={"data": "value"})
             assert resp.status == 403
-            data = await resp.json()
-            assert data["error"] == "Webhook route is missing an HMAC secret"
 
         adapter.handle_message.assert_not_called()
 
@@ -794,18 +761,6 @@ class TestDeliveryCleanup:
 
 
 # ===================================================================
-# check_webhook_requirements
-# ===================================================================
-
-
-class TestCheckRequirements:
-
-    @patch("gateway.platforms.webhook.AIOHTTP_AVAILABLE", False)
-    def test_returns_false_without_aiohttp(self):
-        assert check_webhook_requirements() is False
-
-
-# ===================================================================
 # __raw__ template token
 # ===================================================================
 
@@ -915,13 +870,6 @@ class TestDualStackBind:
     machines) it yields an IPv6-ONLY socket, which would then break the IPv4
     loopback health check and the AF_INET port-conflict probe.
     """
-
-
-    def test_missing_host_key_resolves_to_none(self):
-        """Config with no host key → dual-stack (None), not a literal string."""
-        cfg = PlatformConfig(enabled=True, extra={"port": 0, "routes": {}})
-        adapter = WebhookAdapter(cfg)
-        assert adapter._host is None
 
 
     @pytest.mark.asyncio

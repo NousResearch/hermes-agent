@@ -229,7 +229,7 @@ export function useStatusbarItems({
   // file manager on this computer can show its workspace at all.
   const focusedRowConnectionId = useStoreSelector($sessions, sessions =>
     focusedStoredSessionId
-      ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.connection_id?.trim() || '')
+      ? sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.connection_id?.trim() || ''
       : ''
   )
 

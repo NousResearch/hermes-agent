@@ -693,7 +693,9 @@ def _join_cancelled_worker(future: Any, grace_seconds: float) -> bool:
         future.result(timeout=grace)
         return True
     except concurrent.futures.TimeoutError:
-        return False
+        # Aliases builtin TimeoutError (3.11+): also raised when the worker DIED with a timeout-class
+        # error. That worker has exited, so report it settled or the caller orphans the lease (#63892).
+        return future.done()
     except concurrent.futures.CancelledError:
         # Never started; nothing can be in flight.
         return True
@@ -1059,6 +1061,14 @@ def _await_worker_within_budget(
         try:
             return True, future.result(timeout=wait_slice)
         except concurrent.futures.TimeoutError:
+            # Aliases builtin TimeoutError (3.11+): also fires when the WORKER died with one (#63892).
+            # A settled future never unsettles — re-waiting spun ~2k iter/s; take the stall path now.
+            if future.done():
+                exc = future.exception()
+                if exc is None:
+                    return True, future.result()
+                logger.info("Context compression worker exited with %r — taking the stall path", exc)
+                return False, None
             waited = time.monotonic() - wait_started
             since_progress = fence.seconds_since_progress()
             if not fence.deadline_exceeded and since_progress < idle and waited < ceiling:
@@ -1100,6 +1110,10 @@ def _await_in_flight_commit(
         try:
             return future.result(timeout=remaining)
         except concurrent.futures.TimeoutError:
+            # Aliases builtin TimeoutError (3.11+): also fires when the commit worker died with one (#63892).
+            # A settled future never unsettles — this ceiling-less loop spun forever; re-raise the worker's error.
+            if future.done():
+                return future.result()
             # Commit-phase progress is informative only — the commit must complete; loop
             # and re-report with the updated overrun window.
             continue
@@ -3569,12 +3583,14 @@ def _commit_compaction(
     agent: Any, messages: list, compressed: list, *, in_place: bool, lease: _CompressionLease,
     new_system_prompt: str, system_message: str, compressed_user_turn_outcome: str,
     messages_before_compression: Optional[list], made_progress: bool, attempt: _Attempt,
+    verbatim_tail: Optional[list] = None,
 ) -> _CommitOutcome:
     """Persist the compacted transcript: memory extraction, anti-growth guard, then the
     in-place archive or the parent->child rotation.
 
     Failures roll the live list back and arm the split-failure cooldown; a refused (would-grow) candidate returns
-    ``refused_prompt`` so the caller hands back the input unchanged.
+    ``refused_prompt`` so the caller hands back the input unchanged. ``verbatim_tail`` (``/compress here N``) is
+    re-inserted after the compacted head by the in-place commit and stamped once durable; rotation ignores it.
     """
     session_commit_succeeded = False
     compacted_in_place = False
@@ -3605,16 +3621,27 @@ def _commit_compaction(
                 from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
                 # Tail rows tagged by compress() are archived as superseded duplicates, not
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
+                tail_count = sum(1 for m in compressed if id(m) in _tail_tagged_ids)
+                persisted = compressed
+                if verbatim_tail:
+                    # The kept exchanges are durable rows under the watermark, so the archive below covers
+                    # them too. Store them after the head in the same transaction, with the seam the caller
+                    # would build, and count their originals as carried duplicates like compress()'s tail.
+                    from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+                    persisted = rejoin_compressed_head_and_tail(compressed, verbatim_tail)
+                    tail_count += len(verbatim_tail)
                 agent._session_db.archive_and_compact(
-                    agent.session_id, compressed, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
-                    watermark=lease.watermark, lock_holder=lease.holder,
-                    tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
+                    agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
+                    watermark=lease.watermark, lock_holder=lease.holder, tail_count=tail_count,
                 )
+                compressed = persisted
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next
                 # flush re-INSERTs the whole compacted transcript, doubling the live set. Reset
                 # the flush identity set so next turn diffs against the COMPACTED transcript.
-                stamp_db_persisted_markers(compressed)
+                # The verbatim tail is stamped as well: a seam fold drops its first row from
+                # `compressed`, and the stamps tell the caller the tail is already in the list.
+                stamp_db_persisted_markers([*compressed, *(verbatim_tail or ())])
                 agent._flushed_db_message_ids = set()
                 # Rotation-independent signal; the gateway reads this (not an id diff) to
                 # re-baseline transcript handling.
@@ -3889,7 +3916,7 @@ def compress_context(
     agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
-    commit_fence: Optional[CompressionCommitFence] = None,
+    commit_fence: Optional[CompressionCommitFence] = None, verbatim_tail: Optional[list] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
     ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
@@ -3910,7 +3937,8 @@ def compress_context(
     failed attempt records its cooldown normally. defer_context_engine_notification: Delay the existing
     context-engine hook until a manual host commits its outer history transaction. commit_fence: Optional
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
-    session state after its caller has moved on.
+    session state after its caller has moved on. verbatim_tail: The exchanges ``/compress here N`` keeps
+    after ``messages``; an in-place commit stores them after the compacted head and returns head + tail.
     """
     attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
 
@@ -4043,7 +4071,7 @@ def compress_context(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
             messages_before_compression=messages_before_compression, made_progress=_compression_made_progress,
-            attempt=attempt,
+            attempt=attempt, verbatim_tail=verbatim_tail,
         )
         if commit.refused_prompt is not None:
             return messages, commit.refused_prompt

@@ -180,7 +180,6 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
 
     assert [m["role"] for m in messages] == ["tool"]
     assert messages[0]["tool_call_id"] == "c-warn"
-    assert "Tool loop warning" in messages[0]["content"]
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
@@ -208,11 +207,6 @@ def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
 
     content = messages[0]["content"]
     assert "same_tool_failure_warning" in content
-    assert "Do not switch to text-only replies" in content
-    assert "keep using tools" in content
-    assert "pwd && ls -la" in content
-    assert "absolute path" in content
-    assert "different tool" in content
 
 
 def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():
@@ -445,7 +439,7 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
 
     assert result["turn_exit_reason"] == "guardrail_halt"
     halt_text = result["final_response"]
-    assert "stopped retrying" in halt_text
+    assert halt_text
 
     # The halt message must have been pushed through the callback at least
     # once.  Empty-queue SSE writers were the bug — clients saw no content

@@ -15,8 +15,16 @@
  * bot-initiated sends use `hermes -p <bot> chat --in ~ -c "Bot Chat"`.
  */
 
-import { CHAT_EMPTY_AREA, COMPOSER_AREAS, host, LocalizedTabTitle, PALETTE_AREA, translateNow } from '@hermes/plugin-sdk'
-import type { ChatEmptyProps, PluginContext } from '@hermes/plugin-sdk'
+import {
+  CHAT_EMPTY_AREA,
+  COMPOSER_AREAS,
+  host,
+  LocalizedTabTitle,
+  PALETTE_AREA,
+  SIDEBAR_PROFILE_GROUP_HEADER_AREA,
+  translateNow
+} from '@hermes/plugin-sdk'
+import type { ChatEmptyProps, PluginContext, ProfileGroupRoute } from '@hermes/plugin-sdk'
 
 import { startFaceClock, stopFaceClock } from './avatar'
 import {
@@ -71,6 +79,8 @@ import {
   sessionOwnsWorkspace
 } from './roster-pane'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { startScreenAutoRaise } from './screen-autoraise'
+import { ProfileGroupScreenPortal } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
 import type { GroupChat, RosterRow } from './types'
@@ -108,6 +118,8 @@ export default {
     // The cross-connection relay rides every gateway socket this Desktop
     // holds: roster sync + envelope drain/deliver/reply loops.
     startBotRelay()
+    // Opt-in per bot: raise a bot's Screen tab on its first live screen tool call.
+    const stopScreenAutoRaise = startScreenAutoRaise()
 
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
@@ -115,6 +127,7 @@ export default {
       ctx.onDispose(disposeLocales)
       ctx.onDispose(stopFaceClock)
       ctx.onDispose(stopBotRelay)
+      ctx.onDispose(stopScreenAutoRaise)
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the
@@ -269,7 +282,8 @@ export default {
                   // guard as the other maps — a held bot stays held across
                   // window restarts until explicitly released.
                   holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
-                  externalCursors: room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
+                  externalCursors:
+                    room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
@@ -408,6 +422,13 @@ export default {
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
+    // Sessions sidebar: each gateway/profile group gets the profile's Screen portal
+    // above its sessions, so the bot's computer is reachable from either mode.
+    ctx.register({
+      id: 'screen-portal',
+      area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
+      data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
+    })
     ctx.register({
       id: 'pane',
       area: 'panes',

@@ -16,7 +16,11 @@ stubThreadViewportSize()
 const createdAt = new Date('2026-09-11T12:00:00Z')
 const sealedAt = createdAt.getTime() / 1000 + 5
 
-function sealedMessage(toolName: string, args: Record<string, unknown>, extra: Record<string, unknown> = {}): ThreadMessage {
+function sealedMessage(
+  toolName: string,
+  args: Record<string, unknown>,
+  extra: Record<string, unknown> = {}
+): ThreadMessage {
   return {
     id: `assistant-sealed-${toolName}`,
     role: 'assistant',

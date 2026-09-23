@@ -48,7 +48,15 @@ describe('removeDesktopPlugin', () => {
     write(path.join(home, 'config.yaml'), 'model: x')
     write(path.join(root, 'hello', 'plugin.js'), 'export default {}')
 
-    for (const name of ['../config.yaml', '..', '.', '', 'hello/plugin.js', `..${path.sep}config.yaml`, path.join(root, 'hello')]) {
+    for (const name of [
+      '../config.yaml',
+      '..',
+      '.',
+      '',
+      'hello/plugin.js',
+      `..${path.sep}config.yaml`,
+      path.join(root, 'hello')
+    ]) {
       const result = await removeDesktopPlugin(root, name)
 
       expect(result.ok, name).toBe(false)

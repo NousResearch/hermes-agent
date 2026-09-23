@@ -11,6 +11,7 @@ import {
   coarseElapsed,
   Codicon,
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -74,6 +75,7 @@ import {
   useTurnBusy,
   workerActiveAt
 } from './row-helpers'
+import { openBotScreen } from './screen-open'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
 import {
   $botSections,
@@ -321,6 +323,24 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => openBotScreen(bot, meta)}>{b.screen.menu}</ContextMenuItem>
+        <ContextMenuCheckboxItem
+          checked={Boolean(meta?.screenAutoOpen)}
+          onSelect={() => {
+            void ensureBotMetadata(bot)
+              .then(current => {
+                const next = !current.screenAutoOpen
+                void saveBotMeta(bot, { screenAutoOpen: next })
+                host.notify({
+                  kind: 'info',
+                  message: next ? b.screen.autoOpenOnToast(displayName(bot, current)) : b.screen.autoOpenOffToast(displayName(bot, current))
+                })
+              })
+              .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
+          }}
+        >
+          {b.screen.autoOpenMenu}
+        </ContextMenuCheckboxItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {
@@ -332,7 +352,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 })
                 host.notify({
                   kind: 'info',
-                  message: pinned ? b.bot.unpinnedToast(displayName(bot, current)) : b.bot.pinnedToast(displayName(bot, current))
+                  message: pinned
+                    ? b.bot.unpinnedToast(displayName(bot, current))
+                    : b.bot.pinnedToast(displayName(bot, current))
                 })
               })
               .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))

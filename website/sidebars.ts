@@ -3,6 +3,11 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   docs: [
     'user-stories',
+    // The Skills/Plugins hubs live in the navbar. On mobile Docusaurus opens the drawer on the doc
+    // sidebar, with the navbar a "Back to main menu" tap away, so without these links the hubs are
+    // undiscoverable on a phone.
+    {type: 'link', label: 'Browse Skills', href: '/skills'},
+    {type: 'link', label: 'Browse Plugins', href: '/plugins'},
     {
       type: 'category',
       label: 'Getting Started',
@@ -124,6 +129,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/browser',
             'user-guide/features/credential-vault',
             'user-guide/features/computer-use',
+            'user-guide/features/bot-screen',
             'user-guide/features/vision',
             'user-guide/features/image-generation',
             'user-guide/features/spotify',
@@ -824,6 +830,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/web-search-provider-plugin',
                 'developer-guide/browser-provider-plugin',
                 'developer-guide/terminal-environment-plugin',
+                'developer-guide/plugins/application-declarations',
               ],
             },
             'developer-guide/creating-skills',

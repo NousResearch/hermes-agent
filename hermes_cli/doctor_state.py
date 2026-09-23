@@ -18,8 +18,8 @@ from hermes_state_holders import read_only_db_uri
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
-        from plugins.memory.honcho.client import HonchoClientConfig
-        cfg = HonchoClientConfig.from_global_config()
+        from plugins.memory import import_provider_module
+        cfg = import_provider_module("honcho", "client").HonchoClientConfig.from_global_config()
         return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
     except Exception:
         return False
@@ -165,13 +165,44 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
 
 
+# Cache-root entries at least this big that no pruner covers get a doctor warning.
+_UNPRUNED_CACHE_WARN_BYTES = 1 << 30
+_PRUNED_CACHE_DIRS = frozenset({"scratch", "terminal"})
+
+
+def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN_BYTES) -> list[tuple[str, int]]:
+    """``(name, bytes)`` for ``cache/`` entries outside the pruned dirs that exceed *min_bytes*.
+
+    Finished campaign trees parked at the cache root sat for weeks (95 GB on one host)
+    because only ``scratch/`` and ``terminal/`` are reaped; doctor is where that shows."""
+    from hermes_constants import scratch_dir_usage_bytes
+
+    cache = hermes_home / "cache"
+    hogs: list[tuple[str, int]] = []
+    try:
+        entries = [e for e in cache.iterdir() if e.is_dir() and not e.is_symlink() and e.name not in _PRUNED_CACHE_DIRS]
+    except OSError:
+        return hogs
+    for entry in entries:
+        size = scratch_dir_usage_bytes(entry)
+        if size >= min_bytes:
+            hogs.append((entry.name, size))
+    return sorted(hogs, key=lambda item: -item[1])
+
+
 def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
     """Report the scratch dir (TMPDIR target) and its size; a user-set TMPDIR elsewhere is shown, not judged."""
     from hermes_constants import (
-        SCRATCH_DIR_MARKER_ENV, SCRATCH_MAX_AGE_HOURS, get_scratch_dir, scratch_dir_usage_bytes)
+        SCRATCH_DIR_MARKER_ENV, SCRATCH_MAX_IDLE_HOURS, get_scratch_dir, scratch_dir_usage_bytes)
     scratch = get_scratch_dir(hermes_home, prune=False)
     size = _human_bytes(scratch_dir_usage_bytes(scratch))
-    check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {size}, pruned after {SCRATCH_MAX_AGE_HOURS}h)")
+    check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {size}, entries pruned after {SCRATCH_MAX_IDLE_HOURS}h idle)")
+    for name, nbytes in unpruned_cache_hogs(hermes_home):
+        check_warn(
+            f"{_DHH}/cache/{name}/ is {_human_bytes(nbytes)} and outside every pruner "
+            f"(only cache/scratch/ and cache/terminal/ are reaped) — move task files under "
+            f"cache/scratch/<task>/ or delete it"
+        )
     tmpdir = os.environ.get("TMPDIR", "")
     if tmpdir and tmpdir != os.environ.get(SCRATCH_DIR_MARKER_ENV, ""):
         check_info(f"TMPDIR={tmpdir} is set by you or the OS, so Hermes leaves it alone")
@@ -442,9 +473,10 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
 
 
 def _memory_provider_honcho(issues: list) -> None:
-    from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-    hcfg = HonchoClientConfig.from_global_config()
-    cfg_path = resolve_config_path()
+    from plugins.memory import import_provider_module
+    client = import_provider_module("honcho", "client")
+    hcfg = client.HonchoClientConfig.from_global_config()
+    cfg_path = client.resolve_config_path()
     if not cfg_path.exists():
         # Config file missing — env-var fallback may still have resolved it.
         check_bool(hcfg.api_key or hcfg.base_url,
@@ -456,18 +488,17 @@ def _memory_provider_honcho(issues: list) -> None:
         _fail_and_issue("Honcho API key or base URL not set", "run: hermes memory setup",
                         "No Honcho API key — run 'hermes memory setup'", issues)
     else:
-        from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
-        reset_honcho_client()
+        client.reset_honcho_client()
         try:
-            get_honcho_client(hcfg)
+            client.get_honcho_client(hcfg)
             check_ok("Honcho connected", f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}")
         except Exception as _e:
             _fail_and_issue("Honcho connection failed", str(_e), f"Honcho unreachable: {_e}", issues)
 
 
 def _memory_provider_mem0(issues: list) -> None:
-    from plugins.memory.mem0 import _load_config as _load_mem0_config
-    mem0_cfg = _load_mem0_config()
+    from plugins.memory import import_provider_module
+    mem0_cfg = import_provider_module("mem0")._load_config()
     if mem0_cfg.get("api_key", ""):
         check_ok("Mem0 API key configured")
         check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
@@ -500,8 +531,9 @@ def _memory_provider_generic(name: str) -> None:
 @doctor_check()
 def _check_memory_provider(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import HERMES_HOME
+    from agent.memory_provider import is_core_memory_provider
     name = _doctor_memory_config(HERMES_HOME).get("provider", "")
-    if not name:
+    if is_core_memory_provider(name):
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
         return
     checker, missing_row, missing_issue, label = _MEMORY_PROVIDER_CHECKS.get(name, (None, None, None, name))
@@ -541,3 +573,9 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
                 _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8"))
                 if _m and not profile_exists(_m.group(1)):
                     check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+    # Same helper as the multiplex migration preflight, so doctor names the duplicates that make
+    # `hermes gateway migrate --multiplex` refuse (and made pre-multiplex standalone gateways race).
+    from hermes_cli.gateway_migrate import duplicate_credential_findings
+    for line in duplicate_credential_findings():
+        check_warn("Duplicate platform credential across profiles", f"({line})")
+        f.manual_issues.append(line)

@@ -105,10 +105,11 @@ async def get_schema(profile: Optional[str] = None):
 
 
 @config_router.get("/api/egress/status")
-async def get_egress_status():
+async def get_egress_status(profile: Optional[str] = None):
     """Dashboard/Desktop-readable egress proxy status and remediation text."""
     from hermes_cli.proxy_cli import format_status_text
-    return {"text": format_status_text()}
+    with _config_profile_scope(profile):  # reads the profile's ``proxy:`` config block
+        return {"text": format_status_text()}
 
 
 @router.put("/api/config")

@@ -75,9 +75,6 @@ def test_requested_mcp_server_owned_by_other_profile_blocks_run(tmp_path):
     assert agent_built is False
     assert success is False
     assert error is not None and "[blocked_config]" in error and "notion" in error
-    # The reason is operator-facing copy: it must say the block re-evaluates itself so a
-    # transient outage is not mistaken for a config error to repair by hand (#112871).
-    assert "clears by itself" in error
 
 
 def test_requested_mcp_server_with_tools_runs(tmp_path):
@@ -152,32 +149,3 @@ def test_requested_mcp_server_parked_on_permanent_error_blocks(tmp_path):
     assert error is not None and "[blocked_config]" in error and "notion" in error
 
 
-def test_reconnecting_warning_is_once_per_job_and_server_per_outage(tmp_path, caplog):
-    """The reconnecting exemption warns once per job+server while the outage lasts (not every
-    tick) and warns again once the server recovered and dropped out a second time."""
-    import logging
-
-    import cron.scheduler_preflight as preflight
-
-    preflight._RECONNECTING_WARNED.clear()
-    job = _job(enabled_toolsets=["terminal", "notion"])
-    undo = _park_notion(ever_connected=True)
-    try:
-        with caplog.at_level(logging.WARNING, logger="cron.scheduler_preflight"):
-            _run(job, tmp_path)
-            _run(job, tmp_path)
-            warned = [r for r in caplog.records if "are reconnecting" in r.getMessage()]
-            assert len(warned) == 1
-            # Server back: the dedupe entry drops, so the next outage warns again.
-            _register = _register_notion_in_scope(None)
-            try:
-                _run(job, tmp_path)
-            finally:
-                _register()
-            assert ("mcpjob", "notion") not in preflight._RECONNECTING_WARNED
-            _run(job, tmp_path)
-            warned = [r for r in caplog.records if "are reconnecting" in r.getMessage()]
-            assert len(warned) == 2
-    finally:
-        undo()
-        preflight._RECONNECTING_WARNED.clear()

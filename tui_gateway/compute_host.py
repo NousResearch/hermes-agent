@@ -320,9 +320,17 @@ class ComputeHost:
             if profile_home:
                 from hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
                 from hermes_state_registry import acquire
                 home_token = set_hermes_home_override(profile_home)
-                secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                # External sources first (1Password / Bitwarden / secrets.command): this isolated
+                # turn process never ran the launch dotenv path for the routed profile, so without
+                # hydration the scope is built on an empty external snapshot and a vault-only
+                # provider key fails closed. Same order as gateway/run.py::_load_profile_secret_scope
+                # and tui_gateway/model_switch.py::_profile_runtime_scope_tokens (#119521).
+                hydrate_profile_secret_sources(Path(profile_home))
+                secret_token = set_secret_scope(
+                    build_profile_secret_scope(Path(profile_home)), profile_home=profile_home)
                 # DEDICATED handle — ours only until _make_agent succeeds, then the agent owns
                 # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
                 session_db = acquire(Path(profile_home) / "state.db")

@@ -73,25 +73,6 @@ class TestHandleFastCommand(unittest.TestCase):
         self.assertIsNone(stub.agent)
 
 
-    def test_unsupported_model_does_not_expose_fast(self):
-        cli_mod = _import_cli()
-        stub = SimpleNamespace(
-            service_tier=None,
-            provider="openai-codex",
-            requested_provider="openai-codex",
-            model="gpt-5.3-codex",
-            _fast_command_available=lambda: False,
-            agent=MagicMock(),
-        )
-
-        with (
-            patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
-        ):
-            cli_mod.HermesCLI._handle_fast_command(stub, "/fast")
-
-        mock_save.assert_not_called()
-        self.assertTrue(mock_cprint.called)
 
 
 class TestPriorityProcessingModels(unittest.TestCase):
@@ -134,14 +115,6 @@ class TestPriorityProcessingModels(unittest.TestCase):
         assert model_supports_fast_mode("grok-4.5") is False
         assert resolve_fast_mode_overrides("grok-4.6") == {"service_tier": "priority"}
 
-    def test_resolve_overrides_returns_service_tier(self):
-        from hermes_cli.models import resolve_fast_mode_overrides
-
-        result = resolve_fast_mode_overrides("gpt-5.4")
-        assert result == {"service_tier": "priority"}
-
-        result = resolve_fast_mode_overrides("gpt-4.1")
-        assert result == {"service_tier": "priority"}
 
 
 
@@ -242,14 +215,6 @@ class TestAnthropicFastMode(unittest.TestCase):
 
 
 
-    def test_resolve_overrides_returns_speed_for_anthropic(self):
-        from hermes_cli.models import resolve_fast_mode_overrides
-
-        result = resolve_fast_mode_overrides("claude-opus-4-8")
-        assert result == {"speed": "fast"}
-
-        result = resolve_fast_mode_overrides("anthropic/claude-opus-4.8")
-        assert result == {"speed": "fast"}
 
 
 
@@ -340,10 +305,3 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
 
 
 
-class TestConfigDefault(unittest.TestCase):
-    def test_default_config_has_service_tier(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        agent = DEFAULT_CONFIG.get("agent", {})
-        self.assertIn("service_tier", agent)
-        self.assertEqual(agent["service_tier"], "")

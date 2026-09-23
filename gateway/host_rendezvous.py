@@ -571,16 +571,15 @@ def cleanup_on_exit(role: str) -> None:
 
 
 def _multiplex_profiles_enabled() -> bool:
-    """Will THIS process multiplex? Explicit config wins; unset means the default (on)."""
-    try:
-        from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
-        from hermes_constants import get_hermes_home
-
-        flag = explicit_multiplex_flag(get_hermes_home())
-    except Exception:
-        logger.debug("multiplex flag unreadable; assuming the default (on)", exc_info=True)
-        return True
-    return True if flag is None else bool(flag)
+    """Will THIS process multiplex? An explicit ``true`` and an unset key both say yes, and an
+    explicit ``false`` is RETIRED (``hermes_cli.gateway_multiplex_mode``) — it is warned about and
+    ignored at boot, so it must not make the claim-time record advertise a narrower roster than
+    the process actually serves. Reading it here was the last place the retired flag still decided
+    topology, and it made CLI/dashboard report "standalone, serving default" while the runtime
+    multiplexed. The RUNTIME verdict (a boot-time guard refusal) narrows the record afterwards, in
+    ``gateway.run._refresh_host_gateway_record``, which republishes the SETTLED set.
+    """
+    return True
 
 
 def served_profiles(*, multiplex: Optional[bool] = None) -> tuple[str, ...]:

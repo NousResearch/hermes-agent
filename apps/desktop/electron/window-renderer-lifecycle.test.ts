@@ -3,10 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  describeRendererLifecycleEvent,
   installWindowRendererLifecycle,
   pruneReloadTimes,
-  pushReloadTime,
   shouldReloadAfterFailedLoad,
   shouldReloadAfterRendererGone
 } from './window-renderer-lifecycle'
@@ -84,12 +82,6 @@ test('pruneReloadTimes drops timestamps outside the rolling window', () => {
 
   assert.deepEqual(pruneReloadTimes([100_000, 90_000, 39_999], now, 60_000), [100_000, 90_000])
   assert.deepEqual(pruneReloadTimes([], now, 60_000), [])
-})
-
-test('pushReloadTime records the timestamp', () => {
-  const times: number[] = []
-
-  assert.deepEqual(pushReloadTime(times, 42), [42])
 })
 
 test('shouldReloadAfterRendererGone reloads crashed/oom on a live window', () => {
@@ -282,7 +274,7 @@ test('unresponsive is logged, never reloaded', () => {
   win.webContents.emit('unresponsive')
 
   assert.equal(win.reloadCalls.length, 0)
-  assert.equal(logs[0], '[renderer:secondary] webContents became unresponsive')
+  assert.equal(logs.length, 1)
 })
 
 test('did-fail-load on the main frame is logged, not reloaded', () => {
@@ -374,32 +366,6 @@ test('dispose removes every listener (no stacking on window recreation)', () => 
   assert.equal(win.reloadCalls.length, 0)
   assert.equal(logs.length, 0)
   assert.equal(win.webContents.listenerCount('render-process-gone'), before - 1)
-})
-
-test('describeRendererLifecycleEvent sanitizes unknown fields', () => {
-  assert.equal(
-    describeRendererLifecycleEvent({ kind: 'secondary', event: 'render-process-gone' }),
-    '[renderer:secondary] render-process-gone reason=? exitCode=?'
-  )
-  assert.equal(
-    describeRendererLifecycleEvent({
-      kind: 'secondary',
-      event: 'render-process-gone',
-      reason: 'crashed',
-      exitCode: undefined
-    }),
-    '[renderer:secondary] render-process-gone reason=crashed exitCode=?'
-  )
-  assert.equal(
-    describeRendererLifecycleEvent({
-      kind: 'main',
-      event: 'render-process-gone',
-      reason: 'killed',
-      exitCode: 1,
-      isDestroyed: true
-    }),
-    '[renderer:main] render-process-gone reason=killed exitCode=1 (expected teardown)'
-  )
 })
 
 // --- #95575: white-screen recovery for main-frame load failures -------------

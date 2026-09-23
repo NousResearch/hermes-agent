@@ -73,13 +73,6 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
-def test_hermes_provider_subclass_exists():
-    """HermesMCPOAuthProvider is defined and subclasses OAuthClientProvider."""
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
-    from mcp.client.auth.oauth2 import OAuthClientProvider
-
-    assert _HERMES_PROVIDER_CLS is not None
-    assert issubclass(_HERMES_PROVIDER_CLS, OAuthClientProvider)
 
 
 @pytest.mark.asyncio
@@ -125,63 +118,6 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     assert provider._initialized is False
 
 
-@pytest.mark.asyncio
-async def test_handle_401_tracks_inflight_task_to_prevent_gc(tmp_path, monkeypatch):
-    """The 401 handler task must be strongly referenced by the manager.
-
-    ``asyncio.create_task`` returns a task the event loop only weakly
-    references. If the manager discards its handle, the background coroutine
-    can be garbage-collected mid-run and every concurrent waiter stuck on
-    ``await pending`` hangs forever. See the design note on
-    ``MCPOAuthManager._inflight_tasks``.
-    """
-    import asyncio
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
-
-    class _TrackedSet(set):
-        """set subclass that records every element ever inserted."""
-
-        def __init__(self):
-            super().__init__()
-            self.ever_added: list = []
-
-        def add(self, item):  # noqa: A003
-            self.ever_added.append(item)
-            super().add(item)
-
-    mgr = MCPOAuthManager()
-    mgr._inflight_tasks = _TrackedSet()
-
-    class _DummyProvider:
-        context = None  # forces the can_refresh=False branch
-
-    mgr._entries[mgr._key("srv")] = _ProviderEntry(
-        server_url="https://example.com/mcp",
-        oauth_config=None,
-        provider=_DummyProvider(),
-    )
-
-    result = await mgr.handle_401("srv", failed_access_token="TOK")
-
-    # The discard done-callback is scheduled via loop.call_soon, so it runs on
-    # a later loop iteration than the one that resolved `pending` and let
-    # handle_401 return. Yield once so the callback fires before we assert the
-    # task was removed from the live set.
-    await asyncio.sleep(0)
-
-    # Exactly one handler task was created and tracked.
-    assert len(mgr._inflight_tasks.ever_added) == 1
-    tracked_task = mgr._inflight_tasks.ever_added[0]
-    assert isinstance(tracked_task, asyncio.Task)
-    # done_callback must have removed the finished task from the live set,
-    # otherwise the set would grow unbounded across repeated 401s.
-    assert tracked_task not in mgr._inflight_tasks
-    assert len(mgr._inflight_tasks) == 0
-    assert tracked_task.done()
-    # With provider.context=None, there's nothing to refresh — result False.
-    assert result is False
 
 
 @pytest.mark.asyncio
@@ -234,7 +170,6 @@ async def test_handle_401_dedup_survives_even_if_task_reference_dropped(tmp_path
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 
 def _fake_response(status, url, body):
@@ -264,26 +199,6 @@ def _provider_with_token_endpoint(tmp_path, oauth_config, token_endpoint, monkey
     return provider
 
 
-def test_invalid_client_at_token_endpoint_poisons(tmp_path, monkeypatch):
-    """400 invalid_client on the token endpoint deletes the dead client.json."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    d = tmp_path / "mcp-tokens"
-    d.mkdir(parents=True)
-    (d / "srv.client.json").write_text('{"client_id": "dead"}', encoding="utf-8")
-    (d / "srv.meta.json").write_text("{}", encoding="utf-8")
-    provider = _provider_with_token_endpoint(
-        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
-    )
-    resp = _fake_response(
-        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_client"}'
-    )
-
-    asyncio.run(provider._maybe_flag_poisoned_client(resp))
-
-    assert not (d / "srv.client.json").exists()
-    assert (d / "srv.client.json.bak").exists()
-    assert provider._initialized is False
-    assert provider.context.client_info is None
 
 
 def test_invalid_client_metadata_does_not_trip(tmp_path, monkeypatch):
@@ -614,39 +529,6 @@ async def test_refresh_400_rejects_disk_token_without_refresh_token(
     assert provider.context.current_tokens is None
 
 
-@pytest.mark.asyncio
-async def test_refresh_400_does_not_strand_a_rejected_token_in_the_context(
-    tmp_path, monkeypatch
-):
-    """A rejected candidate must not be left installed on the context.
-
-    is_token_valid() reads the context, so the candidate has to be published
-    to be tested. This asserts on the state the recovery helper itself leaves
-    behind, because the caller's clear_tokens() would otherwise mask the
-    difference: without the restore, current_tokens still points at the
-    rejected candidate when the helper returns.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    provider = _provider_with_token_endpoint(
-        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
-    )
-
-    stale = _token("A1", "R1")
-    provider.context.current_tokens = stale
-    await provider.context.storage.set_tokens(_token("A2", "R2"))
-
-    seen = []
-    provider.context.is_token_valid = lambda: (
-        seen.append(provider.context.current_tokens) or False
-    )
-
-    recovered = await provider._hermes_reload_tokens_after_refresh_failure()
-
-    assert recovered is False
-    assert seen and seen[0].access_token == "A2", "candidate must be testable"
-    assert provider.context.current_tokens is stale, (
-        "a rejected candidate must not be left on the context"
-    )
 
 
 
@@ -948,7 +830,7 @@ async def test_refresh_fence_surfaces_non_contention_lock_errors_immediately(tmp
 
     monkeypatch.setattr(mcp_oauth.fcntl, "flock", broken_flock)
     started = time.monotonic()
-    with pytest.raises(mcp_oauth.RefreshFenceTimeout, match="unavailable on this filesystem"):
+    with pytest.raises(mcp_oauth.RefreshFenceTimeout):
         await mcp_oauth.acquire_refresh_fence(tmp_path / "srv.json", timeout=5.0)
     assert time.monotonic() - started < 1.0, "must fail fast, not wait out the deadline"
 

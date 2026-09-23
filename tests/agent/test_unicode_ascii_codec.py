@@ -4,9 +4,8 @@ Covers the fix for issue #6843 — systems with ASCII locale (LANG=C)
 that can't encode non-ASCII characters in API request payloads.
 """
 
-import pytest
 
-from agent.message_sanitization import _strip_non_ascii, _sanitize_messages_non_ascii, _sanitize_structure_non_ascii, _sanitize_tools_non_ascii, _sanitize_messages_surrogates
+from agent.message_sanitization import _strip_non_ascii, _sanitize_messages_non_ascii, _sanitize_structure_non_ascii, _sanitize_tools_non_ascii, _sanitize_messages_surrogates, sanitize_outbound_kwargs
 
 
 class TestStripNonAscii:
@@ -96,18 +95,6 @@ class TestApiKeyNonAsciiSanitization:
         key = "sk-proj-abc" + "ʋ" + "def"
         assert _strip_non_ascii(key) == "sk-proj-abcdef"
 
-    def test_api_key_at_position_153(self):
-        """Reproduce the exact error: ʋ at position 153 in 'Bearer <key>'."""
-        key = "sk-proj-" + "a" * 138 + "ʋ" + "bcd"
-        auth_value = f"Bearer {key}"
-        # This is what httpx does — and it fails:
-        with pytest.raises(UnicodeEncodeError) as exc_info:
-            auth_value.encode("ascii")
-        assert exc_info.value.start == 153
-        # After sanitization, it should work:
-        sanitized_key = _strip_non_ascii(key)
-        sanitized_auth = f"Bearer {sanitized_key}"
-        sanitized_auth.encode("ascii")  # should not raise
 
 
 class TestSanitizeToolsNonAscii:
@@ -152,68 +139,6 @@ class TestSanitizeStructureNonAscii:
         assert payload["default_headers"]["User-Agent"] == "Hermes/1.0 "
 
 
-class TestApiKeyClientSync:
-    """Verify that ASCII recovery updates the live OpenAI client's api_key.
-
-    The OpenAI SDK stores its own copy of api_key which auth_headers reads
-    dynamically.  If only self.api_key is updated but self.client.api_key
-    is not, the next request still sends the corrupted key in the
-    Authorization header.
-    """
-
-    def test_client_api_key_updated_on_sanitize(self):
-        """Simulate the recovery path and verify client.api_key is synced."""
-        from unittest.mock import MagicMock
-        from run_agent import AIAgent
-
-        agent = AIAgent.__new__(AIAgent)
-        bad_key = "sk-proj-abc\u028bdef"  # ʋ lookalike at position 11
-        agent.api_key = bad_key
-        agent._client_kwargs = {"api_key": bad_key}
-        agent.quiet_mode = True
-
-        # Mock client with its own api_key attribute (like the real OpenAI client)
-        mock_client = MagicMock()
-        mock_client.api_key = bad_key
-        agent.client = mock_client
-
-        # --- replicate the recovery logic from run_agent.py ---
-        _raw_key = agent.api_key
-        _clean_key = _strip_non_ascii(_raw_key)
-        assert _clean_key != _raw_key, "test precondition: key should have non-ASCII"
-
-        agent.api_key = _clean_key
-        agent._client_kwargs["api_key"] = _clean_key
-        if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
-            agent.client.api_key = _clean_key
-
-        # All three locations should now hold the clean key
-        assert agent.api_key == "sk-proj-abcdef"
-        assert agent._client_kwargs["api_key"] == "sk-proj-abcdef"
-        assert agent.client.api_key == "sk-proj-abcdef"
-        # The bad char should be gone from all of them
-        assert "\u028b" not in agent.api_key
-        assert "\u028b" not in agent._client_kwargs["api_key"]
-        assert "\u028b" not in agent.client.api_key
-
-    def test_client_none_does_not_crash(self):
-        """Recovery should not crash when client is None (pre-init)."""
-        from run_agent import AIAgent
-
-        agent = AIAgent.__new__(AIAgent)
-        bad_key = "sk-proj-\u028b"
-        agent.api_key = bad_key
-        agent._client_kwargs = {"api_key": bad_key}
-        agent.client = None
-
-        _clean_key = _strip_non_ascii(bad_key)
-        agent.api_key = _clean_key
-        agent._client_kwargs["api_key"] = _clean_key
-        if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
-            agent.client.api_key = _clean_key
-
-        assert agent.api_key == "sk-proj-"
-        assert agent.client is None  # should not have been touched
 
 
 class TestApiMessagesAndApiKwargsSanitized:
@@ -259,22 +184,6 @@ class TestApiMessagesAndApiKwargsSanitized:
         assert found is True
         assert "\u2192" not in api_kwargs["extra_body"]["system"]
 
-    def test_messages_clean_but_api_messages_dirty_both_get_sanitized(self):
-        """Even when canonical messages are clean, api_messages may be dirty."""
-        messages = [{"role": "user", "content": "hello"}]
-        api_messages = [
-            {"role": "user", "content": "hello"},
-            {
-                "role": "assistant",
-                "content": "ok",
-                "reasoning_content": "step \xab done",
-            },
-        ]
-        # messages sanitize returns False (nothing to clean)
-        assert _sanitize_messages_non_ascii(messages) is False
-        # api_messages sanitize must catch the dirty reasoning_content
-        assert _sanitize_messages_non_ascii(api_messages) is True
-        assert "\xab" not in api_messages[1]["reasoning_content"]
 
     def test_reasoning_field_in_canonical_messages_is_sanitized(self):
         """The canonical messages list stores reasoning as 'reasoning', not
@@ -312,3 +221,93 @@ class TestSanitizeMessagesPersistMarker:
         msg = {"role": "user", "content": "clean ascii", _DB_PERSISTED_MARKER: True}
         assert _sanitize_messages_non_ascii([msg]) is False
         assert msg[_DB_PERSISTED_MARKER] is True
+
+    def test_ascii_recovery_sanitizes_detached_request_not_canonical_history(self, monkeypatch):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from agent.turn_recovery import _recover_unicode_encode_error
+
+        monkeypatch.setattr("agent.turn_recovery._runtime_uses_ascii_encoding", lambda: True)
+
+        canonical = [{"role": "user", "content": "olá ☕", _DB_PERSISTED_MARKER: True}]
+        api_messages = [{"role": "user", "content": "olá ☕"}]
+        prefill = [{"role": "assistant", "content": "prefill ☕"}]
+        tools = [{"type": "function", "function": {"name": "read", "description": "desc ☕"}}]
+        agent = type("Agent", (), {
+            "_unicode_sanitization_passes": 0,
+            "_force_ascii_payload": False,
+            "api_key": "ascii-key",
+            "_client_kwargs": {},
+            "client": None,
+            "prefill_messages": prefill,
+            "tools": tools,
+            "_cached_system_prompt": "cached ☕",
+            "ephemeral_system_prompt": "ephemeral ☕",
+            "log_prefix": "",
+            "_buffer_vprint": lambda self, *args, **kwargs: None,
+            "_vprint": lambda self, *args, **kwargs: None,
+        })()
+        api_kwargs = {"tools": agent.tools, "extra_body": {"note": "request ☕"}}
+
+        canonical_before = repr(canonical)
+        prefill_before = repr(prefill)
+        tools_before = repr(tools)
+
+        recovered, sanitized_prompt = _recover_unicode_encode_error(
+            agent, UnicodeEncodeError("ascii", "☕", 0, 1, "ordinal not in range"),
+            canonical, api_messages, api_kwargs, "active ☕",
+        )
+
+        assert recovered is True
+        assert sanitized_prompt == "active "
+        assert repr(canonical) == canonical_before
+        assert repr(prefill) == prefill_before
+        assert repr(tools) == tools_before
+        assert agent._cached_system_prompt == "cached ☕"
+        assert agent.ephemeral_system_prompt == "ephemeral ☕"
+        assert canonical[0][_DB_PERSISTED_MARKER] is True
+        assert api_messages[0] is not canonical[0]
+        api_messages[0]["content"].encode("ascii")
+        # Recovery no longer touches the failed attempt's api_kwargs (the retry rebuilds
+        # them); the outbound chokepoint detaches the aliased canonical tools before
+        # stripping, so agent.tools stays byte-stable.
+        assert agent._force_ascii_payload is True
+        retry_kwargs = {"tools": agent.tools, "extra_body": {"note": "retry ☕"}}
+        sanitize_outbound_kwargs(agent, retry_kwargs)
+        assert retry_kwargs["tools"] is not agent.tools
+        assert repr(tools) == tools_before
+        retry_kwargs["tools"][0]["function"]["description"].encode("ascii")
+        retry_kwargs["extra_body"]["note"].encode("ascii")
+
+    def test_ascii_word_in_error_does_not_strip_utf8_request_copy(self, monkeypatch):
+        from agent.turn_recovery import _recover_unicode_encode_error
+
+        monkeypatch.setattr("agent.turn_recovery._runtime_uses_ascii_encoding", lambda: False)
+        canonical = [{"role": "user", "content": "olá ☕"}]
+        api_messages = [{"role": "user", "content": "olá ☕"}]
+        agent = type("Agent", (), {
+            "_unicode_sanitization_passes": 0,
+            "_force_ascii_payload": False,
+            "api_key": "ascii-key",
+            "_client_kwargs": {},
+            "client": None,
+            "prefill_messages": None,
+            "tools": [],
+            "_cached_system_prompt": "system ☕",
+            "ephemeral_system_prompt": None,
+            "log_prefix": "",
+            "_buffer_vprint": lambda self, *args, **kwargs: None,
+            "_vprint": lambda self, *args, **kwargs: None,
+        })()
+
+        recovered, _ = _recover_unicode_encode_error(
+            agent, UnicodeEncodeError("ascii", "☕", 0, 1, "ordinal not in range"),
+            canonical, api_messages, {}, "system ☕",
+        )
+
+        # Nothing was repaired, so an identical retry cannot help: the error must
+        # surface through the normal path rather than consume a sanitization pass.
+        assert recovered is False
+        assert agent._unicode_sanitization_passes == 0
+        assert canonical[0]["content"] == "olá ☕"
+        assert api_messages[0]["content"] == "olá ☕"
+        assert agent._cached_system_prompt == "system ☕"

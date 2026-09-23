@@ -655,8 +655,9 @@ class CLIStreamMixin:
         if tool_name in announced:
             return
         announced.add(tool_name)
-        from agent.display import get_tool_emoji
-        _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {tool_name}…")
+        from agent.display import bridge_generating_phrase, get_tool_emoji
+        what = bridge_generating_phrase(tool_name) or tool_name
+        _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {what}…")
 
     def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
         """Tool lifecycle events (tool.started / tool.completed / reasoning.* / moa.*).
@@ -751,12 +752,12 @@ class CLIStreamMixin:
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):
-            from agent.display import get_tool_emoji, get_tool_preview_max_len
+            from agent.display import get_tool_preview_max_len, tool_row_emoji
             label = preview or function_name
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
-            self._spinner_text = f"{get_tool_emoji(function_name)} {label}"
+            self._spinner_text = f"{tool_row_emoji(function_name, function_args)} {label}"
             self._tool_start_time = time.monotonic()
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(

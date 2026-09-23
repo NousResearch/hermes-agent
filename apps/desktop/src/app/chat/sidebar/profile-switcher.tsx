@@ -943,7 +943,9 @@ function ProfilePill({
     <ProfileLaunchContextMenu connectionId={connectionId ?? null} label={profile} profile={profile}>
       {button}
     </ProfileLaunchContextMenu>
-  ) : button
+  ) : (
+    button
+  )
 }
 
 // The gateway marker that heads every group on the fleet rail: its kind glyph

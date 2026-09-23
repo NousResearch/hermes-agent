@@ -170,6 +170,23 @@ def test_a_supervised_attach_is_retried_not_parked(monkeypatch, capsys):
     assert exc.value.code != gw.GATEWAY_FATAL_CONFIG_EXIT_CODE
 
 
+def test_a_refusal_lands_in_the_profile_logs_not_only_on_stdout(monkeypatch, caplog):
+    """The refusal's stdout goes to the supervisor's unit log; launchd then maps 78 to a clean exit and
+    parks the unit. Nothing in the profile's own logs said why (field report on #118097)."""
+    owner = host_attach.HostGateway(4321, Path("/somewhere"), ("default",))
+    monkeypatch.setattr(
+        "gateway.host_attach.decide",
+        lambda home, replace=False: host_attach.HostAttachDecision(
+            host_attach.REFUSE, host_attach._refuse_message(owner, "nous"), owner))
+
+    with caplog.at_level("WARNING", logger="hermes_cli.gateway"), pytest.raises(SystemExit) as exc:
+        gw._attach_to_host_gateway_or_guard(force=False)
+
+    assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE
+    warned = [r for r in caplog.records if r.levelno >= 30 and "migrate --multiplex" in r.getMessage()]
+    assert warned, "a refusal must leave the remedy in the profile's own log"
+
+
 def test_replace_is_not_eaten_by_the_cli_guard(monkeypatch):
     """The guard exited before ``start_gateway`` ever saw ``--replace``, so nothing was replaced."""
     owner = host_attach.HostGateway(4321, Path("/somewhere"), ("default", "other"))

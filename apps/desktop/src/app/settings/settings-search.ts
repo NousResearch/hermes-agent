@@ -19,8 +19,10 @@ export const APPEARANCE_SETTING_IDS = {
   hideThreadTimeline: 'appearance.hide-thread-timeline',
   introSplash: 'appearance.intro-splash',
   language: 'appearance.language',
+  minimizeToTray: 'appearance.minimize-to-tray',
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',
+  interfaceMode: 'appearance.interface-mode',
   translucency: 'appearance.translucency',
   uiScale: 'appearance.ui-scale',
   userBubble: 'appearance.user-bubble'

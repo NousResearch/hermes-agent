@@ -17,6 +17,13 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
+import {
+  $interfaceMode,
+  $modeShadowed,
+  INTERFACE_MODES,
+  type InterfaceMode,
+  setInterfaceMode
+} from '@/store/interface-mode'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -68,6 +75,7 @@ import { appearanceSubpageForSetting, type AppearanceSubpageId } from './appeara
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
+import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
@@ -83,6 +91,7 @@ function ResumeLastSessionSetting() {
   const a = t.settings.appearance
   const configQuery = useHermesConfigRecord()
   const config = configQuery.data
+  const writeScope = configQuery.writeScope
   const checked = (config?.display as { resume_last_session?: unknown } | undefined)?.resume_last_session !== false
 
   const update = (on: boolean) => {
@@ -94,7 +103,7 @@ function ResumeLastSessionSetting() {
     setHermesConfigCache(next)
     // Sparse patch: PUT /api/config deep-merges, and echoing the cached
     // snapshot would overwrite keys other surfaces changed since it loaded.
-    void saveHermesConfig(setNested({}, 'display.resume_last_session', on))
+    void saveHermesConfig(setNested({}, 'display.resume_last_session', on), writeScope)
       .then(result => {
         if (!result.ok) {
           throw new Error(t.settings.config.autosaveFailed)
@@ -407,9 +416,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const toolViewShadowed = useStore($modeShadowed('toolViewMode'))
   const hideCodeDiffs = useStore($hideCodeDiffs)
+  const hideCodeDiffsShadowed = useStore($modeShadowed('hideCodeDiffs'))
   const hideThreadTimeline = useStore($hideThreadTimeline)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
+  const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
+  const interfaceMode = useStore($interfaceMode)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
@@ -500,6 +513,19 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     { id: 'comfortable', label: a.sessionDensityComfortable },
     { id: 'detailed', label: a.sessionDensityDetailed }
   ] as const satisfies readonly { id: SessionListDensity; label: string }[]
+
+  const interfaceModeOptions = INTERFACE_MODES.map(id => ({
+    id,
+    label: t.interfaceMode[id].label
+  })) satisfies readonly {
+    id: InterfaceMode
+    label: string
+  }[]
+
+  // A row whose value Simple mode currently decides says so where the
+  // preference text would otherwise promise a persistence it cannot deliver.
+  const withModeNote = (description: string, shadowed: boolean) =>
+    shadowed ? `${description} ${t.interfaceMode.sessionNote}` : description
 
   const tabStripOptions = [
     { id: 'auto', label: a.tabStripAuto },
@@ -680,6 +706,24 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 <SegmentedControl
                   onChange={id => {
                     triggerHaptic('selection')
+                    setInterfaceMode(id)
+                  }}
+                  options={interfaceModeOptions}
+                  value={interfaceMode}
+                />
+              }
+              description={t.interfaceMode.hint}
+              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.interfaceMode)}
+              title={t.interfaceMode.title}
+            />
+          )}
+
+          {show('window-layout') && (
+            <ListRow
+              action={
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
                     setSessionListDensity(id)
                   }}
                   options={sessionDensityOptions}
@@ -724,6 +768,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
               title={a.appActionsTitle}
             />
+          )}
+
+          {show('window-layout') && (
+            <div id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.minimizeToTray)}>
+              <MinimizeToTraySetting />
+            </div>
           )}
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
@@ -1012,7 +1062,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   value={toolViewMode}
                 />
               }
-              description={a.toolViewDesc}
+              description={withModeNote(a.toolViewDesc, toolViewShadowed)}
               id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.toolView)}
               title={a.toolViewTitle}
             />
@@ -1033,7 +1083,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   value={hideCodeDiffs ? 'on' : 'off'}
                 />
               }
-              description={a.hideCodeDiffsDesc}
+              description={withModeNote(a.hideCodeDiffsDesc, hideCodeDiffsShadowed)}
               id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.hideCodeDiffs)}
               title={a.hideCodeDiffsTitle}
             />
@@ -1054,7 +1104,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   value={reasoningCollapsedByDefault ? 'on' : 'off'}
                 />
               }
-              description={a.reasoningCollapsedDesc}
+              description={withModeNote(a.reasoningCollapsedDesc, reasoningCollapsedShadowed)}
               title={a.reasoningCollapsedTitle}
             />
           )}

@@ -19,7 +19,7 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool_config import _ENV_VAR_PATTERN
-from tools.mcp_tool_common import _env_ref_name
+from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -755,9 +755,7 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        enabled = cfg.get("enabled", True)
-        if isinstance(enabled, str):
-            enabled = enabled.lower() in {"true", "1", "yes"}
+        enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()

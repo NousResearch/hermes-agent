@@ -29,17 +29,19 @@ _OPENROUTER_DESCRIPTIONS = {
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     (mid, _OPENROUTER_DESCRIPTIONS.get(mid, "free" if mid.endswith(":free") else ""))
     for mid in (
-        "anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5",
-        "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8-fast",
+        "anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5.5",
+        "anthropic/claude-opus-5", "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8-fast",
         "anthropic/claude-sonnet-5", "anthropic/claude-haiku-4.5", "openai/gpt-6-astra", "openai/gpt-6-astra-fast",
         "openai/gpt-6-astra-flex", "openai/gpt-6-astra-pro", "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
-        "openai/gpt-5.6-sol", "openai/gpt-5.6-sol-pro",
-        "openai/gpt-5.6-terra", "openai/gpt-5.6-terra-pro", "openai/gpt-5.6-luna", "openai/gpt-5.6-luna-pro",
+        "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
+        "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
         "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-3.1-pro-preview",
-        "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.6", "deepseek/deepseek-v4-pro",
+        "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.7", "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-flash-0731",
         "qwen/qwen3.8-max-0902", "qwen/qwen3.8-flash", "moonshotai/kimi-k3", "minimax/minimax-m3", "z-ai/glm-5.3",
-        "z-ai/glm-5.3-flash", "z-ai/glm-5.3-flashx", "z-ai/glm-5.2", "xiaomi/mimo-v2.5-pro", "tencent/hy4-preview",
+        "z-ai/glm-5.3-flash", "z-ai/glm-5.3-flashx", "z-ai/glm-5.2",
+        "xiaomi/mimo-v2.6-pro", "xiaomi/mimo-v2.6-flash", "xiaomi/mimo-v2.6-pro-ultraspeed", "xiaomi/mimo-v2.5-pro", "tencent/hy4-preview",
         "tencent/hy3",
         "stepfun/step-3.7-flash", "nvidia/nemotron-3-super-120b-a12b", "meta/muse-spark-1.2",
         "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "sakana/fugu-ultra",
@@ -163,6 +165,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
     "openai": list(_OPENAI_CHAT_MODELS),
     "openai-api": [
+        "gpt-6-sol", "gpt-6-sol-pro", "gpt-6-luna", "gpt-6-luna-pro",
         "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro", "gpt-5.6-luna",
         "gpt-5.6-luna-pro", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
         "gpt-5-mini", "gpt-5.3-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
@@ -211,7 +214,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-haiku-4-5-20251001",
     ],
     "deepseek": ["deepseek-flash", "deepseek-v4-pro"],
-    "xiaomi": ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"],
+    "xiaomi": [
+        "mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed",
+        "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash",
+    ],
     "tencent-tokenhub": list(_TENCENT_MODELS),
     "tencent-tokenplan": list(_TENCENT_MODELS),
     "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],

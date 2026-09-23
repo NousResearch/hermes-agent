@@ -378,3 +378,14 @@ def purge_gateway_profile_identity(home: Path, name: str, *,
     ``{"ok": True, "dropped": N, ...}`` answer, or None when no gateway answers / the gateway predates
     the verb."""
     return query_gateway_control(home, "purge-profile-identity", params={"name": name}, timeout=timeout)
+
+
+def reload_gateway_plugins(home: Path, *, profile_home: Optional[Path] = None,
+                           timeout: float = 30.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to force plugin re-discovery for ``profile_home`` (default: ``home``)
+    and re-wire its live adapters' plugin handlers now (#87770). Returns ``{"reloaded", "plugins",
+    "adapters_rewired", ...}`` or None when no gateway answers / it predates the verb — callers then
+    fall back to the restart hint. Tools and prompt sections of the reloaded plugin still apply next
+    session; only handlers go live."""
+    params = {"home": str(profile_home or home)}
+    return query_gateway_control(home, "reload-plugins", params=params, timeout=timeout)

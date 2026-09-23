@@ -1613,24 +1613,38 @@ def start() -> None:
     _report_gateway_start("direct spawn")
 
 
-def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
+def _gateway_pid_identity_is_live(pid: int, expected_start_time: int | None) -> bool:
+    """Return whether the original PID identity may still be running."""
+    from gateway.status import _pid_exists, get_process_start_time
+
+    if not _pid_exists(pid):
+        return False
+    current_start_time = get_process_start_time(pid)
+    if expected_start_time is None or current_start_time is None:
+        return True
+    return current_start_time == expected_start_time
+
+
+def _drain_gateway_pid(
+    pid: int, drain_timeout: float, expected_start_time: int | None
+) -> bool:
     """Write the planned-stop marker and wait for the PID to exit. Windows can't deliver POSIX signals
     to an asyncio loop, so the marker is the ONLY way to ask the gateway to drain and persist."""
-    if pid <= 0:
+    if pid <= 0 or expected_start_time is None:
         return False
     try:
-        from gateway.status import write_planned_stop_marker, _pid_exists
+        from gateway.status import write_planned_stop_marker
     except ImportError:
         return False
 
     try:
-        write_planned_stop_marker(pid)
+        write_planned_stop_marker(pid, expected_start_time=expected_start_time)
     except Exception:
         pass   # best-effort; caller escalates to a hard kill
 
     deadline = time.monotonic() + max(drain_timeout, 1.0)
     while time.monotonic() < deadline:
-        if not _pid_exists(pid):
+        if not _gateway_pid_identity_is_live(pid, expected_start_time):
             return True
         time.sleep(0.5)
     return False
@@ -1647,21 +1661,17 @@ def _windows_stop_drain_timeout() -> float:
     return max(1.0, min(configured, 30.0))
 
 
-def _gateway_pid_identities(pids: list[int]) -> dict[int, int | None]:
-    """``{pid: start_time}`` fingerprints, captured BEFORE any drain/wait so a later force-kill can
-    detect that the PID was recycled meanwhile."""
-    try:
-        from gateway.status import get_process_start_time
-    except ImportError:
-        return {pid: None for pid in pids}
-    return {pid: get_process_start_time(pid) for pid in pids}
+def _capture_gateway_pid_identities(pids: list[int]) -> dict[int, int | None]:
+    """Fingerprint gateway PIDs before any drain wait can permit PID reuse."""
+    from gateway.status import get_process_start_time
+
+    return {pid: get_process_start_time(pid) for pid in pids if pid > 0}
 
 
-def _force_terminate_known_gateway_pids(identities: dict[int, int | None]) -> int:
-    """Force-kill known gateway PIDs without a broad process sweep. ``identities`` maps each PID to
-    the start time observed when it was identified as a gateway (``_gateway_pid_identities``);
-    ``terminate_pid`` refuses the kill when the live process no longer matches. Re-reading the start
-    time here would compare the process with itself and taskkill whatever now owns the PID."""
+def _force_terminate_known_gateway_pids(
+    pid_identities: dict[int, int | None],
+) -> int:
+    """Force-kill known gateway identities without a broad process sweep."""
     try:
         from gateway.status import _pid_exists, terminate_pid
     except ImportError:
@@ -1669,11 +1679,13 @@ def _force_terminate_known_gateway_pids(identities: dict[int, int | None]) -> in
 
     own_pid = os.getpid()
     killed = 0
-    for pid, expected_start_time in identities.items():
+    for pid, expected_start_time in pid_identities.items():
         if pid <= 0 or pid == own_pid:
             continue
         try:
             if not _pid_exists(pid):
+                continue
+            if expected_start_time is None:
                 continue
             terminate_pid(pid, force=True, expected_start_time=expected_start_time)
             killed += 1
@@ -1705,16 +1717,21 @@ def stop() -> None:
     ``resume_pending`` (Windows asyncio can't receive SIGTERM — the marker is our only IPC), then
     ``schtasks /End``, then a bounded hard-kill of known PIDs."""
     _assert_windows()
-    from gateway.status import get_running_pid
+    from gateway.status import get_process_start_time, get_running_pid
 
     # A user-initiated stop is a planned death: don't later report it as a silent crash.
     _clear_start_attestation()
 
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)
-    # Fingerprint before the drain: the kill below must refuse a PID recycled during the wait.
-    identities = _gateway_pid_identities(stop_pids)
-    drained = pid is not None and _drain_gateway_pid(pid, _windows_stop_drain_timeout())
+    pid_identities = _capture_gateway_pid_identities(stop_pids)
+    drain_timeout = _windows_stop_drain_timeout()
+    drained = False
+    for candidate, expected_start_time in pid_identities.items():
+        drained = (
+            _drain_gateway_pid(candidate, drain_timeout, expected_start_time)
+            or drained
+        )
 
     stopped_any = drained
     if is_task_registered():
@@ -1726,9 +1743,15 @@ def stop() -> None:
             print(f"⚠ schtasks /End returned code {code}: {err.strip()}")
 
     # No generic process sweep: starts are profile-scoped and stop must stay bounded even if wedged.
-    late_pids = [pid for pid in _collect_gateway_stop_pids() if pid not in identities]
-    identities.update(_gateway_pid_identities(late_pids))
-    killed = _force_terminate_known_gateway_pids(identities)
+    for candidate in _collect_gateway_stop_pids():
+        if candidate not in pid_identities:
+            expected_start_time = get_process_start_time(candidate)
+            pid_identities[candidate] = expected_start_time
+            drained = (
+                _drain_gateway_pid(candidate, drain_timeout, expected_start_time)
+                or drained
+            )
+    killed = _force_terminate_known_gateway_pids(pid_identities)
     if killed:
         stopped_any = True
         print(f"✓ Killed {killed} gateway process(es)")
@@ -1764,7 +1787,8 @@ def restart() -> None:
 
     if not _wait_for_gateway_absent(timeout_s=30.0):
         print("⚠ Gateway still present after stop; forcing termination before restart...")
-        _force_terminate_known_gateway_pids(_gateway_pid_identities(_collect_gateway_stop_pids()))
+        stop_pids = _collect_gateway_stop_pids()
+        _force_terminate_known_gateway_pids(_capture_gateway_pid_identities(stop_pids))
         if not _wait_for_gateway_absent(timeout_s=10.0):
             raise RuntimeError(
                 "Gateway process still detected after force kill; refusing to "

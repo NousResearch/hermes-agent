@@ -1233,6 +1233,26 @@ class TestPlannedStopMarker:
         assert payload["stopper_pid"] == os.getpid()
         assert "written_at" in payload
 
+    def test_write_marker_preserves_pre_wait_target_identity(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            status,
+            "_get_process_start_time",
+            lambda pid: pytest.fail("must not recapture identity after a drain wait"),
+        )
+
+        ok = status.write_planned_stop_marker(
+            target_pid=12345, expected_start_time=42
+        )
+
+        assert ok is True
+        payload = json.loads(
+            (tmp_path / ".gateway-planned-stop.json").read_text()
+        )
+        assert payload["target_start_time"] == 42
+
 
     def test_consume_returns_true_on_windows_when_start_time_unavailable(
         self, tmp_path, monkeypatch

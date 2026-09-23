@@ -1688,6 +1688,25 @@ def main(
         configure_windows_stdio()
 
     os.environ["HERMES_INTERACTIVE"] = "1"  # terminal_tool: interactive sudo prompts with timeout
+
+    # A dispatcher-spawned Kanban worker receives a one-shot ownership marker.
+    # Consume it before agent/tool construction and convert it to process-local
+    # ContextVar authority; ordinary descendants inherit the generic env but not
+    # this proof. A malformed or stale marker denies runtime mount authority
+    # without making the whole CLI unavailable for diagnostics.
+    if os.environ.get("HERMES_KANBAN_WORKER_OWNERSHIP") or (
+        os.environ.get("HERMES_SESSION_SOURCE", "").strip().lower() == "kanban"
+    ):
+        from agent.delegation_context import bootstrap_dispatcher_authority
+
+        try:
+            bootstrap_dispatcher_authority(
+                task_id=os.environ.get("HERMES_KANBAN_TASK", ""),
+                workspace=os.environ.get("HERMES_KANBAN_WORKSPACE"),
+            )
+        except Exception as exc:  # denial is a policy state, not a CLI crash
+            logger.warning("Kanban worker authority denied: %s", exc)
+
     # The banner names affected plugins; the raw per-name compat warnings would only duplicate it on stderr.
     with suppress(Exception):
         from hermes_cli.plugin_compat import quiet_for_interactive

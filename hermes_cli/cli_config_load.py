@@ -87,7 +87,7 @@ _TERMINAL_ENV_MAPPINGS = {
         "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
         "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime",
         "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
-        "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
+        "container_disk", "container_persistent", "docker_volumes", "docker_host_path_map", "docker_env", "docker_extra_args",
         "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
         "docker_snap_compat",
         "docker_persist_across_processes", "docker_shared_container_key", "docker_orphan_reaper",
@@ -188,7 +188,7 @@ def _cli_config_defaults():
         "terminal": {
             "env_type": "local", "cwd": ".", "home_mode": "auto", "lifetime_seconds": 300,  # cwd "." -> os.getcwd()
             "docker_image": img, "docker_forward_env": [], "singularity_image": f"docker://{img}",
-            "modal_image": img, "daytona_image": img, "docker_volumes": [],
+            "modal_image": img, "daytona_image": img, "docker_volumes": [], "docker_host_path_map": [],
             "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
             "docker_shared_container_key": "",
         },

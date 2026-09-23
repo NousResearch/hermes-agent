@@ -11,6 +11,9 @@ import {
   cn,
   Codicon,
   compactNumber,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -741,18 +744,6 @@ export function TaskDrawer({
     refetchInterval: running ? 3_000 : 15_000
   })
 
-  // Esc closes the drawer even though it isn't modal (no backdrop to click off).
-  useEffect(() => {
-    if (!id) {
-      return
-    }
-
-    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-
-    return () => window.removeEventListener('keydown', onKey)
-  }, [id, onClose])
-
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: taskKey(scope, slug, id!) })
     void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
@@ -847,15 +838,20 @@ export function TaskDrawer({
     moveMut.mutate(status)
   }
 
+  // The shared Dialog owns the chrome tokens, focus trap, Esc and outside-click
+  // dismissal, and publishes itself as the portal container so the status,
+  // assignee, actions and model menus open inside it (no z-index rung needed).
+  // The body box is split into two independently scrolling columns, so it
+  // clips instead of scrolling itself; its height follows the content up to
+  // the cap.
   return (
-    <div
-      aria-label={task?.title || shortId(id)}
-      aria-modal="true"
-      className="fixed inset-0 z-(--z-modal-backdrop) flex items-center justify-center bg-black/45 p-6 duration-150 animate-in fade-in-0"
-      onMouseDown={event => event.target === event.currentTarget && onClose()}
-      role="dialog"
-    >
-      <div className="flex h-[min(84vh,54rem)] w-[min(62rem,94vw)] flex-col overflow-hidden rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) shadow-nous duration-150 animate-in fade-in-0 zoom-in-95">
+    <Dialog onOpenChange={open => !open && onClose()} open>
+      <DialogContent
+        aria-describedby={undefined}
+        bodyClassName="flex max-h-[min(84vh,54rem)] flex-col gap-0 overflow-hidden p-0"
+        className="w-[min(62rem,94vw)] max-w-none"
+        showCloseButton={false}
+      >
         <header className="flex flex-col gap-2 px-5 pt-4 pb-3">
           <div className="flex items-center gap-2">
             {task ? (
@@ -872,13 +868,9 @@ export function TaskDrawer({
               {task && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <button
-                      aria-label={k.taskActions}
-                      className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                      type="button"
-                    >
-                      <Codicon name="ellipsis" size="0.9rem" />
-                    </button>
+                    <Button aria-label={k.taskActions} size="icon-xs" variant="ghost">
+                      <Codicon name="ellipsis" />
+                    </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
@@ -914,24 +906,17 @@ export function TaskDrawer({
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
-              <button
-                aria-label={k.close}
-                className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                onClick={onClose}
-                type="button"
-              >
-                <Codicon name="close" size="0.9rem" />
-              </button>
+              <Button aria-label={k.close} onClick={onClose} size="icon-xs" variant="ghost">
+                <Codicon name="close" />
+              </Button>
             </div>
           </div>
-          {task && (
-            <h2 className="text-sm leading-snug font-semibold text-foreground" data-selectable-text="true">
-              {task.title || task.id}
-            </h2>
-          )}
+          <DialogTitle className="leading-snug" data-selectable-text="true">
+            {task ? task.title || task.id : shortId(id)}
+          </DialogTitle>
         </header>
 
-        <div className="min-h-0 flex-1" data-selectable-text="true">
+        <div className="flex min-h-0 flex-1 flex-col" data-selectable-text="true">
           {errorMessage ? (
             <ErrorState title={errorMessage} />
           ) : !detail || !task ? (
@@ -939,7 +924,7 @@ export function TaskDrawer({
               <Loader type="lemniscate-bloom" />
             </div>
           ) : (
-            <div className="flex h-full min-h-0">
+            <div className="flex min-h-0 flex-1">
               <div className="min-w-0 flex-1 overflow-y-auto px-5 pb-5">
                 <div className="flex flex-col gap-4 text-sm">
                   {task.status === 'ready' && !task.assignee && !defaultAssignee && (
@@ -1037,7 +1022,7 @@ export function TaskDrawer({
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }

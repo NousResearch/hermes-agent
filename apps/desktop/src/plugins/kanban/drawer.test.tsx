@@ -102,11 +102,12 @@ describe('task attachment compatibility', () => {
 
   it('keeps upload and attachment rendering working for a supported empty list', async () => {
     detail = { ...legacyDetail, attachments: [] }
-    const { container } = openDrawer()
+    openDrawer()
     const upload = await screen.findByRole('button', { name: en.uploadAttachment })
     expect(screen.getByText(en.noAttachments)).toBeTruthy()
 
-    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!
+    // The modal portals out of the render container; query inside the dialog.
+    const input = screen.getByRole('dialog').querySelector<HTMLInputElement>('input[type="file"]')!
     const click = vi.spyOn(input, 'click')
     fireEvent.click(upload)
     expect(click).toHaveBeenCalledOnce()
@@ -125,6 +126,22 @@ describe('task attachment compatibility', () => {
     )
     expect(await screen.findByText(file.name)).toBeTruthy()
     expect(screen.queryByText(en.noAttachments)).toBeNull()
+  })
+})
+
+describe('task modal dialog', () => {
+  it('is a modal dialog named by the task title that Esc dismisses', async () => {
+    detail = { ...legacyDetail, attachments: [] }
+    const onClose = vi.fn()
+    render(
+      <QueryClientProvider client={client}>
+        <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={onClose} onOpen={vi.fn()} />
+      </QueryClientProvider>
+    )
+
+    const dialog = await screen.findByRole('dialog', { name: legacyDetail.task.title })
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledOnce()
   })
 })
 

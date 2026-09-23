@@ -584,3 +584,79 @@ class TestPlainAlternative:
         parts = self._parts(body)
         # Markdown source IS the readable plain-text form — it must not be rewritten.
         assert parts["text/plain"] == body
+
+
+class TestHtmlFormatConfigCoercion:
+    """`platforms.email.html_format` must be coerced, not tested for raw truthiness.
+
+    A string "false" (quoted YAML value, env bridge, GUI text field) is *truthy* in Python, so a
+    raw ``extra.get("html_format", True)`` keeps HTML ON for a user who explicitly turned it off.
+    The neighbouring config reads in the same module already use ``is_truthy_value``.
+    """
+
+    @staticmethod
+    def _mime_types(part):
+        if part.is_multipart():
+            return [part.get_content_type()] + [
+                t for child in part.get_payload() for t in TestHtmlFormatConfigCoercion._mime_types(child)
+            ]
+        return [part.get_content_type()]
+
+    def _sent_parts(self, monkeypatch, extra, body="**bold** body"):
+        """Drive the real standalone entry point and return the message it handed to SMTP."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from plugins.platforms.email.adapter import _standalone_send
+
+        captured = {}
+
+        class FakeSMTP:
+            def __init__(self, *a, **k):
+                return None
+
+            def starttls(self, context=None):
+                return None
+
+            def login(self, *a, **k):
+                return None
+
+            def send_message(self, msg):
+                captured["msg"] = msg
+
+            def quit(self):
+                return None
+
+        monkeypatch.setenv("EMAIL_ADDRESS", "a@b.ch")
+        monkeypatch.setenv("EMAIL_PASSWORD", "x")
+        monkeypatch.setenv("EMAIL_SMTP_HOST", "smtp.test.com")
+        monkeypatch.setenv("EMAIL_SMTP_PORT", "587")
+
+        pconfig = SimpleNamespace(
+            token=None,
+            api_key=None,
+            extra={"address": "a@b.ch", "smtp_host": "smtp.test.com", **extra},
+        )
+        with patch("smtplib.SMTP", FakeSMTP):
+            result = asyncio.run(_standalone_send(pconfig, "c@d.ch", body))
+
+        assert result.get("success") is True, result
+        assert "msg" in captured, "no message reached SMTP"
+        return captured["msg"]
+
+    def test_string_false_disables_html(self, monkeypatch):
+        msg = self._sent_parts(monkeypatch, {"html_format": "false"})
+        assert self._mime_types(msg) == ["text/plain"], self._mime_types(msg)
+
+    def test_string_false_with_casing_and_padding_disables_html(self, monkeypatch):
+        msg = self._sent_parts(monkeypatch, {"html_format": " FALSE "})
+        assert self._mime_types(msg) == ["text/plain"], self._mime_types(msg)
+
+    def test_absent_key_keeps_html_on(self, monkeypatch):
+        msg = self._sent_parts(monkeypatch, {})
+        assert self._mime_types(msg) == ["multipart/alternative", "text/plain", "text/html"], self._mime_types(msg)
+
+    def test_boolean_false_still_disables_html(self, monkeypatch):
+        msg = self._sent_parts(monkeypatch, {"html_format": False})
+        assert self._mime_types(msg) == ["text/plain"], self._mime_types(msg)

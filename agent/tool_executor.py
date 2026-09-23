@@ -792,6 +792,30 @@ def _run_agent_tool_execution_middleware(
     state = _ManagedToolResult(result=None, args=function_args, middleware_trace=trace, blocked=False, dispatched=False)
     dispatch_lock = threading.Lock()
 
+    def _block_pruned(args: dict[str, Any]) -> str | None:
+        """Refuse synthetic compressor content before the next execution boundary."""
+        block = _pruned_tool_arguments_block(function_name, args)
+        if block is None:
+            return None
+        state.args = args
+        state.blocked = True
+        if begin_execution is not None:
+            begin_execution()
+        return _blocked_tool_result(
+            agent,
+            _ToolCallRef(function_name, args, effective_task_id, tool_call_id, trace),
+            block_message=block["message"],
+            block_error_type=_PRUNED_TOOL_ARGUMENTS_ERROR,
+            guardrail_decision=None,
+            block_payload=block,
+        )
+
+    # Relay execution interceptors may short-circuit without invoking Hermes at all.
+    # Do not hand them model-visible compression artifacts in the first place.
+    if (initial_block := _block_pruned(function_args)) is not None:
+        state.result = initial_block
+        return state
+
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
         with dispatch_lock:
             if state.dispatched:
@@ -825,23 +849,9 @@ def _run_agent_tool_execution_middleware(
         trace.extend(request_result.trace)
 
         # Execution middleware may legally short-circuit without calling next_call().
-        # Enforce the provenance boundary BEFORE it can observe/forward synthetic
-        # compressor content; the inner authorized-dispatch check remains necessary
-        # for execution-middleware and pre_tool_call rewrites that do call downstream.
-        early_block = _pruned_tool_arguments_block(function_name, request_args)
-        if early_block is not None:
-            state.args = request_args
-            state.blocked = True
-            if begin_execution is not None:
-                begin_execution()
-            return _blocked_tool_result(
-                agent,
-                _ToolCallRef(function_name, request_args, effective_task_id, tool_call_id, trace),
-                block_message=early_block["message"],
-                block_error_type=_PRUNED_TOOL_ARGUMENTS_ERROR,
-                guardrail_decision=None,
-                block_payload=early_block,
-            )
+        # Recheck request-middleware rewrites before it can observe/forward them.
+        if (early_block := _block_pruned(request_args)) is not None:
+            return early_block
 
         return run_tool_execution_middleware(
             function_name,

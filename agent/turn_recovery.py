@@ -1689,6 +1689,37 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
     return _genuine
 
 
+def _rotate_rate_limited_credential_before_fallback(
+    agent: Any, classified: Any, status_code: Any, error_context: Any,
+) -> bool:
+    """Last-chance credential-pool rotation at the fallback boundary.
+
+    ``recover_after_classification`` deliberately defers the FIRST rate-limit 429 to a
+    same-credential retry (``has_retried_429``), and the eager-fallback hinge above only
+    trusts a snapshot availability probe (``has_available()`` + entry count). When that
+    probe says "no" — a benched current entry whose failing key no longer matches any
+    pool row (per-request OAuth token refresh), a model-scoped cooldown, or an
+    unhydrated sibling row — the turn jumps to ``fallback_providers`` while the pool can
+    still rotate to a healthy sibling credential. Ask the pool's own rotation hook once
+    before switching providers: it resolves the failed entry itself and only reports
+    failure when every entry really is exhausted or cooling down (#120216).
+    """
+    if getattr(classified, "reason", None) != FailoverReason.rate_limit:
+        return False
+    if not getattr(classified, "should_rotate_credential", False):
+        return False
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or len(pool.entries()) <= 1:
+        return False  # sole credential: rotation cannot help, take the fallback chain
+    from agent.agent_runtime_helpers import recover_with_credential_pool
+
+    rotated, _has_retried_429 = recover_with_credential_pool(
+        agent, status_code=status_code, has_retried_429=True,
+        classified_reason=classified.reason, error_context=error_context,
+    )
+    return bool(rotated)
+
+
 def route_classified_error(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *, error_msg: str,
     error_context: Any, recovered_with_pool: bool, base_url: Any, model: Any,
@@ -1826,6 +1857,10 @@ def route_classified_error(
             False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
         )
         if not pool_may_recover:
+            # The probe is a snapshot: before switching providers, let the pool's own
+            # rotation hook resolve and bench the failed credential once (#120216).
+            if _rotate_rate_limited_credential_before_fallback(agent, classified, status_code, error_context):
+                return _verdict("continue")
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):

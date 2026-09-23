@@ -11,7 +11,7 @@ interface DesktopAppLifecycleDeps {
   tls: any
   pathToFileURL: (...args: any[]) => any
   CHROMIUM_LOG_PATH: string
-  CRASH_DIAGNOSTICS: boolean
+  CRASH_DIAGNOSTICS: ReturnType<typeof import('./linux-crash-diagnostics').linuxCrashDiagnostics>
   DEV_SERVER: string | undefined
   HERMES_PROTOCOL: string
   IS_MAC: boolean

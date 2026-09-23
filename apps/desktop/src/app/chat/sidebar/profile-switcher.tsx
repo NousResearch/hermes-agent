@@ -50,7 +50,7 @@ import { useI18n } from '@/i18n'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
-import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
+import { assignProfileColors, PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import {
   REORDER_DRAG_TRANSITION_CSS,
   REORDER_RAIL_TRANSITION,
@@ -155,6 +155,7 @@ export function ProfileRail() {
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
+  const railColors = useMemo(() => assignProfileColors(profiles.map(profile => profile.name), colors), [colors, profiles])
   const remoteOverrides = useStore($profileRemoteOverrides)
   const multipleConnections = useStore($hasMultipleConnections)
   const registry = useStore($connectionsRegistry)
@@ -374,7 +375,7 @@ export function ProfileRail() {
               {named.map(profile => (
                 <ProfileSquare
                   active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-                  color={resolveProfileColor(profile.name, colors)}
+                  color={railColors[normalizeProfileKey(profile.name)] ?? null}
                   connectionId={namedProfileConnectionId}
                   key={profile.name}
                   label={profileLabel(profile)}
@@ -1274,6 +1275,7 @@ function ProfileSquare({
                   <button
                     className={cn(
                       'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                      active && 'w-auto max-w-28 gap-1 px-1',
                       active ? 'opacity-100' : 'opacity-55',
                       isDragging && 'z-10 cursor-grabbing opacity-100'
                     )}
@@ -1328,7 +1330,8 @@ function ProfileSquare({
                     onPointerMove={notePointerMove}
                     onPointerUp={clearPress}
                   >
-                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    <span>{label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}</span>
+                    {active && <span className="max-w-20 truncate normal-case text-[0.625rem]">{label}</span>}
                     {/* The "remote" badge: a tiny globe pinned to the corner of an
                         overridden profile's square, so which profiles leave this
                         machine is visible at a glance (#91349). */}

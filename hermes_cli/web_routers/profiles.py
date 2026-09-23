@@ -42,7 +42,7 @@ from hermes_cli.web_server_sessions import _open_session_db_at_path
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
-    ProfileSoulUpdate, ProfileDescriptionUpdate, ProfileModelUpdate, ProfileDescribeAuto,
+    ProfileSoulUpdate, ProfileDescriptionUpdate, ProfileColorUpdate, ProfileModelUpdate, ProfileDescribeAuto,
     SessionPrScanBody)
 from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
 
@@ -89,6 +89,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "description_auto": bool(attr("description_auto", False)),
         "display_name": attr("display_name", "") or "",
         "bot_title": attr("bot_title", "") or "",
+        "profile_color": attr("profile_color", "") or "",
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
@@ -923,6 +924,20 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
         await run_in_threadpool(
             profiles_mod.write_profile_meta, profile_dir, description=text, description_auto=False)
     return {"ok": True, "description": text, "description_auto": False}
+
+
+@router.put("/api/profiles/{name}/color")
+async def update_profile_color_endpoint(name: str, body: ProfileColorUpdate):
+    """Store a Desktop rail override in portable profile metadata, not localStorage."""
+    from hermes_cli import profiles as profiles_mod
+    profile_dir = _resolve_profile_dir(name)
+    color = (body.color or "").strip()
+    if len(color) > 128:
+        raise HTTPException(status_code=400, detail="color is too long")
+    with _profile_errors("PUT /api/profiles/%s/color failed", name,
+                         not_found=(), bad_request=()):
+        await run_in_threadpool(profiles_mod.write_profile_meta, profile_dir, profile_color=color)
+    return {"ok": True, "profile_color": color}
 
 
 @router.put("/api/profiles/{name}/model")

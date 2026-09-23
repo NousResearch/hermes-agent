@@ -4997,6 +4997,16 @@ Write only the summary body. Do not include any preamble or prefix."""
                 compress_end = bridge_idx
         return compress_start, compress_end
 
+    def _plan_compaction_window(self, messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int, int, int]:
+        """Phases 1-2 of compress(): ``(working, pruned_count, compress_start, compress_end)``.
+        ``working`` is a pruned copy without blank echoes; the boundaries index into it."""
+        working, pruned_count = self._prune_old_tool_results(
+            messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
+        )
+        working = self._drop_blank_echoes(working)
+        compress_start, compress_end = self._compress_window(working)
+        return working, pruned_count, compress_start, compress_end
+
     def _log_compression_start(
         self, display_tokens: int, compress_start: int, compress_end: int, n_turns: int, tail_msgs: int,
     ) -> None:
@@ -5273,16 +5283,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
-        # Phase 1: Prune old tool results (cheap, no LLM call)
-        messages, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
-        )
+        # Phases 1-2: prune (cheap, no LLM call), drop blank echoes, determine boundaries
+        messages, pruned_count, compress_start, compress_end = self._plan_compaction_window(messages)
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
-        messages = self._drop_blank_echoes(messages)
         n_messages = len(messages)
-        # Phase 2: Determine boundaries
-        compress_start, compress_end = self._compress_window(messages)
         if compress_start >= compress_end:
             self._record_compression_regions(
                 head_messages=messages[:compress_start], middle_messages=[], tail_messages=messages[compress_end:],

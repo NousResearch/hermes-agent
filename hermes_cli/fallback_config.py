@@ -7,6 +7,41 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Sections that never carry a fallback chain but read as though they should. The CLI reference
+# documented ``fallback_providers`` "under ``model:``" until #19691 corrected it, and that issue
+# closed on the docs fix alone — so configs written from the old docs still nest the chain where
+# no loader looks. ``delegation.fallback_providers`` is deliberately absent: it IS a real key.
+_MISPLACED_FALLBACK_SECTIONS: tuple[str, ...] = ("model",)
+
+# Warn once per (section, key) per process: get_fallback_chain runs per turn on some surfaces.
+_warned_misplaced_fallback: set[tuple[str, str]] = set()
+
+
+def _warn_misplaced_fallback_keys(config: dict[str, Any]) -> None:
+    """Warn for a fallback chain nested under a section no loader reads.
+
+    ``get_fallback_chain`` reads the TOP-LEVEL keys only. A chain written as
+    ``model.fallback_providers`` resolves to an EMPTY chain while the config looks configured,
+    so the primary's exhaustion kills the session with no fallback and no explanation. Entry
+    values are never logged — fallback dicts may carry ``api_key``/``extra_headers``.
+    """
+    for section_name in _MISPLACED_FALLBACK_SECTIONS:
+        section = config.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for key in ("fallback_providers", "fallback_model"):
+            if not section.get(key):
+                continue
+            marker = (section_name, key)
+            if marker in _warned_misplaced_fallback:
+                continue
+            _warned_misplaced_fallback.add(marker)
+            logger.warning(
+                "'%s.%s' is not read by any loader and is IGNORED — the fallback chain is read "
+                "from the TOP-LEVEL '%s' in config.yaml. Move the list to the top level (or run "
+                "`hermes fallback add`); until then the effective chain from this section is EMPTY.",
+                section_name, key, key)
+
 
 def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/") if isinstance(value, str) else ""
@@ -109,6 +144,7 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     copies.
     """
     config = config or {}
+    _warn_misplaced_fallback_keys(config)
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for key in ("fallback_providers", "fallback_model"):

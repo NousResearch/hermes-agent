@@ -30,7 +30,9 @@ STATE_KEY = "quota_hold_until"
 # recorded a little wall clock has passed, so land clearly past the boundary.
 HOLD_SLACK_SECONDS = 60
 
-_RETRY_AFTER_RE = re.compile(r"retry after (\d+)s", re.IGNORECASE)
+# The wait is a float everywhere it is produced (``parse_retry_after_seconds`` returns one), so
+# "retry after 30.0s" is the real shape; an integer-only pattern matched nothing in production.
+_RETRY_AFTER_RE = re.compile(r"retry after (\d+(?:\.\d+)?)s", re.IGNORECASE)
 
 
 def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:

@@ -1456,7 +1456,9 @@ _NO_AUTO_DETECT_PROVIDERS = frozenset({"copilot", "lmstudio"})
 def _env_key_auto_detected(
     scoped_key_env: Callable[[str], str], oauth_active: Optional[str]) -> Optional[str]:
     """First registry api_key provider (registry order) with a usable env key, warning when it
-    preempts a logged-in OAuth provider so a stale key in ~/.hermes/.env never switches silently."""
+    preempts a logged-in OAuth provider so a stale key in ~/.hermes/.env never switches silently.
+    Also warns when SEVERAL api_key providers have usable keys: first-match then silently picks
+    the registry-earliest one (e.g. gemini over zai), a common source of mis-routing (#30797)."""
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS:
             continue
@@ -1472,8 +1474,31 @@ def _env_key_auto_detected(
                         "OAuth login, unset %s or set `model.provider` "
                         "explicitly.",
                         pid, env_var, oauth_active, env_var)
+                others = [p for p in env_key_provider_candidates(scoped_key_env) if p != pid]
+                if others:
+                    logger.warning(
+                        "Multiple providers have usable API keys (%s); auto-detect (no "
+                        "`model.provider` set) resolved to '%s' (first registry match). "
+                        "Set `model.provider` in config.yaml to pin the one you meant.",
+                        ", ".join([pid, *others]), pid)
                 return pid
     return None
+
+
+def env_key_provider_candidates(
+    scoped_key_env: Optional[Callable[[str], str]] = None) -> list:
+    """Auto-detect-eligible api_key providers (registry order, minus copilot/lmstudio) that
+    currently have a usable env key. The timeout-retry ambiguity hint (#30797) enumerates the
+    ALTERNATIVES with this; the resolved route itself always comes from the agent's own
+    provider provenance (``requested_provider``/``provider``), never from a re-scan."""
+    read = scoped_key_env or _scoped_key_env_reader()
+    return [
+        pid
+        for pid, pconfig in PROVIDER_REGISTRY.items()
+        if pconfig.auth_type == "api_key"
+        and pid not in _NO_AUTO_DETECT_PROVIDERS
+        and any(has_usable_secret(read(env_var)) for env_var in pconfig.api_key_env_vars)
+    ]
 
 
 def resolve_provider(

@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "source": {
+    "uri": "../moon-settlement-approved.jpg",
+    "sha256": "248e8d40946b08b9f74f4b2ddd0ba17e4f17fd054260189972164c5d6ca70590",
+    "dimensions": { "width": 1280, "height": 910 },
+    "usage": "immutable modeling reference only; forbidden from every runtime geometry, material, texture, billboard, floor, wall, and character URI"
+  },
+  "palette": [
+    { "id": "lunar-rust", "hex": "#A84623", "role": "warm regolith and cliffs" },
+    { "id": "sunset-orange", "hex": "#D96A31", "role": "terrain highlights and doors" },
+    { "id": "charcoal-structure", "hex": "#242431", "role": "walkways, roofs, and machine shells" },
+    { "id": "bone-metal", "hex": "#D7C5AF", "role": "building frames and robot panels" },
+    { "id": "cyan-signal", "hex": "#43D6E8", "role": "research, depot, and robot emissives" },
+    { "id": "violet-archive", "hex": "#A467E8", "role": "library and review emissives" },
+    { "id": "garden-green", "hex": "#72C66A", "role": "break garden and ready state" },
+    { "id": "triage-amber", "hex": "#F2B53A", "role": "triage vehicle and warning highlights" }
+  ],
+  "districtLandmarks": [
+    { "id": "library", "point": [0.18, 0.24], "silhouette": "open-front archive with violet stacks and owl leader" },
+    { "id": "research-lab", "point": [0.67, 0.2], "silhouette": "large open-front laboratory with telescope and fox leader" },
+    { "id": "resource-depot", "point": [0.14, 0.61], "silhouette": "cyan stocked depot with badger leader" },
+    { "id": "bus-stop", "point": [0.45, 0.46], "silhouette": "central black transit kiosk and red shuttle" },
+    { "id": "review-office", "point": [0.79, 0.55], "silhouette": "violet portal office with owl verifier" },
+    { "id": "triage", "point": [0.52, 0.72], "silhouette": "amber service bus with cross-marked roof" },
+    { "id": "garden", "point": [0.36, 0.83], "silhouette": "sunken planted break garden with cyan fixtures" },
+    { "id": "council", "point": [0.72, 0.81], "silhouette": "foreground council overlook with bird leader" },
+    { "id": "arts-studio", "point": [0.2, 0.47], "silhouette": "open-front gallery with stacked canvases, easels, and palette star" },
+    { "id": "engineering-workshop", "point": [0.2, 0.72], "silhouette": "open-front workshop with gantry crane, workbenches, and gear" },
+    { "id": "release-gatehouse", "point": [0.45, 0.62], "silhouette": "amber release gate with raised lintel, signal panel, and beacon" },
+    { "id": "archive", "point": [0.82, 0.74], "silhouette": "compact open-front vault with violet records and sealed volume" }
+  ],
+  "silhouettes": {
+    "buildings": ["open-front lunar rooms", "stepped cliffs", "raised metal walkways", "removable roof shells"],
+    "leaders": ["owl archivist", "fox scientist", "badger depot keeper", "otter dispatcher", "bird verifier", "stag coordinator"],
+    "workers": ["small white robot children", "round black face plates", "cyan eye lights", "role accessories"],
+    "vehicles": ["red shuttle bus", "amber triage vehicle"]
+  },
+  "materialGuide": {
+    "finish": "matte low-poly metal and painted panels with restrained emissive signage",
+    "lighting": "warm red-orange lunar ambient with cyan, violet, green, and amber practical lights",
+    "prohibited": ["source-image fragments", "photographic billboards", "camera-facing character cutouts", "generic replacement art"]
+  },
+  "overviewFraming": {
+    "projection": "angled perspective isometric-like overview",
+    "focus": "raised settlement, open room interiors, central bus stop, connected walkways, and foreground garden",
+    "preserve": ["warmth", "district relationships", "readable interiors", "leaders anchored to districts", "robot-child scale"]
+  }
+}

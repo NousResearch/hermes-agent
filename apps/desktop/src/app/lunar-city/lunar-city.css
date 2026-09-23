@@ -1,0 +1,434 @@
+.lunar-city {
+  background: #070a10;
+  color: #edf3ff;
+}
+
+.lunar-city-hud {
+  background: linear-gradient(180deg, rgb(5 8 14 / 88%), rgb(5 8 14 / 42%) 72%, transparent);
+  border: 0;
+  backdrop-filter: blur(2px);
+}
+
+.lunar-city-hud h2,
+.lunar-city-hud p {
+  color: #edf3ff !important;
+}
+
+.lunar-city-hud p {
+  opacity: 0.62;
+}
+
+.lunar-city-viewport {
+  background:
+    radial-gradient(ellipse at 50% 92%, rgb(181 77 39 / 46%) 0 18%, transparent 64%),
+    radial-gradient(ellipse at 88% 82%, rgb(49 84 145 / 28%) 0 12%, transparent 48%), #151922;
+  isolation: isolate;
+}
+
+.lunar-city-world {
+  transform: scale(1.03);
+  transform-origin: center;
+  transition: transform 900ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.lunar-city-world::after {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background:
+    linear-gradient(180deg, rgb(5 8 14 / 28%), transparent 23%, transparent 77%, rgb(5 8 14 / 40%)),
+    radial-gradient(circle at center, transparent 47%, rgb(3 6 11 / 32%) 100%);
+  content: '';
+  pointer-events: none;
+}
+
+.lunar-city-camera-controls {
+  width: min(15.5rem, calc(100vw - 2rem));
+  border: 1px solid color-mix(in srgb, var(--ui-stroke-tertiary) 88%, transparent);
+  border-radius: 0.6rem;
+  background: color-mix(in srgb, var(--ui-bg-editor) 88%, transparent);
+  padding: 0.35rem;
+  box-shadow: 0 10px 22px rgb(0 0 0 / 22%);
+  backdrop-filter: blur(0.75rem);
+}
+
+.lunar-city-camera-controls button {
+  min-height: 1.75rem;
+  border: 1px solid transparent;
+  border-radius: 0.28rem;
+  padding: 0.18rem 0.35rem;
+  color: var(--ui-text-secondary);
+  font-size: 0.61rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-align: left;
+}
+
+.lunar-city-camera-controls button:hover:not(:disabled) {
+  background: var(--chrome-action-hover);
+  color: var(--ui-text-primary);
+}
+
+.lunar-city-camera-controls button:focus-visible {
+  border-color: var(--ui-accent);
+  outline: 2px solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.lunar-city-camera-controls button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.lunar-city-camera-controls output {
+  display: block;
+  overflow: hidden;
+  margin-top: 0.3rem;
+  color: var(--ui-text-secondary);
+  font-size: 0.6rem;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lunar-city-accessible-operations {
+  position: absolute;
+  top: 20.5rem;
+  left: 1.25rem;
+  z-index: 35;
+  display: grid;
+  width: min(18rem, calc(100vw - 2rem));
+  max-height: min(22rem, calc(100vh - 23rem));
+  gap: 0.55rem;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--ui-stroke-tertiary) 88%, transparent);
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--ui-bg-editor) 94%, transparent);
+  padding: 0.65rem;
+  box-shadow: 0 12px 26px rgb(0 0 0 / 28%);
+  color: var(--ui-text-primary);
+  font-size: 0.65rem;
+  pointer-events: auto;
+  backdrop-filter: blur(0.75rem);
+}
+
+.lunar-city-accessible-operations h2 {
+  margin-bottom: 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+.lunar-city-renderer-fallback {
+  border: 1px solid color-mix(in srgb, var(--ui-red) 42%, transparent);
+  border-radius: 0.4rem;
+  background: color-mix(in srgb, var(--ui-red) 9%, transparent);
+  padding: 0.45rem;
+}
+
+.lunar-city-motion-status,
+.lunar-city-entity-details,
+.lunar-city-source-health li span {
+  color: var(--ui-text-secondary);
+}
+
+.lunar-city-quality-control,
+.lunar-city-source-health li,
+.lunar-city-entity-list li {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.lunar-city-quality-control select,
+.lunar-city-entity-list button {
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 0.3rem;
+  background: var(--ui-bg-quaternary);
+  padding: 0.3rem 0.4rem;
+  color: var(--ui-text-primary);
+  text-align: left;
+}
+
+.lunar-city-quality-control select:focus-visible,
+.lunar-city-entity-list button:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+
+.lunar-city-source-health ul,
+.lunar-city-entity-list ul {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.lunar-city-entity-list button[aria-pressed='true'] {
+  border-color: var(--ui-accent);
+}
+
+.lunar-city-terrain {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.lunar-city-atmosphere {
+  background:
+    radial-gradient(
+      circle at 11% 13%,
+      rgb(224 250 255 / 98%) 0 1.45%,
+      rgb(61 157 188 / 96%) 1.6% 2.35%,
+      rgb(21 52 89 / 94%) 2.5% 3.2%,
+      transparent 3.65%
+    ),
+    radial-gradient(circle at 11% 13%, rgb(64 182 224 / 34%) 0 5.2%, transparent 9%),
+    radial-gradient(circle at 11% 13%, rgb(255 255 255 / 48%) 0 3.2%, transparent 3.8%),
+    radial-gradient(circle at 76% 10%, rgb(255 255 255 / 75%) 0 0.12rem, transparent 0.19rem),
+    radial-gradient(circle at 84% 23%, rgb(255 255 255 / 55%) 0 0.1rem, transparent 0.17rem),
+    radial-gradient(circle at 63% 18%, rgb(255 255 255 / 60%) 0 0.09rem, transparent 0.16rem),
+    radial-gradient(circle at 42% 9%, rgb(255 255 255 / 52%) 0 0.1rem, transparent 0.16rem),
+    radial-gradient(circle at 92% 38%, rgb(255 255 255 / 45%) 0 0.1rem, transparent 0.16rem),
+    radial-gradient(circle at 62% 15%, color-mix(in srgb, var(--ui-cyan) 12%, transparent), transparent 29%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--ui-bg-editor) 10%, transparent),
+      transparent 38%,
+      color-mix(in srgb, #111827 28%, transparent)
+    );
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.lunar-city-status-badges {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+}
+
+.lunar-city-status-badge {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  transform: translate(-50%, calc(-100% - 0.42rem));
+  border: 1px solid color-mix(in srgb, var(--badge-accent) 62%, var(--ui-stroke-tertiary));
+  border-radius: 9999px;
+  background: color-mix(in srgb, #070a10 86%, var(--badge-accent));
+  padding: 0.2rem 0.42rem 0.2rem 0.3rem;
+  box-shadow:
+    0 5px 14px rgb(0 0 0 / 30%),
+    0 0 12px color-mix(in srgb, var(--badge-accent) 28%, transparent);
+  color: #edf3ff;
+  font-size: 0.58rem;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.lunar-city-status-badge::after {
+  position: absolute;
+  bottom: -0.33rem;
+  left: 50%;
+  width: 0.42rem;
+  height: 0.42rem;
+  transform: translateX(-50%) rotate(45deg);
+  border-right: 1px solid color-mix(in srgb, var(--badge-accent) 62%, var(--ui-stroke-tertiary));
+  border-bottom: 1px solid color-mix(in srgb, var(--badge-accent) 62%, var(--ui-stroke-tertiary));
+  background: #070a10;
+  content: '';
+}
+
+.lunar-city-status-badge:hover,
+.lunar-city-status-badge:focus-visible {
+  filter: brightness(1.18);
+  outline: 2px solid color-mix(in srgb, var(--badge-accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
+.lunar-city-status-badge-pin {
+  display: block;
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 9999px;
+  background: var(--badge-accent);
+  box-shadow: 0 0 7px var(--badge-accent);
+}
+
+.lunar-city-status-badge-working {
+  --badge-accent: var(--ui-cyan);
+}
+
+.lunar-city-status-badge-delivering {
+  --badge-accent: var(--ui-green);
+}
+
+.lunar-city-status-badge-review {
+  --badge-accent: var(--ui-violet);
+}
+
+.lunar-city-status-badge-blocked {
+  --badge-accent: var(--ui-red);
+}
+
+.lunar-city-status-badge-waiting {
+  --badge-accent: var(--ui-amber);
+}
+
+.lunar-city-status-badge-resting {
+  --badge-accent: #8aa5c8;
+}
+
+.lunar-city-leader-dialogue {
+  display: grid;
+  max-height: min(38rem, calc(100vh - 8rem));
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+  gap: 0.7rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--ui-accent) 28%, var(--ui-stroke-tertiary));
+  border-radius: 0.9rem;
+  background: rgb(5 10 18 / 94%);
+  padding: 0.85rem;
+  box-shadow: 0 18px 42px rgb(0 0 0 / 42%);
+  backdrop-filter: blur(1rem);
+}
+
+.lunar-city-leader-dialogue header,
+.lunar-city-leader-dialogue header > div,
+.lunar-city-leader-dialogue label,
+.lunar-city-leader-dialogue label > span {
+  min-width: 0;
+}
+
+.lunar-city-leader-dialogue header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.lunar-city-leader-dialogue h2,
+.lunar-city-leader-dialogue p {
+  margin: 0;
+}
+
+.lunar-city-leader-dialogue h2 {
+  color: var(--ui-text-primary);
+  font-size: 0.82rem;
+}
+
+.lunar-city-leader-dialogue header p,
+.lunar-city-leader-dialogue output,
+.lunar-city-leader-dialogue label > span {
+  color: var(--ui-text-secondary);
+  font-size: 0.66rem;
+}
+
+.lunar-city-leader-dialogue output {
+  width: max-content;
+  max-width: 100%;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--ui-bg-quaternary) 80%, transparent);
+  padding: 0.22rem 0.5rem;
+}
+
+.lunar-city-leader-dialogue output[data-state='thinking'],
+.lunar-city-leader-dialogue output[data-state='speaking'] {
+  color: var(--ui-cyan);
+}
+
+.lunar-city-leader-dialogue output[data-state='unavailable'],
+.lunar-city-leader-dialogue output[data-state='error'] {
+  color: var(--ui-red);
+}
+
+.lunar-city-leader-dialogue ol {
+  display: grid;
+  min-height: 4.5rem;
+  gap: 0.45rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.2rem;
+  list-style: none;
+}
+
+.lunar-city-leader-dialogue article {
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--ui-bg-quaternary) 78%, transparent);
+  padding: 0.45rem 0.55rem;
+  color: var(--ui-text-secondary);
+  font-size: 0.69rem;
+}
+
+.lunar-city-leader-dialogue article strong {
+  display: block;
+  margin-bottom: 0.15rem;
+  color: var(--ui-text-primary);
+  font-size: 0.61rem;
+}
+
+.lunar-city-leader-dialogue label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.lunar-city-leader-dialogue textarea {
+  min-height: 3.5rem;
+  resize: vertical;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 0.5rem;
+  background: var(--ui-bg-editor);
+  padding: 0.45rem;
+  color: var(--ui-text-primary);
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+.lunar-city-leader-dialogue textarea:focus-visible,
+.lunar-city-leader-dialogue button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ui-accent) 65%, transparent);
+  outline-offset: 2px;
+}
+
+.lunar-city-leader-dialogue > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.lunar-city-leader-dialogue button {
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 0.4rem;
+  background: color-mix(in srgb, var(--ui-bg-quaternary) 86%, transparent);
+  padding: 0.32rem 0.48rem;
+  color: var(--ui-text-primary);
+  font-size: 0.65rem;
+}
+
+.lunar-city-leader-dialogue button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lunar-city-world {
+    transition: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .lunar-city-world {
+    transform: rotateX(3deg) scale(1.08);
+  }
+}
+
+.lunar-city-worker-life, .lunar-city-alerts { border-top: 1px solid #746354; padding-block: 12px; }
+.lunar-city-worker-life button { text-decoration: underline; padding: 4px; }
+.lunar-city-systems-demo { position: fixed; right: 16px; top: 16px; z-index: 20; max-height: 82vh; overflow: auto; width: min(360px, 38vw); padding: 14px; border: 1px solid #887969; border-radius: 12px; background: #241d29f5; color: #fff2df; font: 14px/1.5 system-ui; }
+.lunar-city-systems-demo p { margin-block: 8px; }
+.lunar-city-systems-demo button, .lunar-city-systems-demo select { background: #4e4154; color: #fff2df; border: 1px solid #ad9b86; border-radius: 5px; padding: 5px 8px; margin: 4px; }
+.lunar-city-systems-demo button:disabled { opacity: .5; }
+.lunar-city-systems-demo button:focus-visible, .lunar-city-systems-demo select:focus-visible { outline: 3px solid #ffd16d; }
+.lunar-city-delegation-legend { position: absolute; right: 1rem; bottom: 8rem; z-index: 34; max-width: 26rem; max-height: 9rem; overflow: auto; padding: .6rem; border-radius: .5rem; background: #201d2aeb; color: #f6e9da; pointer-events: auto; font-size: .75rem; }
+.lunar-city-delegation-legend button { text-decoration: underline; }

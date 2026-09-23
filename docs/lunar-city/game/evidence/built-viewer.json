@@ -1,0 +1,166 @@
+{
+  "options": [
+    "Focus a character…",
+    "owl",
+    "elephant",
+    "cat",
+    "fox",
+    "capybara",
+    "lion",
+    "beaver",
+    "monkey",
+    "Worker: baseline",
+    "Worker: ci-repair-triage",
+    "Building: library (review)",
+    "Building: research-lab (review)",
+    "Building: publishing (review)",
+    "Building: arts-studio (review)"
+  ],
+  "errors": [],
+  "ready": true,
+  "loadedGlbs": [
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/terrain-752ada2a9541.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-building-owl-f76ec839e4cd.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-building-fox-cbce9ab6d4e1.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/depot.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-office.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/triage.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/garden.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/council.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-building-cat-8b3378294db0.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/engineering-workshop.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/release-gatehouse.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/archive.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/bus.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/workers.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-building-monkey-4147ed882633.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-owl-424364fdacee.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-elephant-90357430baa2.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-cat-ea4f708d37b7.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-fox-6f02184262d0.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-capybara-bf281acb2538.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-lion-c135959f5fd5.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-beaver-b0878c9ea5cc.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-monkey-d961d9faf527.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-worker-baseline-dd8a79afef8e.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/review-worker-ci-repair-triage-6035edc9ddd9.glb",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:5180/lunar-city/v2-review/models/navigation-a4ae0c0418e0.glb",
+      "status": 200
+    }
+  ],
+  "cat": {
+    "uri": "models/review-building-cat-8b3378294db0.glb",
+    "sha256": "8b3378294db02a9ee598872b84dfaefbdc328fb33ba90dd6c8ef798f2c14de50",
+    "bounds": {
+      "min": [
+        -6.212369441986084,
+        0,
+        -6.208340167999268
+      ],
+      "max": [
+        6.207792282104492,
+        10,
+        6.21066951751709
+      ]
+    },
+    "transform": {
+      "position": [
+        -46.4,
+        2.3499999999999996,
+        -1.6
+      ],
+      "rotation": [
+        0,
+        1.5363272257953886,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    "heightMetres": 10
+  },
+  "ci": {
+    "uri": "models/review-worker-ci-repair-triage-6035edc9ddd9.glb"
+  },
+  "capturedAt": "2026-09-08T04:58:21.233Z",
+  "scope": "Actual production renderer build in headless WebGL; not packaged Electron or authenticated gateway acceptance"
+}

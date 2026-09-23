@@ -1,0 +1,14 @@
+{
+  "asset": "capybara-revenue",
+  "worstAbsoluteGrowth": {
+    "frame": 16,
+    "growthMetres": 0.03748773338193061,
+    "restLengthMetres": 0.020996361957535525,
+    "restMidpoint": [
+      -0.39954209327697754,
+      -0.10702027007937431,
+      0.4411996454000473
+    ]
+  },
+  "maxEdgesOver3xAnd5mmGrowth": 23
+}

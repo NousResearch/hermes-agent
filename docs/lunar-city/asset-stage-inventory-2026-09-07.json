@@ -1,0 +1,1262 @@
+{
+  "generatedAt": "2026-09-08T04:35:02.132463+00:00",
+  "acceptance": "Inventory proves file structure only, not visual quality or game acceptance",
+  "assets": [
+    {
+      "category": "leader",
+      "asset": "beaver-architect",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/beaver-architect/shape-metres.glb",
+          "sha256": "54b509a5fa4fc37ea403395dd8cc9f2df73bde3116c8c8b49ccb452ef6f783ad",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/beaver-architect/material-review.glb",
+          "sha256": "5e68dee87efb76db5fe50c7fd3288998c399ec972135a1eee922805aab785322",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/beaver-architect/rigged-review.glb",
+          "sha256": "6b4f331d2fe005e26aae52a5506ecb19b43fbd76a16827876742b4bb288c545b",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "leader:beaver:acknowledging",
+            "leader:beaver:idle",
+            "leader:beaver:listening",
+            "leader:beaver:talking",
+            "leader:beaver:thinking",
+            "leader:beaver:unavailable",
+            "leader:beaver:walk"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "leader",
+      "asset": "capybara-revenue",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/capybara-revenue/shape-metres.glb",
+          "sha256": "42fff270feffba2a7efcf47c4b6fe8fe9fa725a9a7e4b6bc3c25f092a20ee226",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/capybara-revenue/material-review.glb",
+          "sha256": "bf281acb2538e6d9c865980a58cb8f92350be4373cda231e39601b08a933fd2d",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/capybara-revenue/rigged-review.glb",
+          "sha256": "bf51813c3dedef7b8dcbce5009772de7a4ac5ea7eb434fe0ef355d27614579eb",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "leader:capybara:acknowledging",
+            "leader:capybara:idle",
+            "leader:capybara:listening",
+            "leader:capybara:talking",
+            "leader:capybara:thinking",
+            "leader:capybara:unavailable",
+            "leader:capybara:walk"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "leader",
+      "asset": "cat-arts",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/cat-arts/shape-metres.glb",
+          "sha256": "3d61af9a4f06a0839ca64f8f6663b532f285552f146649275cc2f58d9215af74",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/cat-arts/material-review.glb",
+          "sha256": "1b15a810fcf13154f2de51c2317c9bbe027e8d777653fd1a01b46547dcb255d6",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/cat-arts/rigged-review.glb",
+          "sha256": "ea4f708d37b721d66be83b51f86e2e32882442dcc5e6122cbd40b41c9ef98d8d",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "leader:cat:acknowledging",
+            "leader:cat:idle",
+            "leader:cat:listening",
+            "leader:cat:talking",
+            "leader:cat:thinking",
+            "leader:cat:unavailable",
+            "leader:cat:walk"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "leader",
+      "asset": "elephant-memory",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/elephant-memory/shape-metres.glb",
+          "sha256": "2f094dc50c757aacf047eaa1f565ddf38b52728779d7a8081493b6ee0b24fb9c",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/elephant-memory/material-review.glb",
+          "sha256": "90357430baa273a3d95d1a8633aecae1afa3a715f3b27d94159aff031805ca5e",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/elephant-memory/rigged-review.glb",
+          "sha256": "d562446ef10b86185d7e947b1bc81dcebf00a66901ba3a7da3e2e0ba26d72aad",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "leader:elephant:acknowledging",
+            "leader:elephant:idle",
+            "leader:elephant:listening",
+            "leader:elephant:talking",
+            "leader:elephant:thinking",
+            "leader:elephant:unavailable",
+            "leader:elephant:walk"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "leader",
+      "asset": "fox-scientist",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/fox-scientist/shape-metres.glb",
+          "sha256": "ff56c70a2cfa9206da5444762a3f43d909d63ce28aed748aed5bf4a556b354c6",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/fox-scientist/material-review.glb",
+          "sha256": "13f31537018f99127a61f556d8f99b4426ca21d3e82c6b415d9657d416df40de",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/fox-scientist/rigged-review.glb",
+          "sha256": "ccc501e5f20df2a62b21ef34f8ff0faaec0e0097961dc9d2e330c7a23afbc915",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "leader:fox:acknowledging",
+            "leader:fox:idle",
+            "leader:fox:listening",
+            "leader:fox:talking",
+            "leader:fox:thinking",
+            "leader:fox:unavailable",
+            "leader:fox:walk"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "leader",
+      "asset": "lion-steward",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/lion-steward/shape-metres.glb",
+          "sha256": "dfdd038701a27b21a785509b088ac222e6c90b63c3c6238e59ce2343fc94f49c",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/lion-steward/material-review.glb",
+          "sha256": "c135959f5fd59274618d6718c0602fbacda9106e7151f8958b5d38b97482f6b7",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/lion-steward/rigged-review.glb",
+          "sha256": "cf115c60f0e8783c4b21d1aaa9e4b6d2eae9f9e9f5529e0a997df0008956e056",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "leader:lion:acknowledging",
+            "leader:lion:idle",
+            "leader:lion:listening",
+            "leader:lion:talking",
+            "leader:lion:thinking",
+            "leader:lion:unavailable",
+            "leader:lion:walk"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "leader",
+      "asset": "monkey-poet",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/monkey-poet/shape-metres.glb",
+          "sha256": "267f6539f4e4c23d6d397ebf22fc358642f901faccd2816c39d0a51f5127d5c7",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/monkey-poet/material-review.glb",
+          "sha256": "465bbbdefa00d4ce46033dc4caca7536da187689e17750a38eab17db100f638a",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/monkey-poet/rigged-review.glb",
+          "sha256": "6374e0e082003eb8bf4f46ce70c7a97c497cffceeae8c1d1f33492362aeae6d6",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "leader:monkey:acknowledging",
+            "leader:monkey:idle",
+            "leader:monkey:listening",
+            "leader:monkey:talking",
+            "leader:monkey:thinking",
+            "leader:monkey:unavailable",
+            "leader:monkey:walk"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "leader",
+      "asset": "owl-librarian",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/owl-librarian/shape-metres.glb",
+          "sha256": "a62c61f6e8da0b49add4562b154716882659d1943aba9f7ed62a3c842714064b",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/multiview-2026-09-07/owl-librarian/rigged-review.glb",
+          "sha256": "dd81d4f39bcd048ddb12ca37f3fbd7ceb6b3ed974bc4e4d115fabe468f352f19",
+          "meshes": 5,
+          "skins": 1,
+          "animations": [
+            "leader:owl:acknowledging",
+            "leader:owl:idle",
+            "leader:owl:listening",
+            "leader:owl:talking",
+            "leader:owl:thinking",
+            "leader:owl:unavailable",
+            "leader:owl:walk"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "acceptance-release",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/acceptance-release/shape-metres.glb",
+          "sha256": "0d62f7ec3dbaa82c112f1112ff5e1bba07cfb70409f287299870f7eaf68a5bd4",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/acceptance-release/material-review.glb",
+          "sha256": "7cf22b13f33f06675d58d3ce126058d3bc4c770a4b6e4041677cf310ce3efb5b",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/acceptance-release/rigged-review.glb",
+          "sha256": "56604a449a75aba69bb8e41ec497f39c4a679b9f69ae6490bb3ada357edfc0a6",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "idle",
+            "walk",
+            "talk",
+            "listen",
+            "work",
+            "tool-use",
+            "carry",
+            "handoff",
+            "queue",
+            "wait",
+            "blocked",
+            "failed",
+            "review",
+            "triage",
+            "heartbeat",
+            "rest",
+            "done"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "archive-acquisition",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/archive-acquisition/shape-metres.glb",
+          "sha256": "e9390d7f661c1c21010b13d6dd3cf80d9e8a309b2c6f83ff783da28d72519d80",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/archive-acquisition/material-review.glb",
+          "sha256": "4bff1b15a3adb474bd5af3f3cccc44e254da38f781d094261d0b08a877ee2ab1",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/archive-acquisition/rigged-review.glb",
+          "sha256": "8527dfdd38b24f77c35df73505cd6c64fdca28983fb0c9534460edeab7f365d4",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "idle",
+            "walk",
+            "talk",
+            "listen",
+            "work",
+            "tool-use",
+            "carry",
+            "handoff",
+            "queue",
+            "wait",
+            "blocked",
+            "failed",
+            "review",
+            "triage",
+            "heartbeat",
+            "rest",
+            "done"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "arts-studio",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/arts-studio/shape-metres.glb",
+          "sha256": "7bca36f0fd1e81b69957d9ecfc702fd4232a129eb084f0b285ab2b84f6049920",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/arts-studio/material-review.glb",
+          "sha256": "97f64e5daedda7f64199ec7f301a512306716f2deb74cfee7ed3c2b25015d493",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/arts-studio/rigged-review.glb",
+          "sha256": "d9112f068df567f80709cf5096871f18b951b91fb3863bea8fcb96c269116937",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "idle",
+            "walk",
+            "talk",
+            "listen",
+            "work",
+            "tool-use",
+            "carry",
+            "handoff",
+            "queue",
+            "wait",
+            "blocked",
+            "failed",
+            "review",
+            "triage",
+            "heartbeat",
+            "rest",
+            "done"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "baseline",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/baseline/shape-metres.glb",
+          "sha256": "5d09fec646d7b752533bab067a4188f0c6e6d9285307beda14c230daf2fe596d",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/baseline/material-review.glb",
+          "sha256": "4b4b94f829dfe25c7d717cc7f55729b037dacbae3046c0a22d5a0b6866ac1e3f",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/baseline/rigged-review.glb",
+          "sha256": "dd8a79afef8e0db23ee00832657e1dbacc66e7113a4f3af2cb16f92e453e5d01",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "idle",
+            "walk",
+            "talk",
+            "listen",
+            "work",
+            "tool-use",
+            "carry",
+            "handoff",
+            "queue",
+            "wait",
+            "blocked",
+            "failed",
+            "review",
+            "triage",
+            "heartbeat",
+            "rest",
+            "done"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "ci-repair-triage",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/ci-repair-triage/shape-metres.glb",
+          "sha256": "b2bb1fbed716298635de51a7b6ccf793eb4922a86e29962d44038e81a847c643",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/ci-repair-triage/material-review.glb",
+          "sha256": "fe70a82418eb118c44dbbc76970b307d07fc389bfde5df41d8ed0c0073a88f14",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/ci-repair-triage/rigged-review.glb",
+          "sha256": "6035edc9ddd9f42c3c895f39d6b6233ef19e013eb8ce1eead225c292887bc93e",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "idle",
+            "walk",
+            "talk",
+            "listen",
+            "work",
+            "tool-use",
+            "carry",
+            "handoff",
+            "queue",
+            "wait",
+            "blocked",
+            "failed",
+            "review",
+            "triage",
+            "heartbeat",
+            "rest",
+            "done"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "community-intake",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/community-intake/shape-metres.glb",
+          "sha256": "2ffa18c4de29f02de451a58187444d6dbac8851a884925be143569327b72b9f6",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/community-intake/material-review.glb",
+          "sha256": "8e8748eed3982e8874ea531af5b8e347363a1c73b52328cb2498355d11cd45b3",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/community-intake/rigged-review.glb",
+          "sha256": "9621da8d23e567a38b8f07392abfa804b997126260e257e64331b62044e9209f",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "idle",
+            "walk",
+            "talk",
+            "listen",
+            "work",
+            "tool-use",
+            "carry",
+            "handoff",
+            "queue",
+            "wait",
+            "blocked",
+            "failed",
+            "review",
+            "triage",
+            "heartbeat",
+            "rest",
+            "done"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "content-studio",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/content-studio/shape-metres.glb",
+          "sha256": "12c466a637624e90c936cd4612c238a0ac259e55b2c862154b72247cf558606d",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/content-studio/material-review.glb",
+          "sha256": "4f90f4b8250ad25619c139c9349d793f39f838d32fae9e25f14ddd2d6221042c",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/content-studio/rigged-review.glb",
+          "sha256": "c76e20ce3ddd6a91443f5df2fb92cb8977142202ea37b0ca45822915536b0f40",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "idle",
+            "walk",
+            "talk",
+            "listen",
+            "work",
+            "tool-use",
+            "carry",
+            "handoff",
+            "queue",
+            "wait",
+            "blocked",
+            "failed",
+            "review",
+            "triage",
+            "heartbeat",
+            "rest",
+            "done"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "control-plane-incidents",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/control-plane-incidents/shape-metres.glb",
+          "sha256": "747bfd452d038b3d626544bed55f6508c3f7c639592f993d5176d0f754bffcc1",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/control-plane-incidents/material-review.glb",
+          "sha256": "7dae579b6d46a7f4f40d6d0754b8516f97a9e5b9816fd4279a7e0071cbb2ebfe",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/control-plane-incidents/rigged-review.glb",
+          "sha256": "cf1ba03246c3ed976781c01f321a24dd6b4663f84f77e29255d5499353ad2b08",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "idle",
+            "walk",
+            "talk",
+            "listen",
+            "work",
+            "tool-use",
+            "carry",
+            "handoff",
+            "queue",
+            "wait",
+            "blocked",
+            "failed",
+            "review",
+            "triage",
+            "heartbeat",
+            "rest",
+            "done"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "core-runtime-ux-repairs",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/core-runtime-ux-repairs/shape-metres.glb",
+          "sha256": "74f2bd15bfc2407cb1fddf55661349a20c0ac1dbc7d6233f17e9a1767aa43f32",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/core-runtime-ux-repairs/material-review.glb",
+          "sha256": "3e8f49a72aa42b39a20e607f67efefd1c7dfed7764ee7192f0ddb6cdb16b7550",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "data-performance-repairs",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/data-performance-repairs/shape-metres.glb",
+          "sha256": "d13351edcb57ecc92a03bee36ebe101d858f25728324647c0df2c4b77785af75",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/data-performance-repairs/material-review.glb",
+          "sha256": "1d75541d9bb9e8d81391199b58771bb4f981a70464831fa392e1dd515642101a",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "editorial-desk",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/editorial-desk/shape-metres.glb",
+          "sha256": "34f60cb71df99582b0881d1ee2bab52c270182b0692508ad6ce6f2a5891e01e5",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/editorial-desk/material-review.glb",
+          "sha256": "1609a34ae6e3d4919d7863be7ad92ed3e301023ffc3698cdab61cd029fb00bae",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "engineering-guild",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/engineering-guild/shape-metres.glb",
+          "sha256": "e3b533ecf9a820a8462bc62b22f9b1fd501f14574c62df6f8e7f0497c6c9644e",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/engineering-guild/material-review.glb",
+          "sha256": "3e79e1808a04fb62911efcef3aa6bb45a7513e772af98f3f20a9e71715a915b9",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "rig": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/engineering-guild/rigged-review.glb",
+          "sha256": "54403e12ce4f5e488a33843bb9570c56cb096c9df09a216bb7ec111307cbe65c",
+          "meshes": 1,
+          "skins": 1,
+          "animations": [
+            "idle",
+            "walk",
+            "talk",
+            "listen",
+            "work",
+            "tool-use",
+            "carry",
+            "handoff",
+            "queue",
+            "wait",
+            "blocked",
+            "failed",
+            "review",
+            "triage",
+            "heartbeat",
+            "rest",
+            "done"
+          ],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "federation-council",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/federation-council/shape-metres.glb",
+          "sha256": "c58db6b8ab9379ff97622d28d53e726362923897c02c4197f24f3c183cbc7179",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/federation-council/material-review.glb",
+          "sha256": "a81656048c31efa1c880f8e6ac4f715b7995007e43c278a75348c27b289dc660",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "knowledge-commons",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/knowledge-commons/shape-metres.glb",
+          "sha256": "24dad5a601156091d80b1cab736035ef0ab8eaa870f9af30424972286a7051a9",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/knowledge-commons/material-review.glb",
+          "sha256": "2eae1b00a3ce7f02ac03046677e6ba0596749eeb5da2a6740521e1bab2a25250",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "memory-stewardship",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/memory-stewardship/shape-metres.glb",
+          "sha256": "c9e29a62212374d32137e4a2324bb6a54a6cf4897c4fe6c32e80bf2c5f7213e2",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/memory-stewardship/material-review.glb",
+          "sha256": "abe300f3924ab8f2d9bf000133cd3ac5133b060f2719fdd7d2e9a4e7642cce72",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "operations-release",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/operations-release/shape-metres.glb",
+          "sha256": "e942d0c505ec063a29c931f912eab90bea10e713ccd88a46ab97d4e384985f08",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/operations-release/material-review.glb",
+          "sha256": "821b476a15cfd916ef826a3035a1a09ce23bacf428d96ee952d433a84e1d4e9a",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "pr-merge-train",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/pr-merge-train/shape-metres.glb",
+          "sha256": "618999ead584cc7037d45cd16211ac3667b5e0af07a40f24cd324ab0daadfe0f",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/pr-merge-train/material-review.glb",
+          "sha256": "77a41ae5ac96f4196fb6bdfd54c1cbfdcab0c96e9f199fe0aef0eea4f7ac6168",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "research-lab",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/research-lab/shape-metres.glb",
+          "sha256": "518c6b85e33711dd6e91071180f0827322e38d5fe67ff6117787b7ca964a6ca7",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/worker-multiview-2026-09-07/research-lab/material-review.glb",
+          "sha256": "9e72cc8b2dd94c4f45c0c6ce8255c39bede5c4faff9430abfa0d6ac500ab560e",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "worker",
+      "asset": "research-review-board",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {}
+    },
+    {
+      "category": "worker",
+      "asset": "upstream-hermes-maintenance",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {}
+    },
+    {
+      "category": "building",
+      "asset": "beaver",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/beaver/shape-metres.glb",
+          "sha256": "e82e89fd5ba22de6427454d376d44eec7dd208857f9a70538b5c121b2ce3b295",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/beaver/material-review.glb",
+          "sha256": "cb2b8b74fe0b0e0af792f5b9e35af8f371e309c39f40e9086b9b299fd4b7d7c7",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "buildingMaterials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/beaver/building-review.glb",
+          "sha256": "d7e3c9fcc9c76c2abd21b56cf93cab54f714172d432fc61c5d43f5e671d58622",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "building",
+      "asset": "capybara",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/capybara/shape-metres.glb",
+          "sha256": "7aef708ec177be0d6e4a831a5ec35177fccefec605794fbeaefca2fbe495b797",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/capybara/material-review.glb",
+          "sha256": "c497c5d65105fe02e9c2c9f35a58d3b864fa3d7016c77c664d980c7601310cdb",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "buildingMaterials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/capybara/building-review.glb",
+          "sha256": "b35a5c0dfb16fbffe6f358210595a3455cf1379a00e140119df8ccee5334200c",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "building",
+      "asset": "cat",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/cat/shape-metres.glb",
+          "sha256": "f00a798d00f54e9d7c7b68f50e14ab398855dbbacea63d12f655e47780a17f86",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/cat/material-review.glb",
+          "sha256": "6cb2e48067b5c3893b207790ec815662c372cae33d9bf696ee4cc87aa8eed3ce",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "buildingMaterials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/cat/building-review.glb",
+          "sha256": "07cc96ece5a4e0084d15da477764825848b60f43f20a09b4a331e2cb4e7dd144",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "reconstructionV2": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/cat/reconstruction-v2/building-review.glb",
+          "sha256": "9af33d01926cd0c08bd0e6fcfdc07d8d4e12d0b2198c66510410ae9dd112dfda",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "building",
+      "asset": "elephant",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/elephant/shape-metres.glb",
+          "sha256": "4c6545ba25d109604ec4ee06be06e47946ff2b563be1549fb23fc1c717106ab9",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/elephant/material-review.glb",
+          "sha256": "4f5bbbc6f51f46dca70c7b64417bc24f27dda6d9366617dd32a04ecdae9095e8",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "buildingMaterials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/elephant/building-review.glb",
+          "sha256": "73ee39e6dd9ed2bba86b6ede12af55a9f5b2c15d9b8c9c59c685e310f873d92e",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "building",
+      "asset": "fox",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/fox/shape-metres.glb",
+          "sha256": "143cccb268ac5982cd0f2fae73eb9f07b81af30294ec1355747dedff61105aca",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/fox/material-review.glb",
+          "sha256": "539cff3d2d96a76089ede111caba70646feb0aaa43f5b4af92d0c926252655e5",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "buildingMaterials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/fox/building-review.glb",
+          "sha256": "1d628370bbac521c9623b640610d46519bca3c59ea4beb338be488e96159ddcf",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "building",
+      "asset": "lion",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/lion/shape-metres.glb",
+          "sha256": "5696d6f6bd35c39a9f59a12bca2bd0273d875ddf67ace41705df205c5231e59e",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/lion/material-review.glb",
+          "sha256": "abcc0fb8d6dbb992f5b4ad30028d1e6f1257504420d94100efbc8517f7c7c6e7",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "buildingMaterials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/lion/building-review.glb",
+          "sha256": "e22e6fc0ef03100db94e2ca634566713586c14920f7fd7137e7f63b4b3d39b25",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "building",
+      "asset": "monkey",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/monkey/shape-metres.glb",
+          "sha256": "89ddbbe7d6b28f64760de96c78bbb28be6919f32f8a86e58a861131873590c7c",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/monkey/material-review.glb",
+          "sha256": "c846bc358bc61d83847868be8c68ded044fc797ab0f81c58b84972dde7333568",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "buildingMaterials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/monkey/building-review.glb",
+          "sha256": "897a3f233de11825d9c3e93e223faa42f92cf41fa396cd3c61ba2f453a542278",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    },
+    {
+      "category": "building",
+      "asset": "owl",
+      "status": "work_in_progress",
+      "reviewRequired": true,
+      "stages": {
+        "source": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/owl/shape-metres.glb",
+          "sha256": "834107cd43425e7ff36350c6995232f1ebc49fe74820e7b529cc10e3170ca67c",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 0
+        },
+        "materials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/owl/material-review.glb",
+          "sha256": "2a0ca24190e229a5bbf839d760a605a3fd0459e3c6c606962658a55bd306f77a",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        },
+        "buildingMaterials": {
+          "path": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/owl/building-review.glb",
+          "sha256": "38f33752b064796aed2823a9d123bbc6a40bd45c98c3f6ea05aa9b53334d27ee",
+          "meshes": 1,
+          "skins": 0,
+          "animations": [],
+          "images": 2
+        }
+      }
+    }
+  ]
+}

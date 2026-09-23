@@ -1,0 +1,21 @@
+# Eight-building review selection follow-up
+
+The prior review pack intentionally selected four new card reconstructions (owl, fox, monkey and cat) while retaining historical buildings for other roles. The manifest contained unique model IDs and the world scene imported each entry once. That explains mixed visual generations; no duplicate instancing for the same role was established.
+
+`build-review-buildings.mjs` now selects all eight card-derived buildings in the opt-in pack: owl/library, fox/research-lab, monkey/publishing, cat/arts-studio (reconstruction-v2), elephant/archive, capybara/revenue, lion/council and beaver/engineering-workshop. Revenue fills a previously empty model role at its existing district. Originals and the historical default v2 pack remain preserved. Other operational fixtures (depot, triage, release gatehouse, review office, bus and garden) are distinct roles, not duplicates of this roster.
+
+Actual source GLBs were assembled into a temporary pack and checked for one entry per role, exact source-metre height within 5 mm, unit scale, readable output files, repeat-build idempotence and duplicate-ID rejection. All passed; the assembled model count is 17. [Receipt](evidence/all-building-registration.json) records source/output hashes and bounds. This is registration evidence, not a fresh built-viewer or visual-acceptance claim.
+
+Root owns the concurrent layout/terrain/environment changes and coordinated pack rebuild. After that rebuild, verify all eight selected URIs load in the built viewer, source metre heights remain unchanged, there is one focus entry per role, and routes/forecourts remain clear under the new layout. Refresh the pack review-status text to describe all eight as unfinished review models. See the [static model-quality backlog](model-quality-backlog-2026-09-07.md): especially elephant tree geometry and beaver/capybara water still require material/model repair.
+
+## Town revision and actual runtime verification
+
+The subsequent user-directed town revision uses `BUILDING_SCALE = .75` for buildings only. Source GLBs and their local bounds retain the original metre dimensions; runtime transform applies the revised design size exactly once. Placed target heights are owl12m, fox9m, monkey9m, cat7.5m, elephant18m, capybara12m, lion19.5m and beaver10.5m. Workers retain their own metre-tested heights. Source and placed heights are separately recorded in new registration receipts. Earlier unit-scale receipt above is historical pre-town evidence.
+
+The latest built viewer loaded all eight content-hashed building candidates and exposed exactly one selector entry per role. [Actual built receipt and screenshots](evidence/building-roster/receipt.json) verify loaded hashes, source bounds and placed scales. The selector now derives its building list from the selected review manifest instead of the old four-item array. Cat's current forecourt has no old streetlight crossing its entrance in the inspected built screenshot; exact doorway dimensions remain unsurveyed, so human-height entrance acceptance is still pending.
+
+The denser flat street plane revealed 10cm Recast vertical voxel error. Navigation now uses 1cm vertical cells while preserving 2m head clearance and 0.2m permitted step height (200 and20 vertical cells). All21 actual Recast routes passed, with maximum road-height error4.77e-8m and endpoint error1.74e-6m, without relaxing the2cm grounding check. See [navigation receipt](evidence/navigation.json).
+
+A separate atmosphere helper adds nonpickable distant ridges, sky, sun/moon and slow clouds; its20-minute cycle is local presentation time, not backend or wall-clock truth. Reduced motion freezes it, renderer suspension does not catch up elapsed wall time, and night retains a useful lighting floor. [Runtime motion/pause receipt](evidence/atmosphere-runtime.json) checks actual scene transforms. Source-local controlled phase review renders use the same helper without changing the default daytime setting.
+
+Remaining visual work includes dark/noisy card-model materials, the elephant tree silhouette, unsurveyed door clearances, and root-owned terrain palette/horizon refinement. The per-model static backlog is still open; runtime loading and scale checks do not approve beauty.

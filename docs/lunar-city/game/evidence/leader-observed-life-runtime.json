@@ -1,0 +1,124 @@
+{
+  "capturedAt": "2026-09-08T07:46:15.213Z",
+  "owner": {
+    "connectionId": "local-proof-a",
+    "profile": "fixture-4"
+  },
+  "other": {
+    "connectionId": "local-proof-b",
+    "profile": "fixture-5"
+  },
+  "modelIds": [
+    "owl",
+    "elephant",
+    "cat",
+    "fox",
+    "capybara",
+    "lion",
+    "beaver",
+    "monkey"
+  ],
+  "catUri": "models/review-cat-a94817c2f48a.glb",
+  "events": [
+    {
+      "label": "unique observed work",
+      "id": "cat",
+      "mode": "work",
+      "status": "held",
+      "position": {
+        "x": -30.276000000000003,
+        "y": 2.2,
+        "z": -1.044
+      },
+      "canWalk": true,
+      "provenance": "local-authored",
+      "manualOverride": false
+    },
+    {
+      "label": "observed idle",
+      "id": "cat",
+      "mode": "idle",
+      "status": "held",
+      "position": {
+        "x": -30.076118800129287,
+        "y": 2.2,
+        "z": -1.0371075448320441
+      },
+      "canWalk": true,
+      "provenance": "local-authored",
+      "manualOverride": false
+    },
+    {
+      "label": "stale owner/session hold",
+      "id": "cat",
+      "mode": "unavailable",
+      "status": "held",
+      "position": {
+        "x": -30.076118800129287,
+        "y": 2.2,
+        "z": -1.0371075448320441
+      },
+      "canWalk": true,
+      "provenance": "local-authored",
+      "manualOverride": false
+    },
+    {
+      "label": "ambiguous shared model hold",
+      "id": "cat",
+      "mode": "unavailable",
+      "status": "held",
+      "position": {
+        "x": -30.076118800129287,
+        "y": 2.2,
+        "z": -1.0371075448320441
+      },
+      "canWalk": true,
+      "provenance": "local-authored",
+      "manualOverride": false
+    },
+    {
+      "label": "manual preview override",
+      "id": "cat",
+      "mode": "home",
+      "status": "held",
+      "position": {
+        "x": -30.076118800129287,
+        "y": 2.2,
+        "z": -1.0371075448320441
+      },
+      "canWalk": true,
+      "provenance": "local-authored",
+      "manualOverride": true
+    },
+    {
+      "label": "observations do not replace manual preview",
+      "id": "cat",
+      "mode": "home",
+      "status": "held",
+      "position": {
+        "x": -30.076118800129287,
+        "y": 2.2,
+        "z": -1.0371075448320441
+      },
+      "canWalk": true,
+      "provenance": "local-authored",
+      "manualOverride": true
+    },
+    {
+      "label": "automatic restores last observation",
+      "id": "cat",
+      "mode": "idle",
+      "status": "held",
+      "position": {
+        "x": -30.076118800129287,
+        "y": 2.2,
+        "z": -1.0371075448320441
+      },
+      "canWalk": true,
+      "provenance": "local-authored",
+      "manualOverride": false
+    }
+  ],
+  "actualWalkFrames": 2,
+  "scope": "Synthetic immutable snapshots exercise actual world projection and imported cat motion. No backend requests or work started."
+}

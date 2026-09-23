@@ -1,0 +1,5570 @@
+{
+  "capturedAt": "2026-09-08T04:44:17.729Z",
+  "origin": "http://127.0.0.1:5178",
+  "evidence": "Actual loaded WebGL scene bounds; enabled/isVisible/visibility-positive geometry only. Hidden template/LOD meshes counted separately. Not packaged acceptance.",
+  "receipts": [
+    {
+      "sampleAt": "2026-09-08T04:44:06.818Z",
+      "focusedWorkers": [
+        {
+          "modelId": "workers",
+          "owner": "kind:string:7:session:connection:string:15:local-city-demo:profile:string:9:Archivist:session:string:6:demo-0",
+          "kind": "worker",
+          "visibleMeshes": 5,
+          "hiddenMeshes": 78,
+          "min": {
+            "x": -11.801205238304398,
+            "y": 1.9416666800963434,
+            "z": 44.863340589741355
+          },
+          "max": {
+            "x": -11.195437828101852,
+            "y": 3.1416666972985468,
+            "z": 45.21405711403226
+          },
+          "roots": [
+            "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:9:Archivist:session:string:6:demo-0"
+          ],
+          "dimensions": {
+            "x": 0.6057674102025459,
+            "y": 1.2000000172022034,
+            "z": 0.3507165242909025
+          }
+        },
+        {
+          "modelId": "workers",
+          "owner": "kind:string:7:session:connection:string:15:local-city-demo:profile:string:8:Engineer:session:string:6:demo-1",
+          "kind": "worker",
+          "visibleMeshes": 5,
+          "hiddenMeshes": 78,
+          "min": {
+            "x": -10.600266059837601,
+            "y": 1.9416666800963434,
+            "z": 43.65547411935568
+          },
+          "max": {
+            "x": -9.994498649635055,
+            "y": 3.1416666972985468,
+            "z": 44.01083674660062
+          },
+          "roots": [
+            "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:8:Engineer:session:string:6:demo-1"
+          ],
+          "dimensions": {
+            "x": 0.6057674102025459,
+            "y": 1.2000000172022034,
+            "z": 0.3553626272449364
+          }
+        }
+      ],
+      "demoWorkers": [
+        {
+          "modelId": "workers",
+          "owner": "",
+          "kind": "landmark-mesh",
+          "visibleMeshes": 2,
+          "hiddenMeshes": 86,
+          "min": {
+            "x": -22.518328964710236,
+            "y": 0.8998628665867727,
+            "z": 2.350542664527893
+          },
+          "max": {
+            "x": -17.350525498390198,
+            "y": 2.1000787019729614,
+            "z": 3.6486926674842834
+          },
+          "roots": [
+            "review-leader:baseline",
+            "review-leader:ci-repair-triage"
+          ],
+          "dimensions": {
+            "x": 5.167803466320038,
+            "y": 1.2002158353861887,
+            "z": 1.2981500029563904
+          }
+        },
+        {
+          "modelId": "workers",
+          "owner": "kind:string:7:session:connection:string:15:local-city-demo:profile:string:9:Archivist:session:string:6:demo-0",
+          "kind": "worker",
+          "visibleMeshes": 5,
+          "hiddenMeshes": 78,
+          "min": {
+            "x": -11.801205238304398,
+            "y": 1.9416666800963434,
+            "z": 44.863340589741355
+          },
+          "max": {
+            "x": -11.195437828101852,
+            "y": 3.1416666972985468,
+            "z": 45.21405711403226
+          },
+          "roots": [
+            "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:9:Archivist:session:string:6:demo-0"
+          ],
+          "dimensions": {
+            "x": 0.6057674102025459,
+            "y": 1.2000000172022034,
+            "z": 0.3507165242909025
+          }
+        },
+        {
+          "modelId": "workers",
+          "owner": "kind:string:7:session:connection:string:15:local-city-demo:profile:string:8:Engineer:session:string:6:demo-1",
+          "kind": "worker",
+          "visibleMeshes": 5,
+          "hiddenMeshes": 78,
+          "min": {
+            "x": -10.600266059837601,
+            "y": 1.9416666800963434,
+            "z": 43.65547411935568
+          },
+          "max": {
+            "x": -9.994498649635055,
+            "y": 3.1416666972985468,
+            "z": 44.01083674660062
+          },
+          "roots": [
+            "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:8:Engineer:session:string:6:demo-1"
+          ],
+          "dimensions": {
+            "x": 0.6057674102025459,
+            "y": 1.2000000172022034,
+            "z": 0.3553626272449364
+          }
+        }
+      ],
+      "pack": "review",
+      "manifestOverride": null,
+      "overview": {
+        "groups": [
+          {
+            "modelId": "terrain",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 4,
+            "hiddenMeshes": 5,
+            "min": {
+              "x": -116.0000017285347,
+              "y": -10.120000000000001,
+              "z": -92.63999833822245
+            },
+            "max": {
+              "x": 116.0000017285347,
+              "y": 9.42000015258789,
+              "z": 102.2399984812736
+            },
+            "roots": [
+              "lunar-city:placement:terrain"
+            ],
+            "dimensions": {
+              "x": 232.0000034570694,
+              "y": 19.540000152587893,
+              "z": 194.87999681949606
+            }
+          },
+          {
+            "modelId": "library",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 2,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -59.67478859648344,
+              "y": 2.4500000397965778,
+              "z": -43.674096117092404
+            },
+            "max": {
+              "x": -29.925197787183038,
+              "y": 18.451234340667725,
+              "z": -13.925684843432975
+            },
+            "roots": [
+              "lunar-city:placement:library"
+            ],
+            "dimensions": {
+              "x": 29.7495908093004,
+              "y": 16.001234300871147,
+              "z": 29.74841127365943
+            }
+          },
+          {
+            "modelId": "research-lab",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 2,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": 27.590068519412057,
+              "y": 2.75,
+              "z": -47.60809079824037
+            },
+            "max": {
+              "x": 52.412586057499084,
+              "y": 14.75,
+              "z": -22.79130206730656
+            },
+            "roots": [
+              "lunar-city:placement:research-lab"
+            ],
+            "dimensions": {
+              "x": 24.822517538087027,
+              "y": 12,
+              "z": 24.81678873093381
+            }
+          },
+          {
+            "modelId": "depot",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -58.38509060034622,
+              "y": 2.0833670174889267,
+              "z": 8.623475435047261
+            },
+            "max": {
+              "x": -39.68649894366135,
+              "y": 17.89000024795532,
+              "z": 29.870680165255834
+            },
+            "roots": [
+              "lunar-city:placement:depot"
+            ],
+            "dimensions": {
+              "x": 18.69859165668487,
+              "y": 15.806633230466394,
+              "z": 21.247204730208573
+            }
+          },
+          {
+            "modelId": "review-office",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 6,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": 77.49534196808295,
+              "y": 2.3278538885712625,
+              "z": 18.657892988327614
+            },
+            "max": {
+              "x": 101.13121755986622,
+              "y": 19.427999401092528,
+              "z": 40.87823533306258
+            },
+            "roots": [
+              "lunar-city:placement:review-office"
+            ],
+            "dimensions": {
+              "x": 23.63587559178326,
+              "y": 17.100145512521266,
+              "z": 22.220342344734963
+            }
+          },
+          {
+            "modelId": "triage",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 3,
+            "hiddenMeshes": 3,
+            "min": {
+              "x": 1.0192385569384577,
+              "y": 2.049999952316284,
+              "z": 34.9344295959118
+            },
+            "max": {
+              "x": 11.674908013641835,
+              "y": 7.33000002861023,
+              "z": 44.403985265642405
+            },
+            "roots": [
+              "lunar-city:placement:triage"
+            ],
+            "dimensions": {
+              "x": 10.655669456703377,
+              "y": 5.280000076293946,
+              "z": 9.469555669730603
+            }
+          },
+          {
+            "modelId": "garden",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 4,
+            "hiddenMeshes": 3,
+            "min": {
+              "x": -24.223336838185787,
+              "y": 1.475,
+              "z": 42.97666487842798
+            },
+            "max": {
+              "x": -1.3766635432839394,
+              "y": 6.385745262205601,
+              "z": 65.82333817332983
+            },
+            "roots": [
+              "lunar-city:placement:garden"
+            ],
+            "dimensions": {
+              "x": 22.846673294901848,
+              "y": 4.910745262205602,
+              "z": 22.846673294901848
+            }
+          },
+          {
+            "modelId": "council",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": 31.95932004451752,
+              "y": -0.879999918937683,
+              "z": 38.407968199253084
+            },
+            "max": {
+              "x": 55.09746220111847,
+              "y": 18.341999435424803,
+              "z": 61.54611035585403
+            },
+            "roots": [
+              "lunar-city:placement:council"
+            ],
+            "dimensions": {
+              "x": 23.13814215660095,
+              "y": 19.221999354362488,
+              "z": 23.13814215660095
+            }
+          },
+          {
+            "modelId": "arts-studio",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 2,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -52.81874621191596,
+              "y": 2.3499999046325684,
+              "z": -8.018058291483628
+            },
+            "max": {
+              "x": -39.97908661335499,
+              "y": 12.349999904632568,
+              "z": 4.82271295944545
+            },
+            "roots": [
+              "lunar-city:placement:arts-studio"
+            ],
+            "dimensions": {
+              "x": 12.83965959856097,
+              "y": 10,
+              "z": 12.840771250929079
+            }
+          },
+          {
+            "modelId": "engineering-workshop",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -57.083449709868006,
+              "y": 0.4419999523162841,
+              "z": 37.005415854928124
+            },
+            "max": {
+              "x": -35.67041835317991,
+              "y": 18.591999435424803,
+              "z": 58.639829603429064
+            },
+            "roots": [
+              "lunar-city:placement:engineering-workshop"
+            ],
+            "dimensions": {
+              "x": 21.413031356688094,
+              "y": 18.14999948310852,
+              "z": 21.63441374850094
+            }
+          },
+          {
+            "modelId": "release-gatehouse",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 6,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -6.950000000000001,
+              "y": 0.7520000476837159,
+              "z": 12.590000953674316
+            },
+            "max": {
+              "x": 6.950000000000001,
+              "y": 16.65200033187866,
+              "z": 24.63750072479248
+            },
+            "roots": [
+              "lunar-city:placement:release-gatehouse"
+            ],
+            "dimensions": {
+              "x": 13.900000000000002,
+              "y": 15.900000284194945,
+              "z": 12.047499771118165
+            }
+          },
+          {
+            "modelId": "archive",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": 57.14397799821853,
+              "y": 0.38300004768371654,
+              "z": -12.898205254254169
+            },
+            "max": {
+              "x": 71.70912882014348,
+              "y": 18.307999515533446,
+              "z": 2.895904360711575
+            },
+            "roots": [
+              "lunar-city:placement:archive"
+            ],
+            "dimensions": {
+              "x": 14.565150821924945,
+              "y": 17.92499946784973,
+              "z": 15.794109614965745
+            }
+          },
+          {
+            "modelId": "bus",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 3,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -3.4,
+              "y": 2.3600000524520874,
+              "z": -3.0600000762939454
+            },
+            "max": {
+              "x": 3.4,
+              "y": 4.975000047683716,
+              "z": -0.13999997138977038
+            },
+            "roots": [
+              "lunar-city:placement:bus"
+            ],
+            "dimensions": {
+              "x": 6.8,
+              "y": 2.6149999952316287,
+              "z": 2.920000104904175
+            }
+          },
+          {
+            "modelId": "workers",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 2,
+            "hiddenMeshes": 86,
+            "min": {
+              "x": -22.518328964710236,
+              "y": 0.8998628665867727,
+              "z": 2.350542664527893
+            },
+            "max": {
+              "x": -17.350525498390198,
+              "y": 2.1000787019729614,
+              "z": 3.6486926674842834
+            },
+            "roots": [
+              "review-leader:baseline",
+              "review-leader:ci-repair-triage"
+            ],
+            "dimensions": {
+              "x": 5.167803466320038,
+              "y": 1.2002158353861887,
+              "z": 1.2981500029563904
+            }
+          },
+          {
+            "modelId": "publishing",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 2,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -6.574435234069824,
+              "y": 2.200000047683716,
+              "z": -71.74247217178345
+            },
+            "max": {
+              "x": 6.5769944190979,
+              "y": 14.200000047683716,
+              "z": -56.250813484191895
+            },
+            "roots": [
+              "lunar-city:placement:publishing"
+            ],
+            "dimensions": {
+              "x": 13.151429653167725,
+              "y": 12,
+              "z": 15.491658687591553
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "owl",
+            "kind": "leader",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -30.667406260967255,
+              "y": 0.8998655064642662,
+              "z": -5.459330439567566
+            },
+            "max": {
+              "x": -29.33252787590027,
+              "y": 2.399954676628113,
+              "z": -4.541158586740494
+            },
+            "roots": [
+              "review-leader:owl"
+            ],
+            "dimensions": {
+              "x": 1.334878385066986,
+              "y": 1.5000891701638466,
+              "z": 0.9181718528270721
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "elephant",
+            "kind": "leader",
+            "visibleMeshes": 1,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -26.870265066623688,
+              "y": 0.8999798020013259,
+              "z": -5.748264193534851
+            },
+            "max": {
+              "x": -25.128965318202972,
+              "y": 3.200508713722229,
+              "z": -4.2523903250694275
+            },
+            "roots": [
+              "review-leader:elephant"
+            ],
+            "dimensions": {
+              "x": 1.7412997484207153,
+              "y": 2.300528911720903,
+              "z": 1.4958738684654236
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "cat",
+            "kind": "leader",
+            "visibleMeshes": 2,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -22.502592504024506,
+              "y": 0.899957377670944,
+              "z": -5.61148464679718
+            },
+            "max": {
+              "x": -21.497518181800842,
+              "y": 2.4998072385787964,
+              "z": -4.38852322101593
+            },
+            "roots": [
+              "review-leader:cat"
+            ],
+            "dimensions": {
+              "x": 1.0050743222236633,
+              "y": 1.5998498609078524,
+              "z": 1.22296142578125
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "fox",
+            "kind": "leader",
+            "visibleMeshes": 1,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -18.54818683862686,
+              "y": 0.9000203578634682,
+              "z": -5.590847134590149
+            },
+            "max": {
+              "x": -17.45180857181549,
+              "y": 2.649873733520508,
+              "z": -4.409025192260742
+            },
+            "roots": [
+              "review-leader:fox"
+            ],
+            "dimensions": {
+              "x": 1.0963782668113708,
+              "y": 1.7498533756570396,
+              "z": 1.1818219423294067
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "capybara",
+            "kind": "leader",
+            "visibleMeshes": 1,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -30.63896995782852,
+              "y": 0.9000071002278673,
+              "z": -1.4350607693195343
+            },
+            "max": {
+              "x": -29.361186146736145,
+              "y": 2.599979519844055,
+              "z": -0.5646658837795258
+            },
+            "roots": [
+              "review-leader:capybara"
+            ],
+            "dimensions": {
+              "x": 1.2777838110923767,
+              "y": 1.6999724196161878,
+              "z": 0.8703948855400085
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "lion",
+            "kind": "leader",
+            "visibleMeshes": 1,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -26.6683811545372,
+              "y": 0.899966002380097,
+              "z": -1.5547307133674622
+            },
+            "max": {
+              "x": -25.331747710704803,
+              "y": 2.8999149799346924,
+              "z": -0.44478726387023926
+            },
+            "roots": [
+              "review-leader:lion"
+            ],
+            "dimensions": {
+              "x": 1.3366334438323975,
+              "y": 1.9999489775545953,
+              "z": 1.109943449497223
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "beaver",
+            "kind": "leader",
+            "visibleMeshes": 1,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -22.57011342048645,
+              "y": 0.8999342407769291,
+              "z": -1.7337265610694885
+            },
+            "max": {
+              "x": -21.429736614227295,
+              "y": 2.499893546104431,
+              "z": -0.2655826210975647
+            },
+            "roots": [
+              "review-leader:beaver"
+            ],
+            "dimensions": {
+              "x": 1.1403768062591553,
+              "y": 1.599959305327502,
+              "z": 1.4681439399719238
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "monkey",
+            "kind": "leader",
+            "visibleMeshes": 1,
+            "hiddenMeshes": 1,
+            "min": {
+              "x": -18.56170630455017,
+              "y": 0.9000017155965452,
+              "z": -1.726102352142334
+            },
+            "max": {
+              "x": -17.438566207885742,
+              "y": 2.549240231513977,
+              "z": -0.2741888165473938
+            },
+            "roots": [
+              "review-leader:monkey"
+            ],
+            "dimensions": {
+              "x": 1.1231400966644287,
+              "y": 1.6492385159174319,
+              "z": 1.4519135355949402
+            }
+          }
+        ],
+        "models": [
+          {
+            "id": "terrain",
+            "uri": "models/terrain.glb",
+            "bounds": {
+              "min": [
+                -56,
+                -8,
+                -52
+              ],
+              "max": [
+                56,
+                18,
+                52
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 112,
+              "y": 26,
+              "z": 104
+            }
+          },
+          {
+            "id": "library",
+            "uri": "models/library.glb",
+            "bounds": {
+              "min": [
+                -12,
+                0,
+                -10
+              ],
+              "max": [
+                12,
+                16,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 24,
+              "y": 16,
+              "z": 20
+            }
+          },
+          {
+            "id": "research-lab",
+            "uri": "models/research-lab.glb",
+            "bounds": {
+              "min": [
+                -14,
+                0,
+                -12
+              ],
+              "max": [
+                14,
+                17,
+                12
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 28,
+              "y": 17,
+              "z": 24
+            }
+          },
+          {
+            "id": "depot",
+            "uri": "models/depot.glb",
+            "bounds": {
+              "min": [
+                -12,
+                0,
+                -10
+              ],
+              "max": [
+                12,
+                14,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 24,
+              "y": 14,
+              "z": 20
+            }
+          },
+          {
+            "id": "review-office",
+            "uri": "models/review-office.glb",
+            "bounds": {
+              "min": [
+                -13,
+                0,
+                -10
+              ],
+              "max": [
+                13,
+                15,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 26,
+              "y": 15,
+              "z": 20
+            }
+          },
+          {
+            "id": "triage",
+            "uri": "models/triage.glb",
+            "bounds": {
+              "min": [
+                -7,
+                0,
+                -6
+              ],
+              "max": [
+                7,
+                9,
+                6
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 14,
+              "y": 9,
+              "z": 12
+            }
+          },
+          {
+            "id": "garden",
+            "uri": "models/garden.glb",
+            "bounds": {
+              "min": [
+                -14,
+                0,
+                -12
+              ],
+              "max": [
+                14,
+                5,
+                12
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 28,
+              "y": 5,
+              "z": 24
+            }
+          },
+          {
+            "id": "council",
+            "uri": "models/council.glb",
+            "bounds": {
+              "min": [
+                -11,
+                0,
+                -9
+              ],
+              "max": [
+                11,
+                14,
+                9
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 22,
+              "y": 14,
+              "z": 18
+            }
+          },
+          {
+            "id": "arts-studio",
+            "uri": "models/arts-studio.glb",
+            "bounds": {
+              "min": [
+                -12,
+                0,
+                -10
+              ],
+              "max": [
+                12,
+                15,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 24,
+              "y": 15,
+              "z": 20
+            }
+          },
+          {
+            "id": "engineering-workshop",
+            "uri": "models/engineering-workshop.glb",
+            "bounds": {
+              "min": [
+                -13,
+                0,
+                -11
+              ],
+              "max": [
+                13,
+                16,
+                11
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 26,
+              "y": 16,
+              "z": 22
+            }
+          },
+          {
+            "id": "release-gatehouse",
+            "uri": "models/release-gatehouse.glb",
+            "bounds": {
+              "min": [
+                -11,
+                0,
+                -9
+              ],
+              "max": [
+                11,
+                15,
+                9
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 22,
+              "y": 15,
+              "z": 18
+            }
+          },
+          {
+            "id": "archive",
+            "uri": "models/archive.glb",
+            "bounds": {
+              "min": [
+                -12,
+                0,
+                -10
+              ],
+              "max": [
+                12,
+                15,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 24,
+              "y": 15,
+              "z": 20
+            }
+          },
+          {
+            "id": "bus",
+            "uri": "models/bus.glb",
+            "bounds": {
+              "min": [
+                -5,
+                0,
+                -3
+              ],
+              "max": [
+                5,
+                4,
+                3
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 10,
+              "y": 4,
+              "z": 6
+            }
+          },
+          {
+            "id": "leaders",
+            "uri": "models/leaders.glb",
+            "bounds": {
+              "min": [
+                -44,
+                0,
+                -34
+              ],
+              "max": [
+                44,
+                14,
+                38
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 88,
+              "y": 14,
+              "z": 72
+            }
+          },
+          {
+            "id": "workers",
+            "uri": "models/workers.glb",
+            "bounds": {
+              "min": [
+                -2,
+                0,
+                -2
+              ],
+              "max": [
+                2,
+                3,
+                2
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 4,
+              "y": 3,
+              "z": 4
+            }
+          }
+        ],
+        "untaggedVisible": 0,
+        "sceneMeshes": 192
+      },
+      "focused": [
+        {
+          "id": "terrain",
+          "focusKey": "lunar-city:model:terrain",
+          "groups": [
+            {
+              "modelId": "terrain",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 4,
+              "hiddenMeshes": 5,
+              "min": {
+                "x": -116.0000017285347,
+                "y": -10.120000000000001,
+                "z": -92.63999833822245
+              },
+              "max": {
+                "x": 116.0000017285347,
+                "y": 9.42000015258789,
+                "z": 102.2399984812736
+              },
+              "roots": [
+                "lunar-city:placement:terrain"
+              ],
+              "dimensions": {
+                "x": 232.0000034570694,
+                "y": 19.540000152587893,
+                "z": 194.87999681949606
+              }
+            }
+          ]
+        },
+        {
+          "id": "library",
+          "focusKey": "lunar-city:model:library",
+          "groups": [
+            {
+              "modelId": "library",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -59.67478859648344,
+                "y": 2.4500000397965778,
+                "z": -43.674096117092404
+              },
+              "max": {
+                "x": -29.925197787183038,
+                "y": 18.451234340667725,
+                "z": -13.925684843432975
+              },
+              "roots": [
+                "lunar-city:placement:library"
+              ],
+              "dimensions": {
+                "x": 29.7495908093004,
+                "y": 16.001234300871147,
+                "z": 29.74841127365943
+              }
+            }
+          ]
+        },
+        {
+          "id": "research-lab",
+          "focusKey": "lunar-city:model:research-lab",
+          "groups": [
+            {
+              "modelId": "research-lab",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": 27.590068519412057,
+                "y": 2.75,
+                "z": -47.60809079824037
+              },
+              "max": {
+                "x": 52.412586057499084,
+                "y": 14.75,
+                "z": -22.79130206730656
+              },
+              "roots": [
+                "lunar-city:placement:research-lab"
+              ],
+              "dimensions": {
+                "x": 24.822517538087027,
+                "y": 12,
+                "z": 24.81678873093381
+              }
+            }
+          ]
+        },
+        {
+          "id": "depot",
+          "focusKey": "lunar-city:model:depot",
+          "groups": [
+            {
+              "modelId": "depot",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -58.38509060034622,
+                "y": 2.0833670174889267,
+                "z": 8.623475435047261
+              },
+              "max": {
+                "x": -39.68649894366135,
+                "y": 17.89000024795532,
+                "z": 29.870680165255834
+              },
+              "roots": [
+                "lunar-city:placement:depot"
+              ],
+              "dimensions": {
+                "x": 18.69859165668487,
+                "y": 15.806633230466394,
+                "z": 21.247204730208573
+              }
+            }
+          ]
+        },
+        {
+          "id": "review-office",
+          "focusKey": "lunar-city:model:review-office",
+          "groups": [
+            {
+              "modelId": "review-office",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 6,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": 77.49534196808295,
+                "y": 2.3278538885712625,
+                "z": 18.657892988327614
+              },
+              "max": {
+                "x": 101.13121755986622,
+                "y": 19.427999401092528,
+                "z": 40.87823533306258
+              },
+              "roots": [
+                "lunar-city:placement:review-office"
+              ],
+              "dimensions": {
+                "x": 23.63587559178326,
+                "y": 17.100145512521266,
+                "z": 22.220342344734963
+              }
+            }
+          ]
+        },
+        {
+          "id": "triage",
+          "focusKey": "lunar-city:model:triage",
+          "groups": [
+            {
+              "modelId": "triage",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 3,
+              "hiddenMeshes": 3,
+              "min": {
+                "x": 1.0192385569384577,
+                "y": 2.049999952316284,
+                "z": 34.9344295959118
+              },
+              "max": {
+                "x": 11.674908013641835,
+                "y": 7.33000002861023,
+                "z": 44.403985265642405
+              },
+              "roots": [
+                "lunar-city:placement:triage"
+              ],
+              "dimensions": {
+                "x": 10.655669456703377,
+                "y": 5.280000076293946,
+                "z": 9.469555669730603
+              }
+            }
+          ]
+        },
+        {
+          "id": "garden",
+          "focusKey": "lunar-city:model:garden",
+          "groups": [
+            {
+              "modelId": "garden",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 4,
+              "hiddenMeshes": 3,
+              "min": {
+                "x": -24.223336838185787,
+                "y": 1.475,
+                "z": 42.97666487842798
+              },
+              "max": {
+                "x": -1.3766635432839394,
+                "y": 6.385745262205601,
+                "z": 65.82333817332983
+              },
+              "roots": [
+                "lunar-city:placement:garden"
+              ],
+              "dimensions": {
+                "x": 22.846673294901848,
+                "y": 4.910745262205602,
+                "z": 22.846673294901848
+              }
+            }
+          ]
+        },
+        {
+          "id": "council",
+          "focusKey": "lunar-city:model:council",
+          "groups": [
+            {
+              "modelId": "council",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": 31.95932004451752,
+                "y": -0.879999918937683,
+                "z": 38.407968199253084
+              },
+              "max": {
+                "x": 55.09746220111847,
+                "y": 18.341999435424803,
+                "z": 61.54611035585403
+              },
+              "roots": [
+                "lunar-city:placement:council"
+              ],
+              "dimensions": {
+                "x": 23.13814215660095,
+                "y": 19.221999354362488,
+                "z": 23.13814215660095
+              }
+            }
+          ]
+        },
+        {
+          "id": "arts-studio",
+          "focusKey": "lunar-city:model:arts-studio",
+          "groups": [
+            {
+              "modelId": "arts-studio",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -52.81874621191596,
+                "y": 2.3499999046325684,
+                "z": -8.018058291483628
+              },
+              "max": {
+                "x": -39.97908661335499,
+                "y": 12.349999904632568,
+                "z": 4.82271295944545
+              },
+              "roots": [
+                "lunar-city:placement:arts-studio"
+              ],
+              "dimensions": {
+                "x": 12.83965959856097,
+                "y": 10,
+                "z": 12.840771250929079
+              }
+            }
+          ]
+        },
+        {
+          "id": "engineering-workshop",
+          "focusKey": "lunar-city:model:engineering-workshop",
+          "groups": [
+            {
+              "modelId": "engineering-workshop",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -57.083449709868006,
+                "y": 0.4419999523162841,
+                "z": 37.005415854928124
+              },
+              "max": {
+                "x": -35.67041835317991,
+                "y": 18.591999435424803,
+                "z": 58.639829603429064
+              },
+              "roots": [
+                "lunar-city:placement:engineering-workshop"
+              ],
+              "dimensions": {
+                "x": 21.413031356688094,
+                "y": 18.14999948310852,
+                "z": 21.63441374850094
+              }
+            }
+          ]
+        },
+        {
+          "id": "release-gatehouse",
+          "focusKey": "lunar-city:model:release-gatehouse",
+          "groups": [
+            {
+              "modelId": "release-gatehouse",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 6,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -6.950000000000001,
+                "y": 0.7520000476837159,
+                "z": 12.590000953674316
+              },
+              "max": {
+                "x": 6.950000000000001,
+                "y": 16.65200033187866,
+                "z": 24.63750072479248
+              },
+              "roots": [
+                "lunar-city:placement:release-gatehouse"
+              ],
+              "dimensions": {
+                "x": 13.900000000000002,
+                "y": 15.900000284194945,
+                "z": 12.047499771118165
+              }
+            }
+          ]
+        },
+        {
+          "id": "archive",
+          "focusKey": "lunar-city:model:archive",
+          "groups": [
+            {
+              "modelId": "archive",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": 57.14397799821853,
+                "y": 0.38300004768371654,
+                "z": -12.898205254254169
+              },
+              "max": {
+                "x": 71.70912882014348,
+                "y": 18.307999515533446,
+                "z": 2.895904360711575
+              },
+              "roots": [
+                "lunar-city:placement:archive"
+              ],
+              "dimensions": {
+                "x": 14.565150821924945,
+                "y": 17.92499946784973,
+                "z": 15.794109614965745
+              }
+            }
+          ]
+        },
+        {
+          "id": "bus",
+          "focusKey": "lunar-city:model:bus",
+          "groups": [
+            {
+              "modelId": "bus",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 3,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -3.4,
+                "y": 2.3600000524520874,
+                "z": -3.0600000762939454
+              },
+              "max": {
+                "x": 3.4,
+                "y": 4.975000047683716,
+                "z": -0.13999997138977038
+              },
+              "roots": [
+                "lunar-city:placement:bus"
+              ],
+              "dimensions": {
+                "x": 6.8,
+                "y": 2.6149999952316287,
+                "z": 2.920000104904175
+              }
+            }
+          ]
+        },
+        {
+          "id": "leaders",
+          "focusKey": "lunar-city:model:leaders",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.667406260967255,
+                "y": 0.8998655064642662,
+                "z": -5.459330439567566
+              },
+              "max": {
+                "x": -29.33252787590027,
+                "y": 2.399954676628113,
+                "z": -4.541158586740494
+              },
+              "roots": [
+                "review-leader:owl"
+              ],
+              "dimensions": {
+                "x": 1.334878385066986,
+                "y": 1.5000891701638466,
+                "z": 0.9181718528270721
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "elephant",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.870265066623688,
+                "y": 0.8999798020013259,
+                "z": -5.748264193534851
+              },
+              "max": {
+                "x": -25.128965318202972,
+                "y": 3.200508713722229,
+                "z": -4.2523903250694275
+              },
+              "roots": [
+                "review-leader:elephant"
+              ],
+              "dimensions": {
+                "x": 1.7412997484207153,
+                "y": 2.300528911720903,
+                "z": 1.4958738684654236
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "cat",
+              "kind": "leader",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.502592504024506,
+                "y": 0.899957377670944,
+                "z": -5.61148464679718
+              },
+              "max": {
+                "x": -21.497518181800842,
+                "y": 2.4998072385787964,
+                "z": -4.38852322101593
+              },
+              "roots": [
+                "review-leader:cat"
+              ],
+              "dimensions": {
+                "x": 1.0050743222236633,
+                "y": 1.5998498609078524,
+                "z": 1.22296142578125
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.54818683862686,
+                "y": 0.9000203578634682,
+                "z": -5.590847134590149
+              },
+              "max": {
+                "x": -17.45180857181549,
+                "y": 2.649873733520508,
+                "z": -4.409025192260742
+              },
+              "roots": [
+                "review-leader:fox"
+              ],
+              "dimensions": {
+                "x": 1.0963782668113708,
+                "y": 1.7498533756570396,
+                "z": 1.1818219423294067
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "capybara",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.63896995782852,
+                "y": 0.9000071002278673,
+                "z": -1.4350607693195343
+              },
+              "max": {
+                "x": -29.361186146736145,
+                "y": 2.599979519844055,
+                "z": -0.5646658837795258
+              },
+              "roots": [
+                "review-leader:capybara"
+              ],
+              "dimensions": {
+                "x": 1.2777838110923767,
+                "y": 1.6999724196161878,
+                "z": 0.8703948855400085
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "lion",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.6683811545372,
+                "y": 0.899966002380097,
+                "z": -1.5547307133674622
+              },
+              "max": {
+                "x": -25.331747710704803,
+                "y": 2.8999149799346924,
+                "z": -0.44478726387023926
+              },
+              "roots": [
+                "review-leader:lion"
+              ],
+              "dimensions": {
+                "x": 1.3366334438323975,
+                "y": 1.9999489775545953,
+                "z": 1.109943449497223
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "beaver",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.57011342048645,
+                "y": 0.8999342407769291,
+                "z": -1.7337265610694885
+              },
+              "max": {
+                "x": -21.429736614227295,
+                "y": 2.499893546104431,
+                "z": -0.2655826210975647
+              },
+              "roots": [
+                "review-leader:beaver"
+              ],
+              "dimensions": {
+                "x": 1.1403768062591553,
+                "y": 1.599959305327502,
+                "z": 1.4681439399719238
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "monkey",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.56170630455017,
+                "y": 0.9000017155965452,
+                "z": -1.726102352142334
+              },
+              "max": {
+                "x": -17.438566207885742,
+                "y": 2.549240231513977,
+                "z": -0.2741888165473938
+              },
+              "roots": [
+                "review-leader:monkey"
+              ],
+              "dimensions": {
+                "x": 1.1231400966644287,
+                "y": 1.6492385159174319,
+                "z": 1.4519135355949402
+              }
+            }
+          ]
+        },
+        {
+          "id": "workers",
+          "focusKey": "lunar-city:model:workers",
+          "groups": [
+            {
+              "modelId": "workers",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 86,
+              "min": {
+                "x": -22.518328964710236,
+                "y": 0.8998628665867727,
+                "z": 2.350542664527893
+              },
+              "max": {
+                "x": -17.350525498390198,
+                "y": 2.1000787019729614,
+                "z": 3.6486926674842834
+              },
+              "roots": [
+                "review-leader:baseline",
+                "review-leader:ci-repair-triage"
+              ],
+              "dimensions": {
+                "x": 5.167803466320038,
+                "y": 1.2002158353861887,
+                "z": 1.2981500029563904
+              }
+            }
+          ]
+        },
+        {
+          "id": "publishing",
+          "focusKey": "lunar-city:model:publishing",
+          "groups": [
+            {
+              "modelId": "publishing",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -6.574435234069824,
+                "y": 2.200000047683716,
+                "z": -71.74247217178345
+              },
+              "max": {
+                "x": 6.5769944190979,
+                "y": 14.200000047683716,
+                "z": -56.250813484191895
+              },
+              "roots": [
+                "lunar-city:placement:publishing"
+              ],
+              "dimensions": {
+                "x": 13.151429653167725,
+                "y": 12,
+                "z": 15.491658687591553
+              }
+            }
+          ]
+        },
+        {
+          "id": "owl",
+          "focusKey": "lunar-city:leader:owl",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.667406260967255,
+                "y": 0.8998655064642662,
+                "z": -5.459330439567566
+              },
+              "max": {
+                "x": -29.33252787590027,
+                "y": 2.399954676628113,
+                "z": -4.541158586740494
+              },
+              "roots": [
+                "review-leader:owl"
+              ],
+              "dimensions": {
+                "x": 1.334878385066986,
+                "y": 1.5000891701638466,
+                "z": 0.9181718528270721
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "elephant",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.870265066623688,
+                "y": 0.8999798020013259,
+                "z": -5.748264193534851
+              },
+              "max": {
+                "x": -25.128965318202972,
+                "y": 3.200508713722229,
+                "z": -4.2523903250694275
+              },
+              "roots": [
+                "review-leader:elephant"
+              ],
+              "dimensions": {
+                "x": 1.7412997484207153,
+                "y": 2.300528911720903,
+                "z": 1.4958738684654236
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "cat",
+              "kind": "leader",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.502592504024506,
+                "y": 0.899957377670944,
+                "z": -5.61148464679718
+              },
+              "max": {
+                "x": -21.497518181800842,
+                "y": 2.4998072385787964,
+                "z": -4.38852322101593
+              },
+              "roots": [
+                "review-leader:cat"
+              ],
+              "dimensions": {
+                "x": 1.0050743222236633,
+                "y": 1.5998498609078524,
+                "z": 1.22296142578125
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.54818683862686,
+                "y": 0.9000203578634682,
+                "z": -5.590847134590149
+              },
+              "max": {
+                "x": -17.45180857181549,
+                "y": 2.649873733520508,
+                "z": -4.409025192260742
+              },
+              "roots": [
+                "review-leader:fox"
+              ],
+              "dimensions": {
+                "x": 1.0963782668113708,
+                "y": 1.7498533756570396,
+                "z": 1.1818219423294067
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "capybara",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.63896995782852,
+                "y": 0.9000071002278673,
+                "z": -1.4350607693195343
+              },
+              "max": {
+                "x": -29.361186146736145,
+                "y": 2.599979519844055,
+                "z": -0.5646658837795258
+              },
+              "roots": [
+                "review-leader:capybara"
+              ],
+              "dimensions": {
+                "x": 1.2777838110923767,
+                "y": 1.6999724196161878,
+                "z": 0.8703948855400085
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "lion",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.6683811545372,
+                "y": 0.899966002380097,
+                "z": -1.5547307133674622
+              },
+              "max": {
+                "x": -25.331747710704803,
+                "y": 2.8999149799346924,
+                "z": -0.44478726387023926
+              },
+              "roots": [
+                "review-leader:lion"
+              ],
+              "dimensions": {
+                "x": 1.3366334438323975,
+                "y": 1.9999489775545953,
+                "z": 1.109943449497223
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "beaver",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.57011342048645,
+                "y": 0.8999342407769291,
+                "z": -1.7337265610694885
+              },
+              "max": {
+                "x": -21.429736614227295,
+                "y": 2.499893546104431,
+                "z": -0.2655826210975647
+              },
+              "roots": [
+                "review-leader:beaver"
+              ],
+              "dimensions": {
+                "x": 1.1403768062591553,
+                "y": 1.599959305327502,
+                "z": 1.4681439399719238
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "monkey",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.56170630455017,
+                "y": 0.9000017155965452,
+                "z": -1.726102352142334
+              },
+              "max": {
+                "x": -17.438566207885742,
+                "y": 2.549240231513977,
+                "z": -0.2741888165473938
+              },
+              "roots": [
+                "review-leader:monkey"
+              ],
+              "dimensions": {
+                "x": 1.1231400966644287,
+                "y": 1.6492385159174319,
+                "z": 1.4519135355949402
+              }
+            }
+          ]
+        },
+        {
+          "id": "elephant",
+          "focusKey": "lunar-city:leader:elephant",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.667406260967255,
+                "y": 0.8998655064642662,
+                "z": -5.459330439567566
+              },
+              "max": {
+                "x": -29.33252787590027,
+                "y": 2.399954676628113,
+                "z": -4.541158586740494
+              },
+              "roots": [
+                "review-leader:owl"
+              ],
+              "dimensions": {
+                "x": 1.334878385066986,
+                "y": 1.5000891701638466,
+                "z": 0.9181718528270721
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "elephant",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.870265066623688,
+                "y": 0.8999798020013259,
+                "z": -5.748264193534851
+              },
+              "max": {
+                "x": -25.128965318202972,
+                "y": 3.200508713722229,
+                "z": -4.2523903250694275
+              },
+              "roots": [
+                "review-leader:elephant"
+              ],
+              "dimensions": {
+                "x": 1.7412997484207153,
+                "y": 2.300528911720903,
+                "z": 1.4958738684654236
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "cat",
+              "kind": "leader",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.502592504024506,
+                "y": 0.899957377670944,
+                "z": -5.61148464679718
+              },
+              "max": {
+                "x": -21.497518181800842,
+                "y": 2.4998072385787964,
+                "z": -4.38852322101593
+              },
+              "roots": [
+                "review-leader:cat"
+              ],
+              "dimensions": {
+                "x": 1.0050743222236633,
+                "y": 1.5998498609078524,
+                "z": 1.22296142578125
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.54818683862686,
+                "y": 0.9000203578634682,
+                "z": -5.590847134590149
+              },
+              "max": {
+                "x": -17.45180857181549,
+                "y": 2.649873733520508,
+                "z": -4.409025192260742
+              },
+              "roots": [
+                "review-leader:fox"
+              ],
+              "dimensions": {
+                "x": 1.0963782668113708,
+                "y": 1.7498533756570396,
+                "z": 1.1818219423294067
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "capybara",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.63896995782852,
+                "y": 0.9000071002278673,
+                "z": -1.4350607693195343
+              },
+              "max": {
+                "x": -29.361186146736145,
+                "y": 2.599979519844055,
+                "z": -0.5646658837795258
+              },
+              "roots": [
+                "review-leader:capybara"
+              ],
+              "dimensions": {
+                "x": 1.2777838110923767,
+                "y": 1.6999724196161878,
+                "z": 0.8703948855400085
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "lion",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.6683811545372,
+                "y": 0.899966002380097,
+                "z": -1.5547307133674622
+              },
+              "max": {
+                "x": -25.331747710704803,
+                "y": 2.8999149799346924,
+                "z": -0.44478726387023926
+              },
+              "roots": [
+                "review-leader:lion"
+              ],
+              "dimensions": {
+                "x": 1.3366334438323975,
+                "y": 1.9999489775545953,
+                "z": 1.109943449497223
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "beaver",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.57011342048645,
+                "y": 0.8999342407769291,
+                "z": -1.7337265610694885
+              },
+              "max": {
+                "x": -21.429736614227295,
+                "y": 2.499893546104431,
+                "z": -0.2655826210975647
+              },
+              "roots": [
+                "review-leader:beaver"
+              ],
+              "dimensions": {
+                "x": 1.1403768062591553,
+                "y": 1.599959305327502,
+                "z": 1.4681439399719238
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "monkey",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.56170630455017,
+                "y": 0.9000017155965452,
+                "z": -1.726102352142334
+              },
+              "max": {
+                "x": -17.438566207885742,
+                "y": 2.549240231513977,
+                "z": -0.2741888165473938
+              },
+              "roots": [
+                "review-leader:monkey"
+              ],
+              "dimensions": {
+                "x": 1.1231400966644287,
+                "y": 1.6492385159174319,
+                "z": 1.4519135355949402
+              }
+            }
+          ]
+        },
+        {
+          "id": "cat",
+          "focusKey": "lunar-city:leader:cat",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.667406260967255,
+                "y": 0.8998655064642662,
+                "z": -5.459330439567566
+              },
+              "max": {
+                "x": -29.33252787590027,
+                "y": 2.399954676628113,
+                "z": -4.541158586740494
+              },
+              "roots": [
+                "review-leader:owl"
+              ],
+              "dimensions": {
+                "x": 1.334878385066986,
+                "y": 1.5000891701638466,
+                "z": 0.9181718528270721
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "elephant",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.870265066623688,
+                "y": 0.8999798020013259,
+                "z": -5.748264193534851
+              },
+              "max": {
+                "x": -25.128965318202972,
+                "y": 3.200508713722229,
+                "z": -4.2523903250694275
+              },
+              "roots": [
+                "review-leader:elephant"
+              ],
+              "dimensions": {
+                "x": 1.7412997484207153,
+                "y": 2.300528911720903,
+                "z": 1.4958738684654236
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "cat",
+              "kind": "leader",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.502592504024506,
+                "y": 0.899957377670944,
+                "z": -5.61148464679718
+              },
+              "max": {
+                "x": -21.497518181800842,
+                "y": 2.4998072385787964,
+                "z": -4.38852322101593
+              },
+              "roots": [
+                "review-leader:cat"
+              ],
+              "dimensions": {
+                "x": 1.0050743222236633,
+                "y": 1.5998498609078524,
+                "z": 1.22296142578125
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.54818683862686,
+                "y": 0.9000203578634682,
+                "z": -5.590847134590149
+              },
+              "max": {
+                "x": -17.45180857181549,
+                "y": 2.649873733520508,
+                "z": -4.409025192260742
+              },
+              "roots": [
+                "review-leader:fox"
+              ],
+              "dimensions": {
+                "x": 1.0963782668113708,
+                "y": 1.7498533756570396,
+                "z": 1.1818219423294067
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "capybara",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.63896995782852,
+                "y": 0.9000071002278673,
+                "z": -1.4350607693195343
+              },
+              "max": {
+                "x": -29.361186146736145,
+                "y": 2.599979519844055,
+                "z": -0.5646658837795258
+              },
+              "roots": [
+                "review-leader:capybara"
+              ],
+              "dimensions": {
+                "x": 1.2777838110923767,
+                "y": 1.6999724196161878,
+                "z": 0.8703948855400085
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "lion",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.6683811545372,
+                "y": 0.899966002380097,
+                "z": -1.5547307133674622
+              },
+              "max": {
+                "x": -25.331747710704803,
+                "y": 2.8999149799346924,
+                "z": -0.44478726387023926
+              },
+              "roots": [
+                "review-leader:lion"
+              ],
+              "dimensions": {
+                "x": 1.3366334438323975,
+                "y": 1.9999489775545953,
+                "z": 1.109943449497223
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "beaver",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.57011342048645,
+                "y": 0.8999342407769291,
+                "z": -1.7337265610694885
+              },
+              "max": {
+                "x": -21.429736614227295,
+                "y": 2.499893546104431,
+                "z": -0.2655826210975647
+              },
+              "roots": [
+                "review-leader:beaver"
+              ],
+              "dimensions": {
+                "x": 1.1403768062591553,
+                "y": 1.599959305327502,
+                "z": 1.4681439399719238
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "monkey",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.56170630455017,
+                "y": 0.9000017155965452,
+                "z": -1.726102352142334
+              },
+              "max": {
+                "x": -17.438566207885742,
+                "y": 2.549240231513977,
+                "z": -0.2741888165473938
+              },
+              "roots": [
+                "review-leader:monkey"
+              ],
+              "dimensions": {
+                "x": 1.1231400966644287,
+                "y": 1.6492385159174319,
+                "z": 1.4519135355949402
+              }
+            }
+          ]
+        },
+        {
+          "id": "fox",
+          "focusKey": "lunar-city:leader:fox",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.667406260967255,
+                "y": 0.8998655064642662,
+                "z": -5.459330439567566
+              },
+              "max": {
+                "x": -29.33252787590027,
+                "y": 2.399954676628113,
+                "z": -4.541158586740494
+              },
+              "roots": [
+                "review-leader:owl"
+              ],
+              "dimensions": {
+                "x": 1.334878385066986,
+                "y": 1.5000891701638466,
+                "z": 0.9181718528270721
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "elephant",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.870265066623688,
+                "y": 0.8999798020013259,
+                "z": -5.748264193534851
+              },
+              "max": {
+                "x": -25.128965318202972,
+                "y": 3.200508713722229,
+                "z": -4.2523903250694275
+              },
+              "roots": [
+                "review-leader:elephant"
+              ],
+              "dimensions": {
+                "x": 1.7412997484207153,
+                "y": 2.300528911720903,
+                "z": 1.4958738684654236
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "cat",
+              "kind": "leader",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.502592504024506,
+                "y": 0.899957377670944,
+                "z": -5.61148464679718
+              },
+              "max": {
+                "x": -21.497518181800842,
+                "y": 2.4998072385787964,
+                "z": -4.38852322101593
+              },
+              "roots": [
+                "review-leader:cat"
+              ],
+              "dimensions": {
+                "x": 1.0050743222236633,
+                "y": 1.5998498609078524,
+                "z": 1.22296142578125
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.54818683862686,
+                "y": 0.9000203578634682,
+                "z": -5.590847134590149
+              },
+              "max": {
+                "x": -17.45180857181549,
+                "y": 2.649873733520508,
+                "z": -4.409025192260742
+              },
+              "roots": [
+                "review-leader:fox"
+              ],
+              "dimensions": {
+                "x": 1.0963782668113708,
+                "y": 1.7498533756570396,
+                "z": 1.1818219423294067
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "capybara",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.63896995782852,
+                "y": 0.9000071002278673,
+                "z": -1.4350607693195343
+              },
+              "max": {
+                "x": -29.361186146736145,
+                "y": 2.599979519844055,
+                "z": -0.5646658837795258
+              },
+              "roots": [
+                "review-leader:capybara"
+              ],
+              "dimensions": {
+                "x": 1.2777838110923767,
+                "y": 1.6999724196161878,
+                "z": 0.8703948855400085
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "lion",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.6683811545372,
+                "y": 0.899966002380097,
+                "z": -1.5547307133674622
+              },
+              "max": {
+                "x": -25.331747710704803,
+                "y": 2.8999149799346924,
+                "z": -0.44478726387023926
+              },
+              "roots": [
+                "review-leader:lion"
+              ],
+              "dimensions": {
+                "x": 1.3366334438323975,
+                "y": 1.9999489775545953,
+                "z": 1.109943449497223
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "beaver",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.57011342048645,
+                "y": 0.8999342407769291,
+                "z": -1.7337265610694885
+              },
+              "max": {
+                "x": -21.429736614227295,
+                "y": 2.499893546104431,
+                "z": -0.2655826210975647
+              },
+              "roots": [
+                "review-leader:beaver"
+              ],
+              "dimensions": {
+                "x": 1.1403768062591553,
+                "y": 1.599959305327502,
+                "z": 1.4681439399719238
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "monkey",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.56170630455017,
+                "y": 0.9000017155965452,
+                "z": -1.726102352142334
+              },
+              "max": {
+                "x": -17.438566207885742,
+                "y": 2.549240231513977,
+                "z": -0.2741888165473938
+              },
+              "roots": [
+                "review-leader:monkey"
+              ],
+              "dimensions": {
+                "x": 1.1231400966644287,
+                "y": 1.6492385159174319,
+                "z": 1.4519135355949402
+              }
+            }
+          ]
+        },
+        {
+          "id": "capybara",
+          "focusKey": "lunar-city:leader:capybara",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.667406260967255,
+                "y": 0.8998655064642662,
+                "z": -5.459330439567566
+              },
+              "max": {
+                "x": -29.33252787590027,
+                "y": 2.399954676628113,
+                "z": -4.541158586740494
+              },
+              "roots": [
+                "review-leader:owl"
+              ],
+              "dimensions": {
+                "x": 1.334878385066986,
+                "y": 1.5000891701638466,
+                "z": 0.9181718528270721
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "elephant",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.870265066623688,
+                "y": 0.8999798020013259,
+                "z": -5.748264193534851
+              },
+              "max": {
+                "x": -25.128965318202972,
+                "y": 3.200508713722229,
+                "z": -4.2523903250694275
+              },
+              "roots": [
+                "review-leader:elephant"
+              ],
+              "dimensions": {
+                "x": 1.7412997484207153,
+                "y": 2.300528911720903,
+                "z": 1.4958738684654236
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "cat",
+              "kind": "leader",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.502592504024506,
+                "y": 0.899957377670944,
+                "z": -5.61148464679718
+              },
+              "max": {
+                "x": -21.497518181800842,
+                "y": 2.4998072385787964,
+                "z": -4.38852322101593
+              },
+              "roots": [
+                "review-leader:cat"
+              ],
+              "dimensions": {
+                "x": 1.0050743222236633,
+                "y": 1.5998498609078524,
+                "z": 1.22296142578125
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.54818683862686,
+                "y": 0.9000203578634682,
+                "z": -5.590847134590149
+              },
+              "max": {
+                "x": -17.45180857181549,
+                "y": 2.649873733520508,
+                "z": -4.409025192260742
+              },
+              "roots": [
+                "review-leader:fox"
+              ],
+              "dimensions": {
+                "x": 1.0963782668113708,
+                "y": 1.7498533756570396,
+                "z": 1.1818219423294067
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "capybara",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.63896995782852,
+                "y": 0.9000071002278673,
+                "z": -1.4350607693195343
+              },
+              "max": {
+                "x": -29.361186146736145,
+                "y": 2.599979519844055,
+                "z": -0.5646658837795258
+              },
+              "roots": [
+                "review-leader:capybara"
+              ],
+              "dimensions": {
+                "x": 1.2777838110923767,
+                "y": 1.6999724196161878,
+                "z": 0.8703948855400085
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "lion",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.6683811545372,
+                "y": 0.899966002380097,
+                "z": -1.5547307133674622
+              },
+              "max": {
+                "x": -25.331747710704803,
+                "y": 2.8999149799346924,
+                "z": -0.44478726387023926
+              },
+              "roots": [
+                "review-leader:lion"
+              ],
+              "dimensions": {
+                "x": 1.3366334438323975,
+                "y": 1.9999489775545953,
+                "z": 1.109943449497223
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "beaver",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.57011342048645,
+                "y": 0.8999342407769291,
+                "z": -1.7337265610694885
+              },
+              "max": {
+                "x": -21.429736614227295,
+                "y": 2.499893546104431,
+                "z": -0.2655826210975647
+              },
+              "roots": [
+                "review-leader:beaver"
+              ],
+              "dimensions": {
+                "x": 1.1403768062591553,
+                "y": 1.599959305327502,
+                "z": 1.4681439399719238
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "monkey",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.56170630455017,
+                "y": 0.9000017155965452,
+                "z": -1.726102352142334
+              },
+              "max": {
+                "x": -17.438566207885742,
+                "y": 2.549240231513977,
+                "z": -0.2741888165473938
+              },
+              "roots": [
+                "review-leader:monkey"
+              ],
+              "dimensions": {
+                "x": 1.1231400966644287,
+                "y": 1.6492385159174319,
+                "z": 1.4519135355949402
+              }
+            }
+          ]
+        },
+        {
+          "id": "lion",
+          "focusKey": "lunar-city:leader:lion",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.667406260967255,
+                "y": 0.8998655064642662,
+                "z": -5.459330439567566
+              },
+              "max": {
+                "x": -29.33252787590027,
+                "y": 2.399954676628113,
+                "z": -4.541158586740494
+              },
+              "roots": [
+                "review-leader:owl"
+              ],
+              "dimensions": {
+                "x": 1.334878385066986,
+                "y": 1.5000891701638466,
+                "z": 0.9181718528270721
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "elephant",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.870265066623688,
+                "y": 0.8999798020013259,
+                "z": -5.748264193534851
+              },
+              "max": {
+                "x": -25.128965318202972,
+                "y": 3.200508713722229,
+                "z": -4.2523903250694275
+              },
+              "roots": [
+                "review-leader:elephant"
+              ],
+              "dimensions": {
+                "x": 1.7412997484207153,
+                "y": 2.300528911720903,
+                "z": 1.4958738684654236
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "cat",
+              "kind": "leader",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.502592504024506,
+                "y": 0.899957377670944,
+                "z": -5.61148464679718
+              },
+              "max": {
+                "x": -21.497518181800842,
+                "y": 2.4998072385787964,
+                "z": -4.38852322101593
+              },
+              "roots": [
+                "review-leader:cat"
+              ],
+              "dimensions": {
+                "x": 1.0050743222236633,
+                "y": 1.5998498609078524,
+                "z": 1.22296142578125
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.54818683862686,
+                "y": 0.9000203578634682,
+                "z": -5.590847134590149
+              },
+              "max": {
+                "x": -17.45180857181549,
+                "y": 2.649873733520508,
+                "z": -4.409025192260742
+              },
+              "roots": [
+                "review-leader:fox"
+              ],
+              "dimensions": {
+                "x": 1.0963782668113708,
+                "y": 1.7498533756570396,
+                "z": 1.1818219423294067
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "capybara",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.63896995782852,
+                "y": 0.9000071002278673,
+                "z": -1.4350607693195343
+              },
+              "max": {
+                "x": -29.361186146736145,
+                "y": 2.599979519844055,
+                "z": -0.5646658837795258
+              },
+              "roots": [
+                "review-leader:capybara"
+              ],
+              "dimensions": {
+                "x": 1.2777838110923767,
+                "y": 1.6999724196161878,
+                "z": 0.8703948855400085
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "lion",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.6683811545372,
+                "y": 0.899966002380097,
+                "z": -1.5547307133674622
+              },
+              "max": {
+                "x": -25.331747710704803,
+                "y": 2.8999149799346924,
+                "z": -0.44478726387023926
+              },
+              "roots": [
+                "review-leader:lion"
+              ],
+              "dimensions": {
+                "x": 1.3366334438323975,
+                "y": 1.9999489775545953,
+                "z": 1.109943449497223
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "beaver",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.57011342048645,
+                "y": 0.8999342407769291,
+                "z": -1.7337265610694885
+              },
+              "max": {
+                "x": -21.429736614227295,
+                "y": 2.499893546104431,
+                "z": -0.2655826210975647
+              },
+              "roots": [
+                "review-leader:beaver"
+              ],
+              "dimensions": {
+                "x": 1.1403768062591553,
+                "y": 1.599959305327502,
+                "z": 1.4681439399719238
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "monkey",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.56170630455017,
+                "y": 0.9000017155965452,
+                "z": -1.726102352142334
+              },
+              "max": {
+                "x": -17.438566207885742,
+                "y": 2.549240231513977,
+                "z": -0.2741888165473938
+              },
+              "roots": [
+                "review-leader:monkey"
+              ],
+              "dimensions": {
+                "x": 1.1231400966644287,
+                "y": 1.6492385159174319,
+                "z": 1.4519135355949402
+              }
+            }
+          ]
+        },
+        {
+          "id": "beaver",
+          "focusKey": "lunar-city:leader:beaver",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.667406260967255,
+                "y": 0.8998655064642662,
+                "z": -5.459330439567566
+              },
+              "max": {
+                "x": -29.33252787590027,
+                "y": 2.399954676628113,
+                "z": -4.541158586740494
+              },
+              "roots": [
+                "review-leader:owl"
+              ],
+              "dimensions": {
+                "x": 1.334878385066986,
+                "y": 1.5000891701638466,
+                "z": 0.9181718528270721
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "elephant",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.870265066623688,
+                "y": 0.8999798020013259,
+                "z": -5.748264193534851
+              },
+              "max": {
+                "x": -25.128965318202972,
+                "y": 3.200508713722229,
+                "z": -4.2523903250694275
+              },
+              "roots": [
+                "review-leader:elephant"
+              ],
+              "dimensions": {
+                "x": 1.7412997484207153,
+                "y": 2.300528911720903,
+                "z": 1.4958738684654236
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "cat",
+              "kind": "leader",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.502592504024506,
+                "y": 0.899957377670944,
+                "z": -5.61148464679718
+              },
+              "max": {
+                "x": -21.497518181800842,
+                "y": 2.4998072385787964,
+                "z": -4.38852322101593
+              },
+              "roots": [
+                "review-leader:cat"
+              ],
+              "dimensions": {
+                "x": 1.0050743222236633,
+                "y": 1.5998498609078524,
+                "z": 1.22296142578125
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.54818683862686,
+                "y": 0.9000203578634682,
+                "z": -5.590847134590149
+              },
+              "max": {
+                "x": -17.45180857181549,
+                "y": 2.649873733520508,
+                "z": -4.409025192260742
+              },
+              "roots": [
+                "review-leader:fox"
+              ],
+              "dimensions": {
+                "x": 1.0963782668113708,
+                "y": 1.7498533756570396,
+                "z": 1.1818219423294067
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "capybara",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.63896995782852,
+                "y": 0.9000071002278673,
+                "z": -1.4350607693195343
+              },
+              "max": {
+                "x": -29.361186146736145,
+                "y": 2.599979519844055,
+                "z": -0.5646658837795258
+              },
+              "roots": [
+                "review-leader:capybara"
+              ],
+              "dimensions": {
+                "x": 1.2777838110923767,
+                "y": 1.6999724196161878,
+                "z": 0.8703948855400085
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "lion",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.6683811545372,
+                "y": 0.899966002380097,
+                "z": -1.5547307133674622
+              },
+              "max": {
+                "x": -25.331747710704803,
+                "y": 2.8999149799346924,
+                "z": -0.44478726387023926
+              },
+              "roots": [
+                "review-leader:lion"
+              ],
+              "dimensions": {
+                "x": 1.3366334438323975,
+                "y": 1.9999489775545953,
+                "z": 1.109943449497223
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "beaver",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.57011342048645,
+                "y": 0.8999342407769291,
+                "z": -1.7337265610694885
+              },
+              "max": {
+                "x": -21.429736614227295,
+                "y": 2.499893546104431,
+                "z": -0.2655826210975647
+              },
+              "roots": [
+                "review-leader:beaver"
+              ],
+              "dimensions": {
+                "x": 1.1403768062591553,
+                "y": 1.599959305327502,
+                "z": 1.4681439399719238
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "monkey",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.56170630455017,
+                "y": 0.9000017155965452,
+                "z": -1.726102352142334
+              },
+              "max": {
+                "x": -17.438566207885742,
+                "y": 2.549240231513977,
+                "z": -0.2741888165473938
+              },
+              "roots": [
+                "review-leader:monkey"
+              ],
+              "dimensions": {
+                "x": 1.1231400966644287,
+                "y": 1.6492385159174319,
+                "z": 1.4519135355949402
+              }
+            }
+          ]
+        },
+        {
+          "id": "monkey",
+          "focusKey": "lunar-city:leader:monkey",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.667406260967255,
+                "y": 0.8998655064642662,
+                "z": -5.459330439567566
+              },
+              "max": {
+                "x": -29.33252787590027,
+                "y": 2.399954676628113,
+                "z": -4.541158586740494
+              },
+              "roots": [
+                "review-leader:owl"
+              ],
+              "dimensions": {
+                "x": 1.334878385066986,
+                "y": 1.5000891701638466,
+                "z": 0.9181718528270721
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "elephant",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.870265066623688,
+                "y": 0.8999798020013259,
+                "z": -5.748264193534851
+              },
+              "max": {
+                "x": -25.128965318202972,
+                "y": 3.200508713722229,
+                "z": -4.2523903250694275
+              },
+              "roots": [
+                "review-leader:elephant"
+              ],
+              "dimensions": {
+                "x": 1.7412997484207153,
+                "y": 2.300528911720903,
+                "z": 1.4958738684654236
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "cat",
+              "kind": "leader",
+              "visibleMeshes": 2,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.502592504024506,
+                "y": 0.899957377670944,
+                "z": -5.61148464679718
+              },
+              "max": {
+                "x": -21.497518181800842,
+                "y": 2.4998072385787964,
+                "z": -4.38852322101593
+              },
+              "roots": [
+                "review-leader:cat"
+              ],
+              "dimensions": {
+                "x": 1.0050743222236633,
+                "y": 1.5998498609078524,
+                "z": 1.22296142578125
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.54818683862686,
+                "y": 0.9000203578634682,
+                "z": -5.590847134590149
+              },
+              "max": {
+                "x": -17.45180857181549,
+                "y": 2.649873733520508,
+                "z": -4.409025192260742
+              },
+              "roots": [
+                "review-leader:fox"
+              ],
+              "dimensions": {
+                "x": 1.0963782668113708,
+                "y": 1.7498533756570396,
+                "z": 1.1818219423294067
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "capybara",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -30.63896995782852,
+                "y": 0.9000071002278673,
+                "z": -1.4350607693195343
+              },
+              "max": {
+                "x": -29.361186146736145,
+                "y": 2.599979519844055,
+                "z": -0.5646658837795258
+              },
+              "roots": [
+                "review-leader:capybara"
+              ],
+              "dimensions": {
+                "x": 1.2777838110923767,
+                "y": 1.6999724196161878,
+                "z": 0.8703948855400085
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "lion",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -26.6683811545372,
+                "y": 0.899966002380097,
+                "z": -1.5547307133674622
+              },
+              "max": {
+                "x": -25.331747710704803,
+                "y": 2.8999149799346924,
+                "z": -0.44478726387023926
+              },
+              "roots": [
+                "review-leader:lion"
+              ],
+              "dimensions": {
+                "x": 1.3366334438323975,
+                "y": 1.9999489775545953,
+                "z": 1.109943449497223
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "beaver",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -22.57011342048645,
+                "y": 0.8999342407769291,
+                "z": -1.7337265610694885
+              },
+              "max": {
+                "x": -21.429736614227295,
+                "y": 2.499893546104431,
+                "z": -0.2655826210975647
+              },
+              "roots": [
+                "review-leader:beaver"
+              ],
+              "dimensions": {
+                "x": 1.1403768062591553,
+                "y": 1.599959305327502,
+                "z": 1.4681439399719238
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "monkey",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 1,
+              "min": {
+                "x": -18.56170630455017,
+                "y": 0.9000017155965452,
+                "z": -1.726102352142334
+              },
+              "max": {
+                "x": -17.438566207885742,
+                "y": 2.549240231513977,
+                "z": -0.2741888165473938
+              },
+              "roots": [
+                "review-leader:monkey"
+              ],
+              "dimensions": {
+                "x": 1.1231400966644287,
+                "y": 1.6492385159174319,
+                "z": 1.4519135355949402
+              }
+            }
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "sampleAt": "2026-09-08T04:44:17.723Z",
+      "focusedWorkers": [
+        {
+          "modelId": "workers",
+          "owner": "kind:string:7:session:connection:string:15:local-city-demo:profile:string:9:Archivist:session:string:6:demo-0",
+          "kind": "worker",
+          "visibleMeshes": 5,
+          "hiddenMeshes": 78,
+          "min": {
+            "x": -9.251743873558304,
+            "y": 2.502158480410799e-9,
+            "z": 34.071741316059715
+          },
+          "max": {
+            "x": -8.645976463355758,
+            "y": 1.2000000197043619,
+            "z": 34.42245784035062
+          },
+          "roots": [
+            "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:9:Archivist:session:string:6:demo-0"
+          ],
+          "dimensions": {
+            "x": 0.6057674102025459,
+            "y": 1.2000000172022034,
+            "z": 0.3507165242909025
+          }
+        },
+        {
+          "modelId": "workers",
+          "owner": "kind:string:7:session:connection:string:15:local-city-demo:profile:string:8:Engineer:session:string:6:demo-1",
+          "kind": "worker",
+          "visibleMeshes": 5,
+          "hiddenMeshes": 78,
+          "min": {
+            "x": -8.076665481529496,
+            "y": 2.502158480410799e-9,
+            "z": 32.837894571171624
+          },
+          "max": {
+            "x": -7.47089807132695,
+            "y": 1.2000000197043619,
+            "z": 33.19396510353421
+          },
+          "roots": [
+            "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:8:Engineer:session:string:6:demo-1"
+          ],
+          "dimensions": {
+            "x": 0.6057674102025459,
+            "y": 1.2000000172022034,
+            "z": 0.3560705323625868
+          }
+        }
+      ],
+      "demoWorkers": [
+        {
+          "modelId": "workers",
+          "owner": "",
+          "kind": "landmark-mesh",
+          "visibleMeshes": 0,
+          "hiddenMeshes": 84,
+          "min": null,
+          "max": null,
+          "roots": [],
+          "dimensions": null
+        },
+        {
+          "modelId": "workers",
+          "owner": "kind:string:7:session:connection:string:15:local-city-demo:profile:string:9:Archivist:session:string:6:demo-0",
+          "kind": "worker",
+          "visibleMeshes": 5,
+          "hiddenMeshes": 78,
+          "min": {
+            "x": -9.251743873558304,
+            "y": 2.502158480410799e-9,
+            "z": 34.071741316059715
+          },
+          "max": {
+            "x": -8.645976463355758,
+            "y": 1.2000000197043619,
+            "z": 34.42245784035062
+          },
+          "roots": [
+            "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:9:Archivist:session:string:6:demo-0"
+          ],
+          "dimensions": {
+            "x": 0.6057674102025459,
+            "y": 1.2000000172022034,
+            "z": 0.3507165242909025
+          }
+        },
+        {
+          "modelId": "workers",
+          "owner": "kind:string:7:session:connection:string:15:local-city-demo:profile:string:8:Engineer:session:string:6:demo-1",
+          "kind": "worker",
+          "visibleMeshes": 1,
+          "hiddenMeshes": 82,
+          "min": {
+            "x": -7.579896680894105,
+            "y": -1.8535897270473712e-16,
+            "z": 33.04098806453788
+          },
+          "max": {
+            "x": -7.099896676955016,
+            "y": 1.199999975639841,
+            "z": 33.56272720533869
+          },
+          "roots": [
+            "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:8:Engineer:session:string:6:demo-1"
+          ],
+          "dimensions": {
+            "x": 0.4800000039390895,
+            "y": 1.1999999756398412,
+            "z": 0.5217391408008112
+          }
+        }
+      ],
+      "pack": "historical",
+      "manifestOverride": "Original v2 manifest and corresponding bytes loaded through browser-only v2-review request redirection; unchanged manifest contents",
+      "overview": {
+        "groups": [
+          {
+            "modelId": "terrain",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 4,
+            "hiddenMeshes": 5,
+            "min": {
+              "x": -55,
+              "y": -10.120000000000001,
+              "z": -43.199998557567596
+            },
+            "max": {
+              "x": 55,
+              "y": 9.769999828338623,
+              "z": 52.901565518215364
+            },
+            "roots": [
+              "lunar-city:placement:terrain"
+            ],
+            "dimensions": {
+              "x": 110,
+              "y": 19.889999828338624,
+              "z": 96.10156407578296
+            }
+          },
+          {
+            "modelId": "library",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -38.66483924646341,
+              "y": 3.9999999046325683,
+              "z": -28.663878239441612
+            },
+            "max": {
+              "x": -16.707423591407398,
+              "y": 22.181999588012694,
+              "z": -6.707586886166286
+            },
+            "roots": [
+              "lunar-city:placement:library"
+            ],
+            "dimensions": {
+              "x": 21.95741565505601,
+              "y": 18.181999683380127,
+              "z": 21.956291353275326
+            }
+          },
+          {
+            "modelId": "research-lab",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 7,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": 11.79046533000884,
+              "y": 4.599999952316284,
+              "z": -34.18992568885441
+            },
+            "max": {
+              "x": 37.657102863051264,
+              "y": 28.334000015258788,
+              "z": -9.198149854979441
+            },
+            "roots": [
+              "lunar-city:placement:research-lab"
+            ],
+            "dimensions": {
+              "x": 25.866637533042425,
+              "y": 23.734000062942503,
+              "z": 24.991775833874968
+            }
+          },
+          {
+            "modelId": "depot",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -37.695279092088946,
+              "y": 1.9833671128563584,
+              "z": 3.046581746308144
+            },
+            "max": {
+              "x": -23.129766614476402,
+              "y": 17.790000343322752,
+              "z": 21.54060329071398
+            },
+            "roots": [
+              "lunar-city:placement:depot"
+            ],
+            "dimensions": {
+              "x": 14.565512477612543,
+              "y": 15.806633230466394,
+              "z": 18.49402154440584
+            }
+          },
+          {
+            "modelId": "review-office",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 6,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": 22.098606223534674,
+              "y": 2.977853983938694,
+              "z": 1.3681707958037705
+            },
+            "max": {
+              "x": 41.90173122819397,
+              "y": 20.07799949645996,
+              "z": 18.631108201069814
+            },
+            "roots": [
+              "lunar-city:placement:review-office"
+            ],
+            "dimensions": {
+              "x": 19.803125004659293,
+              "y": 17.100145512521266,
+              "z": 17.262937405266044
+            }
+          },
+          {
+            "modelId": "triage",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 3,
+            "hiddenMeshes": 3,
+            "min": {
+              "x": -1.541550335288048,
+              "y": 1,
+              "z": 20.20322453379631
+            },
+            "max": {
+              "x": 9.713794282595583,
+              "y": 6.280000076293946,
+              "z": 30.44425664328194
+            },
+            "roots": [
+              "lunar-city:placement:triage"
+            ],
+            "dimensions": {
+              "x": 11.25534461788363,
+              "y": 5.280000076293946,
+              "z": 10.24103210948563
+            }
+          },
+          {
+            "modelId": "garden",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 4,
+            "hiddenMeshes": 3,
+            "min": {
+              "x": -20.015706285834312,
+              "y": -0.4249999985098839,
+              "z": 21.984293714165688
+            },
+            "max": {
+              "x": 4.015706285834312,
+              "y": 4.485745286047459,
+              "z": 46.01570628583431
+            },
+            "roots": [
+              "lunar-city:placement:garden"
+            ],
+            "dimensions": {
+              "x": 24.031412571668625,
+              "y": 4.910745284557343,
+              "z": 24.031412571668625
+            }
+          },
+          {
+            "modelId": "council",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": 15.098602205514908,
+              "y": -1.879999918937683,
+              "z": 19.186481207609177
+            },
+            "max": {
+              "x": 38.11189404129982,
+              "y": 17.341999435424803,
+              "z": 42.19977304339409
+            },
+            "roots": [
+              "lunar-city:placement:council"
+            ],
+            "dimensions": {
+              "x": 23.013291835784912,
+              "y": 19.221999354362488,
+              "z": 23.013291835784912
+            }
+          },
+          {
+            "modelId": "arts-studio",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 7,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -37.229912018825374,
+              "y": 0.35599995231628423,
+              "z": -10.285545086052133
+            },
+            "max": {
+              "x": -20.113366505058742,
+              "y": 17.606000328063963,
+              "z": 8.274898394942284
+            },
+            "roots": [
+              "lunar-city:placement:arts-studio"
+            ],
+            "dimensions": {
+              "x": 17.11654551376663,
+              "y": 17.25000037574768,
+              "z": 18.560443480994415
+            }
+          },
+          {
+            "modelId": "engineering-workshop",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -39.25669335345354,
+              "y": 0.19199995231628408,
+              "z": 19.101587204847874
+            },
+            "max": {
+              "x": -18.616308911427037,
+              "y": 18.341999435424803,
+              "z": 40.72051650751864
+            },
+            "roots": [
+              "lunar-city:placement:engineering-workshop"
+            ],
+            "dimensions": {
+              "x": 20.640384442026505,
+              "y": 18.14999948310852,
+              "z": 21.618929302670765
+            }
+          },
+          {
+            "modelId": "release-gatehouse",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 6,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -6.95,
+              "y": 0.6019999523162842,
+              "z": 6.562500038146973
+            },
+            "max": {
+              "x": 6.95,
+              "y": 16.50200023651123,
+              "z": 18.609999809265137
+            },
+            "roots": [
+              "lunar-city:placement:release-gatehouse"
+            ],
+            "dimensions": {
+              "x": 13.9,
+              "y": 15.900000284194945,
+              "z": 12.047499771118165
+            }
+          },
+          {
+            "modelId": "archive",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 5,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": 29.408791967922056,
+              "y": 0.2329999523162849,
+              "z": 9.454437623918057
+            },
+            "max": {
+              "x": 45.53152476902871,
+              "y": 18.157999420166014,
+              "z": 26.551734097997443
+            },
+            "roots": [
+              "lunar-city:placement:archive"
+            ],
+            "dimensions": {
+              "x": 16.12273280110665,
+              "y": 17.92499946784973,
+              "z": 17.097296474079386
+            }
+          },
+          {
+            "modelId": "bus",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 3,
+            "hiddenMeshes": 2,
+            "min": {
+              "x": -3.4,
+              "y": 2.1600000047683716,
+              "z": -2.4600000524520875
+            },
+            "max": {
+              "x": 3.4,
+              "y": 4.775,
+              "z": 0.4600000524520875
+            },
+            "roots": [
+              "lunar-city:placement:bus"
+            ],
+            "dimensions": {
+              "x": 6.8,
+              "y": 2.6149999952316287,
+              "z": 2.920000104904175
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "",
+            "kind": "leader-shared-surface",
+            "visibleMeshes": 1,
+            "hiddenMeshes": 6,
+            "min": {
+              "x": -31.745628311949893,
+              "y": 1.15,
+              "z": -22.566311896062462
+            },
+            "max": {
+              "x": 33.74562831194989,
+              "y": 7.85,
+              "z": 31.7
+            },
+            "roots": [
+              "lunar-city:placement:leaders"
+            ],
+            "dimensions": {
+              "x": 65.49125662389979,
+              "y": 6.699999999999999,
+              "z": 54.26631189606246
+            }
+          },
+          {
+            "modelId": "leaders",
+            "owner": "owl",
+            "kind": "leader",
+            "visibleMeshes": 0,
+            "hiddenMeshes": 1,
+            "min": null,
+            "max": null,
+            "roots": [],
+            "dimensions": null
+          },
+          {
+            "modelId": "leaders",
+            "owner": "fox",
+            "kind": "leader",
+            "visibleMeshes": 0,
+            "hiddenMeshes": 1,
+            "min": null,
+            "max": null,
+            "roots": [],
+            "dimensions": null
+          },
+          {
+            "modelId": "leaders",
+            "owner": "badger",
+            "kind": "leader",
+            "visibleMeshes": 0,
+            "hiddenMeshes": 1,
+            "min": null,
+            "max": null,
+            "roots": [],
+            "dimensions": null
+          },
+          {
+            "modelId": "leaders",
+            "owner": "otter",
+            "kind": "leader",
+            "visibleMeshes": 0,
+            "hiddenMeshes": 1,
+            "min": null,
+            "max": null,
+            "roots": [],
+            "dimensions": null
+          },
+          {
+            "modelId": "leaders",
+            "owner": "bird",
+            "kind": "leader",
+            "visibleMeshes": 0,
+            "hiddenMeshes": 1,
+            "min": null,
+            "max": null,
+            "roots": [],
+            "dimensions": null
+          },
+          {
+            "modelId": "leaders",
+            "owner": "stag",
+            "kind": "leader",
+            "visibleMeshes": 0,
+            "hiddenMeshes": 1,
+            "min": null,
+            "max": null,
+            "roots": [],
+            "dimensions": null
+          },
+          {
+            "modelId": "workers",
+            "owner": "",
+            "kind": "landmark-mesh",
+            "visibleMeshes": 0,
+            "hiddenMeshes": 84,
+            "min": null,
+            "max": null,
+            "roots": [],
+            "dimensions": null
+          }
+        ],
+        "models": [
+          {
+            "id": "terrain",
+            "uri": "models/terrain.glb",
+            "bounds": {
+              "min": [
+                -56,
+                -8,
+                -52
+              ],
+              "max": [
+                56,
+                18,
+                52
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 112,
+              "y": 26,
+              "z": 104
+            }
+          },
+          {
+            "id": "library",
+            "uri": "models/library.glb",
+            "bounds": {
+              "min": [
+                -12,
+                0,
+                -10
+              ],
+              "max": [
+                12,
+                16,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 24,
+              "y": 16,
+              "z": 20
+            }
+          },
+          {
+            "id": "research-lab",
+            "uri": "models/research-lab.glb",
+            "bounds": {
+              "min": [
+                -14,
+                0,
+                -12
+              ],
+              "max": [
+                14,
+                17,
+                12
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 28,
+              "y": 17,
+              "z": 24
+            }
+          },
+          {
+            "id": "depot",
+            "uri": "models/depot.glb",
+            "bounds": {
+              "min": [
+                -12,
+                0,
+                -10
+              ],
+              "max": [
+                12,
+                14,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 24,
+              "y": 14,
+              "z": 20
+            }
+          },
+          {
+            "id": "review-office",
+            "uri": "models/review-office.glb",
+            "bounds": {
+              "min": [
+                -13,
+                0,
+                -10
+              ],
+              "max": [
+                13,
+                15,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 26,
+              "y": 15,
+              "z": 20
+            }
+          },
+          {
+            "id": "triage",
+            "uri": "models/triage.glb",
+            "bounds": {
+              "min": [
+                -7,
+                0,
+                -6
+              ],
+              "max": [
+                7,
+                9,
+                6
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 14,
+              "y": 9,
+              "z": 12
+            }
+          },
+          {
+            "id": "garden",
+            "uri": "models/garden.glb",
+            "bounds": {
+              "min": [
+                -14,
+                0,
+                -12
+              ],
+              "max": [
+                14,
+                5,
+                12
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 28,
+              "y": 5,
+              "z": 24
+            }
+          },
+          {
+            "id": "council",
+            "uri": "models/council.glb",
+            "bounds": {
+              "min": [
+                -11,
+                0,
+                -9
+              ],
+              "max": [
+                11,
+                14,
+                9
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 22,
+              "y": 14,
+              "z": 18
+            }
+          },
+          {
+            "id": "arts-studio",
+            "uri": "models/arts-studio.glb",
+            "bounds": {
+              "min": [
+                -12,
+                0,
+                -10
+              ],
+              "max": [
+                12,
+                15,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 24,
+              "y": 15,
+              "z": 20
+            }
+          },
+          {
+            "id": "engineering-workshop",
+            "uri": "models/engineering-workshop.glb",
+            "bounds": {
+              "min": [
+                -13,
+                0,
+                -11
+              ],
+              "max": [
+                13,
+                16,
+                11
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 26,
+              "y": 16,
+              "z": 22
+            }
+          },
+          {
+            "id": "release-gatehouse",
+            "uri": "models/release-gatehouse.glb",
+            "bounds": {
+              "min": [
+                -11,
+                0,
+                -9
+              ],
+              "max": [
+                11,
+                15,
+                9
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 22,
+              "y": 15,
+              "z": 18
+            }
+          },
+          {
+            "id": "archive",
+            "uri": "models/archive.glb",
+            "bounds": {
+              "min": [
+                -12,
+                0,
+                -10
+              ],
+              "max": [
+                12,
+                15,
+                10
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 24,
+              "y": 15,
+              "z": 20
+            }
+          },
+          {
+            "id": "bus",
+            "uri": "models/bus.glb",
+            "bounds": {
+              "min": [
+                -5,
+                0,
+                -3
+              ],
+              "max": [
+                5,
+                4,
+                3
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 10,
+              "y": 4,
+              "z": 6
+            }
+          },
+          {
+            "id": "leaders",
+            "uri": "models/leaders.glb",
+            "bounds": {
+              "min": [
+                -44,
+                0,
+                -34
+              ],
+              "max": [
+                44,
+                14,
+                38
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 88,
+              "y": 14,
+              "z": 72
+            }
+          },
+          {
+            "id": "workers",
+            "uri": "models/workers.glb",
+            "bounds": {
+              "min": [
+                -2,
+                0,
+                -2
+              ],
+              "max": [
+                2,
+                3,
+                2
+              ]
+            },
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "targetDimensions": {
+              "x": 4,
+              "y": 3,
+              "z": 4
+            }
+          }
+        ],
+        "untaggedVisible": 0,
+        "sceneMeshes": 193
+      },
+      "focused": [
+        {
+          "id": "terrain",
+          "focusKey": "lunar-city:model:terrain",
+          "groups": [
+            {
+              "modelId": "terrain",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 4,
+              "hiddenMeshes": 5,
+              "min": {
+                "x": -55,
+                "y": -10.120000000000001,
+                "z": -43.199998557567596
+              },
+              "max": {
+                "x": 55,
+                "y": 9.769999828338623,
+                "z": 52.901565518215364
+              },
+              "roots": [
+                "lunar-city:placement:terrain"
+              ],
+              "dimensions": {
+                "x": 110,
+                "y": 19.889999828338624,
+                "z": 96.10156407578296
+              }
+            }
+          ]
+        },
+        {
+          "id": "library",
+          "focusKey": "lunar-city:model:library",
+          "groups": [
+            {
+              "modelId": "library",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -38.66483924646341,
+                "y": 3.9999999046325683,
+                "z": -28.663878239441612
+              },
+              "max": {
+                "x": -16.707423591407398,
+                "y": 22.181999588012694,
+                "z": -6.707586886166286
+              },
+              "roots": [
+                "lunar-city:placement:library"
+              ],
+              "dimensions": {
+                "x": 21.95741565505601,
+                "y": 18.181999683380127,
+                "z": 21.956291353275326
+              }
+            }
+          ]
+        },
+        {
+          "id": "research-lab",
+          "focusKey": "lunar-city:model:research-lab",
+          "groups": [
+            {
+              "modelId": "research-lab",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 7,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": 11.79046533000884,
+                "y": 4.599999952316284,
+                "z": -34.18992568885441
+              },
+              "max": {
+                "x": 37.657102863051264,
+                "y": 28.334000015258788,
+                "z": -9.198149854979441
+              },
+              "roots": [
+                "lunar-city:placement:research-lab"
+              ],
+              "dimensions": {
+                "x": 25.866637533042425,
+                "y": 23.734000062942503,
+                "z": 24.991775833874968
+              }
+            }
+          ]
+        },
+        {
+          "id": "depot",
+          "focusKey": "lunar-city:model:depot",
+          "groups": [
+            {
+              "modelId": "depot",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -37.695279092088946,
+                "y": 1.9833671128563584,
+                "z": 3.046581746308144
+              },
+              "max": {
+                "x": -23.129766614476402,
+                "y": 17.790000343322752,
+                "z": 21.54060329071398
+              },
+              "roots": [
+                "lunar-city:placement:depot"
+              ],
+              "dimensions": {
+                "x": 14.565512477612543,
+                "y": 15.806633230466394,
+                "z": 18.49402154440584
+              }
+            }
+          ]
+        },
+        {
+          "id": "review-office",
+          "focusKey": "lunar-city:model:review-office",
+          "groups": [
+            {
+              "modelId": "review-office",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 6,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": 22.098606223534674,
+                "y": 2.977853983938694,
+                "z": 1.3681707958037705
+              },
+              "max": {
+                "x": 41.90173122819397,
+                "y": 20.07799949645996,
+                "z": 18.631108201069814
+              },
+              "roots": [
+                "lunar-city:placement:review-office"
+              ],
+              "dimensions": {
+                "x": 19.803125004659293,
+                "y": 17.100145512521266,
+                "z": 17.262937405266044
+              }
+            }
+          ]
+        },
+        {
+          "id": "triage",
+          "focusKey": "lunar-city:model:triage",
+          "groups": [
+            {
+              "modelId": "triage",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 3,
+              "hiddenMeshes": 3,
+              "min": {
+                "x": -1.541550335288048,
+                "y": 1,
+                "z": 20.20322453379631
+              },
+              "max": {
+                "x": 9.713794282595583,
+                "y": 6.280000076293946,
+                "z": 30.44425664328194
+              },
+              "roots": [
+                "lunar-city:placement:triage"
+              ],
+              "dimensions": {
+                "x": 11.25534461788363,
+                "y": 5.280000076293946,
+                "z": 10.24103210948563
+              }
+            }
+          ]
+        },
+        {
+          "id": "garden",
+          "focusKey": "lunar-city:model:garden",
+          "groups": [
+            {
+              "modelId": "garden",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 4,
+              "hiddenMeshes": 3,
+              "min": {
+                "x": -20.015706285834312,
+                "y": -0.4249999985098839,
+                "z": 21.984293714165688
+              },
+              "max": {
+                "x": 4.015706285834312,
+                "y": 4.485745286047459,
+                "z": 46.01570628583431
+              },
+              "roots": [
+                "lunar-city:placement:garden"
+              ],
+              "dimensions": {
+                "x": 24.031412571668625,
+                "y": 4.910745284557343,
+                "z": 24.031412571668625
+              }
+            }
+          ]
+        },
+        {
+          "id": "council",
+          "focusKey": "lunar-city:model:council",
+          "groups": [
+            {
+              "modelId": "council",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": 15.098602205514908,
+                "y": -1.879999918937683,
+                "z": 19.186481207609177
+              },
+              "max": {
+                "x": 38.11189404129982,
+                "y": 17.341999435424803,
+                "z": 42.19977304339409
+              },
+              "roots": [
+                "lunar-city:placement:council"
+              ],
+              "dimensions": {
+                "x": 23.013291835784912,
+                "y": 19.221999354362488,
+                "z": 23.013291835784912
+              }
+            }
+          ]
+        },
+        {
+          "id": "arts-studio",
+          "focusKey": "lunar-city:model:arts-studio",
+          "groups": [
+            {
+              "modelId": "arts-studio",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 7,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -37.229912018825374,
+                "y": 0.35599995231628423,
+                "z": -10.285545086052133
+              },
+              "max": {
+                "x": -20.113366505058742,
+                "y": 17.606000328063963,
+                "z": 8.274898394942284
+              },
+              "roots": [
+                "lunar-city:placement:arts-studio"
+              ],
+              "dimensions": {
+                "x": 17.11654551376663,
+                "y": 17.25000037574768,
+                "z": 18.560443480994415
+              }
+            }
+          ]
+        },
+        {
+          "id": "engineering-workshop",
+          "focusKey": "lunar-city:model:engineering-workshop",
+          "groups": [
+            {
+              "modelId": "engineering-workshop",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -39.25669335345354,
+                "y": 0.19199995231628408,
+                "z": 19.101587204847874
+              },
+              "max": {
+                "x": -18.616308911427037,
+                "y": 18.341999435424803,
+                "z": 40.72051650751864
+              },
+              "roots": [
+                "lunar-city:placement:engineering-workshop"
+              ],
+              "dimensions": {
+                "x": 20.640384442026505,
+                "y": 18.14999948310852,
+                "z": 21.618929302670765
+              }
+            }
+          ]
+        },
+        {
+          "id": "release-gatehouse",
+          "focusKey": "lunar-city:model:release-gatehouse",
+          "groups": [
+            {
+              "modelId": "release-gatehouse",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 6,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -6.95,
+                "y": 0.6019999523162842,
+                "z": 6.562500038146973
+              },
+              "max": {
+                "x": 6.95,
+                "y": 16.50200023651123,
+                "z": 18.609999809265137
+              },
+              "roots": [
+                "lunar-city:placement:release-gatehouse"
+              ],
+              "dimensions": {
+                "x": 13.9,
+                "y": 15.900000284194945,
+                "z": 12.047499771118165
+              }
+            }
+          ]
+        },
+        {
+          "id": "archive",
+          "focusKey": "lunar-city:model:archive",
+          "groups": [
+            {
+              "modelId": "archive",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 5,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": 29.408791967922056,
+                "y": 0.2329999523162849,
+                "z": 9.454437623918057
+              },
+              "max": {
+                "x": 45.53152476902871,
+                "y": 18.157999420166014,
+                "z": 26.551734097997443
+              },
+              "roots": [
+                "lunar-city:placement:archive"
+              ],
+              "dimensions": {
+                "x": 16.12273280110665,
+                "y": 17.92499946784973,
+                "z": 17.097296474079386
+              }
+            }
+          ]
+        },
+        {
+          "id": "bus",
+          "focusKey": "lunar-city:model:bus",
+          "groups": [
+            {
+              "modelId": "bus",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 3,
+              "hiddenMeshes": 2,
+              "min": {
+                "x": -3.4,
+                "y": 2.1600000047683716,
+                "z": -2.4600000524520875
+              },
+              "max": {
+                "x": 3.4,
+                "y": 4.775,
+                "z": 0.4600000524520875
+              },
+              "roots": [
+                "lunar-city:placement:bus"
+              ],
+              "dimensions": {
+                "x": 6.8,
+                "y": 2.6149999952316287,
+                "z": 2.920000104904175
+              }
+            }
+          ]
+        },
+        {
+          "id": "leaders",
+          "focusKey": "lunar-city:model:leaders",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "",
+              "kind": "leader-shared-surface",
+              "visibleMeshes": 4,
+              "hiddenMeshes": 3,
+              "min": {
+                "x": -41.93940507164988,
+                "y": 0.6071040441284181,
+                "z": -30.158846969940193
+              },
+              "max": {
+                "x": 44.49940501442942,
+                "y": 13.695200081634521,
+                "z": 41.27580153285826
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 86.4388100860793,
+                "y": 13.088096037506103,
+                "z": 71.43464850279845
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 0,
+              "min": {
+                "x": -28.459999978542328,
+                "y": 6.283359974622726,
+                "z": -18.959999978542328
+              },
+              "max": {
+                "x": -26.540000021457672,
+                "y": 8.323359996080399,
+                "z": -17.040000021457672
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 1.9199999570846558,
+                "y": 2.040000021457672,
+                "z": 1.9199999570846558
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 0,
+              "min": {
+                "x": 22.41526689231396,
+                "y": 5.386094121512257,
+                "z": -22.562744594558907
+              },
+              "max": {
+                "x": 25.069531539082526,
+                "y": 8.157905550423777,
+                "z": -20.157256626144218
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 2.654264646768567,
+                "y": 2.77181142891152,
+                "z": 2.4054879684146897
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "badger",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 0,
+              "min": {
+                "x": -32.190478678792715,
+                "y": 3.9831128902733326,
+                "z": 10.751284936442971
+              },
+              "max": {
+                "x": -29.809521321207285,
+                "y": 6.4821676425635815,
+                "z": 13.248715063557029
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 2.38095735758543,
+                "y": 2.499054752290249,
+                "z": 2.4974301271140575
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "otter",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 0,
+              "min": {
+                "x": -0.5730863779783248,
+                "y": 2.040325842388822,
+                "z": -1.1897516491005242
+              },
+              "max": {
+                "x": 1.597086426615715,
+                "y": 4.143674649707125,
+                "z": 0.5977516414711298
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 2.17017280459404,
+                "y": 2.1033488073183033,
+                "z": 1.787503290571654
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "bird",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 0,
+              "min": {
+                "x": 24.920000123977662,
+                "y": 2.0294400572776796,
+                "z": 30.68767972290516
+              },
+              "max": {
+                "x": 29.079999876022338,
+                "y": 3.5145600914955137,
+                "z": 31.95231966674328
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 4.159999752044676,
+                "y": 1.4851200342178341,
+                "z": 1.2646399438381195
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "stag",
+              "kind": "leader",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 0,
+              "min": {
+                "x": 32.072000020742415,
+                "y": 5.635600140690803,
+                "z": 9.072000020742417
+              },
+              "max": {
+                "x": 33.927999979257585,
+                "y": 7.60760016143322,
+                "z": 10.927999979257583
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 1.85599995851517,
+                "y": 1.972000020742417,
+                "z": 1.8559999585151665
+              }
+            }
+          ]
+        },
+        {
+          "id": "workers",
+          "focusKey": "lunar-city:model:workers",
+          "groups": [
+            {
+              "modelId": "workers",
+              "owner": "",
+              "kind": "landmark-mesh",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 84,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            }
+          ]
+        },
+        {
+          "id": "owl",
+          "focusKey": "lunar-city:leader:owl",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "",
+              "kind": "leader-shared-surface",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 6,
+              "min": {
+                "x": -31.88800003528595,
+                "y": 0.9231999373435973,
+                "z": -22.799200031757355
+              },
+              "max": {
+                "x": 33.88800003528595,
+                "y": 8.076800062656403,
+                "z": 31.799200031757355
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 65.7760000705719,
+                "y": 7.153600125312806,
+                "z": 54.59840006351471
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "badger",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "otter",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "bird",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "stag",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            }
+          ]
+        },
+        {
+          "id": "fox",
+          "focusKey": "lunar-city:leader:fox",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "",
+              "kind": "leader-shared-surface",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 6,
+              "min": {
+                "x": -31.88800003528595,
+                "y": 0.9231999373435973,
+                "z": -22.799200031757355
+              },
+              "max": {
+                "x": 33.88800003528595,
+                "y": 8.076800062656403,
+                "z": 31.799200031757355
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 65.7760000705719,
+                "y": 7.153600125312806,
+                "z": 54.59840006351471
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "badger",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "otter",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "bird",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "stag",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            }
+          ]
+        },
+        {
+          "id": "badger",
+          "focusKey": "lunar-city:leader:badger",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "",
+              "kind": "leader-shared-surface",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 6,
+              "min": {
+                "x": -31.88800003528595,
+                "y": 0.9231999373435973,
+                "z": -22.799200031757355
+              },
+              "max": {
+                "x": 33.88800003528595,
+                "y": 8.076800062656403,
+                "z": 31.799200031757355
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 65.7760000705719,
+                "y": 7.153600125312806,
+                "z": 54.59840006351471
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "badger",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "otter",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "bird",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "stag",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            }
+          ]
+        },
+        {
+          "id": "otter",
+          "focusKey": "lunar-city:leader:otter",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "",
+              "kind": "leader-shared-surface",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 6,
+              "min": {
+                "x": -31.88800003528595,
+                "y": 0.9231999373435973,
+                "z": -22.799200031757355
+              },
+              "max": {
+                "x": 33.88800003528595,
+                "y": 8.076800062656403,
+                "z": 31.799200031757355
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 65.7760000705719,
+                "y": 7.153600125312806,
+                "z": 54.59840006351471
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "badger",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "otter",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "bird",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "stag",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            }
+          ]
+        },
+        {
+          "id": "bird",
+          "focusKey": "lunar-city:leader:bird",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "",
+              "kind": "leader-shared-surface",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 6,
+              "min": {
+                "x": -31.88800003528595,
+                "y": 0.9231999373435973,
+                "z": -22.799200031757355
+              },
+              "max": {
+                "x": 33.88800003528595,
+                "y": 8.076800062656403,
+                "z": 31.799200031757355
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 65.7760000705719,
+                "y": 7.153600125312806,
+                "z": 54.59840006351471
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "badger",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "otter",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "bird",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "stag",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            }
+          ]
+        },
+        {
+          "id": "stag",
+          "focusKey": "lunar-city:leader:stag",
+          "groups": [
+            {
+              "modelId": "leaders",
+              "owner": "",
+              "kind": "leader-shared-surface",
+              "visibleMeshes": 1,
+              "hiddenMeshes": 6,
+              "min": {
+                "x": -31.745628311949893,
+                "y": 1.15,
+                "z": -22.566311896062462
+              },
+              "max": {
+                "x": 33.74562831194989,
+                "y": 7.85,
+                "z": 31.7
+              },
+              "roots": [
+                "lunar-city:placement:leaders"
+              ],
+              "dimensions": {
+                "x": 65.49125662389979,
+                "y": 6.699999999999999,
+                "z": 54.26631189606246
+              }
+            },
+            {
+              "modelId": "leaders",
+              "owner": "owl",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "fox",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "badger",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "otter",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "bird",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            },
+            {
+              "modelId": "leaders",
+              "owner": "stag",
+              "kind": "leader",
+              "visibleMeshes": 0,
+              "hiddenMeshes": 1,
+              "min": null,
+              "max": null,
+              "roots": [],
+              "dimensions": null
+            }
+          ]
+        }
+      ],
+      "errors": []
+    }
+  ]
+}

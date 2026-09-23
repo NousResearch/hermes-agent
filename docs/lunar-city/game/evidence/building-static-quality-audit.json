@@ -1,0 +1,293 @@
+{
+  "scope": "read-only saved static images, not aesthetic acceptance",
+  "assets": {
+    "owl": {
+      "directory": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/owl",
+      "design_height_m": 16.0,
+      "files": {
+        "source-card.png": {
+          "sha256": "0110f442a4b945d6ba4496f6c5c2f9cc3a7a066734fabda84f2bca5a59bd9496",
+          "bytes": 1924979,
+          "visually_inspected": true
+        },
+        "building-front.png": {
+          "sha256": "d9f7afbf83e3d6457eab4a9183dffbd1c3df2c32c14371ab643bf009a0134ff8",
+          "bytes": 1210474,
+          "visually_inspected": true
+        },
+        "building-rear.png": {
+          "sha256": "25b1fae6f8582f697b92e7d098b4088546e87b29d7a636e6e56f059b5cef0089",
+          "bytes": 1198812,
+          "visually_inspected": true
+        },
+        "building-side.png": {
+          "sha256": "f1d026eb547c79d876726d5e44999ba2d855fa29e4daaf953280501841cb10a5",
+          "bytes": 1159819,
+          "visually_inspected": true
+        },
+        "building-top.png": {
+          "sha256": "c5f8f717009110ffc9c51746a224c0ac015d4944fa44c15913229064ba1b192b",
+          "bytes": 1367365,
+          "visually_inspected": true
+        },
+        "building-review.glb": {
+          "sha256": "38f33752b064796aed2823a9d123bbc6a40bd45c98c3f6ea05aa9b53334d27ee",
+          "bytes": 8880972,
+          "visually_inspected": false
+        }
+      }
+    },
+    "elephant": {
+      "directory": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/elephant",
+      "design_height_m": 24.0,
+      "files": {
+        "source-card.png": {
+          "sha256": "759f3484effcca32e03572ba616902b7279e715a95e38dda2ddfc472bb85ec4e",
+          "bytes": 2409150,
+          "visually_inspected": true
+        },
+        "building-front.png": {
+          "sha256": "b36dafd1ae22796ea36929d41e65168a784fe367e4f95d0b9db07f0e32eb3695",
+          "bytes": 1313913,
+          "visually_inspected": true
+        },
+        "building-rear.png": {
+          "sha256": "62846b1c17e9700e6f4f3857f23f7df491d3fa78ea484895e866ac6c01ace139",
+          "bytes": 1282532,
+          "visually_inspected": true
+        },
+        "building-side.png": {
+          "sha256": "38e571429935beb69793752a9caf9124228dc4e7cf26862feb145ad96f7fd3a3",
+          "bytes": 1262015,
+          "visually_inspected": true
+        },
+        "building-top.png": {
+          "sha256": "76156ce436f12b857ae4547bad46dbf4e8015cca5322d5680bf22c69c2f5791c",
+          "bytes": 1349654,
+          "visually_inspected": true
+        },
+        "building-review.glb": {
+          "sha256": "73ee39e6dd9ed2bba86b6ede12af55a9f5b2c15d9b8c9c59c685e310f873d92e",
+          "bytes": 9445760,
+          "visually_inspected": false
+        }
+      }
+    },
+    "cat": {
+      "directory": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/cat/reconstruction-v2",
+      "design_height_m": 10.0,
+      "files": {
+        "source-card.png": {
+          "sha256": "5d9181b04b2e0aecb6aeed51e5117bba4f1e8c93f2834e4ecb3e082aa83659ce",
+          "bytes": 2046057,
+          "visually_inspected": true
+        },
+        "building-front.png": {
+          "sha256": "fba765926ccac4d4b35bbfaa10639f83fcf2e27c8ced38f67537c85cb3f0ca50",
+          "bytes": 1274530,
+          "visually_inspected": true
+        },
+        "building-rear.png": {
+          "sha256": "e496a3c50fb287d4469b7aed8f6f74324e64f6cfe194464db87ff0866bdd9221",
+          "bytes": 1264760,
+          "visually_inspected": true
+        },
+        "building-side.png": {
+          "sha256": "40b3803da95939102ca44f94ae4e189ae2f13728a52b522fb5ca6c0d5b9164fa",
+          "bytes": 1164050,
+          "visually_inspected": true
+        },
+        "building-top.png": {
+          "sha256": "8db06bbc59aa8d60921231bc4562752cce7f2b763a3748bed0e2ae09e3f644c2",
+          "bytes": 1232130,
+          "visually_inspected": true
+        },
+        "building-review.glb": {
+          "sha256": "9af33d01926cd0c08bd0e6fcfdc07d8d4e12d0b2198c66510410ae9dd112dfda",
+          "bytes": 9473508,
+          "visually_inspected": false
+        }
+      }
+    },
+    "fox": {
+      "directory": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/fox",
+      "design_height_m": 12.0,
+      "files": {
+        "source-card.png": {
+          "sha256": "0a5182ebd9d1e4f9f420a08b6dad939e96fe93b42d3fd63812831ad06d406f96",
+          "bytes": 2030590,
+          "visually_inspected": true
+        },
+        "building-front.png": {
+          "sha256": "2d6c7fdd0c068ed7236de0b86706433a4d440f6574ba247e689dd8430418e18c",
+          "bytes": 1196963,
+          "visually_inspected": true
+        },
+        "building-rear.png": {
+          "sha256": "e31b0724bb535902e021646361d3c7949150cc58cddcbf84a251a655ae67a3e0",
+          "bytes": 1159733,
+          "visually_inspected": true
+        },
+        "building-side.png": {
+          "sha256": "e2e0c3ca11ef53237f7b95b5270bf46e15ce2c449c5751c968d6449d362e4385",
+          "bytes": 1160488,
+          "visually_inspected": true
+        },
+        "building-top.png": {
+          "sha256": "e614b1912e6a24bd5db737847138dcd9947ac5144addbdf4f5d3f42992413bf2",
+          "bytes": 1451256,
+          "visually_inspected": true
+        },
+        "building-review.glb": {
+          "sha256": "1d628370bbac521c9623b640610d46519bca3c59ea4beb338be488e96159ddcf",
+          "bytes": 8883336,
+          "visually_inspected": false
+        }
+      }
+    },
+    "capybara": {
+      "directory": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/capybara",
+      "design_height_m": 16.0,
+      "files": {
+        "source-card.png": {
+          "sha256": "aeb3db0e2f1ec05db238e5818f8291e1d4b596a0ca7f062de88666922d6e1d41",
+          "bytes": 2184909,
+          "visually_inspected": true
+        },
+        "building-front.png": {
+          "sha256": "b221659e85a252d50117577f970e7d29bfe60e0c9414ebea994325f9c4e54f54",
+          "bytes": 1177680,
+          "visually_inspected": true
+        },
+        "building-rear.png": {
+          "sha256": "43b37ccf92ce82c2bcac74b85a6f8763db69c2ca264ce58320b74719f23c6c3f",
+          "bytes": 1168201,
+          "visually_inspected": true
+        },
+        "building-side.png": {
+          "sha256": "2de4df313bf33eb63c3898bf4900eef9301a72dbf8955c13164ceac8930cee8c",
+          "bytes": 1113864,
+          "visually_inspected": true
+        },
+        "building-top.png": {
+          "sha256": "fe377b903f5b1b1f1397d11d47acc845a3acea0455317350cd47dae4d9a2d221",
+          "bytes": 1319282,
+          "visually_inspected": true
+        },
+        "building-review.glb": {
+          "sha256": "b35a5c0dfb16fbffe6f358210595a3455cf1379a00e140119df8ccee5334200c",
+          "bytes": 9077312,
+          "visually_inspected": false
+        }
+      }
+    },
+    "lion": {
+      "directory": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/lion",
+      "design_height_m": 26.0,
+      "files": {
+        "source-card.png": {
+          "sha256": "b75070444345d063e8543210048933b520929ccabbb4cdf4f3a74fd81dd34a7a",
+          "bytes": 1971934,
+          "visually_inspected": true
+        },
+        "building-front.png": {
+          "sha256": "8ffc501b97a8cfb9693f09b954ca1a434c42ef7ceda34534180ca274f86d36a2",
+          "bytes": 1201328,
+          "visually_inspected": true
+        },
+        "building-rear.png": {
+          "sha256": "798ea7383eb3306ec7b09804d1072751be03beb34c216801caba3c5bb63e8386",
+          "bytes": 1180758,
+          "visually_inspected": true
+        },
+        "building-side.png": {
+          "sha256": "4b3a0c3ab467ec7dc2700056c22368d7e6653b86fe50ac1832b9a27483237ad9",
+          "bytes": 1163316,
+          "visually_inspected": true
+        },
+        "building-top.png": {
+          "sha256": "88b2e8fe8bdc1df1f228ae66b038f103963ee8c704b470e56e412730795f99c8",
+          "bytes": 1422396,
+          "visually_inspected": true
+        },
+        "building-review.glb": {
+          "sha256": "e22e6fc0ef03100db94e2ca634566713586c14920f7fd7137e7f63b4b3d39b25",
+          "bytes": 9547572,
+          "visually_inspected": false
+        }
+      }
+    },
+    "beaver": {
+      "directory": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/beaver",
+      "design_height_m": 14.0,
+      "files": {
+        "source-card.png": {
+          "sha256": "126003e8916edf28ff0566a0a4a69fae72d068e981d88fb9d46963c1730613ad",
+          "bytes": 2029138,
+          "visually_inspected": true
+        },
+        "building-front.png": {
+          "sha256": "c5179566142e50f807b7f106aab3bf72926b0cca7d3b7244670eb41de49e9195",
+          "bytes": 1170314,
+          "visually_inspected": true
+        },
+        "building-rear.png": {
+          "sha256": "7665d0953b3e0386a501200839fb08bdaebc2a1a7804c3668752e7a681d2024d",
+          "bytes": 1178425,
+          "visually_inspected": true
+        },
+        "building-side.png": {
+          "sha256": "22804fa4e9a841727f830c2ac18b807b33d3f575cbb00125d9aa8a0aacf2b354",
+          "bytes": 1069366,
+          "visually_inspected": true
+        },
+        "building-top.png": {
+          "sha256": "5d15a65ebed74f1d6f875f5fe339201e72658f6c1576f7dc69ba86851957f106",
+          "bytes": 1201193,
+          "visually_inspected": true
+        },
+        "building-review.glb": {
+          "sha256": "d7e3c9fcc9c76c2abd21b56cf93cab54f714172d432fc61c5d43f5e671d58622",
+          "bytes": 8850156,
+          "visually_inspected": false
+        }
+      }
+    },
+    "monkey": {
+      "directory": "apps/desktop/public/lunar-city/building-multiview-2026-09-07/monkey",
+      "design_height_m": 12.0,
+      "files": {
+        "source-card.png": {
+          "sha256": "33839963ca7b01a783fb3e1e6c94cb821ec6b082bc545fe7e63c2e5e91fbfe60",
+          "bytes": 1955937,
+          "visually_inspected": true
+        },
+        "building-front.png": {
+          "sha256": "85e4eaacaa561f8ee46b2c24a5eeb68d3d4af2c1da6ca7797613054ddc7d0f18",
+          "bytes": 1244582,
+          "visually_inspected": true
+        },
+        "building-rear.png": {
+          "sha256": "05cf79379d40b644384665e76b9b43a71f9a214a566fe6d1c1d1ae70ebf4f164",
+          "bytes": 1194009,
+          "visually_inspected": true
+        },
+        "building-side.png": {
+          "sha256": "323aa159520df9859e0f411fba6ed0314ac7e64ccdfb7acc57a208e7b646f78c",
+          "bytes": 1169373,
+          "visually_inspected": true
+        },
+        "building-top.png": {
+          "sha256": "ebbf4dae6544cfea5099aed0b43e12eda85ffc3e55b18214227e5f2866801e09",
+          "bytes": 1232000,
+          "visually_inspected": true
+        },
+        "building-review.glb": {
+          "sha256": "897a3f233de11825d9c3e93e223faa42f92cf41fa396cd3c61ba2f453a542278",
+          "bytes": 8882644,
+          "visually_inspected": false
+        }
+      }
+    }
+  }
+}

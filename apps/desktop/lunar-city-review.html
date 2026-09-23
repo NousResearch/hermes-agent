@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Lunar City · Model review</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font: 15px system-ui;
+        background: #18131d;
+        color: #f6ecdf;
+      }
+      body {
+        margin: 0;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        touch-action: none;
+      }
+      main {
+        height: 100vh;
+      }
+      header {
+        position: absolute;
+        top: 24px;
+        left: 28px;
+        max-width: 420px;
+        pointer-events: none;
+      }
+      h1 {
+        font-size: 28px;
+        font-weight: 600;
+        margin: 0 0 8px;
+      }
+      p {
+        line-height: 1.5;
+        color: #c6bbc9;
+        margin: 8px 0;
+      }
+      nav {
+        position: absolute;
+        bottom: 24px;
+        left: 28px;
+        right: 28px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      button,
+      select {
+        background: #302637;
+        color: #f6ecdf;
+        border: 1px solid #665269;
+        border-radius: 8px;
+        padding: 10px 14px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:focus-visible,
+      select:focus-visible {
+        outline: 2px solid #e5b775;
+      }
+      #status {
+        color: #e5b775;
+      }
+      #selection {
+        font-weight: 600;
+      }
+      #loading {
+        position: absolute;
+        inset: 45% 20%;
+        text-align: center;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main><canvas id="city" aria-label="Lunar City 3D model review"></canvas></main>
+    <header>
+      <h1>Lunar City</h1>
+      <p>Drag to orbit · Right-drag to pan · Scroll to zoom</p>
+      <p id="status">Loading the city…</p>
+      <p id="selection"></p>
+      <p id="interior-note" aria-live="polite"></p>
+      <p id="leader-life-note" aria-live="polite"></p>
+    </header>
+    <div id="loading" role="status">Preparing environment and materials…</div>
+    <nav aria-label="Model review controls">
+      <button id="overview">City overview</button
+      ><button id="interior" aria-pressed="false" disabled>See inside</button
+      ><select id="leaders" aria-label="Focus leader">
+        <option value="">Focus a character…</option></select
+      ><select id="animation" aria-label="Preview animation" disabled>
+        <option value="">No rig clips</option>
+      </select>
+      <select id="leader-life" aria-label="Local leader activity" disabled>
+        <option value="">Local leader activity…</option>
+        <option value="automatic">Automatic · observed activity</option>
+        <option value="home">Go home · local preview</option>
+        <option value="work">Go to desk · local preview</option>
+        <option value="idle">Stroll · local preview</option>
+      </select>
+      <select id="quality" aria-label="Quality">
+        <option value="efficient">Efficient</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="detailed">Detailed</option></select
+      ><button id="motion" aria-pressed="false">Pause idle motion</button
+      ><button id="retry" hidden>Retry loading</button>
+    </nav>
+    <script type="module" src="/src/app/lunar-city/review/main.ts"></script>
+  </body>
+</html>

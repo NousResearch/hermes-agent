@@ -1,0 +1,29 @@
+{
+  "sourceScene": "Worker static finish | core v2",
+  "scene": "Worker static finish | core v3 probe",
+  "removedDistalToolVertices": 733,
+  "repair": "Three discrete articulated fingers and central cyan-tipped probe, based on all-view card",
+  "preservation": "v2 scene and all original source scenes retained",
+  "newParts": [
+    "Core probe v3 | wrist socket",
+    "Core probe v3 | grip barrel",
+    "Core probe v3 | grip collar",
+    "Core probe v3 | grip collar.001",
+    "Core probe v3 | central stylus",
+    "Core probe v3 | cyan sensing tip",
+    "Core probe v3 | finger1 upper",
+    "Core probe v3 | finger1 knuckle",
+    "Core probe v3 | finger1 lower",
+    "Core probe v3 | finger2 upper",
+    "Core probe v3 | finger2 knuckle",
+    "Core probe v3 | finger2 lower",
+    "Core probe v3 | finger3 upper",
+    "Core probe v3 | finger3 knuckle",
+    "Core probe v3 | finger3 lower"
+  ],
+  "heightMetres": 1.2000000476837158,
+  "groundMin": 0.0,
+  "sha256": "812560a2e3d21acaeb7e21a123de6cb1f97ed2624527742668be9c0baa99f41b",
+  "stage": "Static probe candidate; arm/socket and rig acceptance pending",
+  "visor": "Baked source-surface graphite display and two cyan eyes; rejected separate panels remain hidden"
+}

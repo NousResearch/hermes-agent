@@ -585,7 +585,9 @@ export function ProfileRail() {
       <RenameProfileDialog
         currentName={pendingRestRename?.profile ?? ''}
         onClose={() => setPendingRestRename(null)}
-        onRenamed={() => refreshFleetRoster({ force: true })}
+        onRenamed={async () => {
+          await refreshFleetRoster({ force: true })
+        }}
         open={pendingRestRename !== null}
         scope={pendingRestRename ? restScope(pendingRestRename) : undefined}
       />
@@ -593,7 +595,9 @@ export function ProfileRail() {
       <DeleteProfileDialog
         gatewayLabel={pendingRestDelete?.connectionLabel}
         onClose={() => setPendingRestDelete(null)}
-        onDeleted={() => refreshFleetRoster({ force: true })}
+        onDeleted={async () => {
+          await refreshFleetRoster({ force: true })
+        }}
         open={pendingRestDelete !== null}
         profile={pendingRestDelete ? { name: pendingRestDelete.profile, path: pendingRestDelete.handle } : null}
         scope={pendingRestDelete ? restScope(pendingRestDelete) : undefined}

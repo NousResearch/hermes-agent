@@ -1,0 +1,35 @@
+{
+  "capturedAt": "2026-09-08T04:58:49.678629+00:00",
+  "head": "2237be355906fbe6065ce1815711eee52b2d646e",
+  "sourceState": "uncommitted recovered and new game implementation; not a clean release",
+  "uiApiTests": {
+    "passed": 616,
+    "files": 61
+  },
+  "desktopTypecheck": "passed",
+  "lunarCityLint": "passed with zero warnings",
+  "productionRendererBuild": {
+    "seconds": 22.75,
+    "output": "/private/tmp/lunar-city-renderer-build",
+    "reviewHtmlSha256": "8e901766c3c392f646d6116dcc0a12092f9e09bd49b7dfeaa249647ab78941b1"
+  },
+  "actualBuiltViewer": {
+    "capturedAt": "2026-09-08T04:58:17.557Z",
+    "url": "http://127.0.0.1:5180/lunar-city-review.html",
+    "greeting": "Worker life\n\nAmbient gestures are local presentation. They do not send messages or change work.\n\nSession Demo 1 and Session Demo 0: greeting\nWorker personality\n\nCurious \u2014 Pauses for a small look around.\n\nAuthored city presentation. This style does not describe or change the agent\u2019s instructions or work.\n\nConfigured role\nArchive specialist\nConfigured groups\nNo fresh group information\nRole metadata\nfresh \u00b7 local-demo\nPreview city gesture\n\nProfile SOUL: Archivist on local-city-demo. Loaded only when requested.\n\nLoad profile SOUL\nGreet a nearby worker\nObserved delegation\n\nNo exact parent or delegated worker is present in this snapshot.\n\nAvailable for nearby resting workers in balanced or detailed mode with motion enabled. A greeting also needs a free nearby partner.",
+    "alerts": "City attention\n\n1 attention items \u00b7 1 unacknowledged\n\nAcknowledgement is local. It does not change tasks or clear blockers.\n\nShow resolved history\nArchivist \u00b7 local-city-demo \u00b7 blocked \u00b7 reopened\n\nblocked\n\nInspect Archivist \u00b7 local-city-demoAcknowledge Archivist \u00b7 local-city-demo\nLocal demonstration \u00b7 source health \u00b7 resolved\n\nstale",
+    "delegation": "Observed delegation \u00b7 local visual links. No messages or artifacts are sent.\n\nTraveling toward the same destination: Inspect parent \u00b7 Archivist \u00b7 local-city-demo to Inspect subagent demo-child \u00b7 Archivist \u00b7 local-city-demo",
+    "errors": [],
+    "externalRequests": [],
+    "tamperRejected": "Lunar City asset digest mismatch: http://127.0.0.1:5180/lunar-city/v2-review/models/terrain-752ada2a9541.glb",
+    "navigationTamperRejected": "Lunar City asset digest mismatch: http://127.0.0.1:5180/lunar-city/v2-review/models/navigation-a4ae0c0418e0.glb",
+    "recoveryAfterTamper": true,
+    "scope": "Actual local WebGL viewer. Demo observations only; no gateway/API writes."
+  },
+  "reviewAssetsReceipt": "built-viewer.json",
+  "navigationReceipt": "navigation.json",
+  "scaleReceipt": "historical-worker-metre-scale.json",
+  "staticBoundsCensus": "loaded-historical-bounds-analysis.json",
+  "packagedElectronLiveAcceptance": "not completed",
+  "gatewayMutations": false
+}

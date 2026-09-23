@@ -1,0 +1,108 @@
+{
+  "capturedAt": "2026-09-08T07:38:10.450Z",
+  "url": "http://127.0.0.1:5178/lunar-city-review.html",
+  "worldManifestSha256": "5e65ea0a065c6522b448f09deda996bdb29232ac0cb7d87a597e67d89366dabc",
+  "results": [
+    {
+      "id": "library",
+      "openedAndClosed": true
+    },
+    {
+      "id": "research-lab",
+      "openedAndClosed": true
+    },
+    {
+      "id": "depot",
+      "openedAndClosed": true
+    },
+    {
+      "id": "review-office",
+      "openedAndClosed": true
+    },
+    {
+      "id": "triage",
+      "openedAndClosed": true
+    },
+    {
+      "id": "garden",
+      "openedAndClosed": true
+    },
+    {
+      "id": "council",
+      "openedAndClosed": true
+    },
+    {
+      "id": "arts-studio",
+      "openedAndClosed": true
+    },
+    {
+      "id": "engineering-workshop",
+      "openedAndClosed": true
+    },
+    {
+      "id": "release-gatehouse",
+      "openedAndClosed": true
+    },
+    {
+      "id": "archive",
+      "openedAndClosed": true
+    },
+    {
+      "id": "bus",
+      "openedAndClosed": true
+    },
+    {
+      "id": "publishing",
+      "openedAndClosed": true
+    },
+    {
+      "id": "revenue",
+      "openedAndClosed": true
+    }
+  ],
+  "localLeaderControls": [
+    {
+      "key": "lunar-city:leader:owl",
+      "enabled": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:elephant",
+      "enabled": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:cat",
+      "enabled": true,
+      "reason": "Local visual activity only · does not start backend work."
+    },
+    {
+      "key": "lunar-city:leader:fox",
+      "enabled": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:capybara",
+      "enabled": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:lion",
+      "enabled": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:beaver",
+      "enabled": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:monkey",
+      "enabled": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    }
+  ],
+  "errors": [],
+  "externalRequests": [],
+  "scope": "Actual browser cutaway UI open/close and selection reset for each authored plan; saved library and waterworks views. Not proof of shell fit or navigation."
+}

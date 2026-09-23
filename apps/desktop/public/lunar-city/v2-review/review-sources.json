@@ -1,0 +1,264 @@
+[
+  {
+    "id": "owl",
+    "source": "owl-librarian/owl-detail-review.glb",
+    "uri": "models/review-owl-424364fdacee.glb",
+    "sha256": "424364fdaceeb55d9dd67c9219cc09e1594b9583dc828db3def389e4f46ff420",
+    "status": "review_only"
+  },
+  {
+    "id": "elephant",
+    "source": "elephant-memory/material-review.glb",
+    "uri": "models/review-elephant-90357430baa2.glb",
+    "sha256": "90357430baa273a3d95d1a8633aecae1afa3a715f3b27d94159aff031805ca5e",
+    "status": "review_only"
+  },
+  {
+    "id": "cat",
+    "source": "cat-arts/walk-contact-review/rigged-review.glb",
+    "uri": "models/review-cat-a94817c2f48a.glb",
+    "sha256": "a94817c2f48a03349f03c56b69646830b587a5eaca1d6340568386223f979e84",
+    "status": "contact_corrected_rig_review_only"
+  },
+  {
+    "id": "fox",
+    "source": "fox-scientist/material-review-v4.glb",
+    "uri": "models/review-fox-6f02184262d0.glb",
+    "sha256": "6f02184262d013f90a0c07a66532b945c93f4e0db71eb1ce47b7b47c1c081270",
+    "status": "review_only"
+  },
+  {
+    "id": "capybara",
+    "source": "capybara-revenue/material-review.glb",
+    "uri": "models/review-capybara-bf281acb2538.glb",
+    "sha256": "bf281acb2538e6d9c865980a58cb8f92350be4373cda231e39601b08a933fd2d",
+    "status": "review_only"
+  },
+  {
+    "id": "lion",
+    "source": "lion-steward/material-review.glb",
+    "uri": "models/review-lion-c135959f5fd5.glb",
+    "sha256": "c135959f5fd59274618d6718c0602fbacda9106e7151f8958b5d38b97482f6b7",
+    "status": "review_only"
+  },
+  {
+    "id": "beaver",
+    "source": "beaver-architect/material-review-v4.glb",
+    "uri": "models/review-beaver-b0878c9ea5cc.glb",
+    "sha256": "b0878c9ea5ccceec52f298b87346fe3cdee5bb3a24ceab6d0c5589307efc84c7",
+    "status": "review_only"
+  },
+  {
+    "id": "monkey",
+    "source": "monkey-poet/material-review-v4.glb",
+    "uri": "models/review-monkey-d961d9faf527.glb",
+    "sha256": "d961d9faf52726ee7d00c32ebe3408aa19549eabd6d1585d0fe35d2d63398afa",
+    "status": "review_only"
+  },
+  {
+    "id": "worker:baseline",
+    "source": "worker-multiview-2026-09-07/baseline/rigged-review.glb",
+    "uri": "models/review-worker-baseline-dd8a79afef8e.glb",
+    "sha256": "dd8a79afef8e0db23ee00832657e1dbacc66e7113a4f3af2cb16f92e453e5d01",
+    "status": "rig_review_only"
+  },
+  {
+    "id": "worker:ci-repair-triage",
+    "source": "worker-multiview-2026-09-07/ci-repair-triage/rigged-review.glb",
+    "uri": "models/review-worker-ci-repair-triage-6035edc9ddd9.glb",
+    "sha256": "6035edc9ddd9f42c3c895f39d6b6233ef19e013eb8ce1eead225c292887bc93e",
+    "status": "rig_review_only"
+  },
+  {
+    "id": "building:owl",
+    "modelId": "library",
+    "sourceHeightMetres": 16,
+    "placedHeightMetres": 12,
+    "source": "building-multiview-2026-09-07/owl/building-review.glb",
+    "uri": "models/review-building-owl-f76ec839e4cd.glb",
+    "sha256": "f76ec839e4cd26baa6db183dd1d79ef5ffb884d9577551e00f49ad15548ccf1b",
+    "sourceSha256": "38f33752b064796aed2823a9d123bbc6a40bd45c98c3f6ea05aa9b53334d27ee",
+    "status": "review_only_pending_geometry_material_and_entrance_acceptance",
+    "boundsMetres": {
+      "min": [
+        -10.762629508972168,
+        0.00030111477826721966,
+        -10.764440536499023
+      ],
+      "max": [
+        10.762453079223633,
+        16.001535415649414,
+        10.764568328857422
+      ]
+    },
+    "entrance": "Path ends at the reserved forecourt; authored doorway not yet surveyed."
+  },
+  {
+    "id": "building:fox",
+    "modelId": "research-lab",
+    "sourceHeightMetres": 12,
+    "placedHeightMetres": 9,
+    "source": "building-multiview-2026-09-07/fox/building-review.glb",
+    "uri": "models/review-building-fox-cbce9ab6d4e1.glb",
+    "sha256": "cbce9ab6d4e121e39e3ec75eb39159732f4daca79ffbd77ac7f765ff157765cb",
+    "sourceSha256": "1d628370bbac521c9623b640610d46519bca3c59ea4beb338be488e96159ddcf",
+    "status": "review_only_pending_geometry_material_and_entrance_acceptance",
+    "boundsMetres": {
+      "min": [
+        -8.77592658996582,
+        0,
+        -8.809623718261719
+      ],
+      "max": [
+        8.77813720703125,
+        12,
+        8.808032989501953
+      ]
+    },
+    "entrance": "Path ends at the reserved forecourt; authored doorway not yet surveyed."
+  },
+  {
+    "id": "building:monkey",
+    "modelId": "publishing",
+    "sourceHeightMetres": 12,
+    "placedHeightMetres": 9,
+    "source": "building-multiview-2026-09-07/monkey/building-review.glb",
+    "uri": "models/review-building-monkey-4147ed882633.glb",
+    "sha256": "4147ed8826331096e7844ab13a0006df935738ba1e5b826a77c60440ad4705f7",
+    "sourceSha256": "897a3f233de11825d9c3e93e223faa42f92cf41fa396cd3c61ba2f453a542278",
+    "status": "review_only_pending_geometry_material_and_entrance_acceptance",
+    "boundsMetres": {
+      "min": [
+        -6.574435234069824,
+        0,
+        -7.742472171783447
+      ],
+      "max": [
+        6.5769944190979,
+        12,
+        7.7491865158081055
+      ]
+    },
+    "entrance": "Path ends at the reserved forecourt; authored doorway not yet surveyed."
+  },
+  {
+    "id": "building:cat",
+    "modelId": "arts-studio",
+    "sourceHeightMetres": 10,
+    "placedHeightMetres": 7.5,
+    "source": "building-multiview-2026-09-07/cat/reconstruction-v2/building-review.glb",
+    "uri": "models/review-building-cat-8b3378294db0.glb",
+    "sha256": "8b3378294db02a9ee598872b84dfaefbdc328fb33ba90dd6c8ef798f2c14de50",
+    "sourceSha256": "9af33d01926cd0c08bd0e6fcfdc07d8d4e12d0b2198c66510410ae9dd112dfda",
+    "status": "review_only_pending_geometry_material_and_entrance_acceptance",
+    "boundsMetres": {
+      "min": [
+        -6.212369441986084,
+        0,
+        -6.208340167999268
+      ],
+      "max": [
+        6.207792282104492,
+        10,
+        6.21066951751709
+      ]
+    },
+    "entrance": "Path ends at the reserved forecourt; authored doorway not yet surveyed."
+  },
+  {
+    "id": "building:elephant",
+    "modelId": "archive",
+    "sourceHeightMetres": 24,
+    "placedHeightMetres": 18,
+    "source": "building-multiview-2026-09-07/elephant/building-review.glb",
+    "uri": "models/review-building-elephant-f5784a3ebdd6.glb",
+    "sha256": "f5784a3ebdd68d8f1b6bf232560ee284bc531cc4393e37f97b5e398cb1d75d08",
+    "sourceSha256": "73ee39e6dd9ed2bba86b6ede12af55a9f5b2c15d9b8c9c59c685e310f873d92e",
+    "status": "review_only_pending_geometry_material_and_entrance_acceptance",
+    "boundsMetres": {
+      "min": [
+        -15.333895683288574,
+        0,
+        -15.162243843078613
+      ],
+      "max": [
+        15.341630935668945,
+        24,
+        15.164332389831543
+      ]
+    },
+    "entrance": "Path ends at the reserved forecourt; authored doorway not yet surveyed."
+  },
+  {
+    "id": "building:capybara",
+    "modelId": "revenue",
+    "sourceHeightMetres": 16,
+    "placedHeightMetres": 12,
+    "source": "building-multiview-2026-09-07/capybara/building-review.glb",
+    "uri": "models/review-building-capybara-49598b840363.glb",
+    "sha256": "49598b84036340dc2e77ac89cc817693ba4f1554bcf0f773e76291b189142110",
+    "sourceSha256": "b35a5c0dfb16fbffe6f358210595a3455cf1379a00e140119df8ccee5334200c",
+    "status": "review_only_pending_geometry_material_and_entrance_acceptance",
+    "boundsMetres": {
+      "min": [
+        -13.410595893859863,
+        0,
+        -13.3908109664917
+      ],
+      "max": [
+        13.405263900756836,
+        16,
+        13.39323902130127
+      ]
+    },
+    "entrance": "Path ends at the reserved forecourt; authored doorway not yet surveyed."
+  },
+  {
+    "id": "building:lion",
+    "modelId": "council",
+    "sourceHeightMetres": 26,
+    "placedHeightMetres": 19.5,
+    "source": "building-multiview-2026-09-07/lion/building-review.glb",
+    "uri": "models/review-building-lion-1cc020265594.glb",
+    "sha256": "1cc0202655943a3c39f06521a88b83dcc55bcf00b0a1c96e36a6f831a45cb6cc",
+    "sourceSha256": "e22e6fc0ef03100db94e2ca634566713586c14920f7fd7137e7f63b4b3d39b25",
+    "status": "review_only_pending_geometry_material_and_entrance_acceptance",
+    "boundsMetres": {
+      "min": [
+        -19.391252517700195,
+        0,
+        -19.493825912475586
+      ],
+      "max": [
+        19.38672637939453,
+        25.999998092651367,
+        19.489295959472656
+      ]
+    },
+    "entrance": "Path ends at the reserved forecourt; authored doorway not yet surveyed."
+  },
+  {
+    "id": "building:beaver",
+    "modelId": "engineering-workshop",
+    "sourceHeightMetres": 14,
+    "placedHeightMetres": 10.5,
+    "source": "building-multiview-2026-09-07/beaver/building-review.glb",
+    "uri": "models/review-building-beaver-c15b2bf553f3.glb",
+    "sha256": "c15b2bf553f30c054c65fb0c853b39f5f34d2eedc858544324a123da8e4707ef",
+    "sourceSha256": "d7e3c9fcc9c76c2abd21b56cf93cab54f714172d432fc61c5d43f5e671d58622",
+    "status": "review_only_pending_geometry_material_and_entrance_acceptance",
+    "boundsMetres": {
+      "min": [
+        -10.947213172912598,
+        0,
+        -10.912091255187988
+      ],
+      "max": [
+        10.949092864990234,
+        14.000000953674316,
+        10.91160774230957
+      ]
+    },
+    "entrance": "Path ends at the reserved forecourt; authored doorway not yet surveyed."
+  }
+]

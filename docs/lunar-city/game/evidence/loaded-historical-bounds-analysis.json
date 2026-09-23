@@ -1,0 +1,605 @@
+{
+  "capturedAt": "2026-09-08T04:44:17.729Z",
+  "rows": [
+    {
+      "pack": "review",
+      "id": "depot",
+      "actual": {
+        "x": 18.69859165668487,
+        "y": 15.806633230466394,
+        "z": 21.247204730208573
+      },
+      "target": [
+        24,
+        14,
+        20
+      ],
+      "minY": 2.0833670174889267,
+      "placementY": 2.1,
+      "groundOffset": -0.01663298251107337,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": {
+        "diameter": 24,
+        "deckY": 2.1,
+        "minimumGeometryOffset": -0.01663298251107337,
+        "worldAabbOutsideSquarePad": {
+          "x": 0,
+          "z": 0
+        }
+      },
+      "visibleMeshes": 5,
+      "sampleAt": "2026-09-08T04:44:06.818Z"
+    },
+    {
+      "pack": "review",
+      "id": "review-office",
+      "actual": {
+        "x": 23.63587559178326,
+        "y": 17.100145512521266,
+        "z": 22.220342344734963
+      },
+      "target": [
+        26,
+        15,
+        20
+      ],
+      "minY": 2.3278538885712625,
+      "placementY": 2.3499999999999996,
+      "groundOffset": -0.022146111428737125,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": {
+        "diameter": 24,
+        "deckY": 2.3499999999999996,
+        "minimumGeometryOffset": -0.022146111428737125,
+        "worldAabbOutsideSquarePad": {
+          "x": 0.504658031917046,
+          "z": 0
+        }
+      },
+      "visibleMeshes": 6,
+      "sampleAt": "2026-09-08T04:44:06.818Z"
+    },
+    {
+      "pack": "review",
+      "id": "triage",
+      "actual": {
+        "x": 10.655669456703377,
+        "y": 5.280000076293946,
+        "z": 9.469555669730603
+      },
+      "target": [
+        14,
+        9,
+        12
+      ],
+      "minY": 2.049999952316284,
+      "placementY": 2.05,
+      "groundOffset": -4.7683715642676816e-08,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": {
+        "diameter": 21,
+        "deckY": 2.05,
+        "minimumGeometryOffset": -4.7683715642676816e-08,
+        "worldAabbOutsideSquarePad": {
+          "x": 0,
+          "z": 0
+        }
+      },
+      "visibleMeshes": 3,
+      "sampleAt": "2026-09-08T04:44:06.818Z"
+    },
+    {
+      "pack": "review",
+      "id": "garden",
+      "actual": {
+        "x": 22.846673294901848,
+        "y": 4.910745262205602,
+        "z": 22.846673294901848
+      },
+      "target": [
+        28,
+        5,
+        24
+      ],
+      "minY": 1.475,
+      "placementY": 1.9,
+      "groundOffset": -0.4249999999999998,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": {
+        "diameter": 24,
+        "deckY": 1.9,
+        "minimumGeometryOffset": -0.4249999999999998,
+        "worldAabbOutsideSquarePad": {
+          "x": 0,
+          "z": 0
+        }
+      },
+      "visibleMeshes": 4,
+      "sampleAt": "2026-09-08T04:44:06.818Z"
+    },
+    {
+      "pack": "review",
+      "id": "council",
+      "actual": {
+        "x": 23.13814215660095,
+        "y": 19.221999354362488,
+        "z": 23.13814215660095
+      },
+      "target": [
+        22,
+        14,
+        18
+      ],
+      "minY": -0.879999918937683,
+      "placementY": 2,
+      "groundOffset": -2.879999918937683,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": {
+        "diameter": 44,
+        "deckY": 2,
+        "minimumGeometryOffset": -2.879999918937683,
+        "worldAabbOutsideSquarePad": {
+          "x": 0,
+          "z": 0
+        }
+      },
+      "visibleMeshes": 5,
+      "sampleAt": "2026-09-08T04:44:06.818Z"
+    },
+    {
+      "pack": "review",
+      "id": "engineering-workshop",
+      "actual": {
+        "x": 21.413031356688094,
+        "y": 18.14999948310852,
+        "z": 21.63441374850094
+      },
+      "target": [
+        26,
+        16,
+        22
+      ],
+      "minY": 0.4419999523162841,
+      "placementY": 2.25,
+      "groundOffset": -1.808000047683716,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": {
+        "diameter": 26,
+        "deckY": 2.25,
+        "minimumGeometryOffset": -1.808000047683716,
+        "worldAabbOutsideSquarePad": {
+          "x": 0,
+          "z": 0
+        }
+      },
+      "visibleMeshes": 5,
+      "sampleAt": "2026-09-08T04:44:06.818Z"
+    },
+    {
+      "pack": "review",
+      "id": "release-gatehouse",
+      "actual": {
+        "x": 13.900000000000002,
+        "y": 15.900000284194945,
+        "z": 12.047499771118165
+      },
+      "target": [
+        22,
+        15,
+        18
+      ],
+      "minY": 0.7520000476837159,
+      "placementY": 2.15,
+      "groundOffset": -1.397999952316284,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": {
+        "diameter": 23,
+        "deckY": 2.15,
+        "minimumGeometryOffset": -1.397999952316284,
+        "worldAabbOutsideSquarePad": {
+          "x": 0,
+          "z": 0
+        }
+      },
+      "visibleMeshes": 6,
+      "sampleAt": "2026-09-08T04:44:06.818Z"
+    },
+    {
+      "pack": "review",
+      "id": "archive",
+      "actual": {
+        "x": 14.565150821924945,
+        "y": 17.92499946784973,
+        "z": 15.794109614965745
+      },
+      "target": [
+        24,
+        15,
+        20
+      ],
+      "minY": 0.38300004768371654,
+      "placementY": 2.15,
+      "groundOffset": -1.7669999523162834,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": {
+        "diameter": 35,
+        "deckY": 2.15,
+        "minimumGeometryOffset": -1.7669999523162834,
+        "worldAabbOutsideSquarePad": {
+          "x": 0,
+          "z": 0
+        }
+      },
+      "visibleMeshes": 5,
+      "sampleAt": "2026-09-08T04:44:06.818Z"
+    },
+    {
+      "pack": "review",
+      "id": "bus",
+      "actual": {
+        "x": 6.8,
+        "y": 2.6149999952316287,
+        "z": 2.920000104904175
+      },
+      "target": [
+        10,
+        4,
+        6
+      ],
+      "minY": 2.3600000524520874,
+      "placementY": 2.2,
+      "groundOffset": 0.16000005245208726,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": {
+        "diameter": 23,
+        "deckY": 2.2,
+        "minimumGeometryOffset": 0.16000005245208726,
+        "worldAabbOutsideSquarePad": {
+          "x": 0,
+          "z": 0
+        }
+      },
+      "visibleMeshes": 3,
+      "sampleAt": "2026-09-08T04:44:06.818Z"
+    },
+    {
+      "pack": "historical",
+      "id": "terrain",
+      "actual": {
+        "x": 110,
+        "y": 19.889999828338624,
+        "z": 96.10156407578296
+      },
+      "target": [
+        112,
+        26,
+        104
+      ],
+      "minY": -10.120000000000001,
+      "placementY": 0,
+      "groundOffset": -10.120000000000001,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0.9015655182153637
+      },
+      "reviewPad": null,
+      "visibleMeshes": 4,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "library",
+      "actual": {
+        "x": 21.95741565505601,
+        "y": 18.181999683380127,
+        "z": 21.956291353275326
+      },
+      "target": [
+        24,
+        16,
+        20
+      ],
+      "minY": 3.9999999046325683,
+      "placementY": 4,
+      "groundOffset": -9.536743172944284e-08,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 5,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "research-lab",
+      "actual": {
+        "x": 25.866637533042425,
+        "y": 23.734000062942503,
+        "z": 24.991775833874968
+      },
+      "target": [
+        28,
+        17,
+        24
+      ],
+      "minY": 4.599999952316284,
+      "placementY": 5,
+      "groundOffset": -0.400000047683716,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 7,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "depot",
+      "actual": {
+        "x": 14.565512477612543,
+        "y": 15.806633230466394,
+        "z": 18.49402154440584
+      },
+      "target": [
+        24,
+        14,
+        20
+      ],
+      "minY": 1.9833671128563584,
+      "placementY": 2,
+      "groundOffset": -0.01663288714364164,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 5,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "review-office",
+      "actual": {
+        "x": 19.803125004659293,
+        "y": 17.100145512521266,
+        "z": 17.262937405266044
+      },
+      "target": [
+        26,
+        15,
+        20
+      ],
+      "minY": 2.977853983938694,
+      "placementY": 3,
+      "groundOffset": -0.02214601606130584,
+      "xzDeclaredExcess": {
+        "x": 0.8987462322311615,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 6,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "triage",
+      "actual": {
+        "x": 11.25534461788363,
+        "y": 5.280000076293946,
+        "z": 10.24103210948563
+      },
+      "target": [
+        14,
+        9,
+        12
+      ],
+      "minY": 1,
+      "placementY": 1,
+      "groundOffset": 0,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 3,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "garden",
+      "actual": {
+        "x": 24.031412571668625,
+        "y": 4.910745284557343,
+        "z": 24.031412571668625
+      },
+      "target": [
+        28,
+        5,
+        24
+      ],
+      "minY": -0.4249999985098839,
+      "placementY": 0,
+      "groundOffset": -0.4249999985098839,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 4,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "council",
+      "actual": {
+        "x": 23.013291835784912,
+        "y": 19.221999354362488,
+        "z": 23.013291835784912
+      },
+      "target": [
+        22,
+        14,
+        18
+      ],
+      "minY": -1.879999918937683,
+      "placementY": 1,
+      "groundOffset": -2.879999918937683,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 5,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "arts-studio",
+      "actual": {
+        "x": 17.11654551376663,
+        "y": 17.25000037574768,
+        "z": 18.560443480994415
+      },
+      "target": [
+        24,
+        15,
+        20
+      ],
+      "minY": 0.35599995231628423,
+      "placementY": 2,
+      "groundOffset": -1.6440000476837158,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 7,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "engineering-workshop",
+      "actual": {
+        "x": 20.640384442026505,
+        "y": 18.14999948310852,
+        "z": 21.618929302670765
+      },
+      "target": [
+        26,
+        16,
+        22
+      ],
+      "minY": 0.19199995231628408,
+      "placementY": 2,
+      "groundOffset": -1.808000047683716,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 5,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "release-gatehouse",
+      "actual": {
+        "x": 13.9,
+        "y": 15.900000284194945,
+        "z": 12.047499771118165
+      },
+      "target": [
+        22,
+        15,
+        18
+      ],
+      "minY": 0.6019999523162842,
+      "placementY": 2,
+      "groundOffset": -1.3980000476837158,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 6,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "archive",
+      "actual": {
+        "x": 16.12273280110665,
+        "y": 17.92499946784973,
+        "z": 17.097296474079386
+      },
+      "target": [
+        24,
+        15,
+        20
+      ],
+      "minY": 0.2329999523162849,
+      "placementY": 2,
+      "groundOffset": -1.767000047683715,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 5,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    },
+    {
+      "pack": "historical",
+      "id": "bus",
+      "actual": {
+        "x": 6.8,
+        "y": 2.6149999952316287,
+        "z": 2.920000104904175
+      },
+      "target": [
+        10,
+        4,
+        6
+      ],
+      "minY": 2.1600000047683716,
+      "placementY": 2,
+      "groundOffset": 0.16000000476837162,
+      "xzDeclaredExcess": {
+        "x": 0,
+        "z": 0
+      },
+      "reviewPad": null,
+      "visibleMeshes": 3,
+      "sampleAt": "2026-09-08T04:44:17.723Z"
+    }
+  ]
+}

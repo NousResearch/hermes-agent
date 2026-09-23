@@ -1,0 +1,799 @@
+{
+  "capturedAt": "2026-09-08T03:01:18.008166+00:00",
+  "status": "fitting_requirements_only_not_rig_acceptance",
+  "workers": [
+    {
+      "id": "baseline",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "0ceba096db1da81e1854ade5b1ff367a2ec5a54980d6efdb232a2e88920441c1",
+      "generated": true,
+      "rigExportPresent": true,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "4b4b94f829dfe25c7d717cc7f55729b037dacbae3046c0a22d5a0b6866ac1e3f",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29997,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.5183289647102356,
+          1.9735191017389297e-05,
+          -0.3250456750392914
+        ],
+        "max": [
+          0.5182898640632629,
+          1.2000787258148193,
+          0.32545581459999084
+        ]
+      },
+      "sourceComponents": 20,
+      "largestSourceComponentFaces": 398006,
+      "sourceFaces": 404324,
+      "visuallyInspectedFiles": [
+        {
+          "path": "baseline/source-card.png",
+          "sha256": "0ceba096db1da81e1854ade5b1ff367a2ec5a54980d6efdb232a2e88920441c1"
+        },
+        {
+          "path": "baseline/finish-front.png",
+          "sha256": "0b1dc57b41826c0dc510ff6d21fe0e24ad50f931e54e9f9846c3d69b9f7e1e8e"
+        }
+      ]
+    },
+    {
+      "id": "acceptance-release",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "0629785b40f08b569e8d2dfa2b21b72c12248194751fc92d6d45869eacd4d6d4",
+      "generated": true,
+      "rigExportPresent": true,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "7cf22b13f33f06675d58d3ce126058d3bc4c770a4b6e4041677cf310ce3efb5b",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29996,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.4415815770626068,
+          1.2279485417820979e-05,
+          -0.3834546208381653
+        ],
+        "max": [
+          0.44173869490623474,
+          1.1998172998428345,
+          0.38332507014274597
+        ]
+      },
+      "sourceComponents": 19,
+      "largestSourceComponentFaces": 352540,
+      "sourceFaces": 353404,
+      "visuallyInspectedFiles": [
+        {
+          "path": "acceptance-release/source-card.png",
+          "sha256": "0629785b40f08b569e8d2dfa2b21b72c12248194751fc92d6d45869eacd4d6d4"
+        },
+        {
+          "path": "acceptance-release/finish-front.png",
+          "sha256": "2ecee69bad8db01991d7ff51ea538852233e702250b89b67db9fc2b4cb31e80a"
+        }
+      ]
+    },
+    {
+      "id": "archive-acquisition",
+      "targetHeightMetres": 0.95,
+      "cardSha256": "b2e319adf2df05697584c70c9769f3c0271e65554febecd6856c64cee64d7242",
+      "generated": true,
+      "rigExportPresent": true,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "4bff1b15a3adb474bd5af3f3cccc44e254da38f781d094261d0b08a877ee2ab1",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29997,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.4420279264450073,
+          1.3702735486731399e-05,
+          -0.3026183247566223
+        ],
+        "max": [
+          0.4419846534729004,
+          0.9501160979270935,
+          0.3022163212299347
+        ]
+      },
+      "sourceComponents": 29,
+      "largestSourceComponentFaces": 472934,
+      "sourceFaces": 476768,
+      "visuallyInspectedFiles": [
+        {
+          "path": "archive-acquisition/source-card.png",
+          "sha256": "b2e319adf2df05697584c70c9769f3c0271e65554febecd6856c64cee64d7242"
+        },
+        {
+          "path": "archive-acquisition/finish-front.png",
+          "sha256": "f3f2935cc12a8d9c7b6eb592dace7aec940bbf0fc6f01e84184a82bb5f906a56"
+        }
+      ]
+    },
+    {
+      "id": "arts-studio",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "6cdbc973c91c2f779ab56927e5055e32f363b0cec2791c27cc2d8e30e9594c85",
+      "generated": true,
+      "rigExportPresent": true,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "97f64e5daedda7f64199ec7f301a512306716f2deb74cfee7ed3c2b25015d493",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29988,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.5353569388389587,
+          -9.885462350212038e-05,
+          -0.4049302339553833
+        ],
+        "max": [
+          0.5352213978767395,
+          1.20003342628479,
+          0.40340664982795715
+        ]
+      },
+      "sourceComponents": 29,
+      "largestSourceComponentFaces": 418962,
+      "sourceFaces": 422542,
+      "visuallyInspectedFiles": [
+        {
+          "path": "arts-studio/source-card.png",
+          "sha256": "6cdbc973c91c2f779ab56927e5055e32f363b0cec2791c27cc2d8e30e9594c85"
+        },
+        {
+          "path": "arts-studio/finish-front.png",
+          "sha256": "67e5b6dcc56eb584d9fdb152eb1e9efba902666a76dfddb22b4fa529b21871c8"
+        },
+        {
+          "path": "arts-studio/material-side.png",
+          "sha256": "1332ede4780a9e3fe1ec3ca4034428bd1b42cf51b08e0890e06b9eb85c8e275c"
+        }
+      ]
+    },
+    {
+      "id": "ci-repair-triage",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "a1dea883134b5b2a447d14f405979006fd9ea79caf5ec48ff289acb6002b8035",
+      "generated": true,
+      "rigExportPresent": true,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "fe70a82418eb118c44dbbc76970b307d07fc389bfde5df41d8ed0c0073a88f14",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29967,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6488665342330933,
+          -0.00013710957136936486,
+          -0.6494573354721069
+        ],
+        "max": [
+          0.6494746804237366,
+          1.1997928619384766,
+          0.6486925482749939
+        ]
+      },
+      "sourceComponents": 103,
+      "largestSourceComponentFaces": 653372,
+      "sourceFaces": 677374,
+      "visuallyInspectedFiles": [
+        {
+          "path": "ci-repair-triage/source-card.png",
+          "sha256": "a1dea883134b5b2a447d14f405979006fd9ea79caf5ec48ff289acb6002b8035"
+        },
+        {
+          "path": "ci-repair-triage/finish-front.png",
+          "sha256": "2ad32c60adffef0996ed28a8dbeef634f02565060051426a6943abb498d0b874"
+        }
+      ]
+    },
+    {
+      "id": "content-studio",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "31231152b4fc3752abca7c862a6da8bbd05737422436d563c80573cd90816a38",
+      "generated": true,
+      "rigExportPresent": true,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "4f90f4b8250ad25619c139c9349d793f39f838d32fae9e25f14ddd2d6221042c",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29980,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6337368488311768,
+          0,
+          -0.522195041179657
+        ],
+        "max": [
+          0.6340253949165344,
+          1.1999999284744263,
+          0.5219721794128418
+        ]
+      },
+      "sourceComponents": 59,
+      "largestSourceComponentFaces": 457962,
+      "sourceFaces": 465074,
+      "visuallyInspectedFiles": [
+        {
+          "path": "content-studio/source-card.png",
+          "sha256": "31231152b4fc3752abca7c862a6da8bbd05737422436d563c80573cd90816a38"
+        },
+        {
+          "path": "content-studio/finish-front.png",
+          "sha256": "d07271832658fb1cbd2b4150ecc240b07841bb6e818f251099e4b0bdc67b1586"
+        }
+      ]
+    },
+    {
+      "id": "community-intake",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "2b85d932c7fb013b7c3425345973a508446dba207be3ebefe02deb0937e9db51",
+      "generated": true,
+      "rigExportPresent": true,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "8e8748eed3982e8874ea531af5b8e347363a1c73b52328cb2498355d11cd45b3",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29988,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6166600584983826,
+          0,
+          -0.5118651986122131
+        ],
+        "max": [
+          0.6171638369560242,
+          1.2000000476837158,
+          0.5104674696922302
+        ]
+      },
+      "sourceComponents": 34,
+      "largestSourceComponentFaces": 497428,
+      "sourceFaces": 511460,
+      "visuallyInspectedFiles": [
+        {
+          "path": "community-intake/source-card.png",
+          "sha256": "2b85d932c7fb013b7c3425345973a508446dba207be3ebefe02deb0937e9db51"
+        },
+        {
+          "path": "community-intake/finish-front.png",
+          "sha256": "f3245a30c99457d46ef91a4719cc0821fd68e92d4df3ff1a4fda0dab1c9f50ec"
+        }
+      ]
+    },
+    {
+      "id": "control-plane-incidents",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "c1728b33e91f6c8cfd60e45209328cad54ee006acafa794fb0cbc1cebe20e08a",
+      "generated": true,
+      "rigExportPresent": true,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "7dae579b6d46a7f4f40d6d0754b8516f97a9e5b9816fd4279a7e0071cbb2ebfe",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29982,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.601002037525177,
+          0,
+          -0.5991187691688538
+        ],
+        "max": [
+          0.6006903052330017,
+          1.2000000476837158,
+          0.5999597311019897
+        ]
+      },
+      "sourceComponents": 72,
+      "largestSourceComponentFaces": 755610,
+      "sourceFaces": 771194,
+      "visuallyInspectedFiles": [
+        {
+          "path": "control-plane-incidents/source-card.png",
+          "sha256": "c1728b33e91f6c8cfd60e45209328cad54ee006acafa794fb0cbc1cebe20e08a"
+        },
+        {
+          "path": "control-plane-incidents/finish-front.png",
+          "sha256": "133993c110bd8d48a3b897f59bf8d9762d617edb4779c32d0ac635562e28d36b"
+        }
+      ]
+    },
+    {
+      "id": "core-runtime-ux-repairs",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "cf258b9d8e954db9f6bf2ce253bb960aee40f72c34f82469993a5aedde47362c",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "3e8f49a72aa42b39a20e607f67efefd1c7dfed7764ee7192f0ddb6cdb16b7550",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29979,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6439385414123535,
+          0,
+          -0.6490938663482666
+        ],
+        "max": [
+          0.6430312395095825,
+          1.2000000476837158,
+          0.6486876010894775
+        ]
+      },
+      "sourceComponents": 57,
+      "largestSourceComponentFaces": 595780,
+      "sourceFaces": 605194,
+      "visuallyInspectedFiles": [
+        {
+          "path": "core-runtime-ux-repairs/source-card.png",
+          "sha256": "cf258b9d8e954db9f6bf2ce253bb960aee40f72c34f82469993a5aedde47362c"
+        },
+        {
+          "path": "core-runtime-ux-repairs/finish-front.png",
+          "sha256": "2fb08d42c4f3bf3f3c9515effd4d871f6850ec25aa00b6475b3f15981a741c61"
+        },
+        {
+          "path": "core-runtime-ux-repairs/material-side.png",
+          "sha256": "9c7e7bc17cedd54e3d2ef326a745bad3176383ea23d30c7ae0706576265726ee"
+        }
+      ]
+    },
+    {
+      "id": "data-performance-repairs",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "a1a9e533bf44f19f044cc1b39c30876d6993bc1db2dec1e6ffd429bf6be5cdb0",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "1d75541d9bb9e8d81391199b58771bb4f981a70464831fa392e1dd515642101a",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29978,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6773163080215454,
+          0,
+          -0.6817535758018494
+        ],
+        "max": [
+          0.6771481037139893,
+          1.2000000476837158,
+          0.6818646192550659
+        ]
+      },
+      "sourceComponents": 67,
+      "largestSourceComponentFaces": 531978,
+      "sourceFaces": 545948,
+      "visuallyInspectedFiles": [
+        {
+          "path": "data-performance-repairs/source-card.png",
+          "sha256": "a1a9e533bf44f19f044cc1b39c30876d6993bc1db2dec1e6ffd429bf6be5cdb0"
+        },
+        {
+          "path": "data-performance-repairs/material-review.png",
+          "sha256": "8dae2a8e788fa7e8747b898868ba145a481daf5ad2d543dfd515d24b1daf3d7b"
+        }
+      ]
+    },
+    {
+      "id": "engineering-guild",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "1330050c95f485973cbbb95276bd05f3e5d679443e8c8f28f58b02b7b6aa7d5c",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "3e79e1808a04fb62911efcef3aa6bb45a7513e772af98f3f20a9e71715a915b9",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29982,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6442491412162781,
+          0,
+          -0.4133194386959076
+        ],
+        "max": [
+          0.6443033814430237,
+          1.1999999284744263,
+          0.41298219561576843
+        ]
+      },
+      "sourceComponents": 65,
+      "largestSourceComponentFaces": 433332,
+      "sourceFaces": 444392,
+      "visuallyInspectedFiles": [
+        {
+          "path": "engineering-guild/source-card.png",
+          "sha256": "1330050c95f485973cbbb95276bd05f3e5d679443e8c8f28f58b02b7b6aa7d5c"
+        },
+        {
+          "path": "engineering-guild/material-review.png",
+          "sha256": "1a8cd9e0eabc59b676371ee50bb1c067c287dab5320d97309292cadcf697b368"
+        }
+      ]
+    },
+    {
+      "id": "editorial-desk",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "f1d6d152ab20d044d9ef82e857ca17cb8b1bba824c70c1ff6f5f4cf00855e73d",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "1609a34ae6e3d4919d7863be7ad92ed3e301023ffc3698cdab61cd029fb00bae",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29990,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.5371707677841187,
+          0,
+          -0.46086376905441284
+        ],
+        "max": [
+          0.5378674864768982,
+          1.2000000476837158,
+          0.4605616331100464
+        ]
+      },
+      "sourceComponents": 46,
+      "largestSourceComponentFaces": 437764,
+      "sourceFaces": 450568,
+      "visuallyInspectedFiles": [
+        {
+          "path": "editorial-desk/source-card.png",
+          "sha256": "f1d6d152ab20d044d9ef82e857ca17cb8b1bba824c70c1ff6f5f4cf00855e73d"
+        },
+        {
+          "path": "editorial-desk/material-review.png",
+          "sha256": "3e44289abafc759af1f5f393cd3d23f2c3d0c8a9a526f300c81174cd3c0cc8ec"
+        },
+        {
+          "path": "editorial-desk/material-side.png",
+          "sha256": "9ee4103c49489356b19723dcc20d805b534f836b48f375353692006c1be10bf9"
+        }
+      ]
+    },
+    {
+      "id": "federation-council",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "fedb4e233461b2a1eb8d18f94e7803642bee59b4714c4dc6b4c2442a60e20c2a",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "a81656048c31efa1c880f8e6ac4f715b7995007e43c278a75348c27b289dc660",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29990,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.7019577622413635,
+          0,
+          -0.6294968128204346
+        ],
+        "max": [
+          0.7018185257911682,
+          1.1999999284744263,
+          0.6293448209762573
+        ]
+      },
+      "sourceComponents": 52,
+      "largestSourceComponentFaces": 467148,
+      "sourceFaces": 476032,
+      "visuallyInspectedFiles": [
+        {
+          "path": "federation-council/source-card.png",
+          "sha256": "fedb4e233461b2a1eb8d18f94e7803642bee59b4714c4dc6b4c2442a60e20c2a"
+        },
+        {
+          "path": "federation-council/material-review.png",
+          "sha256": "ec11623e57d1790f55f6bec3bf6fe35ef6c698fab11303321141ce6527d28af8"
+        }
+      ]
+    },
+    {
+      "id": "knowledge-commons",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "b19c0ff28b77e36a1468298a8fbfc8c746d70e603128be57673e542987e62ef3",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "2eae1b00a3ce7f02ac03046677e6ba0596749eeb5da2a6740521e1bab2a25250",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29981,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6048859357833862,
+          0,
+          -0.4387671947479248
+        ],
+        "max": [
+          0.605891764163971,
+          1.2000000476837158,
+          0.4386608302593231
+        ]
+      },
+      "sourceComponents": 75,
+      "largestSourceComponentFaces": 470862,
+      "sourceFaces": 488258,
+      "visuallyInspectedFiles": [
+        {
+          "path": "knowledge-commons/source-card.png",
+          "sha256": "b19c0ff28b77e36a1468298a8fbfc8c746d70e603128be57673e542987e62ef3"
+        },
+        {
+          "path": "knowledge-commons/material-review.png",
+          "sha256": "26eda13afa8b7d54af87dace4cd1e49bfbc317158a4c4c522007e870e8b1cdac"
+        },
+        {
+          "path": "knowledge-commons/material-side.png",
+          "sha256": "88b29c85de93d2bff338b8fef373f1deb2516f467961420916893c292acd6979"
+        }
+      ]
+    },
+    {
+      "id": "memory-stewardship",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "892d055c79369217b7b4a59997c22f031a366526d750329766c082321b9111a3",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "abe300f3924ab8f2d9bf000133cd3ac5133b060f2719fdd7d2e9a4e7642cce72",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29985,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6696696281433105,
+          0,
+          -0.5658885836601257
+        ],
+        "max": [
+          0.6698456406593323,
+          1.1999999284744263,
+          0.5662092566490173
+        ]
+      },
+      "sourceComponents": 58,
+      "largestSourceComponentFaces": 473212,
+      "sourceFaces": 487562,
+      "visuallyInspectedFiles": [
+        {
+          "path": "memory-stewardship/source-card.png",
+          "sha256": "892d055c79369217b7b4a59997c22f031a366526d750329766c082321b9111a3"
+        },
+        {
+          "path": "memory-stewardship/material-review.png",
+          "sha256": "713712a88047a833417899ff2637cacda45c5d6303d0032e67fb85cd1eed55cc"
+        }
+      ]
+    },
+    {
+      "id": "operations-release",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "145c853890fa95b5251fe5f0da04a0ac030d283c47f2680cf8750aec4f407556",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "821b476a15cfd916ef826a3035a1a09ce23bacf428d96ee952d433a84e1d4e9a",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29995,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6771062016487122,
+          0,
+          -0.38379967212677
+        ],
+        "max": [
+          0.6767697930335999,
+          1.2000000476837158,
+          0.3838035464286804
+        ]
+      },
+      "sourceComponents": 22,
+      "largestSourceComponentFaces": 377316,
+      "sourceFaces": 378676,
+      "visuallyInspectedFiles": [
+        {
+          "path": "operations-release/source-card.png",
+          "sha256": "145c853890fa95b5251fe5f0da04a0ac030d283c47f2680cf8750aec4f407556"
+        },
+        {
+          "path": "operations-release/material-review.png",
+          "sha256": "e42be12e659f4645f35b601ae19218fbd1ff79fd8fa10bdea0c0452996fe89bc"
+        }
+      ]
+    },
+    {
+      "id": "pr-merge-train",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "e10f436b43add9a775138b5110a03185e917f0511f390256b14dd861731ad765",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "77a41ae5ac96f4196fb6bdfd54c1cbfdcab0c96e9f199fe0aef0eea4f7ac6168",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29990,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.7887352705001831,
+          0,
+          -0.8124958276748657
+        ],
+        "max": [
+          0.7908564805984497,
+          1.1999999284744263,
+          0.8134641647338867
+        ]
+      },
+      "sourceComponents": 45,
+      "largestSourceComponentFaces": 483134,
+      "sourceFaces": 494206,
+      "visuallyInspectedFiles": [
+        {
+          "path": "pr-merge-train/source-card.png",
+          "sha256": "e10f436b43add9a775138b5110a03185e917f0511f390256b14dd861731ad765"
+        },
+        {
+          "path": "pr-merge-train/material-review.png",
+          "sha256": "d6a0582dc8f735478ff9601303542f8dfe0202a077e9f8963a52ae0dc564e60a"
+        },
+        {
+          "path": "pr-merge-train/material-side.png",
+          "sha256": "eff83a6928f395bb03671728db03e41f5a621d03634ea3ba80726ef55fc050b7"
+        }
+      ]
+    },
+    {
+      "id": "research-lab",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "9c246fe1be3ba7c7c5a503b15fe743f5a540c7a5ca6f0cd1efee6d2123d58b8c",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "9e72cc8b2dd94c4f45c0c6ce8255c39bede5c4faff9430abfa0d6ac500ab560e",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29992,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6396777033805847,
+          0,
+          -0.43821877241134644
+        ],
+        "max": [
+          0.6393437385559082,
+          1.1999999284744263,
+          0.4387214183807373
+        ]
+      },
+      "sourceComponents": 42,
+      "largestSourceComponentFaces": 468416,
+      "sourceFaces": 474688,
+      "visuallyInspectedFiles": [
+        {
+          "path": "research-lab/source-card.png",
+          "sha256": "9c246fe1be3ba7c7c5a503b15fe743f5a540c7a5ca6f0cd1efee6d2123d58b8c"
+        },
+        {
+          "path": "research-lab/material-review.png",
+          "sha256": "a57040ae2d44f6064c8ab845b39dc0bbacd93fead844ae10a7b7063f520cd62e"
+        },
+        {
+          "path": "research-lab/material-side.png",
+          "sha256": "4ac8be092155a0b02f1e8c7519fba0daf043f2683aff698d22e22bc32750a867"
+        }
+      ]
+    },
+    {
+      "id": "research-review-board",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "8d49e914d59b64d6de22ba6930d21a1d1650bd7cc6abe932387222ff8279dfa2",
+      "generated": true,
+      "rigExportPresent": false,
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "b8f31967feb79c879157c112ddd0d02786d51cd8e653e8430ec1310a3d542c97",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29998,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.6708395481109619,
+          0,
+          -0.46799710392951965
+        ],
+        "max": [
+          0.6706992983818054,
+          1.2000000476837158,
+          0.468120276927948
+        ]
+      },
+      "sourceComponents": 9,
+      "largestSourceComponentFaces": 446768,
+      "sourceFaces": 447950,
+      "visuallyInspectedFiles": [
+        {
+          "path": "research-review-board/source-card.png",
+          "sha256": "8d49e914d59b64d6de22ba6930d21a1d1650bd7cc6abe932387222ff8279dfa2"
+        },
+        {
+          "path": "research-review-board/material-review.png",
+          "sha256": "e198758f20101b9ffba46e5c5bfb6d7f5a86bf82e6e47e37516f2158bbd3cbca"
+        },
+        {
+          "path": "research-review-board/material-side.png",
+          "sha256": "f69e53c4c2522f21e7627815a3512a00922473ae311556669a6d9c70e5cf3707"
+        }
+      ]
+    },
+    {
+      "id": "upstream-hermes-maintenance",
+      "targetHeightMetres": 1.2,
+      "cardSha256": "6cb70c03fdc75474351244f4f51feb9af0f3d5e6b7edd4d36102d6a2976b1cb2",
+      "generated": true,
+      "rigExportPresent": false,
+      "visuallyInspectedFiles": [
+        {
+          "path": "upstream-hermes-maintenance/source-card.png",
+          "sha256": "6cb70c03fdc75474351244f4f51feb9af0f3d5e6b7edd4d36102d6a2976b1cb2"
+        },
+        {
+          "path": "upstream-hermes-maintenance/material-review.png",
+          "sha256": "0f478684b9183d058f66be01ea3a8226e0b9bc4c909abd75769ef32fdfc4bf71"
+        },
+        {
+          "path": "upstream-hermes-maintenance/material-side.png",
+          "sha256": "3894374531e82b681c2c0b65f9f1d6f6b15ef44db2eac2a8a389de2fae65c94b"
+        }
+      ],
+      "inspectedGeometry": "material-review.glb",
+      "geometrySha256": "449812a977e4e11d7e9bb6b0202c66f154e3174b18181893f73ce1ecf020f48f",
+      "meshNodes": 1,
+      "skins": 0,
+      "triangles": 29985,
+      "nodes": 1,
+      "localAccessorBounds": {
+        "min": [
+          -0.5504943132400513,
+          0,
+          -0.391569048166275
+        ],
+        "max": [
+          0.5506696105003357,
+          1.2000000476837158,
+          0.39210349321365356
+        ]
+      },
+      "sourceComponents": 50,
+      "largestSourceComponentFaces": 457690,
+      "sourceFaces": 464222
+    }
+  ],
+  "lastAdditionAt": "2026-09-08T03:09:29.780318+00:00"
+}

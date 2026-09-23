@@ -1,0 +1,7 @@
+{
+  "meshes": 24,
+  "heightMetres": 1.2000000476837158,
+  "groundMin": 0.0,
+  "sha256": "812560a2e3d21acaeb7e21a123de6cb1f97ed2624527742668be9c0baa99f41b",
+  "stage": "Static GLB roundtrip, no rig acceptance"
+}

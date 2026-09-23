@@ -1,0 +1,14 @@
+{
+  "asset": "beaver-architect",
+  "worstAbsoluteGrowth": {
+    "frame": 16,
+    "growthMetres": 0.032495479140165665,
+    "restLengthMetres": 0.014813207502338967,
+    "restMidpoint": [
+      -0.28302106261253357,
+      -0.09935886412858963,
+      0.2943338006734848
+    ]
+  },
+  "maxEdgesOver3xAnd5mmGrowth": 20
+}

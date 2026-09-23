@@ -1,0 +1,14 @@
+{
+  "asset": "owl-librarian",
+  "worstAbsoluteGrowth": {
+    "frame": 46,
+    "growthMetres": 0.07871783743454686,
+    "restLengthMetres": 0.02656461203471212,
+    "restMidpoint": [
+      0.6455554962158203,
+      0.21236368268728256,
+      0.23212851583957672
+    ]
+  },
+  "maxEdgesOver3xAnd5mmGrowth": 130
+}

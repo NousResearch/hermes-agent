@@ -15,6 +15,7 @@ from gateway.action_journal import (
     MutationConflict,
     MutationCursorInvalid,
     MutationEvent,
+    OneShotInProgress,
 )
 
 NOW = datetime(2026, 9, 22, 18, 0, tzinfo=UTC)
@@ -158,3 +159,29 @@ def test_concurrent_unique_append_on_shared_connection_is_safe() -> None:
         results = list(pool.map(journal.append, events))
     assert all(created for _, created in results)
     assert len(journal.list(after_cursor=None, limit=100).events) == 100
+
+
+def test_start_loop_progress_allows_restart_reconciliation(tmp_path: Path) -> None:
+    path = tmp_path / "actions.sqlite3"
+    key = uuid4()
+    journal = ActionJournal(path, profile_key="becky")
+    fingerprint = "a" * 64
+    assert journal.claim_start_loop(key, fingerprint) is None
+    journal.update_start_loop_progress(
+        key,
+        {"stage": "topic_created", "thread_id": "12345"},
+    )
+    journal.close()
+
+    reopened = ActionJournal(path, profile_key="becky")
+    # A restart may resume a staged operation, while a duplicate request with
+    # no durable stage remains fail-closed.
+    assert reopened.claim_start_loop(key, fingerprint) is None
+    assert reopened.get_start_loop_progress(key) == {
+        "stage": "topic_created",
+        "thread_id": "12345",
+    }
+    other = uuid4()
+    assert reopened.claim_start_loop(other, fingerprint) is None
+    with pytest.raises(OneShotInProgress):
+        reopened.claim_start_loop(other, fingerprint)

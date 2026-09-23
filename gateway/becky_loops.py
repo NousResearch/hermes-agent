@@ -2661,23 +2661,64 @@ async def start_becky_loops_bridge(
                     prior_status: str,
                     idempotency_key: UUID,
                 ) -> dict[str, Any]:
-                    del prior_status, idempotency_key
-                    thread_id = await create_topic(
-                        chat_id=config.chat_id,
-                        title=title,
-                    )
-                    receipt = await topic_sender.send_topic(
-                        chat_id=config.chat_id,
-                        thread_id=thread_id,
-                        text=context,
-                        reply_to_message_id=None,
-                    )
-                    session_id = record_topic(
-                        title=title,
-                        text=context,
-                        topic_id=thread_id,
-                        message_id=receipt.message_id,
-                    )
+                    del prior_status
+                    progress = action_journal.get_start_loop_progress(idempotency_key) or {}
+                    stage = progress.get("stage")
+                    thread_id = progress.get("thread_id")
+                    message_id = progress.get("message_id")
+                    session_id = progress.get("session_id")
+                    if not isinstance(thread_id, str) or not _POSITIVE_TELEGRAM_ID_RE.fullmatch(thread_id):
+                        thread_id = await create_topic(
+                            chat_id=config.chat_id,
+                            title=title,
+                        )
+                        action_journal.update_start_loop_progress(
+                            idempotency_key,
+                            {"stage": "topic_created", "thread_id": thread_id},
+                        )
+                        stage = "topic_created"
+                    if (
+                        stage not in {"message_sent", "session_bound", "completed"}
+                        or not isinstance(message_id, str)
+                        or not message_id
+                    ):
+                        receipt = await topic_sender.send_topic(
+                            chat_id=config.chat_id,
+                            thread_id=thread_id,
+                            text=context,
+                            reply_to_message_id=None,
+                        )
+                        message_id = receipt.message_id
+                        action_journal.update_start_loop_progress(
+                            idempotency_key,
+                            {
+                                "stage": "message_sent",
+                                "thread_id": thread_id,
+                                "message_id": message_id,
+                            },
+                        )
+                        stage = "message_sent"
+                    if (
+                        stage not in {"session_bound", "completed"}
+                        or not isinstance(session_id, str)
+                        or not session_id
+                    ):
+                        session_id = record_topic(
+                            title=title,
+                            text=context,
+                            topic_id=thread_id,
+                            message_id=message_id,
+                        )
+                        action_journal.update_start_loop_progress(
+                            idempotency_key,
+                            {
+                                "stage": "session_bound",
+                                "thread_id": thread_id,
+                                "message_id": message_id,
+                                "session_id": session_id,
+                            },
+                        )
+                        stage = "session_bound"
                     if not isinstance(session_id, str) or not session_id:
                         raise RuntimeError("action loop session unavailable")
                     chat_id = config.chat_id
@@ -2687,7 +2728,7 @@ async def start_becky_loops_bridge(
                         deep_link_chat = chat_id.lstrip("-")
                     if not _POSITIVE_TELEGRAM_ID_RE.fullmatch(deep_link_chat):
                         raise RuntimeError("action loop deep link unavailable")
-                    return {
+                    result = {
                         "schema_version": "1",
                         "state": "completed",
                         "title": title,
@@ -2695,6 +2736,17 @@ async def start_becky_loops_bridge(
                             f"https://t.me/c/{deep_link_chat}/{thread_id}"
                         ),
                     }
+                    action_journal.update_start_loop_progress(
+                        idempotency_key,
+                        {
+                            "stage": "completed",
+                            "thread_id": thread_id,
+                            "message_id": message_id,
+                            "session_id": session_id,
+                            "result": result,
+                        },
+                    )
+                    return result
 
                 action_loop_starter = _start_action_loop
         server = BeckyLoopsBridgeServer(

@@ -179,11 +179,25 @@ class ActionJournal:
                 request_key TEXT NOT NULL,
                 fingerprint TEXT NOT NULL,
                 state TEXT NOT NULL CHECK (state IN ('pending', 'complete')),
+                progress_json TEXT,
                 result_json TEXT,
                 PRIMARY KEY (profile_key, request_key)
             );
             """
         )
+        # The operation ledger was introduced before staged topic creation was
+        # durable. Keep existing profile databases forward-compatible without
+        # rewriting or exposing their mutation rows.
+        columns = {
+            row["name"]
+            for row in self._connection.execute(
+                "PRAGMA table_info(start_loop_requests)"
+            ).fetchall()
+        }
+        if "progress_json" not in columns:
+            self._connection.execute(
+                "ALTER TABLE start_loop_requests ADD COLUMN progress_json TEXT"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -365,7 +379,7 @@ class ActionJournal:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
                 row = self._connection.execute(
-                    f"SELECT fingerprint, state, result_json FROM {table} "
+                    f"SELECT fingerprint, state, progress_json, result_json FROM {table} "
                     "WHERE profile_key = ? AND request_key = ?",
                     (self.profile_key, key),
                 ).fetchone()
@@ -381,6 +395,12 @@ class ActionJournal:
                 if row["fingerprint"] != fingerprint:
                     raise MutationConflict("operation key has another payload")
                 if row["state"] == "pending":
+                    # A start-loop retry after a gateway restart may resume a
+                    # staged operation.  A process-local concurrent retry with
+                    # no recorded stage still fails closed.
+                    if table == "start_loop_requests" and row["progress_json"]:
+                        self._connection.execute("COMMIT")
+                        return None
                     raise OneShotInProgress("operation is still pending")
                 result_json = row["result_json"]
                 if not isinstance(result_json, str):
@@ -406,6 +426,45 @@ class ActionJournal:
             )
             if cursor.rowcount != 1:
                 raise OneShotInProgress("operation is not pending")
+
+    def get_start_loop_progress(self, request_key: UUID | str) -> dict[str, object] | None:
+        """Return private staged start-loop state for crash reconciliation."""
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT progress_json FROM start_loop_requests
+                WHERE profile_key = ? AND request_key = ?
+                """,
+                (self.profile_key, str(request_key)),
+            ).fetchone()
+            if row is None or not isinstance(row["progress_json"], str):
+                return None
+            try:
+                value = json.loads(row["progress_json"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+            return value if isinstance(value, dict) else None
+
+    def update_start_loop_progress(
+        self, request_key: UUID | str, progress: dict[str, object]
+    ) -> None:
+        """Persist bounded private stage output while a start-loop is pending."""
+        if not isinstance(progress, dict) or not progress:
+            raise ValueError("start-loop progress must be a non-empty object")
+        encoded = json.dumps(progress, sort_keys=True, separators=(",", ":"))
+        if len(encoded) > 4_000:
+            raise ValueError("start-loop progress is too large")
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                UPDATE start_loop_requests
+                SET progress_json = ?
+                WHERE profile_key = ? AND request_key = ? AND state = 'pending'
+                """,
+                (encoded, self.profile_key, str(request_key)),
+            )
+            if cursor.rowcount != 1:
+                raise OneShotInProgress("start-loop request is not pending")
 
     def _encode_cursor(self, sequence: int) -> str:
         profile_digest = hashlib.sha256(self.profile_key.encode("utf-8")).hexdigest()[:16]

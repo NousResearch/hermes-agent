@@ -57,6 +57,7 @@ import {
   requestGatewayForProfile,
   retainGatewayForAgent,
   retainGatewayForRelay,
+  retainGatewayForSessionTurn,
   retireLocalProfileGateways,
   type SpawnPriority
 } from '@/store/gateway'
@@ -107,6 +108,15 @@ import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import {
+  type PluginRouteTarget,
+  type PluginSessionSubmitInput,
+  type PluginSessionSubmitResult,
+  type PluginSessionSubmitStatus,
+  submitToPluginSession
+} from './session-delivery'
+
+export type { PluginSessionSubmitInput, PluginSessionSubmitResult, PluginSessionSubmitStatus }
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -244,6 +254,41 @@ export interface PluginProfileRequestOptions {
   spawnPriority?: SpawnPriority
 }
 
+/** Canonical route resolution: the exact (connection, profile) pair the pool
+ *  dials, and the ONE place the string overload's policy lives. Shared with the
+ *  SDK verbs that must know the answer before they touch the socket pool. */
+async function resolvePluginProfileTarget(
+  route: PluginProfileRoute | string
+): Promise<PluginRouteTarget> {
+  if (typeof route !== 'string') {
+    if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
+      throw new Error('Profile route must include connectionId, profile, and targetProfile')
+    }
+
+    return { connectionId: route.connectionId, profile: route.profile, targetProfile: route.targetProfile }
+  }
+
+  const profile = route.trim() || 'default'
+  const getAgentRoster = window.hermesDesktop?.getAgentRoster
+
+  // The string overload is compatibility-only. A sole local registry is the
+  // one topology where a profile name is intrinsically unambiguous, even when
+  // its live enumeration transiently failed. Any additional source requires a
+  // descriptor because an undialed/unreachable source may expose the same name.
+  if (getAgentRoster) {
+    const roster = await getAgentRoster()
+    const soleLocalSource = roster.sources.length === 1 && roster.sources[0]?.kind === 'local'
+
+    if (!soleLocalSource) {
+      throw new Error(
+        `Profile "${profile}" requires a route descriptor from host.profileRoutes(); profile-only routing is limited to legacy/local profiles.`
+      )
+    }
+  }
+
+  return { connectionId: null, profile, targetProfile: profile }
+}
+
 async function requestPluginProfile<T>(
   route: PluginProfileRoute | string,
   method: string,
@@ -263,43 +308,22 @@ async function requestPluginProfile<T>(
         ? requestGatewayForProfile<T>(profile, method, params)
         : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
 
-  if (typeof route !== 'string') {
-    if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
-      throw new Error('Profile route must include connectionId, profile, and targetProfile')
-    }
+  const target = await resolvePluginProfileTarget(route)
 
-    if (spawnPriority) {
-      return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
-        spawnPriority
-      })
-    }
-
-    return timeoutMs === undefined
-      ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
-      : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
+  // A null connectionId is the legacy profile-only overload, dialed by name.
+  if (target.connectionId === null) {
+    return dialProfile(target.profile)
   }
 
-  const getAgentRoster = window.hermesDesktop?.getAgentRoster
-
-  if (!getAgentRoster) {
-    return dialProfile(route)
+  if (spawnPriority) {
+    return requestGatewayForAgent<T>(target.connectionId, target.profile, method, params, timeoutMs, undefined, {
+      spawnPriority
+    })
   }
 
-  const roster = await getAgentRoster()
-  const profile = route.trim() || 'default'
-  const soleLocalSource = roster.sources.length === 1 && roster.sources[0]?.kind === 'local'
-
-  // The string overload is compatibility-only. A sole local registry is the
-  // one topology where a profile name is intrinsically unambiguous, even when
-  // its live enumeration transiently failed. Any additional source requires a
-  // descriptor because an undialed/unreachable source may expose the same name.
-  if (soleLocalSource) {
-    return dialProfile(profile)
-  }
-
-  throw new Error(
-    `Profile "${profile}" requires a route descriptor from host.profileRoutes(); profile-only routing is limited to legacy/local profiles.`
-  )
+  return timeoutMs === undefined
+    ? requestGatewayForAgent<T>(target.connectionId, target.profile, method, params)
+    : requestGatewayForAgent<T>(target.connectionId, target.profile, method, params, timeoutMs)
 }
 
 /** Re-read Electron's current registry before retrying an exact-owner wake.
@@ -1474,6 +1498,30 @@ export const host = {
 
     return retainGatewayForAgent(null, route.trim() || 'default', options)
   },
+
+  /** Deliver one turn to ONE stored session on ONE route — no credentials, no
+   *  foreground switch. `storedSessionId` is durable, the reply's
+   *  `runtimeSessionId` ephemeral. The route-hold → resume → turn-hold → submit
+   *  sequence is owned here, and delivery is always `queued: true` so it lands
+   *  after an active turn and never steers one.
+   *
+   *  Never retried automatically — a timed-out submit may already have been
+   *  accepted, so reconcile the transcript. Fails closed on foreign ownership;
+   *  feature-detect it (`typeof host.submitToSession === 'function'`). */
+  submitToSession: async (
+    route: PluginProfileRoute | string,
+    input: PluginSessionSubmitInput
+  ): Promise<PluginSessionSubmitResult> =>
+    submitToPluginSession(
+      {
+        request: (target, method, params) => requestPluginProfile(target, method, params),
+        resolveRoute: resolvePluginProfileTarget,
+        retainRoute: retainGatewayForAgent,
+        retainTurn: retainGatewayForSessionTurn
+      },
+      route,
+      input
+    ),
 
   /** Read persisted sessions from a profile's owning source without dialing
    *  that profile's gateway. The source primary opens state.db directly. */

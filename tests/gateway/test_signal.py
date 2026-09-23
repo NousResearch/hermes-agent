@@ -24,8 +24,14 @@ def _reset_signal_scheduler():
 # ---------------------------------------------------------------------------
 
 def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
-    """Create a SignalAdapter with sensible test defaults."""
-    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", extra.pop("group_allowed", ""))
+    """Create a SignalAdapter with sensible test defaults.
+
+    The egress allowlist admits the DM chat ids the send tests target (the pre-masked
+    "+155****4567" / "+155****0000" literals used throughout this file, and "+15551230000")
+    plus the test group IDs, so tests unrelated to egress are not blocked by the gate.
+    """
+    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", extra.pop("group_allowed", "group123,group456,abc123==,xyz"))
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", extra.pop("allowed_users", "+155****4567,+155****0000,+15551230000"))
     from gateway.platforms.signal import SignalAdapter
     config = PlatformConfig()
     config.enabled = True
@@ -1383,3 +1389,63 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+class TestSignalOutboundAllowlist:
+    """Egress gate: sends reach signal-cli only for allowlisted targets (fail closed)."""
+
+    @staticmethod
+    def _adapter(monkeypatch, **extra):
+        adapter = _make_signal_adapter(monkeypatch, **extra)
+        adapter._stop_typing_indicator = AsyncMock()
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return [] if method == "listContacts" else {"timestamp": 1234567890}
+
+        adapter._rpc = mock_rpc
+        return adapter, captured
+
+    @pytest.mark.asyncio
+    async def test_explicit_send_list_allows_listed_and_blocks_unlisted(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_SEND_ALLOWED_USERS", "+15550001111")
+        adapter, captured = self._adapter(monkeypatch, allowed_users="+15550002222")
+
+        assert (await adapter.send(chat_id="+15550001111", content="hi")).success is True
+        assert [c["method"] for c in captured][-1] == "send"
+
+        captured.clear()
+        result = await adapter.send(chat_id="+15550002222", content="hi")
+        assert result.success is False
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_send_list_falls_back_to_inbound_allowlist(self, monkeypatch):
+        monkeypatch.delenv("SIGNAL_SEND_ALLOWED_USERS", raising=False)
+        adapter, captured = self._adapter(monkeypatch, allowed_users="+15550001111")
+
+        assert (await adapter.send(chat_id="+15550001111", content="hi")).success is True
+        captured.clear()
+        assert (await adapter.send(chat_id="+15550003333", content="hi")).success is False
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_open_inbound_without_send_list_blocks_dm_sends(self, monkeypatch):
+        monkeypatch.delenv("SIGNAL_SEND_ALLOWED_USERS", raising=False)
+        adapter, captured = self._adapter(monkeypatch, allowed_users="*")
+
+        result = await adapter.send(chat_id="+15550001111", content="hi")
+        assert result.success is False
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_group_sends_gated_by_group_allowlist(self, monkeypatch):
+        adapter, captured = self._adapter(monkeypatch, group_allowed="allowedgrp")
+
+        assert (await adapter.send(chat_id="group:allowedgrp", content="hi")).success is True
+        assert captured[-1]["params"]["groupId"] == "allowedgrp"
+
+        captured.clear()
+        assert (await adapter.send(chat_id="group:othergrp", content="hi")).success is False
+        assert captured == []

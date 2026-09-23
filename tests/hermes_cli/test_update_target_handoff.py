@@ -630,9 +630,99 @@ def test_pinned_dependency_warning_is_terminal(monkeypatch, capsys):
     assert "Lazy refresh failed" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("pinned,update_complete,node_failures,exit_code", [
+    (True, False, [], 1), (True, True, ["dashboard"], 1),
+    (False, False, [], None),
+])
+def test_post_swap_partial_verification_preserves_legacy_and_refuses_pinned_success(
+    tmp_path, monkeypatch, pinned, update_complete, node_failures, exit_code,
+):
+    from hermes_cli import update_cmd, update_cmd_fleet
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(update_cmd_fleet, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda _plan: [])
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
+        _fleet_probe_expected_runtimes=lambda *a: False,
+    ))
+    monkeypatch.setattr(update_cmd_fleet, "_collect_fleet_snapshot", lambda *a: [])
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.print_fleet_version_matrix", lambda _rows: False,
+    )
+    cleared = []
+    monkeypatch.setattr(update_cmd_fleet, "_clear_fleet_restart_pending_marker", lambda: cleared.append(True))
+    restart = update_cmd_fleet._GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[],
+        restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(),
+    )
+    update_receipt._current = None
+    update_receipt.begin_update_receipt()
+
+    def verify():
+        update_cmd_fleet._verify_fleet_after_update(
+            restart, _pre_update_plan=None, _windows_gateway_resume=None,
+            node_failures=node_failures, update_complete=update_complete, pinned=pinned,
+        )
+
+    if exit_code is None:
+        verify()
+    else:
+        with pytest.raises(SystemExit) as exc:
+            verify()
+        assert exc.value.code == exit_code
+    assert cleared == [True]
+    assert update_receipt.read_latest_receipt()["outcome"] == "partial"
+
+
+def test_pinned_node_failure_cannot_exit_success_when_gateway_restart_is_deferred(
+    tmp_path, monkeypatch,
+):
+    from hermes_cli import update_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
+        PROJECT_ROOT=tmp_path, _build_web_ui=lambda _path: None,
+    ))
+    monkeypatch.setattr(update_cmd, "_run_pinned_dependency_sync", lambda *a: None)
+    monkeypatch.setattr(update_cmd, "_validate_critical_modules_import", lambda _root: (True, None, None))
+    monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: ["dashboard"])
+    monkeypatch.setattr(update_cmd, "_rebuild_desktop_after_update", lambda *a, **k: True)
+    monkeypatch.setattr(update_cmd, "_branch_head_suffix", lambda *a: "")
+    monkeypatch.setattr(update_cmd, "_run_post_update_maintenance", lambda **k: True)
+    monkeypatch.setattr(update_cmd, "_resume_windows_gateways_and_merge_outcome", lambda *a: None)
+    opts = SimpleNamespace(
+        active_lazy_features=[], active_tool_dependencies=[], assume_yes=True,
+        pre_update_version="old", no_gateway_restart=True,
+    )
+    update_receipt._current = None
+    update_receipt.begin_update_receipt()
+
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._finish_pulled_update(
+            ["git"], "main", "b" * 40, opts, gateway_mode=True,
+            is_fork=False, desktop_dir=tmp_path / "desktop",
+            had_desktop_app_before_update=True, pre_update_snapshot_id=None,
+            _pre_update_plan=None, _windows_gateway_resume=None, pinned=True,
+        )
+
+    assert exc.value.code == 1
+    assert (home / ".update_exit_code").read_text(encoding="utf-8") == "1"
+    receipt = update_receipt.read_latest_receipt()
+    assert receipt["outcome"] == "partial"
+    assert "dependency-failure: node dependencies" in receipt["failure_reasons"]
+
+
 @pytest.mark.real_post_swap_handoff
 @pytest.mark.parametrize("ack_present", [True, False, None])
-def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypatch, ack_present):
+@pytest.mark.parametrize("child_outcome", ["success", "partial"])
+def test_pinned_parent_does_not_duplicate_child_final_receipt(
+    tmp_path, monkeypatch, ack_present, child_outcome,
+):
     from types import SimpleNamespace
 
     from hermes_cli import update_cmd
@@ -656,13 +746,13 @@ def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypa
         update_receipt.record_pinned_post_swap(
             post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
         )
-        child_receipt = update_receipt.finalize_update_receipt("success")
+        child_receipt = update_receipt.finalize_update_receipt(child_outcome)
         assert child_receipt is not None
         child = json.loads(child_receipt.read_text(encoding="utf-8"))
     if ack_present:
         ack.write_text(json.dumps({
             "schema": 1, "correlation_id": intent["correlation_id"],
-            "outcome": "success", "finished_at": child["finished_at"],
+            "outcome": child_outcome, "finished_at": child["finished_at"],
             "receipt_path": str(child_receipt),
         }), encoding="utf-8")
     token = {"resume_needed": True}
@@ -680,7 +770,7 @@ def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypa
         update_cmd._hand_off_post_swap(SimpleNamespace(), gateway_mode=False,
                                       _windows_gateway_resume=token)
 
-    assert exc_info.value.code == (1 if ack_present is None else 0)
+    assert exc_info.value.code == (1 if ack_present is None or child_outcome == "partial" else 0)
     receipts = list((home / "logs" / "update_receipts").glob("update_*.json"))
     assert len(receipts) == 1
     if child_receipt is not None:

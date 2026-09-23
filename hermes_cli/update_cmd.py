@@ -1483,7 +1483,7 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
             record_failure("post-swap-child-did-not-consume-handoff")
         _finalize_receipt("failed", 'Update receipt finalize (pinned handoff) failed: %s')
         code = 1
-    elif pinned and child_outcome in {"failed", "refused"}:
+    elif pinned and child_outcome in {"partial", "failed", "refused"}:
         # The child already persisted the terminal receipt. Relay its truthful failure
         # without re-adopting or finalizing the detached receipt a second time.
         code = 2 if child_outcome == "refused" else 1
@@ -1702,12 +1702,13 @@ def _finish_pulled_update(
         pre_update_version=opts.pre_update_version)
     if not update_complete:
         record_failure("dependency-failure: post-update maintenance")
+    pinned_complete = update_complete and (not pinned or not node_failures)
 
     # Exit code *before* the restart: under --gateway this process lives in the gateway's
     # systemd cgroup and the systemctl-restart fallback SIGKILLs it (KillMode=mixed), so
     # the marker would never land and the new gateway's watcher would time out spuriously.
     if gateway_mode:
-        _write_gateway_update_exit_code(update_complete)
+        _write_gateway_update_exit_code(pinned_complete)
 
     if opts.no_gateway_restart:
         # Cron inside the gateway's own cgroup: restarting the fleet now would
@@ -1728,7 +1729,7 @@ def _finish_pulled_update(
         _resume_windows_gateways_and_merge_outcome(
             resume_outcome, _windows_gateway_resume, gateway_mode)
         _defer_fleet_restart_after_update(
-            update_complete=update_complete, resume_incomplete=resume_outcome.incomplete)
+            update_complete=pinned_complete, resume_incomplete=resume_outcome.incomplete)
         return
 
     _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)
@@ -1737,7 +1738,7 @@ def _finish_pulled_update(
         record_failure("restart-failure")
     _verify_fleet_after_update(
         _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
-        node_failures=node_failures, update_complete=update_complete)
+        node_failures=node_failures, update_complete=pinned_complete, pinned=pinned)
 
 
 def _cmd_update_impl(args, gateway_mode: bool):

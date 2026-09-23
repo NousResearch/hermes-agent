@@ -104,7 +104,7 @@ def _restarted_units_gone(scoped_units) -> bool:
     return True
 
 
-def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete):
+def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete, pinned=False):
     """Post-restart verification: legacy-unit warning, dashboard cleanup, stale serve
     probe, fleet version matrix, plan-vs-execution reconciliation, receipt finalize.
 
@@ -218,10 +218,11 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 if _ur._current is not None:
                     _ur._current.data["runtime_outcomes"] = _runtime_outcomes
 
+    partial = restart.incomplete or not update_complete or (pinned and bool(node_failures))
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
         _receipt_path = finalize_update_receipt(
-            "partial" if restart.incomplete or not update_complete else "success",
+            "partial" if partial else "success",
             fleet=_fleet_snapshot,
         )
         if _receipt_path is not None:
@@ -232,6 +233,10 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
     _fleet._clear_fleet_restart_pending_marker()
+    if pinned and partial:
+        # The fleet is current, but the pinned update still has unfinished build or
+        # maintenance work. Its terminal receipt and process exit must agree.
+        sys.exit(1)
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
     with _best_effort('Multiplex auto-migration after update failed: %s'):

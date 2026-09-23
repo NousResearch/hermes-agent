@@ -2746,6 +2746,39 @@ export interface Translations {
       done: string
     }
     markAllRead: string
+    filterMenu: {
+      grouping: string
+      ordering: string
+      show: string
+      filters: string
+      status: string
+      pullRequest: string
+      profile: string
+      project: string
+      resetToDefaults: string
+      expandAll: string
+      collapseAll: string
+      // Option labels (the per-row text inside each submenu).
+      updated: string
+      created: string
+      tokens: string
+      cost: string
+      manual: string
+      preview: string
+      pr: string
+      open: string
+      draft: string
+      merged: string
+      closed: string
+      noPr: string
+      needsInput: string
+      workingStatus: string
+      unread: string
+      draftStatus: string
+      idle: string
+      archived: string
+      inboxStyle: string
+    }
   }
 
   composer: {

@@ -3097,7 +3097,39 @@ export const zh = defineLocale({
       working: '进行中',
       done: '已完成'
     },
-    markAllRead: '全部标记为已读'
+    markAllRead: '全部标记为已读',
+    filterMenu: {
+      grouping: '分组方式',
+      ordering: '排序方式',
+      show: '显示',
+      filters: '筛选',
+      status: '状态',
+      pullRequest: '拉取请求',
+      profile: '配置文件',
+      project: '项目',
+      resetToDefaults: '恢复默认',
+      expandAll: '全部展开',
+      collapseAll: '全部折叠',
+      updated: '更新时间',
+      created: '创建时间',
+      tokens: '令牌数',
+      cost: '花费',
+      manual: '手动',
+      preview: '预览',
+      pr: 'PR',
+      open: '开启',
+      draft: '草稿',
+      merged: '已合并',
+      closed: '已关闭',
+      noPr: '无 PR',
+      needsInput: '需要输入',
+      workingStatus: '进行中',
+      unread: '未读',
+      draftStatus: '草稿',
+      idle: '空闲',
+      archived: '已归档',
+      inboxStyle: '收件箱样式'
+    }
   },
 
   composer: {
@@ -4363,7 +4395,8 @@ export const zh = defineLocale({
     sudoTitle: '管理员密码',
     sudoDesc: '输入 sudo 密码前，请先检查命令。密码会发送给执行命令的 agent，并在本次会话中缓存。',
     sudoCommandUnavailable: '此 agent 未提供命令。如果无法在对话中确认，请取消。',
-    sudoInstallDesc: 'Hermes 需要你的 sudo 密码，以在网关主机上安装 Bot Screen 软件包（TigerVNC + Xfce）。它只会发送到该主机。',
+    sudoInstallDesc:
+      'Hermes 需要你的 sudo 密码，以在网关主机上安装 Bot Screen 软件包（TigerVNC + Xfce）。它只会发送到该主机。',
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',

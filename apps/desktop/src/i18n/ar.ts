@@ -2123,6 +2123,38 @@ export const ar = defineLocale({
       ageDay: 'يوم',
       ageHour: 'ساعة',
       ageMin: 'دقيقة'
+    },
+    filterMenu: {
+      grouping: 'طريقة التجميع',
+      ordering: 'الترتيب',
+      show: 'إظهار',
+      filters: 'المرشحات',
+      status: 'الحالة',
+      pullRequest: 'طلب سحب',
+      profile: 'الملف الشخصي',
+      project: 'المشروع',
+      resetToDefaults: 'إعادة الافتراضيات',
+      expandAll: 'توسيع الكل',
+      collapseAll: 'طي الكل',
+      updated: 'تاريخ التحديث',
+      created: 'تاريخ الإنشاء',
+      tokens: 'الرموز',
+      cost: 'التكلفة',
+      manual: 'يدوي',
+      preview: 'معاينة',
+      pr: 'PR',
+      open: 'مفعّل',
+      draft: 'مسودة',
+      merged: 'تم دمجه',
+      closed: 'مغلق',
+      noPr: 'لا يوجد PR',
+      needsInput: 'يحتاج إدخالًا',
+      workingStatus: 'قيد التشغيل',
+      unread: 'غير مقروء',
+      draftStatus: 'مسودة',
+      idle: 'خامل',
+      archived: 'مؤرشف',
+      inboxStyle: 'نمط الوارد'
     }
   },
   composer: {
@@ -3229,7 +3261,8 @@ export const ar = defineLocale({
     sudoDesc:
       'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
     sudoCommandUnavailable: 'لم يقدّم هذا الوكيل الأمر. ألغِ الطلب إذا لم تتمكن من التحقق منه في المحادثة.',
-    sudoInstallDesc: 'يحتاج Hermes إلى كلمة مرور sudo لتثبيت حزم Bot Screen (TigerVNC + Xfce) على مضيف البوابة. تُرسل إلى ذلك المضيف فقط.',
+    sudoInstallDesc:
+      'يحتاج Hermes إلى كلمة مرور sudo لتثبيت حزم Bot Screen (TigerVNC + Xfce) على مضيف البوابة. تُرسل إلى ذلك المضيف فقط.',
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',
     secretDesc: 'أدخل القيمة المطلوبة لمتابعة المهمة.',

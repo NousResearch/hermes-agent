@@ -2436,6 +2436,38 @@ export const zhHant = defineLocale({
     statusDivider: {
       working: '進行中',
       done: '已完成'
+    },
+    filterMenu: {
+      grouping: '分組方式',
+      ordering: '排序方式',
+      show: '顯示',
+      filters: '篩選',
+      status: '狀態',
+      pullRequest: '拉取請求',
+      profile: '設定檔',
+      project: '專案',
+      resetToDefaults: '恢復預設值',
+      expandAll: '全部展開',
+      collapseAll: '收合全部',
+      updated: '更新時間',
+      created: '建立時間',
+      tokens: '詞元數',
+      cost: '花費',
+      manual: '手動',
+      preview: '預覽',
+      pr: 'PR',
+      open: '開啟',
+      draft: '草稿',
+      merged: '已合併',
+      closed: '已關閉',
+      noPr: '無 PR',
+      needsInput: '需要輸入',
+      workingStatus: '進行中',
+      unread: '未讀',
+      draftStatus: '草稿',
+      idle: '閒置',
+      archived: '已封存',
+      inboxStyle: '收件匣樣式'
     }
   },
 
@@ -3562,7 +3594,8 @@ export const zhHant = defineLocale({
     sudoTitle: '管理員密碼',
     sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
     sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
-    sudoInstallDesc: 'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
+    sudoInstallDesc:
+      'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',

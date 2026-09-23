@@ -2457,6 +2457,38 @@ export const ja = defineLocale({
     statusDivider: {
       working: '実行中',
       done: '完了'
+    },
+    filterMenu: {
+      grouping: 'グループ化',
+      ordering: '並び替え',
+      show: '表示',
+      filters: 'フィルター',
+      status: '状態',
+      pullRequest: 'プルリクエスト',
+      profile: 'プロファイル',
+      project: 'プロジェクト',
+      resetToDefaults: 'デフォルトに戻す',
+      expandAll: 'すべて展開',
+      collapseAll: 'すべて折りたたむ',
+      updated: '更新日時',
+      created: '作成日時',
+      tokens: 'トークン数',
+      cost: 'コスト',
+      manual: '手動',
+      preview: 'プレビュー',
+      pr: 'PR',
+      open: 'オン',
+      draft: '下書き',
+      merged: 'マージ済み',
+      closed: 'クローズ済み',
+      noPr: 'PRなし',
+      needsInput: '入力が必要',
+      workingStatus: '実行中',
+      unread: '未読',
+      draftStatus: '下書き',
+      idle: 'アイドル',
+      archived: 'アーカイブ済み',
+      inboxStyle: '受信箱スタイル'
     }
   },
 
@@ -3644,7 +3676,8 @@ export const ja = defineLocale({
       'sudo パスワードを入力する前にコマンドを確認してください。パスワードは実行するエージェントに送信され、このセッション中キャッシュされます。',
     sudoCommandUnavailable:
       'エージェントからコマンドが提供されていません。会話で確認できない場合はキャンセルしてください。',
-    sudoInstallDesc: 'Bot Screen のパッケージ（TigerVNC + Xfce）をゲートウェイホストにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
+    sudoInstallDesc:
+      'Bot Screen のパッケージ（TigerVNC + Xfce）をゲートウェイホストにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',

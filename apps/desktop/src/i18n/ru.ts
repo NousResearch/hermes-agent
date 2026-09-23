@@ -3018,6 +3018,7 @@ export const ru = defineLocale({
       stageAll: 'Добавить всё в индекс',
       viewAsTree: 'Вид деревом',
       viewAsList: 'Вид списком',
+      viewAsSmart: 'По важности',
       revert: 'Отменить',
       revertAll: 'Отменить всё',
       revertConfirm:

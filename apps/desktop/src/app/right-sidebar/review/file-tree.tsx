@@ -50,6 +50,7 @@ import { pickRevealLabel } from '../file-actions'
 
 import {
   buildReviewFlatList,
+  buildReviewSmartList,
   buildReviewTree,
   countAllNodes,
   flattenReviewRows,
@@ -113,7 +114,11 @@ export function ReviewFileTree() {
   const loading = useStore($reviewLoading)
   const mode = useStore($reviewTreeMode)
 
-  const tree = useMemo(() => (mode === 'tree' ? buildReviewTree(files) : buildReviewFlatList(files)), [files, mode])
+  const tree = useMemo(
+    () =>
+      mode === 'tree' ? buildReviewTree(files) : mode === 'smart' ? buildReviewSmartList(files) : buildReviewFlatList(files),
+    [files, mode]
+  )
 
   // Heavy is decided by the TOTAL node count, not the top-level row count: the
   // classic blow-up is ONE folder holding tens of thousands of untracked files,
@@ -390,6 +395,9 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
         aria-selected={selected}
         className={cn(
           'group/review-row row-hover flex h-6 select-none items-center gap-1.5 rounded-md pr-1.5 text-xs text-(--ui-text-secondary) hover:text-foreground',
+          // Smart order dims supporting files (tests, fixtures, lockfiles) so
+          // the change-explaining files read first, the way Amp mutes them.
+          node.muted && !selected && 'opacity-55',
           selected && 'bg-(--ui-row-active-background) text-foreground'
         )}
         draggable

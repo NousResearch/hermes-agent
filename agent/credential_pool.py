@@ -490,6 +490,11 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
 def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
     """Epoch when an exhausted entry may re-enter rotation, else ``None``.
 
+    Clamp rule: a sole non-billing credential's persisted absolute
+    ``last_error_reset_at`` is capped at the TTL bench, so a subscription-period
+    429 (monthly/weekly window) cannot bench it for the whole window (#119163).
+    Confirmed billing and pools with siblings keep the provider-stated reset.
+
     A persisted absolute ``last_error_reset_at`` is honoured while it stays
     inside the TTL bench. On a lone credential it may not: a subscription-period
     429 (monthly/weekly window) writes a reset days out, and with nothing to

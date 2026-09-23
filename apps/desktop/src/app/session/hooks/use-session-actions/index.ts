@@ -559,6 +559,12 @@ export function useSessionActions({
     async (dir: TileDock = 'right', options?: { cwd?: null | string; listed?: boolean }) => {
       const listed = options?.listed ?? true
 
+      // Unlisted fresh draft tile: reset $newChatProfile to null so stale quick-create
+      // or picker state does not leak into the new session (#91089).
+      if (!listed) {
+        $newChatProfile.set(null)
+      }
+
       try {
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), else the resolved new-session cwd

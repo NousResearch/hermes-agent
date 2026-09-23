@@ -520,6 +520,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const startSessionInWorkspace = useCallback(
     (path: null | string, options?: { openTab?: boolean }) => {
       if (options?.openTab && mainChatOccupied(activeSessionIdRef.current, $selectedStoredSessionId.get())) {
+        $newChatProfile.set(null)
         void openNewSessionTile('center', { cwd: path, listed: false })
 
         return
@@ -910,7 +911,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     },
     onNavigate: selectSidebarItem,
     onNewSessionInWorkspace: path => startSessionInWorkspace(path, { openTab: true }),
-    onNewSessionSplit: dir => void openNewSessionTile(dir),
+    onNewSessionSplit: dir => {
+      $newChatProfile.set(null)
+      void openNewSessionTile(dir)
+    },
     onPasteClipboardImage: opts => composer.pasteClipboardImage(opts),
     onPickFiles: () => void composer.pickContextPaths('file'),
     onPickFolders: () => void composer.pickContextPaths('folder'),

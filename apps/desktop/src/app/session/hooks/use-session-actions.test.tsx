@@ -91,7 +91,7 @@ function deferred<T>() {
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft' | 'openNewSessionTile'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -509,6 +509,33 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'analyst' })
+  })
+
+  it('resets $newChatProfile to null when opening an unlisted draft tile', async () => {
+    let handle: HarnessHandle | null = null
+    const requestGateway = vi.fn().mockResolvedValue({
+      info: { cwd: '/test' },
+      session_id: 'runtime-1',
+      stored_session_id: 'stored-1'
+    })
+
+    render(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        requestGateway={requestGateway}
+      />
+    )
+
+    $newChatProfile.set('analyst')
+    expect($newChatProfile.get()).toBe('analyst')
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { listed: false })
+    })
+
+    expect($newChatProfile.get()).toBeNull()
   })
 
   it('passes the default profile for single-profile users (backend resolves it to launch)', async () => {

@@ -192,6 +192,15 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
+    # Xiaomi MiMo: flat list rates, no peak/off-peak split and no separate cache-write rate
+    # (the prompt cache is implicit). The model page quotes ¥ and USD per million tokens;
+    # ``mimo-v2.6-flash`` keeps the V2.5 Flash price card. The cache-read column is what
+    # makes MiMo viable for long agent loops: a hit ($0.0028) is ~50x cheaper than a miss
+    # ($0.14), so a snapshot with only input/output overbills every cached turn ~50x.
+    ("xiaomi", "https://mimo.mi.com/models/en-US/mimo-v2.6-flash", "xiaomi-pricing-2026-09-22", {
+        "mimo-v2.6-flash": ("0.14", "0.28", "0.0028"),
+        "mimo-v2.6-pro": ("0.435", "0.87", "0.0036"),
+    }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),
     }),

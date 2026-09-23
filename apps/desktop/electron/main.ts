@@ -291,6 +291,7 @@ import { resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createIntroRevealWindowController } from './intro-reveal-window'
+import { CURL_TITLE_WRITE_OUT, parseCurlTitleResponse } from './link-title-curl'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -519,6 +520,7 @@ import { createStoreStrategy } from './updater/store-client'
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
+import { decodeWebText } from './web-text-decoder'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
@@ -5156,22 +5158,7 @@ function parseHtmlTitle(html) {
   return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
 }
 
-// `--write-out` trailer: `\n<mark><url_effective>` after the body.
-const URL_EFFECTIVE_MARK = 'hermes-url-effective:'
 const URL_EFFECTIVE_TAIL_BYTES = 4096
-
-function splitUrlEffective(stdout: string): { effectiveUrl: string; html: string } {
-  const at = stdout.lastIndexOf(`\n${URL_EFFECTIVE_MARK}`)
-
-  if (at < 0) {
-    return { effectiveUrl: '', html: stdout }
-  }
-
-  return {
-    effectiveUrl: stdout.slice(at + 1 + URL_EFFECTIVE_MARK.length).trim(),
-    html: stdout.slice(0, at)
-  }
-}
 
 function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
   return new Promise(resolve => {
@@ -5203,7 +5190,7 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; ti
       // Arrival URL after redirects, on its own line after the body: a sign-in
       // wall is proven from where curl landed even when the page has no markup id.
       '--write-out',
-      `\n${URL_EFFECTIVE_MARK}%{url_effective}`,
+      CURL_TITLE_WRITE_OUT,
       url
     ]
 
@@ -5234,12 +5221,10 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; ti
         return resolve({ authWall: false, title: '' })
       }
 
-      const body = Buffer.concat(chunks)
-
-      // The trailer is inside `body` unless the budget cut it off; then it is in `tail`.
-      const { effectiveUrl, html } = splitUrlEffective(
-        (bytes >= TITLE_BYTE_BUDGET ? Buffer.concat([body, tail]) : body).toString('utf8')
-      )
+      // The trailer is inside `bodyWithTrailer` unless the budget cut it off;
+      // then it is still present in the separately retained tail.
+      const bodyWithTrailer = Buffer.concat(chunks)
+      const { effectiveUrl, html } = parseCurlTitleResponse(bodyWithTrailer, tail)
 
       const title = parseHtmlTitle(html)
 
@@ -5508,7 +5493,13 @@ const faviconIo: FaviconIo = {
   fetchText: async url => {
     const response = await faviconFetch(url, 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5')
 
-    return response.ok ? (await response.text()).slice(0, TITLE_BYTE_BUDGET * 2) : ''
+    if (!response.ok) {
+      return ''
+    }
+
+    const bytes = new Uint8Array(await response.arrayBuffer()).subarray(0, TITLE_BYTE_BUDGET * 2)
+
+    return decodeWebText(bytes, response.headers.get('content-type') ?? '')
   }
 }
 

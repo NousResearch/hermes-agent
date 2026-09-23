@@ -243,6 +243,12 @@ class TestBuildOAuthAuth:
         assert provider is not None
         assert provider.context.client_metadata.scope == "read write admin"
 
+        # The SDK selects the provider's entire scopes_supported list after a
+        # 401. Hermes must restore the explicit config scope before consent.
+        provider.context.client_metadata.scope = "read write admin delete"
+        provider._restore_configured_scope()
+        assert provider.context.client_metadata.scope == "read write admin"
+
     @pytest.mark.asyncio
     async def test_token_exchange_includes_secret_for_dcr_secret_client(self, tmp_path, monkeypatch):
         from mcp.shared.auth import OAuthClientInformationFull

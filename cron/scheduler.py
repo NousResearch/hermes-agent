@@ -515,8 +515,9 @@ from cron.jobs import (
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron.executions import (
-    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
-    get_execution, mark_execution_handoff_pending, mark_execution_running,
+    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution,
+    discard_unstarted_execution, finish_execution, get_execution,
+    mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
@@ -3987,8 +3988,10 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     # Claim only when the worker actually starts, so a queued lease can't expire first.
     claimed = claim_job_for_fire(job["id"], return_job=True)
     if not claimed:
-        finish_execution(
-            job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
+        if not discard_unstarted_execution(job["execution_id"]):
+            logger.warning(
+                "Job '%s' lost its fire claim but its unstarted execution row "
+                "could not be discarded", job.get("name", job["id"]))
         return True
     # CAS returns the persisted record; bool fallback only for older test doubles.
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)

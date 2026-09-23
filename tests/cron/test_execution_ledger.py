@@ -49,6 +49,47 @@ def test_execution_can_be_loaded_by_exact_attempt_id(monkeypatch, tmp_path):
     assert executions.get_execution("missing") is None
 
 
+def test_unstarted_local_claim_can_be_discarded_without_a_false_failure(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("contended-job", source="builtin")
+
+    assert executions.discard_unstarted_execution(record["id"])
+    assert executions.get_execution(record["id"]) is None
+    assert executions.list_executions(job_id="contended-job") == []
+
+
+def test_discard_refuses_running_handoff_and_foreign_claims(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    running = executions.create_execution("running", source="builtin")
+    executions.mark_execution_running(running["id"])
+    assert not executions.discard_unstarted_execution(running["id"])
+
+    handoff = executions.create_execution("handoff", source="builtin")
+    executions.mark_execution_handoff_pending(handoff["id"])
+    assert not executions.discard_unstarted_execution(handoff["id"])
+
+    foreign = executions.create_execution("foreign", source="builtin")
+    monkeypatch.setattr(executions, "_PROCESS_ID", "other-process")
+    assert not executions.discard_unstarted_execution(foreign["id"])
+
+
+def test_fire_claim_loser_is_not_recorded_as_a_failed_run(monkeypatch):
+    import cron.scheduler as scheduler
+
+    discarded = []
+    monkeypatch.setattr(scheduler, "claim_job_for_fire", lambda *_a, **_kw: False)
+    monkeypatch.setattr(
+        scheduler, "discard_unstarted_execution", lambda execution_id: discarded.append(execution_id) or True)
+    monkeypatch.setattr(
+        scheduler, "finish_execution",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("false failure row")))
+
+    assert scheduler._process_due_job(
+        {"id": "contended", "name": "contended", "execution_id": "exec-1"},
+        adapters=None, loop=None, verbose=False)
+    assert discarded == ["exec-1"]
+
+
 def test_fresh_external_handoff_is_not_recovered_before_worker_adopts(
     monkeypatch, tmp_path
 ):

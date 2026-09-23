@@ -1011,7 +1011,8 @@ class SlackAdapter(BasePlatformAdapter):
     supports_inchannel_continuable = True
 
     # Bounded-cache caps (instance assignment in tests overrides per adapter).
-    _USER_NAME_CACHE_MAX = _CHANNEL_NAME_CACHE_MAX = _DM_CONVERSATION_CACHE_MAX = 5000
+    _USER_NAME_CACHE_MAX = _CHANNEL_NAME_CACHE_MAX = _CHANNEL_SESSION_CACHE_MAX = 5000
+    _DM_CONVERSATION_CACHE_MAX = 5000
     _PROCESSED_MESSAGE_TS_MAX = _BOT_TS_MAX = _MENTIONED_THREADS_MAX = 5000
     _ASSISTANT_THREADS_MAX = _AGENT_VIEW_CONTEXTS_MAX = _THREAD_REHYDRATION_CHECKED_MAX = 5000
     _REACTING_MESSAGE_IDS_MAX = _TITLED_ASSISTANT_THREADS_MAX = 5000
@@ -1047,6 +1048,9 @@ class SlackAdapter(BasePlatformAdapter):
         # posts lacking bot_id/bot_message markers; DM channel IDs are per-user, hence bounded).
         self._user_name_cache: Dict[Tuple[str, str], str] = {}
         self._channel_name_cache: Dict[Tuple[str, str], str] = {}
+        # Confirmed ``is_channel_agent_enabled`` conversations are Slack Code session channels.
+        # Cache only successful API reads: a transient lookup failure must preserve normal routing.
+        self._channel_session_cache: Dict[Tuple[str, str], bool] = {}
         self._user_is_bot_cache: Dict[Tuple[str, str], bool] = {}
         # channel_id → owning team_id (bounded; re-learned on the next event, _get_client falls
         # back to primary). Kept only while exactly one workspace claims the id — _channel_teams
@@ -2595,8 +2599,7 @@ class SlackAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=ts)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Show a thread status via assistant.threads.setStatus.
-        Needs assistant:write or chat:write scope; auto-clears on reply."""
+        """Show a thread or Slack Code channel session status; auto-clears on reply."""
         if self._suppressed_ignored(chat_id, "typing/status in", level=logging.DEBUG):
             return
         if not self._app:
@@ -2607,10 +2610,13 @@ class SlackAdapter(BasePlatformAdapter):
             # message's own ts, and setStatus on it would open an assistant thread prematurely.
             thread_ts = self._resolve_thread_ts(
                 reply_to=metadata.get("message_id"), metadata=metadata)
-        if not thread_ts:
-            return  # Can only set status in a thread context
         team_id = self._metadata_team_id(metadata) or self._channel_team.get(chat_id, "")
-        status_key = self._workspace_thread_key(team_id, chat_id, str(thread_ts))
+        is_channel_session = not thread_ts and _sdk_supports_agent_sessions() and await self._is_channel_session(
+            chat_id, team_id)
+        if not thread_ts and not is_channel_session:
+            return
+        status_key = self._workspace_thread_key(
+            team_id, chat_id, str(thread_ts or "__channel_session__"))
         _status_started: Optional[float] = None
         if status_key:
             # Keep the first start time across _keep_typing refreshes so long turns show elapsed
@@ -2627,6 +2633,7 @@ class SlackAdapter(BasePlatformAdapter):
                 _status_started = time.monotonic()
             self._active_status_threads[status_key] = {
                 "thread_ts": str(thread_ts), "team_id": str(team_id) if team_id else "",
+                "channel_session": is_channel_session,
                 "started": _status_started}
             # Evict oldest-thread-first (key[2] is the thread ts) so the newest survives.
             self._evict_oldest_by_ts(
@@ -2635,14 +2642,19 @@ class SlackAdapter(BasePlatformAdapter):
         _status = getattr(self, "_status_text", {}).get(str(chat_id)) or getattr(
             self.config, "typing_status_text", None)
         _status = _status or self._default_status_text(_status_started)
-        await self._set_thread_status(chat_id, team_id, thread_ts, _status, "failed")
+        await self._set_thread_status(
+            chat_id, team_id, thread_ts if not is_channel_session else None,
+            "processing" if is_channel_session else _status, "failed")
 
     async def _set_thread_status(
-        self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        self, chat_id: str, team_id: str, thread_ts: Optional[str], status: str, fail_label: str) -> None:
+        """Set a thread status, or omit ``thread_ts`` for a Slack Code channel session."""
         try:
             _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
-            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
+            kwargs: Dict[str, str] = {"channel_id": chat_id, "status": status}
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+            await _set_status(**kwargs)
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
 
@@ -2687,13 +2699,16 @@ class SlackAdapter(BasePlatformAdapter):
         active = active or {}
         thread_ts = active.get("thread_ts", "")
         team_id = requested_team_id or active.get("team_id", "")
+        is_channel_session = bool(active.get("channel_session"))
         if not thread_ts and requested_thread_ts and not ambiguous_tracked:
             # Untracked (restart/eviction) but the caller named the exact thread: clear anyway so
             # a stuck status is always dismissable; skipped when several workspaces track it.
             thread_ts = requested_thread_ts
-        if not thread_ts:
+        if not thread_ts and not is_channel_session:
             return
-        await self._set_thread_status(chat_id, team_id, thread_ts, "", "clear failed")
+        await self._set_thread_status(
+            chat_id, team_id, thread_ts if not is_channel_session else None,
+            "closed" if is_channel_session else "", "clear failed")
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Each top-level DM reply thread is its own session (default True; set
@@ -3230,6 +3245,32 @@ class SlackAdapter(BasePlatformAdapter):
         self._channel_name_cache[cache_key] = name
         self._trim_oldest_dict_entries(self._channel_name_cache, self._CHANNEL_NAME_CACHE_MAX)
         return name
+
+    async def _is_channel_session(self, channel_id: str, team_id: str = "") -> bool:
+        """Whether Slack identifies this conversation as an agent-owned channel session.
+
+        Slack Code channels expose ``is_channel_agent_enabled`` through
+        ``conversations.info``.  Do not infer this from a channel name or a missing thread: an
+        uncertain lookup keeps ordinary channel mention and thread semantics unchanged.
+        """
+        if not self._app or not channel_id:
+            return False
+        team_id = str(team_id or self._channel_team.get(channel_id, ""))
+        cache_key = (team_id, str(channel_id))
+        cached = self._channel_session_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            response = await self._get_client(
+                channel_id, team_id=team_id or None).conversations_info(channel=channel_id)
+            channel = _slack_response_payload(response).get("channel") or {}
+        except Exception as e:
+            logger.debug("[Slack] conversations.info session lookup failed for %s: %s", channel_id, e)
+            return False
+        is_session = bool(channel.get("is_channel_agent_enabled"))
+        self._channel_session_cache[cache_key] = is_session
+        self._trim_oldest_dict_entries(self._channel_session_cache, self._CHANNEL_SESSION_CACHE_MAX)
+        return is_session
 
     async def _humanize_user_mentions(self, text: str, chat_id: str = "", team_id: str = "") -> str:
         """``<@UID>`` → ``@DisplayName`` (opaque IDs make the agent confuse a human's mention with
@@ -4172,7 +4213,9 @@ class SlackAdapter(BasePlatformAdapter):
         return text
 
     def _session_thread_ts(
-        self, event: dict, ts: str, is_dm: bool, assistant_meta: Dict[str, str]) -> Optional[str]:
+        self, event: dict, ts: str, is_dm: bool, assistant_meta: Dict[str, str],
+        is_channel_session: bool = False,
+    ) -> Optional[str]:
         """thread_ts for session keying. DMs: each top-level thread is its own session unless
         ``dm_top_level_threads_as_sessions: false``. Reaction handoffs reply top-level, never under
         the synthetic reaction ts. Channels: real reply → per-thread; top-level with
@@ -4182,6 +4225,8 @@ class SlackAdapter(BasePlatformAdapter):
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
             return thread_ts
+        if is_channel_session:
+            return None
         if event.get("_hermes_no_thread_response"):
             return event.get("thread_ts") or None
         # Reaction handoff into a configured target channel (#45265): the response should be a new top-level
@@ -4497,7 +4542,9 @@ class SlackAdapter(BasePlatformAdapter):
         # the runner's own auth check only runs after MessageEvent is built.
         if self._early_reject_unauthorized(user_id, channel_id, is_dm):
             return
-        thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
+        is_channel_session = not is_dm and await self._is_channel_session(channel_id, team_id)
+        thread_ts = self._session_thread_ts(
+            event, ts, is_dm, assistant_meta, is_channel_session=is_channel_session)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks.
         # See #52387.
@@ -4513,7 +4560,7 @@ class SlackAdapter(BasePlatformAdapter):
         if await self._peer_bot_drop(event, user_id, bot_uid, channel_id, team_id, is_mentioned):
             return
         if (
-            not is_one_to_one_dm and bot_uid and not await self._channel_gate_allows(
+            not is_one_to_one_dm and not is_channel_session and bot_uid and not await self._channel_gate_allows(
             channel_id=channel_id, routing_text=routing_text, bot_uid=bot_uid,
             is_mentioned=is_mentioned, is_thread_reply=is_thread_reply,
             event_thread_ts=event_thread_ts, user_id=user_id, team_id=team_id, is_dm=is_dm,

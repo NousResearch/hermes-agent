@@ -106,6 +106,13 @@ import { createDesktopExternalOpenRuntime } from './desktop-external-open-runtim
 import { registerDesktopFileIpc } from './desktop-file-ipc'
 import { createDesktopGatewayReadinessRuntime } from './desktop-gateway-readiness-runtime'
 import { createDesktopHostAttachRuntime } from './desktop-host-attach-runtime'
+import {
+  createDesktopMediaProtocolRuntime,
+  ensureWslWindowsFonts as ensureWslWindowsFontsImpl,
+  makeDashboardReadyFile as makeDashboardReadyFileImpl,
+  recentHermesLog as recentHermesLogImpl,
+  writeFileAtomic
+} from './desktop-host-utilities'
 import { createDesktopInstallHomeRuntime } from './desktop-install-home-runtime'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { createDesktopLocalRuntime } from './desktop-local-runtime'
@@ -602,48 +609,7 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 function registerMediaProtocol() {
-  const handler = createMediaProtocolHandler({
-    ensureRemoteBearer: baseUrl => ensureNativeAccessToken(baseUrl),
-    // Answer local files ourselves: Electron's file:// loader ignores Range and
-    // returns the whole body as 200 without Accept-Ranges, which makes <video>
-    // unseekable (seekable=[0,0]).
-    fetchLocal: fetchLocalMedia,
-    fetchRemote: (url, headers, method) =>
-      electronNet.fetch(url, {
-        bypassCustomProtocolHandlers: true,
-        credentials: 'omit',
-        headers,
-        method
-      }),
-    fetchRemoteWithCookies: (url, headers, method) => {
-      const oauthSession = getOauthSessionForUrl(url)
-
-      if (!oauthSession) {
-        throw new Error('OAuth session partition is unavailable.')
-      }
-
-      return oauthSession.fetch(url, {
-        bypassCustomProtocolHandlers: true,
-        credentials: 'include',
-        headers,
-        method
-      })
-    },
-    resolveLocalFile: async filePath => {
-      const { resolvedPath } = await resolveReadableFileForIpc(filePath, { purpose: 'Media stream' })
-
-      return resolvedPath
-    },
-    // Claim-guarded (#90812): a media stream load can race a renderer's own
-    // reconnect dial for the same (connectionId, profile) scope; coalescing
-    // here avoids bootstrapping a second SSH tunnel / remote dashboard.
-    resolveRemoteConnection: ({ connectionId, profile }) =>
-      backendDialClaims.run(backendScopeKey(connectionId, profile), () =>
-        connectionId ? ensureRegistryBackend(connectionId, profile) : ensureBackend(profile)
-      )
-  })
-
-  protocol.handle(MEDIA_PROTOCOL, handler)
+  return desktopMediaProtocolRuntime.registerMediaProtocol()
 }
 
 let mainWindow = null
@@ -806,50 +772,7 @@ const { openExternalUrl, openPreviewInBrowser } = createDesktopExternalOpenRunti
 })
 
 function ensureWslWindowsFonts() {
-  if (!IS_WSL) {
-    return
-  }
-
-  const fontsDir = ['/mnt/c/Windows/Fonts', '/mnt/c/windows/fonts'].find(candidate => {
-    try {
-      return fs.statSync(candidate).isDirectory()
-    } catch {
-      return false
-    }
-  })
-
-  if (!fontsDir) {
-    return
-  }
-
-  try {
-    const confDir = path.join(app.getPath('home'), '.config', 'fontconfig', 'conf.d')
-    const confPath = path.join(confDir, '99-hermes-wsl-windows-fonts.conf')
-    let existing = ''
-
-    try {
-      existing = fs.readFileSync(confPath, 'utf8')
-    } catch {
-      existing = ''
-    }
-
-    if (existing.includes(fontsDir)) {
-      return
-    }
-
-    fs.mkdirSync(confDir, { recursive: true })
-    fs.writeFileSync(
-      confPath,
-      `<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <dir>${fontsDir}</dir>\n</fontconfig>\n`
-    )
-    rememberLog(`[fonts] wired WSL Windows fonts for renderer: ${fontsDir}`)
-
-    const cache = spawn('fc-cache', ['-f', fontsDir], { detached: true, stdio: 'ignore' })
-    cache.on('error', () => undefined)
-    cache.unref()
-  } catch (error) {
-    rememberLog(`[fonts] WSL font setup skipped: ${error.message}`)
-  }
+  return ensureWslWindowsFontsImpl({ isWsl: IS_WSL, fs, path, app, spawn, rememberLog })
 }
 
 function fileExists(filePath) {
@@ -943,10 +866,7 @@ const {
 // needed.
 
 function makeDashboardReadyFile() {
-  const dir = path.join(app.getPath('userData'), 'backend-ready')
-  fs.mkdirSync(dir, { recursive: true })
-
-  return path.join(dir, `dashboard-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.json`)
+  return makeDashboardReadyFileImpl(app.getPath('userData'))
 }
 
 const { resolveGitBinary, resolveGhBinary } = createExecutableDiscoveryRuntime({
@@ -958,15 +878,7 @@ const { resolveGitBinary, resolveGhBinary } = createExecutableDiscoveryRuntime({
 })
 
 function recentHermesLog() {
-  return hermesLog.slice(-20).join('\n')
-}
-
-// Atomic file write: temp + rename (atomic on all platforms). Prevents
-// partial writes on crash/power loss that corrupt JSON config files.
-function writeFileAtomic(targetPath, data, encoding?: BufferEncoding) {
-  const tmp = targetPath + '.tmp'
-  fs.writeFileSync(tmp, data, encoding)
-  fs.renameSync(tmp, targetPath)
+  return recentHermesLogImpl(hermesLog)
 }
 
 const { readWindowState, schedulePersistWindowState, readZoomState, writeZoomState, getAppIconPath,
@@ -1916,6 +1828,21 @@ const { ensureBackend, ensureRegistryBackend, connectRegistryBackend } = createD
   teardownFailedLocalBackend,
   teardownSshConnection,
   waitForHermes
+})
+
+const desktopMediaProtocolRuntime = createDesktopMediaProtocolRuntime({
+  createMediaProtocolHandler,
+  protocol,
+  MEDIA_PROTOCOL,
+  ensureNativeAccessToken,
+  fetchLocalMedia,
+  electronNet,
+  getOauthSessionForUrl,
+  resolveReadableFileForIpc,
+  backendDialClaims,
+  backendScopeKey,
+  ensureRegistryBackend,
+  ensureBackend
 })
 
 const { managedSshConfig, updateManagedSshConnection, resumeManagedSshRecoveries } =

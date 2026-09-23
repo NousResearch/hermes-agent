@@ -156,8 +156,9 @@ def spawn_background_process(
         _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
     )
 
+    from tools.terminal_tool import cwd_record_key
     effective_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        workdir=workdir, default_cwd=cwd, session_key=cwd_record_key(task_id, session_key), env_type=env_type,
     )
     try:
         proc_session = _spawn(

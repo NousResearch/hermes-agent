@@ -348,6 +348,25 @@ def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) 
         _container_aliases[child_task_id] = str(parent_task_id or "default")
 
 
+def cwd_record_key(task_id: Optional[str], session_key: str) -> str:
+    """Key of the cwd record a terminal command reads and writes.
+
+    A delegate_task child inherits the parent's session key through
+    ``contextvars.copy_context()``, so keying its cwd by ``session_key`` made the
+    parent and every child share ONE record: a child's ``cd`` moved the parent
+    and its siblings, and the per-child record seeded at spawn (the isolated
+    worktree path) was never read. Children are exactly the task ids registered
+    in the container-alias table; they key their cwd by their own task id. Every
+    other caller keeps ``session_key``. Routing, approvals and notifications
+    still use ``session_key``.
+    """
+    if task_id:
+        with _container_alias_lock:
+            if task_id in _container_aliases:
+                return task_id
+    return session_key
+
+
 def _resolve_container_alias(task_id: str) -> str:
     """Follow the child→parent alias chain (cycle-safe) for *task_id*."""
     seen = set()
@@ -1122,7 +1141,8 @@ def _run_foreground(
     for retry_count in range(max_retries + 1):
         try:
             command_cwd = _resolve_command_cwd(
-                workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
+                workdir=workdir, default_cwd=plan.cwd, session_key=cwd_record_key(task_id, session_key),
+                env_type=env_type,
             )
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;

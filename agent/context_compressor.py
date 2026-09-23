@@ -1541,8 +1541,17 @@ _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
 def _is_image_part(part: Any) -> bool:
-    """True if ``part`` is an image block (``image_url``, ``input_image``, or ``image``)."""
-    return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+    """True if ``part`` is an image block (``image_url``, ``input_image``, or ``image``).
+
+    Only a SCALAR ``type`` can ever match: JSON-Schema nodes may carry a sub-schema
+    (``properties.type``) or a multi-type list under the "type" key, both unhashable —
+    the bare frozenset membership raised TypeError and permanently broke compression
+    for the session (#104793/#104795/#107628; same guard as chat_completion_helpers).
+    """
+    if not isinstance(part, dict):
+        return False
+    ptype = part.get("type")
+    return isinstance(ptype, str) and ptype in _IMAGE_PART_TYPES
 
 
 def _content_has_images(content: Any) -> bool:
@@ -1610,13 +1619,20 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
 
 
 def _summary_part_text(part: Any) -> str:
-    """Summarizer-facing text of one content part; non-text parts keep a marker so content is known to exist."""
+    """Summarizer-facing text of one content part; non-text parts keep a marker so content is known to exist.
+
+    Non-scalar ``type`` values (JSON-Schema sub-schemas, multi-type lists) fall to the
+    generic marker instead of raising TypeError on the frozenset membership test
+    (#107628); ``f"{ptype or 'attachment'}"`` renders them harmlessly.
+    """
     if isinstance(part, str):
         return part
-    ptype = part.get("type")
+    ptype = part.get("type") if isinstance(part, dict) else None
     if ptype == "text":
         return part.get("text", "")
-    return _image_part_label(part) if ptype in _IMAGE_PART_TYPES else f"[{ptype or 'attachment'}]"
+    if isinstance(ptype, str) and ptype in _IMAGE_PART_TYPES:
+        return _image_part_label(part)
+    return f"[{ptype or 'attachment'}]"
 
 
 def _image_part_label(part: Dict[str, Any]) -> str:

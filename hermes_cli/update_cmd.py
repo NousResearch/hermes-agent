@@ -17,7 +17,6 @@ import time as _time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli import update_handoff as _update_handoff
@@ -1084,15 +1083,16 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         no_gateway_restart=no_gateway_restart)
 
 
-def _begin_update_receipt_and_plan(args):
+def _begin_update_receipt_and_plan(args, *, begin_receipt=True):
     """Open the receipt, snapshot the fleet, refuse on Windows shim holders. Returns the
     pre-update plan (None if the probe failed); ``sys.exit(2)`` when a non-gateway hermes.exe
     holds the venv shim."""
     # Structured receipt: record what this run discovers/does/skips so silent failures are diagnosable.
-    with _best_effort('Update receipt unavailable: %s'):
-        # See #74973, #81193, #85753, #88848, #91277.
-        from hermes_cli.update_receipt import begin_update_receipt
-        begin_update_receipt()
+    if begin_receipt:
+        with _best_effort('Update receipt unavailable: %s'):
+            # See #74973, #81193, #85753, #88848, #91277.
+            from hermes_cli.update_receipt import begin_update_receipt
+            begin_update_receipt()
 
     # Plan phase: snapshot runtimes/supervisors/version (read-only; probe failure records
     # nothing). Re-read AFTER the restart phase to reconcile — the plan is the worklist.
@@ -1421,7 +1421,7 @@ def _sibling_snapshots_module():
 
 
 def _cmd_pinned_update_impl(args, gateway_mode: bool):
-    """Apply one admitted target, then hand its immutable intent to the new tree."""
+    """Prepare the same safety state as an ordinary update, then apply one exact target."""
     from hermes_cli.update_receipt import (
         begin_update_receipt, finalize_update_receipt, record_refusal, record_step,
     )
@@ -1436,9 +1436,45 @@ def _cmd_pinned_update_impl(args, gateway_mode: bool):
     begin_update_receipt(intent=_pinned_intent(
         request, branch=receipt_branch, correlation_id=correlation_id,
     ))
+    _windows_gateway_resume = None
     try:
+        opts = _resolve_update_options(args, gateway_mode)
+        _pre_update_plan = _begin_update_receipt_and_plan(args, begin_receipt=False)
+        if _pre_update_plan is None or _pre_update_plan.expected_sha != request.current_sha:
+            raise TargetAdmissionError("pre-update-plan-unavailable")
+        _sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS = {}
+        pre_update_snapshot_id = _m()._run_pre_update_backup(args)
+        _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
+        if _resolve_pre_update_backup_mode(args) != "off":
+            if not pre_update_snapshot_id:
+                raise TargetAdmissionError("pre-update-backup-unavailable")
+            from hermes_cli.backup import _sibling_profile_homes
+            expected = {name for name, _home in _sibling_profile_homes(get_hermes_home())}
+            if expected != set(_sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS):
+                raise TargetAdmissionError("pre-update-sibling-backup-incomplete")
+        _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
+        if _windows_gateway_resume:
+            import atexit as _atexit
+            _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
+        if _m()._is_windows() and not getattr(args, "force_venv", False):
+            _clear_windows_venv_holders_or_exit(args, gateway_mode, _windows_gateway_resume)
+        had_desktop_app_before_update = _desktop_app_present(_m().PROJECT_ROOT / "apps" / "desktop")
         result = apply_pinned_target(
             _m().PROJECT_ROOT, request, branch=requested_branch
+        )
+        intent = _pinned_intent(request, branch=result.branch, correlation_id=correlation_id)
+        with suppress(Exception):
+            from hermes_cli.update_receipt import _current
+            if _current is not None:
+                _current.set_intent(intent)
+        record_step("pinned_apply", True, f"post_sha={result.target_sha}")
+        _hand_off_post_swap(
+            args, swap="pinned-git", branch=result.branch, pre_pull_sha=result.prior_sha,
+            is_fork=False, opts=opts, gateway_mode=gateway_mode,
+            had_desktop_app_before_update=had_desktop_app_before_update,
+            pre_update_snapshot_id=pre_update_snapshot_id,
+            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
+            target_request=request, correlation_id=correlation_id,
         )
     except TargetAdmissionError as exc:
         record_step("pinned_admission", False, exc.reason)
@@ -1448,28 +1484,15 @@ def _cmd_pinned_update_impl(args, gateway_mode: bool):
             _write_gateway_update_exit_code(False)
         print(f"✗ Pinned update refused: {exc}")
         raise SystemExit(2)
-
-    intent = _pinned_intent(request, branch=result.branch, correlation_id=correlation_id)
-    with suppress(Exception):
-        from hermes_cli.update_receipt import _current
-        if _current is not None:
-            _current.set_intent(intent)
-    record_step("pinned_apply", True, f"post_sha={result.target_sha}")
-    # Do not run legacy branch/stash/backup preparation in the pinned parent.
-    # The post-swap child resolves its own tail options from the immutable argv
-    # and payload after it imports the target tree.
-    opts = SimpleNamespace(
-        pre_update_version=None,
-        active_lazy_features=None,
-        active_tool_dependencies=None,
-    )
-    _hand_off_post_swap(
-        args, swap="pinned-git", branch=result.branch, pre_pull_sha=result.prior_sha,
-        is_fork=False, opts=opts, gateway_mode=gateway_mode,
-        had_desktop_app_before_update=False, pre_update_snapshot_id=None,
-        _pre_update_plan=None, _windows_gateway_resume=None,
-        target_request=request, correlation_id=correlation_id,
-    )
+    except SystemExit as exc:
+        if exc.code == 2:
+            record_refusal("pre-update-safety-refused")
+            finalize_update_receipt("refused", stop_reason="pre-update-safety-refused")
+            if gateway_mode:
+                _write_gateway_update_exit_code(False)
+        raise
+    finally:
+        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 
 
 def _hand_off_post_swap(args, **payload_kwargs) -> None:
@@ -1498,8 +1521,6 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
     token = payload_kwargs.get("_windows_gateway_resume")
     pinned = bool(payload.get("pinned_intent"))
     detached = bool(payload.get("_handoff_detached"))
-    if token and code is not None:
-        token["resume_needed"] = False
     correlation_id = payload.get("correlation_id") or (payload.get("pinned_intent") or {}).get("correlation_id")
     from hermes_cli.update_receipt import read_finalized_receipt, read_handoff_ack
     expected_intent = payload.get("pinned_intent") if pinned else None
@@ -1512,6 +1533,8 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
     ) if pinned else None
     child_outcome = (ack or finalized or {}).get("outcome")
     child_did_not_consume = not bool(ack or finalized)
+    if token and code is not None and (not pinned or not child_did_not_consume or detached):
+        token["resume_needed"] = False
     if code is None or (pinned and code != 0 and child_did_not_consume):
         if payload["receipt"]:
             resume_update_receipt(payload["receipt"])
@@ -1578,7 +1601,10 @@ def _run_post_swap_phase(args, gateway_mode: bool) -> None:
     # before adoption, the parent can safely resume the still-detached receipt.
     with suppress(OSError):
         Path(args.post_swap).unlink()
-    _execute_post_swap(payload, args, gateway_mode)
+    try:
+        _execute_post_swap(payload, args, gateway_mode)
+    finally:
+        _m()._resume_windows_gateways_after_update(payload.get("windows_gateway_resume"))
 
 
 def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:

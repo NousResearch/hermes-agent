@@ -388,11 +388,12 @@ def test_post_swap_refuses_source_changed_between_argv_and_handoff(tmp_path, mon
     assert called == []
 
 
-def test_pinned_command_carries_resulting_branch_into_handoff_without_legacy_prepare(
+def test_pinned_command_prepares_safety_before_apply_and_carries_handoff(
     tmp_path, monkeypatch
 ):
     from hermes_cli import update_cmd
     from hermes_cli.update_target import PinnedApplyResult
+    from hermes_cli.update_inventory import UpdatePlan
 
     request = TargetRequest(
         "a" * 40, INSTALL_ID, "b" * 40,
@@ -403,37 +404,137 @@ def test_pinned_command_carries_resulting_branch_into_handoff_without_legacy_pre
     )
     args = SimpleNamespace(target_request=request, branch=None, post_swap=None, gateway=False)
     captured = {}
+    events = []
+    plan = UpdatePlan(expected_sha=request.current_sha)
+    token = {"resume_needed": True}
+    opts = update_cmd._UpdateOptions(
+        active_lazy_features=["lazy-before"], active_tool_dependencies=["tool-before"],
+        pre_update_version="before", gw_input_fn=None, assume_yes=False,
+        keep_stash=False, switch_branch=False, discard_local_changes=False,
+    )
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     update_receipt._current = None
     monkeypatch.setattr(
-        update_cmd, "_m", lambda: SimpleNamespace(PROJECT_ROOT=tmp_path)
+        update_cmd, "_m", lambda: SimpleNamespace(
+            PROJECT_ROOT=tmp_path,
+            _run_pre_update_backup=lambda _args: events.append("backup") or "snapshot-before",
+            _pause_windows_gateways_for_update=lambda: events.append("pause") or token,
+            _resume_windows_gateways_after_update=lambda value: events.append("resume")
+            if value and value.get("resume_needed") else None,
+            _is_windows=lambda: sys.platform == "win32",
+        )
     )
-    monkeypatch.setattr(update_cmd, "current_branch", lambda _root: "release/1")
+    monkeypatch.setattr(
+        update_cmd, "_resolve_update_options",
+        lambda *_args: events.append("options") or opts,
+    )
+    monkeypatch.setattr(
+        update_cmd, "_begin_update_receipt_and_plan",
+        lambda _args, **kwargs: events.append("plan") or plan,
+    )
+    monkeypatch.setattr(update_cmd, "_resolve_pre_update_backup_mode", lambda _args: "quick")
+    monkeypatch.setattr(update_cmd, "_desktop_app_present", lambda _dir: events.append("desktop") or True)
+    monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", lambda *_args: events.append("holders"))
+    monkeypatch.setattr("atexit.register", lambda *_args: None)
     monkeypatch.setattr(
         update_cmd,
         "apply_pinned_target",
-        lambda _root, _request, branch=None: PinnedApplyResult(
-            "applied", request.current_sha, request.revision, "release/1", "origin"
-        ),
+        lambda _root, _request, branch=None: events.append("apply") or
+        PinnedApplyResult("applied", request.current_sha, request.revision, "release/1", "origin"),
     )
     monkeypatch.setattr(
         update_cmd,
-        "_resolve_update_options",
+        "_prepare_checkout_for_update",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy preparation entered pinned path")
+            AssertionError("legacy branch/stash preparation entered pinned path")
         ),
     )
     monkeypatch.setattr(
         update_cmd,
         "_hand_off_post_swap",
-        lambda _args, **kwargs: captured.update(kwargs),
+        lambda _args, **kwargs: events.append("handoff") or captured.update(kwargs),
     )
     try:
         update_cmd._cmd_pinned_update_impl(args, gateway_mode=False)
+        expected = ["options", "plan", "backup", "pause"]
+        if sys.platform == "win32":
+            expected.append("holders")
+        assert events[:len(expected) + 3] == expected + ["desktop", "apply", "handoff"]
         assert captured["branch"] == "release/1"
         assert captured["target_request"] == request
         assert captured["correlation_id"]
+        assert captured["opts"] is opts
+        assert captured["_pre_update_plan"] is plan
+        assert captured["pre_update_snapshot_id"] == "snapshot-before"
+        assert captured["_windows_gateway_resume"] is token
+        assert captured["had_desktop_app_before_update"] is True
         assert update_receipt._current.data["update_intent"]["branch"] == "release/1"
+    finally:
+        update_receipt._current = None
+
+
+@pytest.mark.parametrize("failure", [
+    "plan", "plan-sha", "backup", "sibling",
+    pytest.param("holder", marks=pytest.mark.windows_only), "admission",
+])
+def test_pinned_pre_swap_refusal_never_leaves_gateway_paused(tmp_path, monkeypatch, failure):
+    from hermes_cli import update_cmd
+    from hermes_cli import backup
+    from hermes_cli.update_inventory import UpdatePlan
+
+    request = TargetRequest(
+        "a" * 40, INSTALL_ID, "b" * 40,
+        SourceBinding(str(tmp_path.resolve()), "https://example.test/hermes.git",
+                      "refs/remotes/origin/main", "a" * 40, "fixture", "d" * 64, 1),
+    )
+    args = SimpleNamespace(target_request=request, branch=None, force_venv=False)
+    events = []
+    token = {"resume_needed": True}
+    update_receipt._current = None
+    monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda *_args: SimpleNamespace())
+    monkeypatch.setattr(
+        update_cmd, "_begin_update_receipt_and_plan",
+        lambda *_args, **_kwargs: events.append("plan") or
+        (None if failure == "plan" else UpdatePlan(
+            expected_sha="c" * 40 if failure == "plan-sha" else request.current_sha)),
+    )
+    if failure == "sibling":
+        monkeypatch.setattr(backup, "_sibling_profile_homes",
+                            lambda _home: [("beta", tmp_path / "home" / "profiles" / "beta")])
+    monkeypatch.setattr(update_cmd, "_resolve_pre_update_backup_mode", lambda _args: "quick")
+    monkeypatch.setattr(update_cmd, "_record_pre_update_backup_outcome", lambda *_args: None)
+    monkeypatch.setattr(update_cmd, "_desktop_app_present", lambda _dir: False)
+    monkeypatch.setattr("atexit.register", lambda *_args: None)
+    monkeypatch.setattr(
+        update_cmd, "_m", lambda: SimpleNamespace(
+            PROJECT_ROOT=tmp_path,
+            _run_pre_update_backup=lambda _args: events.append("backup") or
+            (None if failure == "backup" else "snapshot-before"),
+            _pause_windows_gateways_for_update=lambda: events.append("pause") or token,
+            _resume_windows_gateways_after_update=lambda value: (
+                events.append("resume"), value.update(resume_needed=False)
+            ) if value and value.get("resume_needed") else None,
+            _is_windows=lambda: sys.platform == "win32",
+        ),
+    )
+    def refuse_holder(*_args):
+        events.append("holder")
+        if failure == "holder":
+            raise SystemExit(2)
+    monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", refuse_holder)
+    def apply(*_args, **_kwargs):
+        events.append("apply")
+        raise TargetAdmissionError("dirty-checkout")
+    monkeypatch.setattr(update_cmd, "apply_pinned_target", apply)
+    monkeypatch.setattr(update_cmd, "_hand_off_post_swap", lambda *_args, **_kwargs: events.append("handoff"))
+
+    try:
+        with pytest.raises(SystemExit) as raised:
+            update_cmd._cmd_pinned_update_impl(args, gateway_mode=False)
+        assert raised.value.code == 2
+        assert "handoff" not in events
+        assert ("apply" in events) == (failure == "admission")
+        assert ("resume" in events) == (failure in {"holder", "admission"})
     finally:
         update_receipt._current = None
 
@@ -456,7 +557,7 @@ def test_pinned_dependency_warning_is_terminal(monkeypatch, capsys):
 
 
 @pytest.mark.real_post_swap_handoff
-@pytest.mark.parametrize("ack_present", [True, False])
+@pytest.mark.parametrize("ack_present", [True, False, None])
 def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypatch, ack_present):
     from types import SimpleNamespace
 
@@ -476,31 +577,41 @@ def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypa
     ack.parent.mkdir(parents=True)
     update_receipt._current = None
     update_receipt.begin_update_receipt(intent=intent)
-    update_receipt.record_pinned_post_swap(
-        post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
-    )
-    child_receipt = update_receipt.finalize_update_receipt("success")
-    assert child_receipt is not None
-    child = json.loads(child_receipt.read_text(encoding="utf-8"))
+    child_receipt = None
+    if ack_present is not None:
+        update_receipt.record_pinned_post_swap(
+            post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
+        )
+        child_receipt = update_receipt.finalize_update_receipt("success")
+        assert child_receipt is not None
+        child = json.loads(child_receipt.read_text(encoding="utf-8"))
     if ack_present:
         ack.write_text(json.dumps({
             "schema": 1, "correlation_id": intent["correlation_id"],
             "outcome": "success", "finished_at": child["finished_at"],
             "receipt_path": str(child_receipt),
         }), encoding="utf-8")
+    token = {"resume_needed": True}
     payload = {
         "receipt": {"update_intent": intent}, "pinned_intent": intent,
         "target_intent": intent, "correlation_id": intent["correlation_id"],
         "_handoff_ack_path": str(ack), "_handoff_detached": False,
+        "windows_gateway_resume": token,
     }
     monkeypatch.setattr(update_cmd, "_post_swap_payload", lambda **kwargs: payload)
-    monkeypatch.setattr(update_cmd._update_handoff, "continue_update_in_fresh_interpreter", lambda *a, **k: 0)
+    monkeypatch.setattr(update_cmd._update_handoff, "continue_update_in_fresh_interpreter",
+                        lambda *a, **k: 1 if ack_present is None else 0)
 
     with pytest.raises(SystemExit) as exc_info:
-        update_cmd._hand_off_post_swap(SimpleNamespace(), gateway_mode=False)
+        update_cmd._hand_off_post_swap(SimpleNamespace(), gateway_mode=False,
+                                      _windows_gateway_resume=token)
 
-    assert exc_info.value.code == 0
-    assert list((home / "logs" / "update_receipts").glob("update_*.json")) == [child_receipt]
+    assert exc_info.value.code == (1 if ack_present is None else 0)
+    receipts = list((home / "logs" / "update_receipts").glob("update_*.json"))
+    assert len(receipts) == 1
+    if child_receipt is not None:
+        assert receipts == [child_receipt]
+    assert token["resume_needed"] is (ack_present is None)
     assert not ack.exists()
 
 

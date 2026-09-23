@@ -4,7 +4,8 @@ import {
   $transcriptTailBySessionId,
   clearTranscriptTailPaging,
   recordTranscriptTail,
-  rewindTranscriptTail
+  rewindTranscriptTail,
+  transcriptTailState
 } from './transcript-tail'
 
 const page = (count: number, limit = 10) =>
@@ -135,5 +136,22 @@ describe('rewindTranscriptTail', () => {
     )
 
     expect(rewindTranscriptTail('s1', 4)).toBe(false)
+  })
+})
+
+describe('recordTranscriptTail with an empty page', () => {
+  beforeEach(() => {
+    clearTranscriptTailPaging()
+  })
+
+  // The REST helper records the tail before the active refresh decides whether
+  // the page is authoritative. A transient zero-row read must not turn a
+  // known-truncated tail into "nothing earlier to show".
+  it('keeps an existing truncated entry so "Show earlier" stays armed', () => {
+    recordTranscriptTail('s1', page(10))
+
+    recordTranscriptTail('s1', page(0))
+
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
   })
 })

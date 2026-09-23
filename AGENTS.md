@@ -286,6 +286,16 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   spawns (`served_profile_child_env`, never `os.environ.copy()`). Fail-closed reads exist only after
   `set_multiplex_active(True)`. Prove live with two homes (A→B→A) under multiplex, not one temp
   `HERMES_HOME`. Advisory lint: `scripts/check_profile_scope_patterns.py`.
+- **Machine facts and resource lookup go through `hermes_platform`.** `hermes_platform.host` is the
+  one answer for OS family, native architecture (`IsWow64Process2` → `platform.machine()`; never
+  `PROCESSOR_ARCHITECTURE` alone, it reads AMD64 under x64-on-ARM64 emulation), CPU identity, and
+  WSL/container/Termux. Facts are cached per process and take **no environment-variable input**, so
+  a hardware recognizer (`host/products.py`) cannot be set from a shell. Distinguish the control
+  host (where this Python runs) from the terminal execution target (SSH/container) and the Desktop
+  client (another machine): `host.*` answers only the first. A new bare `shutil.which` or a
+  hand-written known-path table outside `hermes_platform/` fails
+  `tests/test_managed_runtime_resolution.py` unless allowlisted with a reason; resolvers land in
+  `hermes_platform/resolver/`. Lookup never installs, downloads, or starts anything.
 - **Argparse alias dispatch:** `add_parser("list", aliases=["ls"])` sets `dest` to the literal
   the user typed (`"ls"`). Dispatch must accept both (caught PTY-testing `hermes webhook ls`).
 - **Don't wire in dead code without E2E validation.** Unshipped code was dead for a reason;

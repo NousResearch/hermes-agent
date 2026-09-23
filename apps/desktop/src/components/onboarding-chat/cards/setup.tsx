@@ -204,6 +204,10 @@ export function LayoutCard({ locked }: CardProps) {
     $chatLayoutPicked.set(true)
     setOnboardingAnswers({ layout: id })
 
+    // The pick answers "how much of the machinery do you want to see" too;
+    // Skip leaves the mode alone, so only an actual choice sets it.
+    const layout = LAYOUTS.find(candidate => candidate.id === id)
+
     const preset = registry.getArea('layouts').find(contribution => contribution.id === id)
 
     if (!preset?.data) {
@@ -215,7 +219,7 @@ export function LayoutCard({ locked }: CardProps) {
     // Swapping only the preset tree on a re-pick kept the previous layout's dismissals and dock records, and the two
     // layouts came up mixed together.
     // SAFETY: Layout presets declare data: LayoutNode (pane-shell/tree/presets.ts).
-    assembleChatOnboarding(preset.id, preset.data as LayoutNode)
+    assembleChatOnboarding(preset.id, preset.data as LayoutNode, layout?.mode)
   }
 
   return (
@@ -233,6 +237,7 @@ export function LayoutCard({ locked }: CardProps) {
         {LAYOUTS.map(layout => (
           <LayoutPreviewCard
             active={picked && answers.layout === layout.id}
+            description={layout.description}
             key={layout.id}
             name={layout.name}
             onSelect={() => pickLayout(layout.id)}

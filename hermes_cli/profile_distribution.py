@@ -478,6 +478,10 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
     # Make sure the manifest on disk reflects resolved name + source
     write_manifest(target, manifest)
+    # A shipped profile.yaml must not carry a backend-assigned role.
+    if any(rel_parts == ("profile.yaml",) for _, rel_parts in entries):
+        from hermes_cli.profiles import drop_profile_role
+        drop_profile_role(target)
 
 
 def _bootstrap_user_dirs(target: Path) -> None:

@@ -140,6 +140,7 @@ import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-r
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { captureDisplayHydration } from './display-hydration'
+import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
@@ -165,7 +166,7 @@ import {
   patchSessionWorkspace,
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
-  reconcileResumeMessages,
+  reconcileDurableHistory,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
@@ -261,16 +262,21 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 function reconcileAuthoritativeChatMessages(
   authoritativeMessages: ChatMessage[],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
+  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>,
+  sourceRows?: SessionMessage[]
 ): ChatMessage[] {
-  const withLiveProjection = liveProjection
-    ? appendLiveSessionProjection(authoritativeMessages, liveProjection)
-    : authoritativeMessages
+  if (liveProjection && sourceRows) {
+    const reconciled = reconcilePersistedLiveTurn(authoritativeMessages, previousMessages, sourceRows, liveProjection)
 
-  const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
-  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
+    if (reconciled) {
+      return reconciled
+    }
+  }
 
-  return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
+  return reconcileDurableHistory(
+    liveProjection ? appendLiveSessionProjection(authoritativeMessages, liveProjection) : authoritativeMessages,
+    previousMessages
+  )
 }
 
 function reconcileAuthoritativeMessages(
@@ -278,7 +284,12 @@ function reconcileAuthoritativeMessages(
   previousMessages: ChatMessage[],
   liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
-  return reconcileAuthoritativeChatMessages(toChatMessages(authoritativeMessages), previousMessages, liveProjection)
+  return reconcileAuthoritativeChatMessages(
+    toChatMessages(authoritativeMessages),
+    previousMessages,
+    liveProjection,
+    authoritativeMessages
+  )
 }
 
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
@@ -1453,6 +1464,7 @@ export function useSessionActions({
               // Reconcile its in-flight/queued tail onto the complete transcript
               // instead of replacing durable history while the turn is running.
               let acceptedPersistedDisplayTranscript = false
+              let reconciledCurrentLiveTurn = false
 
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
@@ -1502,17 +1514,27 @@ export function useSessionActions({
                     activated
                   )
 
-                  activatedMessages = reconcileAuthoritativeChatMessages(
+                  const currentLiveTurn = reconcilePersistedLiveTurn(
                     persistedMessages,
-                    previousMessages,
+                    sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages ?? previousMessages,
+                    persisted.messages,
                     liveProjection
                   )
+
+                  // `null` does not depend on `previous`; retrying the live-turn
+                  // reconcile inside the fallback would return `null` again.
+                  reconciledCurrentLiveTurn = currentLiveTurn !== null
+                  activatedMessages =
+                    currentLiveTurn ??
+                    reconcileAuthoritativeChatMessages(persistedMessages, previousMessages, liveProjection)
                 }
               }
 
               const currentMessages = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages
 
-              if (currentMessages) {
+              // The occurrence-aware path already read the latest cache. An
+              // additional identity overlay would restore its consumed tools.
+              if (currentMessages && !reconciledCurrentLiveTurn) {
                 activatedMessages = overlayConcurrentMessageChanges(
                   activatedMessages,
                   cachedViewState.messages,
@@ -1830,7 +1852,8 @@ export function useSessionActions({
               const resumedMessages = reconcileAuthoritativeChatMessages(
                 prefetchedTranscriptMessages,
                 previousMessages,
-                liveProjection
+                liveProjection,
+                prefetchedResult?.messages
               )
 
               const withConcurrentChanges = overlayConcurrentMessageChanges(

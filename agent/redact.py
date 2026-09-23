@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
 _VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {value: None}
 _VAULT_REDACTION_LOCK = threading.Lock()
+# Substring scrub keys below this length corrupt innocent text far more often
+# than they protect anything: a payment fill registers every card field, so a
+# 2-char expiry month ("09") or a malformed "20" masks "2026", prices and dates
+# in all later model- and user-visible output (#120655). Same floor the
+# pattern-based passes already use (_looks_like_opaque_credential / mask_secret).
+_VAULT_REDACTION_MIN_LENGTH = 12
 
 
 def _vault_scope() -> str:
@@ -43,6 +49,9 @@ def register_vault_redaction_value(value) -> None:
     Called by the vault fill path BEFORE the injection happens, so no later browser tool result
     can echo the value back into model context. Also registers the form a text input normalizes
     it to (CR/LF stripped), since that is what the page holds.
+
+    Values shorter than ``_VAULT_REDACTION_MIN_LENGTH`` are ignored: the scrub is a plain
+    substring replace, and a short key (a card expiry month) rips through ordinary text.
     """
     if not isinstance(value, str) or not value:
         return
@@ -50,7 +59,7 @@ def register_vault_redaction_value(value) -> None:
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(), {})
         for v in (value, normalized):
-            if v:
+            if v and len(v) >= _VAULT_REDACTION_MIN_LENGTH:
                 bucket.pop(v, None)  # re-registering refreshes recency
                 bucket[v] = None
         while len(bucket) > _VAULT_REDACTION_MAX_PER_PROFILE:

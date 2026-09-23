@@ -1,6 +1,8 @@
 """Tests for the dashboard-managed file browser API."""
 
+import asyncio
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -418,4 +420,62 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     mcp_listing = client.get("/api/files", params={"path": str(mcp_dir)})
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+@pytest.mark.parametrize("route", [
+    "delete", "read", "list", "fs-list", "fs-read-data-url", "fs-default-cwd", "system-stats"])
+def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, monkeypatch, route):
+    """An ``async def`` route runs ON the event loop that also serves /api/ws chat streaming and the PTY: a recursive
+    delete, a multi-MB read, a directory scan, a git subprocess or psutil's 100 ms CPU sample there froze every other
+    request for as long as it ran. The blocking call must happen on a worker thread."""
+    client, root = forced_files_client
+    seeded = _seed_file(client, root)
+    seen = []
+
+    def spy(owner, name, wanted=lambda *a, **k: True):
+        original = getattr(owner, name)
+
+        def wrapper(*args, **kwargs):
+            if wanted(*args, **kwargs):
+                seen.append(_on_event_loop())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, wrapper)
+
+    if route in ("read", "fs-read-data-url"):
+        # The multi-MB data URL is rendered off the loop too: returned as a dict, FastAPI serialized it on the loop.
+        from starlette.responses import JSONResponse
+
+        spy(JSONResponse, "render",
+            lambda self, content: isinstance(content, dict) and ({"data_url", "dataUrl"} & content.keys()))
+    if route == "delete":
+        spy(_rt_files.shutil, "rmtree")
+        response = client.request("DELETE", "/api/files", json={"path": str(seeded.parent), "recursive": True})
+    elif route == "read":
+        spy(Path, "read_bytes", lambda self, *a, **k: self == seeded)
+        response = client.get("/api/files/read", params={"path": str(seeded)})
+    elif route in ("list", "fs-list"):
+        spy(_rt_files.os, "scandir", lambda target, *a, **k: Path(target) == seeded.parent)
+        endpoint = "/api/files" if route == "list" else "/api/fs/list"
+        response = client.get(endpoint, params={"path": str(seeded.parent)})
+    elif route == "fs-read-data-url":
+        spy(_rt_files, "_fs_read_bytes")
+        response = client.get("/api/fs/read-data-url", params={"path": str(seeded)})
+    elif route == "fs-default-cwd":
+        spy(_rt_files, "_fs_git_branch")
+        response = client.get("/api/fs/default-cwd")
+    else:
+        psutil = pytest.importorskip("psutil")
+        spy(psutil, "cpu_percent")
+        response = client.get("/api/system/stats")
+
+    assert response.status_code == 200, response.text
+    assert seen and not any(seen), seen
 

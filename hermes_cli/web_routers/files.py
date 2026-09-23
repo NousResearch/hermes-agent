@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.web_deps import late
@@ -357,7 +357,7 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
 
 
 @router.get("/api/files")
-async def list_managed_files(request: Request, path: Optional[str] = None):
+def list_managed_files(request: Request, path: Optional[str] = None):
     policy, target, display_path = _resolve_managed_path(path, request)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
@@ -406,19 +406,20 @@ def _managed_file_size(target: Path, max_bytes: int) -> int:
 
 
 @router.get("/api/files/read")
-async def read_managed_file(request: Request, path: str):
+def read_managed_file(request: Request, path: str):
     policy, target, display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     size = _managed_file_size(target, max_bytes)
     with _io_errors("File is not readable", "Could not read file"):
         encoded = base64.b64encode(target.read_bytes()).decode("ascii")
-    return {
+    # Rendered here, on the worker: returned as a dict, the multi-MB data URL would be serialized on the event loop.
+    return JSONResponse({
         "name": target.name,
         "path": display_path,
         "size": size,
         "mime_type": mime_type,
         "data_url": f"data:{mime_type};base64,{encoded}",
         **_managed_response_meta(policy),
-    }
+    })
 
 
 def _managed_file_response(
@@ -491,7 +492,7 @@ def _managed_write_result(policy, target: Path, display_path: str) -> dict:
 
 
 @router.post("/api/files/upload")
-async def upload_managed_file(payload: ManagedFileUpload, request: Request):
+def upload_managed_file(payload: ManagedFileUpload, request: Request):
     policy, target, display_path = _managed_write_target(payload.path, request, payload.overwrite)
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
@@ -566,7 +567,7 @@ async def upload_managed_file_stream(
 
 
 @router.post("/api/files/mkdir")
-async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
+def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
@@ -576,7 +577,7 @@ async def create_managed_directory(payload: ManagedDirectoryCreate, request: Req
 
 
 @router.delete("/api/files")
-async def delete_managed_file(payload: ManagedFileDelete, request: Request):
+def delete_managed_file(payload: ManagedFileDelete, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
@@ -607,7 +608,7 @@ _FS_LIST_ERRNO = (
 
 
 @router.get("/api/fs/list")
-async def fs_list(path: str):
+def fs_list(path: str):
     target = _fs_path(path)
     try:
         entries = []
@@ -630,7 +631,7 @@ async def fs_list(path: str):
 
 
 @router.get("/api/fs/read-text")
-async def fs_read_text(path: str):
+def fs_read_text(path: str):
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
@@ -647,7 +648,7 @@ async def fs_read_text(path: str):
 
 
 @router.post("/api/fs/write-text")
-async def fs_write_text(payload: FsWriteText):
+def fs_write_text(payload: FsWriteText):
     """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
 
     Mirrors the Electron ``hermes:fs:writeText`` hardening: path validated by
@@ -714,8 +715,13 @@ async def fs_read_data_url(
     target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
-    return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
+
+    def _render() -> JSONResponse:
+        encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
+        return JSONResponse({"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"})
+
+    # Read, encode and render off the event loop: up to 16 MB inline stalls every other request (and /api/ws).
+    return await asyncio.to_thread(_render)
 
 
 @router.get("/api/fs/download")
@@ -732,7 +738,7 @@ async def fs_download(
 
 
 @router.get("/api/fs/git-root")
-async def fs_git_root(path: str):
+def fs_git_root(path: str):
     target = _fs_path(path)
     try:
         st = target.stat()
@@ -743,6 +749,6 @@ async def fs_git_root(path: str):
 
 
 @router.get("/api/fs/default-cwd")
-async def fs_default_cwd():
+def fs_default_cwd():
     cwd = _fs_default_cwd()
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}

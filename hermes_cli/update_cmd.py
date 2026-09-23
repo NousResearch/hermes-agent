@@ -8,6 +8,7 @@ main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at cal
 import logging
 from contextlib import suppress
 import os
+import re
 import shlex
 import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules resolve it here)
 import subprocess
@@ -604,6 +605,75 @@ def _base_git_cmd() -> list[str]:
     return ["git"]
 
 
+# Release tags follow vMAJOR.MINOR.PATCH[.N] (e.g. v2026.9.14). Anything matching this
+# shape is a tag candidate when no origin/<name> branch exists — never before that check.
+_VERSION_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+(\.\d+)?$")
+
+
+def _looks_like_version_tag(name: str) -> bool:
+    """True for release-tag-shaped names (``v2026.9.14``). Used only to decide whether a
+    missing ``origin/<name>`` should be retried as a tag before refusing the update."""
+    return bool(_VERSION_TAG_RE.match(name or ""))
+
+
+def _fetch_update_target(git_cmd, name: str) -> tuple[str, str]:
+    """Fetch *name* scoped (a bare fetch pulls thousands of auto-generated branches) and
+    return ``(target_kind, fetch_ref)`` where target_kind is "branch" or "tag".
+
+    The plain ``fetch origin <name>`` leaves a fetched TAG only in ``FETCH_HEAD`` on some
+    git versions and never creates ``origin/<name>`` (that ref only exists for branches),
+    so every later ``origin/{branch}`` reference in the pipeline fails for tags. For a
+    version-tag-shaped name whose branch fetch did not yield ``origin/<name>``, retry with
+    an explicit refspec that materializes ``refs/tags/<name>`` (mirrors install.ps1's tag
+    path; see #100243) and require it to peel to a commit.
+
+    ``sys.exit(1)`` with a clear message when *name* is neither a branch nor a tag.
+    """
+    fetch_result = _git_run(git_cmd, ["fetch", "origin", name], network=True)
+    if fetch_result.returncode == 0 and _git_run(
+            git_cmd, ["rev-parse", "--verify", "--quiet", f"origin/{name}"]).returncode == 0:
+        return "branch", f"origin/{name}"
+
+    if fetch_result.returncode != 0 and not _looks_like_version_tag(name):
+        # A failed fetch is usually a NETWORK problem (outage, DNS, auth), not a missing
+        # ref — keep the original classified diagnosis instead of "does not exist".
+        # EXCEPTION: git itself says the ref is absent ("couldn't find remote ref"),
+        # which for a non-tag name means the branch does not exist — say that plainly.
+        # (Version-tag-shaped names fall through: `fetch origin v2026.9.14` also exits
+        # non-zero when the name is neither a branch nor a tag, and the tag retry below
+        # decides existence.)
+        if "couldn't find remote ref" in (fetch_result.stderr or ""):
+            print(f"✗ Branch '{name}' does not exist locally or on origin.")
+        else:
+            _print_fetch_failure(fetch_result.stderr)
+        sys.exit(1)
+
+    if _looks_like_version_tag(name):
+        tag_fetch = _git_run(
+            git_cmd,
+            ["fetch", "--no-tags", "origin", f"refs/tags/{name}:refs/tags/{name}"],
+            network=True)
+        if tag_fetch.returncode == 0 and _git_run(
+                git_cmd, ["rev-parse", "--verify", "--quiet", f"refs/tags/{name}^{{commit}}"]
+        ).returncode == 0:
+            return "tag", f"refs/tags/{name}"
+        if tag_fetch.returncode != 0 and _fetch_stderr_is_network(tag_fetch.stderr):
+            # Network outage (not "ref missing"): report it as such — retrying later can work.
+            _print_fetch_failure(tag_fetch.stderr)
+            sys.exit(1)
+
+    label = "release tag or branch" if _looks_like_version_tag(name) else "branch"
+    print(f"✗ {label.capitalize()} '{name}' does not exist locally or on origin.")
+    sys.exit(1)
+
+
+def _fetch_stderr_is_network(stderr: str) -> bool:
+    """True when git-fetch stderr matches a KNOWN network/classification rule rather than
+    the generic "couldn't find remote ref" shape (which means the ref simply is absent)."""
+    from hermes_cli.update_cmd_git import _FETCH_FAILURE_RULES
+    return any(matches(stderr or "") for matches, _message in _FETCH_FAILURE_RULES)
+
+
 def _is_shallow_checkout(git_cmd) -> bool:
     return _git_run(git_cmd, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
 
@@ -611,6 +681,11 @@ def _is_shallow_checkout(git_cmd) -> bool:
 def _tip_shas(git_cmd, target_ref: str) -> tuple[str, str]:
     """``(HEAD sha, <target_ref> sha)`` as printed by rev-parse ("" when unresolvable)."""
     return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in ("HEAD", target_ref))
+
+
+def _tip_sha_of(git_cmd, ref: str) -> str:
+    """Single-ref sha ("" when unresolvable) — tag-mode SHA comparison in the checkout phase."""
+    return _git_run(git_cmd, ["rev-parse", ref]).stdout.strip()
 
 
 def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
@@ -856,20 +931,28 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha) -> None:
 
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
-    keep_stash):
-    """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
-    custom branch -> merge, same branch -> reset, orphan history -> rescue ref first; a
-    post-pull syntax error in a critical file rolls back. Exits on failure; returns pre-pull SHA."""
+    keep_stash, target_kind: str = "branch", fetch_ref: str | None = None,
+    pre_move_sha: str | None = None):
+    """Fast-forward onto ``origin/<branch>`` (or the fetched tag ref in tag mode) and settle
+    the autostash. Divergence by shape: custom branch -> merge, same branch -> reset, orphan
+    history -> rescue ref first; a post-pull syntax error in a critical file rolls back.
+    Exits on failure; returns pre-pull SHA."""
     update_succeeded = False
+    merge_ref = (fetch_ref or f"refs/tags/{branch}") if target_kind == "tag" else f"origin/{branch}"
     # Pre-pull SHA for auto-rollback (stray conflict markers once bricked every updater).
     # Capture the pre-pull SHA so we can auto-roll-back if the new code has a syntax error in a
     # critical-path file (PR #28452 incident: orphan merge-conflict markers in hermes_cli/config.py bricked
     # every user who ran ``hermes update`` for the 7 minutes between the bad commit and the fix landing).
-    pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+    # Tag mode: the checkout phase already detached HEAD at the tag, so the rollback anchor is
+    # the PRE-move SHA (restoring the tag SHA would "roll back" onto the bad code itself).
+    pre_pull_sha = (
+        (pre_move_sha or _capture_head_sha(git_cmd, _m().PROJECT_ROOT))
+        if target_kind == "tag" else _capture_head_sha(git_cmd, _m().PROJECT_ROOT))
     try:
         # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
         # SECOND network fetch; identical in effect given the fresh tracking ref.
-        if _git_run(git_cmd, ["merge", "--ff-only", f"origin/{branch}"]).returncode != 0:
+        # Tag mode has nothing to merge: the detach in the checkout phase landed the target.
+        if target_kind != "tag" and _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
             _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha)
         _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha)
         update_succeeded = True
@@ -903,6 +986,10 @@ class _CheckoutPlan:
     prompt_for_restore: bool
     switch_block_reason: "str | None"
     upstream_checked: bool
+    target_kind: str = "branch"          # "tag" updates detach at refs/tags/<name>
+    fetch_ref: "str | None" = None       # resolved upstream ref (origin/<branch> or refs/tags/<name>)
+    pre_move_sha: "str | None" = None    # tag mode: HEAD before the detach, for rollback
+    tag_downgrade_count: int = 0         # tag mode: commits the tag is BEHIND pre-move HEAD (rollback)
 
 
 def _apply_parked_branch_guard(
@@ -951,18 +1038,46 @@ def _apply_parked_branch_guard(
 
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
-    switch_branch, _windows_gateway_resume):
+    switch_branch, target_kind: str = "branch", fetch_ref: str | None = None,
+    _windows_gateway_resume=None):
     """Parked-branch guard, land on the target, stash, count new commits. Exits when the
     checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up to
-    date, -1 when tips differ but the shallow count is unrecoverable."""
-    parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
-        git_cmd, branch, current_branch, switch_branch=switch_branch,
-        _windows_gateway_resume=_windows_gateway_resume)
+    date, -1 when tips differ but the shallow count is unrecoverable.
 
-    if not in_place_update and current_branch == "HEAD" != branch:
+    ``target_kind``/``fetch_ref`` come from ``_fetch_update_target``: a "branch" target
+    lands via checkout as before; a "tag" target lands detached at ``refs/tags/<name>``
+    and never creates/moves a local branch."""
+    if target_kind == "tag":
+        # Tags never go through the parked-branch guard (no branch is created or moved):
+        # stash if needed, then detach at the tag. A parked branch with unmerged commits is
+        # left untouched — the stash keeps the working tree safe across the checkout.
+        parked_branch_switched, in_place_update, switch_block_reason = False, False, None
+        if current_branch != "HEAD":
+            print(f"  ℹ Updating to tag '{branch}' — local branch '{current_branch}' is left as-is.")
+        tag_pre_checkout_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+    else:
+        parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
+            git_cmd, branch, current_branch, switch_branch=switch_branch,
+            _windows_gateway_resume=_windows_gateway_resume)
+        tag_pre_checkout_sha = None
+    tag_downgrade_count = 0
+    if not in_place_update and current_branch == "HEAD" != branch and target_kind != "tag":
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
     auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
-    if (
+    if target_kind == "tag":
+        # Detach at the exact tag commit. --no-checkout-into-current-branch equivalent:
+        # never write the tag into a local branch; HARD requirement for a tag update so
+        # `git checkout <tag>` semantics (detached) match what the user asked for.
+        checkout = _git_run(git_cmd, ["checkout", "--detach", fetch_ref])
+        if checkout.returncode != 0:
+            if auto_stash_ref is not None:
+                _m()._restore_stashed_changes(
+                    git_cmd, _m().PROJECT_ROOT, auto_stash_ref, prompt_user=False, input_fn=gw_input_fn)
+            print(f"✗ Could not check out tag '{branch}' ({fetch_ref}).")
+            if checkout.stderr.strip():
+                print(f"  {checkout.stderr.strip().splitlines()[0]}")
+            sys.exit(1)
+    elif (
         not in_place_update and current_branch != branch
         and _git_run(git_cmd, ["checkout", branch]).returncode != 0):
         track_result = _git_run(git_cmd, ["checkout", "-B", branch, f"origin/{branch}"])
@@ -983,16 +1098,35 @@ def _prepare_checkout_for_update(
 
     # On shallow checkouts `rev-list --count` can report the entire remote ancestry. The
     # zero/nonzero gate is still sound; treat the shallow NUMBER as unknown and recover it
-    # via the GitHub compare API when possible.
-    result = _git_run(git_cmd, ["rev-list", f"HEAD..origin/{branch}", "--count"], check=True)
+    # via the GitHub compare API when possible. Tag targets compare against the fetched
+    # tag ref (origin/<name> does not exist for tags) and against the PRE-checkout SHA —
+    # the detach above already moved HEAD onto the tag, so HEAD..tag would always be 0.
+    compare_ref = (fetch_ref or f"origin/{branch}") if target_kind == "tag" else f"origin/{branch}"
+    count_base = f"{tag_pre_checkout_sha}.." if target_kind == "tag" and tag_pre_checkout_sha else "HEAD.."
+    result = _git_run(git_cmd, ["rev-list", f"{count_base}{compare_ref}", "--count"], check=True)
     commit_count = int(result.stdout.strip())
 
     apply_is_shallow = _is_shallow_checkout(git_cmd)
-    if commit_count > 0 and apply_is_shallow:
+    if commit_count > 0 and apply_is_shallow and target_kind != "tag":
         from hermes_cli.banner import _github_compare_behind
-        counted = _github_compare_behind(*_tip_shas(git_cmd, f"origin/{branch}"))
+        counted = _github_compare_behind(*_tip_shas(git_cmd, compare_ref))
         # counted == 0 means local-ahead: falls through to the up-to-date path.
         commit_count = counted if counted is not None else -1
+
+    if target_kind == "tag" and tag_pre_checkout_sha and tag_pre_checkout_sha != _tip_sha_of(
+            git_cmd, compare_ref):
+        # The user explicitly asked to land on this tag: ANY SHA difference is an update,
+        # including a DOWNGRADE (rollback from a main-tip overshoot to the release tag —
+        # the #100243 incident shape). rev-list pre..tag is 0 for a downgrade, which would
+        # wrongly take the "Already up to date" path and check the original branch back
+        # out, silently undoing the move. The compare-API "local-ahead means 0" rule is
+        # likewise wrong here, so tag mode skips it (branch check above).
+        commit_count = max(commit_count, 1)
+        with suppress(Exception):
+            behind = int(_git_run(
+                git_cmd, ["rev-list", f"{compare_ref}..{tag_pre_checkout_sha}", "--count"]
+            ).stdout.strip() or 0)
+            tag_downgrade_count = behind if behind > 0 else 0
 
     # A fork can match origin yet trail upstream, so the sync can move HEAD with
     # commit_count == 0; detect that BEFORE the no-update return so deps, restarts AND the
@@ -1018,7 +1152,9 @@ def _prepare_checkout_for_update(
     return _CheckoutPlan(
         auto_stash_ref=auto_stash_ref, commit_count=commit_count, in_place_update=in_place_update,
         parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
-        switch_block_reason=switch_block_reason, upstream_checked=upstream_checked)
+        switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
+        target_kind=target_kind, fetch_ref=fetch_ref, pre_move_sha=tag_pre_checkout_sha,
+        tag_downgrade_count=tag_downgrade_count)
 
 
 @dataclass
@@ -1272,7 +1408,12 @@ def _finish_already_up_to_date(
         else:
             print(f"  ✓ Checkout was parked on '{current_branch}' (fully merged) — switched back to {branch}.")
     elif current_branch not in {branch, "HEAD"}:
-        _git_run(git_cmd, ["checkout", current_branch])
+        if getattr(_plan, "target_kind", "branch") == "tag":
+            # Tag mode never created or moved a branch, and the user asked to BE at the tag:
+            # re-attaching the old branch could move HEAD off the tag commit. Stay detached.
+            print(f"  ℹ Already at tag '{branch}' — staying detached (branch '{current_branch}' untouched).")
+        else:
+            _git_run(git_cmd, ["checkout", current_branch])
 
     current_checkout_complete = _repair_current_checkout(
         assume_yes=assume_yes, gateway_mode=gateway_mode,
@@ -1641,15 +1782,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
-        if fetch_result.returncode != 0:
-            _print_fetch_failure(fetch_result.stderr)
-            sys.exit(1)
+        target_kind, fetch_ref = _fetch_update_target(git_cmd, branch)
+        if target_kind == "tag":
+            print(f"  ℹ '{branch}' is a release tag (no origin/{branch} branch) — updating to the tag.")
 
         current_branch = _current_branch_name(git_cmd, check=True)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
+            target_kind=target_kind, fetch_ref=fetch_ref,
             _windows_gateway_resume=_windows_gateway_resume)
         commit_count = _plan.commit_count
 
@@ -1666,7 +1807,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             return
 
         if commit_count > 0:
-            print(f"→ Found {commit_count} new commit(s)")
+            if getattr(_plan, "tag_downgrade_count", 0) > 0:
+                print(
+                    f"→ Moving to tag '{branch}' — rolling back "
+                    f"{_plan.tag_downgrade_count} commit(s) from the current position")
+            else:
+                print(f"→ Found {commit_count} new commit(s)")
         else:
             # Shallow, exact count unrecoverable — but the tips differ, so there IS an update.
             print("→ Updates available (commit count unknown on this shallow checkout)")
@@ -1675,7 +1821,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _pull_updates(
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash)
+            keep_stash=opts.keep_stash, target_kind=_plan.target_kind,
+            fetch_ref=_plan.fetch_ref, pre_move_sha=_plan.pre_move_sha)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
             is_fork=is_fork, desktop_dir=desktop_dir,

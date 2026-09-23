@@ -29,3 +29,20 @@ class TestGetHostnameMalformedUrl:
             name="custom", hostname="api.example.com", base_url="http://[::1"
         )
         assert profile.get_hostname() == "api.example.com"
+
+    def test_non_string_base_url_returns_empty(self):
+        # A mis-typed config value is truthy but not a string (here an int,
+        # on which urlparse would raise AttributeError). The isinstance guard
+        # fails closed for any non-string rather than relying on the exact
+        # exception urlparse happens to raise for that type.
+        profile = ProviderProfile(name="custom", base_url=12345)  # type: ignore[arg-type]
+        assert profile.get_hostname() == ""
+
+    def test_malformed_base_url_does_not_abort_detection(self):
+        # The stated motivation: an empty hostname must let URL-based provider
+        # detection proceed, not raise. Callers compare the return against a
+        # host suffix; an empty string simply fails to match, never aborts.
+        profile = ProviderProfile(name="custom", base_url="http://[::1")
+        hostname = profile.get_hostname()
+        assert hostname == ""
+        assert not hostname.endswith("gmi-serving.com")

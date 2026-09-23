@@ -384,6 +384,20 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)", re.IGNORECASE)
 
+# Account/workspace-level spend caps, distinct from request-throttling rate limits above.
+# Deliberately scoped to budget/credit/spending/billing context — a bare "quota" or "limit"
+# stays classified as a rate limit (see _GATEWAY_RATE_LIMIT_RE).
+_GATEWAY_BUDGET_ERROR_RE = re.compile(
+    r"("
+    r"insufficient\s+(?:credits|funds)"
+    r"|(?:budget|spending|credit|billing)\s+limit"
+    r"|monthly\s+budget"
+    r"|billing\s+quota"
+    r"|purchase\s+(?:more\s+)?credits"
+    r"|add\s+credits"
+    r")",
+    re.IGNORECASE)
+
 # Connection-failure markers: the first 8 also anchor the provider-failure envelope shape below.
 _CONNECTION_ERROR_MARKERS = (
     r"(?:\w+\.)?(?:api\s*)?connection\s*(?:error|timeout)", r"(?:\w+\.)?connect\s*(?:error|timeout)",
@@ -577,19 +591,24 @@ def _format_exec_approval_fallback(
         f"{heading}\n```\n{cmd_preview}\n```\nReason: {description}\n\n"
         + ", ".join(choices[:-1]) + f", or {choices[-1]}.")
 
-# Ordered: auth beats policy beats rate-limit beats connection; first match wins.
+# Ordered: auth beats policy beats budget beats rate-limit beats connection; first match wins.
+# Budget precedes rate-limit so a body mentioning both ("billing quota", "usage limit exceeded on
+# the monthly budget") resolves to the account-level cap rather than generic throttling.
 _PROVIDER_ERROR_REPLIES = (
     (_GATEWAY_AUTH_ERROR_RE, "⚠️ Provider authentication failed. Check the configured credentials; "
                              "raw provider details are in the gateway logs."),
     (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The model provider rejected the request. I kept the raw provider "
                                   "error out of chat; check gateway logs for details or try rephrasing."),
+    (_GATEWAY_BUDGET_ERROR_RE, "⚠️ The model provider's account or workspace budget/credit limit has been "
+                               "reached. Check the provider billing or workspace budget settings, or "
+                               "switch providers/models."),
     (_GATEWAY_RATE_LIMIT_RE, "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."),
     (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The model server is not responding — it looks like the configured "
                                    "model endpoint is not running or is unreachable."))
 
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    """Map raw provider/API errors to a short user-safe reply across chat surfaces."""
     for pattern, reply in _PROVIDER_ERROR_REPLIES:
         if pattern.search(text):
             return reply

@@ -3494,6 +3494,46 @@ class TestDesktopLoopbackAuthExemption:
         ) is True
 
 
+class TestDesktopHostRendezvousIsolation:
+    """Desktop pool children have a private lifecycle, not a host ownership role."""
+
+    def test_desktop_backend_does_not_claim_the_host_serve_record(self, monkeypatch):
+        """A Desktop child must not block a separately supervised public dashboard."""
+        from gateway import host_rendezvous as hr
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        claimed = []
+        monkeypatch.setattr(hr, "claim_host_lock", lambda role: claimed.append(role))
+
+        web_server._publish_host_rendezvous("127.0.0.1", 9231)
+
+        assert claimed == []
+
+    def test_standalone_backend_still_claims_the_host_serve_record(self, monkeypatch):
+        """The Desktop exclusion must not alter standalone dashboard discovery."""
+        from gateway import host_rendezvous as hr
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        claimed = []
+        published = []
+        monkeypatch.setattr(
+            hr,
+            "claim_host_lock",
+            lambda role: (claimed.append(role) or (hr.HostLockOutcome.ACQUIRED, None)),
+        )
+        monkeypatch.setattr(hr, "publish_record", lambda *args, **kwargs: published.append((args, kwargs)))
+        monkeypatch.setattr(hr, "cleanup_on_exit", lambda role: None)
+
+        web_server._publish_host_rendezvous("0.0.0.0", 9119)
+
+        assert claimed == [hr.ROLE_SERVE]
+        assert published[0][0] == (hr.ROLE_SERVE,)
+        assert published[0][1]["host"] == "0.0.0.0"
+        assert published[0][1]["port"] == 9119
+
+
 # ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info
 # ---------------------------------------------------------------------------

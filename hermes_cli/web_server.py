@@ -1207,6 +1207,43 @@ def _best_effort(what: str, fn) -> None:
         _log.debug("%s skipped: %s", what, exc)
 
 
+def _publish_host_rendezvous(host: str, port: int) -> None:
+    """Publish the machine-level serve owner unless this is a Desktop pool child."""
+    # Desktop-spawned backends have a per-profile lifecycle. Publishing one as
+    # the host owner makes a later independently supervised dashboard attach to
+    # (or refuse behind) the private loopback child instead of its public bind.
+    if os.getenv("HERMES_DESKTOP") == "1":
+        return
+
+    from gateway import host_rendezvous as hr
+
+    outcome, error = hr.claim_host_lock(hr.ROLE_SERVE)
+    if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
+        _log.warning(
+            "Host backend lock could not be opened (%s); this backend is not discoverable. "
+            "This is NOT another backend holding it.", error)
+        return
+    if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
+        owner = hr.read_record(hr.ROLE_SERVE)
+        _log.warning(
+            "Another backend already owns this host (%s); this one bound anyway "
+            "(observe-only). Multiplex-only expects exactly one backend per host.",
+            hr.describe(owner) if owner else "owner unknown",
+        )
+        return
+    hr.publish_record(
+        hr.ROLE_SERVE,
+        host=host,
+        port=port,
+        profiles=hr.served_profiles(),
+        # The live session token, so an attaching client of the same OS user can
+        # authenticate even when the backend is gated and `GET /` withholds it.
+        token=_SESSION_TOKEN,
+    )
+    # SIGTERM included: it is the normal stop, and it does not run atexit here.
+    hr.cleanup_on_exit(hr.ROLE_SERVE)
+
+
 def _on_server_started(
     server,
     *,
@@ -1280,36 +1317,7 @@ def _on_server_started(
     # for any profile find this process and attach instead of binding a second port. Published
     # after the bind so the record carries the real port, and beside — not instead of — the
     # spawn-ledger entry above, which Desktop's attach ladder reads.
-    def _publish_host_record() -> None:
-        from gateway import host_rendezvous as hr
-
-        outcome, error = hr.claim_host_lock(hr.ROLE_SERVE)
-        if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
-            _log.warning(
-                "Host backend lock could not be opened (%s); this backend is not discoverable. "
-                "This is NOT another backend holding it.", error)
-            return
-        if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
-            owner = hr.read_record(hr.ROLE_SERVE)
-            _log.warning(
-                "Another backend already owns this host (%s); this one bound anyway "
-                "(observe-only). Multiplex-only expects exactly one backend per host.",
-                hr.describe(owner) if owner else "owner unknown",
-            )
-            return
-        hr.publish_record(
-            hr.ROLE_SERVE,
-            host=host,
-            port=actual_port,
-            profiles=hr.served_profiles(),
-            # The live session token, so an attaching client of the same OS user can
-            # authenticate even when the backend is gated and `GET /` withholds it.
-            token=_SESSION_TOKEN,
-        )
-        # SIGTERM included: it is the normal stop, and it does not run atexit here.
-        hr.cleanup_on_exit(hr.ROLE_SERVE)
-
-    _best_effort("host rendezvous publish", _publish_host_record)
+    _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
 
     _write_dashboard_ready_file(actual_port)
     # Port-discovery sentinel parsed by the Desktop spawn (matches either

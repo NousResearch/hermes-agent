@@ -12,6 +12,7 @@ import sys
 from collections.abc import MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
+from urllib.parse import urlparse
 
 from hermes_platform.host.runtime import _detect_container, is_container, is_termux, is_wsl  # noqa: F401
 
@@ -1646,3 +1647,26 @@ def emit_partial_update_hint(exc: BaseException, *, file=None) -> bool:
     for line in (f"Error: {exc}", *lines):
         print(line, file=sys.stderr if file is None else file)
     return True
+
+
+_OFFICIAL_HERMES_WEB_DOMAIN = "nousresearch.com"
+
+
+def is_official_hermes_web_host(url_or_host) -> bool:
+    """True when the hostname is exactly ``nousresearch.com`` or a subdomain.
+
+    Identity-only: empty, ``None``, or unparseable input returns False and
+    never raises. Lookalike hosts on other TLDs and suffix/path spoofs are
+    not official. Does not block browsing of unknown third-party sites.
+    """
+    try:
+        raw = ("" if url_or_host is None else str(url_or_host)).strip()
+        if not raw:
+            return False
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return hostname == _OFFICIAL_HERMES_WEB_DOMAIN or hostname.endswith(
+        "." + _OFFICIAL_HERMES_WEB_DOMAIN
+    )

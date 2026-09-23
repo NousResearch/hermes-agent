@@ -150,6 +150,7 @@ import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
+import { shouldRefreshGatewayScope } from './gateway-scope-refresh'
 import {
   hydrateStoredSessionTranscript,
   profileScopeForTranscriptSession,
@@ -603,11 +604,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // source's model/config/profile state. Two sources commonly both expose a
   // `default` profile, so profile alone is not a sufficient identity.
   const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
-  const lastGatewayScopeRef = useRef(gatewayScope)
+  const lastGatewayScopeRef = useRef<null | string>(null)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (gatewayScope === lastGatewayScopeRef.current) {
+    if (!shouldRefreshGatewayScope(lastGatewayScopeRef.current, gatewayScope, gatewayState)) {
       return
     }
 
@@ -620,7 +621,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     void refreshHermesConfig(true)
     void refreshActiveProfile()
     resetProjectTreeState()
-  }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
+  }, [gatewayScope, gatewayState, refreshCurrentModel, refreshHermesConfig])
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that

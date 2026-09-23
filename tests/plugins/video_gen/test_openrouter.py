@@ -194,6 +194,34 @@ def test_multiplexed_profile_spends_its_own_key_not_the_launch_profiles(monkeypa
     assert session.posts[0][0] == "https://profile-b.example/api/v1/videos"
 
 
+def test_multiplexed_profile_without_a_key_is_refused_not_served_on_the_launch_key(monkeypatch, tmp_path):
+    """Absence on the routed side: a profile with no OpenRouter credential of its own must fail closed, never
+    spend the launch profile's ``os.environ`` key."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile")
+    profile_home = tmp_path / "profile-nokey"
+    profile_home.mkdir()
+    (profile_home / ".env").write_text("")
+    provider = _provider(monkeypatch, [_VEO])
+
+    set_multiplex_active(True)
+    home_token = set_hermes_home_override(str(profile_home))
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    try:
+        available = provider.is_available()
+        result, session, bearers = _generate_capturing(monkeypatch, tmp_path, provider)
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+        set_multiplex_active(False)
+
+    assert available is False
+    assert result["success"] is False and result["error_type"] == "missing_credentials", result
+    assert session.posts == [] and bearers == []
+
+
 def test_generate_rejects_local_image_paths_before_spending(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     provider = _provider(monkeypatch, [_VEO])

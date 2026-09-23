@@ -490,14 +490,17 @@ class TestExaClientConfig:
         self._lazy_gate_patch.stop()
 
     def test_multiplexed_profiles_search_with_their_own_key(self, tmp_path, monkeypatch):
-        """One process serving two profiles: each turn's search goes out with its own profile's key."""
+        """One process serving two profiles: each turn's search goes out with its own profile's key, and a
+        profile WITHOUT a key is refused — never served on the launch profile's ``os.environ`` key."""
         from agent import secret_scope
         from plugins.web.exa.provider import ExaWebSearchProvider
         homes = {}
-        for name in ("a", "b"):
+        for name, line in (("a", "EXA_API_KEY=key-a\n"), ("b", "EXA_API_KEY=key-b\n"), ("nokey", "")):
             homes[name] = tmp_path / name
             homes[name].mkdir()
-            (homes[name] / ".env").write_text(f"EXA_API_KEY=key-{name}\n")
+            (homes[name] / ".env").write_text(line)
+        monkeypatch.setenv("EXA_API_KEY", "key-launch")
+        monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: False)
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
 
         def sent_with(name):
@@ -506,10 +509,22 @@ class TestExaClientConfig:
                 result = ExaWebSearchProvider().search("q")
             finally:
                 secret_scope.reset_secret_scope(token)
-            assert result["success"], result
+            if not result["success"]:
+                return result["error"]
             return result["data"]["web"][0]["description"]
 
         assert [sent_with("a"), sent_with("b"), sent_with("a")] == ["key-a", "key-b", "key-a"]
+        assert "EXA_API_KEY" in sent_with("nokey") and "key-launch" not in sent_with("nokey")
+        assert sent_with("a") == "key-a"
+
+    def test_single_profile_process_env_still_serves_the_key(self, monkeypatch):
+        """Control: no profile scope bound (plain CLI / systemd-injected env) keeps reading os.environ."""
+        from plugins.web.exa.provider import ExaWebSearchProvider
+        monkeypatch.setenv("EXA_API_KEY", "key-env")
+        monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: False)
+        result = ExaWebSearchProvider().search("q")
+        assert result["success"], result
+        assert result["data"]["web"][0]["description"] == "key-env"
 
 
 class TestWebSearchSchema:

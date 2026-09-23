@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-ServiceManagerKind = Literal["systemd", "launchd", "windows", "s6", "none"]
+ServiceManagerKind = Literal["systemd", "launchd", "windows", "s6", "sprites", "none"]
 
 # Profile names become s6 service directory names (``<scandir>/gateway-<profile>/``), so they
 # must not traverse paths, span filesystems, or break s6's own naming rules.
@@ -65,6 +65,8 @@ def detect_service_manager() -> ServiceManagerKind:
     # and is False on Fly's Firecracker microVMs even though s6-overlay is PID 1 there — that
     # made the s6 dispatch inert on Fly, so `hermes gateway start` spawned a foreground gateway
     # competing with the supervised one.
+    if Path("/opt/hermes/.sprites-ready").is_file() and Path("/.sprite/api.sock").exists():
+        return "sprites"
     if _s6_running():
         return "s6"
     if is_windows():
@@ -208,6 +210,9 @@ class WindowsServiceManager(_HostServiceManager):
 
 def get_service_manager() -> ServiceManager:
     """Return the ServiceManager instance for the current environment."""
+    if detect_service_manager() == "sprites":
+        from hermes_cli.sprites_services import SpritesServiceManager
+        return SpritesServiceManager()
     cls = _MANAGER_CLASSES.get(detect_service_manager())
     if cls is None:
         raise RuntimeError("no supported service manager detected")

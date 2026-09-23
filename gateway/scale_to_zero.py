@@ -167,7 +167,8 @@ def suspend_available(environ: Optional[dict] = None) -> bool:
     Quiescing without one is worse than not quiescing: the re-dial clears the flip.
     """
     env = environ if environ is not None else os.environ
-    return self_suspend_available(env) or brokered_sleep_url(env) is not None
+    from gateway.sprites_activity import available as sprites_available
+    return sprites_available() or self_suspend_available(env) or brokered_sleep_url(env) is not None
 
 
 # Must EXCEED the broker's own hard request ceiling (NAS route maxDuration = 30s),

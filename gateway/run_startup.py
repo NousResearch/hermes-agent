@@ -1536,6 +1536,12 @@ class GatewayStartupMixin:
         # so ``gateway status`` / /api/status / the health snapshot surface it, instead of only a log
         # line next to "Gateway running with N platform(s)".
         self._update_runtime_status(self._serving_state())
+        from gateway.sprites_activity import ActivityHold, available as sprites_available
+        if sprites_available():
+            from hermes_cli.profiles import get_active_profile_name
+            self._sprites_activity = ActivityHold(get_active_profile_name())  # launch profile
+            await self._sprites_activity.renew()
+            self._spawn_supervised(lambda: self._sprites_activity.watch(self), "sprites_activity")
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
         logger.info("Press Ctrl+C to stop")

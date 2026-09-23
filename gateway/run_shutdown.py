@@ -319,9 +319,12 @@ class GatewayShutdownMixin:
             return bool(process_registry.has_any_active() or process_registry.pending_watchers)
 
         for label, probe in (("async-delegation", _delegations_active), ("bg-work", _processes_active)):
-            with _log_suppressed(logging.DEBUG, f"scale-to-zero {label} check failed", exc_info=True):
+            try:
                 if probe():
                     return True
+            except Exception:
+                logger.debug("scale-to-zero %s check failed", label, exc_info=True)
+                return True
         return False
 
     @staticmethod
@@ -414,9 +417,14 @@ class GatewayShutdownMixin:
     def _scale_to_zero_should_arm(self) -> bool:
         """Whether to start the idle watcher (D1/D11/§3.4(1))."""
         from gateway.scale_to_zero import messaging_is_relay_only_or_absent, scale_to_zero_enabled, should_arm
+        active = self._scale_to_zero_active_messaging_platforms()
+        # A dashboard-only Sprite wakes through native ingress. Messaging still
+        # requires the connector's acknowledged dormancy and registered wake URL.
+        if getattr(self, '_sprites_activity', None) is not None and not active:
+            return True
         return should_arm(
             enabled=scale_to_zero_enabled(),
-            relay_only_or_absent=messaging_is_relay_only_or_absent(self._scale_to_zero_active_messaging_platforms()),
+            relay_only_or_absent=messaging_is_relay_only_or_absent(active),
             wake_url=self._relay_wake_url_or_none(),
         )
 
@@ -520,6 +528,10 @@ class GatewayShutdownMixin:
                 self._scale_to_zero_direct_platform_logged = False
                 go_dormant = getattr(self._relay_adapter_for_dormancy(), "go_dormant", None)
                 if not callable(go_dormant):
+                    sprites = getattr(self, "_sprites_activity", None)
+                    if sprites is not None and not active:
+                        await sprites.sleep_until_wake(self)
+                        self._scale_to_zero_abandon_suspend()
                     continue
                 # Quiesce only when a suspend can follow: otherwise the re-dial after the socket
                 # close just clears the flip again.
@@ -593,6 +605,11 @@ class GatewayShutdownMixin:
             brokered_sleep_url, request_brokered_suspend, self_suspend_available, suspend_self
         )
         try:
+            sprites = getattr(self, "_sprites_activity", None)
+            if sprites is not None:
+                await sprites.sleep_until_wake(self)
+                self._scale_to_zero_abandon_suspend()
+                return
             if self_suspend_available():
                 accepted = await asyncio.to_thread(suspend_self)
                 lever = "self-suspend"

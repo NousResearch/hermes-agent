@@ -866,3 +866,74 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field" and "device" in out["error"]
+
+    def test_a_bound_handle_focuses_only_its_saved_origin_for_otp(self, store):
+        """With a handle, tab selection is restricted to the login's saved origin(s) instead of
+        attaching to the first OTP-looking tab on any site (issue #119682)."""
+        from tools import browser_vault_tool
+
+        meta = store.add_item("login", "b", {"identifier_type": "username", "identifier": "tek", "password": "pw",
+                                             "otp_secret": "JBSWY3DPEHPK3PXP"}, origin="https://site-b.test")
+        focus_calls = []
+        controls = [{"index": 0, "type": "tel", "name": "otpCode", "label": "", "autocomplete": "one-time-code"}]
+        seen = {}
+
+        def fake_focus(task_id, origin, kind):
+            focus_calls.append((origin, kind))
+            return "https://site-b.test" if origin == "https://site-b.test" else None
+
+        def fake_eval(task_id, expr):
+            return {"success": True, "result": json.dumps(controls) if "querySelectorAll" in expr else "https://site-b.test/otp"}
+
+        def fake_secret(task_id, expr):
+            seen["expr"] = expr
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", side_effect=fake_focus), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t"))
+        assert out["success"] and out["origin"] == "https://site-b.test"
+        # the saved origin was probed; the any-origin search never ran even though another
+        # site's OTP tab could have won it
+        assert focus_calls == [("https://site-b.test", "otp")]
+
+    def test_a_bound_handle_refuses_an_otp_form_on_another_origin(self, store):
+        """Fail closed: when no tab on the saved origin holds the form, the code is never
+        prompted for or injected on a different site's OTP page."""
+        from tools import browser_vault_tool
+
+        meta = store.add_item("login", "b", {"identifier_type": "username", "identifier": "tek", "password": "pw",
+                                             "otp_secret": "JBSWY3DPEHPK3PXP"}, origin="https://site-b.test")
+        inspected, injected = [], []
+
+        def fake_eval(task_id, expr):
+            inspected.append(expr)
+            return {"success": True, "result": "https://site-a.test/2fa"}  # current tab is another site
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=lambda t, e: injected.append(e) or {"success": True, "result": "{}"}):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t"))
+        assert out["error_type"] == "origin_mismatch" and not out["success"]
+        assert not any("querySelectorAll" in e for e in inspected)  # the wrong tab was never inspected
+        assert injected == []  # nothing was written anywhere
+
+    def test_without_a_handle_the_current_tab_is_preferred_over_the_first_match(self):
+        """No handle: the tab the user is on wins over an earlier-opened OTP tab elsewhere."""
+        from tools import browser_vault_tool
+
+        focus_calls = []
+
+        def fake_focus(task_id, origin, kind):
+            focus_calls.append((origin, kind))
+            return "https://acme.test" if origin == "https://acme.test" else None
+
+        fake_eval = lambda t, e: {"success": True, "result": "https://acme.test/2fa" if "location" in e else "[]"}
+        with patch.object(browser_vault_tool, "_focus_bound_origin", side_effect=fake_focus), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
+            json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+        # current origin first; the any-origin scan is the fallback, never the first move
+        assert focus_calls[0] == ("https://acme.test", "otp")

@@ -163,8 +163,9 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
         return True, sanitize("\n".join(lines))
 
 
-USAGE = """usage: wintermute_pulse.py [--peek | --wake-next]
+USAGE = """usage: wintermute_pulse.py [--status | --peek | --wake-next]
   (no flag)    one real tick, as run by cron
+  --status     full live state for the operator, unconscious included (read-only; `wm`)
   --peek       show the state as a wake would, without saving anything
   --wake-next  make the next cron tick a wake (budget still applies)"""
 
@@ -173,6 +174,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args and args[0] in ("-h", "--help"):
         print(USAGE)
+        return 0
+    if args and args[0] == "--status":
+        from .status import render_status
+        print(render_status())
         return 0
     if args and args[0] == "--wake-next":
         with store.locked_state() as (drives, _peers):

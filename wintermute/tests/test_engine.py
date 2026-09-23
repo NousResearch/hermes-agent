@@ -408,3 +408,13 @@ def test_balance_prefers_the_key_limit_then_the_account(plugin):
     assert module._read_balance("k") == {"total": 5.0, "used": 0.46, "remaining": 4.54}
     answers[module.KEY_URL] = {"limit": None, "usage": 3}
     assert module._read_balance("k") == {"total": 20.0, "used": 3.0, "remaining": 17.0}
+
+
+def test_status_is_live_and_read_only(home):
+    pulse.tick(T0)
+    before = (home / "wintermute" / "drives.json").read_text()
+    from wintermute_engine.status import render_status
+    text = render_status(T0 + timedelta(hours=2))
+    assert "UNCONSCIOUS" in text and "irritability" in text and "telegram:7375758021" in text
+    assert "Next wake:  ~2026-09-23" in text
+    assert (home / "wintermute" / "drives.json").read_text() == before

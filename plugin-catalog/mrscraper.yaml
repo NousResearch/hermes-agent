@@ -1,6 +1,6 @@
 name: mrscraper
 repo: https://github.com/ai-mrscraper/hermes-mrscraper-plugin
-sha: 7981f91339eac0e9795044b3586d6d5012e10198
+sha: 87f7b14132671ae9d02b5edb7e69f64b0982a31b
 description: MrScraper web search, rendered extraction, crawling, and scraper tools.
 maintainer: ai-mrscraper
 tier: community

@@ -3,16 +3,21 @@ import { useEffect, useRef, useState } from 'react'
 
 import { profileScopeKey } from '@/api/client'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import { $settingsOwner } from '@/store/settings-scope'
-import { CHAT_FONT_SUGGESTIONS, normalizeChatFontFamily, setChatFontFamilyFromConfig } from '@/themes/chat-font'
+import {
+  CHAT_FONT_SUGGESTIONS,
+  normalizeChatFontFamily,
+  resolveChatFontFamily,
+  setChatFontFamilyFromConfig
+} from '@/themes/chat-font'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 
+import { ComboboxInput } from './combobox-input'
 import { getNested, setNested } from './helpers'
 import { ListRow } from './primitives'
 
@@ -137,24 +142,22 @@ function ChatFontSettingInner({ settingsOwner }: { settingsOwner: ReturnType<typ
       below={
         <div className="mt-3 space-y-2">
           <div className="flex items-center gap-3">
-            <Input
+            <ComboboxInput
               aria-label={copy.chatFontTitle}
               className="flex-1"
               disabled={draft === null}
-              list="hermes-chat-font-families"
-              onChange={event => update(event.target.value)}
+              onChange={update}
+              options={CHAT_FONT_SUGGESTIONS}
               placeholder={copy.chatFontPlaceholder}
+              renderOption={font => (
+                <span style={{ fontFamily: resolveChatFontFamily(font, 'var(--dt-font-sans)') }}>{font}</span>
+              )}
               value={value}
             />
             <Button disabled={!value || draft === null} onClick={() => update('')} size="inline" variant="text">
               {copy.chatFontReset}
             </Button>
           </div>
-          <datalist id="hermes-chat-font-families">
-            {CHAT_FONT_SUGGESTIONS.map(font => (
-              <option key={font} value={font} />
-            ))}
-          </datalist>
           {/* Inherits --dt-font-sans, so it IS the live result, not a simulation. */}
           <div
             aria-label={copy.chatFontPreview}

@@ -26,6 +26,7 @@ import type {
   CustomEndpointUpdate
 } from '@/types/hermes'
 
+import { ComboboxInput } from './combobox-input'
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 
@@ -466,17 +467,12 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem]">
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 {ce.fields.defaultModel}
-                <Input
-                  list="custom-endpoint-models"
-                  onChange={event => setForm(current => ({ ...current, model: event.target.value }))}
+                <ComboboxInput
+                  onChange={model => setForm(current => ({ ...current, model }))}
+                  options={allModelOptions}
                   placeholder="gpt-5.4"
                   value={form.model}
                 />
-                <datalist id="custom-endpoint-models">
-                  {allModelOptions.map(model => (
-                    <option key={model} value={model} />
-                  ))}
-                </datalist>
               </label>
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 {ce.fields.context}

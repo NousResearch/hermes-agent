@@ -1155,8 +1155,32 @@ export const zh = defineLocale({
     }),
     uninstallSection: {
       dangerZone: '危险操作',
+      checkingInstalled: '正在检查已安装内容…',
+      uninstallHermes: '卸载 Hermes',
+      chooseHowMuch: '选择要删除的内容。应用会关闭以完成卸载；随时重新打开安装程序即可恢复。',
       confirmUninstall: '确认卸载',
-      uninstallHermes: '卸载 Hermes'
+      confirmBody: what => `这将删除${what}。此操作无法撤销。`,
+      appLabel: '应用：',
+      couldNotStart: '无法开始卸载。',
+      uninstalling: '正在卸载…',
+      yesUninstall: '是，卸载',
+      options: {
+        gui: {
+          title: '仅卸载聊天图形界面',
+          description: '仅移除此桌面应用。Hermes 智能体、你的配置和聊天记录都会保留。',
+          consequence: '桌面聊天图形界面（此应用及其数据）'
+        },
+        lite: {
+          title: '卸载图形界面和智能体，保留数据',
+          description: '移除应用和 Hermes 智能体，但保留配置、聊天记录和密钥，以便将来重新安装。',
+          consequence: '聊天图形界面和 Hermes 智能体（配置、聊天记录和密钥会保留）'
+        },
+        full: {
+          title: '全部卸载',
+          description: '移除应用、智能体和所有用户数据——配置、聊天记录、定时任务、密钥和日志。',
+          consequence: '全部内容——聊天图形界面、Hermes 智能体以及你的所有配置、聊天记录、密钥和日志'
+        }
+      }
     },
     poolLimits: {
       warmBotBackendsAria: '预热机器人后端',
@@ -1783,6 +1807,229 @@ export const zh = defineLocale({
       deleteConfirm: model => `从磁盘删除 ${model}？`,
       deleted: model => `已删除 ${model}。`,
       deleteFailed: '删除失败'
+    },
+    billing: {
+      perMonth: amount => `${amount}/月`,
+      creditsPerMonth: amount => `${amount} 额度/月`,
+      usageLabel: label => `${label}用量`,
+      freeTier: {
+        signIn: '登录',
+        title: '你正在使用 Nous 免费服务',
+        message: '登录 Nous 账户以解锁更多模型和工具。',
+        caption: '使用 nous/welcome，包含连接器。登录后会保留连接器，并增加需要账户的工具和其他所有模型。',
+        name: 'Nous · 免费服务',
+        footnote: '免费服务没有余额，无需支付。登录 Nous 账户后才会显示支付与用量。',
+        plan: '免费服务',
+        model: '模型',
+        connectors: '连接器',
+        included: '已包含'
+      },
+      amountValidation: {
+        reloadTo: '充值金额',
+        greaterThanThreshold: '充值金额必须大于阈值。',
+        decimal: label => `${label}：请输入最多含两位小数的美元金额。`,
+        positive: label => `${label}：金额必须大于 $0。`,
+        minimum: (label, amount) => `${label}：最低金额为 ${amount}。`,
+        maximum: (label, amount) => `${label}：最高金额为 ${amount}。`
+      },
+      stepUp: {
+        openVerification: '打开验证页面',
+        dismiss: '关闭',
+        waiting: '正在等待验证链接…',
+        verify: '验证以继续',
+        deniedTitle: '验证未获批准',
+        deniedBody: '验证已结束，但未允许此终端进行远程支出。',
+        successTitle: '验证完成',
+        successBody: '此终端已获准进行远程支出。'
+      },
+      charge: {
+        added: amount => (amount ? `已添加 $${amount}。` : '已添加额度。'),
+        failedTitle: '扣款失败',
+        unconfirmedTitle: '扣款结果尚未确认',
+        unconfirmedBody: message => `${message} 上次扣款结果尚未确认，请在重试前检查余额和历史记录。`,
+        checkTitle: '无法检查扣款',
+        checkBody: '无法检查扣款。',
+        untrackedTitle: '无法跟踪扣款',
+        untrackedBody: '账单服务已接受请求，但未返回扣款标识。',
+        timeoutTitle: '5 分钟后仍在处理',
+        timeoutBody: '扣款仍可能结算，请在重试前检查门户。',
+        authenticationRequired: '银行要求验证（3DS）。请在门户完成验证以完成本次购买。',
+        expired: '银行卡已过期。请在门户中更新。',
+        declined: '银行卡被拒绝。请在门户中尝试另一张卡。',
+        failedBody: reason => `扣款未成功（${reason}）。`
+      },
+      title: '账单',
+      preview: '预览',
+      summary: { balance: '余额', plan: '套餐', autoRefill: '自动充值' },
+      sections: {
+        invoices: '发票',
+        plan: '套餐',
+        paymentAndCredits: '支付与额度',
+        usage: '用量'
+      },
+      usage: { title: '用量' },
+      buyCredits: {
+        customAmount: '自定义充值金额',
+        title: '立即购买额度',
+        buyButton: '购买',
+        processing: '处理中…正在确认结算',
+        added: amount => `已添加 ${amount}，正在刷新余额。`,
+        retry: '重试',
+        openPortal: '打开门户'
+      },
+      plan: {
+        title: '套餐',
+        changePlan: '更改套餐',
+        viewPlans: '查看套餐',
+        backAria: '返回账单',
+        current: '当前套餐',
+        scheduled: '已安排',
+        empty: '目前没有可切换的套餐。',
+        undo: '撤销',
+        undoing: '正在撤销…',
+        downgrade: '降级',
+        confirmDowngrade: '确认降级',
+        tryAgain: '重试',
+        checkingChange: '正在检查此变更…',
+        cannotChange: '无法在此进行该变更。',
+        alreadyOn: name => `你已使用 ${name}，无需更改。`,
+        notScheduleable: '无法在此安排该变更。',
+        scheduling: '正在安排…',
+        cancel: '取消',
+        effectScheduled: (targetName, effectiveAt, creditsDelta) =>
+          `更改为 ${targetName}，于 ${effectiveAt} 生效。现在不扣费；在此之前保留当前套餐。${creditsDelta ? `每月额度变化：${creditsDelta}。` : ''}`
+      },
+      autoReload: {
+        threshold: '阈值',
+        thresholdAria: '自动充值阈值',
+        reloadTo: '充值金额',
+        reloadToAria: '自动充值金额',
+        turnOffConfirm: '关闭自动充值？',
+        turnOff: '关闭',
+        disable: '禁用',
+        updated: '自动充值已更新。',
+        turnedOff: '自动充值已关闭。',
+        manage: '管理',
+        save: '保存',
+        saving: '正在保存…',
+        cancel: '取消'
+      },
+      state: {
+        notice: {
+          loggedOut: {
+            title: '连接你的 Nous 账户',
+            message: '在 TUI 中运行 /portal，或打开 Nous 门户连接账户。',
+            action: '打开门户 ↗'
+          },
+          noCard: {
+            title: '尚未添加支付方式',
+            message: '添加银行卡后才能购买额度和使用自动充值。请在门户中添加。',
+            action: '添加银行卡 ↗'
+          }
+        },
+        paymentMethod: {
+          title: '支付方式',
+          description: '管理用于充值和订阅续费的银行卡。',
+          addAction: '添加支付方式',
+          updateAction: '更新',
+          provenance: {
+            autoRefill: '自动充值卡',
+            customerDefault: '账户默认卡',
+            subPin: '订阅卡',
+            suffix: label => ` - ${label}`
+          }
+        },
+        buyCredits: { description: '从银行卡一次性扣款，今天即可计入余额。' },
+        autoRefill: {
+          title: '余额不足时充值',
+          genericDescription: '余额低于阈值时自动补充额度。',
+          offPill: '已关闭',
+          enabledPill: '已启用',
+          notAvailablePill: '—',
+          manageCaption: '在门户中管理自动充值。',
+          turnOnCaption: '在门户中开启自动充值',
+          chargesDescription: (reloadTo, threshold) => `余额低于 ${threshold} 时自动扣款 ${reloadTo}。`,
+          distinctCardCaption: cardLabel => `自动充值使用 ${cardLabel} 扣款，请在门户中核对`,
+          distinctCardFallback: '另一张银行卡',
+          reconcileAction: '核对 ↗'
+        },
+        usage: {
+          subscriptionCredits: {
+            title: '订阅额度',
+            barLabel: '剩余订阅额度',
+            captionResets: date => `于 ${date} 重置`,
+            valueOf: (remaining, monthly) => `${monthly} 中剩余 ${remaining}`,
+            valueOver: (remaining, monthly, over) => `${monthly} 中剩余 ${remaining} · 超出 ${over}`
+          },
+          topupCredits: { title: '充值额度', caption: '不会过期' },
+          monthlyCap: {
+            title: '每月支出上限',
+            barLabel: '已用每月支出限额',
+            captionDefault: '默认上限',
+            captionSpending: '每月远程支出',
+            valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          }
+        },
+        planCard: {
+          freeTier: '免费',
+          chooseAction: '选择 ↗',
+          adjustPlanAction: '调整套餐 ↗',
+          unavailableCaption: '订阅详情暂不可用，仍可打开门户。',
+          downgradeCaption: (tierName, when) => `于 ${when} 更改为 ${tierName}。`,
+          cancellationCaption: when => `于 ${when} 取消。`,
+          renewsCaption: date => `于 ${date} 续费`,
+          noSubscriptionCaption: '没有有效订阅，付费模型会扣除充值额度。'
+        }
+      },
+      errors: {
+        consentRequired: { title: '需要确认银行卡', message: '请在门户中确认此卡可用于终端扣款' },
+        insufficientScope: {
+          title: '需要批准远程支出',
+          message: '此操作需要远程支出权限。请发起一次充值以授权，然后重试。'
+        },
+        remoteSpendingRevoked: {
+          title: '远程支出已停止',
+          messageByAdmin: '管理员已停止此终端的远程支出。',
+          messageBySelf: '你已停止此终端的远程支出。'
+        },
+        remoteSpendingReconnect: who => `${who} 请从“设置 → 网关”重新连接以重新授权此设备。`,
+        sessionRevoked: { title: '会话已登出', message: '你的会话已登出。请从“设置 → 网关”重新登录。' },
+        cliBillingDisabled: {
+          title: '远程支出已关闭',
+          message: '此账户的远程支出已关闭，账单管理员可在门户的 Hermes Agent 页面开启。'
+        },
+        roleRequired: {
+          title: '需要管理员权限',
+          message: '添加资金需要组织管理员或所有者权限。请联系管理员，或在门户中管理。'
+        },
+        idempotencyConflict: { title: '请发起新的充值', message: '🔴 此扣款标识已用于另一金额。请发起新的充值。' },
+        noPaymentMethod: {
+          title: '没有已保存的银行卡',
+          message: '💳 尚未保存用于终端扣款的银行卡。请在门户中设置（一次性购买额度不会保存可重复使用的卡）。'
+        },
+        orgAccessDenied: { title: '组织访问被拒绝', message: '此令牌未绑定到你可管理的组织' },
+        monthlyCapExceeded: {
+          title: '已达每月支出上限',
+          messageReached: '🔴 已达每月支出上限。',
+          messageHeadroom: remaining => `🔴 已达每月支出上限，剩余额度为 $${remaining}。`
+        },
+        rateLimited: {
+          title: '当前扣款请求过多',
+          message: mins => `🟡 当前扣款请求过多${mins > 0 ? `（请约 ${mins} 分钟后重试）` : ''}。这不是支付失败。`
+        },
+        stripeUnavailable: {
+          title: 'Stripe 遇到问题',
+          message: mins => (mins > 0 ? `Stripe 遇到问题，请约 ${mins} 分钟后重试` : 'Stripe 遇到问题，请稍后重试')
+        },
+        upgradeCapExceeded: { title: '已达每日套餐变更次数上限', message: '已达每日套餐变更次数上限，请明天重试' },
+        endpointUnavailable: {
+          title: '账单端点不可用',
+          message: '账单端点返回了非 JSON 响应（此部署可能不支持该端点）。'
+        },
+        timeout: { title: '账单请求超时', message: '账单请求超时。' },
+        transport: { title: '账单连接失败', message: '账单请求在到达网关前失败。' },
+        default: { title: '账单请求失败', message: '账单请求失败。' }
+      }
     },
     providers: {
       connectAccount: '连接账号',

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
 import { $connection } from '@/store/session'
 import { $settingsOwner, $settingsScopeOverride } from '@/store/settings-scope'
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import type {
   CustomEndpoint,
   CustomEndpointsResponse,
@@ -106,6 +107,8 @@ function replaceOwner() {
 }
 
 beforeEach(async () => {
+  stubResizeObserver()
+  stubMenuDomApis()
   const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
   vi.stubGlobal('hermesDesktop', {
     ...window.hermesDesktop,

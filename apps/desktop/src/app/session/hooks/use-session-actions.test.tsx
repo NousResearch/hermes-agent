@@ -5,6 +5,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
@@ -93,6 +94,7 @@ import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
+import { createPersistedDisplayTranscriptProvenance } from './use-session-actions/transcript-provenance'
 import { useSessionStateCache } from './use-session-state-cache'
 
 vi.mock('@/hermes', async importOriginal => ({
@@ -1832,6 +1834,286 @@ describe('session.resume turn timer contract', () => {
     await resumeFrom({ ...sessionResumeActiveTurn, turn_started_at: 'not-a-timestamp' })
 
     expect($turnStartedAt.get()).toBeNull()
+  })
+})
+
+// Real session cache + real view sync: the leak lives in the seam between
+// resumeSession's foreground binding and the cache's view gate, so the fakes
+// in ResumeHarness would hide it.
+function WarmSwitchHarness({
+  onReady,
+  requestGateway
+}: {
+  onReady: (ready: {
+    cache: ReturnType<typeof useSessionStateCache>
+    resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>
+  }) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+}) {
+  const activeSessionId = useStore($activeSessionId)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const busyRef = useRef(false)
+
+  const cache = useSessionStateCache({
+    activeSessionId,
+    busyRef,
+    selectedStoredSessionId,
+    setAwaitingResponse,
+    setBusy,
+    setMessages
+  })
+
+  const actions = useSessionActions({
+    activeSessionId,
+    activeSessionIdRef: cache.activeSessionIdRef,
+    busyRef,
+    creatingSessionRef: useRef(false),
+    ensureSessionState: cache.ensureSessionState,
+    getRouteToken: () => 'warm-switch',
+    getRoutedStoredSessionId: () => null,
+    holdSessionTranscriptView: cache.holdSessionTranscriptView,
+    navigate: vi.fn() as never,
+    requestGateway,
+    resetViewSync: cache.resetViewSync,
+    runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef: cache.sessionStateByRuntimeIdRef,
+    syncSessionStateToView: cache.syncSessionStateToView,
+    updateSessionState: cache.updateSessionState
+  })
+
+  useEffect(() => {
+    onReady({ cache, resume: actions.resumeSession })
+  }, [actions.resumeSession, cache, onReady])
+
+  return null
+}
+
+describe('resumeSession warm switch away from a streaming session (#89696)', () => {
+  const textOf = (messages: readonly { parts: readonly unknown[] }[]) => JSON.stringify(messages)
+
+  const turnA = [
+    { id: 'a-user', role: 'user' as const, parts: [{ type: 'text' as const, text: 'A history question' }] },
+    { id: 'a-answer', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'A history answer' }] }
+  ]
+
+  const turnB = [
+    { id: 'b-user', role: 'user' as const, parts: [{ type: 'text' as const, text: 'B history question' }] },
+    { id: 'b-answer', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'B history answer' }] }
+  ]
+
+  const persistedB = [
+    { content: 'B history question', role: 'user', timestamp: 1 },
+    { content: 'B history answer', role: 'assistant', timestamp: 2 }
+  ]
+
+  beforeEach(() => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback: FrameRequestCallback) => {
+      callback(0)
+
+      return null as unknown as number
+    })
+    vi.mocked(ensureGatewayProfile).mockReset().mockResolvedValue(undefined)
+    vi.mocked(getSession).mockReset()
+    vi.mocked(getLatestSessionMessages)
+      .mockReset()
+      .mockResolvedValue({ messages: persistedB, session_id: 'stored-B' } as never)
+    setSessions([
+      storedSession({ id: 'stored-A', message_count: 2, profile: 'default' }),
+      storedSession({ id: 'stored-B', message_count: 2, profile: 'default' })
+    ])
+  })
+
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    setAwaitingResponse(false)
+    setBusy(false)
+    setMessages([])
+    setSessions([])
+    vi.mocked(ensureGatewayProfile).mockReset().mockResolvedValue(undefined)
+    vi.mocked(requestGatewayForProfile).mockReset()
+    vi.mocked(getLatestSessionMessages)
+      .mockReset()
+      .mockResolvedValue({ messages: [] } as never)
+    vi.restoreAllMocks()
+  })
+
+  // A is the foreground chat, mid-turn; B is a warm, settled chat the user
+  // opened earlier in this window.
+  async function mountWithStreamingForegroundAndWarmTarget() {
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-B',
+          session_key: 'stored-B',
+          resumed: 'stored-B',
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          running: false,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let harness!: Parameters<Parameters<typeof WarmSwitchHarness>[0]['onReady']>[0]
+    render(<WarmSwitchHarness onReady={ready => (harness = ready)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(harness).toBeDefined())
+    // Profile-owned rows route session RPCs through the profile dispatcher.
+    vi.mocked(requestGatewayForProfile).mockImplementation((_profile, method, params) => requestGateway(method, params))
+
+    act(() => {
+      setSelectedStoredSessionId('stored-A')
+      setActiveSessionId('rt-A')
+    })
+
+    act(() => {
+      harness.cache.updateSessionState(
+        'rt-A',
+        state => ({ ...state, awaitingResponse: true, busy: true, messages: turnA, turnLive: true }),
+        'stored-A'
+      )
+      harness.cache.updateSessionState('rt-B', state => ({ ...state, messages: turnB }), 'stored-B')
+    })
+
+    expect(textOf($messages.get())).toContain('A history answer')
+
+    return { harness, requestGateway }
+  }
+
+  function streamIntoA(harness: Parameters<Parameters<typeof WarmSwitchHarness>[0]['onReady']>[0]) {
+    act(() => {
+      harness.cache.updateSessionState(
+        'rt-A',
+        state => ({
+          ...state,
+          messages: [
+            ...state.messages,
+            { id: 'user-a-live', role: 'user', parts: [{ type: 'text', text: 'A live prompt' }] },
+            {
+              id: 'assistant-stream-a',
+              role: 'assistant',
+              pending: true,
+              parts: [{ type: 'text', text: 'A streaming reply' }]
+            }
+          ]
+        }),
+        'stored-A'
+      )
+    })
+  }
+
+  it('stops painting the outgoing live turn while the warm target waits on its gateway', async () => {
+    const { harness } = await mountWithStreamingForegroundAndWarmTarget()
+    const gatewayReady = deferred<void>()
+    vi.mocked(ensureGatewayProfile).mockReturnValueOnce(gatewayReady.promise)
+
+    const pending = harness.resume('stored-B', true)
+    await waitFor(() => expect(ensureGatewayProfile).toHaveBeenCalled())
+
+    // B is selected but not bound yet. The runtime A just left must not own
+    // the foreground: its deltas would keep flushing into the shared view.
+    expect($selectedStoredSessionId.get()).toBe('stored-B')
+    expect($activeSessionId.get()).not.toBe('rt-A')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('A history answer')
+
+    streamIntoA(harness)
+
+    expect(textOf($messages.get())).not.toContain('A streaming reply')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('A streaming reply')
+
+    await act(async () => {
+      gatewayReady.resolve()
+      await pending
+    })
+
+    // A kept streaming in the background, into its own slice only.
+    expect(textOf(harness.cache.sessionStateByRuntimeIdRef.current.get('rt-A')?.messages ?? [])).toContain(
+      'A streaming reply'
+    )
+    await waitFor(() => expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).toContain('B history answer'))
+    expect($activeSessionId.get()).toBe('rt-B')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('A ')
+  })
+
+  it("never grafts the outgoing chat's pending turn into a warm target re-resumed mid-switch", async () => {
+    const { harness } = await mountWithStreamingForegroundAndWarmTarget()
+    const gatewayReady = deferred<void>()
+    vi.mocked(ensureGatewayProfile).mockReturnValueOnce(gatewayReady.promise)
+
+    const first = harness.resume('stored-B', true)
+    await waitFor(() => expect(ensureGatewayProfile).toHaveBeenCalledTimes(1))
+    streamIntoA(harness)
+
+    // A second resume of the same target (route self-heal, reconnect, a
+    // repeated click) snapshots the view as "this session's pending turn".
+    await act(async () => {
+      await harness.resume('stored-B', true)
+    })
+
+    const cachedB = harness.cache.sessionStateByRuntimeIdRef.current.get('rt-B')
+
+    expect(textOf(cachedB?.messages ?? [])).not.toContain('A live prompt')
+    expect(textOf(cachedB?.messages ?? [])).not.toContain('A streaming reply')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('A live prompt')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('A streaming reply')
+
+    await act(async () => {
+      gatewayReady.resolve()
+      await first
+    })
+
+    expect($activeSessionId.get()).toBe('rt-B')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('A streaming reply')
+  })
+
+  it('paints a proven warm target at entry, never the outgoing live turn', async () => {
+    const { harness } = await mountWithStreamingForegroundAndWarmTarget()
+
+    act(() => {
+      harness.cache.updateSessionState(
+        'rt-B',
+        state => ({
+          ...state,
+          transcriptProvenance: createPersistedDisplayTranscriptProvenance({
+            lineageRootId: null,
+            scope: 'default',
+            storedSessionId: 'stored-B'
+          })
+        }),
+        'stored-B'
+      )
+    })
+
+    const gatewayReady = deferred<void>()
+    vi.mocked(ensureGatewayProfile).mockReturnValueOnce(gatewayReady.promise)
+
+    const pending = harness.resume('stored-B', true)
+
+    // Display-only: B's persisted-display transcript is on screen before the
+    // gateway swap resolves, with A's runtime already off the foreground.
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).toContain('B history answer')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('A history answer')
+    expect($activeSessionId.get()).toBeNull()
+
+    streamIntoA(harness)
+
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).toContain('B history answer')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('A streaming reply')
+
+    await act(async () => {
+      gatewayReady.resolve()
+      await pending
+    })
+
+    expect($activeSessionId.get()).toBe('rt-B')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).toContain('B history answer')
+    expect(textOf(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('A ')
   })
 })
 

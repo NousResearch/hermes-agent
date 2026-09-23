@@ -1531,6 +1531,16 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 30                # seconds
+    # Set kind: decisions only with provider: openrouter and a Decisions model.
+    # kind: decisions
+    # model: "typesafe/jev-1.13"
+    # fallback:                  # Optional separate chat route if Decisions is unavailable.
+    #   provider: openrouter
+    #   model: openai/gpt-4.1-nano
+    # questions:
+    #   approve:
+    #     type: noul
+    #     instructions: "Should the command in state.messages be approved?"
 
   # Gemini 3.1 TTS hidden audio-tag insertion
   tts_audio_tags:

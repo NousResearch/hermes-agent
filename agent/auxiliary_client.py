@@ -6126,6 +6126,53 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config
 
 
+def is_openrouter_decisions_task(task: str) -> bool:
+    """Whether an auxiliary task explicitly opts into OpenRouter Decisions."""
+    return str(_get_auxiliary_task_config(task).get("kind") or "").strip().lower() == "decisions"
+
+
+def decisions_chat_fallback(task: str) -> Dict[str, Any]:
+    """Configured chat route for a Decisions task, or an empty mapping.
+
+    A Decisions model cannot be retried through ``chat/completions``.  A
+    fallback must therefore name a separate chat provider/model pair.
+    """
+    fallback = _get_auxiliary_task_config(task).get("fallback")
+    return dict(fallback) if isinstance(fallback, dict) else {}
+
+
+def call_openrouter_decisions(
+    task: str, *, state: Any, questions: Dict[str, Any], timeout: Optional[float] = None,
+) -> Dict[str, float]:
+    """Run a configured OpenRouter Decisions task without using the chat wire.
+
+    Decisions models cannot accept OpenAI chat-completions requests.  Keep this
+    opt-in so every existing auxiliary task retains its chat behavior unless
+    its own configuration declares ``kind: decisions``.
+    """
+    task_config = _get_auxiliary_task_config(task)
+    if not is_openrouter_decisions_task(task):
+        raise ValueError(f"auxiliary.{task}.kind must be 'decisions'")
+    provider = str(task_config.get("provider") or "").strip().lower()
+    if provider != "openrouter":
+        raise ValueError(f"auxiliary.{task}.kind 'decisions' requires provider 'openrouter'")
+    configured_questions = task_config.get("questions")
+    if configured_questions is not None:
+        questions = configured_questions
+    client, resolved_model = get_text_auxiliary_client(task)
+    if client is None:
+        raise AuxiliaryClientUnavailable(f"No OpenRouter client configured for Decisions task={task}")
+    api_key = getattr(client, "api_key", None)
+    if callable(api_key):
+        api_key = api_key()
+    from agent.openrouter_decisions import call_decisions
+    return call_decisions(
+        api_key=str(api_key or ""), base_url=str(getattr(client, "base_url", "") or ""),
+        model=str(resolved_model or task_config.get("model") or ""), state=state,
+        questions=questions, timeout=_effective_aux_timeout(task, timeout),
+    )
+
+
 class CompressionFastLane(NamedTuple):
     """Explicit, non-reasoning compression route."""
 

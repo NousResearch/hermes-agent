@@ -69,6 +69,31 @@ class TestSmartApproval:
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
 
+    @pytest.mark.parametrize(("probability", "expected"), [
+        (0.97, "approve"), (0.03, "deny"), (0.5, "escalate"),
+    ])
+    def test_smart_approval_maps_decisions_probability(self, monkeypatch, probability, expected):
+        monkeypatch.setattr("agent.auxiliary_client.is_openrouter_decisions_task", lambda task: task == "approval")
+        mock_decision = mock_patch("agent.auxiliary_client.call_openrouter_decisions", return_value={"approve": probability})
+        with mock_decision as call_decision:
+            assert _smart_approve("git status", "flagged") == expected
+
+        assert call_decision.call_args.args == ("approval",)
+        assert call_decision.call_args.kwargs["questions"]["approve"]["type"] == "noul"
+
+    def test_smart_approval_uses_chat_only_when_decisions_fallback_is_configured(self, monkeypatch):
+        monkeypatch.setattr("agent.auxiliary_client.is_openrouter_decisions_task", lambda _: True)
+        monkeypatch.setattr("agent.auxiliary_client.decisions_chat_fallback", lambda _: {
+            "provider": "openrouter", "model": "openai/gpt-4.1-nano",
+        })
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="DENY"))])
+        with mock_patch("agent.auxiliary_client.call_openrouter_decisions", side_effect=RuntimeError("down")):
+            with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as call_llm:
+                assert _smart_approve("git status", "flagged") == "deny"
+
+        assert call_llm.call_args.kwargs["task"] == "approval"
+        assert call_llm.call_args.kwargs["model"] == "openai/gpt-4.1-nano"
+
     def test_smart_approval_does_not_allowlist_the_pattern_for_session(self, monkeypatch):
         session_key = "test-smart-per-command"
         command = "python -c \"print('hello')\""

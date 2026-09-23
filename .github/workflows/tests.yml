@@ -48,7 +48,8 @@ jobs:
             tests/gateway/test_postgres_state_health.py \
             tests/agent/test_postgres_insights.py \
             tests/gateway/test_postgres_delivery_ledger.py \
-            tests/cron/test_postgres_cron_stores.py
+            tests/cron/test_postgres_cron_stores.py \
+            tests/hermes_cli/test_postgres_kanban.py
         env:
           HERMES_TEST_POSTGRES: "1"
           HERMES_TEST_WORKERS: "4"

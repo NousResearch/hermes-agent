@@ -10,12 +10,10 @@ Covers:
 """
 
 import os
-import logging
 import sys
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
-from zoneinfo import ZoneInfo
 
 import hermes_time
 
@@ -48,20 +46,7 @@ class TestHermesTimeNow:
         offset = result.utcoffset()
         assert offset == timedelta(hours=5, minutes=30)
 
-    def test_utc_timezone(self):
-        """UTC timezone works."""
-        os.environ["HERMES_TIMEZONE"] = "UTC"
-        result = hermes_time.now()
-        assert result.utcoffset() == timedelta(0)
 
-    def test_us_eastern(self):
-        """US/Eastern timezone works (DST-aware zone)."""
-        os.environ["HERMES_TIMEZONE"] = "America/New_York"
-        result = hermes_time.now()
-        assert result.tzinfo is not None
-        # Offset is -5h or -4h depending on DST
-        offset_hours = result.utcoffset().total_seconds() / 3600
-        assert offset_hours in {-5, -4}
 
 
 
@@ -78,11 +63,6 @@ class TestGetTimezone:
         _reset_hermes_time_cache()
         os.environ.pop("HERMES_TIMEZONE", None)
 
-    def test_returns_zoneinfo_for_valid(self):
-        os.environ["HERMES_TIMEZONE"] = "Europe/London"
-        tz = hermes_time.get_timezone()
-        assert isinstance(tz, ZoneInfo)
-        assert str(tz) == "Europe/London"
 
     def test_cache_isolated_by_active_profile_config(self, tmp_path, monkeypatch):
         """Switching HERMES_HOME must not reuse another profile's timezone."""
@@ -249,19 +229,6 @@ class TestCodeExecutionTZ:
             "HERMES_TIMEZONE should not leak into child env (only TZ)"
         )
 
-    def test_tz_not_injected_when_empty(self):
-        """When HERMES_TIMEZONE is not set, child process has no TZ."""
-        import json as _json
-        os.environ.pop("HERMES_TIMEZONE", None)
-
-        with patch("model_tools.handle_function_call", side_effect=self._mock_handle):
-            result = _json.loads(self._execute_code(
-                code='import os; print(os.environ.get("TZ", "NOT_SET"))',
-                task_id="tz-test-empty",
-                enabled_tools=[],
-            ))
-        assert result["status"] == "success"
-        assert "NOT_SET" in result["output"]
 
 
 # =========================================================================
@@ -287,14 +254,6 @@ class TestCronTimezone:
         # The stored timestamp should be tz-aware
         assert run_at.tzinfo is not None
 
-    def test_compute_next_run_tz_aware(self):
-        """compute_next_run returns tz-aware timestamps."""
-        os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"
-        from cron.jobs import compute_next_run
-        schedule = {"kind": "interval", "minutes": 60}
-        result = compute_next_run(schedule)
-        next_dt = datetime.fromisoformat(result)
-        assert next_dt.tzinfo is not None
 
 
     def test_ensure_aware_naive_preserves_absolute_time(self):

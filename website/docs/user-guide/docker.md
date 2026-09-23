@@ -40,7 +40,7 @@ docker run -it --rm \
 This drops you into the setup wizard, which will prompt you for your API keys and write them to `~/.hermes/.env`. You only need to do this once. It is highly recommended to set up a chat system for the gateway to work with at this point.
 
 :::tip
-Inside the container, run `hermes setup --portal` once — the refresh token persists in the mounted `~/.hermes` volume. See [Nous Portal](/integrations/nous-portal).
+Inside the container, run `hermes setup --portal` once — the refresh token persists in the mounted `~/.hermes` volume. See [Nous Portal](../integrations/nous-portal.md).
 :::
 
 ## Running in gateway mode
@@ -450,6 +450,7 @@ services:
     volumes:
       - ~/.hermes:/opt/data
       - /run/user/${HERMES_UID}/pulse:/run/user/${HERMES_UID}/pulse
+      # no-tmp: ok — path inside the container
       - ~/.config/pulse/cookie:/tmp/pulse-cookie:ro
       - ./asound.conf:/etc/asound.conf:ro
     environment:
@@ -457,6 +458,7 @@ services:
       - HERMES_GID=${HERMES_GID}
       - XDG_RUNTIME_DIR=/run/user/${HERMES_UID}
       - PULSE_SERVER=unix:/run/user/${HERMES_UID}/pulse/native
+      # no-tmp: ok — path inside the container
       - PULSE_COOKIE=/tmp/pulse-cookie
 ```
 
@@ -501,12 +503,12 @@ docker run -d \
 
 The official image is based on `debian:13.4` and includes:
 
-- Python 3.13 with dependencies synced from the lockfile via `uv sync --frozen --no-install-project` for the baked extras (`all`, `messaging`, Anthropic/Bedrock/Azure identity, Hindsight, Matrix), followed by a no-dependency editable install of Hermes itself.
+- Python 3.13 with dependencies synced from the lockfile via `uv sync --frozen --no-install-project` for the baked extras (`all`, `messaging`, Anthropic/Bedrock/Azure identity, Matrix), followed by a no-dependency editable install of Hermes itself. Catalog plugins such as the Hindsight memory provider are not baked in; `hermes plugins install hindsight` installs the plugin and its dependencies into `HERMES_LAZY_INSTALL_TARGET` (`/opt/data/lazy-packages`) at install time.
 - Node.js 26 + npm (for browser automation, WhatsApp bridge, TUI/Desktop bundles, and workspace build tooling)
 - Playwright with Chromium (`npx playwright install --with-deps chromium --only-shell`)
 - ripgrep, ffmpeg, git, and `xz-utils` as system utilities
 - **`docker-cli`** — so agents running inside the container can drive the host's Docker daemon (bind-mount `/var/run/docker.sock` to opt in) for `docker build`, `docker run`, container inspection, etc.
-- **`openssh-client`** — enables the [SSH terminal backend](/user-guide/configuration#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.
+- **`openssh-client`** — enables the [SSH terminal backend](./configuration.md#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.
 - The WhatsApp bridge (`scripts/whatsapp-bridge/`)
 - **[`s6-overlay`](https://github.com/just-containers/s6-overlay) v3** as PID 1 (replaces the older `tini`) — supervises the dashboard and per-profile gateways with auto-restart on crash, reaps zombie subprocesses, and forwards signals.
 

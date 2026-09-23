@@ -117,9 +117,6 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
-    # opencode-free is Zen-hosted (hermes_cli/models.py) and models.dev's "opencode" catalog lists
-    # its *-contributor-free SKUs; without this alias every opencode-free lookup missed models.dev.
-    "opencode-free": "opencode",
     "kilocode": "kilo", "fireworks": "fireworks-ai",
     "huggingface": "huggingface", "gemini": "google", "google": "google",
     "xai": "xai",
@@ -591,6 +588,9 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
     override_ctx = _override_context_window(provider, model)
     if override_ctx is not None:
         return override_ctx
+    declared_ctx = _override_int(_provider_model_capabilities(provider, model), "context_window")
+    if declared_ctx is not None:
+        return declared_ctx
     models = _get_provider_models(provider, allow_network=allow_network)
     catalog_ctx = next((ctx for _mid, entry in _iter_model_entries(models, model, provider=provider) if (ctx := _extract_context(entry))), None) if models is not None else None
     return catalog_ctx if catalog_ctx is not None else _default_override_context(provider)
@@ -764,12 +764,41 @@ def _builtin_model_metadata(provider: str, model: str) -> Optional[Dict[str, Any
     return _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
 
 
+def _relay_vision_marker_metadata(provider: str, model: str) -> Optional[Dict[str, Any]]:
+    """Fill-gap base for an OpenCode Zen/Go ``*-vision*`` model id the catalog does not know. The relays
+    resell vendor previews (``deepseek-v4-flash-vision-exp``) before models.dev indexes them, and the id's
+    ``-vision`` token is the vendor's own capability marker; without it ``image_input_mode: auto`` treats
+    the model as text-only and detours images through the lossy describe path (#96066). Every other field
+    keeps the unknown-model defaults, so only vision is claimed."""
+    from hermes_cli.models import opencode_provider_family
+
+    if "-vision" not in (model or "").strip().lower() or opencode_provider_family(provider) is None:
+        return None
+    return {**_UNKNOWN_MODEL_BASE, "modalities": {"input": ["text", "image"], "output": ["text"]}}
+
+
+def _provider_model_capabilities(provider: str, model: str) -> Dict[str, Any]:
+    """Exact-model declaration from the registered ``ProviderProfile.model_capabilities`` (canonical
+    ``model_overrides`` schema). The ONE plugin seam: every consumer that reads models.dev through this
+    module (picker badges, image routing, ``/api/model/info``, context lookup) sees it (#102115)."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider)
+    return profile.model_capabilities.get(model, {}) if profile is not None else {}
+
+
 def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """*entry* patched by its override; ``_UNKNOWN_MODEL_BASE`` patched by a fill-gap override on a
-    catalog miss (selected AFTER lookup: _default only fills misses); None when neither exists."""
+    """Catalog/builtin metadata, patched by the plugin's declaration, then by the explicit user override.
+    ``_UNKNOWN_MODEL_BASE`` is the base on a catalog miss; a fill-gap ``_default`` applies only when no
+    source knows the model. None when nothing knows it."""
     builtin = _builtin_model_metadata(provider, model)
     base = entry if entry is not None else builtin
+    declared = _provider_model_capabilities(provider, model)
+    if declared:
+        base = _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, declared)
     override = _override_for(provider, model, catalog_hit=base is not None)
+    if base is None:
+        base = _relay_vision_marker_metadata(provider, model)
     return base if override is None else _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, override)
 
 

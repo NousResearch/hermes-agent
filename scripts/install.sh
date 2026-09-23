@@ -610,8 +610,8 @@ install_uv() {
     # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
     # and conflates network errors with installer errors.
     local _uv_install_log _uv_installer
-    _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
-    _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+    _uv_install_log="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-install.$$.log")"
+    _uv_installer="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-installer.$$.sh")"
     if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
         log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
         log_info "curl output:"
@@ -1324,6 +1324,10 @@ check_network_prerequisites() {
 }
 
 install_system_packages() {
+    # setup_path persists this directory later, but dependency probes must also
+    # see commands that were pre-staged there during a fresh install.
+    local PATH="$(get_command_link_dir):$PATH"
+
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false

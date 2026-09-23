@@ -23,6 +23,7 @@ import {
   SidebarRowNest,
   SidebarRowShell
 } from '../chrome'
+import { shellOwnsPress } from '../reorderable-list'
 
 import { expandedProjectSessions, latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
@@ -222,12 +223,19 @@ export function ProjectOverviewRow({
       data-glass-opaque={dragging ? '' : undefined}
       label={project.isAuto ? <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip> : labelLink}
       lead={lead}
-      // The label is grab surface too, not just the lead's grabber — same
-      // listeners, minus the controls that keep their own gestures. A project
-      // row has no rival drag (its title navigates on CLICK), so the sortable
-      // owns the press outright.
-      {...dragHandleProps}
+      // The label is grab surface too, not just the lead's grabber — the
+      // pointer activator only (the full handle stays on the grabber, see
+      // useSortableBindings), minus the controls that keep their own gestures.
+      // A project row has no rival drag (its title navigates on CLICK), so the
+      // sortable owns the press outright.
       onPointerDown={event => {
+        // The project row's ⋯ menu and its confirm dialog portal out of this
+        // row's React subtree — a press on either arrives with a target outside
+        // the row, so gate the shell on presses that started inside it.
+        if (!shellOwnsPress(event)) {
+          return
+        }
+
         if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
           return
         }

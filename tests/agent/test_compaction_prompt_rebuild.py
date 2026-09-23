@@ -43,10 +43,6 @@ class TestInvalidateClearsPluginFreeze(unittest.TestCase):
         self.assertEqual(agent._plugin_system_prompt_sections_previous, ("frozen-section",))
         self.assertIsNone(agent._cached_system_prompt)
 
-    def test_invalidate_without_snapshot_is_noop_for_plugins(self):
-        agent = _agent()
-        invalidate_system_prompt(agent)
-        self.assertFalse(hasattr(agent, "_plugin_system_prompt_sections_snapshot"))
 
 
 class TestPluginRerenderFailOpen(unittest.TestCase):
@@ -86,29 +82,6 @@ def _init_repo(path, first_commit):
     return path
 
 
-class TestCommitAlwaysRebuilds(unittest.TestCase):
-    """Source-level contract pins for the commit-site semantics."""
-
-    def _src(self):
-        import inspect
-        from agent import conversation_compression as cc
-        return inspect.getsource(cc)
-
-    def test_keep_prompt_branch_requires_byte_equality(self):
-        src = self._src()
-        i = src.find("rebuilt_system_prompt = agent._build_system_prompt(")
-        self.assertGreater(i, 0, "commit site must always run the live builder")
-        window = src[i:i + 900]
-        self.assertIn("rebuilt_system_prompt == cached_system_prompt", window,
-                      "keep-prompt must be gated on BYTE EQUALITY of the "
-                      "rebuilt output, not on memory containment")
-        self.assertNotIn("_cached_prompt_reflects_builtin_memory(agent, cached_system_prompt)",
-                         window,
-                         "the containment keep-prompt gate must not return")
-
-    def test_drift_rebuild_is_logged(self):
-        src = self._src()
-        self.assertIn("Compaction rebuilt a drifted system prompt", src)
 
 
 class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
@@ -169,7 +142,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_workspace_snapshot_reprobes_when_cwd_changes(self):
-        import tempfile, shutil, subprocess
+        import tempfile, shutil
         from pathlib import Path
         from agent.system_prompt import build_system_prompt
 

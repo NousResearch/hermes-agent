@@ -258,6 +258,8 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 
 
 def main():
+    # stdout is this process's JSON-RPC client channel: peer-less global broadcasts belong on it.
+    server._stdio_is_rpc_channel = True
     _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
 

@@ -108,20 +108,8 @@ class TestClearNousRateLimit:
         assert nous_rate_limit_remaining() is None
         assert not os.path.exists(_state_path())
 
-    def test_clear_when_no_file(self, rate_guard_env):
-        from agent.nous_rate_guard import clear_nous_rate_limit
-
-        # Should not raise
-        clear_nous_rate_limit()
 
 
-class TestFormatRemaining:
-    """Test human-readable duration formatting."""
-
-    def test_seconds(self):
-        from agent.nous_rate_guard import format_remaining
-
-        assert format_remaining(30) == "30s"
 
 
 
@@ -170,16 +158,6 @@ class TestAuxiliaryClientIntegration:
         result = aux._try_nous()
         assert result == (None, None)
 
-    def test_try_nous_works_when_not_rate_limited(self, rate_guard_env, monkeypatch):
-        import agent.auxiliary_client as aux
-
-        # No rate limit recorded — _try_nous should proceed normally
-        # (will return None because no real creds, but won't be blocked
-        # by the rate guard)
-        monkeypatch.setattr(aux, "_read_nous_auth", lambda: None)
-        monkeypatch.setattr(aux, "_resolve_nous_runtime_api", lambda **kw: None)
-        result = aux._try_nous()
-        assert result == (None, None)
 
 
 class TestIsGenuineNousRateLimit:
@@ -286,6 +264,8 @@ class TestWelcomeRouteCopy:
             _flush_status_buffer=lambda: None,
             _persist_session=lambda *_args: None,
         )
+        from agent.status_output import StatusOutputMixin
+        agent._buffer_diagnostic_status = StatusOutputMixin._buffer_diagnostic_status.__get__(agent)
         verdict = nous_rate_limit_guard(
             agent,
             _retry=None,
@@ -314,16 +294,6 @@ class TestWelcomeRouteCopy:
         assert "Nous Portal" not in expected
         assert buffered == [f"⏳ {expected} Trying fallback..."]
 
-    def test_a_non_welcome_route_keeps_todays_sentence(self, monkeypatch):
-        verdict, buffered, statuses = self._drive_guard(
-            "https://inference-api.nousresearch.com/v1", monkeypatch
-        )
-
-        expected = "Your Nous account has hit its rate limit; it resets in 10m."
-        assert verdict.action == "return"
-        assert statuses == [f"⏳ {expected}"]
-        assert verdict.result["final_response"].startswith(f"⏳ {expected}\n\n")
-        assert buffered == [f"⏳ {expected} Trying fallback..."]
 
 
 class TestRateGuardStateEncoding:

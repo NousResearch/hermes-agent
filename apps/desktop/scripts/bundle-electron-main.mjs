@@ -15,6 +15,7 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
 import { buildCommandScreenshotMonitor } from './build-command-screenshot-monitor.mjs'
+import { buildHudModifierMonitor } from './build-hud-modifier-monitor.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
@@ -22,8 +23,9 @@ const distDir = resolve(root, 'dist')
 mkdirSync(distDir, { recursive: true })
 // Stage for both --dev and release bundles; non-mac hosts skip this helper.
 buildCommandScreenshotMonitor({ distDir })
+buildHudModifierMonitor({ distDir })
 
-const mainEntry = resolve(root, 'electron/main.ts')
+const mainEntry = resolve(root, 'electron/entry.ts')
 const mainOut = resolve(distDir, 'electron-main.mjs')
 const preloadEntry = resolve(root, 'electron/preload.ts')
 const preloadOut = resolve(distDir, 'electron-preload.js')

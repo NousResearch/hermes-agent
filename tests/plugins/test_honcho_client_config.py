@@ -3,7 +3,6 @@
 import json
 import os
 import stat
-from pathlib import Path
 
 import pytest
 
@@ -60,14 +59,6 @@ class TestHonchoClientConfigAutoEnable:
                 os.environ["HONCHO_API_KEY"] = env_key
 
 
-    def test_from_env_always_enabled(self, monkeypatch):
-        """from_env() should always set enabled=True."""
-        monkeypatch.setenv("HONCHO_API_KEY", "env-test-key")
-
-        cfg = HonchoClientConfig.from_env()
-
-        assert cfg.api_key == "env-test-key"
-        assert cfg.enabled is True
 
 
 

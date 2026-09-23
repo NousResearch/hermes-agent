@@ -1,9 +1,14 @@
 import { runBackendStartStep } from './backend-start-cancellation'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
-export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
+export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection, Attached> {
   assertCurrentAttempt: () => void
   signal?: AbortSignal
+  /**
+   * Multiplex-only: attach to the backend already running on this HOST.
+   * Resolves null when the host has none, which is the only case that spawns.
+   */
+  attachHostBackend?: () => Promise<Attached | null>
   connectRemote: (remote: Remote) => Promise<Connection>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
   prepareLocalBackend: () => Backend | Promise<Backend>
@@ -12,8 +17,10 @@ export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, C
   waitForLocalStart: () => Promise<unknown>
 }
 
-export type PrimaryBackendStartupResult<RuntimeBackend, Connection> =
-  { kind: 'local'; backend: RuntimeBackend } | { kind: 'remote'; connection: Connection }
+export type PrimaryBackendStartupResult<RuntimeBackend, Connection, Attached = never> =
+  | { kind: 'attached'; attached: Attached }
+  | { kind: 'local'; backend: RuntimeBackend }
+  | { kind: 'remote'; connection: Connection }
 
 interface ResolvedPrimaryRemote {
   authMode?: 'oauth' | 'token'
@@ -81,8 +88,9 @@ export class FirstRunSetupResetError extends Error {
 // test: an already-saved remote wins immediately; otherwise update exclusion
 // and local backend resolution happen before the setup gate, and a remote Apply
 // re-resolves persisted config without ever entering ensureRuntime/bootstrap.
-export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, Connection>({
+export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, Connection, Attached = never>({
   assertCurrentAttempt,
+  attachHostBackend,
   connectRemote,
   ensureLocalRuntime,
   prepareLocalBackend,
@@ -90,8 +98,8 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
   waitForDecision,
   waitForLocalStart,
   signal
-}: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>): Promise<
-  PrimaryBackendStartupResult<RuntimeBackend, Connection>
+}: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection, Attached>): Promise<
+  PrimaryBackendStartupResult<RuntimeBackend, Connection, Attached>
 > {
   const step = async <T>(run: () => T | Promise<T>) => {
     const result = await runBackendStartStep(signal, run)
@@ -107,6 +115,15 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
   }
 
   await step(waitForLocalStart)
+
+  // Multiplex-only: one backend per HOST. Attach before resolving a runtime or
+  // entering the first-run gate — a machine with a live backend is, by
+  // definition, already set up, and the runtime resolve is only needed to spawn.
+  const attached = attachHostBackend ? await step(attachHostBackend) : null
+
+  if (attached) {
+    return { kind: 'attached', attached }
+  }
 
   const backend = await step(prepareLocalBackend)
   const decision = await step(() => waitForDecision(backend))

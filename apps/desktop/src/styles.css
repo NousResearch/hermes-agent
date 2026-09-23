@@ -45,7 +45,8 @@
     .pet-wobble,
     .progress-slide,
     .kanban-arc,
-    .glyph-spinner__strip
+    .glyph-spinner__strip,
+    .decode-cursor-blink
   ),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused]
@@ -821,7 +822,11 @@
      · things you point at (paths)          → neutral, they're the common case
      · things you fetch (links, media)      → secondary
      · things that act (commands, tools)    → accent
-     · things that change code (skills, git)→ warm */
+     · things that change code (skills, git)→ warm
+   The fallback is declared FIRST: it shares specificity with every kind rule
+   below, so source order alone decides the cascade — declared after them it
+   would repaint every kinded reference in the raw primary (#114612). */
+.ref,
 [data-ref] {
   --ref-color: var(--dt-primary);
 }
@@ -868,8 +873,6 @@
 }
 
 .ref {
-  --ref-color: var(--dt-primary);
-
   /* Prose links inherit the surrounding text's weight. `@tailwindcss/typography`
      sets `prose a { font-weight: 500 }`, which outranks a utility class on the
      anchor — so the override belongs here, on the shared class. */
@@ -1235,6 +1238,40 @@
 @media (prefers-reduced-motion: reduce) {
   .arc-border::before {
     animation: none;
+  }
+}
+
+/* Keyframes live here, not in per-instance <style> tags: inserting or removing an
+   @keyframes rule invalidates every animating element in the document (#99889). */
+@keyframes decode-cursor {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.decode-cursor-blink {
+  animation: decode-cursor 1s step-end infinite;
+}
+/* 0.001 start mirrors ZonesOverlay::GetAnimationAlpha's clamp(t / 200ms, 0.001, 1). */
+@keyframes hermes-zone-fade {
+  from {
+    opacity: 0.001;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes starmap-twinkle {
+  0%,
+  100% {
+    opacity: var(--o, 1);
+  }
+  50% {
+    opacity: calc(var(--o, 1) * 0.35);
   }
 }
 
@@ -1897,22 +1934,18 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 /* ── Composer fill — ONE var painted by the surface AND anything docked to it
    (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
-   `background: var(--composer-fill)`, so every state matches by construction.
-   The :has() rule is last on purpose: while a completion drawer is open it
-   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
-   translucent glass can never match across the two layers because they sample
-   different backdrops. */
+   `background: var(--composer-fill)`, so every state matches by construction. */
 :root {
   /* Fallback for drawers outside the main composer (e.g. edit-message). */
   --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 [data-slot='composer-root'] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
 }
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -1995,7 +2028,11 @@ body.guest-pointer-lock :is(webview, iframe) {
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
 }
 
-[data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
+/* Themed at the renderer root so every `aui-md` consumer (assistant turns,
+   system-message reports, session-import previews) inherits it; the room
+   selector covers the plugin's raw-Streamdown fallback, which has no `.aui-md`. */
+.aui-md :not(pre) > code,
+[data-slot='group-chat-message-content'] :not(pre) > code {
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);
 }
@@ -3431,8 +3468,7 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* The composer surface paints TWO layers: the surface itself, plus an
-   `absolute inset-0 -z-10` fill+glass div behind it (composerFill /
-   composerSurfaceGlass). Two stacked fills read as a box inside a box, so the
+   `absolute inset-0 -z-10` fill div behind it (composerInputBacking). Two stacked fills read as a box inside a box, so the
    backing layer goes and the surface carries the single fill. */
 [data-hud-shell] [data-slot='composer-surface'] > .pointer-events-none.absolute.inset-0 {
   display: none !important;

@@ -36,6 +36,15 @@ def _queue_prompt(state: SessionState, text: str) -> int:
         return len(state.queued_prompts)
 
 
+# Commands that mutate shared turn state must not run beside a live turn or beside each
+# other: slash dispatch happens on a worker thread while the turn iterates state.history and
+# reads agent._session_db, so clearing, rebinding, or swapping state.agent underneath
+# run_conversation tears the running turn. Gateway parity: all three are idle-only there.
+# The command_op flag is held for the whole handler so a turn cannot claim the session in
+# the check-then-act window (the /compress LLM call and /model agent rebuild take seconds).
+_MID_TURN_BLOCKED_COMMANDS = frozenset({"reset", "compress", "model"})
+
+
 class SlashCommandsMixin:
     """Slash-command surface for ``HermesACPAgent``; relies on ``_conn``, ``_send``, ``_schedule_soon``,
     ``session_manager`` and ``_switch_model`` from the host class."""
@@ -93,6 +102,13 @@ class SlashCommandsMixin:
 
         if cmd not in self._COMMANDS:
             return None
+        mutating = cmd in _MID_TURN_BLOCKED_COMMANDS
+        if mutating:
+            with state.runtime_lock:
+                if state.is_running or state.command_op:
+                    return (f"⏳ Session is busy; /{cmd} only works while the session is "
+                            "idle. Wait for the current response or cancel first.")
+                state.command_op = True
         handler = getattr(self, f"_cmd_{cmd}")
 
         # Handlers run outside the per-turn cwd-pinning context. ``/compress``
@@ -112,6 +128,10 @@ class SlashCommandsMixin:
         except Exception as e:
             logger.error("Slash command /%s error: %s", cmd, e, exc_info=True)
             return f"Error executing /{cmd}: {e}"
+        finally:
+            if mutating:
+                with state.runtime_lock:
+                    state.command_op = False
 
     def _cmd_help(self, args: str, state: SessionState) -> str:
         lines = ["Available commands:", ""]

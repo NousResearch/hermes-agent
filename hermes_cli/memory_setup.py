@@ -12,33 +12,13 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 _CANCELLED = -1
 
-# pip name → import name mapping for packages where they differ
+# pip name → import name mapping for packages where they differ. Catalog-installed providers keep
+# declaring pip_dependencies in their plugin.yaml, so their bridge packages stay here too.
 _IMPORT_NAMES = {
     "honcho-ai": "honcho",
     "mem0ai": "mem0",
     "hindsight-client": "hindsight_client",
-    "hindsight-all": "hindsight"}
-
-
-def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
-    """Return the pip deps a provider actually needs on THIS install.
-
-    ``plugin.yaml`` declares the baseline bridge packages; some providers add mode-dependent extras
-    at setup time that the manifest can't express.
-
-    Hindsight's ``local_embedded`` mode installs ``hindsight-all`` (daemon + embedder + client) during
-    ``hermes memory setup`` — if the update-time refresh only reinstalled the declared ``hindsight-client``,
-    the embedded daemon would stay broken after a venv rebuild stripped ``hindsight-embed`` (#70636).
-    """
-    deps = list(declared or [])
-    if provider_name == "hindsight":
-        from utils import read_json_or_empty  # BOM-tolerant; {} on missing/corrupt
-
-        cfg = read_json_or_empty(get_hermes_home() / "hindsight" / "config.json")
-        # "local" is a legacy alias for "local_embedded"
-        if cfg.get("mode", "") in {"local", "local_embedded"}:
-            deps.append("hindsight-all")
-    return deps
+}
 
 
 def _curses_select(
@@ -106,7 +86,7 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
     except Exception:
         return
 
-    pip_deps = _provider_pip_dependencies(provider_name, meta.get("pip_dependencies", []))
+    pip_deps = list(meta.get("pip_dependencies", []) or [])
     if not pip_deps:
         return
 

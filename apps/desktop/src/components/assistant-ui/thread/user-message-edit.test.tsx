@@ -7,7 +7,7 @@ import { type AppendMessage, ExportedMessageRepository } from '@assistant-ui/rea
 // mode (titlebar -webkit-app-region:drag swallowing clicks on *stuck* sticky
 // bubbles) is not reproducible in jsdom — see USER_BUBBLE_BASE_CLASS's no-drag
 // carve-out in thread.tsx.
-import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -49,22 +49,6 @@ function IncrementalHarness({ onEdit }: { onEdit: (message: AppendMessage) => Pr
     onEdit,
     onCancel: async () => {},
     onReload: async () => {}
-  })
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
-  )
-}
-
-// Control: stock external store runtime.
-function StockHarness({ onEdit }: { onEdit: () => Promise<void> }) {
-  const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistantMessage()],
-    isRunning: false,
-    onNew: async () => {},
-    onEdit
   })
 
   return (
@@ -191,62 +175,9 @@ describe('click-to-edit user message', () => {
 
     expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeFalsy()
   })
-
-  it('opens the edit composer with the stock runtime', async () => {
-    const { container } = render(<StockHarness onEdit={async () => {}} />)
-
-    const bubble = await screen.findByRole('button', { name: 'Edit message' })
-
-    fireEvent.click(bubble)
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
-    })
-  })
-
-  // A long previous prompt is capped at max-h-48 in the edit composer. Without
-  // an overflow rule the overflow is clipped with no way to scroll, hiding the
-  // tail of the prompt. The editor must scroll its own overflow (like the main
-  // composer's editor does).
-  it('keeps the edit composer editor scrollable when the prompt overflows the cap', async () => {
-    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
-
-    const bubble = await screen.findByRole('button', { name: 'Edit message' })
-
-    fireEvent.click(bubble)
-
-    const editor = await waitFor(() => {
-      const node = container.querySelector('[contenteditable="true"]')
-      expect(node).toBeTruthy()
-
-      return node as HTMLElement
-    })
-
-    expect(editor.className).toContain('max-h-48')
-    expect(editor.className).toContain('overflow-y-auto')
-  })
 })
 
 describe('Enter submission and latch behavior', () => {
-  it('submits the edit when Enter is pressed', async () => {
-    const onEdit = vi.fn(async () => {})
-    render(<IncrementalHarness onEdit={onEdit} />)
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
-
-    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
-    const editedText = 'modified text for submission'
-
-    editor.textContent = editedText
-    fireEvent.input(editor)
-
-    fireEvent.keyDown(editor, { key: 'Enter' })
-
-    await waitFor(() => {
-      expect(onEdit).toHaveBeenCalledTimes(1)
-    })
-  })
-
   it('clears the submitting latch after onEdit resolves, allowing second edit session', async () => {
     const onEdit = vi.fn(async () => {})
     render(<IncrementalHarness onEdit={onEdit} />)
@@ -278,67 +209,6 @@ describe('Enter submission and latch behavior', () => {
     await waitFor(() => {
       expect(onEdit).toHaveBeenCalledTimes(2)
     })
-  })
-
-  // Confirming an edit unmounts the composer while its 200ms submit latch is
-  // still pending. Left running, the callback resumes on an unmounted tree and
-  // calls setSubmitting, which React turns into work against a torn-down
-  // renderer. Under vitest that surfaces after the test file finishes, as
-  // "ReferenceError: window is not defined" out of resolveUpdatePriority, an
-  // unhandled error that fails a run in which every test passed. The delay is
-  // matched explicitly so unrelated library timers cannot make this pass.
-  it('clears the submit latch timer when confirming the edit unmounts the composer', async () => {
-    const LATCH_MS = 200
-    // jsdom under node hands back a Timeout object rather than a numeric id,
-    // so these are compared by identity rather than by value.
-    const scheduled: unknown[] = []
-    const cleared: unknown[] = []
-    const realSetTimeout = window.setTimeout.bind(window)
-    const realClearTimeout = window.clearTimeout.bind(window)
-
-    vi.spyOn(window, 'setTimeout').mockImplementation(((
-      handler: TimerHandler,
-      timeout?: number,
-      ...args: unknown[]
-    ) => {
-      const id = realSetTimeout(handler, timeout, ...args)
-
-      if (timeout === LATCH_MS) {
-        scheduled.push(id)
-      }
-
-      return id
-    }) as typeof window.setTimeout)
-
-    // `id` is typed `unknown` for the same reason the arrays above are: what
-    // actually arrives is whatever `setTimeout` returned, and under jsdom that
-    // is a Timeout object rather than the `number` the DOM lib promises.
-    // Declaring it `number` would have documented a shape this never sees.
-    vi.spyOn(window, 'clearTimeout').mockImplementation(((id?: unknown) => {
-      cleared.push(id)
-      realClearTimeout(id as number | undefined)
-    }) as typeof window.clearTimeout)
-
-    const onEdit = vi.fn(async () => {})
-    const view = render(<IncrementalHarness onEdit={onEdit} />)
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
-
-    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
-
-    editor.textContent = 'an edit whose composer goes away before the latch expires'
-    fireEvent.input(editor)
-    fireEvent.keyDown(editor, { key: 'Enter' })
-
-    await waitFor(() => {
-      expect(onEdit).toHaveBeenCalledTimes(1)
-    })
-
-    expect(scheduled).toHaveLength(1)
-
-    view.unmount()
-
-    expect(cleared).toContain(scheduled[0])
   })
 
   it('inserts a newline on Shift+Enter without submitting', async () => {

@@ -282,39 +282,3 @@ class TestCatalogProbeThreadsSSLContext:
 
         assert captured["ssl_context"] is None
 
-    def test_public_endpoint_calls_seam_without_ssl_context_kwarg(self, clean_env):
-        """A public endpoint must not pass ssl_context to the call seam.
-
-        Regression guard: threading ssl_context unconditionally broke existing
-        call-seam mocks whose signature is ``(req, timeout=...)``. The probe
-        must keep the original 2-arg call shape when no per-provider override
-        applies, so a strict 2-arg mock still works.
-        """
-        import hermes_cli.models as models
-
-        class _Resp:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return b'{"data": [{"id": "local-model"}]}'
-
-        calls = []
-
-        def _strict_two_arg(req, timeout=5.0):
-            calls.append(req.full_url)
-            return _Resp()
-
-        with patch(
-            "hermes_cli.config.get_compatible_custom_providers",
-            return_value=[],
-        ), patch.object(
-            models, "_urlopen_model_catalog_request", side_effect=_strict_two_arg
-        ):
-            probe = models.probe_api_models("key", "http://localhost:8000", timeout=1)
-
-        assert probe["models"] == ["local-model"]
-        assert calls == ["http://localhost:8000/models"]

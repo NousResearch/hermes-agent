@@ -219,6 +219,12 @@ class ComputeHost:
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
+            # #101416: the parent already holds this session's active-session lease (claimed in
+            # prompt.submit before routing here). Install the inert borrow BEFORE the turn runs, or
+            # _admit_prompt_turn re-claims from this child pid and is fenced out by the parent's own
+            # registry entry ("already has a live owner"). Unknown flag (parent predates the field):
+            # no borrow, legacy self-claim path, unchanged behaviour.
+            server._install_borrowed_lease(sid, session, frame)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
             with session["history_lock"]:
@@ -242,7 +248,9 @@ class ComputeHost:
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
             server._run_prompt_submit(
-                request_id, sid, session, text, display_kind=frame.get("display_kind") or None)
+                request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
+                display_metadata=(frame.get("display_metadata")
+                                  if isinstance(frame.get("display_metadata"), dict) else None))
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
@@ -312,9 +320,17 @@ class ComputeHost:
             if profile_home:
                 from hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
                 from hermes_state_registry import acquire
                 home_token = set_hermes_home_override(profile_home)
-                secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                # External sources first (1Password / Bitwarden / secrets.command): this isolated
+                # turn process never ran the launch dotenv path for the routed profile, so without
+                # hydration the scope is built on an empty external snapshot and a vault-only
+                # provider key fails closed. Same order as gateway/run.py::_load_profile_secret_scope
+                # and tui_gateway/model_switch.py::_profile_runtime_scope_tokens (#119521).
+                hydrate_profile_secret_sources(Path(profile_home))
+                secret_token = set_secret_scope(
+                    build_profile_secret_scope(Path(profile_home)), profile_home=profile_home)
                 # DEDICATED handle — ours only until _make_agent succeeds, then the agent owns
                 # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
                 session_db = acquire(Path(profile_home) / "state.db")

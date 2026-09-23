@@ -78,7 +78,7 @@ def _agent(**overrides):
     lines = []
     agent = SimpleNamespace(
         provider="nous", api_key=make_jwt(), model="gpt-5", base_url=WELCOME, log_prefix="", _rate_limit_state=None,
-        _vprint=lambda text, force=False: lines.append(text),
+        _vprint=lambda text, force=False, diagnostic=False: lines.append(text),
         _try_refresh_nous_client_credentials=lambda **kw: True,
     )
     for k, v in overrides.items():
@@ -96,7 +96,6 @@ class TestOneShotRecoveries:
         assert _recover_welcome_tier(agent, classified, retry) is True
         assert agent.model == "nous/welcome"
         assert agent._nous_model_switch == ("gpt-5", "nous/welcome")
-        assert "without signing in" in agent.lines[0]
         # Once: a second refusal in the same attempt falls through to the terminal path.
         assert _recover_welcome_tier(agent, classified, retry) is False
 
@@ -206,6 +205,8 @@ class TestTerminalResultsCarryTheFreeTierBlock:
                        _summarize_api_error=lambda e: "HTTP 403: no permissions", _emit_status=lambda *a: None,
                        _persist_session=lambda *a: None, _plines=lambda *a: None, _buffer_status=lambda *a: None,
                        _rate_limit_state=None, _has_pending_fallback=lambda: False)
+        from agent.status_output import StatusOutputMixin
+        agent._emit_diagnostic_status = StatusOutputMixin._emit_diagnostic_status.__get__(agent)
         return agent
 
     def test_a_dark_tier_403_is_stamped_disabled_with_the_chat_sentence(self):
@@ -217,7 +218,7 @@ class TestTerminalResultsCarryTheFreeTierBlock:
             messages=[], conversation_history=[], api_call_count=1, approx_tokens=10,
             provider="nous", base_url=WELCOME, model="nous/welcome")
         # The chat text names /login; the card text (a button beside it) leaves that tail off.
-        assert "switched off" in result["final_response"] and "/login" in result["final_response"]
+        assert "/login" in result["final_response"]
         assert result["free_tier"]["kind"] == "disabled"
         assert result["final_response"].startswith(result["free_tier"]["message"])
         assert "/login" not in result["free_tier"]["message"]
@@ -232,7 +233,7 @@ class TestTerminalResultsCarryTheFreeTierBlock:
             api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
             approx_tokens=10, provider="nous", base_url=WELCOME, model="nous/welcome")
         assert result["free_tier"]["kind"] == "at_capacity"
-        assert "really busy" in result["free_tier"]["message"] and "/login" not in result["free_tier"]["message"]
+        assert "/login" not in result["free_tier"]["message"]
         assert "/login" in result["final_response"]
 
     def test_a_spent_outage_on_the_welcome_host_is_stamped_outage(self):

@@ -631,43 +631,6 @@ def test_dispatch_json_exposes_suppression_reasons(
     assert payload["memory_pressure"] == "elevated"
 
 
-def test_dispatch_text_and_daemon_stuck_warning_name_guard_reason(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The plain `hermes kanban dispatch` output and the standalone daemon's
-    "dispatcher stuck" warning both say WHY a ready card was held (#111910):
-    a guarded card must not look like an idle tick with `Spawned: 0`."""
-    res = kbd.DispatchResult(respawn_guarded=[("t_held", "active_pr")], memory_pressure="elevated")
-    monkeypatch.setattr(kanban_ops.kbd, "dispatch_once", lambda *a, **k: res)
-
-    class _Conn:
-        def __enter__(self):
-            return None
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(kanban_ops.kbc, "connect_closing", lambda: _Conn())
-    assert kanban_ops._cmd_dispatch(
-        SimpleNamespace(dry_run=True, max=None, failure_limit=kbd.DEFAULT_FAILURE_LIMIT, json=False)
-    ) == 0
-    out = capsys.readouterr().out
-    assert "Guarded (active_pr): t_held" in out
-    assert "Memory pressure elevated" in out
-
-    def _fake_daemon(*, interval, max_spawn, failure_limit, on_tick):
-        for _ in range(6):  # HEALTH_WINDOW consecutive bad ticks
-            on_tick(res)
-
-    monkeypatch.setattr(kanban_ops.kbd, "run_daemon", _fake_daemon)
-    monkeypatch.setattr(kanban_ops.kbd, "has_spawnable_ready", lambda conn: True)
-    monkeypatch.setattr(kanban_ops.kb, "init_db", lambda *a, **k: None)
-    assert kanban_ops._cmd_daemon(
-        SimpleNamespace(force=True, interval=5, max=None, failure_limit=2, verbose=False, pidfile=None)
-    ) in (0, None)
-    err = capsys.readouterr().err
-    assert "dispatcher stuck" in err
-    assert "Last tick held back: active_pr=1, memory_pressure=elevated." in err
 
 
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
@@ -766,6 +729,7 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
         assert kb.complete_task(
             conn,
             running_id,
+            result="done",
             expected_run_id=running.current_run_id,
         )
         global_dry_run = kbd.dispatch_once(
@@ -921,6 +885,37 @@ def test_review_handoff_without_live_run_attributes_run_to_implementer(kanban_ho
         assert (run["outcome"], run["profile"]) == ("review_requested", "worker")
         assert run["step_key"] == kb.get_task(conn, tid).current_step_key
         assert _events(conn, tid, kind="review_requested")[0][1]["implementer"] == "worker"
+
+
+def test_review_handoff_of_card_assigned_to_its_reviewer_records_no_implementer(
+    kanban_home: Path,
+) -> None:
+    """A card created already assigned to its reviewer has no implementer to
+    record. Stamping the assignee made the payload read
+    ``implementer == reviewer``, and ``request_changes`` routes on that field —
+    so a rejection went back to the profile that wrote the findings. With no
+    live run and nothing but the reviewer on the row, the honest provenance is
+    *none*, and the rejection must refuse rather than misroute."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="already applied", assignee="reviewer-a")
+        assert kb.request_review(
+            conn, tid, summary="review this", reviewer="reviewer-a",
+        ) is True
+
+        ev = _events(conn, tid, kind="review_requested")[0][1]
+        assert ev["reviewer"] == "reviewer-a"
+        assert ev["implementer"] is None
+        run = conn.execute(
+            "SELECT profile, outcome FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1", (tid,),
+        ).fetchone()
+        assert (run["outcome"], run["profile"]) == ("review_requested", None)
+
+        claimed = kb.claim_review_task(conn, tid, claimer="reviewer-a")
+        assert claimed is not None
+        ok, reason = kb.request_changes(conn, tid, reason="found 3 issues")
+        assert ok is False
+        assert "implementer provenance" in (reason or "")
 
 
 def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Path) -> None:

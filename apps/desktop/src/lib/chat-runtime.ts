@@ -29,6 +29,7 @@ export function createClientSessionState(
     model: '',
     provider: '',
     reasoningEffort: '',
+    reasoningEffortWire: '',
     serviceTier: '',
     fast: false,
     yolo: false,

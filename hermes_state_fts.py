@@ -357,9 +357,11 @@ class SessionFtsSetupMixin:
         if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
             return False
         self._raise_if_db_corrupt()
-        self._halt_if_db_generation_changed()
         try:
             with self._lock:
+                self._raise_if_db_replaced()
+                if self._conn is None:
+                    self._reopen_after_close_locked(context="write")
                 self._conn.execute("BEGIN IMMEDIATE")
                 try:
                     self._conn.execute(

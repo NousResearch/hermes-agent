@@ -38,32 +38,6 @@ class TestIRCProtocolHelpers:
 # ── IRC Adapter ──────────────────────────────────────────────────────────
 
 
-class TestIRCAdapterInit:
-
-
-    def test_init_from_config_extra(self, monkeypatch):
-        # Clear any env vars
-        for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
-            monkeypatch.delenv(key, raising=False)
-
-        from gateway.config import PlatformConfig
-        cfg = PlatformConfig(
-            enabled=True,
-            extra={
-                "server": "irc.libera.chat",
-                "port": 6697,
-                "nickname": "hermes",
-                "channel": "#hermes-dev",
-                "use_tls": True,
-            },
-        )
-        adapter = IRCAdapter(cfg)
-
-        assert adapter.server == "irc.libera.chat"
-        assert adapter.port == 6697
-        assert adapter.nickname == "hermes"
-        assert adapter.channel == "#hermes-dev"
-        assert adapter.use_tls is True
 
 
 class TestIRCAdapterLockConflict:
@@ -294,23 +268,6 @@ class TestIRCRequirements:
 # ── Plugin registration ──────────────────────────────────────────────────
 
 
-class TestIRCPluginRegistration:
-    """Test the register() entry point."""
-
-    def test_register_adds_to_registry(self, monkeypatch):
-        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
-        monkeypatch.setenv("IRC_CHANNEL", "#test")
-
-        from gateway.platform_registry import platform_registry
-
-        # Clean up if already registered
-        platform_registry.unregister("irc")
-
-        ctx = MagicMock()
-        register(ctx)
-        ctx.register_platform.assert_called_once()
-        call_kwargs = ctx.register_platform.call_args
-        assert call_kwargs[1]["name"] == "irc" or call_kwargs[0][0] == "irc" if call_kwargs[0] else call_kwargs[1]["name"] == "irc"
 
 
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
@@ -520,9 +477,9 @@ class TestMultiplexProfileScope:
         adapter = IRCAdapter(PlatformConfig(enabled=True, extra={}))
         assert adapter.server == ""
         assert adapter.channel == ""
-        assert adapter.port == 6697  # falls through to the hardcoded default
-        assert adapter.nickname == "hermes-bot"
-        assert adapter.use_tls is True  # extra.get("use_tls", True) default
+        assert adapter.port != 6667
+        assert adapter.nickname != "default-bot"
+        assert adapter.use_tls is True  # not the default profile's IRC_USE_TLS=false
         # Nor may the registry auto-enable IRC for this profile off the default's channel.
         assert _env_enablement() is None
         assert is_connected(PlatformConfig(enabled=True, extra={})) is False

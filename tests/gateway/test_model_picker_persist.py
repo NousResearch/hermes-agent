@@ -19,6 +19,7 @@ callback and assert ``config.yaml`` is (or isn't) updated — exercising the exa
 closure the PR changed, against a real temp ``HERMES_HOME``.
 """
 
+import asyncio
 import types
 
 import yaml
@@ -254,3 +255,155 @@ async def test_multiplex_picker_global_persists_only_named_profile(
     assert written["marker"] == "named"
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
+
+
+def _make_store_runner(adapter, sessions_dir, monkeypatch):
+    """Bare runner with a real JSONL SessionStore (the durable /model override lives there)."""
+    import hermes_state
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+
+    def _no_sqlite(*_a, **_k):
+        raise RuntimeError("SQLite disabled in test")
+
+    monkeypatch.setattr(hermes_state, "SessionDB", _no_sqlite)
+    runner = _make_runner(adapter)
+    runner.session_store = SessionStore(sessions_dir=sessions_dir, config=GatewayConfig())
+    return runner
+
+
+async def _typed_global(runner, event_text="/model gpt-5.5 --global"):
+    return await runner._handle_model_command(_make_event(event_text))
+
+
+async def _picker_global(runner, event_text="/model --global"):
+    return await _drive_picker(runner, _make_event(event_text))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drive", [_typed_global, _picker_global], ids=["typed", "picker"])
+async def test_global_switch_clears_redundant_session_override(tmp_path, monkeypatch, drive):
+    """A ``--global`` pick (typed or picker) leaves config.yaml as the ONLY durable authority:
+    the per-session override is dropped from memory and the session store, so a later global
+    change is not shadowed after a gateway restart (#100314: a stale override resumed
+    ``gpt-5.6-sol-900k`` as the base 272K model)."""
+    adapter = _FakePickerAdapter()
+    cfg_path = _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
+    runner = _make_store_runner(adapter, tmp_path / "sessions", monkeypatch)
+    source = _make_event("x").source
+    session_key = runner._session_key_for_source(source)
+    runner.session_store.get_or_create_session(source)
+    stale = {"model": "old-model", "provider": "openrouter"}
+    runner.session_store.set_model_override(session_key, stale)
+    runner._session_model_overrides[session_key] = dict(stale)
+
+    confirmation = await drive(runner)
+
+    assert "config.yaml" in confirmation
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["model"]["default"] == "gpt-5.5"
+    assert runner._session_model_override(session_key) is None
+    assert runner.session_store.get_model_override(session_key) is None
+    # Restart: a fresh store + runner rehydrate nothing, so config.yaml decides the model.
+    restarted = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    restarted._rehydrate_session_model_override(session_key)
+    assert restarted._session_model_override(session_key) is None
+
+
+@pytest.mark.asyncio
+async def test_global_switch_keeps_session_override_when_config_write_fails(tmp_path, monkeypatch):
+    """When the config.yaml write fails the switch must stay a truthful session override (memory +
+    store) and the confirmation must not claim a clean global save (#100314)."""
+    adapter = _FakePickerAdapter()
+    cfg_path = _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
+    runner = _make_store_runner(adapter, tmp_path / "sessions", monkeypatch)
+    source = _make_event("x").source
+    session_key = runner._session_key_for_source(source)
+    runner.session_store.get_or_create_session(source)
+
+    async def _disk_full(result, config_path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("gateway.slash_commands_model._persist_model_switch_to_config", _disk_full)
+
+    confirmation = await _typed_global(runner)
+
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["model"]["default"] == "old-model"
+    assert "Saved to config.yaml" not in confirmation
+    assert "disk full" in confirmation
+    assert runner._session_model_override(session_key)["model"] == "gpt-5.5"
+    assert runner.session_store.get_model_override(session_key)["model"] == "gpt-5.5"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_model_commands_commit_in_issue_order(tmp_path, monkeypatch):
+    """Two /model commands on one session dispatched concurrently (a second slash command bypasses the
+    busy guard while no agent runs) must commit as if issued serially: a ``--global`` pick followed by
+    a session pick leaves config.yaml on the global model AND the session override on the later pick,
+    instead of the global cleanup wiping it; memory and durable store agree (#100314)."""
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    def _switch(**kw):
+        return ModelSwitchResult(success=True, new_model=kw["raw_input"], target_provider="openrouter",
+                                 provider_changed=False, api_key="sk-test", base_url="https://openrouter.ai/api/v1",
+                                 api_mode="chat_completions", provider_label="OpenRouter",
+                                 is_global=kw.get("is_global", False))
+
+    cfg_path = _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    source = _make_event("x").source
+    session_key = runner._session_key_for_source(source)
+    runner.session_store.get_or_create_session(source)
+
+    await asyncio.gather(runner._handle_model_command(_make_event("/model model-A --global")),
+                         runner._handle_model_command(_make_event("/model model-B")))
+
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["model"]["default"] == "model-A"
+    assert runner._session_model_override(session_key)["model"] == "model-B"
+    assert runner.session_store.get_model_override(session_key)["model"] == "model-B"
+
+
+@pytest.mark.asyncio
+async def test_global_switch_keeps_session_override_under_channel_override(tmp_path, monkeypatch):
+    """Precedence is session /model > channel_overrides > config.yaml. In a chat whose
+    ``channel_overrides`` names a model, a ``--global`` pick must NOT drop the session override:
+    config.yaml alone would lose to the channel model on the next turn while the confirmation
+    claims the switch to gpt-5.5 (#100314 follow-up)."""
+    from gateway.config import ChannelOverride, GatewayConfig, PlatformConfig
+
+    _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
+    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(
+        enabled=True, channel_overrides={"12345": ChannelOverride(model="channel-model")})})
+    source = _make_event("x").source
+    runner.session_store.get_or_create_session(source)
+
+    confirmation = await _typed_global(runner)
+
+    assert "gpt-5.5" in confirmation
+    model, _runtime = runner._resolve_session_agent_runtime(source=source)
+    assert model == "gpt-5.5", f"next turn would run {model!r} while the confirmation says gpt-5.5"
+    assert runner.session_store.get_model_override(runner._session_key_for_source(source))["model"] == "gpt-5.5"
+
+
+@pytest.mark.asyncio
+async def test_global_switch_reports_failed_stale_override_cleanup(tmp_path, monkeypatch):
+    """config.yaml written but the stale session override could not be cleared from the store: the
+    in-memory override stays (memory agrees with the store's copy surviving) and the confirmation
+    warns instead of claiming a clean 'Saved to config.yaml' (#100314 acceptance)."""
+    _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
+    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    source = _make_event("x").source
+    session_key = runner._session_key_for_source(source)
+    runner.session_store.get_or_create_session(source)
+
+    def _locked(key, override):
+        raise OSError("store locked")
+
+    monkeypatch.setattr(runner.session_store, "set_model_override", _locked)
+
+    confirmation = await _typed_global(runner)
+
+    assert "store locked" in confirmation
+    assert "Saved to config.yaml" not in confirmation
+    assert runner._session_model_override(session_key)["model"] == "gpt-5.5"

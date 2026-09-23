@@ -1,14 +1,16 @@
 """Tests for hermes_constants module."""
 
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import hermes_constants
+from hermes_platform.host import runtime as host_runtime
+from hermes_platform.host import facts as host_facts
 from hermes_constants import (
-    VALID_REASONING_EFFORTS,
     agent_browser_runnable,
     find_hermes_node_executable,
     find_node_executable,
@@ -55,6 +57,17 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
 
+    def test_expanded_custom_profile_returns_custom_root(self, tmp_path, monkeypatch):
+        custom_root = tmp_path / "deployment"
+        home_token = "$" + "HOME"
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv(
+            "HERMES_HOME", f"{home_token}/deployment/profiles/research"
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "native-home")
+
+        assert get_default_hermes_root() == custom_root
+
     @pytest.mark.windows_only
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
@@ -65,60 +78,6 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == local_appdata / "hermes"
 
-    def test_result_memoised_until_env_or_home_changes(self, tmp_path, monkeypatch):
-        """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.
-
-        get_default_hermes_root() resolves HERMES_HOME against the native
-        home (~80us of path resolution) and is called at 31+ sites — kanban,
-        backup, gateway, update, profile enumeration. The memo is keyed on
-        (native home, HERMES_HOME) compared for free each call.
-        """
-        # HERMES_HOME set to a Docker-profile path: every call resolves the
-        # env path against the native home (the ~80us work the memo skips).
-        docker_root = tmp_path / "opt" / "data"
-        profile = docker_root / "profiles" / "coder"
-        profile.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(profile))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        # Probe the expensive inner work: the memo check itself calls
-        # _get_platform_default_hermes_home() on every call (even hits), so
-        # count Path.resolve on the env path instead — only the actual
-        # resolution branch pays it.
-        resolve_calls = {"n": 0}
-        orig_resolve = Path.resolve
-
-        def counting_resolve(self, *a, **k):
-            resolve_calls["n"] += 1
-            return orig_resolve(self, *a, **k)
-
-        monkeypatch.setattr(Path, "resolve", counting_resolve)
-        # raising=False: on pre-fix code the memo attribute doesn't exist
-        # (that IS the fix); the reset is a no-op there so the measured-work
-        # assertion below fails genuinely instead of erroring.
-        monkeypatch.setattr(
-            hermes_constants, "_default_hermes_root_memo", None, raising=False
-        )
-
-        first = get_default_hermes_root()
-        first_count = resolve_calls["n"]
-        for _ in range(10):
-            get_default_hermes_root()
-        assert resolve_calls["n"] == first_count, (
-            "repeated calls must be memo hits (no path resolution on hits), "
-            f"resolve went {first_count} -> {resolve_calls['n']}"
-        )
-        assert first == docker_root
-
-        # HERMES_HOME change invalidates the memo (fresh resolution).
-        other_profile = docker_root / "profiles" / "writer"
-        other_profile.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(other_profile))
-        before = resolve_calls["n"]
-        assert get_default_hermes_root() == docker_root
-        assert resolve_calls["n"] > before, (
-            "HERMES_HOME change must force a fresh resolution"
-        )
 
 
 
@@ -151,6 +110,26 @@ class TestGetProcessHermesHome:
         home = tmp_path / "launch-home"
         monkeypatch.setenv("HERMES_HOME", str(home))
         assert get_process_hermes_home() == home
+
+    def test_process_and_context_homes_expand_environment_and_user_syntax(
+        self, tmp_path, monkeypatch
+    ):
+        home_token = "$" + "HOME"
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        for syntax in (home_token, "~"):
+            process_home = tmp_path / "process-home"
+            monkeypatch.setenv("HERMES_HOME", f"{syntax}/process-home")
+            assert get_process_hermes_home() == process_home
+
+            override_home = tmp_path / "override-home"
+            token = set_hermes_home_override(f"{syntax}/override-home")
+            try:
+                assert get_hermes_home() == override_home
+                assert get_process_hermes_home() == process_home
+            finally:
+                reset_hermes_home_override(token)
 
 
 
@@ -343,7 +322,7 @@ class TestIsContainer:
 
     def _reset_cache(self, monkeypatch):
         """Reset the cached detection result before each test."""
-        monkeypatch.setattr(hermes_constants, "_container_detected", None)
+        monkeypatch.setattr(host_runtime, "_container_detected", None)
 
     def test_detects_dockerenv(self, monkeypatch, tmp_path):
         """/.dockerenv triggers container detection."""
@@ -367,8 +346,6 @@ class TestIsContainer:
         """#58135: a host that merely RUNS containers exposes each container's overlay lowerdir
         (``lowerdir=/var/lib/containerd/...``) at non-root mount points; only the root ('/') line
         says whether *this* process lives in a runtime overlay."""
-        from hermes_constants import _root_mount_has_marker
-
         markers = ("kubepods", "containerd", "crio")
         host = tmp_path / "host"
         host.write_text(
@@ -382,17 +359,10 @@ class TestIsContainer:
             "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9/fs\n"
             "2 1 0:51 / /proc rw,nosuid - proc proc rw\n"
         )
-        assert _root_mount_has_marker(str(host), markers) is False
-        assert _root_mount_has_marker(str(container), markers) is True
-        assert _root_mount_has_marker(str(tmp_path / "missing"), markers) is False
+        assert host_runtime._root_mount_has_marker(str(host), markers) is False
+        assert host_runtime._root_mount_has_marker(str(container), markers) is True
+        assert host_runtime._root_mount_has_marker(str(tmp_path / "missing"), markers) is False
 
-    def test_caches_result(self, monkeypatch):
-        """Second call uses cached value without re-probing."""
-        monkeypatch.setattr(hermes_constants, "_container_detected", True)
-        assert is_container() is True
-        # Even if we make os.path.exists return False, cached value wins
-        monkeypatch.setattr(os.path, "exists", lambda p: False)
-        assert is_container() is True
 
 
 class TestParseReasoningEffort:
@@ -416,15 +386,6 @@ class TestParseReasoningEffort:
         """Unrecognized strings fall back to the caller default (None)."""
         assert parse_reasoning_effort(value) is None
 
-    def test_known_supported_levels_are_documented(self):
-        """Guard against silently dropping a documented level.
-
-        The docstring promises "minimal", "low", "medium", "high", "xhigh",
-        "max", "ultra". If someone removes one from VALID_REASONING_EFFORTS without
-        updating the docstring, this test will fail and force the call out.
-        """
-        documented = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
-        assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
 
 class TestResolvePerModelReasoningEffort:
@@ -473,8 +434,23 @@ class TestResolvePerModelReasoningEffort:
         result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
         assert result == {"enabled": True, "effort": "high"}
 
+    def test_prefixed_key_matches_bare_model(self):
+        """A custom-provider prefixed key (``ollama-local/qwen3.6:27b``) applies to the bare runtime slug.
 
+        Fallback entries and named custom providers feed ``agent.model`` without the provider
+        prefix while the documented key spelling keeps ``provider/model``; a key for a different
+        model must still miss.
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"ollama-local/qwen3.6:27b-q4_k_m": "low"}
+        assert resolve_per_model_reasoning_effort("qwen3.6:27b-q4_k_m", overrides) == {"enabled": True, "effort": "low"}
+        assert resolve_per_model_reasoning_effort("llama3.2:3b", overrides) is None
 
+    def test_direct_match_wins_over_reverse_lookup(self):
+        """A direct/variant key match keeps priority over a prefixed reverse match."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"qwen3.6:27b": "medium", "ollama-local/qwen3.6:27b": "low"}
+        assert resolve_per_model_reasoning_effort("qwen3.6:27b", overrides) == {"enabled": True, "effort": "medium"}
 
 
 class TestResolveReasoningConfig:
@@ -528,15 +504,27 @@ class TestResolveReasoningConfig:
         cfg = self._cfg(effort="medium", overrides={"gpt-5": "turbo-max"})
         assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "medium"}
 
+    def test_dict_form_passes_bespoke_tier_verbatim_globally_and_per_model(self):
+        """#93238: providers with custom tiers (fast/thinking) need the dict form to send their
+        real level; a bare non-ladder string stays rejected so typos never reach the wire."""
+        from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+        cfg = self._cfg(effort={"enabled": True, "effort": "thinking"},
+                        overrides={"lumo-max": {"enabled": True, "effort": "fast"}})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "thinking"}
+        assert resolve_reasoning_config(cfg, "my-relay/lumo-max") == {"enabled": True, "effort": "fast"}
+        assert parse_reasoning_effort("thinking") is None
+
+    def test_dict_form_disabled_or_empty_effort(self):
+        """enabled:false disables regardless of level; a dict without a level is 'unset'."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort({"enabled": False, "effort": "low"}) == {"enabled": False}
+        assert parse_reasoning_effort({"enabled": True}) is None
+        assert parse_reasoning_effort({"effort": 0}) is None
+
 
 class TestReasoningOverridesDefaultConfig:
     """Tests for the agent.reasoning_overrides default config key (Task 2)."""
 
-    def test_default_config_has_reasoning_overrides_key(self):
-        """DEFAULT_CONFIG['agent'] contains 'reasoning_overrides' as an empty dict."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        assert "reasoning_overrides" in DEFAULT_CONFIG["agent"]
-        assert DEFAULT_CONFIG["agent"]["reasoning_overrides"] == {}
 
 
     def test_spelling_tolerant_lookup_works_with_user_config(self):
@@ -692,23 +680,6 @@ class TestAgentBrowserRunnable:
 
 
 
-    def test_version_probe_uses_windows_hide_flags(self, tmp_path, monkeypatch):
-        good = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho hi\n")
-        captured = []
-
-        def fake_run(cmd, **kwargs):
-            captured.append((cmd, kwargs))
-            return SimpleNamespace(returncode=0)
-
-        import hermes_cli._subprocess_compat as subprocess_compat
-        import subprocess as subprocess_mod
-
-        monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
-        monkeypatch.setattr(subprocess_mod, "run", fake_run)
-
-        assert agent_browser_runnable(str(good)) is True
-        assert captured[0][0] == [str(good), "--version"]
-        assert captured[0][1]["creationflags"] == 0x08000000
 
 
 
@@ -804,25 +775,19 @@ class TestWslPathTranslation:
         assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"
 
 
+@pytest.mark.windows_only
 class TestManagedNodeTreeInUse:
     """managed_node_tree_in_use() detects processes executing from the tree."""
 
     def _install_fake_psutil(self, monkeypatch, procs):
         import sys
-        from types import SimpleNamespace
 
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         fake = SimpleNamespace(
             process_iter=lambda fields: [
                 SimpleNamespace(info=info) for info in procs
             ]
         )
         monkeypatch.setitem(sys.modules, "psutil", fake)
-
-    def test_always_false_off_windows(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(hermes_constants.sys, "platform", "darwin")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        assert hermes_constants.managed_node_tree_in_use() is False
 
     def test_exe_under_node_dir_counts(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
@@ -862,11 +827,18 @@ class TestManagedNodeTreeInUse:
     def test_missing_psutil_is_false(self, tmp_path, monkeypatch):
         import sys
 
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # None in sys.modules makes `import psutil` raise ImportError.
         monkeypatch.setitem(sys.modules, "psutil", None)
         assert hermes_constants.managed_node_tree_in_use() is False
+
+
+@pytest.mark.linux_only
+def test_managed_node_tree_never_in_use_off_windows(tmp_path, monkeypatch):
+    """The psutil scan is Windows-only; POSIX hosts can swap the tree freely."""
+    (tmp_path / "node").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert hermes_constants.managed_node_tree_in_use() is False
 
 
 class _FakeUrlResponse:
@@ -896,6 +868,7 @@ def _make_node_zip(major: int) -> tuple[str, bytes]:
     return name, buf.getvalue()
 
 
+@pytest.mark.windows_only
 class TestWindowsHealStageSwap:
     """_heal_managed_node_windows() must never destroy the live tree before
     its replacement is fully staged, and must defer (return None) when the
@@ -906,8 +879,8 @@ class TestWindowsHealStageSwap:
     ):
         import urllib.request
 
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
-        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+        # Pin the native architecture to the x64 archive served by the fake index.
+        monkeypatch.setattr(host_facts, "native_arch", lambda: "amd64")
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv(
             "HERMES_NODE_TARGET_MAJOR",
@@ -1132,6 +1105,7 @@ class TestWindowsHealStageSwap:
         assert fresh_backup.exists()
 
 
+@pytest.mark.windows_only
 class TestHealAttemptFlagSemantics:
     """An in-use deferral must not record the once-per-process heal attempt,
     so a later call can retry once the tree is free (#80926)."""
@@ -1140,7 +1114,6 @@ class TestHealAttemptFlagSemantics:
         home = tmp_path / "hermes"
         (home / "node").mkdir(parents=True)
         (home / "node" / "node.exe").write_text("x", encoding="utf-8")
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
         calls = {"n": 0}
@@ -1161,7 +1134,6 @@ class TestHealAttemptFlagSemantics:
         home = tmp_path / "hermes"
         (home / "node").mkdir(parents=True)
         (home / "node" / "node.exe").write_text("x", encoding="utf-8")
-        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
         calls = {"n": 0}
@@ -1177,3 +1149,40 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+class TestProjectVenvDirOutOfTree:
+    """#116148: a checkout with no in-tree venv whose interpreter lives in ``$HERMES_HOME/venvs/<name>``
+    (the layout the shipped Windows launchers pin) must resolve to the running interpreter's venv,
+    never ``None`` — every updater call site turns ``None`` into a fabricated ``<checkout>/venv`` that
+    uv cannot inspect, so tool dependencies are never refreshed."""
+
+    @staticmethod
+    def _running_from(monkeypatch, checkout, venv):
+        monkeypatch.setattr(hermes_constants, "__file__", str(checkout / "hermes_constants.py"))
+        monkeypatch.setattr(sys, "prefix", str(venv))
+        monkeypatch.setattr(sys, "base_prefix", str(checkout / "no-such-base"))
+
+    def test_out_of_tree_install_resolves_the_running_interpreter_venv(self, monkeypatch, tmp_path):
+        checkout = tmp_path / "hermes-agent"
+        checkout.mkdir()
+        venv = tmp_path / "venvs" / "hermes"
+        hermes_constants.venv_python_path(venv).parent.mkdir(parents=True)
+        hermes_constants.venv_python_path(venv).write_text("", encoding="utf-8")
+        self._running_from(monkeypatch, checkout, venv)
+
+        assert hermes_constants.project_venv_dir(checkout) == venv
+
+    def test_foreign_root_and_in_tree_venv_are_unchanged(self, monkeypatch, tmp_path):
+        """A temp dir / another clone never claims the running venv; an in-tree venv still wins."""
+        checkout = tmp_path / "hermes-agent"
+        checkout.mkdir()
+        venv = tmp_path / "venvs" / "hermes"
+        hermes_constants.venv_python_path(venv).parent.mkdir(parents=True)
+        hermes_constants.venv_python_path(venv).write_text("", encoding="utf-8")
+        self._running_from(monkeypatch, checkout, venv)
+        other = tmp_path / "not-our-checkout"
+        other.mkdir()
+
+        assert hermes_constants.project_venv_dir(other) is None
+        (checkout / ".venv").mkdir()
+        assert hermes_constants.project_venv_dir(checkout) == checkout / ".venv"

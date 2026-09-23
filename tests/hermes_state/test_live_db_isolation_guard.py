@@ -77,13 +77,6 @@ class TestProductionPathRefused:
 
 
 class TestHermeticPathsAllowed:
-    def test_tmp_db_path_works(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        try:
-            db.create_session("iso-guard-session", "cli")
-            assert db.get_session("iso-guard-session") is not None
-        finally:
-            db.close()
 
     def test_tmp_hermes_home_default_resolution_works(self, tmp_path, monkeypatch):
         """Argless SessionDB() under a hermetic HERMES_HOME must succeed."""

@@ -3,8 +3,22 @@ turn tracking and turn-failure detail. Bodies are rebound onto server.py's globa
 
 from __future__ import annotations
 
+import re
+
 from .method_ctx import bind_module
 from agent.prompt_builder import STEER_DISPLAY_KIND
+
+# Discord routing note (gateway/run_inbound.py::discord_triggering_note) persisted as user
+# ``content`` by gateways before the authored-text fix; presentation-only heal for those rows.
+_DISCORD_TRIGGERING_NOTE_RE = re.compile(
+    r"(^|\n)\[Triggering message id: `[^`\n]*` — use as `message_id` for reply/react/pin via the discord tools\.\]\n*"
+)
+
+
+def _bridged_tool_labels(name: str, args: dict) -> list[dict]:
+    from agent.display import tool_labels_for_call
+
+    return [label.as_payload() for label in tool_labels_for_call(name, args)]
 
 
 def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
@@ -194,6 +208,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         content_text = _coerce_message_text(m.get("content"))
         if _is_display_hidden_marker(role, content_text):
             continue
+        if role == "user":
+            content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")
@@ -212,7 +228,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             name = tc_name or m.get("tool_name") or "tool"
             args = tc_args or {}
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
-            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args), **({"args": args} if args else {})})
+            labels = _bridged_tool_labels(name, args)
+            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
+                             **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
         has_assistant_detail = role == "assistant" and any(m.get(key) for key in _HISTORY_ASSISTANT_DETAIL_KEYS)

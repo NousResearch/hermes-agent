@@ -11,6 +11,7 @@ import {
   coarseElapsed,
   Codicon,
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -74,6 +75,7 @@ import {
   useTurnBusy,
   workerActiveAt
 } from './row-helpers'
+import { openBotScreen } from './screen-open'
 import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
 import {
   $botSections,
@@ -148,13 +150,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // last_session alone shows "6d ago" on a bot you just messaged.
   const previewSession = bot.canonical_session || last
   const activitySession = botActivitySession(bot)
-  // A live kanban/tool worker counts as activity (#90268): fresh age while it
-  // runs, falling back to chat activity when it ends.
+  // A live kanban/tool worker gates only the pulse/mood (#90268). The age is
+  // the last time the bot did ANYTHING — chat or delegated worker run — so a
+  // delegate-only specialist that ran all day no longer snaps back to "11d"
+  // the moment the 150 s liveness window lapses (#105874). An absent
+  // worker_session (past the gateway's 20-row window) degrades to chat age.
   const workerActive = workerActiveAt(bot)
-
-  const rowAgeTs = workerActive
-    ? Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
-    : activitySession?.last_active || 0
+  const rowAgeTs = Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
 
   const groupKeys = useValue($activeGroupMemberKeys)
   const botMood = botWorkingMood(bot, focusedOwner, turnBusy, activeConnectionId, Date.now(), groupKeys)
@@ -321,6 +323,24 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => openBotScreen(bot, meta)}>{b.screen.menu}</ContextMenuItem>
+        <ContextMenuCheckboxItem
+          checked={Boolean(meta?.screenAutoOpen)}
+          onSelect={() => {
+            void ensureBotMetadata(bot)
+              .then(current => {
+                const next = !current.screenAutoOpen
+                void saveBotMeta(bot, { screenAutoOpen: next })
+                host.notify({
+                  kind: 'info',
+                  message: next ? b.screen.autoOpenOnToast(displayName(bot, current)) : b.screen.autoOpenOffToast(displayName(bot, current))
+                })
+              })
+              .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
+          }}
+        >
+          {b.screen.autoOpenMenu}
+        </ContextMenuCheckboxItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {
@@ -332,7 +352,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 })
                 host.notify({
                   kind: 'info',
-                  message: pinned ? b.bot.unpinnedToast(displayName(bot, current)) : b.bot.pinnedToast(displayName(bot, current))
+                  message: pinned
+                    ? b.bot.unpinnedToast(displayName(bot, current))
+                    : b.bot.pinnedToast(displayName(bot, current))
                 })
               })
               .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))

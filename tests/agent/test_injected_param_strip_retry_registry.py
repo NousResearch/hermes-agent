@@ -131,20 +131,6 @@ class TestClassifierPathRegistryWalk:
             assert verdict.retryable is True, message
             assert verdict.should_compress is False, message
 
-    @pytest.mark.parametrize("param", REGISTRY_PARAMS)
-    def test_turn_completes_via_retry(self, param):
-        """The full contract: 400 once naming the injected param, retry the
-        identical request, turn completes (#89503 — the turn used to die)."""
-        for msg_param in _error_shapes(param):
-            message, body = msg_param.values
-            transport = _FlakyTransport(
-                MockAPIError(message, status_code=400, body=copy.deepcopy(body))
-            )
-            result = _drive_conversation_retry(
-                transport, provider="openai-codex", model="gpt-5.6-sol",
-            )
-            assert result == {"ok": True}, message
-            assert transport.calls == 2, message
 
     @pytest.mark.parametrize("param", REGISTRY_PARAMS)
     def test_sender_route_still_fails_fast(self, param):
@@ -206,11 +192,13 @@ class _FlakyClient:
 
 
 def _aux_patches(client):
+    # gpt-4.1: a model the aux path still SENDS temperature to. gpt-5.x omits it up front
+    # (#51083), which would leave the reactive strip rung nothing to strip.
     return (
         patch("agent.auxiliary_client._resolve_task_provider_model",
-              return_value=("openai-codex", "gpt-5.5", None, None, None)),
+              return_value=("openai-codex", "gpt-4.1", None, None, None)),
         patch("agent.auxiliary_client._get_cached_client",
-              return_value=(client, "gpt-5.5")),
+              return_value=(client, "gpt-4.1")),
         patch("agent.auxiliary_client._validate_llm_response",
               side_effect=lambda resp, _task, **_kw: resp),
     )

@@ -393,8 +393,16 @@ const wordEnd = (value: string, cursor: number) => {
   return i
 }
 
-const normalCursor = (value: string, cursor: number) =>
-  value.length > 0 && cursor >= value.length ? prevPos(value, value.length) : cursor
+// Normal mode rests ON a character, never past it -- and never on the newline
+// that ends a line, or `x`/`D` there would delete the separator and join two
+// logical lines. Clamp to the line's last grapheme, but leave an empty line's
+// sole position (start === end) alone: there is no character to sit on.
+const normalCursor = (value: string, cursor: number) => {
+  const pos = snapPos(value, cursor)
+  const end = lineEnd(value, pos)
+
+  return pos >= end && end > lineStart(value, pos) ? prevPos(value, end) : pos
+}
 
 /** Pure Vim command reducer used by TextInput and behavior tests. */
 export function applyVimCommand(
@@ -416,9 +424,12 @@ export function applyVimCommand(
   }
 
   // Leave non-Vim control chords and named special keys to the composer's
-  // existing handlers (copy, interrupt, arrows, Tab, PageUp, etc.).
+  // existing handlers (copy, interrupt, arrows, Tab, PageUp, etc.). A special
+  // key still cancels a half-typed operator, as in Vim: `pending` is cleared
+  // even though the key itself falls through. Callers must therefore adopt
+  // `pending` from the result regardless of `handled`.
   if (key.ctrl || (!input && !key.escape)) {
-    return { ...state, handled: false }
+    return { ...state, handled: false, pending: '' }
   }
 
   if (state.pending === 'd') {
@@ -445,8 +456,11 @@ export function applyVimCommand(
 
   if (input === 'A') {return { ...state, cursor: lineEnd(value, cursor), handled: true, mode: 'insert', pending: '' }}
 
-  if (input === 'h') {cursor = prevPos(value, cursor)}
-  else if (input === 'l') {cursor = nextPos(value, cursor)}
+  // h/l never leave the current line (as in Vim); the normalCursor clamp below
+  // cannot express this, because a step onto the trailing newline lands exactly
+  // ON that line's end and so looks already-clamped.
+  if (input === 'h') {cursor = Math.max(lineStart(value, cursor), prevPos(value, cursor))}
+  else if (input === 'l') {cursor = Math.min(lineEnd(value, cursor), nextPos(value, cursor))}
   else if (input === 'j') {cursor = lineNav(value, cursor, 1) ?? cursor}
   else if (input === 'k') {cursor = lineNav(value, cursor, -1) ?? cursor}
   else if (input === 'w') {cursor = wordRight(value, cursor)}
@@ -458,7 +472,10 @@ export function applyVimCommand(
     const end = lineEnd(value, cursor)
 
     cursor = end > lineStart(value, cursor) ? prevPos(value, end) : end
-  } else if (input === 'x' && cursor < value.length) {
+    // `x` deletes the character UNDER the cursor, so it is a no-op on an empty
+    // line (cursor === lineEnd): there is nothing there but the separator, and
+    // deleting that would join two logical lines instead.
+  } else if (input === 'x' && cursor < lineEnd(value, cursor)) {
     const next = value.slice(0, cursor) + value.slice(nextPos(value, cursor))
 
     return { cursor: normalCursor(next, cursor), handled: true, mode: 'normal', pending: '', value: next }
@@ -1553,10 +1570,15 @@ export function TextInput({
           k
         )
 
+        // Adopt `pending` even when the command was not handled: a special key
+        // (arrow, Enter, ...) cancels a half-typed operator before falling
+        // through, so a stale "d" cannot pair with the next `d` and delete a
+        // line at an unrelated cursor.
+        vimPendingRef.current = result.pending
+
         if (result.handled) {
           flushKeyBurst()
           ;(event as InputEvent & { stopImmediatePropagation?: () => void }).stopImmediatePropagation?.()
-          vimPendingRef.current = result.pending
 
           if (result.action === 'undo') {
             swap(undo, redo)

@@ -4219,6 +4219,59 @@ export const zh = defineLocale({
       branchNewChat: '在新对话中分支',
       react: '回应',
       dismissError: '关闭错误',
+      errorGenericProvider: 'AI 服务',
+      errorLayerBodies: {
+        generic: 'Hermes 回复时出现问题。请重试；若问题持续，请复制错误详情。',
+        provider: 'AI 服务无法完成此请求。请稍后重试或切换服务商。',
+        endpoint: 'Hermes 无法连接到你的自定义模型服务器。请确认它正在运行，然后重新发送消息。',
+        streaming: '回复完成前连接已断开。请重试以重新发送。'
+      },
+      errorCodes: {
+        provider_policy_blocked: {
+          title: '账户设置阻止了此模型',
+          body: provider => `${provider} 无法按你账户的数据或隐私设置路由此请求。请选择其他模型或切换服务商。`
+        },
+        content_policy_blocked: {
+          title: 'AI 服务拒绝回答此请求',
+          body: provider => `${provider} 拒绝回答这条消息。请修改后重新发送。`
+        },
+        format_error: {
+          title: 'AI 服务拒绝了请求格式',
+          body: provider => `${provider} 不接受此请求的构造方式。请切换服务商，或发送诊断信息以便我们排查。`
+        },
+        invalid_response: {
+          title: 'AI 服务返回了无法读取的回复',
+          body: provider => `${provider} 返回了 Hermes 无法读取的内容。请稍后重试。`
+        },
+        empty_response: {
+          title: 'AI 服务返回了空回复',
+          body: provider => `${provider} 没有为此消息返回内容。请稍后重试。`
+        },
+        rate_limit: {
+          title: 'AI 服务繁忙',
+          body: provider => `${provider} 正在限制请求数量。请稍等片刻后重试。`
+        },
+        upstream_rate_limit: {
+          title: 'AI 服务繁忙',
+          body: provider => `${provider} 正在限制请求数量。请稍等片刻后重试。`
+        },
+        overloaded: {
+          title: 'AI 服务负载过高',
+          body: provider => `${provider} 当前遇到问题。请稍后重试或切换服务商。`
+        },
+        server_error: {
+          title: 'AI 服务发生错误',
+          body: provider => `${provider} 返回了服务器错误。请稍后重试或切换服务商。`
+        },
+        timeout: {
+          title: '回复超时',
+          body: provider => `${provider} 未及时响应。请重试以重新发送。`
+        },
+        ssl_cert_verification: {
+          title: '安全连接失败',
+          body: provider => `Hermes 无法验证与 ${provider} 的安全连接。请检查网络或代理设置，或切换服务商后重新发送。`
+        }
+      },
       errorLayers: {
         auth: '认证错误',
         billing: '额度不足',

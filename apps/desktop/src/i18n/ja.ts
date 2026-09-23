@@ -3511,6 +3511,67 @@ export const ja = defineLocale({
       branchNewChat: '新しいチャットでブランチ',
       react: 'リアクション',
       dismissError: 'エラーを閉じる',
+      errorGenericProvider: 'AI サービス',
+      errorLayerBodies: {
+        generic:
+          'Hermes の返信中に問題が発生しました。再試行してください。問題が続く場合はエラー詳細をコピーしてください。',
+        provider:
+          'AI サービスがリクエストを完了できませんでした。少し待って再試行するか、プロバイダーを切り替えてください。',
+        endpoint:
+          'カスタムモデルサーバーに接続できません。サーバーが起動しているか確認し、メッセージを再送してください。',
+        streaming: '返信が完了する前に接続が切れました。再試行してもう一度送信してください。'
+      },
+      errorCodes: {
+        provider_policy_blocked: {
+          title: 'アカウント設定によりこのモデルはブロックされています',
+          body: provider =>
+            `${provider} はアカウントのデータまたはプライバシー設定により、このリクエストを処理できません。別のモデルまたはプロバイダーを選んでください。`
+        },
+        content_policy_blocked: {
+          title: 'AI サービスが回答を拒否しました',
+          body: provider => `${provider} はこのメッセージへの回答を拒否しました。編集して再送してください。`
+        },
+        format_error: {
+          title: 'AI サービスがリクエストの形式を拒否しました',
+          body: provider =>
+            `${provider} はこのリクエストの形式を受け付けませんでした。プロバイダーを切り替えるか、調査のため診断情報を送信してください。`
+        },
+        invalid_response: {
+          title: 'AI サービスが読み取れない応答を返しました',
+          body: provider => `${provider} は Hermes が読み取れない内容を返しました。しばらくしてから再試行してください。`
+        },
+        empty_response: {
+          title: 'AI サービスが空の応答を返しました',
+          body: provider => `${provider} はこのメッセージに内容を返しませんでした。しばらくしてから再試行してください。`
+        },
+        rate_limit: {
+          title: 'AI サービスが混み合っています',
+          body: provider => `${provider} は現在リクエスト数を制限しています。少し待ってから再試行してください。`
+        },
+        upstream_rate_limit: {
+          title: 'AI サービスが混み合っています',
+          body: provider => `${provider} は現在リクエスト数を制限しています。少し待ってから再試行してください。`
+        },
+        overloaded: {
+          title: 'AI サービスの負荷が高すぎます',
+          body: provider =>
+            `${provider} で現在問題が発生しています。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
+        },
+        server_error: {
+          title: 'AI サービスでエラーが発生しました',
+          body: provider =>
+            `${provider} がサーバーエラーを返しました。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
+        },
+        timeout: {
+          title: '応答がタイムアウトしました',
+          body: provider => `${provider} から時間内に応答がありませんでした。再試行してもう一度送信してください。`
+        },
+        ssl_cert_verification: {
+          title: '安全な接続に失敗しました',
+          body: provider =>
+            `Hermes は ${provider} との安全な接続を検証できませんでした。ネットワークやプロキシの設定を確認するか、プロバイダーを切り替えて再送してください。`
+        }
+      },
       errorLayers: {
         auth: '認証エラー',
         billing: 'クレジット不足',

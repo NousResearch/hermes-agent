@@ -3459,6 +3459,59 @@ export const zhHant = defineLocale({
       branchNewChat: '在新聊天中分支',
       react: '回應',
       dismissError: '关闭错误',
+      errorGenericProvider: 'AI 服務',
+      errorLayerBodies: {
+        generic: 'Hermes 回覆時發生問題。請重試；若問題持續，請複製錯誤詳細資訊。',
+        provider: 'AI 服務無法完成此請求。請稍後重試或切換服務商。',
+        endpoint: 'Hermes 無法連線至你的自訂模型伺服器。請確認它正在執行，然後重新傳送訊息。',
+        streaming: '回覆完成前連線已中斷。請重試以重新傳送。'
+      },
+      errorCodes: {
+        provider_policy_blocked: {
+          title: '帳戶設定封鎖了此模型',
+          body: provider => `${provider} 無法依你帳戶的資料或隱私設定路由此請求。請選擇其他模型或切換服務商。`
+        },
+        content_policy_blocked: {
+          title: 'AI 服務拒絕回答此請求',
+          body: provider => `${provider} 拒絕回答這則訊息。請修改後重新傳送。`
+        },
+        format_error: {
+          title: 'AI 服務拒絕了請求格式',
+          body: provider => `${provider} 不接受此請求的建構方式。請切換服務商，或傳送診斷資訊以便我們排查。`
+        },
+        invalid_response: {
+          title: 'AI 服務傳回了無法讀取的回覆',
+          body: provider => `${provider} 傳回了 Hermes 無法讀取的內容。請稍後重試。`
+        },
+        empty_response: {
+          title: 'AI 服務傳回了空回覆',
+          body: provider => `${provider} 沒有為此訊息傳回內容。請稍後重試。`
+        },
+        rate_limit: {
+          title: 'AI 服務忙碌中',
+          body: provider => `${provider} 正在限制請求數量。請稍等片刻後重試。`
+        },
+        upstream_rate_limit: {
+          title: 'AI 服務忙碌中',
+          body: provider => `${provider} 正在限制請求數量。請稍等片刻後重試。`
+        },
+        overloaded: {
+          title: 'AI 服務負載過高',
+          body: provider => `${provider} 目前遇到問題。請稍後重試或切換服務商。`
+        },
+        server_error: {
+          title: 'AI 服務發生錯誤',
+          body: provider => `${provider} 傳回了伺服器錯誤。請稍後重試或切換服務商。`
+        },
+        timeout: {
+          title: '回覆逾時',
+          body: provider => `${provider} 未及時回應。請重試以重新傳送。`
+        },
+        ssl_cert_verification: {
+          title: '安全連線失敗',
+          body: provider => `Hermes 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
+        }
+      },
       errorLayers: {
         auth: '認證錯誤',
         billing: '額度不足',

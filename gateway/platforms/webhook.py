@@ -19,6 +19,7 @@ import re
 import subprocess
 import time
 from collections import deque
+from contextvars import ContextVar, Token
 from contextlib import nullcontext, suppress
 from typing import Any, Deque, Dict, List, Optional
 
@@ -174,11 +175,20 @@ class WebhookAdapter(BasePlatformAdapter):
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
         self._v1_signature_warned: set[str] = set()  # routes already warned about legacy V1 (once per route)
-        # Keyed by session chat_id; read by EVERY send() (interim status messages AND the final
+        # One-shot routes key delivery info by session chat_id; persistent routes key it by
+        # delivery_id so overlapping turns in one conversation cannot overwrite each other's
+        # rendered response target. Read by EVERY send() (interim status messages AND the final
         # response) so never pop on send(). TTL-pruned on each POST.
         self._delivery_info: Dict[str, dict] = {}
         self._delivery_info_created: Dict[str, float] = {}
         self._delivery_info_order: Deque[tuple[float, str]] = deque()
+        # The processing hooks run in the task that owns one agent turn. Keep that task's reset
+        # token alongside its delivery id so a task reused by an embedding host cannot retain a
+        # completed turn's routing context.
+        self._active_delivery_id: ContextVar[Optional[str]] = ContextVar(
+            f"webhook_delivery_id_{id(self)}", default=None)
+        self._active_delivery_token: ContextVar[Optional[Token]] = ContextVar(
+            f"webhook_delivery_token_{id(self)}", default=None)
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
         # Idempotency: TTL cache of recently processed delivery IDs.
         self._seen_deliveries: Dict[str, float] = {}
@@ -264,7 +274,15 @@ class WebhookAdapter(BasePlatformAdapter):
         if is_autonomous_silence_response(content):
             logger.info("[webhook] Response for %s is a silence marker — not delivering", chat_id)
             return SendResult(success=True)
-        delivery = self._delivery_info.get(chat_id, {})
+        # Persistent sessions keep delivery identity separate from conversation identity so each
+        # turn keeps its own rendered target: prefer the turn's bound delivery id, then reply_to
+        # (the delivery id rides MessageEvent.message_id), then the one-shot chat_id key.
+        active_delivery_id = self._active_delivery_id.get()
+        delivery = self._delivery_info.get(active_delivery_id or "", {})
+        if not delivery and reply_to:
+            delivery = self._delivery_info.get(str(reply_to), {})
+        if not delivery:
+            delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
@@ -645,21 +663,37 @@ class WebhookAdapter(BasePlatformAdapter):
                          route_name: str, profile, event_type: str) -> "asyncio.Task":
         """Record delivery info and fire the agent run (shared by the immediate and coalesced paths)."""
         # delivery_id in the session key → concurrent webhooks on one route get independent runs.
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        # A route may opt into a persistent conversation with a rendered session_key template;
+        # an unresolved template falls back to the one-shot delivery identity. Persistent
+        # (session:) and one-shot (delivery:) identities use disjoint namespaces so a
+        # delivery ID can never collide with — or auto-close — a persistent conversation.
+        session_key = ""
+        session_key_tpl = route_config.get("session_key", "")
+        if session_key_tpl:
+            session_key = self._render_prompt(session_key_tpl, payload, event_type, route_name).strip()
+            if "{" in session_key:
+                session_key = ""
+        is_persistent_session = bool(session_key)
+        session_identity = f"session:{session_key}" if is_persistent_session else f"delivery:{delivery_id}"
+        session_chat_id = f"webhook:{route_name}:{session_identity}"
+        # Persistent conversations key delivery info per delivery rather than per chat_id so a
+        # later request cannot replace an in-flight turn's rendered deliver_extra.
+        delivery_info_key = delivery_id if is_persistent_session else session_chat_id
         # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
-        self._delivery_info[session_chat_id] = {
+        self._delivery_info[delivery_info_key] = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
-        self._delivery_info_created[session_chat_id] = now
-        self._delivery_info_order.append((now, session_chat_id))
+        self._delivery_info_created[delivery_info_key] = now
+        self._delivery_info_order.append((now, delivery_info_key))
         self._prune_delivery_info(now)
         source = self.build_source(chat_id=session_chat_id, chat_name=f"webhook/{route_name}", chat_type="webhook",
                                    user_id=f"webhook:{route_name}", user_name=route_name)
         if profile and isinstance(profile, str):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
-                             message_id=delivery_id)
+                             message_id=delivery_id,
+                             metadata={"webhook_persistent_session": is_persistent_session})
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))
@@ -667,11 +701,25 @@ class WebhookAdapter(BasePlatformAdapter):
         task.add_done_callback(self._background_tasks.discard)
         return task
 
+    async def on_processing_start(self, event: "MessageEvent") -> None:
+        """Bind response routing to this delivery for the current async turn."""
+        if event.message_id:
+            token = self._active_delivery_id.set(str(event.message_id))
+            self._active_delivery_token.set(token)
+
     async def on_processing_complete(self, event: "MessageEvent", outcome: Any) -> None:
         """Close the one-shot per-delivery session: ``prune_sessions`` only reaps rows with ``ended_at`` set, so
         unclosed webhook sessions leak unbounded. Fires at the true end of the run; ``end_session()`` is
-        first-reason-wins."""
-        await self._end_webhook_session(event, event.source.chat_id)
+        first-reason-wins. Persistent (``session_key``) turns keep their session open across turns."""
+        try:
+            if bool((event.metadata or {}).get("webhook_persistent_session")):
+                return
+            await self._end_webhook_session(event, event.source.chat_id)
+        finally:
+            token = self._active_delivery_token.get()
+            if token is not None:
+                self._active_delivery_id.reset(token)
+                self._active_delivery_token.set(None)
 
     async def _end_webhook_session(self, event: "MessageEvent", session_chat_id: str) -> None:
         """Mark the per-delivery session ended via ``SessionDB.end_session`` (never a hand-written UPDATE),

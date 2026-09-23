@@ -10,7 +10,7 @@ import re
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from agent.compaction_display import project_compaction_message_for_display
 from agent.i18n import t
@@ -487,7 +487,41 @@ class GatewayTopicThreadsMixin:
         platform_cfg = config.platforms.get(source.platform) if config and getattr(config, "platforms", None) else None
         if platform_cfg is None:
             return False
-        return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("disable_topic_auto_rename"))
+        value = (getattr(platform_cfg, "extra", None) or {}).get("disable_topic_auto_rename")
+        return is_truthy_value(value) if value is not None else False
+
+    async def _plugin_topic_rename(self, adapter, source: SessionSource, session_id: str, title: str) -> Dict[str, str]:
+        """``{"name", "icon_custom_emoji_id"}`` overrides from ``pre_topic_rename`` plugins (both optional).
+
+        The hook is the one seam for "shape the topic when Hermes titles it" — icon pickers and
+        sidebar-length names live in plugins so the core never carries a catalog or a prompt. The
+        session title itself is untouched (``hermes sessions``/TUI keep the full one); only the
+        platform-facing topic name may be overridden. Plugins get the catalog fetch
+        (``fetch_forum_topic_icon_stickers``) instead of an adapter handle; last non-empty wins per key.
+        """
+        from hermes_cli.plugins import ainvoke_hook, has_hook
+
+        if not has_hook("pre_topic_rename"):
+            return {}
+        fetch = getattr(adapter, "fetch_forum_topic_icon_stickers", None)
+        try:
+            results = await ainvoke_hook(
+                "pre_topic_rename", platform=source.platform.value, chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id), session_id=session_id, title=title,
+                fetch_icon_catalog=fetch if callable(fetch) else None,
+            )
+        except Exception:
+            logger.debug("pre_topic_rename hook failed; renaming with the plain title", exc_info=True)
+            return {}
+        merged: Dict[str, str] = {}
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            for key in ("name", "icon_custom_emoji_id"):
+                value = str(result.get(key) or "").strip()
+                if value:
+                    merged[key] = value
+        return merged
 
     async def _rename_telegram_topic_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:
         """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
@@ -525,10 +559,15 @@ class GatewayTopicThreadsMixin:
         if adapter is None:
             return
         topic_name = self._sanitize_telegram_topic_title(title)
+        overrides = await self._plugin_topic_rename(adapter, source, session_id, topic_name)
+        if overrides.get("name"):
+            topic_name = self._sanitize_telegram_topic_title(overrides["name"]) or topic_name
+        icon_id = overrides.get("icon_custom_emoji_id")
         try:
             rename_topic = getattr(adapter, "rename_dm_topic", None)
             if rename_topic is not None:
-                await rename_topic(chat_id=str(source.chat_id), thread_id=str(source.thread_id), name=topic_name)
+                kwargs = {"icon_custom_emoji_id": icon_id} if icon_id else {}
+                await rename_topic(chat_id=str(source.chat_id), thread_id=str(source.thread_id), name=topic_name, **kwargs)
                 return
             bot = getattr(adapter, "_bot", None)
             edit_forum_topic = getattr(bot, "edit_forum_topic", None) or getattr(bot, "editForumTopic", None)

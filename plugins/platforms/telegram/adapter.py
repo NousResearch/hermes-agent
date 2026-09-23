@@ -2619,16 +2619,28 @@ class TelegramAdapter(BasePlatformAdapter):
         self._persist_dm_topic_thread_id(chat_id_int, name, int(thread_id), replace_existing=force_create)
         return str(thread_id)
 
-    async def rename_dm_topic(self, chat_id: int, thread_id: int, name: str) -> None:
-        """Rename a forum topic in a private (DM) chat."""
+    async def rename_dm_topic(
+        self, chat_id: int, thread_id: int, name: str, icon_custom_emoji_id: Optional[str] = None) -> None:
+        """Rename a forum topic in a private (DM) chat, optionally setting its catalog icon."""
         if not self._bot:
             return
         try:
             chat_id_arg = int(chat_id)
         except (TypeError, ValueError):
             chat_id_arg = chat_id
-        await self._bot.edit_forum_topic(chat_id=chat_id_arg, message_thread_id=int(thread_id), name=name)
-        logger.info("[%s] Renamed DM topic in chat %s thread_id=%s -> '%s'", self.name, chat_id, thread_id, name)
+        kwargs: Dict[str, Any] = {"chat_id": chat_id_arg, "message_thread_id": int(thread_id), "name": name}
+        if icon_custom_emoji_id:
+            kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id
+        await self._bot.edit_forum_topic(**kwargs)
+        logger.info(
+            "[%s] Renamed DM topic in chat %s thread_id=%s -> '%s'%s", self.name, chat_id, thread_id, name,
+            " with icon" if icon_custom_emoji_id else "")
+
+    async def fetch_forum_topic_icon_stickers(self) -> list:
+        """Telegram's fixed forum-topic icon catalog (``getForumTopicIconStickers``); [] without a bot."""
+        if not self._bot:
+            return []
+        return list(await self._bot.get_forum_topic_icon_stickers())
 
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int, replace_existing: bool = False) -> None:
         """Save a newly created thread_id back into config.yaml so it survives restarts."""

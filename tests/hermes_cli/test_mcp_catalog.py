@@ -569,6 +569,27 @@ class TestInstall:
         assert get_env_value("DEMO_KEY") == "secret-val"
         assert "demo" in load_config()["mcp_servers"]
 
+    def test_noninteractive_install_rejects_missing_required_credential_without_prompt(
+        self, catalog_dir, monkeypatch
+    ):
+        """Request handlers fail fast rather than waiting for stdin."""
+        body = _basic_manifest(
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "secret": True}],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog, "get_env_value", lambda _name: None)
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input", lambda *_args, **_kwargs: pytest.fail("stdin prompt opened")
+        )
+
+        with pytest.raises(mcp_catalog.CatalogError, match="DEMO_KEY is required but was not supplied"):
+            mcp_catalog.install_entry(_entry("demo"), interactive=False)
+
     def test_install_http_api_key_writes_bearer_headers(self, catalog_dir, monkeypatch):
         body = _basic_manifest(
             transport={"type": "http", "url": "https://mcp.example.com/sse"},
@@ -738,6 +759,21 @@ class TestToolSelection:
         install_entry(_entry("demo"), enable=True)
         server = load_config()["mcp_servers"]["demo"]
         assert server["tools"]["include"] == ["a", "b", "c"]
+
+    def test_cli_install_keeps_interactive_tool_picker(self, catalog_dir, monkeypatch):
+        """The direct CLI path still lets a TTY user choose a tool subset."""
+        import sys as _sys
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import load_config
+
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        monkeypatch.setattr(mcp_catalog, "_probe_tools", lambda _name: self._make_probed("a", "b"))
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", lambda *_args, **_kwargs: {1})
+
+        mcp_catalog.install_entry(_entry("demo"))
+
+        assert load_config()["mcp_servers"]["demo"]["tools"]["include"] == ["b"]
 
 
 

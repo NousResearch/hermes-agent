@@ -7,8 +7,8 @@ thinking off is trying to stop paying for.  The disable has to be sent:
 
     thinking: {"type": "disabled"}
 
-Reasoning-mandatory families (claude-fable) reject that with an HTTP 400
-("Thinking is mandatory for this model"), so they keep the omission — a
+Reasoning-mandatory families (claude-fable, claude-opus-5-5) reject that
+with an HTTP 400, so they keep the omission — a
 silently-ignored disable is a much better failure than a dead turn.
 
 Legacy manual-thinking Claude (<= 4.5) needs no disable at all: thinking is
@@ -64,9 +64,20 @@ class TestThinkingOffIsSentExplicitly:
         assert kwargs["thinking"] == {"type": "disabled"}
         assert "output_config" not in kwargs
 
-    def test_mandatory_thinking_models_keep_the_omission(self) -> None:
-        """claude-fable answers a disable with HTTP 400, so don't send one."""
-        kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": False})
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-fable-5",
+            "anthropic/claude-opus-5-5",
+            "claude-opus-5.5",
+        ],
+    )
+    def test_mandatory_thinking_models_keep_the_omission(self, model: str) -> None:
+        """Mandatory-thinking families answer a disable with HTTP 400, so don't
+        send one. Opus 5.5 (#120069): the API rejects ``thinking.type=disabled``
+        outright — every reasoning-off side path (session titles, compaction
+        fast lane, ``/reasoning none``) died with a non-retryable 400."""
+        kwargs = _kwargs(model, {"enabled": False})
         assert "thinking" not in kwargs
 
     def test_legacy_manual_thinking_models_keep_the_omission(self) -> None:
@@ -95,8 +106,13 @@ class TestEnablePathIsUnchanged:
         assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "high"}
 
-    def test_mandatory_model_still_thinks_when_asked_to(self) -> None:
-        kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": True, "effort": "max"})
+    @pytest.mark.parametrize(
+        "model", ["anthropic/claude-fable-5", "anthropic/claude-opus-5-5"]
+    )
+    def test_mandatory_model_still_thinks_when_asked_to(self, model: str) -> None:
+        """Opus 5.5's documented alternative to the disable is exactly this
+        shape: ``thinking.type=adaptive`` + ``output_config.effort``."""
+        kwargs = _kwargs(model, {"enabled": True, "effort": "max"})
         assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "max"}
 
@@ -122,6 +138,8 @@ class TestDisableVerdictHelper:
         assert _accepts_thinking_disable("anthropic/claude-opus-5") is True
         assert _accepts_thinking_disable("anthropic/claude-sonnet-5") is True
         assert _accepts_thinking_disable("anthropic/claude-fable-5") is False
+        # Opus 5.5 400s on the disable per its API error (#120069).
+        assert _accepts_thinking_disable("claude-opus-5-5") is False
 
     def test_non_claude_models_are_left_alone(self) -> None:
         from agent.anthropic_adapter import _accepts_thinking_disable

@@ -86,3 +86,19 @@ def test_configure_toggle_is_what_the_runtime_resolver_and_describe_see(profile_
     assert not any("disabled" in entry for entry in on_disk.values())
     assert enabled_mcp_server_names({"mcp_servers": on_disk}) == {"keep", "legacy"}
     assert _described() == {"keep": True, "drop": False, "legacy": True}
+
+
+def test_describe_unpinned_toolsets_uses_the_served_profiles_secret_scope(profile_dir):
+    """An unpinned snapshot resolves tool credentials from its served profile under multiplexing."""
+    from agent.secret_scope import current_secret_scope, set_multiplex_active
+
+    (profile_dir / ".env").write_text("XAI_API_KEY=profile-only-key\n", encoding="utf-8")
+    set_multiplex_active(True)
+    try:
+        snapshot = _call("profiles.describe", {})
+    finally:
+        set_multiplex_active(False)
+
+    enabled = {toolset["name"] for toolset in snapshot["toolsets"] if toolset["enabled"]}
+    assert enabled
+    assert current_secret_scope() is None

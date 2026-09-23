@@ -58,11 +58,13 @@ def _best_effort(fn) -> bool:
 
 @contextlib.contextmanager
 def _hermes_home_scope(path):
-    """Scope config/auth resolution to ``path`` for the block."""
+    """Scope config and profile secrets to ``path`` for the block."""
     token = set_hermes_home_override(str(path))
+    secret_token = set_secret_scope(build_profile_secret_scope(path), profile_home=str(path))
     try:
         yield
     finally:
+        reset_secret_scope(secret_token)
         reset_hermes_home_override(token)
 
 

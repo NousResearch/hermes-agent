@@ -7,13 +7,12 @@ import json
 import sys
 from pathlib import Path
 
-from agent.engineering_execution import CheckSpec
-from agent.engineering_runner import run_project_workflow
 from agent.i18n import t
-from hermes_cli.inventory import build_model_options_payload, load_picker_context
 
 
-def _read_checks(path: Path) -> tuple[CheckSpec, ...]:
+def _read_checks(path: Path) -> tuple:
+    from agent.engineering_execution import CheckSpec
+
     if path.stat().st_size > 64 * 1024:
         raise ValueError("checks file is too large")
     with path.open("r", encoding="utf-8") as stream:
@@ -45,17 +44,29 @@ def _read_checks(path: Path) -> tuple[CheckSpec, ...]:
     return tuple(checks)
 
 
+def _catalogue() -> dict:
+    from hermes_cli.inventory import build_model_options_payload, load_picker_context
+
+    return build_model_options_payload(
+        load_picker_context(),
+        explicit_only=True,
+        refresh=True,
+    )
+
+
+def _run_workflow(**kwargs):
+    from agent.engineering_runner import run_project_workflow
+
+    return run_project_workflow(**kwargs)
+
+
 def _pick_assignments() -> dict[str, dict[str, str]] | None:
     """Use the same provider/model catalogue and chooser as Hermes auxiliary pickers."""
     from hermes_cli.main_provider_setup import _prompt_provider_choice
 
     if not sys.stdin.isatty():
         return None
-    catalogue = build_model_options_payload(
-        load_picker_context(),
-        explicit_only=True,
-        refresh=True,
-    )
+    catalogue = _catalogue()
     providers = [
         row
         for row in catalogue.get("providers", [])
@@ -99,7 +110,7 @@ def run_cli(args: argparse.Namespace) -> int:
                 })
             )
             return 2
-        result = run_project_workflow(
+        result = _run_workflow(
             objective=args.objective,
             assignments=assignments,
             workspace=Path(args.workspace),
@@ -120,16 +131,21 @@ def run_cli(args: argparse.Namespace) -> int:
 
 
 def build_parser(subparsers) -> None:
-    parser = subparsers.add_parser(
-        "engineering", help="Run a verified engineering workflow"
-    )
-    parser.add_argument("--objective", required=True, help="Engineering task objective")
-    parser.add_argument("--workspace", required=True, help="Project worktree to change")
+    parser = subparsers.add_parser("engineering", help=t("engineering.command_help"))
     parser.add_argument(
-        "--checks-file", required=True, help="JSON list of operator-owned checks"
+        "--objective", required=True, help=t("engineering.objective_help")
     )
-    parser.add_argument("--backend", choices=("docker", "native"), default="docker")
     parser.add_argument(
-        "--image", help="Preinstalled Docker image for worker and checks"
+        "--workspace", required=True, help=t("engineering.workspace_help")
     )
+    parser.add_argument(
+        "--checks-file", required=True, help=t("engineering.checks_help")
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("docker", "native"),
+        default="docker",
+        help=t("engineering.backend_help"),
+    )
+    parser.add_argument("--image", help=t("engineering.image_help"))
     parser.set_defaults(func=run_cli)

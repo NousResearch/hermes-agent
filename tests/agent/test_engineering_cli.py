@@ -32,12 +32,7 @@ def test_picker_assigns_only_models_from_shared_catalogue(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.engineering_cmd.sys.stdin", SimpleNamespace(isatty=lambda: True)
     )
-    monkeypatch.setattr(
-        "hermes_cli.engineering_cmd.load_picker_context", lambda: object()
-    )
-    monkeypatch.setattr(
-        "hermes_cli.engineering_cmd.build_model_options_payload", lambda *a, **kw: rows
-    )
+    monkeypatch.setattr("hermes_cli.engineering_cmd._catalogue", lambda: rows)
     picks = iter([0, 1, 0, 0, 0, 1])
     monkeypatch.setattr(
         "hermes_cli.main_provider_setup._prompt_provider_choice",
@@ -88,7 +83,7 @@ def test_cli_reports_status_without_objective_or_model_data(
         },
     )
     monkeypatch.setattr(
-        "hermes_cli.engineering_cmd.run_project_workflow",
+        "hermes_cli.engineering_cmd._run_workflow",
         lambda **kw: SimpleNamespace(
             status="DONE",
             reason="verified",

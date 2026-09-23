@@ -121,6 +121,45 @@ class TestManagedPersistenceMode:
 class TestConfiguredCamofoxIdentity:
     """Externally managed Camofox sessions can provide their own identity."""
 
+    @pytest.mark.parametrize("other_tabs", [
+        [{"tabId": "other", "listItemId": "another-session"}],
+        [{"tabId": "other"}, {"tabId": "newer", "listItemId": "another-session"}],
+    ])
+    def test_adoption_never_uses_another_sessions_tab(self, tmp_path, monkeypatch, other_tabs):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_USER_ID", "shared-camofox")
+        monkeypatch.setenv("CAMOFOX_SESSION_KEY", "our-session")
+        monkeypatch.setenv("CAMOFOX_ADOPT_EXISTING_TAB", "true")
+
+        with (
+            patch("tools.browser_camofox._get", return_value={"tabs": other_tabs}),
+            patch("tools.browser_camofox._post", return_value={"tabId": "ours"}) as mock_post,
+        ):
+            session = _get_session("task-1")
+            assert session["tab_id"] is None
+            result = json.loads(camofox_navigate("https://example.com", task_id="task-1"))
+
+        assert result["success"] is True
+        assert session["tab_id"] == "ours"
+        mock_post.assert_called_once_with("/tabs", {
+            "userId": "shared-camofox", "listItemId": "our-session", "url": "https://example.com",
+        })
+
+    def test_adoption_selects_only_matching_session_key(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_USER_ID", "shared-camofox")
+        monkeypatch.setenv("CAMOFOX_SESSION_KEY", "our-session")
+        monkeypatch.setenv("CAMOFOX_ADOPT_EXISTING_TAB", "true")
+
+        tabs = [
+            {"tabId": "ours", "listItemId": "our-session"},
+            {"tabId": "other", "listItemId": "another-session"},
+        ]
+        with patch("tools.browser_camofox._get", return_value={"tabs": tabs}):
+            assert _get_session("task-1")["tab_id"] == "ours"
+
     def test_multiplex_scope_identity_wins_over_process_env_and_config(
         self, tmp_path, monkeypatch
     ):

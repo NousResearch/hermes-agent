@@ -250,7 +250,7 @@ def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug("Camofox tab adoption failed for %s: %s", session.get("user_id"), exc)
         return session
     dict_tabs = [tab for tab in tabs if isinstance(tab, dict)] if isinstance(tabs, list) else []
-    candidates = [tab for tab in dict_tabs if tab.get("listItemId") == session.get("session_key")] or dict_tabs
+    candidates = [tab for tab in dict_tabs if tab.get("listItemId") == session.get("session_key")]
     tab_id = candidates[-1].get("tabId") if candidates else None
     if isinstance(tab_id, str) and tab_id:
         session["tab_id"] = tab_id

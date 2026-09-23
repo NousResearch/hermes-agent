@@ -532,3 +532,55 @@ class TestStandaloneSendFallback:
         assert result.get("success") is True
         assert "HTML conversion failed" in log_text
         assert "kaboom" in log_text
+
+
+class TestPlainAlternative:
+    """Both alternatives of one email must carry the same content.
+
+    Regression: an already-HTML body produced a trimmed, sanitized HTML part but a raw
+    plain part, so a text-only client rendered the cron wrapper prefix plus naked
+    ``<p>``/``<b>`` tags — visible in exactly the cron-report shape this feature targets.
+    """
+
+    CRON_BODY = "Cronjob Response: nightly\n-------------\n<div><b>Result</b><p>Line one</p></div>"
+
+    def _adapter(self, html_format=True):
+        from plugins.platforms.email.adapter import EmailAdapter
+        adapter = EmailAdapter.__new__(EmailAdapter)
+        adapter._html_format = html_format
+        adapter._address = "hermes@example.ch"
+        adapter._thread_context = {}
+        return adapter
+
+    def _parts(self, body, html_format=True):
+        msg, _, _ = self._adapter(html_format)._new_reply("felix@example.ch", body)
+        children = msg.get_payload()
+        assert isinstance(children, list)
+        body_part = children[0]
+        assert isinstance(body_part, MIMEMultipart)
+        inner = body_part.get_payload()
+        assert isinstance(inner, list)
+        decoded = []
+        for part in inner:
+            assert isinstance(part, MIMEText)
+            payload = part.get_payload(decode=True)
+            decoded.append((part.get_content_type(), payload.decode("utf-8") if isinstance(payload, bytes) else ""))
+        return dict(decoded)
+
+    def test_already_html_body_parts_agree(self):
+        parts = self._parts(self.CRON_BODY)
+        plain, html = parts["text/plain"], parts["text/html"]
+        # The plain alternative is readable text: no tags and no cron wrapper prefix,
+        # i.e. the same content the HTML alternative shows.
+        assert "<" not in plain and ">" not in plain
+        assert "Cronjob Response" not in plain
+        assert "Result" in plain and "Line one" in plain
+        # The HTML alternative still carries the markup and drops the wrapper.
+        assert "<b>Result</b>" in html
+        assert "Cronjob Response" not in html
+
+    def test_markdown_body_plain_part_unchanged(self):
+        body = "**bold** and `code`, mentioning `<pre><code>` in prose"
+        parts = self._parts(body)
+        # Markdown source IS the readable plain-text form — it must not be rewritten.
+        assert parts["text/plain"] == body

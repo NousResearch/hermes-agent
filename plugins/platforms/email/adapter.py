@@ -523,6 +523,20 @@ def _strip_html(html: str) -> str:
     return html.strip()
 
 
+def _plain_body_for(body: str) -> str:
+    """Plain-text alternative for a body that is already HTML.
+
+    Without this the two alternatives of one email disagree: the HTML part is trimmed
+    and sanitized while the plain part carries the raw markup (and any cron wrapper
+    prefix), so a text-only client renders naked ``<p>``/``<b>`` tags plus the wrapper
+    — precisely the report shape this feature targets. Markdown bodies are returned
+    unchanged: they already *are* the readable plain-text form.
+    """
+    if not _is_html(body):
+        return body
+    return _strip_html(_trim_html_preamble_postamble(body))
+
+
 def _extract_email_address(raw: str) -> str:
     """Extract bare email address from 'Name <addr>' format."""
     match = re.search(r"<([^>]+)>", raw)
@@ -986,7 +1000,10 @@ class EmailAdapter(BasePlatformAdapter):
         Markdown body when enabled. HTML rendering is defensive — on failure we
         fall back to plain text only, never breaking the send.
         """
-        container.attach(MIMEText(body, "plain", "utf-8"))
+        # Strip tags only when an HTML alternative exists — with html_format off there is
+        # nothing to be consistent with, and the pre-feature raw-plain shape is preserved.
+        plain = _plain_body_for(body) if self._html_format else body
+        container.attach(MIMEText(plain, "plain", "utf-8"))
         if self._html_format:
             try:
                 html = _markdown_to_html_email(body)
@@ -1097,7 +1114,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         if html_format:
             msg = MIMEMultipart("alternative")
-            msg.attach(MIMEText(message, "plain", "utf-8"))
+            msg.attach(MIMEText(_plain_body_for(message), "plain", "utf-8"))
             try:
                 html = _markdown_to_html_email(message)
                 msg.attach(MIMEText(html, "html", "utf-8"))

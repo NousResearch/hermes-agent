@@ -28,6 +28,14 @@ from hermes_cli import update_cmd
 SHA = "a" * 40
 
 
+@pytest.fixture(autouse=True)
+def _units_belong_to_this_update(monkeypatch):
+    """The fake units here run on invented PIDs (4242, per-unit tables) with no readable home;
+    ownership (#93349, ``test_update_fleet_home_scope.py``) is pinned so these tests keep proving
+    the once-per-host-process collapse, not home scoping."""
+    monkeypatch.setattr(fleet, "_systemd_unit_owned_by_update", lambda scope_cmd, svc_name: True)
+
+
 @pytest.fixture
 def two_profiles(tmp_path, monkeypatch):
     """Two profile HERMES_HOMEs behind ONE host state dir — the real multiplex topology."""

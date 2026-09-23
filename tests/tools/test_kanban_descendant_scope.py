@@ -26,9 +26,15 @@ def _worker_board(tmp_path, monkeypatch):
         "HERMES_KANBAN_DB": str(db), "HERMES_KANBAN_BOARD": "default",
         "HERMES_KANBAN_TASK": own, "HERMES_KANBAN_RUN_ID": str(task.current_run_id),
         "HERMES_KANBAN_CLAIM_LOCK": task.claim_lock, "HOME": str(tmp_path),
+        "HERMES_SESSION_ID": "session-descendant-scope",
+        "HERMES_KANBAN_WORKSPACE": str(tmp_path),
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {"status": "not_applicable"},
+    )
     return conn, own, foreign
 
 

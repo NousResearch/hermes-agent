@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -30,6 +31,8 @@ _SCALAR_TYPES = (str, int, float, bool)
 # Subscription primary key predicate; every per-row statement below binds
 # ``(task_id, platform, chat_id, thread_id or "")`` against it.
 _SUB_KEY_WHERE = "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?"
+
+_log = logging.getLogger(__name__)
 
 
 def _sub_key(task_id: str, platform: str, chat_id: str, thread_id: Optional[str]) -> tuple:
@@ -75,6 +78,7 @@ def add_notify_sub(
     user_id_alt: Optional[str] = None,
     chat_type: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    notifier_profile_explicit: bool = False,
     delivery_mode: Optional[str] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
 ) -> None:
@@ -90,6 +94,12 @@ def add_notify_sub(
     into an existing row so re-subscribing never discards them. New subs start
     caught up (``last_event_id`` =
     ``MAX(task_events.id)``) so the notifier never replays history at boot.
+
+    ``notifier_profile``: an implicit write (ambient profile, the default)
+    self-heals only a missing stamp; ``notifier_profile_explicit=True`` (the
+    CLI's ``--notifier-profile``) write-through over a wrong stamp, so the
+    routed-subscription WARNING's advertised repair is not a silent no-op
+    (#118123).
     """
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
     # api_server is stateless: the adapter has no send(), the wake self-post IS
@@ -99,7 +109,8 @@ def add_notify_sub(
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
         existing = conn.execute(
-            "SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            "SELECT delivery_metadata, notifier_profile FROM kanban_notify_subs "
+            + _SUB_KEY_WHERE,
             key,
         ).fetchone()
         existing_metadata = _decode_notify_delivery_metadata(existing["delivery_metadata"]) if existing else {}
@@ -123,12 +134,14 @@ def add_notify_sub(
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
         # preserves existing routing fields while supplied fields overwrite them.
-        # user_id, user_id_alt and notifier_profile only self-heal legacy rows lacking one.
+        # user_id and user_id_alt only self-heal legacy rows lacking one;
+        # notifier_profile likewise, EXCEPT an explicit re-subscribe which
+        # write-through corrects a wrong (route-denied) stamp (#118123).
         for column, value, fill_only in (
             ("chat_type", chat_type, False),
             ("user_id", user_id, True),
             ("user_id_alt", user_id_alt, True),
-            ("notifier_profile", notifier_profile, True),
+            ("notifier_profile", notifier_profile, not notifier_profile_explicit),
             ("delivery_mode", valid_mode, False),
             ("delivery_metadata", metadata_json, False),
         ):
@@ -139,6 +152,21 @@ def add_notify_sub(
                 f"UPDATE kanban_notify_subs SET {column} = ? " + _SUB_KEY_WHERE + guard,
                 (value, *key),
             )
+    # An explicit write-through that actually replaced a wrong (route-denied)
+    # stamp leaves an observable trail — the routed-subscription WARNING that
+    # advertises this repair is otherwise silent about it (#118123).
+    if (
+        notifier_profile_explicit
+        and notifier_profile
+        and existing
+        and existing["notifier_profile"] not in (None, "")
+        and existing["notifier_profile"] != notifier_profile
+    ):
+        _log.info(
+            "kanban notifier: notifier_profile %r -> %r for task %s on %s "
+            "(explicit re-subscribe)",
+            existing["notifier_profile"], notifier_profile, task_id, platform,
+        )
 
 
 def _notify_profile_filter(

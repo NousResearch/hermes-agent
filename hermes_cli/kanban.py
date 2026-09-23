@@ -1170,11 +1170,16 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
+        # An explicit --notifier-profile write-through corrects a wrong stamp
+        # (the routed-subscription WARNING's advertised repair, #118123); the
+        # ambient fallback stays fill-only so it cannot re-stamp a routed sub.
+        explicit_profile = (args.notifier_profile or "").strip() or None
         kbn.add_notify_sub(
             conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
             chat_type=args.chat_type, thread_id=args.thread_id, user_id=args.user_id,
             user_id_alt=getattr(args, "user_id_alt", None),
-            notifier_profile=args.notifier_profile or _profile_author(),
+            notifier_profile=explicit_profile or _profile_author(),
+            notifier_profile_explicit=explicit_profile is not None,
             delivery_mode=getattr(args, "delivery_mode", None),
             delivery_metadata=delivery_metadata or None,
         )

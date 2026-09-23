@@ -622,6 +622,12 @@ export function preserveLocalPendingTurnMessages(
   const acknowledged = acknowledgedTranscriptBoundary(nextMessages, previousMessages)
   const remainingNext = nextMessages.slice(acknowledged.storedIndex + 1)
   const acknowledgedTurn = nextMessages.slice(Math.max(0, acknowledged.storedIndex))
+  const acknowledgedLocalMessage = previousMessages[acknowledged.localIndex]
+
+  const acknowledgedCommittedAssistant = Boolean(
+    acknowledgedLocalMessage?.role === 'assistant' && !isLiveTailRow(acknowledgedLocalMessage)
+  )
+
   const lastStoredRowId = nextMessages.reduce((last, message) => Math.max(last, ...transcriptRowIds(message)), 0)
   const nextByRoleOrdinal = new Map<string, ChatMessage>()
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
@@ -704,6 +710,20 @@ export function preserveLocalPendingTurnMessages(
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
 
     if (!isOptimisticUser && !isPendingAssistant) {
+      continue
+    }
+
+    // A settled local stream row after an already acknowledged committed
+    // assistant reply cannot start a later turn without a user boundary. It
+    // is a late tail from an older turn (for example, a superseded background
+    // review), not the only copy of an uncommitted reply.
+    if (
+      isPendingAssistant &&
+      message.pending !== true &&
+      hasStructuralParts(message) &&
+      acknowledgedCommittedAssistant &&
+      !crossedUserBoundary
+    ) {
       continue
     }
 

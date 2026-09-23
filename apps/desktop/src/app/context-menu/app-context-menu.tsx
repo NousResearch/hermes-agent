@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
+import { pickRevealLabel } from '@/app/right-sidebar/file-actions'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
@@ -17,11 +18,13 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openCommandPalette } from '@/store/command-palette'
+import { revealFile } from '@/store/file-actions'
 import { openPreview } from '@/store/preview'
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
@@ -128,6 +131,27 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
         onSelect={() => terminal.selectAll()}
       />
     ].filter(Boolean)
+  ]
+}
+
+function pathSections(path: string, t: Translations): ReactNode[][] {
+  // Reveal is a LOCAL act: a remote backend's path is not on this computer, so
+  // the item could only ever fail. The file trees hide it for the same reason.
+  if (!path || isDesktopFsRemoteMode()) {
+    return []
+  }
+
+  const { fileMenu } = t
+
+  return [
+    [
+      <Item
+        icon="folder-opened"
+        key="path-reveal"
+        label={pickRevealLabel(fileMenu.revealFinder, fileMenu.revealExplorer, fileMenu.revealFileManager)}
+        onSelect={() => void revealFile(path)}
+      />
+    ]
   ]
 }
 
@@ -652,7 +676,7 @@ export function AppContextMenu() {
         return
       }
 
-      const target = resolveDomTarget(element)
+      const target = resolveDomTarget(element, { x: event.clientX, y: event.clientY })
       const owned = Boolean(target.linkUrl || target.onImage || target.editable || target.selectionText)
 
       // The reaction bubble owns bare right-clicks; a link inside it still
@@ -678,12 +702,18 @@ export function AppContextMenu() {
     return null
   }
 
+  // A path under the gesture is a target in its own right, so it leads the
+  // menu. The shell fallback still applies when nothing else claimed the
+  // right-click — a path happening to sit under the cursor must not cost the
+  // user "Copy page URL".
+  const dom = open.kind === 'dom' ? domSections(open, t) : []
+
   const sections =
     open.kind === 'terminal'
       ? terminalSections(open, t)
       : open.kind === 'guest'
         ? guestSections(open, t)
-        : (list => (list.length ? list : shellSections({ navigate, t })))(domSections(open, t))
+        : [...pathSections(open.target.path, t), ...(dom.length ? dom : shellSections({ navigate, t }))]
 
   return (
     <DropdownMenu

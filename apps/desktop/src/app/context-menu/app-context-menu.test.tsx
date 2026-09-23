@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { pickRevealLabel } from '@/app/right-sidebar/file-actions'
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
@@ -18,7 +19,7 @@ import {
   type GuestMenuParams,
   openGuestContextMenu
 } from './store'
-import { resolveDomTarget } from './target'
+import { pathFromSelection, pathTokenAt, resolveDomTarget } from './target'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 
@@ -652,6 +653,67 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(guest.replaceMisspelling).toHaveBeenCalledWith('the')
     expect(screen.queryByText('Add to dictionary')).toBeNull()
+  })
+})
+
+describe('path under the gesture', () => {
+  it('reads the path token the caret sits in', () => {
+    const line = '报告在 ~/hermes_output/agent_growth/week.html ，先看着'
+
+    expect(pathTokenAt(line, line.indexOf('hermes_output'))).toBe('~/hermes_output/agent_growth/week.html')
+  })
+
+  it('never mistakes a URL for a path', () => {
+    const line = 'see https://example.com/a/b for context'
+
+    for (let offset = 0; offset <= line.length; offset += 1) {
+      expect(pathTokenAt(line, offset)).toBe('')
+    }
+  })
+
+  it('drops the punctuation and line references that abut a path', () => {
+    expect(pathTokenAt('failed at /Users/me/run.py:42 (traceback)', 12)).toBe('/Users/me/run.py')
+    expect(pathTokenAt('看 /Users/me/报告.html。', 3)).toBe('/Users/me/报告.html')
+  })
+
+  it('treats only a whole-selection path as a target', () => {
+    expect(pathFromSelection('  ~/notes.md  ')).toBe('~/notes.md')
+    expect(pathFromSelection('open ~/notes.md')).toBe('')
+    expect(pathFromSelection('/')).toBe('')
+  })
+
+  it('reveals the path selected in the transcript', async () => {
+    const revealPath = vi.fn().mockResolvedValue(true)
+
+    installBridge({ revealPath: revealPath as unknown as Window['hermesDesktop']['revealPath'] })
+    mountMenu()
+    const host = attach('<p>报告在 ~/hermes_output/week.html</p>')
+
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      toString: () => '~/hermes_output/week.html'
+    } as unknown as Selection)
+
+    fireEvent.contextMenu(host.querySelector('p')!)
+
+    const label = pickRevealLabel('Reveal in Finder', 'Reveal in File Explorer', 'Open containing folder')
+
+    fireEvent.click(await screen.findByText(label))
+
+    await waitFor(() => expect(revealPath).toHaveBeenCalledWith('~/hermes_output/week.html'))
+  })
+
+  // The reveal item leads the menu; the shell verbs must survive underneath it,
+  // or right-clicking near a path would cost the user the actions they had.
+  it('keeps the shell verbs when a path is under the cursor', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<p>见 ~/notes.md</p>')
+
+    vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => '' } as unknown as Selection)
+
+    fireEvent.contextMenu(host.querySelector('p')!)
+
+    expect(await screen.findByText('New session')).toBeTruthy()
   })
 })
 

@@ -559,3 +559,284 @@ def test_finish_chat_stream_recovers_inline_reasoning_content():
     resp = call._finish_chat_stream(None, "assistant", deltas, [], {}, "stop", "MiniMax-M3", None,
                                     flush_pending=lambda: None)
     assert resp.choices[0].message.reasoning_content == "Let me check config"
+
+
+def test_manager_unload_retires_only_its_observers_across_reload(monkeypatch, tmp_path):
+    """Unloading one cached profile manager discards its pending old-generation events.
+
+    The same callback object is deliberately re-registered after unload: manager identity and
+    callback identity alone must not make the old dispatcher/queue current again. A second
+    profile's live dispatcher must survive the A -> B -> A transition.
+    """
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    enqueue_plugin_observer_hook = psh.enqueue_plugin_observer_hook
+    shutdown_plugin_observer_dispatcher = psh.shutdown_plugin_observer_dispatcher
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    monkeypatch.setenv("HERMES_HOME", str(home_a))
+
+    def manager_at(home):
+        token = set_hermes_home_override(home)
+        try:
+            return plugins.get_plugin_manager()
+        finally:
+            reset_hermes_home_override(token)
+
+    manager_a, manager_b = manager_at(home_a), manager_at(home_b)
+    delivered = []
+    delivered_lock = threading.Lock()
+    a_started = threading.Event()
+    release_a = threading.Event()
+
+    def on_a(**kwargs):
+        event_id = kwargs["event_id"]
+        if event_id == "a-running":
+            a_started.set()
+            release_a.wait(timeout=3.0)
+        with delivered_lock:
+            delivered.append(("a", str(get_hermes_home()), event_id))
+
+    def on_b(**kwargs):
+        with delivered_lock:
+            delivered.append(("b", str(get_hermes_home()), kwargs["event_id"]))
+
+    manager_a._discovered = manager_b._discovered = True
+    plugins.PluginContext(plugins.PluginManifest(name="observer-a"), manager_a).register_hook(
+        "memory_prefetch", on_a
+    )
+    plugins.PluginContext(plugins.PluginManifest(name="observer-b"), manager_b).register_hook(
+        "memory_prefetch", on_b
+    )
+
+    def emit(home, event_id):
+        token = set_hermes_home_override(home)
+        try:
+            return enqueue_plugin_observer_hook("memory_prefetch", event_id=event_id)
+        finally:
+            reset_hermes_home_override(token)
+
+    try:
+        assert emit(home_a, "a-running")
+        assert a_started.wait(timeout=1.0)
+        token = set_hermes_home_override(home_a)
+        try:
+            a_worker = psh._dispatchers_for("memory_prefetch")[0].thread
+        finally:
+            reset_hermes_home_override(token)
+        assert a_worker is not None
+        assert emit(home_a, "a-pending-old-generation")
+
+        # Manager unload is the real lifecycle boundary used by force rediscovery and reset.
+        started = time.monotonic()
+        manager_a.unload()
+        assert time.monotonic() - started < 0.8
+        plugins.PluginContext(plugins.PluginManifest(name="observer-a"), manager_a).register_hook(
+            "memory_prefetch", on_a
+        )
+
+        # B is an active cached profile, not dead state to reap just because A is now active.
+        assert emit(home_b, "b-still-active")
+        token = set_hermes_home_override(home_b)
+        try:
+            b_worker = psh._dispatchers_for("memory_prefetch")[0].thread
+        finally:
+            reset_hermes_home_override(token)
+        assert b_worker is not None
+        assert emit(home_a, "a-new-generation")
+        release_a.set()
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            with delivered_lock:
+                ids = {entry[2] for entry in delivered}
+            if {"b-still-active", "a-new-generation"}.issubset(ids):
+                break
+            time.sleep(0.01)
+
+        with delivered_lock:
+            assert ("a", str(home_a), "a-new-generation") in delivered
+            assert ("b", str(home_b), "b-still-active") in delivered
+            assert ("a", str(home_a), "a-pending-old-generation") not in delivered
+        _wait_for(lambda: not a_worker.is_alive(), timeout=1.0)
+        assert b_worker.is_alive()
+    finally:
+        release_a.set()
+        shutdown_plugin_observer_dispatcher(timeout=1.0)
+
+
+def test_stale_enqueue_racing_manager_unload_cannot_enter_new_generation(monkeypatch, tmp_path):
+    """A callback snapshot taken before unload is rejected after the manager token rotates."""
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    home = tmp_path / "race-profile"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+
+    delivered = []
+    delivered_lock = threading.Lock()
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+
+    def observer(**kwargs):
+        event_id = kwargs["event_id"]
+        if event_id == "running":
+            callback_started.set()
+            release_callback.wait(timeout=3.0)
+        with delivered_lock:
+            delivered.append(event_id)
+
+    manager._discovered = True
+    plugins.PluginContext(plugins.PluginManifest(name="race-observer"), manager).register_hook(
+        "memory_prefetch", observer
+    )
+
+    def emit(event_id):
+        scoped_token = set_hermes_home_override(home)
+        try:
+            return psh.enqueue_plugin_observer_hook("memory_prefetch", event_id=event_id)
+        finally:
+            reset_hermes_home_override(scoped_token)
+
+    original_lookup = psh._registered_callbacks
+    lookup_paused = threading.Event()
+    resume_lookup = threading.Event()
+
+    def delayed_lookup(hook_name):
+        callbacks = original_lookup(hook_name)
+        lookup_paused.set()
+        assert resume_lookup.wait(timeout=2.0)
+        return callbacks
+
+    try:
+        assert emit("running")
+        assert callback_started.wait(timeout=1.0)
+        monkeypatch.setattr(psh, "_registered_callbacks", delayed_lookup)
+        queued = {}
+
+        def enqueue_stale_snapshot():
+            queued["result"] = emit("stale-race-event")
+
+        emitter = threading.Thread(target=enqueue_stale_snapshot)
+        emitter.start()
+        assert lookup_paused.wait(timeout=1.0)
+
+        # The enqueue captured the old token, but has not acquired the manager lock or queued yet.
+        token = set_hermes_home_override(home)
+        try:
+            manager.unload()
+            plugins.PluginContext(plugins.PluginManifest(name="race-observer"), manager).register_hook(
+                "memory_prefetch", observer
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        resume_lookup.set()
+        emitter.join(timeout=1.0)
+        assert not emitter.is_alive()
+        assert queued["result"] is False
+        assert emit("new-generation-event")
+        release_callback.set()
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            with delivered_lock:
+                if "new-generation-event" in delivered:
+                    break
+            time.sleep(0.01)
+        with delivered_lock:
+            assert "new-generation-event" in delivered
+            assert "stale-race-event" not in delivered
+    finally:
+        resume_lookup.set()
+        release_callback.set()
+        psh.shutdown_plugin_observer_dispatcher(timeout=1.0)
+
+
+def test_manager_unload_from_its_observer_worker_does_not_self_join(monkeypatch, tmp_path):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    home = tmp_path / "self-unload-profile"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+
+    unloaded = threading.Event()
+
+    def unload_from_worker(**_kwargs):
+        manager.unload()
+        unloaded.set()
+
+    manager._discovered = True
+    plugins.PluginContext(plugins.PluginManifest(name="self-unload-observer"), manager).register_hook(
+        "memory_prefetch", unload_from_worker
+    )
+    token = set_hermes_home_override(home)
+    try:
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="unload")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert unloaded.wait(timeout=1.0)
+    psh.shutdown_plugin_observer_dispatcher(timeout=1.0)
+
+
+def test_observer_enqueue_does_not_wait_for_manager_lifecycle_lock(monkeypatch, tmp_path):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    home = tmp_path / "busy-manager-profile"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+
+    manager._discovered = True
+    plugins.PluginContext(plugins.PluginManifest(name="busy-manager-observer"), manager).register_hook(
+        "memory_prefetch", lambda **_kwargs: None
+    )
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_manager_lock():
+        with manager._discovery_lock:
+            lock_held.set()
+            release_lock.wait(timeout=2.0)
+
+    holder = threading.Thread(target=hold_manager_lock)
+    holder.start()
+    try:
+        assert lock_held.wait(timeout=1.0)
+        token = set_hermes_home_override(home)
+        try:
+            started = time.monotonic()
+            queued = psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="during-unload")
+            elapsed = time.monotonic() - started
+        finally:
+            reset_hermes_home_override(token)
+        assert queued is False
+        assert elapsed < 0.05
+    finally:
+        release_lock.set()
+        holder.join(timeout=1.0)
+        psh.shutdown_plugin_observer_dispatcher(timeout=1.0)
+    assert not holder.is_alive()

@@ -879,17 +879,34 @@ class GatewaySlashCommandsMixin(
         self._track_background_task(_run_side_question())
         return t("gateway.btw.started", preview=preview)
 
+    def _profile_home_scope(self, event: MessageEvent):
+        """Runtime scope resolving home under the routed profile on a multiplexed gateway.
+
+        Mirrors ``_handle_profile_command``: with ``multiplex_profiles`` on the process-level
+        home is the multiplexer's own, so every home-relative read/write in the wrapped handler
+        (pending records, the on-disk memory store, config write-back) must resolve under the
+        profile that owns the source, not the default profile's home (#119915)."""
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            try:
+                from gateway.run import _profile_runtime_scope
+                return _profile_runtime_scope(self._resolve_profile_home_for_source(event.source))
+            except Exception:
+                pass
+        from contextlib import nullcontext
+        return nullcontext()
+
     async def _handle_memory_command(self, event: MessageEvent) -> str:
         """Handle /memory — review pending memory writes + toggle the approval gate. Entries are small
         enough to review inline, so the full flow works on every platform."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
         from tools.memory_tool import load_on_disk_store
-        # Apply approved writes against a fresh on-disk store (the gateway has no long-lived agent;
-        # the store persists to the same MEMORY/USER.md and honors the configured char limits).
-        out = handle_pending_subcommand(
-            wa.MEMORY, event.get_command_args().strip().split(), memory_store=load_on_disk_store(),
-            set_mode_fn=self._write_approval_setter("memory", event))
+        with self._profile_home_scope(event):
+            # Apply approved writes against a fresh on-disk store (the gateway has no long-lived agent;
+            # the store persists to the same MEMORY/USER.md and honors the configured char limits).
+            out = handle_pending_subcommand(
+                wa.MEMORY, event.get_command_args().strip().split(), memory_store=load_on_disk_store(),
+                set_mode_fn=self._write_approval_setter("memory", event))
         return out if out is not None else (
             "Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>."
         )
@@ -900,15 +917,16 @@ class GatewaySlashCommandsMixin(
         (never stranded). ``diff`` is truncated for chat."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
-        args = event.get_command_args().strip().split()
-        sub = args[0].lower() if args else ""
-        gate_off = not wa.write_approval_enabled(wa.SKILLS) and sub not in {"approval", "mode"}
-        if gate_off and wa.pending_count(wa.SKILLS) == 0:
-            return ("Skill write approval is off (skills.write_approval). "
-                    "Enable it with /skills approval on, then review staged "
-                    "writes here with /skills pending.")
-        out = handle_pending_subcommand(
-            wa.SKILLS, args, set_mode_fn=self._write_approval_setter("skills", event))
+        with self._profile_home_scope(event):
+            args = event.get_command_args().strip().split()
+            sub = args[0].lower() if args else ""
+            gate_off = not wa.write_approval_enabled(wa.SKILLS) and sub not in {"approval", "mode"}
+            if gate_off and wa.pending_count(wa.SKILLS) == 0:
+                return ("Skill write approval is off (skills.write_approval). "
+                        "Enable it with /skills approval on, then review staged "
+                        "writes here with /skills pending.")
+            out = handle_pending_subcommand(
+                wa.SKILLS, args, set_mode_fn=self._write_approval_setter("skills", event))
         if out is None:
             return ("Unknown /skills subcommand on this platform. Use: pending, "
                     "approve <id>, reject <id>, diff <id>, approval <on|off>. "

@@ -44,6 +44,44 @@ def _turn_messages():
 
 
 class TestAppendMessagesBatch:
+    def test_single_append_advances_activity_without_clobbering_activity_labels(self, db):
+        db._conn.execute(
+            "UPDATE sessions SET last_activity_at = ?, last_activity_description = ?, "
+            "last_activity_provenance = ? WHERE id = ?",
+            (10.0, "working", "agent", "sess-batch"),
+        )
+        db._conn.commit()
+
+        db.append_message("sess-batch", "user", "new", timestamp=20.0)
+
+        row = db._conn.execute(
+            "SELECT last_activity_at, last_activity_description, last_activity_provenance "
+            "FROM sessions WHERE id = ?", ("sess-batch",)
+        ).fetchone()
+        assert tuple(row) == (20.0, "working", "agent")
+
+    def test_batch_append_advances_to_newest_timestamp_without_moving_later_activity_back(self, db):
+        db._conn.execute(
+            "UPDATE sessions SET last_activity_at = ? WHERE id = ?", (100.0, "sess-batch"),
+        )
+        db._conn.commit()
+
+        db.append_messages_batch("sess-batch", [
+            {"role": "user", "content": "imported", "timestamp": 20.0},
+            {"role": "assistant", "content": "older", "timestamp": 30.0},
+        ])
+
+        assert db._conn.execute(
+            "SELECT last_activity_at FROM sessions WHERE id = ?", ("sess-batch",)
+        ).fetchone()[0] == 100.0
+
+    def test_delegation_delivery_advances_activity(self, db, monkeypatch):
+        monkeypatch.setattr("hermes_state_messages.time.time", lambda: 42.0)
+        db.append_delegation_delivery("sess-batch", "done", {"delegation_id": "d1"})
+        assert db._conn.execute(
+            "SELECT last_activity_at FROM sessions WHERE id = ?", ("sess-batch",)
+        ).fetchone()[0] == 42.0
+
     def test_batch_rows_identical_to_single_appends(self, db, tmp_path):
         """The batch writer stores the same bytes append_message would."""
         db2 = SessionDB(db_path=tmp_path / "state2.db")

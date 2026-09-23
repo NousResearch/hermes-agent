@@ -282,30 +282,35 @@ class SessionMessagesMixin:
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
 
     @staticmethod
-    def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
-        """Bump sessions.* counters after an insert; *unit* bakes the ``+ 1`` literal into the SQL."""
+    def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, activity_at: float, *, unit: bool) -> None:
+        """Bump sessions.* counters and advance durable activity after an insert.
+
+        ``last_activity_at`` is the indexed candidate-ranking key.  Keep it at least as
+        new as every normal persisted transcript row, but never overwrite a later
+        heartbeat or its description/provenance with a backdated import.
+        """
         inc, params = ("1", ()) if unit else ("?", (inserted,))
         if tool_calls > 0:
             conn.execute(
                 f"""UPDATE sessions SET message_count = message_count + {inc},
-                       tool_call_count = tool_call_count + ? WHERE id = ?""",
-                (*params, tool_calls, session_id))
+                       tool_call_count = tool_call_count + ?,
+                       last_activity_at = CASE WHEN last_activity_at IS NULL OR last_activity_at < ?
+                                               THEN ? ELSE last_activity_at END
+                   WHERE id = ?""",
+                (*params, tool_calls, activity_at, activity_at, session_id))
         elif inserted > 0:
             conn.execute(
-                f"UPDATE sessions SET message_count = message_count + {inc} WHERE id = ?", (*params, session_id))
+                f"""UPDATE sessions SET message_count = message_count + {inc},
+                       last_activity_at = CASE WHEN last_activity_at IS NULL OR last_activity_at < ?
+                                               THEN ? ELSE last_activity_at END
+                   WHERE id = ?""",
+                (*params, activity_at, activity_at, session_id))
 
     @staticmethod
-    def _advance_session_activity_for_message(conn, session_id: str, timestamp: float) -> None:
-        """Advance indexed recency in the transaction that made a message durable.
-
-        Labels describe heartbeats and must not be overwritten by transcript persistence.  The timestamp is
-        the already-coerced value bound into ``messages``, never a fresh wall-clock reading.
-        """
-        conn.execute(
-            "UPDATE sessions SET last_activity_at = ? WHERE id = ? "
-            "AND (last_activity_at IS NULL OR last_activity_at < ?)",
-            (timestamp, session_id, timestamp),
-        )
+    def _newest_message_timestamp(messages: List[Dict[str, Any]]) -> Optional[float]:
+        """Newest timestamp already normalized by ``_insert_message_rows``, if any."""
+        timestamps = [message.get("timestamp") for message in messages if message.get("timestamp") is not None]
+        return max(float(timestamp) for timestamp in timestamps) if timestamps else None
 
     def append_message(
         self, session_id: str, role: str, content: str = None, tool_name: str = None, tool_calls: Any = None,
@@ -330,8 +335,8 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
-            self._advance_session_activity_for_message(conn, session_id, message_timestamp)
-            self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
+            self._bump_session_counters(
+                conn, session_id, 1, _tool_calls_count(tool_calls), message_timestamp, unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
@@ -349,8 +354,7 @@ class SessionMessagesMixin:
         msg = {"content": content,
                "display_kind": "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete",
                "display_metadata": metadata}
-        message_timestamp = time.time()
-        params = self._message_row_params(session_id, "user", msg, None, message_timestamp, keep_reasoning=True)
+        params = self._message_row_params(session_id, "user", msg, None, time.time(), keep_reasoning=True)
 
         def _do(conn):
             existing = conn.execute(
@@ -367,8 +371,7 @@ class SessionMessagesMixin:
                 return existing[0]
             self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
-            self._advance_session_activity_for_message(conn, session_id, message_timestamp)
-            self._bump_session_counters(conn, session_id, 1, 0, unit=True)
+            self._bump_session_counters(conn, session_id, 1, 0, params[7], unit=True)
             return msg_id
 
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
@@ -393,7 +396,10 @@ class SessionMessagesMixin:
             inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
                 encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
-            self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+            if inserted:
+                self._bump_session_counters(
+                    conn, session_id, inserted, tool_calls_total,
+                    self._newest_message_timestamp(inserted_rows), unit=False)
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
@@ -529,7 +535,6 @@ class SessionMessagesMixin:
         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows."""
         now_ts = time.time()
         inserted = tool_calls_total = 0
-        latest_timestamp = None
         for msg in messages:
             role = msg.get("role", "unknown")
             tool_calls = _parse_tool_calls(msg.get("tool_calls"))
@@ -545,10 +550,7 @@ class SessionMessagesMixin:
                 msg["_row_id"] = cur.lastrowid
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
-            latest_timestamp = message_timestamp if latest_timestamp is None else max(latest_timestamp, message_timestamp)
             now_ts = max(now_ts, message_timestamp) + 1e-6
-        if latest_timestamp is not None:
-            self._advance_session_activity_for_message(conn, session_id, latest_timestamp)
         carrier = _newest_checkpoint_carrier(messages, "codex_reasoning_items")
         if carrier >= 0 and isinstance(messages[carrier].get("_row_id"), int):
             self._drop_shadowed_checkpoint_rows(conn, session_id, messages[carrier]["_row_id"])
@@ -611,8 +613,12 @@ class SessionMessagesMixin:
             else:
                 conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
             inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
-            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
-                         (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
+            activity_at = self._newest_message_timestamp(messages[kept:])
+            conn.execute(
+                f"""{_SET_COUNTERS_SQL}, last_activity_at = CASE
+                       WHEN ? IS NOT NULL AND (last_activity_at IS NULL OR last_activity_at < ?) THEN ?
+                       ELSE last_activity_at END WHERE id = ?""",
+                (kept + inserted, kept_tool_calls, activity_at, activity_at, activity_at, session_id))
         self._execute_write(_do)
 
     @classmethod
@@ -811,8 +817,13 @@ class SessionMessagesMixin:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
                 tool_calls_total += tail_tool_calls
-            conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
-                (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
+            activity_at = self._newest_message_timestamp(compacted_messages)
+            conn.execute(
+                f"""{_SET_COUNTERS_SQL}, last_activity_at = CASE
+                       WHEN ? IS NOT NULL AND (last_activity_at IS NULL OR last_activity_at < ?) THEN ?
+                       ELSE last_activity_at END{', model_config = ?' if patch else ''} WHERE id = ?""",
+                (inserted, tool_calls_total, activity_at, activity_at, activity_at,
+                 *((patched_model_config,) if patch else ()), session_id))
             return inserted
         return self._execute_write(_do)
 
@@ -1466,13 +1477,19 @@ class SessionMessagesMixin:
                                              (session_id, target_message_id)).fetchall()]
             if ids:
                 conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(ids)})", ids)
+            activity_at = None
             if replacement is not None:
                 self._insert_message_rows(conn, session_id, [replacement])
                 replacement_message_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                activity_at = self._newest_message_timestamp([replacement])
             conn.execute(
                 "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
             message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
-            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
+            conn.execute(
+                f"""{_SET_COUNTERS_SQL}, last_activity_at = CASE
+                       WHEN ? IS NOT NULL AND (last_activity_at IS NULL OR last_activity_at < ?) THEN ?
+                       ELSE last_activity_at END WHERE id = ?""",
+                (message_count, tool_call_count, activity_at, activity_at, activity_at, session_id))
             head_id = conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
             return target_row, ids, head_id, replacement_message_id

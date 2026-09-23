@@ -1050,6 +1050,24 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        if current_version < 31 or cursor.execute(
+            "SELECT 1 FROM state_meta WHERE key = 'session_activity_message_backfill_version' LIMIT 1"
+        ).fetchone() is None:
+            # v31: the bounded recent-candidate index is correct only when its durable
+            # activity key is at least the newest transcript timestamp.  Keep a separate
+            # completion marker: an FTS-unavailable runtime deliberately defers advancing
+            # schema_version, but must not rescan every message on every startup.
+            cursor.execute("""
+                UPDATE sessions
+                   SET last_activity_at = (
+                       SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = sessions.id
+                   )
+                 WHERE (last_activity_at IS NULL OR last_activity_at < (
+                           SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = sessions.id
+                       ))
+                   AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id)
+            """)
+            self.set_meta("session_activity_message_backfill_version", "1", cursor=cursor)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);

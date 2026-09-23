@@ -162,10 +162,6 @@ _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal"
 
 
 def _set_fast(rid, params, key, value, session):
-    if session is None and params.get("session_id"):
-        # A runtime id this backend no longer holds (reaped / re-minted) must not reach the sessionless
-        # branch: it persists agent.service_tier for every surface. 4001 lets the client resume it.
-        return _sess_nowait(params, rid)[1]
     raw = _word(value)
     agent = session.get("agent") if session else None
     if agent is not None:
@@ -282,10 +278,6 @@ def _set_yolo(rid, params, key, value, session):
         enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
         (enable_session_yolo if enable else disable_session_yolo)(skey)
         _emit_session_info(params.get("session_id", ""), session)
-    elif params.get("session_id"):
-        # Stale runtime id: the process flag below never reaches this session's approvals, yet every
-        # child spawned afterwards (compute host, a terminal's `hermes`) inherits the flip.
-        return _sess_nowait(params, rid)[1]
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))
         if enable:
@@ -479,12 +471,21 @@ _CONFIG_SETTERS = {
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 
+# Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
+# agent.* for every surface, the process env every later child inherits). A non-empty session_id this
+# backend no longer holds (reaped / re-minted) is a stale session, not "no session": it answers 4001 so
+# the client resumes, never the global write. An explicit scope="global" is still honoured.
+_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning"})
+
 
 @method("config.set")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))
+    if session is None and params.get("session_id") and key in _SESSION_SCOPED_KEYS \
+            and _word(params.get("scope")) != "global":
+        return _sess_nowait(params, rid)[1]
     handler = _CONFIG_SETTERS.get(key)
     if handler is None and key.startswith("details_mode."):
         handler = _set_details_section

@@ -59,7 +59,7 @@ def test_spotify_client_retries_once_after_401(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(spotify_mod.httpx, "request", fake_request)
 
     client = spotify_mod.SpotifyClient()
-    payload = client.get_devices()
+    payload = client.request("GET", "/me/player/devices")
 
     assert payload["devices"][0]["id"] == "dev-1"
     assert calls == ["Bearer token-1", "Bearer token-2"]

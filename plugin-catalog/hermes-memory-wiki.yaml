@@ -1,0 +1,15 @@
+name: hermes-memory-wiki
+repo: https://github.com/NousResearch/hermes-memory-wiki
+sha: 9bc3913b8474eaf4d7eec32e97af4d77957c36df
+description: 'Memory Wiki dashboard tab: browsable subject pages and daily logs derived from local session
+  history, plus a read-only Persistent Memory (MEMORY.md / USER.md) audit panel.'
+maintainer: NousResearch
+tier: official
+requires_hermes: ">=0.21"
+docs_url: https://github.com/NousResearch/hermes-memory-wiki#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

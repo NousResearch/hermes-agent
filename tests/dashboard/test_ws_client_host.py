@@ -21,11 +21,11 @@ The contract these tests pin down:
 
 from __future__ import annotations
 
-import os
 
 import pytest
 
 from hermes_cli import web_server
+import hermes_cli.web_server_chat as _web_server_chat
 
 
 # ---------------------------------------------------------------------------
@@ -64,15 +64,6 @@ def _set_bound(saved_app_state, host: str, port: int = 9119):
     web_server.app.state.auth_required = False
 
 
-def _netloc(ws_url: str) -> str:
-    """Pull the ``host:port`` (or ``[host]:port``) segment out of a ws URL."""
-    assert ws_url is not None, "expected a URL, got None"
-    # ws://host:port/path?qs — strip the scheme, then take netloc up to "/".
-    after_scheme = ws_url.split("://", 1)[1]
-    netloc = after_scheme.split("/", 1)[0]
-    return netloc
-
-
 # ---------------------------------------------------------------------------
 # _resolve_client_ws_host — direct unit tests
 # ---------------------------------------------------------------------------
@@ -81,22 +72,20 @@ def _netloc(ws_url: str) -> str:
 class TestResolveClientWsHost:
     def test_wildcard_ipv4_uses_loopback(self, saved_app_state, clear_ws_host_env):
         _set_bound(saved_app_state, "0.0.0.0")
-        assert web_server._resolve_client_ws_host() == "127.0.0.1"
+        assert _web_server_chat._resolve_client_ws_host() == "127.0.0.1"
 
     def test_wildcard_ipv6_uses_loopback(self, saved_app_state, clear_ws_host_env):
         _set_bound(saved_app_state, "::")
-        assert web_server._resolve_client_ws_host() == "127.0.0.1"
+        assert _web_server_chat._resolve_client_ws_host() == "127.0.0.1"
 
     def test_loopback_bind_unchanged(self, saved_app_state, clear_ws_host_env):
         _set_bound(saved_app_state, "127.0.0.1")
-        assert web_server._resolve_client_ws_host() == "127.0.0.1"
+        assert _web_server_chat._resolve_client_ws_host() == "127.0.0.1"
 
 
     def test_public_dns_bind_preserved(self, saved_app_state, clear_ws_host_env):
         _set_bound(saved_app_state, "fly-app.example.dev")
-        assert web_server._resolve_client_ws_host() == "fly-app.example.dev"
-
-
+        assert _web_server_chat._resolve_client_ws_host() == "fly-app.example.dev"
 
 
     def test_blank_env_falls_back_to_bind(
@@ -107,18 +96,7 @@ class TestResolveClientWsHost:
         an intent. Treat whitespace-only as absent and fall through."""
         monkeypatch.setenv("HERMES_DASHBOARD_WS_HOST", "   ")
         _set_bound(saved_app_state, "0.0.0.0")
-        assert web_server._resolve_client_ws_host() == "127.0.0.1"
-
-
-    def test_bind_host_unchanged_after_wildcard_resolution(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        """Resolution only affects the client netloc — ``bound_host`` on
-        ``app.state`` (used by the listener and host-header middleware) is
-        NOT mutated."""
-        _set_bound(saved_app_state, "0.0.0.0")
-        web_server._resolve_client_ws_host()
-        assert web_server.app.state.bound_host == "0.0.0.0"
+        assert _web_server_chat._resolve_client_ws_host() == "127.0.0.1"
 
 
 # ---------------------------------------------------------------------------
@@ -132,17 +110,11 @@ class TestGatewayWsUrlHost:
         self, saved_app_state, clear_ws_host_env
     ):
         _set_bound(saved_app_state, "::", port=9119)
-        url = web_server._build_gateway_ws_url()
+        url = _web_server_chat._build_gateway_ws_url()
         assert url is not None
         assert url.startswith("ws://127.0.0.1:9119/api/ws")
         # The ``::`` must not leak into the client URL.
         assert "::" not in url
-
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -153,28 +125,9 @@ class TestGatewayWsUrlHost:
 class TestSidecarUrlHost:
 
 
-
-
-
-
     def test_no_bound_host_returns_none(
         self, saved_app_state, clear_ws_host_env
     ):
         web_server.app.state.bound_host = None
         web_server.app.state.bound_port = None
-        assert web_server._build_sidecar_url("ch-1") is None
-
-
-# ---------------------------------------------------------------------------
-# _netloc helper is exposed only because it's useful for tests; if the
-# production code ever changes the URL shape the tests catch the regression
-# above without needing to assert on the full string.
-# ---------------------------------------------------------------------------
-
-
-def test_netloc_helper_handles_ipv6_bracket_form():
-    """The IPv6 netloc path is exercised by the production ``[host]:port``
-    branch when ``HERMES_DASHBOARD_WS_HOST`` points at an IPv6 address.
-    Verify the helper doesn't choke on the bracket form."""
-    assert _netloc("ws://[::1]:9119/api/ws?x=1") == "[::1]:9119"
-    assert _netloc("ws://127.0.0.1:9119/api/ws?x=1") == "127.0.0.1:9119"
+        assert _web_server_chat._build_sidecar_url("ch-1") is None

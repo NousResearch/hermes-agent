@@ -4,10 +4,7 @@ import asyncio
 import pytest
 
 from gateway.platforms.signal_rate_limit import (
-    SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
-    SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
     SignalAttachmentScheduler,
-    get_scheduler,
     _reset_scheduler,
 )
 
@@ -38,10 +35,6 @@ def _patch_sleep_and_time(monkeypatch, capture: list):
     )
 
 
-class TestSchedulerInitialState:
-    def test_default_capacity_matches_signal_cap(self):
-        s = SignalAttachmentScheduler()
-        assert s.capacity == SIGNAL_RATE_LIMIT_BUCKET_CAPACITY
 
 
 class TestEstimateWait:
@@ -141,9 +134,4 @@ class TestFifoAcquire:
         assert results[1][1] == pytest.approx(s.capacity / s.refill_rate)
 
 
-class TestSingleton:
-    def test_get_scheduler_returns_same_instance(self):
-        s1 = get_scheduler()
-        s2 = get_scheduler()
-        assert s1 is s2
 

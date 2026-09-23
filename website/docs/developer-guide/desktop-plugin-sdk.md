@@ -6,7 +6,7 @@ description: "Extend the native Hermes Desktop app — panes, pages, sidebar nav
 
 # Desktop Plugin SDK
 
-The native [Hermes Desktop](/user-guide/desktop) app is contribution-driven: every
+The native [Hermes Desktop](../user-guide/desktop.md) app is contribution-driven: every
 surface in the window — panes, routes, sidebar nav, status-bar items, palette
 entries, keybinds, themes — registers into one central registry. Core registers
 its surfaces exactly the way a plugin does, so the plugin story is the real one,
@@ -26,8 +26,8 @@ desktop app** (`hermes desktop`) SDK — the `@hermes/plugin-sdk` module and
 `$HERMES_HOME/desktop-plugins/`. The **web dashboard** (`hermes dashboard`) has
 its own, unrelated plugin system on `window.__HERMES_PLUGIN_SDK__` with a
 `manifest.json` — documented at
-[Extending the Dashboard](/user-guide/features/extending-the-dashboard). Python
-CLI/gateway plugins are documented at [Build a Hermes Plugin](/developer-guide/plugins).
+[Extending the Dashboard](../user-guide/features/extending-the-dashboard.md). Python
+CLI/gateway plugins are documented at [Build a Hermes Plugin](./plugins/index.md).
 The three do not share code, APIs, or delivery. Only the backend `plugin_api.py`
 namespace (`/api/plugins/<id>`) is shared between the desktop and dashboard SDKs.
 :::
@@ -58,22 +58,24 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 | **Unified package** | `$HERMES_HOME/plugins/<id>/desktop/plugin.js` | plugins that also ship agent-side code | none — same disk pipeline |
 | **Bundled** | `apps/desktop/src/plugins/<id>/plugin.tsx` | in-tree, shipped with the app | the app's own Vite build |
 
-All three take the same `HermesPlugin` contract, appear in **Settings → Plugins**,
+All three take the same `HermesPlugin` contract, appear in **Capabilities → Plugins**,
 and enable/disable live. A unified package is just the disk door scanning inside
 your agent plugin's folder — see
 [One package, both SDKs](#one-package-both-sdks). Everything on this page is
 written against the disk door (what you and the agent write);
 [Bundled plugins](#bundled-plugins) notes the two
-differences. No desktop plugins ship in the core tree today — reference demos
-live in the companion
+differences. Radio ships as a bundled SDK-only plugin, off by default. Enable it
+in **Capabilities → Plugins** for free live streams, station search, and status-bar
+playback controls with an audio-reactive waveform. It uses the existing plugin
+toggle and contributes nothing while disabled. Reference demos live in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 repo.
 
 ## Quick start — your first plugin
 
 Create `$HERMES_HOME/desktop-plugins/hello/plugin.js` (that's `~/.hermes/...`
-by default, or `~/.hermes/profiles/<name>/...` under a named profile). The folder
-name must equal the plugin `id`.
+by default). Desktop plugins are app-level — one root for every profile, gateway,
+or remote machine the window connects to. The folder name must equal the plugin `id`.
 
 ```javascript
 // ~/.hermes/desktop-plugins/hello/plugin.js
@@ -148,7 +150,7 @@ interface HermesPlugin {
   /** Human name for Settings / about UI. Defaults to `id`. */
   name?: string
   /** Registers on load when the user hasn't chosen (default true). Set false
-   *  for opt-in plugins: they inventory in Settings ▸ Plugins, off until the
+   *  for opt-in plugins: they inventory in Capabilities ▸ Plugins, off until the
    *  user flips the switch. */
   defaultEnabled?: boolean
   /** Called once at load; wire contributions through `ctx`. */
@@ -173,6 +175,14 @@ interface PluginContext {
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live WebSocket to this plugin's own namespace. Returns a disposer. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
+  /** Gateway event stream by type (`'*'` = all). Tracked: removed on unload/reload/disable. */
+  onEvent: (type: string, listener: (event: GatewayEvent) => void) => () => void
+  /** Any other cleanup to run on unload/reload/disable (store subscriptions, injected DOM). */
+  onDispose: (fn: () => void) => void
+  /** Scoped timers and DOM listeners — cleared with the plugin. Each returns a disposer. */
+  setTimeout: (fn: () => void, ms: number) => () => void
+  setInterval: (fn: () => void, ms: number) => () => void
+  addEventListener: (target: EventTarget, type: string, listener: EventListener, options?: AddEventListenerOptions | boolean) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
@@ -208,6 +218,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Sidebar nav | `SIDEBAR_NAV_AREA` | `data: { path, label, codicon }` |
 | Status bar | `STATUSBAR_AREAS.left` / `.right` | `render` (or `data` as `StatusbarItem`) |
 | Title bar | `TITLEBAR_AREAS.left` / `.center` / `.right` | `data` as `TitlebarTool`, or a mount-scoped `<Contribute>` |
+| Page header | `WORKSPACE_PAGE_HEADER_AREA` | `render` via a mount-scoped `<Contribute>` inside your page |
 | ⌘K palette | `PALETTE_AREA` | `data: PaletteContribution` |
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
@@ -248,7 +259,7 @@ data: {
 the pane doesn't claim half the zone.
 
 Closing the only pane contributed by a plugin disables that plugin, which can
-be re-enabled from **Settings → Plugins**. When a plugin contributes multiple
+be re-enabled from **Capabilities → Plugins**. When a plugin contributes multiple
 panes, closing one dismisses only that pane and leaves the plugin's other panes,
 commands, and middleware active. **Reset layout** restores dismissed contributed
 panes.
@@ -298,6 +309,18 @@ ctx.register({
 
 Title-bar tools live in `TITLEBAR_AREAS.left | .center | .right` as `TitlebarTool`
 data (`{ id, label, icon, active?, onSelect? }`).
+
+Title-bar slots are **permanent mount points**: a component you register there
+stays mounted while the user moves between the chat and full pages (Capabilities,
+Messaging, Artifacts, contributed routes), so a `useEffect` that injects global
+side effects (a `<style>` tag, `html[data-*]` attributes, a `MutationObserver`)
+runs its setup once per registration and its cleanup once at dispose — never
+mid-navigation.
+
+Controls that belong to ONE page (the Kanban board switcher) go in
+`WORKSPACE_PAGE_HEADER_AREA` instead: it renders in the workspace panel's
+tab-header row while that page is on screen and is empty otherwise. Register it
+with a mount-scoped `<Contribute>` (below) so it leaves with the page.
 
 ### Palette commands and keybinds
 
@@ -378,8 +401,9 @@ host.onEvent('gateway.ready', () => {
 
 Both doors persist per profile, so a plugin-driven switch sticks exactly like a
 manual pick. To tint the *active* theme rather than replace it, use
-`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the bundled `accent`
-plugin is the worked example.
+`setAccentOverride(hex)` and clear it in `ctx.onDispose` — the standalone
+[Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
+plugin is the worked example (it is also a complete, installable disk plugin).
 
 ### Composer extensions
 
@@ -446,14 +470,14 @@ per frame.
 ### Mount-scoped chrome (`Contribute`)
 
 `ctx.register` is for **permanent** contributions. When chrome should live and
-die with a component that's already on screen (a page's own title-bar control
+die with a component that's already on screen (a page's own header control
 leaves when the page unmounts), render `<Contribute>` inside it instead:
 
 ```javascript
-import { Contribute, TITLEBAR_AREAS } from '@hermes/plugin-sdk'
+import { Contribute, WORKSPACE_PAGE_HEADER_AREA } from '@hermes/plugin-sdk'
 
 jsx(Contribute, {
-  area: TITLEBAR_AREAS.center,
+  area: WORKSPACE_PAGE_HEADER_AREA,
   id: 'my-page:switcher', // namespace with your slug
   children: jsx(MySwitcher, {})
 })
@@ -508,7 +532,9 @@ host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            //   workspace zone and reveal it; returns a disposer
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
-host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer
+host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.
+                                           //   Calls made during register() are retired with the
+                                           //   plugin; elsewhere prefer ctx.onEvent (always tracked)
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
@@ -670,6 +696,8 @@ Import the app's real components directly so your UI is native by default:
 > `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`,
 > `DecodeText`.
 
+`DecodeText`'s `loop` is opt-in as of this change — it decodes once and holds by default, so pass `loop` explicitly on progress surfaces that should keep scrambling.
+
 Plus helpers: `cn` (class merge), `icons.*` (the app's lucide set), `haptic`,
 `profileColor` / `profileColorSoft` (deterministic identity colors), the time
 formatters `relativeTime` / `fmtDateTime` / `fmtDayTime` / `coarseElapsed`,
@@ -693,10 +721,12 @@ construction**.
 ### One package, both SDKs {#one-package-both-sdks}
 
 A feature that needs a desktop UI **and** agent-side code (a Python plugin, its
-backend routes, skills) doesn't have to ship as two co-dependent installs. The
-desktop app also scans `$HERMES_HOME/plugins/<id>/` — the regular agent-plugin
-root — for a `desktop/plugin.js`, and loads it through the exact same pipeline
-as the standalone disk door (hot reload included):
+backend routes, skills) doesn't have to ship as two co-dependent installs. Put a
+`desktop/plugin.js` inside the agent package. When the package lands in any
+local `plugins/` root (default home or a profile), the Electron main process
+copies that half into `$HERMES_HOME/desktop-plugins/<id>/` beside a
+`.hermes-package.json` marker, and the renderer loads it through the exact same
+pipeline as the standalone disk door (hot reload included):
 
 ```
 ~/.hermes/plugins/<id>/           # ONE installable folder
@@ -711,10 +741,24 @@ as the standalone disk door (hot reload included):
 
 The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
 imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
-Installing, sharing, or removing the feature is one folder.
+Installing, sharing, or removing the feature is one folder: the app-root copy
+is refreshed when the source `plugin.js` changes (`hermes plugins update`, or
+**Rescan**) and removed when the package folder disappears. The copy is what
+makes the desktop half **app-level**: it exists once, however many profiles
+carry the package, and it never appears or disappears when the user switches
+the Capabilities profile selector. The renderer never scans `plugins/` itself.
+The marker records the package name and its origin (catalog sidecar or git
+remote), which is what the **Install here** button on the Plugins page uses to
+install the agent half into another profile. The copy is staged beside the
+target and renamed into place, so an interrupted copy (a transient file lock, a
+crash mid-copy) never leaves a half-written folder behind; a leftover
+`desktop-plugins/<id>/` that has no marker and no `plugin.js` is treated as
+such damage and replaced on the next **Rescan**, while a marker-less folder
+that *does* hold a `plugin.js` is a standalone plugin you installed by hand and
+is never overwritten.
 
 Two enable switches still apply, on purpose, and both default to **off**: the
-desktop half ships opt-in — it inventories in **Settings → Plugins** but stays
+desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays
 disabled until the user toggles it — matching the Python half's
 `plugins.enabled` gate in `config.yaml` (the security boundary below). Dropping
 a package into `~/.hermes/plugins` is inert on every surface until the user
@@ -722,10 +766,14 @@ says otherwise. The desktop half degrades gracefully when the backend half is
 off — `ctx.rest` returns errors, not crashes.
 
 :::note
-The scan is local to the machine the desktop app runs on. Against a remote
+The copy is local to the machine the desktop app runs on. Against a remote
 backend, the remote box's `~/.hermes/plugins` is not reachable as a filesystem —
-only locally installed packages contribute a desktop half (same rule as the
-standalone door).
+only locally installed packages contribute a desktop half this way. For a
+remote backend the install dialog clones the desktop half separately into
+`desktop-plugins/`, the same as a desktop-only repo. A package whose agent half
+was installed on the remote host without that clone shows its Desktop half as
+**unavailable (remote backend)** on the Plugins page — not as a pending copy —
+and the tooltip points at **Install from Git** with the Desktop target checked.
 :::
 
 ### Distributing with an install link {#install-link}
@@ -741,7 +789,7 @@ The user gets a confirmation dialog (repo id, source links, a probe of what
 the repo ships) and picks components before anything is installed — deep links
 never auto-install. `force=1` replaces an existing install; dev builds use
 `hermes-dev://`. Full link reference:
-[One-click install links](/user-guide/features/plugins#one-click-install-links-desktop).
+[One-click install links](../user-guide/features/plugins.md#one-click-install-links-desktop).
 
 ### The Python side
 
@@ -774,11 +822,11 @@ async def action(body: dict):
 Routes mount under `/api/plugins/<id>/` (`GET /api/plugins/<id>/board`, …).
 Backend code runs inside the gateway process, so it can import from the
 hermes-agent codebase directly (`hermes_state`, `hermes_cli.config`, …). See
-[Extending the Dashboard → Backend API routes](/user-guide/features/extending-the-dashboard#backend-api-routes)
+[Extending the Dashboard → Backend API routes](../user-guide/features/extending-the-dashboard.md#backend-api-routes)
 for the full backend reference — the mount is identical.
 
 :::caution The Python backend is gated separately
-Enabling a plugin in the desktop **Settings → Plugins** panel is a renderer-side
+Enabling a plugin in the desktop **Capabilities → Plugins** panel is a renderer-side
 choice; it does **not** import Python. A user plugin's `plugin_api.py` is
 imported only when the plugin is in the `plugins.enabled` allow-list in
 `config.yaml` (and not in `plugins.disabled`). Project plugins (`./.hermes/`)
@@ -815,7 +863,7 @@ For gateway-wide data (not your own namespace), use `host.request` (JSON-RPC) an
 
 ## Settings, enable state, and storage
 
-Every plugin — enabled or not — inventories in **Settings → Plugins**, where the
+Every plugin — enabled or not — inventories in **Capabilities → Plugins**, where the
 user toggles it live (no app restart), reveals its folder, or rescans. The user's
 choice is remembered:
 
@@ -855,16 +903,23 @@ companion repo.
 
 A loaded plugin is evaluated as ESM in the renderer realm with **full app
 authority** — the React singleton, the whole SDK (`host.request` gateway RPC,
-`ctx.rest`, storage, `navigate`). The isolation the loader provides is **error
+`ctx.rest`, storage, `navigate`) and the `window.hermesDesktop` native bridge
+(files, git, terminal, installs). The isolation the loader provides is **error
 isolation only**: a plugin can't crash the app (contributions are error-bounded,
-listeners isolated), but it can do anything the app can.
+listeners isolated, a throwing `register()` is rolled back and reported on the
+plugin's row), but it can do anything the app can. Plugin storage namespaces
+are a convention, not a wall.
 
 This is acceptable for **local** sources — a disk file can already run code on
 your machine — which is why the disk door only loads local files you (or your
-agent) wrote. The optional `integrity` (`sha256-…`) check only proves the bytes
-match a hash; it does **not** sandbox. A future remote-source door will need a
-real boundary (iframe/worker + CSP + capability gating) before it can land; do
-not treat this pipeline as a trust boundary.
+agent) wrote. For [catalog](../user-guide/features/plugin-catalog.md#trust-model)
+installs the trust comes from admission — a human reviewed the exact pinned
+commit — backed by two tripwires: the `desktop surface` lint at admission and
+the loader's import allowlist (`@hermes/plugin-sdk` and `react*` only; a static
+or dynamic `import` of anything else, including `https:` URLs, fails the load).
+Neither is a sandbox. A future remote-source door will need a real boundary
+(iframe/worker + CSP + capability gating) before it can land; do not treat this
+pipeline as a trust boundary.
 
 ## Pitfalls
 
@@ -885,6 +940,17 @@ not treat this pipeline as a trust boundary.
   the canvas (width/height attributes, not just CSS) — panes resize constantly.
 - **Don't poll faster than a few seconds** with `host.request`; prefer
   `host.onEvent` / `ctx.socket` and let React Query dedupe.
+- **Bare globals are not tracked.** `window.setInterval`, `window.addEventListener`,
+  a `<style>` you append — the host never sees them, so they survive disable and
+  every hot-reload (ES modules can't be unloaded; a hot-edit loop stacks live
+  copies). Use `ctx.setTimeout` / `ctx.setInterval` / `ctx.addEventListener`, and
+  wire anything else to `ctx.onDispose`. Module-scope state is yours to reset.
+- **Module evaluation has a 10 s deadline.** A top-level `await` that never
+  settles (waiting for a gateway that isn't up) fails the load as `import timed
+  out` instead of stalling the plugin scan; do the waiting inside `register()`.
+- **One id, one file.** Two folders exporting the same `id` (a standalone install
+  beside a unified-package copy) load first-wins in folder-name order; the later
+  one shows `duplicate id` on its own row in Capabilities ▸ Plugins.
 - **`ctx.socket` is a no-op on OAuth remotes.** Always have a polling fallback.
 
 ## Reference
@@ -895,10 +961,10 @@ not treat this pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
-| Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `contrastRatio`, `readableOn`, `normalizeHex`) |
+| Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |
 | Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness` |
 

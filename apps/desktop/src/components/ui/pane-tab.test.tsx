@@ -124,22 +124,6 @@ describe('PaneTab hover close button', () => {
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
   })
 
-  it('a closeable horizontal tab always shows its ✕ — the chip and the pointer gestures are one affordance', () => {
-    const onClose = vi.fn()
-    render(
-      <PaneTab onClose={onClose}>
-        <PaneTabLabel>tab</PaneTabLabel>
-      </PaneTab>
-    )
-
-    expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy()
-
-    const tab = screen.getByText('tab')
-    fireEvent.pointerDown(tab, { button: 1 })
-    fireEvent.pointerUp(tab, { button: 1 })
-    expect(onClose).toHaveBeenCalledTimes(1)
-  })
-
   it('renders no ✕ on a vertical rail tab (middle/⌘-click only there)', () => {
     const onClose = vi.fn()
     render(

@@ -28,6 +28,9 @@ export interface Translations {
     delete: string;
     refresh: string;
     retry: string;
+    /** Optional — English fallback until translated. "{what}" = the noun that failed to load. */
+    loadFailed?: string;
+    loadFailedDetails?: string;
     search: string;
     loading: string;
     create: string;
@@ -81,7 +84,9 @@ export interface Translations {
     activeSessionsLabel: string;
     gatewayStatusLabel: string;
     gatewayStrip: {
+      degraded?: string;
       failed: string;
+      heartbeatStale?: string;
       off: string;
       running: string;
       starting: string;
@@ -203,6 +208,10 @@ export interface Translations {
     failedToDeleteSelected: string;
     resumeInChat: string;
     newChat: string;
+    workspace: string;
+    workspaceDefault: string;
+    workspaceRescan: string;
+    workspaceCustom: string;
     previousPage: string;
     nextPage: string;
     roles: {
@@ -266,6 +275,9 @@ export interface Translations {
 
   // ── Cron page ──
   cron: {
+    /** Optional — English fallback until translated. */
+    loadWhat?: string;
+    scriptRequired?: string;
     confirmDeleteMessage: string;
     confirmDeleteTitle: string;
     newJob: string;
@@ -314,6 +326,8 @@ export interface Translations {
     noJobs: string;
     last: string;
     next: string;
+    overdueSince?: string;
+    schedulerLastTicked?: string;
     pause: string;
     resume: string;
     triggerNow: string;
@@ -335,6 +349,7 @@ export interface Translations {
     disableRuntime: string;
     enableAfterInstall: string;
     enableRuntime: string;
+    toggleTakesEffectAfterRestart: string;
     forceReinstall: string;
     headline: string;
     identifierLabel: string;
@@ -363,9 +378,25 @@ export interface Translations {
     authRequired: string;
     authRequiredHint: string;
     updateGit: string;
+    /** Optional: locales without it fall back to the English body at the call site. */
+    updateConsentBody?: (name: string, sha: string) => string;
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    // Catalog section (en-only fallback convention — optional keys).
+    catalogHeading?: string;
+    catalogHint?: string;
+    catalogSearchPlaceholder?: string;
+    catalogEmpty?: string;
+    catalogEmptyDocsLink?: string;
+    catalogInstallBtn?: string;
+    catalogInstalledBadge?: string;
+    catalogUpdateBtn?: string;
+    catalogRemovedBadge?: string;
+    catalogConfirmTitle?: string;
+    catalogConfirmInstallNote?: string;
+    catalogRequiresEnv?: string;
+    removedFromCatalog?: string;
   };
 
   // ── Profiles page ──
@@ -439,6 +470,10 @@ export interface Translations {
   skills: {
     title: string;
     searchPlaceholder: string;
+    /** Optional — English fallback until translated. */
+    loadWhat?: string;
+    browseHub?: string;
+    createSkill?: string;
     enabledOf: string;
     all: string;
     categories: string;
@@ -551,6 +586,7 @@ export interface Translations {
     copyCliCommand: string;
     connect: string;
     sessionExpires: string;
+    sessionExpiredNoError: string;
     initiatingLogin: string;
     exchangingCode: string;
     connectedClosing: string;

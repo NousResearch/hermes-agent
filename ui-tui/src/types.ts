@@ -1,6 +1,9 @@
+import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
+
 export interface ActiveTool {
   context?: string
   id: string
+  labels?: ToolLabel[]
   name: string
   verboseArgs?: string
   startedAt?: number
@@ -9,6 +12,8 @@ export interface ActiveTool {
 export interface TodoItem {
   content: string
   id: string
+  /** Optional id of another item — renders this as a nested subtask. */
+  parent?: string
   status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
 
@@ -18,11 +23,12 @@ export interface ActivityItem {
   tone: 'error' | 'info' | 'warn'
 }
 
-export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
-
 export interface SubagentProgress {
   apiCalls?: number
   costUsd?: number
+  /** Batch (delegation) id — tags `[n/N]` rows so concurrent/nested fan-outs
+   *  are distinguishable. Absent on older gateways. */
+  delegationId?: string
   depth: number
   durationSeconds?: number
   filesRead?: string[]
@@ -95,6 +101,8 @@ export interface ApprovalReq {
   choices?: string[]
   command: string
   description: string
+  /** Server→client request id; the answer is the response frame for it. */
+  requestId: string
   smartDenied?: boolean
 }
 
@@ -169,55 +177,15 @@ export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 export interface McpServerStatus {
   connected: boolean
   disabled?: boolean
-  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed' | 'lazy'
   name: string
   tools: number
   transport: string
 }
 
-export interface ProjectInfo {
-  id: string
-  name: string
-  primary_path?: null | string
-  slug: string
-}
-
-export interface SessionInfo {
-  cwd?: string
-  fast?: boolean
-  install_warning?: string
-  lazy?: boolean
-  mcp_servers?: McpServerStatus[]
-  model: string
-  profile_name?: string
-  project?: null | ProjectInfo
-  reasoning_effort?: string
-  release_date?: string
-  service_tier?: string
-  skills: Record<string, string[]>
-  system_prompt?: string
-  tools: Record<string, string[]>
-  update_behind?: number | null
-  update_command?: string
-  usage?: Usage
-  version?: string
-}
-
-export interface Usage {
-  active_subagents?: number
-  calls: number
-  compressions?: number
-  context_max?: number
-  context_percent?: number
-  context_used?: number
-  cost_status?: string
-  cost_usd?: number
-  dev_credits_spent_micros?: number
-  input: number
-  output: number
-  reasoning?: number
-  total: number
-}
+/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
+export type SessionInfo = SessionLiveInfo
+export type { ProjectInfo }
 
 export interface SudoReq {
   requestId: string
@@ -226,6 +194,13 @@ export interface SudoReq {
 export interface SecretReq {
   envVar: string
   prompt: string
+  requestId: string
+}
+
+/** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */
+export interface VaultUnlockReq {
+  backend: string
+  displayName: string
   requestId: string
 }
 

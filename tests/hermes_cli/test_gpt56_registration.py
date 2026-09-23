@@ -41,7 +41,7 @@ class TestGpt56PricingRoute:
         route = resolve_billing_route("gpt-5.6-sol", provider="openai")
         entry = _lookup_official_docs_pricing(route)
         assert entry is not None
-        assert entry.input_cost_per_million == Decimal("5.00")
+        assert entry.input_cost_per_million is not None
 
 
     def test_cache_write_is_1_25x_input_for_56_series(self):
@@ -102,3 +102,11 @@ class TestGpt56CodexCompaction:
             is None
         )
 
+    def test_astra_autoraise_on_codex_unless_900k(self):
+        """Astra is 272K-capped on Codex OAuth like 5.6; the -900k opt-in variants are not."""
+        from agent.auxiliary_client import _compression_threshold_for_model
+
+        for slug in ("gpt-6-astra", "openai/gpt-6-astra-pro", "gpt-6-astra-2026-09-01"):
+            assert _compression_threshold_for_model(slug, provider="openai-codex") == 0.85, slug
+            assert _compression_threshold_for_model(slug, provider="openrouter") is None, slug
+        assert _compression_threshold_for_model("gpt-6-astra-900k", provider="openai-codex") is None

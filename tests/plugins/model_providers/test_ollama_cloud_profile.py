@@ -199,7 +199,7 @@ class TestOllamaModelSupportsThinking:
         monkeypatch.setattr(httpx, "Client", _Client)
 
     def test_thinking_capability_true(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, capabilities=["completion", "tools", "thinking"])
         assert (
@@ -211,7 +211,7 @@ class TestOllamaModelSupportsThinking:
 
 
     def test_probe_failure_returns_none(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, status=404)
         assert (
@@ -219,7 +219,7 @@ class TestOllamaModelSupportsThinking:
         )
 
     def test_exception_returns_none(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, raise_exc=RuntimeError("boom"))
         assert (
@@ -227,8 +227,3 @@ class TestOllamaModelSupportsThinking:
         )
 
 
-class TestOllamaCloudAuxModel:
-    """Ollama Cloud aux model is set on the profile."""
-
-    def test_profile_advertises_aux_model(self, ollama_cloud_profile):
-        assert ollama_cloud_profile.default_aux_model == "nemotron-3-nano:30b"

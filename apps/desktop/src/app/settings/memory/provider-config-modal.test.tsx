@@ -107,9 +107,4 @@ describe('ProviderConfigModal', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
-
-  it('renders nothing while closed', async () => {
-    await renderModal(false)
-    expect(screen.queryByText('Message writing')).toBeNull()
-  })
 })

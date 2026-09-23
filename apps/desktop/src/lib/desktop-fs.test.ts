@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection } from '@/api/client'
 import { $connection } from '@/store/session'
 
 import {
@@ -66,12 +67,14 @@ describe('desktop filesystem facade', () => {
   beforeEach(() => {
     stubBridge()
     $connection.set(null)
+    setApiRequestConnection(null)
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.clearAllMocks()
     $connection.set(null)
+    setApiRequestConnection(null)
     setDesktopFsRemotePicker(null)
   })
 
@@ -142,6 +145,86 @@ describe('desktop filesystem facade', () => {
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fsrv%2Fproject', profile: 'remote-docker' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
+  })
+
+  it('pins SSH filesystem reads to the active registry connection', async () => {
+    $connection.set({
+      connectionId: 'work-ssh',
+      mode: 'remote',
+      profile: 'default',
+      remoteKind: 'ssh'
+    } as never)
+    setApiRequestConnection('work-ssh')
+
+    await readDesktopFileDataUrl('/srv/project/image.png')
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'work-ssh',
+      path: '/api/fs/read-data-url?path=%2Fsrv%2Fproject%2Fimage.png',
+      profile: 'default'
+    })
+  })
+
+  it('pins remote filesystem requests to the active registry connection', async () => {
+    $connection.set({ connectionId: 'mr-small', mode: 'remote', profile: 'default' } as never)
+    setApiRequestConnection('mr-small')
+
+    await readDesktopDir('/home/doug/default-profile-workspace')
+    await readDesktopFileText('/home/doug/default-profile-workspace/IDEA.md')
+    await readDesktopFileDataUrl('/home/doug/default-profile-workspace/IDEA.md')
+    await desktopGitRoot('/home/doug/default-profile-workspace')
+    await desktopDefaultCwd()
+    await desktopFileDiff('/home/doug/default-profile-workspace', 'IDEA.md')
+
+    expect(api).toHaveBeenCalledTimes(6)
+
+    for (const [request] of api.mock.calls) {
+      expect(request).toMatchObject({ connectionId: 'mr-small', profile: 'default' })
+    }
+  })
+
+  it('separates filesystem cache keys for registered connections sharing a profile', () => {
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'mr-small',
+      mode: 'remote',
+      profile: 'default'
+    } as never)
+    const mrSmallKey = desktopFsCacheKey()
+
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'other-default',
+      mode: 'remote',
+      profile: 'default'
+    } as never)
+
+    expect(desktopFsCacheKey()).not.toBe(mrSmallKey)
+  })
+
+  it('prefers registry connection identity over SSH host identity', () => {
+    $connection.set({
+      baseUrl: 'http://127.0.0.1:41001',
+      connectionId: 'connection-a',
+      mode: 'remote',
+      remoteHost: 'operator@remote-box',
+      remoteKind: 'ssh',
+      remoteIdentity: 'operator@remote-box',
+      profile: 'default'
+    } as never)
+    const first = desktopFsCacheKey()
+
+    $connection.set({
+      baseUrl: 'http://127.0.0.1:52002',
+      connectionId: 'connection-b',
+      mode: 'remote',
+      remoteHost: 'operator@remote-box',
+      remoteKind: 'ssh',
+      remoteIdentity: 'operator@remote-box',
+      profile: 'default'
+    } as never)
+
+    expect(desktopFsCacheKey()).not.toBe(first)
   })
 
   it('keys SSH filesystem caches by stable host identity instead of the forwarded port', () => {

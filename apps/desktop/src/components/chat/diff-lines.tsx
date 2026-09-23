@@ -5,6 +5,7 @@ import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
 
 import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
+import { ErrorBoundary } from '@/components/error-boundary'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
 
@@ -469,10 +470,18 @@ function SyntaxDiff({ language, lines }: { language: string; lines: DiffLine[] }
   // The Shiki hook lives in a lazily-loaded module (syntax-diff.tsx) so the
   // multi-MB shiki chunk stays off the cold-start path. Until it (and the
   // highlight itself) resolves, show the plain colored diff — no flash.
+  //
+  // A rejected dynamic import (e.g. a packaged app whose renderer window is
+  // pointed at the asar copy of dist/ while the chunk only exists in
+  // app.asar.unpacked, #93479) throws past Suspense, which only covers the
+  // pending state. Without a local boundary that throw reaches the workspace
+  // ContribBoundary and blanks the whole pane instead of just this diff.
   return (
-    <React.Suspense fallback={<DiffBody lines={lines} />}>
-      <LazySyntaxDiff language={language} lines={lines} />
-    </React.Suspense>
+    <ErrorBoundary fallback={() => <DiffBody lines={lines} />} label="syntax-diff">
+      <React.Suspense fallback={<DiffBody lines={lines} />}>
+        <LazySyntaxDiff language={language} lines={lines} />
+      </React.Suspense>
+    </ErrorBoundary>
   )
 }
 

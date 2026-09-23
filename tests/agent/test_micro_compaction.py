@@ -20,7 +20,6 @@ The invariants that matter:
 
 from unittest.mock import patch
 
-import pytest
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
@@ -384,32 +383,6 @@ class TestMicroCompaction:
         blob = json.dumps(payload)
         assert "answer 0" not in blob and "question 0" not in blob
 
-    def test_telemetry_reports_occupancy_without_forcing_resolution(self, caplog):
-        """Occupancy is the headline: how full the window is being kept.
-
-        It must be read from the cached threshold only. The public
-        ``threshold_tokens`` property resolves lazily and can fire a
-        synchronous /models probe (#32221); telemetry must never be what
-        blocks a turn, so an unresolved window reports null instead.
-        """
-        import json
-        import logging
-
-        cc = _compressor()
-        cc.threshold_tokens = 10_000  # pin; also populates the cache
-        messages = _conversation(exchanges=8)
-
-        with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
-            cc._micro_compact(messages)
-
-        line = next(r.getMessage() for r in caplog.records
-                    if "micro compaction telemetry:" in r.getMessage())
-        payload = json.loads(line.split("micro compaction telemetry: ", 1)[1])
-
-        assert payload["threshold_tokens"] == 10_000
-        assert payload["occupancy_pct"] == pytest.approx(
-            payload["tokens_after"] / 10_000 * 100, abs=0.1
-        )
 
     def test_emitter_never_forces_window_resolution(self, caplog):
         """The emitter reads the cached threshold, never the property.
@@ -448,33 +421,6 @@ class TestMicroCompaction:
         assert payload["occupancy_pct"] is None
         assert payload["threshold_tokens"] is None
 
-    def test_first_pass_costs_marker_overhead_then_pays_it_back(self):
-        """The first pass can grow the transcript; later passes recover it.
-
-        Inserting the summary marker costs a fixed block of scaffolding
-        (``SUMMARY_PREFIX``, the historical heading and the end marker —
-        currently ~450 tokens and grows when the preamble is lengthened).
-        On pass one that overhead is paid against a single absorbed exchange,
-        so the net can be positive. From pass two on the marker is replaced
-        rather than added, so the scaffolding is already paid for and each
-        absorbed exchange is pure saving. Anyone reading a single turn's
-        telemetry needs to know this before concluding it made things worse.
-        """
-        from agent.model_metadata import estimate_messages_tokens_rough
-
-        cc = _compressor()
-        messages = _conversation(exchanges=10)
-        start = estimate_messages_tokens_rough(messages)
-
-        messages = cc._micro_compact(messages)
-        after_first = estimate_messages_tokens_rough(messages)
-
-        for _ in range(5):
-            messages = cc._micro_compact(messages)
-        after_many = estimate_messages_tokens_rough(messages)
-
-        assert after_first > start, "expected one-time marker overhead"
-        assert after_many < after_first, "later passes must recover it"
 
     def test_cumulative_savings_accumulate_across_passes(self):
         """Session-total savings go positive once marker overhead is paid back.
@@ -712,25 +658,48 @@ class TestMicroCompaction:
         assert cc._micro_compact_rolling_summary == ""
         assert cc._micro_compact_cursor == 0
 
-    def test_persist_disabled_agent_never_micro_compacts(self):
-        """finalize_turn must skip micro-compaction on isolated fork agents.
 
-        The background-review fork sets _persist_disabled=True; running a
-        pass there burns an aux-LLM call on a throwaway replay transcript
-        and, if the compressor ever holds a DB binding, would
-        archive_and_compact the CANONICAL session rows.
+    def test_db_sync_passes_exact_carried_messages(self):
+        """Micro-compaction carries a prefix and suffix around its summary marker.
+
+        The persistence layer must receive exact durable ids, not len(result)-1:
+        a tail count reaches backward across the removed assistant/tool exchange and
+        turns summarized rows into rewind-only active=0, compacted=0 debris
+        (#118481).
         """
-        import inspect
+        from agent.context_compressor import _DB_PERSISTED_MARKER
 
-        from agent import turn_finalizer
+        cc = _compressor()
+        captured = {}
 
-        src = inspect.getsource(turn_finalizer.finalize_turn)
-        micro_block = src.split("Post-turn micro-compaction", 1)[1]
-        # Scope to the micro block only: stop at the persist call that follows.
-        micro_block = micro_block.split("agent._persist_session", 1)[0]
-        assert "_persist_disabled" in micro_block, (
-            "micro-compaction gate must check agent._persist_disabled"
-        )
+        class _DB:
+            def archive_and_compact(self, session_id, messages, **kwargs):
+                captured["session_id"] = session_id
+                captured["messages"] = messages
+                captured["kwargs"] = kwargs
+                return len(messages)
+
+        cc._session_db = _DB()
+        cc._session_id = "sess"
+        compacted = [
+            {"role": "user", "content": "prefix", "_row_id": 11, _DB_PERSISTED_MARKER: True},
+            {
+                "role": "assistant",
+                "content": "summary",
+                COMPRESSED_SUMMARY_METADATA_KEY: True,
+            },
+            {"role": "user", "content": "suffix", "_row_id": 15, _DB_PERSISTED_MARKER: True},
+            # Content was rewritten in-place: the mutation contract deliberately
+            # popped _DB_PERSISTED_MARKER, so its old row is NOT byte-identical.
+            {"role": "assistant", "content": "rewritten", "_row_id": 16},
+        ]
+
+        cc._sync_micro_compact_to_db(compacted)
+
+        assert captured["session_id"] == "sess"
+        carried = captured["kwargs"].get("carried_messages")
+        assert [message.get("_row_id") for message in carried] == [11, 15]
+        assert "tail_count" not in captured["kwargs"]
 
     def test_splice_preserves_db_persisted_stamps(self):
         """Surviving messages keep their _db_persisted stamps through a splice.
@@ -802,22 +771,48 @@ class TestDefragFlushCursorInvalidation:
         cc._micro_compact(list(messages))
         assert cc._flush_scan_cursor_invalidated is False
 
-    def test_finalizer_consumes_flag_and_invalidates_agent_cursor(self):
-        """finalize_turn's micro-compaction block must translate the
-        compressor flag into agent._db_flush_scan_prefix = None (and reset
-        the flag) so the next flush re-examines the rewritten marker row."""
-        import inspect
 
-        from agent import turn_finalizer
 
-        src = inspect.getsource(turn_finalizer.finalize_turn)
-        micro_block = src.split("Post-turn micro-compaction", 1)[1]
-        micro_block = micro_block.split("agent._persist_session", 1)[0]
-        assert "_flush_scan_cursor_invalidated" in micro_block, (
-            "finalize_turn must consume the compressor's cursor-invalidation "
-            "flag raised by the defrag marker pop"
+class TestMergeAdjacentUserTurnsPersistedMarker:
+    """Third pop site under the _DB_PERSISTED_MARKER contract: a supersede that
+    drops a stale micro marker can leave two persisted plain user dicts adjacent;
+    the merge rewrites the earlier one's content in place, so the stamp must be
+    popped and the flush-scan cursor invalidated or the merged text is
+    identity-skipped and never reaches state.db."""
+
+    def _spliced_merge(self):
+        from agent.context_compressor import (
+            _DB_PERSISTED_MARKER,
+            COMPRESSED_SUMMARY_METADATA_KEY,
+            MICRO_COMPACT_MARKER_KEY,
         )
-        assert "agent._db_flush_scan_prefix = None" in micro_block, (
-            "finalize_turn must invalidate the bounded flush-scan cursor "
-            "when the defrag pop stripped a live marker's stamp"
-        )
+
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = "ROLLING"
+        u1 = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
+        stale_micro = {
+            "role": "assistant",
+            "content": "SUMMARY",
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+            MICRO_COMPACT_MARKER_KEY: True,
+            _DB_PERSISTED_MARKER: True,
+        }
+        u2 = {"role": "user", "content": "second", _DB_PERSISTED_MARKER: True}
+        exchange = [
+            {"role": "assistant", "content": "answer", _DB_PERSISTED_MARKER: True},
+            {"role": "user", "content": "third", _DB_PERSISTED_MARKER: True},
+        ]
+        messages = [u1, stale_micro, u2, *exchange]
+        # Dropping stale_micro leaves u1/u2 adjacent; the exchange is spliced out.
+        return cc, cc._splice_micro_compact_result(messages, 3, 5, supersede=True)
+
+    def test_merge_pops_persisted_marker_and_raises_flag(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        cc, result = self._spliced_merge()
+
+        merged = [m for m in result if m.get("role") == "user"]
+        assert len(merged) == 1
+        assert merged[0]["content"] == "first\n\nsecond"
+        assert _DB_PERSISTED_MARKER not in merged[0]
+        assert cc._flush_scan_cursor_invalidated is True

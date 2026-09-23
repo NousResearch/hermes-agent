@@ -24,22 +24,29 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `clarify`, `image_generate` and `delegate_task` bypass ToolEntry to
 //     render their own markup: a question the user has to answer, an image
 //     they asked for, the several agents a fan-out is running.
-//   - `setup_mcp` is the same kind: an inline consent card the user has to
-//     act on. Folding it into a "Using 2 tools" summary hides the buttons.
+//   - `manage_connections` and `manage_catalog` are consent cards; their controls must stay visible.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
-const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp'])
+const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'manage_catalog'])
+
+// Name the run splitter uses for a manage_connections part it has classified as a card.
+export const CONNECTION_CARD_KEY = 'manage_connections:card'
 
 export function isCardTool(toolName: string): boolean {
-  return CARD_TOOL_NAMES.has(toolName) || isFileEditTool(toolName)
+  return (
+    CARD_TOOL_NAMES.has(toolName) ||
+    toolName === CONNECTION_CARD_KEY ||
+    isFileEditTool(toolName) ||
+    toolName === 'manage_connections'
+  )
 }
 
 // Activity tools that render nothing at all: `todo` parts are hoisted to a
 // dedicated panel above the message content, and a reaction's UI is the emoji
 // landing on the bubble. Both still render when they FAIL, which is a bounded
 // error row either way.
-const SILENT_TOOL_NAMES = new Set(['react_to_message', 'todo'])
+const SILENT_TOOL_NAMES = new Set(['react_to_message', 'todo', 'todo_list'])
 
 export function isSilentTool(toolName: string): boolean {
   return SILENT_TOOL_NAMES.has(toolName)

@@ -1193,6 +1193,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
+        # Process-owned discovery listeners (``on_plugin_loaded``); never cleared by unload().
+        self._plugin_loaded_listeners: List[Callable] = []
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
         # registration order while emitters never block; per-worker chain depth caps mutual emitters.
         self._subscriptions: Dict[str, List[_EventSubscription]] = {}
@@ -1265,6 +1267,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             if self._discovered and not force:
                 return
+            # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
+            # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
+            loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
             if force:
                 self.unload()  # the ledger owns teardown of process-global registries
             if env_var_enabled("HERMES_SAFE_MODE"):
@@ -1296,6 +1301,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             except BaseException:
                 self._discovered = False
                 raise
+        # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
+        self._notify_plugin_loaded(loaded_before)
 
     def _re_register_config_hooks_after_force(self) -> None:
         """Restore config-owned shell hooks/outbound webhooks after a force clear; each guarded

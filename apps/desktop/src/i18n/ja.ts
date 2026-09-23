@@ -361,7 +361,15 @@ export const ja = defineLocale({
       installModal: {
         installFromGit: 'Git からインストール',
         reviewRepository: 'リポジトリを確認',
-        repoPlaceholder: 'https://github.com/owner/repo'
+        repoPlaceholder: 'https://github.com/owner/repo',
+        connectServers: (name, n) =>
+          n === 1
+            ? `${name} をインストールしました。その MCP サーバーはまだ接続されていません。`
+            : `${name} をインストールしました。${n} 個の MCP サーバーはまだ接続されていません。`,
+        connectNow: '今すぐ接続',
+        connectSub: '開いているチャットはコンテキストを再送します',
+        connectFailed: 'プラグインの MCP サーバーに接続できませんでした。',
+        liveNow: name => `${name} はインストールされ、有効です。`
       }
     },
     closeSettings: '設定を閉じる',
@@ -3295,6 +3303,22 @@ export const ja = defineLocale({
       unreachableDescription: 'プレビューページに到達できませんでした。',
       openTarget: url => `${url} を開く`,
       fallbackTitle: 'プレビュー'
+    }
+  },
+
+  interfaceMode: {
+    title: 'インターフェースモード',
+    hint: '表示される内容が変わるだけで、Hermes にできることは変わりません。',
+    sessionNote:
+      'シンプルモードで設定されています。ここでの変更はこのセッション中のみ有効です。自分の設定にするには詳細モードに切り替えてください。',
+    simple: {
+      label: 'シンプル',
+      description:
+        'Hermes と話すための表示。サイドバーとチャットのみ。ターミナル、ファイル、差分のペインは表示しません。'
+    },
+    advanced: {
+      label: '詳細',
+      description: '開発者向け。ターミナル、ファイル、差分、ステータスバー、レイアウトを設定したとおりに。'
     }
   },
 

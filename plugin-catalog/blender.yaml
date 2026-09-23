@@ -1,0 +1,21 @@
+name: blender
+repo: https://github.com/NousResearch/hermes-plugin-blender
+sha: d1929b593bddd2241a8939fb355e0a69b8e077af
+version: "0.1.0"
+description: >-
+  Official Blender Lab MCP server over stdio, pinned to upstream v1.0.3,
+  with a Blender workflow skill. Requires Blender 5.1+, its separately
+  installed MCP add-on, Git and uv. First startup downloads Python dependencies;
+  prepare the uv environment before connecting. Disclosure: tools execute
+  arbitrary Python in Blender with the user's privileges. No automatic
+  application/version/liveness gate; server discovery does not prove scene readiness.
+maintainer: NousResearch
+tier: official
+category: tools
+docs_url: https://github.com/NousResearch/hermes-plugin-blender#readme
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

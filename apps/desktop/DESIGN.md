@@ -290,6 +290,9 @@ existing traffic-light and Window Controls Overlay measurements.
 
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
+In Simple interface mode only sidebar, settings and the layout editor render,
+and the reserved cluster width shrinks with them (`TITLEBAR_FIXED_TOOLS` is the
+one table both the buttons and the width reservation read).
 Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.

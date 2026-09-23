@@ -5,7 +5,6 @@ import { Input } from '@/components/ui/input'
 import type { McpCatalogEntry } from '@/hermes'
 import { useI18n } from '@/i18n'
 
-
 export type InstallField = McpCatalogEntry['required_env'][number]
 
 export function LocalInstall({

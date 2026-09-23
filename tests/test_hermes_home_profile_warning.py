@@ -92,3 +92,47 @@ class TestGetHermesHomeProfileWarning:
         # Shouldn't crash; shouldn't warn either (can't tell what profile was intended)
         assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
+
+class TestBootReadersBeforeProfileOverride:
+    """Readers that run before the CLI applies the sticky ``active_profile`` must not warn.
+
+    ``hermes_bootstrap`` points ``TMPDIR`` at the scratch dir of the *process* home during
+    import, and ``main._apply_profile_override`` re-homes the process a few lines later. A
+    caller that already resolved its home must not send the policy back through
+    ``get_hermes_home()``: for a sticky-profile user with ``HERMES_HOME`` unset in a plain
+    shell that lookup falls back to the default profile and warns, on every ``hermes``
+    command, while nothing lands in the wrong place. Same fix the parser's ``_cfg_path()``
+    carries for the ``--no-config`` help string.
+    """
+
+    def test_scratch_export_uses_the_process_home_silently(
+        self, fresh_constants, tmp_path, capsys
+    ):
+        """Boot scratch setup: silent, and pointed at the home the bootstrap resolved."""
+        hermes_dir = tmp_path / ".hermes"
+        (hermes_dir / "profiles" / "coder").mkdir(parents=True)
+        (hermes_dir / "active_profile").write_text("coder\n")
+        capsys.readouterr()  # drop anything the setup above printed
+
+        env = {"PATH": "/usr/bin:/bin"}
+        assert fresh_constants.apply_scratch_tmp_env(env) is True
+
+        assert env["TMPDIR"] == str(hermes_dir / "cache" / "scratch")
+        assert "HERMES_HOME fallback" not in capsys.readouterr().err
+
+    def test_explicit_home_scratch_dir_never_reads_the_effective_home(
+        self, fresh_constants, tmp_path, capsys
+    ):
+        """A caller that passes a home (`hermes doctor` for another profile) stays silent."""
+        hermes_dir = tmp_path / ".hermes"
+        profile_dir = hermes_dir / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        (hermes_dir / "active_profile").write_text("coder\n")
+        capsys.readouterr()  # drop anything the setup above printed
+
+        scratch = fresh_constants.get_scratch_dir(profile_dir)
+
+        assert scratch == profile_dir / "cache" / "scratch"
+        assert scratch.is_dir()
+        assert "HERMES_HOME fallback" not in capsys.readouterr().err
+

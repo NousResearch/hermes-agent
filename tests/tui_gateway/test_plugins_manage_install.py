@@ -7,10 +7,14 @@ from tui_gateway import server
 
 
 def test_plugins_manage_install_success():
+    # The real ``dashboard_install_plugin`` ok payload, key for key. Under HERMES_TEST_ISOLATION the
+    # dispatcher validates the result against ``PluginsManageResult`` (extra=forbid), so a key the
+    # installer emits but the contract lacks fails here instead of only in the desktop's errors.log.
     payload = {
         "ok": True,
         "plugin_name": "hello-world",
         "warnings": [],
+        "python_dependencies": [],
         "missing_env": [],
         "after_install_path": None,
         "enabled": True,

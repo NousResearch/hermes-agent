@@ -17,19 +17,20 @@ import { Chip } from '@/components/onboarding-chat/chip'
 import {
   $handoffError,
   $setupHandoff,
+  $setupSession,
   firstTaskTitle,
   guideHandoffReceiptKey,
   parseHandoffPlan,
   readGuideHandoffReceipt,
   requestSetupHandoff,
-  retrySetupHandoff,
-  SETUP_PROFILE
+  retrySetupHandoff
 } from '@/components/onboarding-chat/setup-profile'
 import { Button } from '@/components/ui/button'
 import { answeredAfter } from '@/lib/chat-messages/parts'
 import { segmentTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
+import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
@@ -152,7 +153,9 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             storedId,
             runtimeId,
             connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
+            profile: isSessionOwnerRoute(owner)
+              ? owner.profile
+              : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
           })
         }
       })
@@ -195,7 +198,9 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             storedId,
             runtimeId,
             connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
+            profile: isSessionOwnerRoute(owner)
+              ? owner.profile
+              : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
           }
         })
       }

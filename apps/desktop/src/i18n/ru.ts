@@ -339,6 +339,7 @@ export const ru = defineLocale({
       'view.toggleStatusbar': 'Показать / скрыть строку состояния',
       'view.toggleTabStrip': 'Показать / скрыть вкладки',
       'view.toggleProfileRail': 'Показать / скрыть панель профилей',
+      'view.toggleSimpleMode': 'Переключить простой режим',
       'view.showFiles': 'Показать браузер файлов',
       'view.showBrowser': 'Открыть браузер',
       'view.toggleHud': 'Включить / выключить режим HUD',
@@ -532,7 +533,15 @@ export const ru = defineLocale({
         desktopSuccess: name => `Плагин приложения ${name} установлен`,
         agentFailed: 'Не удалось установить плагин агента',
         desktopFailed: 'Не удалось установить плагин приложения',
-        missingEnv: (_name, vars) => `Не хватает переменных окружения: ${vars}. Добавьте их в Настройки → Ключи.`
+        missingEnv: (_name, vars) => `Не хватает переменных окружения: ${vars}. Добавьте их в Настройки → Ключи.`,
+        connectServers: (name, n) =>
+          n === 1
+            ? `${name} установлен. Его MCP-сервер ещё не подключён.`
+            : `${name} установлен. Его ${n} MCP-сервера ещё не подключены.`,
+        connectNow: 'Подключить сейчас',
+        connectSub: 'Открытые чаты повторно отправят свой контекст',
+        connectFailed: 'Не удалось подключить MCP-серверы плагина.',
+        liveNow: name => `${name} установлен и активен.`
       }
     },
     notifications: {
@@ -3581,6 +3590,20 @@ export const ru = defineLocale({
       unreachableDescription: 'Страница предпросмотра недоступна.',
       openTarget: url => `Открыть ${url}`,
       fallbackTitle: 'Предпросмотр'
+    }
+  },
+  interfaceMode: {
+    title: 'Режим интерфейса',
+    hint: 'Меняет то, что показано, а не то, что умеет Hermes.',
+    sessionNote:
+      'Задано простым режимом. Изменение здесь действует до конца сеанса; переключитесь в расширенный, чтобы сделать его своим.',
+    simple: {
+      label: 'Простой',
+      description: 'Для общения с Hermes. Боковая панель и чат; без терминала, файлов и панелей diff.'
+    },
+    advanced: {
+      label: 'Расширенный',
+      description: 'Для разработчиков. Терминал, файлы, diff, строка состояния и раскладки — как вы их настроили.'
     }
   },
   zones: {

@@ -71,8 +71,9 @@ class TestScratchDirPermissionPolicy:
     an explicit HERMES_HOME_MODE and a managed/shared home win (#117347)."""
 
     def _isolate_env(self, monkeypatch, tmp_path):
-        # HERMES_HOME must point somewhere without a .managed marker, or a marker file in the
-        # real home would flip every case into "managed" (the marker is read via get_hermes_home).
+        # A known, marker-free effective home: each case below plants `.managed` in the home whose
+        # scratch dir it exercises (`get_scratch_dir(home)` reads the marker there), and the real
+        # home's own marker must not leak into callers that still resolve the effective home.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         for var in ("HERMES_HOME_MODE", "HERMES_MANAGED", "HERMES_CONTAINER",
                     "HERMES_SKIP_CHMOD", "HERMES_UID", "HERMES_GID"):
@@ -103,10 +104,10 @@ class TestScratchDirPermissionPolicy:
         home.mkdir()
         self._isolate_env(monkeypatch, tmp_path)
         (home / ".managed").write_text("nixos", encoding="utf-8")
-        pre = tmp_path / "cache" / "scratch"
+        pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
         os.chmod(pre, 0o2770)
-        scratch = get_scratch_dir(tmp_path, prune=False)
+        scratch = get_scratch_dir(home, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
 
     def test_empty_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
@@ -116,10 +117,10 @@ class TestScratchDirPermissionPolicy:
         home.mkdir()
         self._isolate_env(monkeypatch, tmp_path)
         (home / ".managed").write_text("", encoding="utf-8")
-        pre = tmp_path / "cache" / "scratch"
+        pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
         os.chmod(pre, 0o2770)
-        scratch = get_scratch_dir(tmp_path, prune=False)
+        scratch = get_scratch_dir(home, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
 
     def test_unreadable_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
@@ -128,11 +129,26 @@ class TestScratchDirPermissionPolicy:
         home.mkdir()
         self._isolate_env(monkeypatch, tmp_path)
         (home / ".managed").mkdir()
-        pre = tmp_path / "cache" / "scratch"
+        pre = home / "cache" / "scratch"
         pre.mkdir(parents=True)
         os.chmod(pre, 0o2770)
-        scratch = get_scratch_dir(tmp_path, prune=False)
+        scratch = get_scratch_dir(home, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+
+    def test_effective_home_marker_does_not_govern_another_homes_scratch(self, tmp_path, monkeypatch):
+        # The caller's home decides the policy. A boot caller (``export_scratch_tmp_env``) and
+        # ``hermes doctor`` have already resolved theirs, so the marker lookup must not fall back
+        # to ``get_hermes_home()``: for a sticky profile with HERMES_HOME unset that lookup warns
+        # about the default profile on every command, and it is the wrong home to judge by anyway.
+        selected = tmp_path / "home"
+        selected.mkdir()
+        self._isolate_env(monkeypatch, tmp_path)
+        (selected / ".managed").write_text("nixos", encoding="utf-8")
+        other = tmp_path / "other"
+        pre = other / "cache" / "scratch"
+        pre.mkdir(parents=True)
+        os.chmod(pre, 0o750)
+        assert stat.S_IMODE(os.stat(get_scratch_dir(other, prune=False)).st_mode) == 0o700
 
     def test_canonical_container_signal_without_env_override_keeps_operator_mode(self, tmp_path, monkeypatch):
         # Podman/containerd/K8s runtimes often don't export HERMES_CONTAINER; the canonical

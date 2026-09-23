@@ -671,10 +671,27 @@ class AgentPluginRow(Result):
     settings_schema: list[PluginSettingField] | None = None
 
 
+class PluginActivation(Result):
+    """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}``
+    with only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names),
+    ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in
+    the running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and
+    ``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server
+    names (exactly as ``mcp.servers.*`` know them) — not connected until ``mcp.reload``.
+    The Desktop "Installed. Connect its servers now" card reads exactly ``deferred.mcp_servers``."""
+
+    name: str
+    key: str
+    activated_now: dict[str, list[str]] = Field(default_factory=dict)
+    deferred: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
-    ok payload; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
+    ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
+    running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is
+    live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
     ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the
     client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus
     ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``."""
@@ -685,12 +702,16 @@ class PluginsManageResult(Result):
     ok: bool | None = None
     unchanged: bool | None = None
     restart_required: bool | None = None
+    gateway_reloaded: bool | None = None
+    activation: PluginActivation | None = None
     cleared_memory_provider: bool | None = None
     name: str | None = None
     plugin: AgentPluginRow | None = None
     plugin_name: str | None = None
     warnings: list[str] | None = None
     missing_env: list[str] | None = None
+    # ``install`` → the manifest's ``python_dependencies`` the installer applied (``[]`` when none).
+    python_dependencies: list[str] | None = None
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None

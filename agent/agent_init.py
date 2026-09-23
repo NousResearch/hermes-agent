@@ -37,7 +37,7 @@ from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
-from hermes_cli.config import cfg_get
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
@@ -1482,9 +1482,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     max_attempts = _parse_config_int(cfg.get("max_attempts", 3), 3)
     if max_attempts < 1:
         max_attempts = 3
-    # threshold_tokens: absolute cap (lower of ratio threshold and this); clamped to the
-    # window at apply-time.
-    threshold_tokens = cfg.get("threshold_tokens")
+    # threshold_tokens: absolute cap (lower of ratio threshold and this); clamped to the window at
+    # apply-time. Explicit null is the ratio-only opt-out and stays None.
+    threshold_tokens = cfg.get("threshold_tokens", cfg_get(DEFAULT_CONFIG, "compression", "threshold_tokens"))
     if threshold_tokens is not None:
         threshold_tokens = _positive_int(threshold_tokens)
     # Non-system head messages to protect (system prompt is always protected); 0 is a
@@ -2194,7 +2194,8 @@ def _emit_compression_summary(agent, cs):
             _pct = getattr(_cc, "threshold_percent", cs.threshold)
             _cap = getattr(_cc, "threshold_tokens_cap", None)
             # Name the cap only when it is what set the trigger; on small windows the ratio already sits below it.
-            _cap_binds = bool(_cap) and _cap > 0 and _cc.threshold_tokens == min(_cap, _cc.context_length)
+            _eff_cap = getattr(_cc, "_effective_threshold_cap", lambda _ctx: None)(_cc.context_length)
+            _cap_binds = _eff_cap is not None and _cc.threshold_tokens == _eff_cap
             _cap_note = f" (capped at {_cap:,} tokens)" if _cap_binds else ""
             print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {int(_pct*100)}% = {_cc.threshold_tokens:,}{_cap_note})")
         else:

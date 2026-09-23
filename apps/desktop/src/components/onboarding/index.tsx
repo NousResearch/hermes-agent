@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
@@ -34,6 +35,7 @@ import {
   refreshOnboarding,
   saveOnboardingApiKey,
   setOnboardingMode,
+  setOnboardingShareMetrics,
   startManualOnboarding,
   startProviderOAuth
 } from '@/store/onboarding'
@@ -593,7 +595,7 @@ const persistShowAll = (value: boolean) => {
 
 export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const { t } = useI18n()
-  const { localEndpoint, manual, mode, providers } = useStore($desktopOnboarding)
+  const { localEndpoint, manual, mode, providers, shareMetrics, shareMetricsDecided } = useStore($desktopOnboarding)
   const [showAll, setShowAll] = useState(readShowAll)
   // Which key-form option to preselect when we flip to 'apikey' mode. The
   // OpenRouter row selects its key; the generic link lands on the first option.
@@ -692,6 +694,10 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
         </Button>
       ) : null}
+      {/* First run only: the usage-metrics opt-in sits on the picker so EVERY
+          route out of it (OAuth, key form, local models, custom endpoint,
+          choose-later) records the same answer. Manual mode = already answered. */}
+      {manual || shareMetricsDecided === true ? null : <ShareMetricsCheckbox checked={shareMetrics} />}
       <div className="flex items-center justify-between gap-3 pt-1">
         {/* First run only: let the user defer the choice and land in the app.
             In manual mode the overlay already has a close affordance, so the
@@ -702,6 +708,17 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
         </Button>
       </div>
     </div>
+  )
+}
+
+function ShareMetricsCheckbox({ checked }: { checked: boolean }) {
+  const { t } = useI18n()
+
+  return (
+    <label className="mt-1 flex items-center gap-2.5 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left">
+      <Checkbox checked={checked} onCheckedChange={value => setOnboardingShareMetrics(value === true)} />
+      <span className="min-w-0 text-xs text-foreground">{t.onboarding.shareMetricsLabel}</span>
+    </label>
   )
 }
 

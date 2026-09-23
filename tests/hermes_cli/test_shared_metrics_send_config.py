@@ -26,10 +26,12 @@ def _config(**shared):
 
 
 class TestDefaults:
-    def test_send_is_registered_disabled_by_default(self):
+    def test_send_is_off_until_someone_answers(self, _isolate_hermes_home):
+        # No False defaults: absent keys mean "inherit the global answer" and must not be
+        # stripped on save. With no recorded answer the resolution is off.
         shared = DEFAULT_CONFIG["telemetry"]["shared_metrics"]
-        assert shared["enabled"] is False
-        assert shared["send"] is False
+        assert "enabled" not in shared and "send" not in shared
+        assert resolve_send_config({}).send is False
 
     def test_default_endpoint_is_production(self):
         shared = DEFAULT_CONFIG["telemetry"]["shared_metrics"]

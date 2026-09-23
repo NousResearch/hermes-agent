@@ -52,14 +52,20 @@ def resolve_send_config(config: dict | None) -> SendConfig:
     """
     global _warned_send_without_collection
 
+    from hermes_cli.observability.shared_metrics_consent import shared_metrics_state
+
     raw = config if isinstance(config, dict) else {}
     telemetry = raw.get("telemetry")
     telemetry = telemetry if isinstance(telemetry, dict) else {}
     shared = telemetry.get("shared_metrics")
     shared = shared if isinstance(shared, dict) else {}
 
-    enabled = shared.get("enabled") is True
-    send_requested = shared.get("send") is True
+    # Profile keys, else the user's global answer, else off (shared_metrics_consent).
+    state = shared_metrics_state(raw)
+    enabled = state.enabled
+    # The explicit-mismatch warning below is about a PROFILE that set send without enabled;
+    # an inherited answer can never be in that state.
+    send_requested = shared.get("send") is True if state.source == "profile" else state.send
 
     if send_requested and not enabled:
         # Loud, not silent: the user believes telemetry is being sent, and it never will be.

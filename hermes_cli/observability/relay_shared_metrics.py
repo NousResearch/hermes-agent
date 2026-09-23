@@ -821,7 +821,8 @@ class _Runtime:
 def _raw_config() -> dict[str, Any]:
     """Read-only config snapshot (lazy import: tests patch ``hermes_cli.config``).
 
-    Collection consent is profile-owned: managed overlays cannot opt a profile in or out.
+    Collection consent is the profile's explicit keys, else the user's global answer
+    (shared_metrics_consent); managed overlays cannot opt a profile in or out.
     The read-only path matters because this gate runs 2-3x per agent turn and the mutable
     read_raw_config() paid a full config deepcopy on every call.
     """
@@ -849,15 +850,13 @@ def _reconcile_store_consent(store: SharedMetricsStore, send_enabled: bool) -> N
 def enabled() -> bool:
     """Return the shared-metrics policy for the active Hermes profile."""
     profile_key = relay_runtime.current_profile_key()
+    from hermes_cli.observability.shared_metrics_consent import shared_metrics_state
+
     try:
-        config: Any = _raw_config()
+        if shared_metrics_state(_raw_config()).enabled:
+            return True
     except Exception:
         logger.debug("Unable to read Hermes shared-metrics policy", exc_info=True)
-        config = None
-    for key in ("telemetry", "shared_metrics"):
-        config = config.get(key) if isinstance(config, dict) else None
-    if isinstance(config, dict) and config.get("enabled") is True:
-        return True
     with _RUNTIME_LOCK:
         runtime = _RUNTIMES.pop(profile_key, None)
         if isinstance(runtime, _Runtime):

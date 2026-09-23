@@ -10,6 +10,7 @@ import { registry } from '@/contrib/registry'
 import { $pinnedSessionIds, $sidebarCardRows } from '@/store/layout'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
+import { $sidebarNavHiddenIds } from '@/store/sidebar-nav-visibility'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { type AppView, ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
@@ -91,6 +92,7 @@ describe('ChatSidebar navigation activity', () => {
       ])
     )
     noteActiveTreeGroup('workspace-group')
+    $sidebarNavHiddenIds.set([])
   })
 
   afterEach(() => {
@@ -101,6 +103,7 @@ describe('ChatSidebar navigation activity', () => {
     $removedSessionIds.set(new Set())
     $layoutTree.set(null)
     noteActiveTreeGroup(null)
+    $sidebarNavHiddenIds.set([])
   })
 
   it('keeps navigation and session activity coherent with the focused pane', () => {
@@ -163,6 +166,16 @@ describe('ChatSidebar navigation activity', () => {
     expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
     expectOnlyCurrent(null)
     expectOnlySelectedSession(null)
+  })
+
+  it('hides persisted built-in and contributed rows without leaving an invisible active row', () => {
+    $sidebarNavHiddenIds.set(['artifacts', 'core:kanban-nav'])
+
+    renderSidebar('/artifacts', 'artifacts')
+
+    expect(screen.queryByRole('button', { name: 'Artifacts' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
+    expectOnlyCurrent(null)
   })
 })
 

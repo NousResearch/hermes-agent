@@ -3,9 +3,11 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import { useDebounced } from '@/app/hooks/use-debounced'
+import { SIDEBAR_NAV_AREA, type SidebarNavContribution, sidebarNavContributionId } from '@/app/routes'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { useContributions } from '@/contrib/react/use-contributions'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -30,6 +32,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $sidebarNavHiddenIds, setSidebarNavItemVisible } from '@/store/sidebar-nav-visibility'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
@@ -423,6 +426,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
   const interfaceMode = useStore($interfaceMode)
+  const hiddenSidebarNavIds = useStore($sidebarNavHiddenIds)
+  const sidebarNavContributions = useContributions(SIDEBAR_NAV_AREA)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
@@ -716,6 +721,33 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.interfaceMode)}
               title={t.interfaceMode.title}
             />
+          )}
+
+          {show('window-layout') && (
+            <div>
+              <ListRow description={a.sidebarNavigationDesc} title={a.sidebarNavigationTitle} />
+              {[
+                ['new-session', t.sidebar.nav['new-session']],
+                ['capabilities', t.sidebar.nav.capabilities],
+                ['messaging', t.sidebar.nav.messaging],
+                ['artifacts', t.sidebar.nav.artifacts],
+                ['cron', t.sidebar.nav.cron],
+                ...sidebarNavContributions.flatMap(contribution => {
+                  const data = contribution.data as Partial<SidebarNavContribution> | undefined
+
+                  return data?.path?.startsWith('/') && data.label
+                    ? [[sidebarNavContributionId(contribution, data), data.label] as const]
+                    : []
+                })
+              ].map(([id, label]) => (
+                <ToggleRow
+                  checked={!hiddenSidebarNavIds.includes(id)}
+                  key={id}
+                  label={label}
+                  onChange={visible => setSidebarNavItemVisible(id, visible)}
+                />
+              ))}
+            </div>
           )}
 
           {show('window-layout') && (

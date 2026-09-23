@@ -857,6 +857,8 @@ export interface Translations {
       uiScaleDesc: (percent: number) => string
       sessionDensityTitle: string
       sessionDensityDesc: string
+      sidebarNavigationTitle: string
+      sidebarNavigationDesc: string
       sessionDensityCompact: string
       sessionDensityComfortable: string
       sessionDensityDetailed: string

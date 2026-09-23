@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -39,7 +40,7 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    kbc.init_db()
     return home
 
 
@@ -91,7 +92,7 @@ def _complete_done(conn, tid, claimed):
 def test_model_b_precreated_review_child_rejects_via_fallback(
     kanban_home: Path,
 ) -> None:
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         # The artifact under review (implementation card) is done.
         artifact = kb.create_task(conn, title="build the widget", assignee="worker")
         _complete_done(conn, artifact, kb.claim_task(conn, artifact))
@@ -145,7 +146,7 @@ def test_model_b_precreated_review_child_rejects_via_fallback(
 
 
 def test_model_a_same_card_review_unchanged(kanban_home: Path) -> None:
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="same card", assignee="worker")
         impl = kb.claim_task(conn, tid)
         assert impl is not None
@@ -175,7 +176,7 @@ def test_model_a_same_card_review_unchanged(kanban_home: Path) -> None:
 
 
 def test_model_b_zero_candidates_still_false(kanban_home: Path) -> None:
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         # A review card whose parent set has no done NON-REVIEWER parent.
         review_id = kb.create_task(conn, title="orphan review", assignee="reviewer")
         claimed = kb.claim_task(conn, review_id)
@@ -195,7 +196,7 @@ def test_model_b_zero_candidates_still_false(kanban_home: Path) -> None:
 
 
 def test_model_b_tie_candidates_still_false(kanban_home: Path) -> None:
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         p1 = kb.create_task(conn, title="impl one", assignee="worker-one")
         p1c = kb.claim_task(conn, p1)
         assert p1c is not None

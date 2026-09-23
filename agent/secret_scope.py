@@ -29,9 +29,18 @@ _MULTIPLEX_ACTIVE: bool = False
 
 
 def set_multiplex_active(active: bool) -> None:
-    """Mark whether the process is a profile multiplexer (get_secret fails closed)."""
+    """Mark whether the process is a profile multiplexer (get_secret fails closed).
+
+    When activating multiplex mode, pins the process home to the current ``HERMES_HOME`` value so
+    subsequent per-turn mirrors of other profiles into that env var cannot re-label the launch home
+    (first pin wins; an embedding host that calls :func:`hermes_constants.pin_process_hermes_home`
+    explicitly before this will keep its own pin).
+    """
     global _MULTIPLEX_ACTIVE
     _MULTIPLEX_ACTIVE = bool(active)
+    if active:
+        import hermes_constants as _hc
+        _hc.pin_process_hermes_home(_hc.get_process_hermes_home())
 
 
 def is_multiplex_active() -> bool:
@@ -42,7 +51,9 @@ def serves_routed_profile() -> bool:
     """True when the current task runs for a profile other than the process's own: always under
     multiplexing, else when a HERMES_HOME override names another home (dashboard/desktop backend,
     per-profile cron ticker). The MCP registry scope and the check_fn cache key both follow this
-    predicate so a served profile's view never aliases the launch profile's (#111151)."""
+    predicate so a served profile's view never aliases the launch profile's (#111151). A host that
+    mirrors the turn's profile into ``HERMES_HOME`` pins its own home with
+    ``hermes_constants.pin_process_hermes_home`` so the mirror cannot flip this predicate."""
     if is_multiplex_active():
         return True
     from hermes_constants import get_hermes_home_override, get_process_hermes_home, hermes_home_key

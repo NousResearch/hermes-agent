@@ -155,14 +155,50 @@ def reset_hermes_home_key_cache() -> None:
     _HOME_KEY_CACHE.clear()
 
 
+# Host-pinned identity of the profile this process serves as its own (None: follow HERMES_HOME).
+# Set explicitly by an embedding host via pin_process_hermes_home(), or auto-set to the
+# launch-time value by set_multiplex_active(True) (first pin wins).
+_PINNED_PROCESS_HERMES_HOME: str | None = None
+
+
+def pin_process_hermes_home(path: "str | Path | None") -> None:
+    """Pin the home this process serves as its own for all process-level home decisions.
+
+    An embedding host that mirrors the active turn's profile into ``os.environ["HERMES_HOME"]``
+    for legacy readers must call this once at startup with the launch profile's home; after that
+    per-turn mutations to ``HERMES_HOME`` do not affect any of the four launch-home decisions
+    (``serves_routed_profile``, ``_is_routed_home``, ``_is_process_home``,
+    ``env_loader._process_hermes_home``). First call wins; subsequent calls with the same path are
+    idempotent. ``None`` clears the pin. Hosts that never mutate ``HERMES_HOME`` need not call this.
+    """
+    global _PINNED_PROCESS_HERMES_HOME
+    if path is None:
+        _PINNED_PROCESS_HERMES_HOME = None
+        return
+    if _PINNED_PROCESS_HERMES_HOME is None:
+        _PINNED_PROCESS_HERMES_HOME = str(path)
+
+
 def get_process_hermes_home() -> Path:
     """Hermes home of the running process, ignoring task overrides.
+
+    Returns the pinned home when one has been set (see :func:`pin_process_hermes_home`); otherwise
+    reads ``HERMES_HOME`` live so standalone invocations (no multiplex, no explicit pin) keep
+    following the env var as before.
 
     For process-level assets (theme YAML, dashboard plugin manifests) that must stay visible while a
     request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
     """
+    pinned = _PINNED_PROCESS_HERMES_HOME
+    if pinned:
+        return _expand_hermes_home(pinned)
     val = os.environ.get("HERMES_HOME", "").strip()
     return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
+
+
+def get_routing_process_hermes_home() -> Path:
+    """Alias for :func:`get_process_hermes_home`; kept for callers that imported it explicitly."""
+    return get_process_hermes_home()
 
 
 # Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,

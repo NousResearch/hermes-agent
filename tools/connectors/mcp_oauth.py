@@ -236,9 +236,14 @@ def _start_loopback_receiver(flow) -> "http.server.HTTPServer":
             return
 
     httpd = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
-    threading.Thread(
-        target=httpd.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True,
-        name=f"mcp-oauth-cb-{flow.server_name}").start()
+    try:
+        threading.Thread(
+            target=httpd.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True,
+            name=f"mcp-oauth-cb-{flow.server_name}").start()
+    except Exception:
+        # A bound receiver whose serve loop never started is useless: release the socket.
+        httpd.server_close()
+        raise
     return httpd
 
 
@@ -316,20 +321,40 @@ def start(
     flow = DashboardOAuthFlow(
         flow_id=secrets.token_urlsafe(24), server_name=server_name, profile=None,
         hermes_home=hermes_home, redirect_uri="", reconnect_live=False)
+    # Bind the receiver before taking over _ACTIVE: a validation or bind failure must leave the
+    # still-running older attempt untouched so its rollback can restore the pre-attempt snapshot.
+    httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
     with _COMMIT_GUARD:
         older = _ACTIVE.get((hermes_home, server_name))
         _ACTIVE[(hermes_home, server_name)] = flow
+        if older is not None and not older.worker_done:
+            flow.inherited_backup = getattr(older, "backup", None)
+    try:
+        mcp_oauth_sessions.register_flow(flow, httpd=httpd)
+        threading.Thread(
+            target=run_worker, args=(hermes_home, server_name, cfg, False),
+            kwargs={"flow": flow, "on_done": lambda: mcp_oauth_sessions.finish_flow(flow.flow_id),
+                    "reuse_saved": True,
+                    **({"env": env, "on_commit": on_commit} if env or on_commit else {})},
+            daemon=True, name=f"mcp-oauth-{server_name}").start()
+    except Exception:
+        # The replacement never became viable: hand ownership back (or drop it) so the older
+        # attempt's undo() does not see a dead flow as the owner and skip its restore.
+        with _COMMIT_GUARD:
+            if _ACTIVE.get((hermes_home, server_name)) is flow:
+                if older is None:
+                    _ACTIVE.pop((hermes_home, server_name), None)
+                else:
+                    _ACTIVE[(hermes_home, server_name)] = older
+        flow.mark_error("MCP OAuth setup failed")
+        if httpd is not None:
+            with suppress(Exception):
+                httpd.shutdown()
+            with suppress(Exception):
+                httpd.server_close()
+        raise
     if older is not None and not older.worker_done:
-        flow.inherited_backup = getattr(older, "backup", None)
         cancel_attempt(older)
-    httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
-    mcp_oauth_sessions.register_flow(flow, httpd=httpd)
-    threading.Thread(
-        target=run_worker, args=(hermes_home, server_name, cfg, False),
-        kwargs={"flow": flow, "on_done": lambda: mcp_oauth_sessions.finish_flow(flow.flow_id),
-                "reuse_saved": True,
-                **({"env": env, "on_commit": on_commit} if env or on_commit else {})},
-        daemon=True, name=f"mcp-oauth-{server_name}").start()
     deadline = time.time() + url_timeout
     while time.time() < deadline:
         snapshot = flow.snapshot()

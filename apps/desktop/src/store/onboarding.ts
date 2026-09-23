@@ -826,9 +826,22 @@ async function openSignInUrl(url: string) {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
+function onboardingOwnerCurrent(ctx: OnboardingContext, generation: number) {
+  return generation === flowGeneration && ctx.isCurrent?.() !== false
+}
+
+function cancelStaleOAuthSession(sessionId: string, ctx: OnboardingContext) {
+  void cancelOAuthSession(sessionId, ctx.scope ?? ctx.profile).catch(() => undefined)
+}
+
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
   ctx = { ...ctx }
   const generation = flowGeneration
+
+  if (!onboardingOwnerCurrent(ctx, generation)) {
+    return
+  }
+
   flowScope = ctx.scope ?? ctx.profile
   clearPoll()
 
@@ -843,8 +856,8 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   try {
     const start = await startOAuthLogin(provider.id, ctx.scope ?? ctx.profile)
 
-    if (generation !== flowGeneration) {
-      void cancelOAuthSession(start.session_id, ctx.scope ?? ctx.profile).catch(() => undefined)
+    if (!onboardingOwnerCurrent(ctx, generation)) {
+      cancelStaleOAuthSession(start.session_id, ctx)
 
       return
     }
@@ -852,8 +865,8 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
     await openSignInUrl(browserUrl)
 
-    if (generation !== flowGeneration) {
-      void cancelOAuthSession(start.session_id, ctx.scope ?? ctx.profile).catch(() => undefined)
+    if (!onboardingOwnerCurrent(ctx, generation)) {
+      cancelStaleOAuthSession(start.session_id, ctx)
 
       return
     }
@@ -865,17 +878,19 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     }
 
     setFlow({ status: 'polling', provider, start, copied: false })
-    schedulePollExpiry(start, () =>
-      setFlow({
-        status: 'error',
-        provider,
-        start,
-        message: translateNow('onboarding.signInExpired')
-      })
-    )
+    schedulePollExpiry(start, () => {
+      if (onboardingOwnerCurrent(ctx, generation)) {
+        setFlow({
+          status: 'error',
+          provider,
+          start,
+          message: translateNow('onboarding.signInExpired')
+        })
+      }
+    })
     pollTimer = window.setInterval(() => void pollSession(provider, start, ctx, generation), POLL_MS)
   } catch (error) {
-    if (generation !== flowGeneration) {
+    if (!onboardingOwnerCurrent(ctx, generation)) {
       return
     }
 
@@ -892,7 +907,10 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
       ctx.scope ?? ctx.profile
     )
 
-    if (generation !== flowGeneration) {
+    if (!onboardingOwnerCurrent(ctx, generation)) {
+      clearPoll()
+      cancelStaleOAuthSession(start.session_id, ctx)
+
       return
     }
 
@@ -911,7 +929,7 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
       setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error_message || status) })
     }
   } catch (error) {
-    if (generation !== flowGeneration) {
+    if (!onboardingOwnerCurrent(ctx, generation)) {
       return
     }
 
@@ -931,6 +949,11 @@ export function setOnboardingCode(code: string) {
 export async function submitOnboardingCode(ctx: OnboardingContext) {
   ctx = { ...ctx }
   const generation = flowGeneration
+
+  if (!onboardingOwnerCurrent(ctx, generation)) {
+    return
+  }
+
   flowScope = ctx.scope ?? ctx.profile
   const { flow } = $desktopOnboarding.get()
 
@@ -944,7 +967,9 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
   try {
     const resp = await submitOAuthCode(provider.id, start.session_id, code.trim(), ctx.scope ?? ctx.profile)
 
-    if (generation !== flowGeneration) {
+    if (!onboardingOwnerCurrent(ctx, generation)) {
+      cancelStaleOAuthSession(start.session_id, ctx)
+
       return
     }
 
@@ -961,7 +986,7 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
       setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, resp.message) })
     }
   } catch (error) {
-    if (generation !== flowGeneration) {
+    if (!onboardingOwnerCurrent(ctx, generation)) {
       return
     }
 

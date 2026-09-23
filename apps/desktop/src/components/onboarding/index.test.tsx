@@ -241,6 +241,50 @@ describe('DesktopOnboardingOverlay owner routing', () => {
     expect($desktopOnboarding.get()).toMatchObject({ flow: { status: 'idle' }, manual: false })
   })
 
+  it('clears the exit timer on unmount without completing or mutating onboarding state', async () => {
+    vi.useFakeTimers()
+    $connection.set({ connectionId: 'owner-a', mode: 'remote', baseUrl: 'https://owner-a.invalid' } as never)
+    const scope = $settingsOwner.get()
+    const onCompleted = vi.fn()
+
+    expect(scope).toBeTruthy()
+    $desktopOnboarding.set({
+      ...$desktopOnboarding.get(),
+      configured: true,
+      flow: {
+        status: 'confirming_model',
+        currentModel: 'fixture/model',
+        label: 'Fixture',
+        providerSlug: 'fixture',
+        saving: false
+      },
+      manual: true,
+      targetProfile: 'default',
+      targetScope: scope ?? undefined
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const view = render(
+      <QueryClientProvider client={client}>
+        <DesktopOnboardingOverlay
+          enabled={false}
+          onCompleted={onCompleted}
+          profile="default"
+          requestGateway={ctx.requestGateway}
+        />
+      </QueryClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '[Begin]' }))
+    view.unmount()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_200)
+    })
+
+    expect(onCompleted).not.toHaveBeenCalled()
+    expect($desktopOnboarding.get()).toMatchObject({ flow: { status: 'confirming_model' }, manual: true })
+  })
+
   it.each(['openai-codex', 'custom:lab', 'retired-provider'])(
     'keeps the named Settings profile through the real %s onboarding handoff',
     async slug => {

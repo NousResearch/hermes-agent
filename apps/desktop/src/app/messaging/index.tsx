@@ -167,7 +167,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     // runGatewayRestart never rejects: it toasts the failure and settles the
     // statusbar indicator; the banner stays if the restart did not complete.
-    const ok = await runGatewayRestart(owner)
+    const ok = await runGatewayRestart(owner, () => scopeRef.current === owner)
 
     if (ok && scopeRef.current === owner) {
       setRestartOwner(null)
@@ -480,7 +480,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           kind: 'error',
           title: m.restartFailedManual,
           message: m.restartFailedManualDetail,
-          action: { label: m.restartAgain, onClick: () => void runGatewayRestart(owner) },
+          action: {
+            label: m.restartAgain,
+            onClick: () => void runGatewayRestart(owner, () => scopeRef.current === owner)
+          },
           secondaryAction: {
             label: m.openLogs,
             onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined)

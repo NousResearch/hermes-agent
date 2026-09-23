@@ -35,12 +35,24 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
 }
 
 function installApiMock(
-  api: (request: { connectionId?: string; path: string; profile?: string }) => Promise<unknown>
+  api: (request: { connectionId?: string; method?: string; path: string; profile?: string }) => Promise<unknown>
 ) {
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { api }
   })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: Error) => void
+
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes
+    reject = no
+  })
+
+  return { promise, reject, resolve }
 }
 
 function emptyOpenRouterGateway(): OnboardingContext['requestGateway'] {
@@ -921,6 +933,107 @@ describe('saveOnboardingLocalEndpoint', () => {
   })
 })
 
+describe('OAuth owner lifetime', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('cancels a delayed start response without opening a browser after its owner changes', async () => {
+    const start = deferred<unknown>()
+    const requests: Array<{ connectionId?: string; method?: string; path: string; profile?: string }> = []
+    let current = true
+    installApiMock(async request => {
+      requests.push(request)
+
+      if (request.path.endsWith('/start')) {
+        return start.promise
+      }
+
+      if (request.method === 'DELETE') {
+        return { ok: true }
+      }
+
+      throw new Error(`unexpected api path: ${request.path}`)
+    })
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const { startProviderOAuth } = await import('./onboarding')
+    const scope = { connectionId: 'owner-a', profile: 'research' }
+
+    const pending = startProviderOAuth(makeOAuthProvider('fixture'), {
+      isCurrent: () => current,
+      requestGateway: async () => undefined as never,
+      scope
+    })
+
+    await vi.waitFor(() => expect(requests.some(request => request.path.endsWith('/start'))).toBe(true))
+    current = false
+    start.resolve({ auth_url: 'https://example.invalid/oauth', expires_in: 600, flow: 'pkce', session_id: 'stale' })
+    await pending
+
+    expect(open).not.toHaveBeenCalled()
+    await vi.waitFor(() =>
+      expect(requests).toContainEqual(
+        expect.objectContaining({ connectionId: 'owner-a', method: 'DELETE', path: '/api/providers/oauth/sessions/stale' })
+      )
+    )
+  })
+
+  it('does not publish a delayed code-submit result after its owner changes', async () => {
+    const submit = deferred<unknown>()
+    const requests: Array<{ method?: string; path: string }> = []
+    let current = true
+    installApiMock(async request => {
+      requests.push(request)
+
+      if (request.path.endsWith('/submit')) {
+        return submit.promise
+      }
+
+      if (request.method === 'DELETE') {
+        return { ok: true }
+      }
+
+      throw new Error(`unexpected api path: ${request.path}`)
+    })
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          code: 'fixture-code',
+          provider: makeOAuthProvider('fixture'),
+          start: { auth_url: 'https://example.invalid/oauth', expires_in: 600, flow: 'pkce', session_id: 'stale-submit' },
+          status: 'awaiting_user'
+        }
+      })
+    )
+
+    const pending = submitOnboardingCode({
+      isCurrent: () => current,
+      requestGateway: async () => undefined as never,
+      scope: { connectionId: 'owner-a', profile: 'research' }
+    })
+
+    await vi.waitFor(() => expect(requests.some(request => request.path.endsWith('/submit'))).toBe(true))
+    current = false
+    submit.resolve({ ok: true, status: 'approved' })
+    await pending
+
+    expect($desktopOnboarding.get().flow.status).toBe('submitting')
+    await vi.waitFor(() =>
+      expect(requests).toContainEqual(
+        expect.objectContaining({ method: 'DELETE', path: '/api/providers/oauth/sessions/stale-submit' })
+      )
+    )
+  })
+})
+
 describe('device-code poll expiry', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -950,6 +1063,52 @@ describe('device-code poll expiry', () => {
       verification_url: 'https://portal.example/device'
     }
   }
+
+  it('cancels a delayed poll result without completing after its owner changes', async () => {
+    vi.useFakeTimers()
+    const poll = deferred<unknown>()
+    const requests: Array<{ method?: string; path: string }> = []
+    let current = true
+    installApiMock(async request => {
+      requests.push(request)
+
+      if (request.path.endsWith('/start')) {
+        return deviceStart(600)
+      }
+
+      if (request.path.includes('/poll/')) {
+        return poll.promise
+      }
+
+      if (request.method === 'DELETE') {
+        return { ok: true }
+      }
+
+      throw new Error(`unexpected api path: ${request.path}`)
+    })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    const { startProviderOAuth } = await import('./onboarding')
+    await startProviderOAuth(deviceCodeProvider(), {
+      isCurrent: () => current,
+      requestGateway: emptyOpenRouterGateway(),
+      scope: { connectionId: 'owner-a', profile: 'research' }
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(requests.some(request => request.path.includes('/poll/'))).toBe(true)
+    current = false
+    poll.resolve({ status: 'approved' })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect($desktopOnboarding.get().flow.status).toBe('polling')
+    expect(requests).toContainEqual(
+      expect.objectContaining({ method: 'DELETE', path: '/api/providers/oauth/sessions/device-sess-1' })
+    )
+  })
 
   it('lapses to an error with actionable guidance when the window expires still pending', async () => {
     vi.useFakeTimers()

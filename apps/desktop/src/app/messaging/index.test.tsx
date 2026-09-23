@@ -92,7 +92,7 @@ vi.mock('@/store/system-actions', async () => {
 
   return {
     $gatewayRestarting: atom(false),
-    runGatewayRestart: (owner?: unknown) => runGatewayRestart(owner),
+    runGatewayRestart: (owner?: unknown, isCurrent?: () => boolean) => runGatewayRestart(owner, isCurrent),
     watchGatewayRestartOutcome: (owner?: unknown) => watchGatewayRestartOutcome(owner)
   }
 })
@@ -383,8 +383,8 @@ describe('MessagingView restart banner', () => {
     })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
     expect(runGatewayRestart).toHaveBeenCalledTimes(2)
-    expect(runGatewayRestart).toHaveBeenNthCalledWith(1, scope())
-    expect(runGatewayRestart).toHaveBeenNthCalledWith(2, scope())
+    expect(runGatewayRestart).toHaveBeenNthCalledWith(1, scope(), expect.any(Function))
+    expect(runGatewayRestart).toHaveBeenNthCalledWith(2, scope(), expect.any(Function))
   })
 })
 

@@ -431,13 +431,17 @@ async def _pty_fail(ws: WebSocket, exc: BaseException) -> None:
 
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
-    from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
+    from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE, _DEC_PRIVATE_MODE_RE, _TERM_AUTOREPLY_RE
     gate = await _ws_gate(ws, "pty")
     if gate is None:
         return
     peer, mode, cred = gate
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
+    # Record when the socket was accepted so the teardown below can log how
+    # long it lived and how it ended — that is what makes reconnect churn visible.
+    import time as _time
+    _t0 = _time.monotonic()
 
     # Native Windows can't import the POSIX PTY bridge: say so and close cleanly.
     if not _PTY_BRIDGE_AVAILABLE:
@@ -561,7 +565,18 @@ async def pty_ws(ws: WebSocket) -> None:
             # Resize escape is consumed locally, never written to the PTY.
             match = _RESIZE_RE.match(raw)
             if match and match.end() == len(raw):
-                session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+                cols, rows = int(match.group(1)), int(match.group(2))
+                # Only signal a real size change. Every page (re)connect
+                # re-sends RESIZE with the same geometry; forwarding that as a
+                # fresh TIOCSWINSZ makes the TUI re-layout on a no-op, which is
+                # what leaks a stray "l" into the input line once per refresh.
+                if (cols, rows) != getattr(session, "_pty_last_size", None):
+                    setattr(session, "_pty_last_size", (cols, rows))
+                    session.bridge.resize(cols=cols, rows=rows)
+                continue
+            raw = _DEC_PRIVATE_MODE_RE.sub(b"", raw)
+            raw = _TERM_AUTOREPLY_RE.sub(b"", raw)
+            if not raw:
                 continue
             if not await session.write(ws, raw):
                 await _close_stalled_pty_input(ws, path="keepalive")
@@ -571,6 +586,15 @@ async def pty_ws(ws: WebSocket) -> None:
     finally:
         # Detach only — the PTY keeps running for a reattach; the registry
         # reaper closes it after the TTL (or immediately on process exit).
+        # Keep a teardown breadcrumb (peer, lifetime, states) so a future
+        # reconnect storm can be attributed without guessing.
+        try:
+            _log.info(
+                "pty closed peer=%s alive=%.1fs ws_state=%s app_state=%s",
+                peer, _time.monotonic() - _t0, ws.client_state, ws.application_state,
+            )
+        except Exception:
+            pass
         PTY_REGISTRY.detach(attach_token, ws)
 
 

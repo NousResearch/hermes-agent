@@ -39,6 +39,37 @@ except ImportError:  # pragma: no cover - pywinpty / ptyprocess missing
     class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
         """Stub when the platform PTY bridge cannot be imported."""
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
+
+# DEC private-mode sets/resets — `\x1b[?2004l` (bracketed paste off),
+# `\x1b[?25l` (hide cursor) and friends. A browser terminal emits these around
+# focus / paste handoffs: they answer the *application's* mode requests, no
+# keystroke produces one, and forwarding one leaves its trailing byte ("l" /
+# "h") sitting in the TUI input line. Strip them before the PTY sees them.
+_DEC_PRIVATE_MODE_RE = re.compile(rb"\x1b\[\?\d+[hl]")
+
+# Browser-terminal *auto replies*: focus in/out (`\x1b[I` / `\x1b[O`), OSC
+# colour reports (`\x1b]10;rgb:…` / `\x1b]11;rgb:…` terminated by BEL or ST)
+# and device-attribute answers (`\x1b[?1;2c`, `\x1b[>0;…c`). xterm.js emits the
+# whole set on every page (re)connect, so a tab that gets refreshed N times
+# pushes N copies into the PTY — and the TUI parser leaks a stray glyph (a
+# lone "l") into the prompt each time. No keypress can produce these bytes, so
+# dropping them cannot eat user input; they are terminal self-reports the Ink
+# app never asked for.
+_TERM_AUTOREPLY_RE = re.compile(
+    rb"(?:"
+    rb"\x1b\[[IO]"                                   # focus in / focus out
+    rb"|\x1b\][0-9]+;[^\x07\x1b]*(?:\x07|\x1b\\)"    # OSC report (BEL or ST)
+    rb"|\x1b\[[?>]?[0-9;]*c"                         # DA1 / DA2 / tertiary DA
+    rb"|\x0c"                                        # Ctrl+L (FF) — see below
+    rb")"
+)
+
+# The browser terminal sends Ctrl+L (0x0C) on every connect / reconnect.
+# Ink's key parser treats it as a printable character and inserts it into
+# the input line, where 0x0C renders as a literal "l" — one stray glyph per
+# refresh. No keystroke produces it, and Ctrl+L only means "redraw" in a PTY,
+# so dropping the byte cannot eat user input.
+
 _PTY_READ_CHUNK_TIMEOUT = 0.2
 
 # Back-off between idle PTY reads so a quiet terminal does not spin the event
@@ -115,7 +146,16 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
             # Resize escape is consumed locally, never written to the PTY.
             match = _RESIZE_RE.match(raw)
             if match and match.end() == len(raw):
-                bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+                cols, rows = int(match.group(1)), int(match.group(2))
+                # Only signal a real size change — see chat_ws.py for why the
+                # redundant per-reconnect RESIZE leaks an "l" into the prompt.
+                if (cols, rows) != getattr(bridge, "_pty_last_size", None):
+                    setattr(bridge, "_pty_last_size", (cols, rows))
+                    bridge.resize(cols=cols, rows=rows)
+                continue
+            raw = _DEC_PRIVATE_MODE_RE.sub(b"", raw)
+            raw = _TERM_AUTOREPLY_RE.sub(b"", raw)
+            if not raw:
                 continue
             if not await bridge.write(raw):
                 await _close_stalled_pty_input(ws, path="legacy")

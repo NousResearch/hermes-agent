@@ -145,12 +145,18 @@ async def test_drain_send_failure_detaches_current_socket_but_not_a_replacement(
 
 
 @pytest.mark.asyncio
-async def test_reattach_can_force_complete_tui_redraw_after_replay():
-    """A fresh terminal cannot reconstruct a differential ANSI tail alone."""
+async def test_reattach_forces_a_repaint_without_injecting_a_keystroke():
+    """A fresh terminal cannot reconstruct a differential ANSI tail alone.
+
+    The repaint must not be requested by writing a control byte into the PTY: Ctrl+L (0x0C)
+    is parsed as printable input and shows up as a literal "l" in the composer after every
+    refresh. Re-asserting the geometry is enough, and the write stays a liveness probe.
+    """
     from hermes_cli.pty_session import PtySession
 
     bridge = FakeBridge([b"partial differential frame", b""])
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    bridge._pty_last_size = (100, 30)          # what the client sent on connect
     await s.start()
     await asyncio.sleep(0.05)
 
@@ -159,7 +165,23 @@ async def test_reattach_can_force_complete_tui_redraw_after_replay():
 
     replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
     assert replay == b"partial differential frame"
-    assert bytes(bridge.written) == b"\x0c"
+    assert bridge.resized == (100, 30)          # SIGWINCH drives the full repaint
+    assert bytes(bridge.written) == b""         # no stray "l" in the composer
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_reattach_without_a_known_geometry_still_probes_liveness():
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b""])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+
+    ws = FakeWS()
+    assert await s.attach(ws, force_redraw=True) is True
+    assert bridge.resized is None
+    assert bytes(bridge.written) == b""
     await s.close()
 
 
@@ -254,7 +276,9 @@ async def test_superseded_failed_write_does_not_kill_replacement_session():
     assert await new_attach is True
     assert s.alive is True
     assert await s.write(new_ws, b"new input") is True
-    assert bytes(bridge.written) == b"\x0cnew input"
+    # The replacement socket's reattach probes liveness without writing a redraw byte
+    # (Ctrl+L would be parsed as printable input and show up as a literal "l").
+    assert bytes(bridge.written) == b"new input"
     await s.close()
 
 

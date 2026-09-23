@@ -33,6 +33,31 @@ def _await_bind(proc, port, log, *, timeout=45):
                 f"{log.read_text(encoding='utf-8', errors='replace')}")
 
 
+def _owned_pids(proc):
+    parent = psutil.Process(proc.pid)
+    return {parent.pid, *(child.pid for child in parent.children(recursive=True))}
+
+
+def _await_publication(processes, dashboard_port, logs, *, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        record = hr.read_record(hr.ROLE_SERVE)
+        entries = process_identity.ledger_entries()
+        if (record is not None and record.port == dashboard_port
+                and record.pid in _owned_pids(processes["dashboard"])
+                and any(e["purpose"] == "dashboard" and e["pid"] == record.pid
+                        for e in entries)
+                and any(e["purpose"] == "serve" and e["pid"] in _owned_pids(processes["serve"])
+                        for e in entries)):
+            return
+        if any(proc.poll() is not None for proc in processes.values()):
+            break
+        time.sleep(0.1)
+    pytest.fail("dashboard record or independent process ledger missing: " +
+                "\n".join(f"{name}: {path.read_text(encoding='utf-8', errors='replace')}"
+                          for name, path in logs.items()))
+
+
 @pytest.mark.parametrize("first", ["serve", "dashboard"])
 def test_isolated_serve_and_dashboard_share_host_without_conflict(tmp_path, monkeypatch, first):
     home = tmp_path / "home"
@@ -56,24 +81,18 @@ def test_isolated_serve_and_dashboard_share_host_without_conflict(tmp_path, monk
     }
     ports = {"serve": serve_port, "dashboard": dashboard_port}
     processes = {}
+    logs = {}
     try:
         for purpose in (first, "dashboard" if first == "serve" else "serve"):
             log = tmp_path / f"{purpose}.log"
+            logs[purpose] = log
             with log.open("w", encoding="utf-8") as output:
                 processes[purpose] = subprocess.Popen(
                     commands[purpose], env=env, stdout=output, stderr=subprocess.STDOUT,
                 )
             _await_bind(processes[purpose], ports[purpose], log)
 
-        record = hr.read_record(hr.ROLE_SERVE)
-        assert record is not None
-        assert record.port == dashboard_port
-        assert record.pid == processes["dashboard"].pid
-        entries = process_identity.ledger_entries()
-        assert {(e["pid"], e["purpose"]) for e in entries} >= {
-            (processes["serve"].pid, "serve"),
-            (processes["dashboard"].pid, "dashboard"),
-        }
+        _await_publication(processes, dashboard_port, logs)
     finally:
         for proc in processes.values():
             try:

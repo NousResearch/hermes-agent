@@ -291,18 +291,31 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
         async def _page_oopif_ids(sid: str) -> List[str]:
             # The parent Page.getFrameTree can omit OOPIFs altogether. DOM nodes
-            # still expose the frameId of each iframe owned by THIS page; never
-            # select an iframe merely because it is attached to the browser.
+            # still expose the frameId of each iframe owned by THIS page, including
+            # those nested in same-process frames. Never select an iframe merely
+            # because it is attached to the browser.
             root = (await self._cdp("DOM.getDocument", {"depth": 0}, session_id=sid,
                                     timeout=timeout))["result"]["root"]["nodeId"]
-            nodes = (await self._cdp("DOM.querySelectorAll", {"nodeId": root, "selector": "iframe, frame"},
-                                     session_id=sid, timeout=timeout))["result"]["nodeIds"]
             ids = []
-            for node in nodes:
-                desc = (await self._cdp("DOM.describeNode", {"nodeId": node}, session_id=sid,
-                                        timeout=timeout))["result"]["node"]
-                if desc.get("frameId"):
-                    ids.append(desc["frameId"])
+            documents = [(root, 0)]
+            visited = set()
+            while documents and len(visited) < 30:
+                document, depth = documents.pop(0)
+                if document in visited:
+                    continue
+                visited.add(document)
+                nodes = (await self._cdp("DOM.querySelectorAll", {"nodeId": document, "selector": "iframe, frame"},
+                                         session_id=sid, timeout=timeout))["result"]["nodeIds"]
+                for node in nodes:
+                    if len(ids) >= 30:
+                        break
+                    desc = (await self._cdp("DOM.describeNode", {"nodeId": node, "depth": 1, "pierce": True},
+                                            session_id=sid, timeout=timeout))["result"]["node"]
+                    if desc.get("frameId"):
+                        ids.append(desc["frameId"])
+                    child = desc.get("contentDocument") or {}
+                    if child.get("nodeId") and depth < 8:
+                        documents.append((child["nodeId"], depth + 1))
             return ids
 
         async def _focus() -> Dict[str, Any]:

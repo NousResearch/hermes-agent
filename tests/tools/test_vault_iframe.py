@@ -50,6 +50,46 @@ def test_focus_login_uses_owning_page_dom_for_oopif_even_without_frame_tree():
     assert ("Runtime.evaluate", "child-session") in calls
 
 
+def test_focus_login_finds_oopif_inside_same_origin_wrapper_not_foreign_tab():
+    supervisor = CDPSupervisor("test", "ws://localhost")
+    supervisor._loop = type("Loop", (), {"is_running": lambda self: True})()
+    supervisor._frames["nested"] = FrameInfo("nested", "https://identity.test/login", "https://identity.test",
+                                              "wrapper", True, "nested-session")
+    supervisor._frames["foreign"] = FrameInfo("foreign", "https://identity.test/login", "https://identity.test",
+                                               None, True, "foreign-session")
+    calls = []
+
+    async def cdp(method, params=None, *, session_id=None, timeout=10):
+        calls.append((method, session_id))
+        if method == "Target.getTargets":
+            return {"result": {"targetInfos": [
+                {"targetId": "foreign-tab", "type": "page", "url": "https://elsewhere.test/"},
+                {"targetId": "rp", "type": "page", "url": "https://site.test/login"}]}}
+        if method == "Target.attachToTarget":
+            return {"result": {"sessionId": "rp-session"}}
+        if method == "Runtime.evaluate":
+            return {"result": {"result": {"value": session_id in {"nested-session", "foreign-session"}}}}
+        if method == "DOM.getDocument":
+            return {"result": {"root": {"nodeId": 1}}}
+        if method == "DOM.querySelectorAll":
+            return {"result": {"nodeIds": {1: [2], 3: [4]}.get(params["nodeId"], [])}}
+        if method == "DOM.describeNode":
+            return {"result": {"node": {2: {"frameId": "wrapper", "contentDocument": {"nodeId": 3}},
+                                         4: {"frameId": "nested"}}[params["nodeId"]]}}
+        return {"result": {}}
+
+    supervisor._cdp = cdp
+    async def noop(*args, **kwargs):
+        pass
+    supervisor._enable_page_domains = noop
+    supervisor._install_dialog_bridge = noop
+    with patch("tools.browser_supervisor._schedule", side_effect=lambda coro, loop, **kw: asyncio.run(coro)):
+        result = supervisor.focus_page("https://site.test", accept="password", frame_accept="password")
+    assert result["ok"] and result["frame_id"] == "nested"
+    assert ("Runtime.evaluate", "foreign-session") not in calls
+    assert ("DOM.querySelectorAll", "rp-session") in calls
+
+
 def test_cross_origin_login_requires_explicit_pair_consent_and_keeps_password_blind(tmp_path):
     store = VaultStore(base_dir=tmp_path / "vault")
     meta = store.add_item("login", "site", {"identifier": "a@b.test", "password": "iframe-only-canary",

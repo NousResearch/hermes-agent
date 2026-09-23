@@ -336,7 +336,7 @@ def _cmd_export(db, args):
         """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
-            data = _redact(db.export_session(resolved)) if resolved else None
+            data = _redact(db.export_session(resolved, include_compacted=True)) if resolved else None
             if not data:
                 _not_found(args.session_id)
                 return None
@@ -345,7 +345,7 @@ def _cmd_export(db, args):
             candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
-            return [s for s in (_redact(db.export_session(row["id"])) for row in candidates) if s]
+            return [s for s in (_redact(db.export_session(row["id"], include_compacted=True)) for row in candidates) if s]
         if args.dry_run:
             return print("--dry-run requires at least one filter.")
         return [_redact(s) for s in db.export_all(source=None)]
@@ -472,7 +472,12 @@ def _export_markdown(db, args, filters, redact):
     output_dir = _export_dir(args.output)
 
     def _export_one(session_id: str, *, include_lineage: bool = False):
-        data = db.export_session_lineage(session_id) if include_lineage else db.export_session(session_id)
+        # Include the in-place-compacted archive rows: the file must hold every message the
+        # session shows before --delete-after-verified is allowed to erase the store (#119933).
+        data = (
+            db.export_session_lineage(session_id, include_compacted=True) if include_lineage
+            else db.export_session(session_id, include_compacted=True)
+        )
         if not data:
             return None, None
         data = redact(data)
@@ -540,6 +545,15 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         ok, reason = verify_export_file(exported_path, data)
         if not ok:
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
+            return
+    for (data, _exported_path), target_id in zip(exported_items, delete_target_ids):
+        fresh = (
+            db.export_session_lineage(target_id, include_compacted=True)
+            if (target_id == resolved_session_id and lineage_is_logical)
+            else db.export_session(target_id, include_compacted=True)
+        )
+        if not fresh or len(fresh.get("messages") or []) != len(data.get("messages") or []):
+            print(f"Session '{target_id}' changed since it was exported; nothing was deleted.")
             return
     if not db.delete_session(
         resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids

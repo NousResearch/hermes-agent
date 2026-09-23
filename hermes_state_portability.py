@@ -276,21 +276,24 @@ class SessionPortabilityMixin:
 
     # ── Export ─────────────────────────────────────────────────────────────
 
-    def _with_messages(self, session: Dict[str, Any]) -> Dict[str, Any]:
-        messages = self.get_messages(session["id"])
+    def _with_messages(self, session: Dict[str, Any], *, include_compacted: bool = False) -> Dict[str, Any]:
+        # In-place compaction keeps the summarised turns as archived rows the session still shows.
+        # Exports that drop them (the default here) silently lose history callers expect to keep.
+        messages = self.get_messages(session["id"], include_compacted=include_compacted)
         return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
 
-    def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def export_session(self, session_id: str, *, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
         session = self.get_session(session_id)
-        return self._with_messages(session) if session else None
+        return self._with_messages(session, include_compacted=include_compacted) if session else None
 
-    def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def export_session_lineage(self, session_id: str, *, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
         """Export a compression lineage as one logical session dict."""
         lineage_ids = self.get_compression_lineage(session_id)
         if not lineage_ids:
             return None
-        segments = [seg for seg in map(self.export_session, lineage_ids) if seg]
+        segments = [seg for seg in (self.export_session(sid, include_compacted=include_compacted)
+                                    for sid in lineage_ids) if seg]
         if not segments:
             return None
         messages = [msg for seg in segments for msg in (seg.get("messages") or [])]

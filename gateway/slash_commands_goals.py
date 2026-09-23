@@ -62,7 +62,12 @@ class GatewayGoalCommandsMixin:
         if result.clear_pending:
             self._clear_goal_continuations(event, result.clear_pending)
         if result.prompt:
-            self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff)
+            prompt = (
+                mgr.next_continuation_prompt() or result.prompt
+                if result.kickoff
+                else result.prompt
+            )
+            self._enqueue_goal_turn(event, prompt, label="command enqueue", kickoff=result.kickoff)
         return result.output
 
     def _clear_goal_continuations(self, event: MessageEvent, verb: str) -> None:
@@ -78,8 +83,8 @@ class GatewayGoalCommandsMixin:
     ) -> None:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
-        A kickoff keeps the triggering message id / channel prompt; a resume continuation carries
-        none. Best-effort: failures only logged.
+        A kickoff is a distinct internal lifecycle; neither kickoff nor resume reuses the
+        triggering message id/channel prompt. Best-effort: failures only logged.
         """
         try:
             adapter, quick_key = self._adapter_and_key_for(event)
@@ -88,8 +93,9 @@ class GatewayGoalCommandsMixin:
                     text=text,
                     message_type=MessageType.TEXT,
                     source=event.source,
-                    message_id=event.message_id if kickoff else None,
-                    channel_prompt=event.channel_prompt if kickoff else None,
+                    message_id=None,
+                    channel_prompt=None,
+                    internal=kickoff,
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:

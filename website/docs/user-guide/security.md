@@ -354,6 +354,8 @@ Useful flags: `--days N` (history window, default 90), `--min-count N`
 
 Before `write_file` or `patch` touches disk, Hermes checks the target path against a denylist and an optional sandbox. Blocked writes return an error to the agent immediately — **there is no approval prompt** and no way to override from the chat UI. The model may still claim the edit succeeded; when `display.file_mutation_verifier` is on (default), trust the [file-mutation verifier footer](./configuration.md#file-mutation-verifier) over the assistant's closing summary.
 
+Kanban workers receive a task-scoped `HERMES_WRITE_SAFE_ROOT` and `TERMINAL_CWD`. The file-tool root limits native `write_file` and `patch` mutations to that task workspace; terminal commands and child processes retain the worker's OS privileges and are outside this boundary.
+
 ### Protected paths (always blocked)
 
 These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:

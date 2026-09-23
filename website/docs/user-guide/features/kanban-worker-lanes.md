@@ -41,10 +41,18 @@ For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <ass
 | `HERMES_KANBAN_WORKSPACE` | absolute path to *this* task's workspace |
 | `HERMES_KANBAN_RUN_ID` | the current run's id (for the lifecycle gate) |
 | `HERMES_KANBAN_CLAIM_LOCK` | the claim lock string (`<host>:<pid>:<uuid>`) |
+| `HERMES_WRITE_SAFE_ROOT` | the normalized absolute task workspace used by native file tools |
+| `TERMINAL_CWD` | the same task workspace used as the worker process's current directory |
 | `HERMES_PROFILE` | the worker's own profile name (for `kanban_comment` author attribution) |
 | `HERMES_TENANT` | tenant namespace, if the task has one |
 
 For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spawn_fn` callable that gets `task`, `workspace`, and `board` and returns an optional pid for crash detection.
+
+The default Hermes lane scopes native `write_file` and `patch` operations to the task workspace through `HERMES_WRITE_SAFE_ROOT`. This is defense in depth, not an operating-system sandbox: terminal commands and subprocesses can still write as the worker's OS user, so integrations that need a hard boundary must provide their own sandbox.
+
+:::caution Multi-board installs
+Setting global `HERMES_KANBAN_DB`, `HERMES_KANBAN_WORKSPACES_ROOT`, or `HERMES_KANBAN_ATTACHMENTS_ROOT` in a shared shell or `.env` collapses board isolation — every worker on that host resolves the same database and workspace tree. Leave these unset for multi-board deployments; the dispatcher injects per-board values at spawn time.
+:::
 
 ### Descendant process scope
 

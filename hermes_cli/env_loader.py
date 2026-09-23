@@ -421,6 +421,12 @@ def load_hermes_dotenv(
         return []
 
     loaded: list[Path] = []
+    kanban_worker = (
+        "HERMES_KANBAN_TASK" in os.environ
+        or "HERMES_KANBAN_SAFE_ROOT_ACTIVE" in os.environ
+    )
+    inherited_safe_root = os.environ.get("HERMES_WRITE_SAFE_ROOT")
+    had_safe_root = "HERMES_WRITE_SAFE_ROOT" in os.environ
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
     load_pass = next(_DOTENV_PASSES)  # one pass: later layers below see the earlier layers' output
@@ -482,6 +488,13 @@ def load_hermes_dotenv(
     # cron standalone runs) call load_hermes_dotenv() repeatedly and used to flip the effective backend back
     # to the stale .env value mid-session (#29186, #67323).
     _reapply_terminal_config_bridge(home_path)
+
+    # Task-scoped roots must outrank profile and managed env files.
+    if kanban_worker:
+        if had_safe_root:
+            os.environ["HERMES_WRITE_SAFE_ROOT"] = inherited_safe_root or ""
+        else:
+            os.environ.pop("HERMES_WRITE_SAFE_ROOT", None)
 
     return loaded
 

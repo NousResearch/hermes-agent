@@ -2817,6 +2817,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    env["HERMES_KANBAN_SAFE_ROOT_ACTIVE"] = "1"
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"
@@ -2831,8 +2832,21 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # home) and build_context_files_prompt (#34619 — workers loaded the dispatching gateway's AGENTS.md
     # instead of the task's). Setting it to the workspace fixes both: the workspace is where the task's work
     # actually happens.
+    accepted_workspace = None
     if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
-        env["TERMINAL_CWD"] = workspace
+        try:
+            normalized_workspace = os.path.realpath(workspace)
+            if (
+                os.path.dirname(normalized_workspace) != normalized_workspace
+                and os.pathsep not in normalized_workspace
+            ):
+                accepted_workspace = normalized_workspace
+        except (OSError, ValueError):
+            pass
+    if accepted_workspace is not None:
+        # Scope native file-tool writes to this task root; terminal and OS access remain outside it.
+        env["TERMINAL_CWD"] = accepted_workspace
+        env["HERMES_WRITE_SAFE_ROOT"] = accepted_workspace
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:

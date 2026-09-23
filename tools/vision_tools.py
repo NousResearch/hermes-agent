@@ -269,6 +269,13 @@ _EMBED_MAX_DIMENSION = 1568
 # Target when auto-resizing after a provider size rejection (retry once).
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 
+# Hard per-side pixel cap for one-shot analysis. Anthropic rejects any image whose long edge
+# exceeds 8000 px with a 400 (`image.source.base64.data: At least one of the image dimensions
+# exceed max allowed size`) — independent of the byte budget, so a small-but-tall screenshot
+# (a full-page capture, 2154x10508 at 2 MB) sails past _MAX_BASE64_BYTES and still 400s.
+# Measured: 8000 px passes, 8500 px and above fails.
+_ANALYZE_MAX_DIMENSION = 8000
+
 _SIZE_ERROR_HINTS = (
     "too large", "payload", "413", "content_too_large",
     "request_too_large", "exceeds", "size limit",
@@ -799,8 +806,13 @@ async def vision_analyze_tool(
             _image_to_base64_data_url, prepared.path, mime_type=prepared.mime)
         logger.info("Image converted to base64 (%.1f KB)", len(image_data_url) / 1024)
         _scale_info: dict = {}
-        if len(image_data_url) > _MAX_BASE64_BYTES:
-            image_data_url = await _resize_prepared(prepared, _scale_info)
+        _over_analyze_dims = await _run_encode_on_cpu_executor(
+            _image_exceeds_dimension, prepared.path, _ANALYZE_MAX_DIMENSION)
+        if len(image_data_url) > _MAX_BASE64_BYTES or _over_analyze_dims:
+            # Providers cap the long edge independently of bytes, so a tall-but-light
+            # screenshot needs the dimension ladder even when it fits the byte budget.
+            image_data_url = await _resize_prepared(
+                prepared, _scale_info, max_dimension=_ANALYZE_MAX_DIMENSION)
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 raise ValueError(_too_large_message(image_data_url))
         debug_call_data["image_size_bytes"] = prepared.size_bytes
@@ -811,12 +823,18 @@ async def vision_analyze_tool(
         try:
             response = await async_call_llm(**call_kwargs)
         except Exception as _api_err:
-            if not (_is_image_size_error(_api_err) and len(image_data_url) > _RESIZE_TARGET_BYTES):
+            # A dimension rejection can arrive well under the byte target, so allow the retry
+            # on either signal rather than bytes alone.
+            _retryable = _is_image_size_error(_api_err) and (
+                len(image_data_url) > _RESIZE_TARGET_BYTES or _over_analyze_dims
+            )
+            if not _retryable:
                 raise
             logger.info(
                 "API rejected image (%.1f MB, likely too large); auto-resizing to ~%.0f MB and retrying...",
                 len(image_data_url) / (1024 * 1024), _RESIZE_TARGET_BYTES / (1024 * 1024))
-            image_data_url = await _resize_prepared(prepared, _scale_info)
+            image_data_url = await _resize_prepared(
+                prepared, _scale_info, max_dimension=_ANALYZE_MAX_DIMENSION)
             messages[0]["content"][1]["image_url"]["url"] = image_data_url
             response = await async_call_llm(**call_kwargs)
         analysis = await _call_vision_llm(

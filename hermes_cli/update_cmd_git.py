@@ -13,7 +13,137 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli.update_target import (
+    PinnedApplyResult, PinnedTargetRefused, TargetAdmissionError, TargetRequest,
+    apply_pinned_target, build_update_intent, current_branch, validate_update_intent,
+    validate_target_request, verify_pinned_post_swap,
+)
+
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
+
+
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+    """``hermes update --check``: fetch and report without installing. ``branch_explicit`` is
+    True iff --branch was passed (Docker installs print a notice instead of dropping the flag)."""
+    from hermes_cli.update_cmd import (
+        _m, _base_git_cmd, _git_run, _is_shallow_checkout, _tip_shas,
+        _print_fetch_failure, _print_update_check_result,
+    )
+    # Same marker-first admission gate as the apply path, so --check never reports git
+    # state for an install whose real update mechanism is an image pull.
+    from hermes_cli.update_contract import evaluate_update_admission, record_refusal_receipt
+
+    refusal = evaluate_update_admission(_m().PROJECT_ROOT)
+    if refusal is not None:
+        print(refusal.message)
+        record_refusal_receipt(refusal)
+        sys.exit(2)
+
+    git_dir = _m().PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        print("✗ Not a git repository — cannot check for updates.")
+        sys.exit(1)
+
+    git_cmd = _base_git_cmd()
+
+    # Interrupted fetches leave .git/*.lock behind ("File exists" forever); self-heal first.
+    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+    for lock_path in clear_stale_git_locks(_m().PROJECT_ROOT):
+        print(f"  (removed stale git lock: {lock_path})")
+    # Aborted fetches also strand tmp_pack_* debris (has reached 6 GB and corrupted the
+    # pack dir); same age+process safety contract as the locks.
+    swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
+    if swept:
+        print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+
+    # Fetch only <branch> (a bare fetch pulls thousands of auto-generated branches). Prefer
+    # upstream only for main (a fork's other branches have no upstream counterpart). Installer
+    # checkouts are shallow: a plain fetch would unshallow them and rev-list would report a
+    # bogus huge "behind" count, so fetch --depth 1 and report presence-only.
+    is_shallow = _is_shallow_checkout(git_cmd)
+    depth_args = ["--depth", "1"] if is_shallow else []
+
+    # Probe locally for an 'upstream' remote before a network fetch non-forks always fail.
+    fetch_result = None
+    if branch == "main" and _git_run(git_cmd, ["remote", "get-url", "upstream"]).returncode == 0:
+        print("→ Fetching from upstream...")
+        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["upstream", branch], network=True)
+    if fetch_result is not None and fetch_result.returncode == 0:
+        compare_branch = f"upstream/{branch}"
+    else:
+        print("→ Fetching from origin...")
+        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["origin", branch], network=True)
+        compare_branch = f"origin/{branch}"
+
+    if fetch_result.returncode != 0:
+        _print_fetch_failure(fetch_result.stderr)
+        sys.exit(1)
+
+    if is_shallow:
+        # The depth-1 fetch above leaves the previous tip behind as a ``.git/shallow`` graft
+        # (git never removes old grafts); prune the stale ones so the file stops growing and
+        # merge-base / the orphan-divergence heuristic keep working (#105951).
+        from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
+        repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
+        if repaired:
+            print(f"  (restored {repaired} broken shallow boundary(ies))")
+        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+        if pruned:
+            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
+
+    # rev-list on a bogus ref exits 128 and (check=True) would traceback; verify first.
+    verify_result = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", compare_branch])
+    if verify_result.returncode != 0:
+        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
+        sys.exit(1)
+
+    if is_shallow:
+        # No history across the shallow boundary: compare tip SHAs, then recover the
+        # exact count via the GitHub compare API (complete graph).
+        head_sha, target_sha = _tip_shas(git_cmd, compare_branch)
+        if head_sha and target_sha and head_sha == target_sha:
+            print("✓ Already up to date.")
+            return
+        from hermes_cli.banner import _github_compare_behind
+        # counted == 0 means local-ahead, not behind; None means the API could not count.
+        _print_update_check_result(_github_compare_behind(head_sha, target_sha), compare_branch)
+        return
+
+    rev_result = _git_run(git_cmd, ["rev-list", f"HEAD..{compare_branch}", "--count"], check=True)
+    _print_update_check_result(int(rev_result.stdout.strip()), compare_branch)
+
+
+def _base_git_cmd() -> list[str]:
+    """``git`` argv; Windows adds ``-c windows.appendAtomically=false`` (git can fail "unable to
+    write loose object file: Invalid argument" on non-atomic appends)."""
+    if sys.platform == "win32":
+        return ["git", "-c", "windows.appendAtomically=false"]
+    return ["git"]
+
+
+def _is_shallow_checkout(git_cmd) -> bool:
+    from hermes_cli.update_cmd import _git_run
+    return _git_run(git_cmd, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
+
+
+def _tip_shas(git_cmd, target_ref: str) -> tuple[str, str]:
+    """``(HEAD sha, <target_ref> sha)`` as printed by rev-parse ("" when unresolvable)."""
+    from hermes_cli.update_cmd import _git_run
+    return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in ("HEAD", target_ref))
+
+
+def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
+    """Report ``--check``'s verdict: up to date, N commits behind, or behind by an unknown count."""
+    if behind == 0:
+        print("✓ Already up to date.")
+        return
+    if behind is not None:
+        print(f"☤ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
+    else:
+        print(f"☤ Update available (behind {compare_branch}).")
+    from hermes_cli.config import recommended_update_command
+    print(f"  Run '{recommended_update_command()}' to install.")
+
 
 _ORPHAN_RESCUE_REFS_TO_KEEP = 10
 _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30

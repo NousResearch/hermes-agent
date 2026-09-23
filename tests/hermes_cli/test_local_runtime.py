@@ -576,6 +576,53 @@ def test_idle_sweep_unloads_idle_models(tmp_path, monkeypatch, stub_server):
     assert sorted(handler.unloaded) == ["model-a", "model-b"]
 
 
+def test_idle_sweep_honors_configurable_keep_alive(tmp_path, monkeypatch, stub_server):
+    """-1 retains idle models, 0 unloads on the first confirmed idle sweep."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "m", "status": {"value": "loaded"}}]}
+    handler.slots = []
+    handler.requests_processing = 0
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    never = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port, keep_alive=-1)
+    assert never.sweep_idle(now=1000.0) == []
+    assert never.sweep_idle(now=1000.0 + never.IDLE_UNLOAD_S + 1) == []
+    assert handler.unloaded == []
+
+    immediate = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port, keep_alive=0)
+    assert immediate.sweep_idle(now=2000.0) == ["m"]
+    assert handler.unloaded == ["m"]
+
+
+def test_keep_alive_defaults_and_invalid_values_fail_safe(tmp_path, monkeypatch):
+    """The default remains 15 minutes; malformed config cannot cause surprise unloads."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    default = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=9999)
+    invalid = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=9999, keep_alive="soon")
+
+    assert DEFAULT_CONFIG["local_runtime"]["keep_alive"] == 15 * 60
+    assert default.keep_alive == 15 * 60
+    assert invalid.keep_alive == 15 * 60
+
+
+def test_keep_alive_config_override_loads(tmp_path, monkeypatch):
+    """A whole-second user override survives the normal config merge."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "local_runtime:\n  keep_alive: 45\n", encoding="utf-8")
+
+    from hermes_cli.config import load_config
+
+    assert load_config()["local_runtime"]["keep_alive"] == 45
+
+
 def test_idle_sweep_busy_model_resets_clock(tmp_path, monkeypatch, stub_server):
     """A model seen busy (C5: busy slot) restarts its idle clock — an
     active conversation never trips the sweep."""

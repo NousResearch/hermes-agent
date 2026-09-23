@@ -2619,6 +2619,8 @@ DEFAULT_CONFIG = {
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",
         "models_max": 4,  # Router process: how many models may be resident at once.
+        # -1 keeps loaded models resident; 0 unloads at the next idle sweep; positive = seconds.
+        "keep_alive": 15 * 60,
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],

@@ -1626,6 +1626,9 @@ export const zh = defineLocale({
       moaSetDefault: '设为默认',
       moaNewPresetPlaceholder: '新预设',
       moaAddPreset: '添加预设',
+      customModel: '自定义模型…',
+      customModelPlaceholder: '模型 ID',
+      chooseFromList: '从列表中选择',
       moaDefault: '默认：',
       moaReferenceToggle: (enabled, index) => `${enabled ? '禁用' : '启用'}参考 ${index}`,
       moaReferenceTitle: index => `参考 ${index}`,
@@ -3844,14 +3847,19 @@ export const zh = defineLocale({
     free: '免费',
     freeTier: '免费层',
     priceTitle: '每百万 token 的输入/输出价格',
-    wasPrice: '原价'
+    wasPrice: '原价',
+    customModel: '自定义模型',
+    addCustomModelAction: '添加自定义模型…',
+    customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5'
   },
 
   modelVisibility: {
     title: '模型',
     search: '搜索模型',
     noAuthenticatedProviders: '没有已认证的提供方。',
-    addProvider: '添加提供方…'
+    addProvider: '添加提供方…',
+    addCustomModel: '添加自定义模型',
+    removeCustomModel: '移除自定义模型'
   },
 
   shell: {

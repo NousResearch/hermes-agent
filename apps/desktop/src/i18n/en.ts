@@ -1674,6 +1674,9 @@ export const en: Translations = {
       moaSetDefault: 'Set default',
       moaNewPresetPlaceholder: 'new preset',
       moaAddPreset: 'Add preset',
+      customModel: 'Custom model…',
+      customModelPlaceholder: 'Model id',
+      chooseFromList: 'Choose from list',
       moaDefault: 'Default:',
       moaReferenceToggle: (enabled, index) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
       moaReferenceTitle: index => `Reference ${index}`,
@@ -4044,14 +4047,19 @@ export const en: Translations = {
     free: 'Free',
     freeTier: 'Free tier',
     priceTitle: 'Input / Output price per million tokens',
-    wasPrice: 'was'
+    wasPrice: 'was',
+    customModel: 'Custom model',
+    addCustomModelAction: 'Add custom model…',
+    customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5'
   },
 
   modelVisibility: {
     title: 'Models',
     search: 'Search models',
     noAuthenticatedProviders: 'No authenticated providers.',
-    addProvider: 'Add provider…'
+    addProvider: 'Add provider…',
+    addCustomModel: 'Add custom model',
+    removeCustomModel: 'Remove custom model'
   },
 
   shell: {

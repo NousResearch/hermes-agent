@@ -1086,6 +1086,9 @@ export const ar = defineLocale({
       moaSetDefault: 'تعيين الافتراضي',
       moaNewPresetPlaceholder: 'إعداد جديد',
       moaAddPreset: 'إضافة إعداد',
+      customModel: 'نموذج مخصص…',
+      customModelPlaceholder: 'معرّف النموذج',
+      chooseFromList: 'اختر من القائمة',
       moaDefault: 'الافتراضي:',
       moaReferenceToggle: (enabled, index) => `${enabled ? 'تعطيل' : 'تفعيل'} المرجع ${index}`,
       moaReferenceTitle: index => `المرجع ${index}`,
@@ -2706,13 +2709,18 @@ export const ar = defineLocale({
     proNeedsSubscription: 'يتطلب اشتراكا',
     free: 'مجاني',
     freeTier: 'طبقة مجانية',
-    priceTitle: 'السعر'
+    priceTitle: 'السعر',
+    customModel: 'نموذج مخصص',
+    addCustomModelAction: 'إضافة نموذج مخصص…',
+    customModelPlaceholder: 'اكتب معرّف النموذج، مثل openai/gpt-5'
   },
   modelVisibility: {
     title: 'النماذج',
     search: 'بحث في النماذج',
     noAuthenticatedProviders: 'لا يوجد مزوّدون مصادق عليهم.',
-    addProvider: 'إضافة مزوّد…'
+    addProvider: 'إضافة مزوّد…',
+    addCustomModel: 'إضافة نموذج مخصص',
+    removeCustomModel: 'إزالة النموذج المخصص'
   },
   shell: {
     windowControls: 'تحكم النافذة',

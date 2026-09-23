@@ -972,6 +972,7 @@ def register(ctx) -> None:
         required_env=["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET"], install_hint="pip install aiohttp",
         setup_fn=interactive_setup, env_enablement_fn=_env_enablement, cron_deliver_env_var="LINE_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, allowed_users_env="LINE_ALLOWED_USERS",
+        group_allowed_chats_env="LINE_ALLOWED_GROUPS",
         allow_all_env="LINE_ALLOW_ALL_USERS",
         max_message_length=LINE_SAFE_BUBBLE_CHARS,  # per-bubble cap is 5000; smart-chunker uses 4500
         emoji="💚", pii_safe=False, allow_update_command=True,

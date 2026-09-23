@@ -39,6 +39,7 @@ WS_RETRY_DELAY_INITIAL = 2.0
 WS_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0
 HEALTH_CHECK_STALE_THRESHOLD = 300.0
+HEALTH_CHECK_PING_TIMEOUT = 10.0
 _CORR_PREFIX = "hermes-"  # marks requests we sent so our own echoes can be ignored
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus"}
@@ -204,15 +205,25 @@ class SimplexAdapter(BasePlatformAdapter):
                 backoff = min(backoff * 2, WS_RETRY_DELAY_MAX)
 
     async def _health_monitor(self) -> None:
-        """Log (never reconnect on) WebSocket idleness: simplex-chat legitimately stays
-        application-silent for long periods and the client already sends protocol pings."""
+        """Probe a transport only after application silence, then let the listener reconnect it."""
         while self._running:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             if not self._running:
                 break
             elapsed = time.time() - self._last_ws_activity
-            if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
-                logger.debug("SimpleX: WS application-idle for %.0fs", elapsed)
+            ws = self._ws
+            if elapsed <= HEALTH_CHECK_STALE_THRESHOLD or ws is None:
+                continue
+            try:
+                pong_waiter = await ws.ping()
+                await asyncio.wait_for(pong_waiter, timeout=HEALTH_CHECK_PING_TIMEOUT)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.warning("SimpleX: WS transport stale after %.0fs; reconnecting: %s", elapsed, e)
+                if self._running and self._ws is ws:
+                    with contextlib.suppress(Exception):
+                        await ws.close(code=1011, reason="transport ping timed out")
 
     async def _handle_event(self, event: dict) -> None:
         # Usually {"corrId": ..., "resp": {"type": ...}}, but some daemons put the

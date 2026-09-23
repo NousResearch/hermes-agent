@@ -128,6 +128,7 @@ DINGTALK_ALLOWED_USERS=user-id-1
 # DINGTALK_REQUIRE_MENTION=true
 # DINGTALK_FREE_RESPONSE_CHATS=cidABC==,cidDEF==
 # DINGTALK_MENTION_PATTERNS=^小马
+# DINGTALK_NATIVE_MENTION_ONLY_CHATS=cidABC==
 # DINGTALK_HOME_CHANNEL=cidXXXX==
 # DINGTALK_ALLOW_ALL_USERS=true
 ```
@@ -145,6 +146,11 @@ gateway:
         # DMs ignore this — the bot always replies in 1:1 chats.
         require_mention: true
 
+        # Group chat IDs where ONLY a native @mention counts — mention-pattern
+        # wake words (DINGTALK_MENTION_PATTERNS) are ignored there.
+        # Comma-separated IDs or a list. Env: DINGTALK_NATIVE_MENTION_ONLY_CHATS.
+        native_mention_only_chats: ""
+
         # Per-platform allowlist. When set, only these DingTalk user IDs can interact with the bot
         # (same semantics as DINGTALK_ALLOWED_USERS, but scoped here instead of in .env).
         allowed_users:
@@ -154,6 +160,7 @@ gateway:
 
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared group chats
 - `require_mention: true` prevents the bot from responding to every group message — it only answers when someone @-mentions it
+- `native_mention_only_chats` disables mention-pattern wake words in the listed group chats: there, only a real DingTalk @mention counts
 - `allowed_users` under `dingtalk.extra` is an alternative to `DINGTALK_ALLOWED_USERS`; set one or the other (if both are set, only users present in both lists are authorized)
 
 ### Start the Gateway

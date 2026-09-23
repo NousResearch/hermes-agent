@@ -19,8 +19,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
-    DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GATEWAY_MESSAGING_GUIDANCE,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
+    NON_MESSAGING_PLATFORM_KEYS,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
@@ -441,18 +443,38 @@ def _cron_delivery_hint(agent: Any) -> str:
     return f"Delivery destination ({deliver_key}): {hint}" if hint else ""
 
 
-def platform_hint(agent: Any) -> str:
-    """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
-    override + desktop TUI clarifier; cron agents also carry their delivery channel's hint."""
+def _platform_parts(agent: Any) -> List[str]:
+    """Platform hint, followed — for messaging-gateway sessions only — by the
+    shared operational-constraints note (cannot self-restart the gateway; reply
+    gating is enforced by gateway config, not by agent behavior/memory).
+
+    The guidance is gated on the *default* hint, not the config-overridable
+    effective one, plus the platform key, so a ``platform_hints`` override
+    cannot strip it. platform_key is fixed at agent construction and the
+    default hint is deterministic for the life of the process (PLATFORM_HINTS
+    is a module constant, registry hints resolve idempotently, and the telegram
+    config read never changes hint truthiness), so the prompt stays byte-stable
+    and cli/tui/cron/desktop prompt bytes are unchanged.
+    """
     platform_key = (agent.platform or "").lower().strip()
-    _effective_hint = _resolve_platform_hint(agent, platform_key, _default_platform_hint(platform_key))
+    _default_hint = _default_platform_hint(platform_key)
+    _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
     if platform_key == "tui" and _effective_hint:
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
     if platform_key == "cron":
         _delivery = _cron_delivery_hint(agent)
         if _delivery:
             _effective_hint = f"{_effective_hint}\n\n{_delivery}".strip()
-    return _effective_hint
+    parts = [_effective_hint]
+    if _default_hint and platform_key not in NON_MESSAGING_PLATFORM_KEYS:
+        parts.append(GATEWAY_MESSAGING_GUIDANCE)
+    return parts
+
+
+def platform_hint(agent: Any) -> str:
+    """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
+    override + desktop TUI clarifier; cron agents also carry their delivery channel's hint."""
+    return _platform_parts(agent)[0]
 
 
 def _telegram_rich_messages_enabled() -> bool:
@@ -633,7 +655,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), platform_hint(agent)]
+    parts += [_active_profile_line(agent), *_platform_parts(agent)]
     return parts
 
 

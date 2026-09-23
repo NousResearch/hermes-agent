@@ -40,7 +40,7 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env, send_error
 )
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, parse_chat_id_set
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
@@ -4504,7 +4504,8 @@ class SlackAdapter(BasePlatformAdapter):
         routing_text = _slack_mention_detection_text(event) or original_text or ""
         is_mentioned = bool(
             (bot_uid and f"<@{bot_uid}>" in routing_text)
-            or self._slack_message_matches_mention_patterns(routing_text))
+            or (channel_id not in self._slack_native_mention_only_channels()
+                and self._slack_message_matches_mention_patterns(routing_text)))
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
         # Internal triggers (reactions) skip the mention requirement but NOT
@@ -6263,6 +6264,23 @@ class SlackAdapter(BasePlatformAdapter):
     _slack_ignored_channels = _extra_or_env_channel_set_getter(
         "ignored_channels", "SLACK_IGNORED_CHANNELS", coerce_scalar=True)
 
+    def _slack_native_mention_only_channels(self) -> set:
+        """Return channel IDs where ONLY a native ``<@BOTUID>`` mention counts.
+
+        In these channels ``mention_patterns`` wake words do NOT satisfy
+        mention gating — the bot is addressed exclusively via a literal Slack
+        @mention. Complements ``require_mention_channels`` (#13855): that key
+        forces a mention to be REQUIRED, this key narrows what QUALIFIES as
+        one (pair them when ``require_mention`` is globally off). Wake checks
+        in :meth:`_should_wake_on_unmentioned_message` (mentioned-thread
+        memory, bot-authored roots, active sessions) still apply. Empty set
+        means wake words count everywhere.
+        """
+        raw = self.config.extra.get("native_mention_only_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_NATIVE_MENTION_ONLY_CHANNELS", "")
+        return parse_chat_id_set(raw)
+
     def _slack_mention_patterns(self) -> List["re.Pattern"]:
         """Compile (cached) wake-word regexes from ``slack.mention_patterns`` (list/str) or
         ``SLACK_MENTION_PATTERNS`` (JSON list or newline/comma-separated)."""
@@ -6714,6 +6732,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),
     ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "csv"),
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),
+    ("native_mention_only_channels", "SLACK_NATIVE_MENTION_ONLY_CHANNELS", "csv"),
     ("reaction_triggers", "SLACK_REACTION_TRIGGERS", "csv"), ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", "str"),
     ("allowed_channels", "SLACK_ALLOWED_CHANNELS", "csv"), ("ignored_channels", "SLACK_IGNORED_CHANNELS", "csv"),
 )
@@ -6745,7 +6764,8 @@ def register(ctx) -> None:
         # YAML→env bridge: config.yaml slack: keys → SLACK_* env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of config.yaml slack: keys (require_mention,
         # strict_mention, ignore_other_user_mentions, thread_require_mention, allow_bots,
-        # free_response_channels, reactions, disable_dms, allowed_channels, ignored_channels) into SLACK_*
+        # free_response_channels, require_mention_channels, native_mention_only_channels,
+        # reactions, disable_dms, allowed_channels, ignored_channels) into SLACK_*
         # env vars that the adapter reads via os.getenv(). Replaces the hardcoded block in
         # gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,

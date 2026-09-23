@@ -385,10 +385,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
                              if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
+        # Gateway sessions that run `hermes kanban create` (rather than the kanban_create
+        # tool) get the same completion/block notifications; no-op for plain CLI/cron.
+        subscribed = kbn.auto_subscribe_session(conn, task_id)
     if getattr(args, "json", False):
-        _print_json(_task_to_dict(task))
+        _print_json({**_task_to_dict(task), "subscribed": subscribed})
     else:
-        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'}, "
+              f"subscribed={'true' if subscribed else 'false'})")
         # Warn only for ready+assigned tasks that would sit without a dispatcher (triage/todo idle
         # by design, unassigned can't dispatch); skipped under --json so stdout stays parseable.
         if task.status == "ready" and task.assignee:

@@ -42,6 +42,17 @@
   src: url('/fonts-terminal/JetBrainsMono-Italic.woff2') format('woff2');
 }
 
+/* Vazirmatn — a Persian-first variable typeface, bundled locally so the
+   interface never depends on a third-party font request. OFL-1.1; see
+   assets/licenses/Vazirmatn-OFL.txt. */
+@font-face {
+  font-family: 'Vazirmatn';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/Vazirmatn-Variable.woff2') format('woff2');
+}
+
 /* ------------------------------------------------------------------ */
 /* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) palette applied
    statically as the default dashboard theme. */
@@ -68,6 +79,7 @@
   --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
     Consolas, monospace;
   --theme-font-display: var(--theme-font-sans);
+  --locale-font-sans: var(--theme-font-sans);
   --theme-base-size: 15px;
   --theme-line-height: 1.55;
   --theme-letter-spacing: 0;
@@ -91,7 +103,7 @@
 /* Theme tokens cascade into the document root so every descendant inherits
    the font stack, base size, and letter spacing without explicit calls. */
 html {
-  font-family: var(--theme-font-sans);
+  font-family: var(--locale-font-sans);
   font-size: var(--theme-base-size);
   line-height: var(--theme-line-height);
   letter-spacing: var(--theme-letter-spacing);
@@ -101,7 +113,7 @@ html {
 }
 
 body {
-  font-family: var(--theme-font-sans);
+  font-family: var(--locale-font-sans);
   min-height: 0;
   height: 100%;
   margin: 0;
@@ -118,7 +130,7 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
    all proportionally in Tailwind v4. */
 @theme inline {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
-  --font-sans: var(--theme-font-sans);
+  --font-sans: var(--locale-font-sans);
   --font-mono: var(--theme-font-mono);
 }
 
@@ -253,3 +265,7 @@ html[dir="rtl"] {
   direction: rtl;
 }
 
+html[lang="fa"] {
+  --locale-font-sans: 'Vazirmatn', var(--theme-font-sans);
+  font-feature-settings: 'ss01' 1;
+}

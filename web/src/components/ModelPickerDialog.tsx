@@ -349,7 +349,7 @@ export function ModelPickerDialog(props: Props) {
           ghost
           size="icon"
           onClick={onClose}
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
           aria-label="Close"
         >
           <X />
@@ -370,13 +370,13 @@ export function ModelPickerDialog(props: Props) {
 
         <div className="px-5 pt-3 pb-2 border-b border-border">
           <div className="relative">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Search className="absolute start-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               autoFocus
               placeholder="Filter providers and models…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              className="pl-7 h-8 text-sm"
+              className="ps-7 h-8 text-sm"
             />
           </div>
         </div>
@@ -440,7 +440,7 @@ export function ModelPickerDialog(props: Props) {
             </div>
           )}
 
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-2 ms-auto">
             <Button
               outlined
               onClick={refreshOptions}
@@ -544,8 +544,8 @@ function ProviderColumn({
             key={p.slug}
             active={active}
             onClick={() => onSelect(p.slug)}
-            className={`items-start text-xs border-l-2 ${
-              active ? "border-l-primary" : "border-l-transparent"
+            className={`items-start text-xs border-s-2 ${
+              active ? "border-s-primary" : "border-s-transparent"
             }`}
           >
             <div className="flex-1 min-w-0">

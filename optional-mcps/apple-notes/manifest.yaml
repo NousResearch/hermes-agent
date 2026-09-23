@@ -14,10 +14,10 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-notes-mcp@2.8.13`:
+# On macOS, `npx -y apple-notes-mcp@2.8.49`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.8.13 — i.e. the bytes npx resolved are the bytes pinned here;
-#   - returns a full `tools/list` of 51 tools, every one carrying a description;
+#     2.8.49 — i.e. the bytes npx resolved are the bytes pinned here;
+#   - returns a full `tools/list` of 66 tools, every one carrying a description;
 #   - resolves all 20 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
@@ -58,14 +58,46 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # the semicolon, matching browser text-content behaviour. No tool surface
 # change: still 51 tools, all 20 default_enabled entries resolve.
 #
-# The 15 tools added since 2.8.3 (native objects and tags, attachments,
-# folder rename, Shortcut-bridge setup) all stay out of default_enabled.
+# 2.8.49 (2026-09-23) is re-pinned on the same footing — defects in
+# default_enabled tools fixed since 2.8.13:
+#   - `search-notes` with `searchContent: true` timed out at 30 s on any broad
+#     term, even at the default limit of 50, because AppleScript's `whose body
+#     contains` scans every body before `limit` applies (#100). With Full Disk
+#     Access it now reads the Notes database read-only and answers in well
+#     under a second; without FDA it falls back to AppleScript as before, and
+#     the response's `source` field says which path answered.
+#   - `list-notes` returned notes in Recently Deleted as if they were live
+#     (#207). ⚠️ Behaviour change in a default_enabled tool: they are now
+#     EXCLUDED by default and counted in `excludedRecentlyDeleted`;
+#     `includeRecentlyDeleted: true` lists them marked `inRecentlyDeleted`.
+#     `export-notes-json` shares the listing and excludes them too.
+#   - `list-shared-notes` returned a note twice when Notes.app enumerated it
+#     twice (#183); `list-attachments` listed a new attachment twice (#197).
+#     Both now keep one row per id, first-seen order.
+#   - Any note containing subscript text failed to read (#188): the protobuf
+#     varint reader stopped at 35 bits, so `get-checklist-state` and every
+#     other body reader failed on Notes' sign-extended -1 baseline offset.
+#   - `doctor`'s Full Disk Access remediation said granting Claude.app was
+#     enough (#220). macOS checks the grant on the Node binary itself, so
+#     `doctor` now prints that binary's path and says to add it.
+# Also carried, outside the default surface: the legacy HTML entity decoder
+# fix from 2.8.13 extended to post-write readback verification (#211; a
+# correct write of `&` inside a link was reported as a mismatch), and
+# fail-closed guards so `delete-note` / `batch-delete-notes` never
+# permanently delete a note already in Recently Deleted (#198, #214).
+# 15 tools added since 2.8.13, none removed: 66 tools, all 20
+# default_enabled entries resolve.
+#
+# The 30 tools added since 2.8.3 (native objects and tags, attachments,
+# folder rename and delete-by-id, Shortcut-bridge setup, the read-only
+# database query / block / table / transcript readers, HTML and Markdown
+# export) all stay out of default_enabled.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp@2.8.13"
+    - "apple-notes-mcp@2.8.49"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:

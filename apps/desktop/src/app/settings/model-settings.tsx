@@ -966,7 +966,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
             <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
               <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
               {reasoningSupported && (
-                <div className="flex items-center gap-2 text-xs">
+                <div className="flex shrink-0 items-center gap-2 text-xs">
                   <span className="whitespace-nowrap">{m.reasoning}</span>
                   <Select
                     onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
@@ -986,7 +986,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                 </div>
               )}
               {fastSupported && (
-                <label className="flex items-center gap-2 text-xs">
+                <label className="flex shrink-0 items-center gap-2 text-xs">
                   <span className="whitespace-nowrap">{t.shell.modelOptions.fast}</span>
                   <Switch
                     checked={fastOn}

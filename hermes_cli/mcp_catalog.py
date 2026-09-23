@@ -111,6 +111,7 @@ class CatalogEntry:
     source: str
     transport: TransportSpec
     auth: AuthSpec
+    connector_slug: Optional[str] = None
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
     post_install: str = ""
@@ -259,6 +260,14 @@ def _parse_suggest(path: Path, suggest_raw: Any) -> Optional[SuggestSpec]:
         applications=applications, examples=examples, requires_app=requires_app)
 
 
+def _parse_connector_slug(path: Path, value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value):
+        raise CatalogError(f"{path}: connector_slug must be a hosted connector slug")
+    return value
+
+
 def _parse_install(path: Path, install_raw: Any) -> Optional[InstallSpec]:
     if install_raw is None:
         return None
@@ -301,10 +310,11 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     auth = _parse_auth(path, data.get("auth"), name, transport.type == "http")
     tools = _parse_tools(path, data.get("tools"))
     suggest = _parse_suggest(path, data.get("suggest"))
+    connector_slug = _parse_connector_slug(path, data.get("connector_slug"))
     install = _parse_install(path, data.get("install"))
     return CatalogEntry(
         name=name, description=description, source=str(data.get("source") or "").strip(),
-        transport=transport, auth=auth, tools=tools, install=install,
+        transport=transport, auth=auth, connector_slug=connector_slug, tools=tools, install=install,
         post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path,
     )
 
@@ -363,11 +373,10 @@ def is_installed(name: str) -> bool:
 
 
 def server_enabled(cfg: dict) -> bool:
-    """Interpret a server block's ``enabled`` flag (bools, and yes/true/1 strings)."""
-    enabled = cfg.get("enabled", True)
-    if isinstance(enabled, str):
-        return enabled.lower() in {"true", "1", "yes"}
-    return bool(enabled)
+    """Whether the server block is on: the same reader the MCP client uses."""
+    from tools.mcp_tool_common import mcp_server_enabled
+
+    return mcp_server_enabled(cfg)
 
 
 def is_enabled(name: str) -> bool:

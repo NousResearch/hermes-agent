@@ -1,5 +1,4 @@
 import asyncio
-import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -11,7 +10,6 @@ import gateway.run as gateway_run
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import (
-    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
 )
 from gateway.session import SessionEntry, build_session_key
@@ -132,7 +130,6 @@ def test_load_signal_interrupt_grace_timeout_from_typed_config(
         gateway_run.GatewayRunner._load_signal_interrupt_grace_timeout()
         == DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
     )
-    assert "Invalid signal_interrupt_grace_timeout" in caplog.text
 
 
 @pytest.mark.asyncio

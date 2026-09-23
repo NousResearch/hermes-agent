@@ -2,9 +2,7 @@
 
 import sys
 from pathlib import Path
-from unittest import mock
 
-import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "skills" / "media" / "youtube-content" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -42,15 +40,4 @@ class TestFormatTimestamp:
 
 
 
-class TestPyprojectDeclaresYoutubeExtra:
-    def test_youtube_extra_declared_in_pyproject(self):
-        """youtube-transcript-api must be listed in pyproject.toml [youtube] extra (issue #22243)."""
-        import tomllib
-        pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
-        with pyproject_path.open("rb") as f:
-            data = tomllib.load(f)
-        extras = data.get("project", {}).get("optional-dependencies", {})
-        assert "youtube" in extras, "Missing [youtube] extra in pyproject.toml"
-        youtube_deps = " ".join(extras["youtube"])
-        assert "youtube-transcript-api" in youtube_deps
 

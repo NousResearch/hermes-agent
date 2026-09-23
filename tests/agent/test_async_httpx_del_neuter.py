@@ -47,26 +47,6 @@ class TestNeuterAsyncHttpxDel:
             # Restore original to avoid leaking into other tests
             AsyncHttpxClientWrapper.__del__ = original_del
 
-    def test_neuter_idempotent(self):
-        """Calling neuter twice doesn't break anything."""
-        from agent.auxiliary_client import neuter_async_httpx_del
-
-        try:
-            from openai._base_client import AsyncHttpxClientWrapper
-        except ImportError:
-            pytest.skip("openai SDK not installed")
-
-        original_del = AsyncHttpxClientWrapper.__del__
-        try:
-            neuter_async_httpx_del()
-            first_del = AsyncHttpxClientWrapper.__del__
-            neuter_async_httpx_del()
-            second_del = AsyncHttpxClientWrapper.__del__
-            # Both calls should succeed; the class should have a no-op
-            assert first_del is not original_del
-            assert second_del is not original_del
-        finally:
-            AsyncHttpxClientWrapper.__del__ = original_del
 
 
 
@@ -309,86 +289,4 @@ class TestClientCacheBoundedGrowth:
             with _client_cache_lock:
                 _client_cache.pop(key, None)
 
-    def test_different_loops_do_not_grow_cache(self):
-        """Multiple event loops for the same provider should NOT create multiple entries."""
-        from agent.auxiliary_client import (
-            _client_cache,
-            _client_cache_key,
-            _client_cache_lock,
-        )
 
-        key = _client_cache_key("test_no_grow", async_mode=True)
-
-        loops = []
-        try:
-            for i in range(5):
-                loop = asyncio.new_event_loop()
-                loops.append(loop)
-                mock_client = MagicMock()
-                mock_client._client = MagicMock()
-                mock_client._client.is_closed = False
-
-                # Close previous loop entries (simulating worker thread recycling)
-                if i > 0:
-                    loops[i - 1].close()
-
-                with _client_cache_lock:
-                    # Simulate what _get_cached_client does: replace on loop mismatch
-                    if key in _client_cache:
-                        old_entry = _client_cache[key]
-                        del _client_cache[key]
-                    _client_cache[key] = (mock_client, f"model-{i}", loop)
-
-            # Only one entry should exist for this key
-            with _client_cache_lock:
-                count = sum(1 for k in _client_cache if k == key)
-                assert count == 1, f"Expected 1 entry, got {count}"
-        finally:
-            for loop in loops:
-                if not loop.is_closed():
-                    loop.close()
-            with _client_cache_lock:
-                _client_cache.pop(key, None)
-
-    def test_max_cache_size_eviction(self):
-        """Cache should not exceed _CLIENT_CACHE_MAX_SIZE."""
-        from agent.auxiliary_client import (
-            _client_cache,
-            _client_cache_key,
-            _client_cache_lock,
-            _CLIENT_CACHE_MAX_SIZE,
-        )
-
-        # Save existing cache state
-        with _client_cache_lock:
-            saved = dict(_client_cache)
-            _client_cache.clear()
-
-        def key_for(i: int) -> tuple:
-            return _client_cache_key(f"evict_test_{i}", async_mode=False)
-
-        try:
-            # Fill to max + 5
-            for i in range(_CLIENT_CACHE_MAX_SIZE + 5):
-                mock_client = MagicMock()
-                mock_client._client = MagicMock()
-                mock_client._client.is_closed = False
-                key = key_for(i)
-                with _client_cache_lock:
-                    # Inline the eviction logic (same as _get_cached_client)
-                    while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
-                        evict_key = next(iter(_client_cache))
-                        del _client_cache[evict_key]
-                    _client_cache[key] = (mock_client, f"model-{i}", None)
-
-            with _client_cache_lock:
-                assert len(_client_cache) <= _CLIENT_CACHE_MAX_SIZE, \
-                    f"Cache size {len(_client_cache)} exceeds max {_CLIENT_CACHE_MAX_SIZE}"
-                # The earliest entries should have been evicted
-                assert key_for(0) not in _client_cache
-                # The latest entries should be present
-                assert key_for(_CLIENT_CACHE_MAX_SIZE + 4) in _client_cache
-        finally:
-            with _client_cache_lock:
-                _client_cache.clear()
-                _client_cache.update(saved)

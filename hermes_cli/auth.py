@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, atomic_yaml_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
+from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -256,7 +256,7 @@ BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
 # a plugin never observes a partially initialized auth module (CONTRACT: during discovery a plugin may
 # rely only on ``ProviderConfig`` and ``PROVIDER_REGISTRY`` from here — nothing defined below).
 from hermes_cli.config import (  # noqa: E402
-    get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
+    atomic_config_write, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
@@ -2237,7 +2237,7 @@ def _update_config_for_provider(
     elif clear_default:
         model_cfg.pop("default", None)
     config["model"] = model_cfg
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    atomic_config_write(config_path, config)
     return config_path
 
 
@@ -2281,7 +2281,7 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    atomic_config_write(config_path, config)
     return config_path
 
 

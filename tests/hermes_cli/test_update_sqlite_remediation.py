@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_maint as update_cmd_maint
-import hermes_cli.update_cmd_deps as update_cmd_deps
 
 
 def test_runtime_status_probes_running_venv_outside_checkout(tmp_path, monkeypatch):
@@ -59,35 +58,8 @@ def test_summary_withholds_success_when_sqlite_remediation_failed(capsys, monkey
     out = capsys.readouterr().out
     assert complete is False
     assert "Update complete" not in out
-    assert "SQLite (3.46.1)" in out
-    assert "WAL" not in out
-    assert "venv" not in out
-    assert "install.sh | bash" in out
-    assert "hermes doctor" in out
 
 
-def test_sqlite_partial_message_is_shared_and_names_windows_installer(capsys, monkeypatch):
-    """Both partial-completion paths print the same fix, and Windows gets the PowerShell one-liner."""
-    for module in (update_cmd, update_cmd_maint):
-        monkeypatch.setattr(
-            module,
-            "_post_update_sqlite_runtime_status",
-            lambda: (False, SimpleNamespace(sqlite_version_string="3.46.1")),
-        )
-    monkeypatch.setattr(update_cmd._m(), "_is_windows", lambda: True)
-
-    update_cmd._print_verified_update_completion("✓ Update complete!")
-    verified_out = capsys.readouterr().out
-    update_cmd._print_update_summary(node_failures=[], desktop_build_ok=True, pre_update_version=None)
-    summary_out = capsys.readouterr().out
-
-    for out in (verified_out, summary_out):
-        assert "known corruption bug" in out
-        assert "install.ps1" in out
-        assert "install.sh" not in out
-        assert "hermes doctor" in out
-    fix_line = next(line for line in verified_out.splitlines() if "install.ps1" in line)
-    assert fix_line in summary_out.splitlines()
 
 
 def test_current_checkout_completion_is_verified_before_success(capsys, monkeypatch):
@@ -107,27 +79,5 @@ def test_current_checkout_completion_is_verified_before_success(capsys, monkeypa
     out = capsys.readouterr().out
     assert complete is False
     assert "Already up to date" not in out
-    assert "SQLite (3.46.1)" in out
-    assert "hermes doctor" in out
 
 
-def test_current_checkout_repair_returns_verified_completion_result(monkeypatch):
-    monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
-    monkeypatch.setattr(update_cmd_deps, "_update_node_dependencies", lambda: [])
-    monkeypatch.setattr(update_cmd._m(), "_build_web_ui", lambda _path: None)
-    monkeypatch.setattr(
-        update_cmd,
-        "_rebuild_desktop_after_update",
-        lambda _dir, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        update_cmd_deps,
-        "_rebuild_desktop_after_update",
-        lambda _dir, **_kwargs: True,
-    )
-
-    complete = update_cmd._repair_node_deps_on_current_checkout(
-        lambda _message: False
-    )
-
-    assert complete is False

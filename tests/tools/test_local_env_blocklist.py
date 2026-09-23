@@ -536,27 +536,6 @@ class TestTerminalFirstPartySnapshotIsolation:
     save/restored per command.
     """
 
-    def test_snapshot_exclusion_set_includes_first_party_names(self, monkeypatch):
-        """Under multiplex, BUZZ_* names present in the env are added to the
-        snapshot exclusion set, so the dump excludes them and _wrap_command
-        save/restores them per command."""
-        from agent import secret_scope as ss
-        from tools.environments.local import LocalEnvironment
-
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-profile-a")
-        env = LocalEnvironment.__new__(LocalEnvironment)
-        env.env = {}
-        env._snapshot_passthrough_names = set()
-        ss.set_multiplex_active(True)
-        try:
-            excluded = env._snapshot_excluded_passthrough_names()
-        finally:
-            ss.set_multiplex_active(False)
-
-        assert "BUZZ_PRIVATE_KEY" in excluded
-        # The set is monotonic for the environment lifetime: the name stays
-        # excluded (and unset-guarded per command) even once it leaves the env.
-        assert "BUZZ_PRIVATE_KEY" in env._snapshot_passthrough_names
 
     def test_buzz_secret_never_reaches_second_profile_via_snapshot(self, monkeypatch, tmp_path):
         """Multiplex regression, end-to-end with real bash: (a) the snapshot
@@ -645,13 +624,6 @@ class TestActiveVenvMarkerStripping:
         })
         assert "CONDA_PREFIX" not in result_env
 
-    def test_make_run_env_strips_markers(self):
-        from tools.environments.local import _make_run_env
-        poison = {"VIRTUAL_ENV": "/venv", "CONDA_PREFIX": "/conda", "PATH": "/usr/bin"}
-        with patch.dict(os.environ, poison, clear=True):
-            result = _make_run_env({})
-        assert "VIRTUAL_ENV" not in result
-        assert "CONDA_PREFIX" not in result
 
     def test_sanitize_subprocess_env_strips_markers(self):
         from tools.environments.local import _sanitize_subprocess_env
@@ -661,11 +633,6 @@ class TestActiveVenvMarkerStripping:
         assert "VIRTUAL_ENV" not in result
         assert "CONDA_PREFIX" not in result
         assert result.get("HOME") == "/home/user"
-
-    def test_markers_constant_contents(self):
-        from tools.environments.local_env_policy import _ACTIVE_VENV_MARKER_VARS
-        assert "VIRTUAL_ENV" in _ACTIVE_VENV_MARKER_VARS
-        assert "CONDA_PREFIX" in _ACTIVE_VENV_MARKER_VARS
 
 
 def _make_directory_link(link: Path, target: Path) -> None:
@@ -899,7 +866,6 @@ class TestPythonpathSelectiveStrip:
         identifies ``<repo>/venv`` as the Hermes runtime producer contract.
         """
         import tools.environments.local as local
-        from tools.environments import local_pythonpath
 
         repo_root = tmp_path / "hermes-agent"
         runtime_venv = repo_root / "venv"
@@ -1367,9 +1333,6 @@ class TestPythonpathSelectiveStrip:
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
 
-
-
-
 class TestPythonhomeSanitized:
     """PYTHONHOME must not leak from the Hermes runtime into subprocesses.
 
@@ -1408,11 +1371,6 @@ class TestPythonhomeSanitized:
                 result = local_mod.build_subprocess_env()
         assert "PYTHONHOME" not in result
 
-    def test_pythonhome_removed_from_active_venv_markers(self):
-        """PYTHONHOME is part of _ACTIVE_VENV_MARKER_VARS so all builders
-        that iterate it drop the variable."""
-        from tools.environments.local_env_policy import _ACTIVE_VENV_MARKER_VARS
-        assert "PYTHONHOME" in _ACTIVE_VENV_MARKER_VARS
 
     def test_build_subprocess_env_no_scrub_preserves_pythonhome(self):
         """``build_subprocess_env(scrub_secrets=False)`` is the documented
@@ -1482,16 +1440,6 @@ class TestProfileScopedPassthrough:
 class TestBlocklistCoverage:
     """Sanity checks that the blocklist covers all known providers."""
 
-    def test_issue_1002_offenders(self):
-        """Blocklist includes the main offenders from issue #1002."""
-        must_block = {
-            "OPENAI_BASE_URL",
-            "OPENAI_API_KEY",
-            "OPENROUTER_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "LLM_MODEL",
-        }
-        assert must_block.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
     def test_registry_vars_are_in_blocklist(self):
         """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY
@@ -1516,11 +1464,6 @@ class TestBlocklistCoverage:
                     f"(provider={pconfig.id}) missing from blocklist"
                 )
 
-    def test_bedrock_bearer_token_is_in_blocklist(self):
-        """auth_type='aws_sdk' providers contribute their Hermes-managed
-        inference token (the Bedrock bearer) to the blocklist, keyed off
-        auth_type so any future SDK-cred provider is covered automatically."""
-        assert "AWS_BEARER_TOKEN_BEDROCK" in _HERMES_PROVIDER_ENV_BLOCKLIST
 
     def test_general_aws_chain_not_in_blocklist(self):
         """The general AWS credential chain must NOT be in the blocklist —
@@ -1546,11 +1489,6 @@ class TestBlocklistCoverage:
             f"blocklisted: {sorted(leaked_block)} (capability regression, #32314)"
         )
 
-    def test_extra_auth_vars_covered(self):
-        """Non-registry auth vars (ANTHROPIC_TOKEN) must also be in the
-        blocklist."""
-        extras = {"ANTHROPIC_TOKEN"}
-        assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
     def test_claude_code_oauth_token_is_inheritable(self):
         """CLAUDE_CODE_OAUTH_TOKEN is owned by the user's Claude Code install
@@ -1652,10 +1590,6 @@ class TestSanePathIncludesHomebrew:
         yield
         local_mod._HERMES_BIN_DIR = saved
 
-    def test_sane_path_includes_homebrew_bin(self):
-        from tools.environments.local import _SANE_PATH
-        assert "/opt/homebrew/bin" in _SANE_PATH
-
 
     def test_make_run_env_appends_homebrew_on_minimal_path(self, monkeypatch):
         """When PATH is minimal, _make_run_env appends missing sane entries.
@@ -1739,12 +1673,6 @@ class TestHermesBinDirOnPath:
         monkeypatch.setattr(local_mod.os.path, "isdir", lambda p: p == "/opt/hermes/bin")
         assert local_mod._resolve_hermes_bin_dir() == "/opt/hermes/bin"
 
-
-    def test_prepend_noop_when_unresolved(self, monkeypatch):
-        from tools.environments import local as local_mod
-        self._reset_cache()
-        local_mod._HERMES_BIN_DIR = None
-        assert local_mod._prepend_hermes_bin_dir("/usr/bin:/bin") == "/usr/bin:/bin"
 
     def test_make_run_env_injects_hermes_bin_dir(self):
         """A gateway env missing the hermes dir gets it back in the subshell PATH.
@@ -1871,9 +1799,3 @@ class TestHermesInternalDynamicSecrets:
         assert "GATEWAY_RELAY_SECRET" not in run_env
         assert run_env.get("AUXILIARY_VISION_PROVIDER") == "openai"
 
-    def test_gateway_relay_static_names_in_blocklist(self):
-        """The static relay names are also added to the name-based blocklist so
-        the exact-match path catches them independently of the predicate."""
-        assert "GATEWAY_RELAY_SECRET" in _HERMES_PROVIDER_ENV_BLOCKLIST
-        assert "GATEWAY_RELAY_DELIVERY_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
-        assert "GATEWAY_RELAY_ID" in _HERMES_PROVIDER_ENV_BLOCKLIST

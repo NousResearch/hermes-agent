@@ -1026,6 +1026,10 @@ class GatewayStartupMixin:
         """Plugins, relay, hooks, then crash/clean-exit recovery of processes and sessions."""
         from gateway.run import _hermes_home
         self._start_register_plugins_relay_hooks()
+        # Plugins that load later (force re-discovery, install/enable nudge) re-wire live adapters (#87770).
+        with _log_suppressed(logging.WARNING, "plugin re-wire subscription failed", exc_info=True):
+            from hermes_cli.plugins import get_plugin_manager
+            self._subscribe_plugin_rewire(get_plugin_manager())
         self.hooks.discover_and_load()
         # Recover background processes from checkpoint (crash recovery). ``_checkpoint_path`` is
         # scope-relative, so a served secondary's turn wrote ITS home's processes.json; recover each

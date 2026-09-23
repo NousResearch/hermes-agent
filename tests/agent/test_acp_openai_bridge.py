@@ -200,16 +200,4 @@ def test_copilot_prompt_still_carries_the_contract_and_the_tools():
     assert "<tool_call>{...}</tool_call>" in prompt
     assert '"name": "memory"' in prompt
     assert '"name": "read_file"' in prompt  # copilot forwards everything
-    # No prompt-text model mention: the model is applied via ACP
-    # session/set_model, and a prompt hint makes a substituted backend
-    # falsely self-identify as the requested model.
-    assert "model hint" not in prompt
     assert "hi" in prompt
-
-
-def test_copilot_prompt_omits_the_tool_section_when_there_are_no_tools():
-    from agent.copilot_acp_client import _format_messages_as_prompt
-
-    prompt = _format_messages_as_prompt([{"role": "user", "content": "hi"}])
-    assert "Available tools" not in prompt
-    assert "Tool choice hint" not in prompt

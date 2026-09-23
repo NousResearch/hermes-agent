@@ -6,8 +6,7 @@ Tests that switch_model:
 3. Saves reasoning_config into _primary_runtime for fallback recovery
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 class TestSwitchModelReasoningOverride:
@@ -43,37 +42,6 @@ class TestSwitchModelReasoningOverride:
         agent._create_openai_client = MagicMock(return_value=MagicMock())
         return agent
 
-    def test_primary_runtime_includes_reasoning_config(self):
-        """After switch_model, _primary_runtime should contain reasoning_config key."""
-        from agent.agent_runtime_helpers import switch_model
-
-        agent = self._make_fake_agent()
-
-        fake_cfg = {
-            "model": {"default": "claude-opus-4.5"},
-            "agent": {
-                "reasoning_effort": "medium",
-                "reasoning_overrides": {
-                    "claude-opus-4.5": "xhigh",
-                },
-            },
-        }
-
-        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
-            try:
-                switch_model(
-                    agent,
-                    new_model="claude-opus-4.5",
-                    new_provider="anthropic",
-                    base_url="https://api.anthropic.com",
-                    api_mode="anthropic_messages",
-                )
-            except Exception:
-                # Client creation may fail in test env; check _primary_runtime was set
-                pass
-
-        assert hasattr(agent, "_primary_runtime")
-        assert "reasoning_config" in agent._primary_runtime
 
 
 

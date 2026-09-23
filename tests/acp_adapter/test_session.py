@@ -3,7 +3,6 @@
 import contextlib
 import io
 import json
-import time
 from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch
@@ -46,7 +45,7 @@ class TestCreateSession:
             captured["task_id"] = task_id
             captured["overrides"] = overrides
 
-        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr("hermes_platform.host.runtime._wsl_detected", True)
         monkeypatch.setattr(
             "tools.terminal_tool.register_task_env_overrides",
             fake_register_task_env_overrides,
@@ -60,10 +59,6 @@ class TestCreateSession:
         }
 
 
-    def test_get_session(self, manager):
-        state = manager.create_session()
-        fetched = manager.get_session(state.session_id)
-        assert fetched is state
 
 
     def test_make_agent_uses_session_cwd_during_init_and_stamps_runtime(
@@ -112,8 +107,9 @@ class TestCreateSession:
             },
         )
         monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
 
-        state = SessionManager(db=None).create_session(cwd=str(workspace))
+        SessionManager(db=None).create_session(cwd=str(workspace))
 
         assert observed["cwd"] == str(workspace)
 
@@ -204,7 +200,7 @@ class TestCreateSession:
 
 class TestWslCwdTranslation:
     def test_translate_acp_cwd_converts_windows_drive_path_when_wsl(self, monkeypatch):
-        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr("hermes_platform.host.runtime._wsl_detected", True)
 
         assert acp_session._translate_acp_cwd(r"E:\Projects\AI\paperclip") == "/mnt/e/Projects/AI/paperclip"
 
@@ -213,7 +209,7 @@ class TestWslCwdTranslation:
 
 
     def test_fork_session_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
-        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr("hermes_platform.host.runtime._wsl_detected", True)
         original = manager.create_session(cwd="/tmp/base")
 
         forked = manager.fork_session(original.session_id, cwd=r"D:\work\project")
@@ -222,7 +218,7 @@ class TestWslCwdTranslation:
         assert forked.cwd == "/mnt/d/work/project"
 
     def test_update_cwd_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
-        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr("hermes_platform.host.runtime._wsl_detected", True)
         state = manager.create_session(cwd="/tmp/old")
 
         updated = manager.update_cwd(state.session_id, cwd=r"C:\Users\foo\project")

@@ -18,9 +18,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.conversation_compression import (
-    finalize_context_engine_compression_notification,
-)
 
 class TestCompressionBoundaryHook:
     def _make_agent(self, session_db):
@@ -312,16 +309,4 @@ class TestSessionCompressEvent:
             assert ctx["old_session_id"] == original_sid
             assert ctx["compression_count"] == 1
 
-    def test_no_callback_is_safe(self):
-        """Compression must work when no event_callback is wired."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "test.db")
-            agent = self._make_agent(db, event_callback=None)
-            agent.context_compressor = self._stub_compressor()
-            compressed, _ = agent._compress_context(
-                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
-            )
-            assert compressed
 

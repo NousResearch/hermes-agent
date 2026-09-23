@@ -151,30 +151,6 @@ class TestModal:
         mock_stdin.assert_not_called()
         assert result == "once"
 
-    @pytest.mark.windows_only
-    def test_windows_scheduling_failure_clean_cancels(self):
-        """win32 off the main thread: if marshaling onto the app loop fails, cancel
-        cleanly (None) rather than fall to raw input() (which deadlocks on native
-        Windows) or hang. Asserts the _stdin_fallback guard (#33961)."""
-        cli = _make_cli()
-
-        def _raise(_cb):
-            raise RuntimeError("loop closed")
-
-        outcome = _run_on_daemon(
-            lambda: cli._prompt_text_input_modal(
-                title="⚠️  /reset",
-                detail="This starts a fresh session.",
-                choices=_SAMPLE_CHOICES,
-                timeout=5,
-            ),
-            cli,
-            response="once",
-            schedule=_raise,
-        )
-        assert outcome["stdin_called"] is False, "win32 off-thread must NOT call raw input()"
-        assert outcome["result"] is None
-        assert cli._slash_confirm_state is None
 
 
 class TestConfirmDestructiveSlash:

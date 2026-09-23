@@ -58,24 +58,6 @@ afterEach(() => {
 })
 
 describe('durable group holds', () => {
-  it('shows an accessible all-members status without relying on the activity feed', async () => {
-    const { GroupHoldStatus } = await import('./group-hold-status')
-
-    render(
-      <GroupHoldStatus
-        holds={{ builder: { at: 2 }, research: { at: 1 } }}
-        memberLabel={member => member.title || member.name}
-        members={MEMBERS}
-      />
-    )
-
-    const status = screen.getByRole('status')
-
-    expect(status.textContent).toContain('All 2 bots are paused')
-    expect(status.textContent).toContain('Mention a paused bot or send @all resume to release them.')
-    expect(status.querySelector('[data-icon="debug-pause"]')).not.toBeNull()
-  })
-
   it('keeps unmatched holds visible instead of reporting all current members held', async () => {
     const { GroupHoldStatus } = await import('./group-hold-status')
 

@@ -81,6 +81,37 @@ def _served_record(home):
 
 
 @pytest.mark.asyncio
+async def test_opt_out_rescans_and_opt_in_waits_for_own_gateway_to_stop(tmp_path, monkeypatch, caplog):
+    runner, home = _runner(tmp_path, monkeypatch)
+    solo = _mkprofile(home, "solo", "DISCORD_BOT_TOKEN=solo-token\n")
+    own_pids = {}
+    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: own_pids.get(h))
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        adapter = runner._profile_adapters["solo"][Platform.DISCORD]
+        (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        result = await runner.reconcile_served_profiles()
+        assert result["removed"] == ["solo"]
+        assert adapter.disconnected
+        assert _served_record(home) == ["default"]
+
+        own_pids[solo] = 12345
+        (solo / "config.yaml").write_text("gateway:\n  standalone: false\n")
+        for _ in range(2):
+            result = await runner.reconcile_served_profiles()
+            assert result["added"] == []
+            assert result["served_profiles"] == ["default"]
+        assert runner._started.count("solo") == 1
+        assert len([r for r in caplog.records if "still runs its own gateway" in r.message]) == 1
+
+        own_pids.clear()
+        result = await runner.reconcile_served_profiles()
+        assert result["added"] == ["solo"]
+        assert _served_record(home) == ["default", "solo"]
+        assert runner._started.count("solo") == 2
+
+
+@pytest.mark.asyncio
 async def test_created_then_credentialed_profile_is_served_without_restart(tmp_path, monkeypatch):
     runner, home = _runner(tmp_path, monkeypatch)
     alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")

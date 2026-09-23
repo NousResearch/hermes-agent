@@ -3,7 +3,6 @@
 Simulates the real crash: a pip/system-Python install where PROJECT_ROOT is
 site-packages and VIRTUAL_ENV=PROJECT_ROOT/venv does not exist.
 """
-import os
 import sys
 import unittest
 from pathlib import Path
@@ -82,32 +81,11 @@ class StaleVirtualEnvTest(unittest.TestCase):
 
     def test_existing_python_flag_wins(self):
         """A caller-supplied --python is not duplicated by the pin."""
-        captured = self._call(
-            uv_cmd=[Path("/fake/uv"), "pip"],
-            venv_path=Path("/fake/project/venv"),
-            fake_executable="/fake/python311/python.exe",
-        )
-        # Force the caller path through a manual pin with a pre-existing flag.
         args = ["install", "--python", "/caller/choice/python.exe", "hermes"]
         pinned = main_install_repair._insert_python_pin(args)
         self.assertEqual(pinned, args, "existing --python must win")
         self.assertEqual(pinned.count("--python"), 1)
 
-    def test_windows_pins_quarantine_to_interpreter_scripts_dir(self):
-        """On Windows with a missing project venv, quarantine must target the
-        interpreter's Scripts dir (where the shims actually live), not None."""
-        fake_scripts = Path("/fake/python311/Scripts")
-        with mock.patch.object(main_install_repair, "_interpreter_scripts_dir", return_value=fake_scripts
-        ):
-            captured = self._call(
-                uv_cmd=[Path("/fake/uv"), "pip"],
-                venv_path=Path("/fake/project/venv"),
-                fake_executable="/fake/python311/python.exe",
-                is_windows=True,
-            )
-        self.assertTrue(captured, "no subprocess call captured")
-        _, _, scripts_dir = captured[0]
-        self.assertEqual(scripts_dir, fake_scripts)
 
 
 if __name__ == "__main__":

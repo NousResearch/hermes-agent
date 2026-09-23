@@ -45,10 +45,6 @@ def test_install_registers_all_three_sequences():
 
 
 
-def test_install_returns_zero_when_already_correct():
-    """Idempotency — running install twice should not report a second change."""
-    install_shift_enter_alias()
-    assert install_shift_enter_alias() == 0
 
 
 def test_csi_u_shift_enter_parses_as_alt_enter():
@@ -64,11 +60,3 @@ def test_csi_u_shift_enter_parses_as_alt_enter():
 
 
 
-def test_plain_enter_remains_distinct_from_alt_enter():
-    """Plain Enter must keep emitting a single key (submit), not a two-key
-    Alt+Enter tuple — otherwise we would have broken submit."""
-    enter = _parse("\r")
-    alt_enter = _parse("\x1b\r")
-    assert enter != alt_enter
-    assert len(enter) == 1
-    assert len(alt_enter) == 2

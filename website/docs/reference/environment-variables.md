@@ -777,7 +777,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | Grace window before flushing a queued Discord text chunk (default: `0.6`). |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Delay between split chunks when a Discord message exceeds the length limit (default: `2.0`). |
 | `HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS` | Compatibility/manual override for `discord.websocket_liveness_interval_seconds`. Interval for sampling the active Discord Gateway WebSocket (default: `15`; set to `0` to disable). Prefer the `config.yaml` key. |
-| `HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD` | Compatibility/manual override for `discord.websocket_liveness_failure_threshold`. Consecutive unhealthy WebSocket samples before forcing a reconnect (default: `2`). Prefer the `config.yaml` key. |
+| `HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD` | Compatibility/manual override for `discord.websocket_liveness_failure_threshold`. Consecutive unhealthy WebSocket samples before forcing a reconnect (default: `2`). Applies to soft signals only — a closed transport (`socket_closed` / `client_closed`) forces the reconnect on the first sample (#118487). Prefer the `config.yaml` key. |
 | `HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS` / `_SPLIT_DELAY_SECONDS` | Matrix equivalents of the Telegram batch knobs. |
 | `HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS` / `_SPLIT_DELAY_SECONDS` / `_MAX_CHARS` / `_MAX_MESSAGES` | Feishu batcher tuning — delay, split delay, max chars per message, max messages per batch. |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | Feishu media flush delay. |

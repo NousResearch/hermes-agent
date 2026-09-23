@@ -803,7 +803,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'connection.update':
         if (ev.payload) {
-          applyConnectionUpdate(ev.payload)
+          // The settling frame is the only record of how each app ended; the card is gone by then.
+          for (const line of applyConnectionUpdate(ev.payload)) {
+            sys(line)
+          }
         }
 
         return
@@ -1265,7 +1268,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload.tool_id,
           ev.payload.name ?? 'tool',
           ev.payload.context ?? '',
-          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined
+          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined,
+          ev.payload.labels ?? undefined
         )
 
         return
@@ -1293,7 +1297,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.tool_id,
             ev.payload.name,
             ev.payload.duration_s ?? undefined,
-            resultText
+            resultText,
+            ev.payload.labels ?? undefined
           )
         } else {
           turnController.recordToolComplete(
@@ -1302,7 +1307,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.summary ?? undefined,
             ev.payload.duration_s ?? undefined,
             ev.payload.todos ?? undefined,
-            resultText
+            resultText,
+            ev.payload.labels ?? undefined
           )
         }
 

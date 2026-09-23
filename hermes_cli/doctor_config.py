@@ -321,6 +321,49 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
         check_warn("config.yaml not found", "(using defaults)")
 
 
+def _plaintext_secret_paths(value, path: str = "", depth: int = 0) -> list[str]:
+    """Return paths whose non-empty string values use config's secret-key semantics."""
+    from hermes_cli.config import _SECRET_CONFIG_KEYS
+
+    if depth > 20:
+        return []
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_path = f"{path}.{key}" if path else str(key)
+            if isinstance(key, str) and key.lower() in _SECRET_CONFIG_KEYS and isinstance(child, str) and child:
+                paths.append(key_path)
+            else:
+                paths.extend(_plaintext_secret_paths(child, key_path, depth + 1))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            paths.extend(_plaintext_secret_paths(child, f"{path}[{index}]", depth + 1))
+    return paths
+
+
+@doctor_check()
+def _check_config_plaintext_secrets(should_fix: bool, f: Finding) -> None:
+    """Warn about credentials stored in config.yaml without ever rendering their values."""
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_cli.config import read_user_config_raw
+
+    config_path = HERMES_HOME / "config.yaml"
+    if not config_path.exists():
+        return
+    try:
+        secret_paths = _plaintext_secret_paths(read_user_config_raw(config_path))
+    except Exception:
+        # The existing config validation reports unreadable or malformed YAML.
+        return
+    if not secret_paths:
+        check_ok("No plaintext credentials in config.yaml")
+        return
+    check_warn(f"Plaintext credential(s) in config.yaml: {', '.join(secret_paths)}", "(move them to .env)")
+    f.manual_issues.append(
+        f"Move plaintext credential(s) at {', '.join(secret_paths)} from {_DHH}/config.yaml to {_DHH}/.env and rotate them."
+    )
+
+
 def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
     from hermes_cli.config import check_config_version, migrate_config
     current_ver, latest_ver = check_config_version()

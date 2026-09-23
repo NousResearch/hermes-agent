@@ -175,14 +175,13 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "", *, sessio
              if (c.get("session_key") == key or getattr(c.get("agent"), "session_id", None) == key)
              and (session_key is None or Path(c.get("profile_home") or _hermes_home).resolve() == current_home)),
             ("", None))
-    resolved = os.path.abspath(os.path.expanduser(str(path)))
     if session_key is not None:
         if session is None or session.get("_finalized"):
             return {"success": False, "error": "calling Desktop session is no longer available"}
         home = Path(session.get("profile_home") or _hermes_home).resolve()
         if home != current_home:
             return {"success": False, "error": "project and calling session profiles do not match"}
-        params = {"session_key": session_key, "cwd": resolved}
+        params = {"session_key": session_key, "cwd": str(path)}
         if home != Path(_hermes_home).resolve():
             profile = profile_name_for_home(home)
             if not profile:
@@ -193,6 +192,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "", *, sessio
         if "error" in response:
             return {"success": False, "error": response["error"]["message"]}
         return {"success": True, "session_key": session_key, **response["result"]}
+    resolved = os.path.abspath(os.path.expanduser(str(path)))
     if session is None or not os.path.isdir(resolved):
         return
     # explicit switch supersedes a settle-adopted cwd

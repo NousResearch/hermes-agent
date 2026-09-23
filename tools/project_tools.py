@@ -122,6 +122,8 @@ def project_move(project: str, session_key: str, task_id: Optional[str] = None) 
         return json.dumps({"success": False, "error": "session_key is required for move"})
     if session_key != session_key.strip():
         return json.dumps({"success": False, "error": "session_key must be an exact stored session ID without surrounding whitespace"})
+    if session_key == task_id:
+        return json.dumps({"success": False, "error": "use switch to move this chat into a project"})
     cb = _workspace_callback
     if cb is None or not task_id:
         return json.dumps({"success": False, "error": "move requires a connected Desktop session"})
@@ -168,7 +170,7 @@ registry.register(
             "this chat into it — pass path to anchor it to a repo/folder (the "
             "chat's workspace moves there, the sidebar follows). switch: move "
             "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. move: move an existing thread by exact session_key into name, in this profile, without switching this chat. list: projects + active."
+            "intentional way to move the session, not `cd`. move: move another thread in this profile by exact session_key into name, without switching this chat. list: projects + active."
         ),
         "parameters": {
             "type": "object",

@@ -1117,3 +1117,18 @@ def test_local_turn_survives_undecodable_transport_output(tmp_path, capsys):
 
     assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
     assert "reply" in capsys.readouterr().out
+
+
+def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkeypatch, capsys):
+    """#83851: the transport is a Hermes CLI child, which always writes UTF-8 stdio. Decoding it with
+    the host's default codec (cp936 on zh-CN Windows) crashed or garbled the reply; it must round-trip."""
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    reply = "✅ 已完成…"
+    argv = [sys.executable, "-c", f"import sys; sys.stdout.buffer.write({reply.encode('utf-8')!r})"]
+    # subprocess resolves an unspecified text-mode codec through _text_encoding() → locale.getencoding();
+    # patch that seam since run_tests.sh's PYTHONUTF8=1 short-circuits the locale lookup.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
+
+    assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
+    assert reply in capsys.readouterr().out

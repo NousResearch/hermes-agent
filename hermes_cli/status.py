@@ -288,7 +288,13 @@ def _render_sessions(ctx):
 
     if gateway_rows:
         _kv("Active:", f"{len(gateway_rows)} session(s)")
-        freshest = max((float(r.get("last_active") or 0) for r in gateway_rows), default=0.0)
+        freshest = 0.0
+        for row in gateway_rows:
+            try:
+                last_active = float(row.get("last_active") or 0)
+            except (TypeError, ValueError):
+                continue
+            freshest = max(freshest, last_active)
         if freshest > 0:
             from hermes_cli.timefmt import relative_time
             print(f"  Last activity:{relative_time(freshest):>13}")

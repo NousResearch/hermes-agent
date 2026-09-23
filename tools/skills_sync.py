@@ -188,6 +188,27 @@ def _move_dir(src: Path, dest: Path) -> None:
 def _copy_dir(src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dest, ignore=_ignore_runtime_cache)
+    _normalize_copied_tree_metadata(dest)
+
+
+def _normalize_copied_tree_metadata(directory: Path) -> None:
+    """Make a copied bundled skill editable without discarding executable bits."""
+    def normalize(path: Path) -> None:
+        mode = stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR
+        os.chmod(path, mode)
+        os.utime(path, None)
+
+    for root, dirnames, filenames in os.walk(directory, topdown=False, followlinks=False):
+        root_path = Path(root)
+        for filename in filenames:
+            path = root_path / filename
+            if not path.is_symlink():
+                normalize(path)
+        for dirname in dirnames:
+            path = root_path / dirname
+            if not path.is_symlink():
+                normalize(path)
+        normalize(root_path)
 
 
 def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Optional[str]:
@@ -303,7 +324,9 @@ def _replace_skill_dir(skill_src: Path, dest: Path) -> None:
         _rmtree_writable(backup)
     shutil.move(str(dest), str(backup))
     try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(skill_src, dest, ignore=_ignore_runtime_cache)
+        _normalize_copied_tree_metadata(dest)
     except OSError:
         if backup.exists():  # clear a partially-written dest so it can't shadow/block the restore
             if dest.exists():

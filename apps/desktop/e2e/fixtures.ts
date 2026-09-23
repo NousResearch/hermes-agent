@@ -246,6 +246,11 @@ function writeEmptyConfig(hermesHome: string): void {
 export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}): Record<string, string> {
   const clean = stripCredentials(process.env)
 
+  // ELECTRON_RUN_AS_NODE can leak in from a parent Electron-based host (e.g.
+  // a desktop agent shell). Electron checks presence, not value, so it must
+  // be removed entirely — an empty string still forces Node mode.
+  delete clean.ELECTRON_RUN_AS_NODE
+
   // XDG_RUNTIME_DIR is needed for Electron on Linux when running in a
   // headless/CI context — without it the zygote may fail to initialize.
   if (!clean.XDG_RUNTIME_DIR && process.env.XDG_RUNTIME_DIR) {

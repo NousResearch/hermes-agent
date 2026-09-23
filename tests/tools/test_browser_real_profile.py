@@ -257,7 +257,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt_real_profile, "_run_agent_browser", return_value=proc), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert err is None
@@ -308,7 +308,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", side_effect=fake_run), \
+             patch.object(bt_real_profile, "_run_agent_browser", side_effect=fake_run), \
              patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             bt_real_profile._real_profile_cdp()
@@ -353,7 +353,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_agent_browser_close_session",
                           side_effect=lambda s: closed.__setitem__("n", closed["n"] + 1)), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt_real_profile, "_run_agent_browser", return_value=proc), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert closed["n"] == 1  # stale wrong-dir session was closed
@@ -1020,7 +1020,7 @@ class TestReviewRound3:
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:9251"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt_real_profile, "_run_agent_browser", return_value=proc), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert err is None
@@ -1181,3 +1181,27 @@ class TestWindowsLockedProfileCopy:
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
         assert err and "login data" in err.lower() and "close" in err.lower()
+
+
+class TestRunAgentBrowser:
+    def test_returns_when_grandchild_holds_stdio(self):
+        """agent-browser spawns a long-lived daemon that inherits its stdio; the call must
+        return when the direct child exits, not block on pipe EOF (Windows wedge)."""
+        import subprocess
+        import sys
+        import time
+        child = ("import subprocess, sys; "
+                 "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                 "print('ws://127.0.0.1:9222/devtools/browser/x')")
+        started = time.monotonic()
+        proc = bt_real_profile._run_agent_browser([sys.executable, "-c", child], timeout=15, env=dict(os.environ))
+        assert time.monotonic() - started < 10
+        assert proc.returncode == 0
+        assert "ws://127.0.0.1:9222/" in proc.stdout
+
+    def test_timeout_raises(self):
+        import subprocess
+        import sys
+        with pytest.raises(subprocess.TimeoutExpired):
+            bt_real_profile._run_agent_browser([sys.executable, "-c", "import time; time.sleep(30)"],
+                                               timeout=1, env=dict(os.environ))

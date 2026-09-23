@@ -868,11 +868,10 @@ class GatewayAdapterLifecycleMixin:
                 from gateway.status import publish_runtime_status
                 publish_runtime_status(served_profiles=[])
             return 0
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-        except Exception:
-            return 0
-        active = get_active_profile_name() or "default"  # launch profile, pre-identity (adapter boot)
+        # The primary map was loaded from the default profile for a
+        # multiplexer.  Do not skip a named launch profile here: it still
+        # needs its own secondary adapter and credential ownership entry.
+        active = getattr(self, "_primary_profile_name", None) or self._active_profile_name()
         connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)

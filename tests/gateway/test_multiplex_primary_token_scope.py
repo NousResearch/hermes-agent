@@ -33,6 +33,41 @@ def _reset_multiplex_flag():
 
 
 class TestLoadGatewayConfigForRunner:
+    def test_named_profile_launch_reloads_primary_from_default_profile(self, tmp_path, monkeypatch):
+        """A host multiplexer launched by a named profile still owns default's adapter.
+
+        The process environment models the named profile's inherited dotenv.  The
+        primary config must instead be loaded under the default home's secret
+        scope, leaving the named profile's distinct token for its secondary
+        adapter startup.
+        """
+        from agent import secret_scope as ss
+        from gateway import run as run_mod
+
+        default_home = tmp_path / "default"
+        worker_home = default_home / "profiles" / "worker"
+        worker_home.mkdir(parents=True)
+        (default_home / ".env").write_text(
+            "TELEGRAM_BOT_TOKEN=default-profile-token-123\n", encoding="utf-8"
+        )
+        (default_home / "config.yaml").write_text(
+            "gateway:\n  multiplex_profiles: true\n", encoding="utf-8"
+        )
+        (worker_home / ".env").write_text(
+            "TELEGRAM_BOT_TOKEN=worker-profile-token-456\n", encoding="utf-8"
+        )
+        (worker_home / "config.yaml").write_text(
+            "gateway:\n  multiplex_profiles: true\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(worker_home))
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "worker-profile-token-456")
+        ss.set_multiplex_active(True)
+
+        cfg = run_mod.load_gateway_config_for_runner()
+
+        assert cfg.multiplex_profiles is True
+        assert cfg.platforms[Platform.TELEGRAM].token == "default-profile-token-123"
+
     def test_unscoped_when_multiplex_off(self, tmp_path, monkeypatch):
         from gateway import run as run_mod
 

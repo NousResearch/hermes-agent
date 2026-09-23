@@ -815,6 +815,10 @@ class GeminiNativeClient:
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
     ) -> Any:
+        # Gemini ignores OpenAI's extra_body.model during native translation and
+        # emits this top-level model in the URL. Guard the actual wire identity.
+        from hermes_cli.routing_policy import check_route, current_routing_policy
+        check_route(current_routing_policy(), provider="gemini", model=str(model or ""), base_url=self.base_url)
         extra = extra_body if isinstance(extra_body, dict) else {}
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,

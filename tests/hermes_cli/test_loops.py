@@ -468,6 +468,20 @@ class TestTickLifecycle:
             decision = mgr.complete_tick("some output")
         assert decision["stopped"] is False  # fail-open: keep looping
 
+    def test_until_policy_denial_pauses_without_scheduling_another_tick(self, hermes_home):
+        from hermes_cli.loops import LoopManager
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        mgr = LoopManager(session_id="t12-policy")
+        state = mgr.set("poll", interval_seconds=300, until="green")
+        state.next_due_at = time.time() - 1
+        mgr.fire_tick()
+        with patch("hermes_cli.goals.judge_goal", side_effect=RoutingPolicyError("denied route")):
+            decision = mgr.complete_tick("some output")
+        assert decision["stopped"] is True
+        assert decision["status"] == "paused"
+        assert mgr.is_due() is False
+
 
 class TestSelfPacedBackoff:
     def test_backoff_doubles_on_unchanged_and_resets_on_change(self, hermes_home):

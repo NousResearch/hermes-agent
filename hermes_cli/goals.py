@@ -8,6 +8,8 @@ failures are fail-OPEN (``continue``); the turn budget is the backstop.
 
 from __future__ import annotations
 
+from hermes_cli.routing_policy import RoutingPolicyError
+
 import asyncio
 import json
 import logging
@@ -893,6 +895,8 @@ def judge_goal(
     try:
         from agent.auxiliary_client import call_llm
         from agent.auxiliary_unavailable import AuxiliaryClientUnavailable
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False, None, False
@@ -925,6 +929,8 @@ def judge_goal(
         # re-authenticate, not to context-length / model debugging (#42177). Still fails open.
         logger.info("goal judge: auxiliary client unavailable (%s) — falling through to continue", exc)
         return "continue", f"goal_judge auxiliary client unavailable: {exc}", False, None, True
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
         return "continue", f"judge error: {type(exc).__name__}", False, None, True
@@ -1031,12 +1037,16 @@ def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Option
 
     try:
         from agent.auxiliary_client import call_llm
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         logger.debug("goal draft: auxiliary client import failed: %s", exc)
         return None
 
     try:
         raw = _call_goal_judge_llm(call_llm, DRAFT_CONTRACT_SYSTEM_PROMPT, f"Objective:\n{_truncate(objective, 4000)}", timeout)
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         logger.info("goal draft: API call failed (%s)", exc)
         return None

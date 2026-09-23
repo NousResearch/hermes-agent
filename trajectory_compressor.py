@@ -30,6 +30,7 @@ import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
+from hermes_cli.routing_policy import RoutingPolicyError
 from agent.retry_utils import jittered_backoff
 from hermes_cli.env_loader import load_hermes_dotenv
 
@@ -447,6 +448,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
     def _summary_attempt_failed(self, metrics: TrajectoryMetrics, attempt: int, exc: Exception) -> Optional[float]:
         """Record a failed attempt; return the backoff delay, or None on the last attempt."""
+        if isinstance(exc, RoutingPolicyError):
+            raise exc
         metrics.summarization_errors += 1
         self.logger.warning("Summarization attempt %d failed: %s", attempt + 1, exc)
         if attempt < self.config.max_retries - 1:
@@ -464,6 +467,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     from agent.auxiliary_client import call_llm
                     response = call_llm(provider=self._llm_provider, temperature=temperature, **kwargs)
                 else:
+                    from agent.auxiliary_client import _check_auxiliary_wire_route
+                    _check_auxiliary_wire_route(self.client, kwargs)
                     response = self.client.chat.completions.create(**kwargs)
                 return self._finish_summary(response)
             except Exception as e:
@@ -483,7 +488,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     from agent.auxiliary_client import async_call_llm
                     response = await async_call_llm(provider=self._llm_provider, temperature=temperature, **kwargs)
                 else:
-                    response = await self._get_async_client().chat.completions.create(**kwargs)
+                    from agent.auxiliary_client import _check_auxiliary_wire_route
+                    client = self._get_async_client()
+                    _check_auxiliary_wire_route(client, kwargs)
+                    response = await client.chat.completions.create(**kwargs)
                 return self._finish_summary(response)
             except Exception as e:
                 delay = self._summary_attempt_failed(metrics, attempt, e)
@@ -606,6 +614,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     run.timeouts += 1
                     run.finish()
                 return None
+            except RoutingPolicyError:
+                async with run.lock:
+                    run.finish(update_status=False)
+                raise
             except Exception as e:
                 self.logger.error("Error processing entry from %s:%s: %s", file_path, entry_idx, e)
                 async with run.lock:

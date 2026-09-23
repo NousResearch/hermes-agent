@@ -15,6 +15,7 @@ from typing import Any
 
 from agent.message_metadata import append_message
 from agent.turn_failure_copy import short_detail, site_copy
+from hermes_cli.routing_policy import RoutingPolicyError
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -55,6 +56,14 @@ def handle_outer_loop_error(
     # Count every escaped exception before classification so permanent failures
     # terminate even with an unlimited turn budget.
     _outer_error_count += 1
+
+    # Operator route denials are intentional terminal decisions, never transient API
+    # failures. Retrying here could dispatch a later iteration through a fallback route.
+    if isinstance(e, RoutingPolicyError):
+        _turn_exit_reason = f"routing_policy_denied({str(e)[:80]})"
+        failed = True
+        final_response = str(e)
+        return _verdict("break")
 
     # Interpreter shutdown makes every executor op raise: break.
     # Phase-aware error classification. The huge outer try/except spans both the actual API request and all

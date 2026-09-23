@@ -2875,6 +2875,53 @@ class TestAuxiliaryTaskExtraBody:
                    side_effect=AuthError("no creds", provider="custom", code="missing_api_key")):
             assert _resolve_custom_runtime() == (None, None, None)
 
+    def test_custom_runtime_policy_denial_is_terminal(self):
+        """A denied custom route must not fall through to environment endpoint discovery."""
+        from agent.auxiliary_client import _resolve_custom_runtime
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=RoutingPolicyError("denied")), \
+             patch("agent.auxiliary_client._scoped_key_env") as scoped_env:
+            with pytest.raises(RoutingPolicyError, match="denied"):
+                _resolve_custom_runtime()
+
+        scoped_env.assert_not_called()
+
+    def test_fallback_destination_policy_denial_is_terminal(self):
+        """A denied fallback destination must not be relabelled and sent to another fallback."""
+        from agent.auxiliary_client import _complete_fallback_destination
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=RoutingPolicyError("denied")):
+            with pytest.raises(RoutingPolicyError, match="denied"):
+                _complete_fallback_destination("fallback-a", "https://fallback.invalid", None, "model-a")
+
+    def test_auxiliary_fallback_policy_denial_does_not_try_next_entry(self, monkeypatch):
+        """Resolution policy rejection is terminal rather than an unavailable fallback candidate."""
+        import agent.auxiliary_client as aux
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        attempted = []
+
+        def resolve_entry(entry):
+            attempted.append(entry["provider"])
+            raise RoutingPolicyError("denied fallback")
+
+        monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda _task: {
+            "fallback_chain": [
+                {"provider": "denied-fallback", "model": "denied-model"},
+                {"provider": "second-fallback", "model": "second-model"},
+            ],
+        })
+        monkeypatch.setattr(aux, "_resolve_fallback_entry", resolve_entry)
+
+        with pytest.raises(RoutingPolicyError, match="denied fallback"):
+            aux._try_configured_fallback_chain("summary", "primary", reason="primary failed")
+
+        assert attempted == ["denied-fallback"]
+
 
 
 # ---------------------------------------------------------------------------

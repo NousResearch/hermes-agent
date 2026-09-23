@@ -65,3 +65,39 @@ def test_production_entry_forwards_the_classifier_verdict_to_the_attempt_line(ca
     assert out.action == "break"
     assert "attempt 1/3, not retryable" in caplog.text
     assert "not retryable" in agent._buffer_vprint.call_args_list[0].args[0]
+
+
+def test_routing_policy_error_returns_terminal_failure_without_retry_or_fallback():
+    """A final-wire routing denial is terminal, never a fallback trigger."""
+    from types import SimpleNamespace
+
+    from agent.turn_api_error import handle_api_error
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    agent = _agent()
+    agent._interrupt_requested = False
+    retry = SimpleNamespace()
+    with patch("agent.turn_api_error.recover_before_classification", side_effect=AssertionError("must not recover")) as before, patch(
+        "agent.turn_api_error.classify_api_error"
+    ) as classify, patch("agent.turn_api_error.recover_after_classification") as after, patch(
+        "agent.turn_api_error.route_classified_error"
+    ) as route, patch("agent.turn_api_error.recover_from_overflow") as overflow, patch(
+        "agent.turn_api_error.settle_unrecovered_error"
+    ) as settle:
+        out = handle_api_error(
+            agent, api_error=RoutingPolicyError("denied"), _retry=retry, thinking_spinner=None,
+            messages=[{"role": "user", "content": "hi"}], api_messages=[], api_kwargs={}, system_message=None,
+            active_system_prompt="sys", conversation_history=[], approx_tokens=10, retry_count=0,
+            max_retries=3, compression_attempts=0, max_compression_attempts=1, api_call_count=1,
+            api_request_id="r", api_start_time=time.time(), effective_task_id=None, turn_id="t",
+        )
+
+    assert out.action == "return"
+    assert out.result["failed"] is True
+    assert out.result["failure_reason"] == "routing_policy"
+    before.assert_not_called()
+    classify.assert_not_called()
+    after.assert_not_called()
+    route.assert_not_called()
+    overflow.assert_not_called()
+    settle.assert_not_called()

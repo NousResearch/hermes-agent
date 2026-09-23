@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass, field, fields, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.routing_policy import RoutingPolicyError
+
 logger = logging.getLogger(__name__)
 
 
@@ -570,6 +572,12 @@ class LoopManager:
                 from hermes_cli.goals import judge_goal
 
                 verdict, reason, _pf, _wait, _tf = judge_goal(s.until, last_response)
+            except RoutingPolicyError as exc:
+                why = f"routing policy denied the goal judge route: {exc}"
+                return self._stop(
+                    "paused", why,
+                    f"⏸ Loop paused — {why}. /loop resume after changing the route policy.",
+                )
             except Exception as exc:
                 verdict, reason = "continue", f"judge unavailable: {type(exc).__name__}"
             if verdict == "done":

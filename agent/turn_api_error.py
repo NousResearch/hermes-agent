@@ -69,6 +69,15 @@ def handle_api_error(
             _provider_overflow_recovery_pending=_provider_overflow_recovery_pending, result=result,
         )
 
+    from hermes_cli.routing_policy import RoutingPolicyError
+    if isinstance(api_error, RoutingPolicyError):
+        error_text = str(api_error)
+        return _verdict("return", {
+            "final_response": error_text, "messages": messages, "api_calls": api_call_count,
+            "completed": False, "failed": True, "error": error_text,
+            "failure_reason": "routing_policy", "failure_retryable": False,
+        })
+
     # Stop spinner silently — retry status is buffered and only flushed when every
     # retry+fallback is exhausted.
     if thinking_spinner:

@@ -761,7 +761,7 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
 
 def create_anthropic_message(
     client: Any, api_kwargs: dict, *, log_prefix: str = "", prefer_stream: bool = True,
-    on_stream_event=None, on_response=None,
+    on_stream_event=None, on_response=None, before_wire=None,
 ) -> Any:
     """Create an Anthropic message, aggregating via stream when available. Some Anthropic-compatible
     gateways are SSE-only and answer ``create()`` with ``text/event-stream``, which the SDK surfaces
@@ -771,13 +771,16 @@ def create_anthropic_message(
     streaming path: ``on_stream_event(event)`` lets liveness watchdogs see forward progress;
     ``on_response(httpx_response)`` exposes headers the parsed Message drops (Nous Portal's
     ``x-nous-credits-*`` balance family)."""
+    from hermes_cli.routing_policy import RoutingPolicyError
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
     messages_api = getattr(client, "messages", None)
     stream_fn = getattr(messages_api, "stream", None)
     if prefer_stream and callable(stream_fn):
         try:
+            if callable(before_wire):
+                before_wire(api_kwargs)
             return _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response)
-        except TimeoutError:
+        except (TimeoutError, RoutingPolicyError):
             raise
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):
@@ -785,6 +788,8 @@ def create_anthropic_message(
             logger.debug(
                 "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
             )
+    if callable(before_wire):
+        before_wire(api_kwargs)
     return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
 
 

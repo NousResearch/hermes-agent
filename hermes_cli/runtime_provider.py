@@ -977,6 +977,16 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
+    from hermes_cli.routing_policy import check_requested_route, check_route, current_routing_policy
+    policy = current_routing_policy()
+    requested_model = str(target_model or _get_model_config().get("default") or "")
+    check_requested_route(policy, requested_provider=requested_provider, model=requested_model)
+    # Deny an explicit route before any ladder rung can inspect credentials or turn an
+    # unavailable primary into an unrelated fallback.  This intentionally uses the
+    # request identity (rather than a later resolved runtime) as the first boundary;
+    # the final ``check_route`` below still verifies aliases and resolved endpoints.
+    check_route(policy, provider=requested_provider, model=requested_model,
+                base_url=str(explicit_base_url or _get_model_config().get("base_url") or ""))
     _raise_if_provider_disabled(requested_provider)
     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on
     # every path (background review, curator, MoA slots, delegation) instead of "Unknown provider".
@@ -997,6 +1007,12 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
         logger.info("model.openai_runtime=codex_app_server overrides the %s runtime (source=%s); its credential/endpoint "
                     "is not used — the app-server authenticates with its own login", runtime.get("provider"), runtime.get("source"))
     runtime["api_mode"] = api_mode
+    check_route(
+        policy,
+        provider=str(runtime.get("provider") or ""),
+        model=str(target_model or _get_model_config().get("default") or ""),
+        base_url=str(runtime.get("base_url") or ""),
+    )
     return runtime
 
 
@@ -1108,6 +1124,7 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     ``model`` is the model the caller must send.
     """
     from hermes_cli.auth import AuthError, primary_failure_wording
+    from hermes_cli.routing_policy import RoutingPolicyError
     try:
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
@@ -1125,6 +1142,8 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
                 kwargs["explicit_api_key"] = entry_key
             try:
                 runtime = resolve_runtime_provider(**kwargs)
+            except RoutingPolicyError:
+                raise
             except AuthError as fb_exc:
                 logger.debug("Fallback entry %s/%s failed: %s", provider, model, fb_exc)
                 continue

@@ -82,6 +82,19 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+# =============================================================================
+# Terminal Model Route Policy (optional)
+# =============================================================================
+# Enforced at provider resolution and immediately before each model request.
+# Disabled by default. A denied route is terminal: Hermes will not retry it on a fallback.
+# routing_policy:
+#   enabled: true
+#   require_explicit: false  # Require provider and model rather than auto-discovery/defaults.
+#   deny:
+#     providers: []          # e.g. ["zai"]
+#     models: []             # glob patterns, e.g. ["z-ai/*", "glm-*"]
+#     base_url_hosts: []     # hosts or absolute URLs, e.g. ["api.z.ai"]
+
   # Stream API responses from the provider (default: true). The agent core
   # prefers streaming for every turn — subagents included — for liveness
   # health-checking. Set false to force non-streaming requests for the whole

@@ -7,6 +7,8 @@ so it hits the same prefix cache, and runs under a dispatch-side tool whitelist.
 
 from __future__ import annotations
 
+from hermes_cli.routing_policy import RoutingPolicyError
+
 import copy
 import json
 import logging
@@ -256,6 +258,9 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             "args": list(rp.get("args") or []), "routed": True,
         }
     except Exception as e:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(e, RoutingPolicyError):
+            raise
         _warn_review_routing_fallback(agent, task_provider, task_model, e)
         return parent
 
@@ -1257,6 +1262,8 @@ def _run_review_in_thread(
                 st.review_messages, messages_snapshot,
                 notification_mode=getattr(agent, "memory_notifications", "on"),
             )
+        except RoutingPolicyError:
+            raise
         except Exception as e:
             logger.warning(
                 "summarize_background_review_actions returned partial results "
@@ -1268,6 +1275,8 @@ def _run_review_in_thread(
         _log_review_completion(st.review_usage, _classify_review_result(actions))
         if actions:
             _publish_review_summary(agent, actions)
+    except RoutingPolicyError:
+        raise
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:

@@ -38,8 +38,9 @@ _cached: dict[str, str] = {}
 
 
 def _default_home() -> str:
-    """Ambient HERMES_HOME (env, else ~/.hermes) as a string."""
-    return os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    """Ambient process HERMES_HOME (env, else the platform default) as a string."""
+    from hermes_constants import get_process_hermes_home
+    return str(get_process_hermes_home())
 
 
 def _resolve_home(home: str | os.PathLike | None) -> Path:
@@ -69,9 +70,23 @@ def _handle(name: str) -> str:
 
 
 def _roster(root: Path) -> list[tuple[str, Path]]:
-    """(name, dir) for the default profile + every named profile, sorted."""
+    """(name, dir) for the default profile + every live named profile, sorted. Same identity
+    predicate as ``profile list``: infra dirs (``sessions/``, ``logs/``) and tombstones are not
+    teammates (#99392), and neither is a marker-carrying dir whose name is not a profile id —
+    a parked backup or staging dir must never become a ``message_agent`` target (#116905)."""
+    from hermes_constants import PROFILE_ID_RE, named_profile_is_live
+
     profiles = root / "profiles"
-    named = _swallow(lambda: [(c.name, c) for c in sorted(profiles.iterdir()) if c.is_dir()] if profiles.is_dir() else [], [])
+    named = _swallow(
+        lambda: [
+            (c.name, c)
+            for c in sorted(profiles.iterdir())
+            if c.name != "default" and PROFILE_ID_RE.match(c.name) and named_profile_is_live(c)
+        ]
+        if profiles.is_dir()
+        else [],
+        [],
+    )
     return [("default", root), *named]
 
 
@@ -126,14 +141,68 @@ def _bullet(handle: str, *parts: str) -> str:
 
 def _profile_role(profile_dir: Path) -> str:
     """Teammate role line: Bot Mode title — profile description; tells a teammate
-    WHO to message for a job. Single-line, ≤160 chars, "" when neither. Never raises."""
+    WHO to message for a job. A friendly ``display_name`` (``hermes profile rename``) that
+    differs from both the folder id and the title leads the line, so an untagged
+    "talk to Scribe" maps to the folder handle without a disk search (#100671).
+    Single-line, ≤160 chars, "" when nothing. Never raises."""
     def _role() -> str:
         data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
-        line = _role_line(str((_bots_meta(data) or {}).get("title") or "").strip(),
-                          str(data.get("description") or "").strip())
+        title = str((_bots_meta(data) or {}).get("title") or "").strip()
+        display = str(data.get("display_name") or "").strip()
+        if display.lower() in (profile_dir.name.lower(), title.lower()):
+            display = ""
+        line = _role_line(display, title, str(data.get("description") or "").strip())
         return " ".join(line.split())[:160]
 
     return _swallow(_role, "")
+
+
+def _friendly_names(profile_dir: Path) -> tuple[str, str]:
+    """(Bot Mode title, profile.yaml ``display_name``) for a profile, "" when unset. Never raises."""
+    def _read() -> tuple[str, str]:
+        data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
+        return (str((_bots_meta(data) or {}).get("title") or "").strip(),
+                str(data.get("display_name") or "").strip())
+
+    return _swallow(_read, ("", ""))
+
+
+def _display_name(name: str, profile_dir: Path) -> str:
+    """Human-facing sender name, in the Desktop's ``botFriendlyNames`` order: Bot Mode title,
+    then profile.yaml ``display_name`` (``hermes profile rename``), else the @handle — the
+    renamed primary signs as ``Maia (@hermes)``, not ``hermes (@hermes)`` (#89720)."""
+    return next((n for n in _friendly_names(profile_dir) if n), None) or _handle(name)
+
+
+# Tokens the Desktop mention parser reserves; a bot titled "Hermes" never hijacks @hermes.
+_RESERVED_ALIASES = frozenset({"all", "everyone", "user", "default", "hermes"})
+
+
+def alias_forms(value: str) -> set[str]:
+    """Lower-cased mention forms of a friendly name, mirroring the Desktop's
+    ``mentionNameForms``: slugified (``"Dr. Foo"`` → ``dr-foo``, what autocomplete inserts)
+    and collapsed (``drfoo``). Reserved tokens and empty forms are dropped."""
+    name = str(value or "").strip().lower()
+    slug = re.sub(r"[^a-z0-9_-]+", "-", name).strip("-")
+    collapsed = re.sub(r"[^a-z0-9_-]+", "", name)
+    return {f for f in (slug, collapsed)
+            if f and re.fullmatch(r"[a-z0-9][a-z0-9_-]*", f) and f not in _RESERVED_ALIASES}
+
+
+def local_alias_map(root: Path) -> dict[str, set[str]]:
+    """``alias form → {folder ids}`` for every local profile's friendly names (profile.yaml
+    ``display_name`` and the Bot Mode title). Folder ids themselves are not aliases: the
+    caller matches those first, so a target that is an exact folder id always addresses that
+    folder — a friendly name colliding with ANOTHER folder id never steals it. Ambiguity
+    (one alias form shared by several profiles) surfaces as a multi-id set. Never raises."""
+    def _build() -> dict[str, set[str]]:
+        aliases: dict[str, set[str]] = {}
+        for name, profile_dir in _roster(root):
+            for form in set().union(*(alias_forms(f) for f in _friendly_names(profile_dir))):
+                aliases.setdefault(form, set()).add(name)
+        return aliases
+
+    return _swallow(_build, {})
 
 
 def _peers(root: Path) -> list[str]:
@@ -156,6 +225,12 @@ def _remote_roster(root: Path) -> list[dict]:
     return _swallow(_read, [])
 
 
+def local_taken_forms(root: Path) -> set[str]:
+    """Bare forms this gateway's own profiles answer to (handles + friendly-name slugs); a remote
+    row must not be offered under any of them, since local resolution wins (``_resolve_local_name``)."""
+    return {_handle(name) for name, _d in _roster(root)} | set(local_alias_map(root))
+
+
 def _remote_paragraph(root: Path) -> str:
     """Addendum for agents on OTHER connected machines; only when the relay roster is non-empty."""
     roster = _remote_roster(root)
@@ -165,13 +240,13 @@ def _remote_paragraph(root: Path) -> str:
 
     lines = [
         _bullet(f"@{form}", f"on {row['connection_label'] or row['connection_id']}", row["title"], row["description"])
-        for row, form in zip(roster, remote_target_forms(roster))
+        for row, form in zip(roster, remote_target_forms(roster, local_taken_forms(root)))
     ]
     return (
         "\n\nTeammates on OTHER connected machines (reachable through the "
         "Desktop relay — message them with message_agent exactly like local "
         "teammates; replies arrive as completion notifications the same "
-        "way):\n" + "\n".join(lines)
+        "way, or via reply_delivery=\"poll\" as below):\n" + "\n".join(lines)
     )
 
 
@@ -207,7 +282,9 @@ def _build_section(home: Path) -> str:
         "with your attribution prefixed automatically and returns an acknowledgement "
         "immediately — it never returns the reply. Send it, finish your turn, and "
         "the reply arrives later as a background-process completion notification "
-        "that wakes you; relay it to the user then, attributed to that agent. "
+        "that wakes you; relay it to the user then, attributed to that agent — unless "
+        "the ack returns reply_delivery=\"poll\", in which case follow its "
+        "process(action=\"wait\") instruction before ending the turn. "
         "COMPOSE every message yourself — say what YOU need from that agent; never "
         "forward the user's words verbatim, and never reveal private 1:1 chat "
         "content. When the user says \"ask <name>\" or \"tell <name> ...\", that is "
@@ -288,7 +365,17 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         skills_root = resolved / "skills"
         if not skills_root.is_dir():
             return []
-        return sorted(str(p.parent.relative_to(skills_root)) for p in skills_root.glob("**/SKILL.md"))
+        # The same walk every other reader of this tree uses (skills_list/skill_view, the prompt's
+        # skills index, skill_count): it prunes EXCLUDED_SKILL_DIRS — ``.archive``, ``.curator_backups``,
+        # ``node_modules`` … — and each skill's support dirs. A raw ``**/SKILL.md`` glob counted files
+        # the model can never invoke, so archiving a skill, or the curator writing a backup, flipped the
+        # epoch and forced every Bot Chat to rebuild a system prompt whose skills index had not changed.
+        # iter_skill_index_files is also org-token-gated, so the epoch moves on an org switch as well —
+        # intended: a different org sees a different skills index, so it needs a different prompt.
+        from agent.skill_utils import iter_skill_index_files
+
+        return sorted(str(p.parent.relative_to(skills_root))
+                      for p in iter_skill_index_files(skills_root, "SKILL.md"))
 
     surface["soul"] = _swallow(_soul, "")
     surface["skills"] = _swallow(_skills, [])

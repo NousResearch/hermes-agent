@@ -13,7 +13,9 @@ import {
   NO_PROJECT_ID,
   overlayLiveLanes,
   overlayLivePreviews,
+  projectOwnerBySessionId,
   reconcileEnteredProjectSessions,
+  sessionBucketId,
   sessionMatchesProjectFilter,
   sessionProjectColor,
   type SidebarProjectTree,
@@ -615,6 +617,48 @@ describe('sessionProjectColor', () => {
 })
 
 describe('overlayLiveLanes', () => {
+  // Issue layout: explicit "work" (/work) + explicit "app" (/work/repos/app);
+  // the session's cwd is the SIBLING linked worktree /work/repos/app-2, which
+  // the backend's git common-root probe assigns to "app" while the renderer's
+  // cwd walk alone only finds "work".
+  it.each([null, '/work/repos/app'])(
+    'entering an ancestor project does not inject a backend-owned sibling worktree session (git_repo_root=%s)',
+    gitRepoRoot => {
+      const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
+
+      const ancestor = projectNode({
+        id: 'p_work',
+        path: '/work',
+        repos: [{ id: '/work', label: 'work', path: '/work', groups: [], sessionCount: 0 }]
+      })
+
+      const appRepo = {
+        id: '/work/repos/app',
+        label: 'app',
+        path: '/work/repos/app',
+        groups: [lane({ id: '/work/repos/app-2', label: 'app-2', path: '/work/repos/app-2', sessions: [] })],
+        sessionCount: 0
+      }
+
+      // Overview snapshot: the row sits beyond the preview window, so only the
+      // backend's claimed-id set knows the owner.
+      const repo = projectNode({ id: 'p_app', path: '/work/repos/app', previewSessions: [], sessionIds: ['sibling'] })
+      const owners = projectOwnerBySessionId([ancestor, repo])
+
+      const enteredAncestor = overlayLiveLanes(ancestor, [sibling], new Set(), owners)
+      const enteredRepo = overlayLiveLanes({ ...repo, repos: [appRepo] }, [sibling], new Set(), owners)
+
+      expect(enteredAncestor.sessionCount).toBe(0)
+      expect(enteredRepo.repos[0].groups.find(g => g.id === '/work/repos/app-2')?.sessions.map(s => s.id)).toEqual([
+        'sibling'
+      ])
+      // A row the tree does not know yet (just created) still lands by cwd.
+      const fresh = makeCwdSession('/work/notes', { id: 'fresh', git_repo_root: null })
+
+      expect(overlayLiveLanes(ancestor, [fresh], new Set(), owners).sessionCount).toBe(1)
+    }
+  )
+
   it('keeps an overview preview visible when the hydrated drill-in is stale', () => {
     const staleHistory = makeCwdSession('/www/app', {
       id: 'stale-history',
@@ -1085,6 +1129,31 @@ describe('overlayLiveLanes', () => {
 })
 
 describe('overlayLivePreviews', () => {
+  it.each([null, '/work/repos/app'])(
+    'shows a backend-owned sibling worktree session only under its repo project (git_repo_root=%s)',
+    gitRepoRoot => {
+      const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
+      const ancestor = projectNode({ id: 'p_work', path: '/work', previewSessions: [], sessionCount: 0 })
+
+      const repo = projectNode({
+        id: 'p_app',
+        path: '/work/repos/app',
+        previewSessions: [sibling],
+        sessionCount: 1,
+        sessionIds: ['sibling']
+      })
+
+      const previews = overlayLivePreviews(
+        [ancestor, repo],
+        [sibling],
+        [makeProject('p_work', ['/work']), makeProject('p_app', ['/work/repos/app'])],
+        3
+      )
+
+      expect(previews.p_work).toBeUndefined()
+      expect(previews.p_app?.map(session => session.id)).toEqual(['sibling'])
+    }
+  )
   it('merges live sessions into a project preview, live first, capped to the limit', () => {
     const project = projectNode({
       id: '/www/app',
@@ -1246,5 +1315,23 @@ describe('project filter row rule (#97762)', () => {
   it('a live id still narrows', () => {
     expect(sessionMatchesProjectFilter(appRow, ['p_app'], projects)).toBe(true)
     expect(sessionMatchesProjectFilter(homeRow, ['p_app'], projects)).toBe(false)
+  })
+
+  // Issue layout: the sibling worktree /work/repos/app-2 sits under the
+  // ancestor "work" folder by cwd alone, but the backend tree owns it via "app".
+  // Filter, bucket and color must follow that owner, like the lane overlay does.
+  it('follows the backend owner map for a sibling worktree row, not the cwd walk', () => {
+    const explicit = [makeProject('p_work', ['/work']), { ...makeProject('p_app', ['/work/repos/app']), color: '#abc' }]
+    const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: null })
+
+    const owners = projectOwnerBySessionId([
+      projectNode({ id: 'p_work', path: '/work' }),
+      projectNode({ id: 'p_app', path: '/work/repos/app', sessionIds: ['sibling'] })
+    ])
+
+    expect(sessionMatchesProjectFilter(sibling, ['p_work'], explicit, owners)).toBe(false)
+    expect(sessionMatchesProjectFilter(sibling, ['p_app'], explicit, owners)).toBe(true)
+    expect(sessionBucketId(sibling, explicit, owners)).toBe('p_app')
+    expect(sessionProjectColor(sibling, explicit, owners)).toBe('#abc')
   })
 })

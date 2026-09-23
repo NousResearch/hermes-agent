@@ -350,7 +350,14 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
           }
         : undefined
 
-    completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
+    completeAssistantMessage(
+      sessionId,
+      finalText,
+      payload?.response_previewed,
+      failure,
+      occurredAt,
+      payload?.persisted_turn
+    )
 
     // Onboarding's first build: between turns is the only moment Setup may
     // put a check-in into that session (no-op everywhere else).
@@ -360,6 +367,11 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // payment required) — cache it + raise a billing-specific toast.
     if (payload?.billing) {
       surfaceBillingBlock(sessionId, payload.billing)
+    }
+
+    // History-commit note (e.g. a mid-turn desync) the gateway chose to surface.
+    if (typeof payload?.warning === 'string' && payload.warning.trim()) {
+      notify({ kind: 'warning', message: payload.warning })
     }
 
     if (isActiveEvent) {

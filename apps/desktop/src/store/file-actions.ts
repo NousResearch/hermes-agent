@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
@@ -71,6 +72,19 @@ export async function copyFilePath(path: string): Promise<void> {
   } catch (error) {
     notifyError(error, translateNow('common.copyFailed'))
   }
+}
+
+/** Whether "Open containing folder" can work for a session's workspace: only
+ *  when that session's backend is this computer. A row tagged with a Connections
+ *  gateway other than `local` runs there; an untagged row runs on the window's
+ *  primary, remote or not (the rule the sidebar menus already apply). */
+export function shouldOfferLocalReveal(
+  connectionId: null | string | undefined,
+  primaryRemote = isDesktopFsRemoteMode()
+): boolean {
+  const tagged = String(connectionId || '').trim()
+
+  return tagged ? tagged === LOCAL_CONNECTION_ID : !primaryRemote
 }
 
 /** Remote Files panel can list gateway files but Reveal/Rename/Delete are local-only.

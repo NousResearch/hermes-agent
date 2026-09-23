@@ -8,6 +8,7 @@ model_tools."""
 import ast
 import functools
 import importlib
+import inspect
 import json
 import logging
 import sys
@@ -83,18 +84,33 @@ def _module_registers_tools(module_path: Path) -> bool:
         for stmt in tree.body)
 
 
+def _tool_module_candidates(tools_path: Path) -> List[Path]:
+    """Flat ``tools/*.py`` modules plus the package entry point ``tools/<pkg>/tool.py``, in one
+    sorted list. Only ``tool.py`` is scanned in a package, so every other file in it is a library
+    by construction. Sorted after merging: ``register()`` lets a same-name, same-toolset duplicate
+    overwrite silently, so the import order must not depend on file depth."""
+    candidates = list(tools_path.glob("*.py")) + list(tools_path.glob("*/tool.py"))
+    return sorted(candidates)
+
+
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
     """Import built-in self-registering tool modules and return their module names. The
     per-file AST scan costs ~145 ms over ~100 files, so verdicts are memoized on disk keyed
     by ``(mtime_ns, size)``; a mismatch or corrupt cache re-scans that file. The write is
     best-effort and atomic, so concurrent processes race harmlessly."""
-    tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    tools_path = (Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent).resolve()
     cache = _load_discovery_cache()
     fresh_cache: Dict[str, list] = {}
     cache_dirty = False
     module_names: List[str] = []
-    for path in sorted(tools_path.glob("*.py")):
+    for path in _tool_module_candidates(tools_path):
         if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+            continue
+        rel_parts = path.relative_to(tools_path).with_suffix("").parts
+        if len(rel_parts) > 1 and not (path.parent / "__init__.py").exists():
+            # setuptools' package finder drops a directory without __init__.py, so this tool would
+            # register from a checkout and vanish from an installed wheel.
+            logger.warning("Skipping %s: package %s has no __init__.py", path, path.parent.name)
             continue
         abs_path = str(path.resolve())
         try:
@@ -110,7 +126,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
             cache_dirty = True
         fresh_cache[abs_path] = [stat_key[0], stat_key[1], registers]
         if registers:
-            module_names.append(f"tools.{path.stem}")
+            module_names.append(".".join(("tools", *rel_parts)))
 
     # Drop entries for files that no longer exist; rewrite only when changed.
     if cache_dirty or set(fresh_cache) != set(cache):
@@ -155,7 +171,8 @@ def _save_discovery_cache(cache: Dict[str, list]) -> None:
         return
     try:
         from utils import atomic_json_write  # stdlib+yaml only; no cycle
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, cache, indent=0)
     except Exception as e:
         logger.debug("Could not write tool discovery cache %s: %s", path, e)
@@ -210,6 +227,8 @@ _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
 _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 _check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
+_check_fn_ever_good: Set[tuple[Callable, Optional[str]]] = set()  # probes that admitted tools this process
+_check_fn_core_drop_warned: Set[tuple[Callable, Optional[str]]] = set()  # once-per-process WARNING gate
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: Set[Callable] = set()
@@ -251,13 +270,18 @@ def check_fn_cache_scope() -> Optional[str]:
     try:
         from gateway.session_context import get_session_env
         if all(str(get_session_env(k, "") or "").strip() for k in _BROWSER_IDENTITY_KEYS):
-            return CHECK_FN_CACHE_BYPASS
+            # api_server binds a server-derived principal + transport family on EVERY request, so
+            # identity-present != controller-attached; only bypass when the extension-control
+            # feature is actually on (#79047).
+            from gateway.browser_control_broker import browser_control_enabled
+            if browser_control_enabled():
+                return CHECK_FN_CACHE_BYPASS
     except Exception:
         pass
     try:
-        from agent.secret_scope import is_multiplex_active
+        from agent.secret_scope import serves_routed_profile
         from hermes_constants import get_hermes_home_override
-        if not is_multiplex_active():
+        if not serves_routed_profile():
             return None
         override = get_hermes_home_override()
         return str(Path(override).expanduser().resolve()) if override else CHECK_FN_CACHE_BYPASS
@@ -267,33 +291,34 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
-def _run_check_fn_uncached(fn: Callable, *, unresolved_scope: bool = False) -> bool:
+def _run_check_fn_uncached(fn: Callable) -> bool:
     """Run an availability check without cache/grace handling."""
-    from agent.secret_scope import UnscopedSecretError
+    from agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
         return bool(fn())
     except UnscopedSecretError:
-        if unresolved_scope:
-            # Expected fail-closed probe: with multiplexing on, boot-time check_fns run before
-            # any profile secret scope exists, so get_secret raises by design. No traceback,
-            # so it isn't mistaken for a crashed check_fn.
+        # The verdict comes from the LIVE scope at the catch site, not from which registry branch
+        # ran the probe: ``no_cache_check_fn`` probes skip the cache-scope lookup entirely, so a
+        # branch-derived hint misreported every boot-time uncached probe as a lost scope (#110635).
+        if current_secret_scope() is None:
+            # Expected fail-closed probe: with multiplexing on, boot-time check_fns run before any
+            # profile secret scope exists, so get_secret raises by design. No traceback, so this
+            # cannot be mistaken for a crashed check_fn (#100697).
             logger.debug(
-                # The tool re-probes on the first scoped turn — log without a traceback so this cannot be
-                # mistaken for a crashed check_fn (#100697).
                 "check_fn %s hit the multiplex fail-closed path with no "
                 "profile secret scope active; dependent tools re-probe on the first scoped turn",
                 _fn_label(fn))
         else:
-            # The scope resolved but the read still failed closed: a genuinely lost scope.
+            # The caller IS scoped but the read still failed closed: the probe dropped the scope on
+            # the way to get_secret (a bare thread/executor hop) — a spawn-site bug, kept loud.
             logger.warning(
                 "check_fn %s raised UnscopedSecretError while the profile cache "
                 "scope was resolved; dependent tools will be unavailable this turn",
                 _fn_label(fn), exc_info=True)
     except Exception:
-        detail = " while profile cache scope was unresolved" if unresolved_scope else ""
         logger.warning(
-            "check_fn %s raised%s; dependent tools will be unavailable this turn",
-            _fn_label(fn), detail, exc_info=True)
+            "check_fn %s raised; dependent tools will be unavailable this turn",
+            _fn_label(fn), exc_info=True)
     return False
 
 
@@ -304,21 +329,28 @@ def _check_fn_cached(fn: Callable) -> bool:
         return _run_check_fn_uncached(fn)
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:
-        return _run_check_fn_uncached(fn, unresolved_scope=True)
+        return _run_check_fn_uncached(fn)
     cache_key = (fn, scope)
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)  # leaves only entries within TTL
         cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             return cached[1]
+    exc_info = None
     try:
         value, outcome = bool(fn()), "returned False"
-    except Exception:
-        value, outcome = False, "raised"
+    except Exception as exc:
+        # Keep the exception for the verdict log below (emitted outside this block, where
+        # ``exc_info=True`` would resolve to nothing): a check_fn that raises is a bug in the probe
+        # or its resolver, and a bare "raised" verdict reads as "nothing configured" (#87950).
+        value, outcome, exc_info = False, "raised", exc
+    # Resolved outside the cache lock: the registry snapshot takes its own lock.
+    core_dropped = sorted(_core_tools_gated_by(fn)) if not value else []
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         if value:
             _check_fn_last_good[cache_key] = now
+            _check_fn_ever_good.add(cache_key)
             _check_fn_cache[cache_key] = (now, True)
             return True
         last_good = _check_fn_last_good.get(cache_key)
@@ -330,12 +362,37 @@ def _check_fn_cached(fn: Callable) -> bool:
                 _fn_label(fn), outcome, _CHECK_FN_FAILURE_GRACE_SECONDS)
             return True
 
-        # No recent success (or grace expired) — honor the failure; logged so silent tool
-        # loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
-            "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome)
+        # No recent success (or grace expired) — honor the failure. A False verdict is the
+        # expected state for optional, unconfigured toolsets; only a raised probe is actionable.
+        # Core (non-deferrable) tools are the exception when they were available earlier in
+        # this process and the probe now fails: dropped, they leave neither the schema nor the
+        # tool_search catalog, so the model's "no such tool" is accurate and nothing points at
+        # the probe. That regression is a WARNING once per probe per process (#112649). A core
+        # tool whose probe never succeeded (browser, image_gen, HA unconfigured on a stock home)
+        # is the expected state and keeps the INFO verdict.
+        if core_dropped and cache_key in _check_fn_ever_good and cache_key not in _check_fn_core_drop_warned:
+            _check_fn_core_drop_warned.add(cache_key)
+            logger.warning(
+                "check_fn %s %s; previously available core tool(s) %s dropped (non-deferrable, "
+                "so not searchable either); dependent tools will be unavailable this turn",
+                _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
+        else:
+            log = logger.warning if exc_info else logger.info
+            log(
+                "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
+                exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)
         return False
+
+
+def _core_tools_gated_by(fn: Callable) -> Set[str]:
+    """Names of ``_HERMES_CORE_TOOLS`` members whose registered ``check_fn`` is *fn*."""
+    try:
+        from toolsets import _HERMES_CORE_TOOLS
+        core = frozenset(_HERMES_CORE_TOOLS)
+    except Exception:
+        return set()
+    return {e.name for e in registry._snapshot_entries() if e.check_fn is fn and e.name in core}
 
 
 def _memo_check(fn: Callable, memo: Dict[Callable, bool]) -> bool:
@@ -350,6 +407,8 @@ def invalidate_check_fn_cache() -> None:
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+        _check_fn_ever_good.clear()
+        _check_fn_core_drop_warned.clear()
 
 
 def get_cached_check_fn_result(fn: Callable) -> Optional[bool]:
@@ -602,6 +661,17 @@ class ToolRegistry:
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
+        # Reject malformed schemas at registration, not at request time: a non-dict
+        # ``parameters`` (e.g. a list) serializes into every provider request and 400s the
+        # whole turn far from the offending plugin. Failing here names the culprit instead.
+        if not isinstance(schema, dict):
+            raise ValueError(
+                f"Tool {name!r}: schema must be a dict, got {type(schema).__name__}")
+        params = schema.get("parameters")
+        if params is not None and not isinstance(params, dict):
+            raise ValueError(
+                f"Tool {name!r}: schema['parameters'] must be an object (JSON Schema dict), "
+                f"got {type(params).__name__}")
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner
@@ -815,6 +885,10 @@ class ToolRegistry:
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
+            # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
+            # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
+            # plugin handler is not broken by every field the dispatcher injects (#68318).
+            kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async
                 result = _run_async(entry.handler(args, **kwargs))
@@ -941,3 +1015,16 @@ def tool_error(message, **extra) -> str:
 def tool_result(data=None, **kwargs) -> str:
     """JSON-encode a dict positional arg *or* keyword arguments (not both)."""
     return json.dumps(data if data is not None else kwargs, ensure_ascii=False)
+
+
+def _kwargs_accepted_by(handler: Callable, kwargs: dict) -> dict:
+    """*kwargs* narrowed to what *handler*'s signature declares; everything when it takes ``**kwargs`` or
+    cannot be introspected (builtins, some C callables)."""
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return kwargs
+    keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    return {k: v for k, v in kwargs.items() if k in parameters and parameters[k].kind in keyword_kinds}

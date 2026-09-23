@@ -47,6 +47,16 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert "mcp_granola_get_account_info" in agent.valid_tool_names
     assert len(agent.tools) == 3
 
+    side = _agent(["read_file", "terminal"])
+    side.side_agent = True
+    monkeypatch.setattr(model_tools, "get_tool_definitions",
+                        lambda **kw: new_defs + [_tool("manage_connections")])
+
+    _mcp_agent.refresh_agent_mcp_tools(side)
+
+    assert "manage_connections" not in side.valid_tool_names
+    assert "manage_connections" not in [t["function"]["name"] for t in side.tools]
+
 
 def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):
     """B1 regression: a rebuild must NOT drop post-build-injected tools.
@@ -221,7 +231,7 @@ def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
     import time
     from hermes_cli import mcp_startup
 
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
     import hermes_cli.config as cfg
     monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 999.0})
 

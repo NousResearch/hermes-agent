@@ -1,5 +1,6 @@
 """Toolset helpers: get/resolve/validate named tool groups (static TOOLSETS + registry-registered)."""
 
+from pathlib import Path
 from typing import Dict, List, Any, Set, Optional, Tuple
 
 
@@ -14,7 +15,6 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     "vision_analyze", "image_generate",
     "skills_list", "skill_view", "skill_manage",
-    "wisdom_inbox", "wisdom_inspect", "present_wisdom_consent",  # Service-gated on Wisdom setup.
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
@@ -102,11 +102,7 @@ TOOLSETS = {
     "skills": _ts(
         "Access, create, edit, and manage skill documents with specialized "
         "instructions and knowledge",
-        ["skills_list", "skill_view", "skill_manage", "wisdom_inbox", "wisdom_inspect", "present_wisdom_consent"],
-    ),
-    "wisdom_consent": _ts(
-        "Present Collective Wisdom consent in the main user-facing conversation",
-        ["present_wisdom_consent"],
+        ["skills_list", "skill_view", "skill_manage"],
     ),
     # web_search belongs to `web`/`search` only. Listing it here too let
     # `disabled_toolsets: [browser]` (headless/Docker deployments) strip
@@ -144,7 +140,17 @@ TOOLSETS = {
         "reactions (GUI sessions only)",
         ["read_terminal", "close_terminal", "desktop_preview", "drive_preview",
          "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
-         "setup_mcp", "gui_tour", "show_tip"],
+         "gui_tour", "show_tip"],
+    ),
+    # Enabled per SESSION whose PROFILE carries ``role: setup`` in its backend-written
+    # profile.yaml (tui_gateway/server.py::_load_enabled_toolsets); stripped from every
+    # other profile's selection whatever the config, env pin or client asked for
+    # (model_tools._select_tool_names). Never configurable, never in `hermes tools`.
+    "setup": _ts(
+        "Onboarding-only surface for the setup profile: catalog plugin/skill install "
+        "requests through the approval card",
+        ["manage_catalog"],
+        role="setup",
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
@@ -330,9 +336,11 @@ def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     return to_remove - core
 
 
-# Memo keyed on (name, include_registry, id(registry), registry generation);
-# engages only at the public entry (visited is None).
-_resolve_toolset_memo: Dict[Tuple[str, bool, int, int], List[str]] = {}
+# Memo keyed on (name, include_registry, id(registry), registry generation, profile scope);
+# engages only at the public entry (visited is None). The scope is part of the key because a
+# multiplexed process resolves ``mcp-<server>`` per profile overlay: without it profile B got
+# profile A's tool names for a server B never connected (#106005).
+_resolve_toolset_memo: Dict[Tuple[str, bool, int, int, str], List[str]] = {}
 
 
 def _plugin_platform_bundle(name: str) -> List[str]:
@@ -366,7 +374,7 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     """
     external_call = visited is None
     if external_call:
-        memo_key = (name, include_registry, *_registry_generation())
+        memo_key = (name, include_registry, *_registry_generation(), _registry_call("current_scope_key", ""))
         cached = _resolve_toolset_memo.get(memo_key)
         if cached is not None:
             return list(cached)
@@ -437,6 +445,18 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
 def get_toolset_names() -> List[str]:
     """Sorted names of all toolsets (static + plugin), excluding aliases."""
     return sorted(set(TOOLSETS.keys()) | set(_plugin_display_names()))
+
+
+def profile_role_toolsets(profile_home: Optional[Path] = None) -> Tuple[Set[str], Set[str]]:
+    """``(granted, denied)`` for the profile at *profile_home* (default: the in-scope home; a session's
+    home override, when bound, IS its profile dir): toolsets reserved for the role in its backend-written
+    ``profile.yaml``, and toolsets reserved for any other role. An ordinary profile is granted none."""
+    from hermes_cli.profiles import read_profile_meta
+    from hermes_constants import get_hermes_home
+    role = read_profile_meta(Path(profile_home or get_hermes_home())).get("role")
+    granted = {name for name, spec in TOOLSETS.items() if role is not None and spec.get("role") == role}
+    denied = {name for name, spec in TOOLSETS.items() if spec.get("role") not in (None, role)}
+    return granted, denied
 
 
 def validate_toolset(name: str) -> bool:

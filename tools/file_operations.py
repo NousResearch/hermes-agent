@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict
 from pathlib import Path
 
-from tools.binary_extensions import BINARY_EXTENSIONS
+from tools.binary_extensions import has_binary_extension
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
@@ -201,11 +201,25 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
         result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         exit_code = result.get("returncode", 0)
+        output = result.get("output", "")
+        # The command wrapper's own ``builtin cd -- <cwd> || exit 126`` failed: the
+        # working directory does not exist on this backend (typically ``terminal.cwd``
+        # is a host path and the backend is a container). Name that, or the raw
+        # ``cd:`` line reads like a sandbox/mount fault at the requested path.
+        cwd_error = ""
+        if exit_code == 126 and "cd: " in output:
+            from tools.terminal_tool_config import _is_container_backend
+            env_type = getattr(self.env, "env_type", None)
+            hint = ("; for container backends use a path inside the container, e.g. /workspace"
+                    if env_type and _is_container_backend(env_type) else "")
+            cwd_error = output = (
+                f"working directory {effective_cwd!r} does not exist on the active terminal "
+                f"backend (check terminal.cwd or the session cwd{hint}). {output.strip()}")
         # A stdin write failure with a clean child exit is still a failure: the
         # child never received the input.
         if result.get("stdin_error") and exit_code == 0:
             exit_code = 1
-        return ExecuteResult(stdout=result.get("output", ""), exit_code=exit_code)
+        return ExecuteResult(stdout=output, exit_code=exit_code, cwd_error=cwd_error)
 
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached); rg goes through
@@ -214,6 +228,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._resolve_command(cmd) is not None
         if cmd not in self._command_cache:
             result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
+            if result.cwd_error:  # the probe never ran: no verdict to cache
+                return False
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
 
@@ -292,7 +308,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """Legacy text-layer binary check: extension, else >30% non-printable chars."""
-        if os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
+        if has_binary_extension(path):
             return True
         if content_sample:
             # Undecodable bytes arrive as U+FFFD ("printable", so the ratio misses
@@ -312,6 +328,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         A/B, while dropping numbers regressed line-referencing."""
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
+        # A trailing newline terminates the final line — it does not start a new,
+        # empty one. Splitting without dropping it rendered a phantom "<N+1>|"
+        # gutter line on every newline-terminated file (`cat -n` semantics).
+        # Exactly ONE terminator is dropped, so a genuinely selected trailing
+        # blank line in a page keeps its own number.
+        if content.endswith('\n'):
+            content = content[:-1]
         return '\n'.join(
             f"{i}|{line if len(line) <= max_line_length else line[:max_line_length] + '... [truncated]'}"
             for i, line in enumerate(content.split('\n'), start=start_line))
@@ -436,7 +459,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _probe_regular_file(self, path: str) -> tuple[int, str]:
         """Byte size of a REGULAR file: ``(file_size, status)`` with status ``"ok"``,
-        ``"missing"``, ``"not_regular"`` or ``"bad_size"`` (unparseable ``wc``).
+        ``"missing"``, ``"not_regular"``, ``"bad_size"`` (unparseable ``wc``),
+        ``"env_unavailable"``, or the named working-directory error when the exec
+        wrapper itself failed (``_env_unavailable_error`` surfaces it verbatim).
         ``wc -c <`` on a writer-less FIFO/socket//dev/zero blocks forever and a
         name-based blocklist can't cover a FIFO (a file TYPE at any path); ``[ -f ]``
         is a stat (symlinks followed) so it answers without touching content."""
@@ -454,13 +479,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if stat_output == NOT_REGULAR_SENTINEL:
             return 0, "not_regular"
         if stat_result.exit_code != 0:
-            return 0, "env_unavailable"
+            return 0, stat_result.cwd_error or "env_unavailable"
         try:
             return int(stat_output), "ok"
         except ValueError:
             return 0, "bad_size"
 
-    def _env_unavailable_error(self, path: str) -> ReadResult:
+    def _env_unavailable_error(self, path: str, status: str = "env_unavailable") -> ReadResult:
+        if status != "env_unavailable":
+            return ReadResult(error=status)
         return ReadResult(error=(f"Terminal environment unavailable: could not stat {path} "
                                  "(the sandbox may still be starting or was removed). Retry shortly."))
 
@@ -469,7 +496,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         allows (base64 sample), else the legacy text heuristic (sample is None)."""
         sample_bytes = self._sample_file_bytes(path)
         if sample_bytes is not None:
-            ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+            ext_binary = has_binary_extension(path)
             return ext_binary or self._is_likely_binary_bytes(sample_bytes), sample_bytes
         sample_output = _strip_terminal_fence_leaks(self._head(path, 1000).stdout)
         return self._is_likely_binary(path, sample_output), None
@@ -490,7 +517,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         """Read ``path`` as UTF-16 transcoded to UTF-8, or None (caller falls back
         to the binary-file error). Skips known-binary extensions and files over
         10 MiB. ``path`` must already be expanded."""
-        if os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS or file_size > self._UTF16_MAX_BYTES:
+        if has_binary_extension(path) or file_size > self._UTF16_MAX_BYTES:
             return None
         snippet = (
             "import sys, json, os\n"
@@ -554,9 +581,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             hint_parts.append(
                 f"Use offset={end_line + 1} to continue reading "
                 f"(showing {offset}-{end_line} of {total_lines} lines)")
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
+        truncated_lines = any(len(line) > max_line_length for line in content.split('\n'))
         return ReadResult(
             content=self._add_line_numbers(content, offset), total_lines=total_lines,
-            file_size=file_size, truncated=truncated, hint=" ".join(hint_parts))
+            file_size=file_size, truncated=truncated, hint=" ".join(hint_parts),
+            truncated_lines=True if truncated_lines else None)
 
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination, binary detection, and line numbers.
@@ -576,7 +607,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
         # Images / known-binary extensions never inline content; the sequential
         # path stops at the probes for them, so don't stream their bytes.
-        if self._is_image(path) or os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
+        if self._is_image(path) or has_binary_extension(path):
             return self._read_file_sequential(path, offset, limit)
 
         from tools.tool_output_limits import get_max_line_length
@@ -697,10 +728,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         kept = bytearray()      # first ``clamp`` bytes of that line
         have_partial = False    # that line has bytes but no newline yet
         last_byte = b""
+        digest = hashlib.sha256()
         try:
             with open(full, "rb") as fh:
                 sample = fh.read(1000)
-                ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+                ext_binary = has_binary_extension(path)
                 if ext_binary or self._is_likely_binary_bytes(sample):
                     return self._read_binary_file(path, offset, limit, file_size, sample)
                 fh.seek(0)
@@ -708,6 +740,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     chunk = fh.read(1 << 20)
                     if not chunk:
                         break
+                    digest.update(chunk)
                     last_byte = chunk[-1:]
                     if lineno > end_line:
                         # Past the window: only the line count and trailing byte
@@ -740,10 +773,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             page.append(bytes(kept) + b"\n")
 
         read_output = _strip_terminal_fence_leaks(b"".join(page).decode("utf-8", errors="replace"))
-        return self._assemble_read_result(
+        result = self._assemble_read_result(
             read_output, offset=offset, end_line=end_line, total_lines=total_lines,
             file_size=file_size,
             file_ends_with_newline=(last_byte == b"\n") if file_size else None)
+        result._snapshot = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, digest.digest())
+        return result
 
     @staticmethod
     def _image_redirect_result(file_size: int) -> ReadResult:
@@ -821,8 +856,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._read_file_missing(path, offset, limit)
         if status == "not_regular":
             return self._not_regular_error(path)
-        if status == "env_unavailable":
-            return self._env_unavailable_error(path)
+        if status not in ("ok", "bad_size"):
+            return self._env_unavailable_error(path, status)
         if self._is_image(path):  # never inlined — redirect to the vision tool
             return self._image_redirect_result(file_size)
         is_binary, sample_bytes = self._detect_binary(path)
@@ -869,6 +904,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         read path so the BOM strip, pagination hint, ``cut`` newline-artifact fix and
         the ambiguous-silence guards never drift apart. ``file_ends_with_newline`` is
         None when the caller could not tell (artifact left alone, as before)."""
+        # ``wc -l`` counts newlines, not lines: a nonempty file whose last byte
+        # is not a newline holds one more line than the count (#3907). Adjust
+        # here — the single choke point — so total_lines, truncation, and the
+        # past-EOF guard agree on every read path (compound, sequential, native).
+        if file_size > 0 and file_ends_with_newline is False:
+            total_lines += 1
         if offset == 1:  # only the first chunk can carry a BOM (byte 0)
             read_output, _ = _strip_bom(read_output)
         truncated = total_lines > end_line
@@ -891,9 +932,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     f"Note: offset {offset} is beyond the end of the file "
                     f"({total_lines} lines total). Retry with offset <= "
                     f"{total_lines}."))
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
+        truncated_lines = any(len(line) > max_line_length for line in read_output.split('\n'))
         return ReadResult(
             content=self._add_line_numbers(read_output, offset), total_lines=total_lines,
-            file_size=file_size, truncated=truncated, hint=hint)
+            file_size=file_size, truncated=truncated, hint=hint,
+            truncated_lines=True if truncated_lines else None)
 
     # Confusable characters seen in real filenames, collapsed after NFC.
     _CONFUSABLES = (
@@ -975,8 +1020,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._suggest_similar_files(path)
         if status == "not_regular":
             return self._not_regular_error(path)
-        if status == "env_unavailable":
-            return self._env_unavailable_error(path)
+        if status not in ("ok", "bad_size"):
+            return self._env_unavailable_error(path, status)
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
         is_binary, sample_bytes = self._detect_binary(path)
@@ -998,8 +1043,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return ReadResult(error=f"File not found: {path}")
         if status == "not_regular":
             return self._not_regular_error(path)
-        if status == "env_unavailable":
-            return self._env_unavailable_error(path)
+        if status not in ("ok", "bad_size"):
+            return self._env_unavailable_error(path, status)
         if status == "bad_size":
             return ReadResult(error=f"Could not determine file size: {path}")
         if max_bytes is not None and file_size > max_bytes:
@@ -1262,6 +1307,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             lsp_diagnostics = self._maybe_lsp_diagnostics(path, pre_content=pre_content, post_content=content) or None
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
+            _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
             lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics)
 
     # --- PATCH (replace mode) -----------------------------------------------
@@ -1318,7 +1364,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return PatchResult(error=denied)
         read_result = self._cat(path)
         if read_result.exit_code != 0:
-            return PatchResult(error=f"Failed to read file: {path}")
+            return PatchResult(error=read_result.cwd_error or f"Failed to read file: {path}")
         # Match and diff on BOM-stripped content (a phantom U+FEFF defeats an exact
         # first-line match); the raw read becomes write_file's pre_content.
         raw_content = read_result.stdout
@@ -1372,7 +1418,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 error=(f"Invalid file search order {order!r}; expected "
                        "'discovery' or 'modified'."))
         path = self._expand_path(path)
-        exists_probe = self._path_exists_probe(path)
+        probe = self._path_exists_probe(path)
+        exists_probe = probe.stdout
+        if probe.cwd_error:
+            return SearchResult(error=probe.cwd_error)
         if "exists" not in exists_probe and "not_found" not in exists_probe:
             return SearchResult(error=(f"Terminal environment unavailable: could not stat {path} "
                                        "(the sandbox may still be starting or was removed). Retry shortly."))

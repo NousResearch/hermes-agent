@@ -7,6 +7,23 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.event import MessageType
 from gateway.session import SessionSource
 
+import os
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_telegram_env():
+    """The YAML→env bridge tests below write TELEGRAM_* into os.environ; an explicit env value now
+    beats ``config.extra`` for the owning profile, so a leaked bridge value would silently override the
+    ``extra`` the later adapter tests construct with."""
+    saved = {k: v for k, v in os.environ.items() if k.startswith("TELEGRAM_")}
+    yield
+    for k in [k for k in os.environ if k.startswith("TELEGRAM_")]:
+        if k not in saved:
+            del os.environ[k]
+    os.environ.update(saved)
+
 
 def _make_adapter(
     require_mention=None,
@@ -1044,3 +1061,59 @@ def test_human_reply_unaffected_by_bots_require_mention():
         gated._should_process_message(_group_message("replying", reply_to_bot=True))
         is True
     )
+
+
+def test_sibling_bot_wake_word_message_is_observed_not_dropped():
+    """#115119: the bot-to-bot loop breaker drops a sibling bot's message that carries no explicit
+    @mention, so a wake-word (``mention_patterns``) match from that bot is never dispatched. It must
+    still land in observed group context instead of vanishing from both paths."""
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            bots_require_mention=True,
+            mention_patterns=["hermes"],
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        msg = _bot_sender_message("hermes, can you take this one?")
+        assert adapter._should_process_message(msg) is False, "loop breaker must still block dispatch"
+        update = SimpleNamespace(update_id=2001, message=msg, effective_message=None)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        _session_id, message, _skip_db = store.messages[0]
+        assert message["observed"] is True
+        assert message["content"].endswith("hermes, can you take this one?")
+
+    asyncio.run(_run())
+
+
+def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
+    """An explicit @mention from another bot still dispatches, so it must NOT be observed as well;
+    the refused quote-reply is observed; a human wake word is unaffected by the bot gate."""
+    adapter = _make_adapter(
+        require_mention=True,
+        bots_require_mention=True,
+        mention_patterns=["hermes"],
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+    )
+    text = "@hermes_bot ping"
+    msg = _bot_sender_message(text, entities=[_mention_entity(text)])
+
+    assert adapter._should_process_message(msg) is True
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+    # A sibling bot's quote-reply is refused by the same loop breaker, so it is observed too ...
+    quoted = _bot_sender_message("auto-reply", reply_to_bot=True)
+    assert adapter._should_process_message(quoted) is False
+    assert adapter._should_observe_unmentioned_group_message(quoted) is True
+    # ... while a human wake-word match still dispatches and is not double-recorded.
+    human = _group_message("hermes, hello")
+    assert adapter._should_process_message(human) is True
+    assert adapter._should_observe_unmentioned_group_message(human) is False

@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Sequence
 
 from hermes_constants import get_hermes_home
-from hermes_state_common import FTS_CJK_STALE_KEY, FTS_STALE_KEY, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS
+from hermes_state_common import (FTS_CJK_STALE_KEY, FTS_STALE_KEY, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS,
+    routed_sessions_setting)
 from hermes_state_errors import is_fts_scoped_corruption_error
 
 # caplog tests pin the "hermes_state" logger name.
@@ -102,8 +103,9 @@ def fts5_cjk_so_path() -> Path:
 
 
 def _cjk_fts_config_enabled() -> bool:
-    """config.yaml ``sessions.cjk_fts`` (default on), via its env bridge."""
-    return os.getenv("HERMES_CJK_FTS", "1").strip().lower() not in ("0", "false", "off", "no")
+    """config.yaml ``sessions.cjk_fts`` (default on) for the profile being served."""
+    value = routed_sessions_setting("cjk_fts", "HERMES_CJK_FTS")
+    return value is None or str(value).strip().lower() not in ("0", "false", "off", "no")
 
 
 def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
@@ -355,9 +357,11 @@ class SessionFtsSetupMixin:
         if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
             return False
         self._raise_if_db_corrupt()
-        self._halt_if_db_generation_changed()
         try:
             with self._lock:
+                self._raise_if_db_replaced()
+                if self._conn is None:
+                    self._reopen_after_close_locked(context="write")
                 self._conn.execute("BEGIN IMMEDIATE")
                 try:
                     self._conn.execute(

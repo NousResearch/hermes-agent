@@ -4,15 +4,14 @@
 import asyncio
 import logging
 import ipaddress
-import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from utils import atomic_json_write
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
     import uvicorn
@@ -176,47 +175,22 @@ def _eager_reconcile_own_session_db() -> None:
     The dashboard is a view layer; the gateway owns the writer. A healthy store
     must never see a second writable ``SessionDB`` from this process (its
     close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
-    two-writer corruption vector, #107688 / #100896). The read-only path still
-    bootstraps a missing store and heals a stale/malformed schema through ONE
-    writable open, so the #79531 contract holds. Never raises: an unfixable
-    store still gets the per-poll read-probe heal.
+    two-writer corruption vector, #107688 / #100896). Access-mode semantics
+    (bootstrap of a missing store, ONE writable heal of a stale schema, so the
+    #79531 contract holds) live in the routers' own-store opener,
+    :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
+    raises: an unfixable store still gets the per-poll read-probe heal.
     """
     try:
-        from hermes_state import _default_db_path
+        from hermes_cli.web_server_sessions import _open_session_db_for_profile
+        from hermes_state_registry import release_or_close
 
-        from hermes_cli.web_server_sessions import _open_session_db_at_path
-
-        db = _open_session_db_at_path(Path(_default_db_path()), read_only=True)
-        db.close()
+        release_or_close(_open_session_db_for_profile(None, read_only=True))
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "
             "reads will retry the heal per poll", exc,
         )
-
-
-async def _wisdom_checker_loop(interval: int = 300) -> None:
-    """Run pending reviews and reconcile the typed feed off the request loop."""
-    while True:
-        try:
-            from hermes_cli.config import load_config
-
-            wisdom = (load_config() or {}).get("wisdom") or {}
-            if isinstance(wisdom, dict) and wisdom.get("enabled"):
-                def reconcile_wisdom():
-                    from hermes_wisdom.service import WisdomService
-
-                    service = WisdomService()
-                    service.require_setup()
-                    service.process_professionalism_reviews(max_jobs=4)
-                    return service.check(apply_automatic=False)
-
-                await asyncio.to_thread(reconcile_wisdom)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            _log.debug("Collective Wisdom background reconciliation failed", exc_info=True)
-        await asyncio.sleep(interval)
 
 
 def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
@@ -236,25 +210,9 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
     if not target:
         return
 
-    tmp_name = ""
     try:
-        path = Path(target)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"port": int(actual_port)}, separators=(",", ":"))
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp", delete=False
-        ) as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-            tmp_name = fh.name
-        os.replace(tmp_name, path)
+        atomic_json_write(Path(target), {"port": int(actual_port)}, indent=None, separators=(",", ":"))
     except Exception as exc:
-        if tmp_name:
-            try:
-                Path(tmp_name).unlink(missing_ok=True)
-            except Exception:
-                pass
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 

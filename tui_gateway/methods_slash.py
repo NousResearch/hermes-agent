@@ -152,6 +152,16 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
         lines.append(f"Context usage: {mark}{context_used:,} tokens")
     if usage.get("compressions"):
         lines.append(f"Compressions: {int(usage.get('compressions') or 0):,}")
+    if (agent := session.get("agent")) is not None:
+        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        # RPC thread: bind the session cwd or the discovery walk keys on the backend's cwd, not the workspace.
+        tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session))
+        try:
+            file_lines = render_context_file_lines(context_file_sources_for_agent(agent))
+        finally:
+            _clear_session_context(tokens)
+        if file_lines:
+            lines += [""] + file_lines
     return "\n".join(lines)
 
 
@@ -197,9 +207,6 @@ def _format_live_status_output(sid: str, session: dict, arg: str) -> str:
 # name → (reply when there is no session, formatter(sid, session, arg) or a fixed reply).
 # A None no-session reply means the formatter handles a missing session itself.
 _LIVE_SLASH_OUTPUT = {
-    "wisdom": (None, lambda sid, session, arg: _format_live_wisdom_output(session or {}, "wisdom", arg)),
-    "collective-wisdom-install": (
-        None, lambda sid, session, arg: _format_live_wisdom_output(session or {}, "collective-wisdom-install", arg)),
     "compress": ("no active session for /compress",
                  lambda sid, session, arg: _mirror_slash_side_effects(sid, session, f"/compress {arg}".strip())),
     "usage": (_NO_AGENT_USAGE, _format_live_usage_output),
@@ -248,39 +255,47 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
     ``here [N]`` / ``--keep N``). CompressionLockHeld is a clean no-op (skip note returned);
     other errors propagate to the caller, which finalizes the context-engine notification."""
     from agent.conversation_compression import finalize_context_engine_compression_notification
+    from agent.conversation_compression_manual import (
+        AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
     from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
     from agent.model_metadata import estimate_request_tokens_rough
-    with session["history_lock"]:
-        before_messages = list(session.get("history", []))
-        history_version = int(session.get("history_version", 0))
-    sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
-    tools = getattr(agent, "tools", None) or None
+    with _session_profile_runtime_scope(session):
+        with session["history_lock"]:
+            before_messages = list(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
+        request = parse_compress_args(arg)
+        if request.aggressive:
+            return AGGRESSIVE_UNSUPPORTED
+        if request.preview:  # report only — history, agent and session key untouched
+            return "\n".join(render_compress_result(compress_now(agent, before_messages, request)))
+        sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+        tools = getattr(agent, "tools", None) or None
 
-    def estimate(messages, prompt, tool_defs) -> int:
-        return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tool_defs) if messages else 0
-    before_tokens = estimate(before_messages, sys_prompt, tools)
-    snapshot = {"approx_tokens": before_tokens, "before_messages": before_messages, "history_version": history_version}
-    try:
-        if snapshot_kwargs:
-            _compress_session_history(session, arg.strip() or None, **snapshot)
-        else:
-            # The raw argument goes through unparsed: _compress_session_history (the choke point shared by
-            # all three manual-compress routes) parses the boundary-aware forms (here [N], up to here,
-            # --keep N) and does the partial head/tail split there (#35533).
-            _compress_session_history(session, arg)
-    except CompressionLockHeld as e:
-        return describe_compression_lock_skip(e.holder)
-    _sync_session_key_after_compress(sid, session)
-    with session["history_lock"]:
-        after_messages = list(session.get("history", []))
-    after_tokens = estimate(
-        after_messages, getattr(agent, "_cached_system_prompt", "") or sys_prompt, getattr(agent, "tools", None) or tools)
-    _emit("session.info", sid, _session_info(agent, session))
-    fb = summarize_manual_compression(
-        before_messages, after_messages, before_tokens, after_tokens,
-        compression_state=getattr(agent, "context_compressor", None))
-    finalize_context_engine_compression_notification(agent, committed=True)
-    return "\n".join(filter(None, [fb["headline"], fb["token_line"], fb.get("note")]))
+        def estimate(messages, prompt, tool_defs) -> int:
+            return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tool_defs) if messages else 0
+        before_tokens = estimate(before_messages, sys_prompt, tools)
+        snapshot = {"approx_tokens": before_tokens, "before_messages": before_messages, "history_version": history_version}
+        try:
+            if snapshot_kwargs:
+                _compress_session_history(session, arg.strip() or None, **snapshot)
+            else:
+                # The raw argument goes through unparsed: _compress_session_history (the choke point shared by
+                # all three manual-compress routes) parses the boundary-aware forms (here [N], up to here,
+                # --keep N) and does the partial head/tail split there (#35533).
+                _compress_session_history(session, arg)
+        except CompressionLockHeld as e:
+            return describe_compression_lock_skip(e.holder)
+        _sync_session_key_after_compress(sid, session)
+        with session["history_lock"]:
+            after_messages = list(session.get("history", []))
+        after_tokens = estimate(
+            after_messages, getattr(agent, "_cached_system_prompt", "") or sys_prompt, getattr(agent, "tools", None) or tools)
+        _emit("session.info", sid, _session_info(agent, session))
+        fb = summarize_manual_compression(
+            before_messages, after_messages, before_tokens, after_tokens,
+            compression_state=getattr(agent, "context_compressor", None))
+        finalize_context_engine_compression_notification(agent, committed=True)
+        return "\n".join(filter(None, [fb["headline"], fb["token_line"], fb.get("note")]))
 
 
 def _mirror_approvals(sid, session, agent, arg) -> None:
@@ -372,7 +387,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         if _session_uses_compute_host(session):
             return _compute_host_slash(sid, session, name, command)[1]
         if session.get("running"):
-            return f"session busy — /interrupt the current turn before running /{name}"
+            return busy_message(name)
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:

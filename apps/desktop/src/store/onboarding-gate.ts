@@ -3,7 +3,8 @@ import { atom } from 'nanostores'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { readKey, writeKey } from '@/lib/storage'
 
-import { hasSeenIntroReveal } from './intro-reveal'
+import { $gateway } from './gateway'
+import { hasSeenIntroReveal, markIntroRevealSeen } from './intro-reveal'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
 
 const PHASE_KEY = 'hermes-onboarding-phase-v1'
@@ -28,7 +29,13 @@ function loadGate(): OnboardingGateState {
 
   const phase = isOnboardingEnabled() && isOnboardingPhase(saved) ? saved : 'idle'
 
-  return { phase, guideQueued: phase === 'cinematic' && hasSeenIntroReveal() }
+  // Two phases owe a kickoff at boot. `cinematic` with the film already seen
+  // is the film-to-guide seam. `guided` is a relaunch mid-guide: without a
+  // kickoff the normal app boots around the persisted solo layout (the
+  // connected splash, the stock composer and model picker, a small window
+  // whose sidebars cannot open) while the gate still says the guide is on.
+  // The kickoff adopts the existing guide chat by title, so nothing is lost.
+  return { phase, guideQueued: (phase === 'cinematic' && hasSeenIntroReveal()) || phase === 'guided' }
 }
 
 export const $onboardingGate = atom<OnboardingGateState>(loadGate())
@@ -40,10 +47,42 @@ function setPhase(phase: OnboardingPhase): void {
   $onboardingGate.set({ phase, guideQueued: false })
 }
 
+/** The guided first launch is on screen or mid-handoff. Ambient chrome that
+ *  would send the user elsewhere (the provider picker, the free-tier chip)
+ *  yields to it: the free tier IS the provider for those phases, and the
+ *  guide's ready screen is where sign-in is offered. */
+export function guidedOnboardingActive(): boolean {
+  const { phase } = $onboardingGate.get()
+
+  return isOnboardingEnabled() && (phase === 'cinematic' || phase === 'guided' || phase === 'handoff')
+}
+
 export function beginOnboardingFlow(): void {
   if (isOnboardingEnabled() && $onboardingGate.get().phase === 'idle' && !hasSeenIntroReveal()) {
     setPhase('cinematic')
   }
+}
+
+/** The guided first launch without its intro film (HERMES_SKIP_INTRO). Same
+ * eligibility as the film path minus the film itself: the film is recorded as
+ * watched and the film-to-guide seam fires immediately, instead of waiting
+ * for a completion that never comes. */
+export function beginOnboardingFlowWithoutIntro(firstRunSkipped: boolean): void {
+  if (!isOnboardingEnabled() || firstRunSkipped) {
+    return
+  }
+
+  beginOnboardingFlow()
+
+  // A prior launch quit mid-film and left the phase at cinematic; the guide
+  // is owed directly. Everything else (guided/skipped/handoff/done) already
+  // had its turn and must not re-queue.
+  if ($onboardingGate.get().phase !== 'cinematic') {
+    return
+  }
+
+  markIntroRevealSeen()
+  queueGuideAfterIntro()
 }
 
 export function queueGuideAfterIntro(): void {
@@ -121,11 +160,13 @@ export function skipGuide(): void {
   }
 }
 
-export function devResetOnboardingFlow(): void {
+/** Resets the backend's setup profile in place, then the local flow state. */
+export async function devResetOnboardingFlow(): Promise<void> {
   if (!import.meta.env.DEV) {
     return
   }
 
+  await $gateway.get()?.request('onboarding.reset_setup_profile', {})
   guideKickoff = { status: 'idle' }
   setPhase('idle')
   setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [...DEFAULT_ANSWERS.connectors] })

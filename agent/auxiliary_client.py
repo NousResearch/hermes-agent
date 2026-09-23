@@ -21,9 +21,18 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+from agent.error_classifier import (
+    _BILLING_PATTERNS,
+    _OVERLOADED_PATTERNS,
+    UNSUPPORTED_PARAM_MARKERS,
+    is_reasoning_field_rejection,
+    is_reasoning_required_rejection,
+)
+from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
+from agent.auxiliary_structured_output import remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -31,6 +40,7 @@ from agent.codex_headers import (
     is_official_codex_base_url as _is_official_codex_base_url,
 )
 from agent.codex_runtime import _codex_event_has_content
+from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -107,12 +117,16 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, get_model_context_length,
-    strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
-)
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
-from agent.auxiliary_health import _custom_health_base_url, _unhealthy_cache_key
+from hermes_cli.config_providers import _canonical_api_mode
+from agent.auxiliary_health import (
+    _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_quarantine_ttl,
+    fallback_candidate_unavailable_reason,
+)
+from agent.auxiliary_unavailable import (
+    AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
+    nous_credential_failure_detail, record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
 from utils import base_url_host_matches, base_url_hostname, base_url_origin, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -169,12 +183,6 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         # Availability probe: resolved credentials/base_url are the answer.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
-    # OpenCode Zen free tier: the keyless placeholder must never hit the wire (relay 401s any
-    # unrecognized bearer) — blank the Authorization header.
-    with contextlib.suppress(Exception):
-        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-        if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-            kwargs["default_headers"] = {**(kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
@@ -519,23 +527,34 @@ def _extract_url_query_params(url: str):
 # Warn only once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
-_PROVIDER_ALIASES = {
-    "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
-    "x-ai": "xai", "x.ai": "xai", "grok": "xai",
-    "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
-    "kimi": "kimi-coding", "moonshot": "kimi-coding",
-    "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
-    "gmi-cloud": "gmi", "gmicloud": "gmi",
-    "actual-computer": "actual", "actualcomputer": "actual", "aci": "actual",
-    "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
-    "claude": "anthropic", "claude-code": "anthropic",
-    "github": "copilot", "github-copilot": "copilot", "github-model": "copilot", "github-models": "copilot",
-    "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
-    "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub", "tencent-cloud": "tencent-tokenhub",
-    "tencentmaas": "tencent-tokenhub",
-    "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
+# Local OpenAI-compatible servers (Ollama, vLLM, llama.cpp) route through the generic custom
+# provider — mirrors hermes_cli.auth._PROVIDER_ALIASES. Without this group an explicit
+# ``provider: ollama`` aux lane matches no registry entry and raises a misleading
+# ``OLLAMA_API_KEY`` error instead of using the lane's base_url (#106010).
+_LOCAL_SERVER_ALIASES = {
+    "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
+    "llama.cpp": "custom", "llama-cpp": "custom",
 }
 
+_ALIAS_TABLE: Optional[Dict[str, str]] = None
+
+
+def _provider_alias_table() -> Dict[str, str]:
+    """The same alias table the main provider path resolves against (hermes_cli.auth).
+
+    A hand-copied mirror here rots silently every time auth grows a family — the local
+    servers (#106010) and the OpenCode entries were both missed that way. Local-server
+    names stay pinned on top: that set doubles as the guard for the /v1 tail and the
+    no-key-borrow rule in the custom branch below.
+    """
+    global _ALIAS_TABLE
+    if _ALIAS_TABLE is None:
+        merged: Dict[str, str] = dict(_LOCAL_SERVER_ALIASES)
+        with contextlib.suppress(Exception):
+            from hermes_cli.auth import _PROVIDER_ALIASES as _auth_table
+            merged.update(_auth_table)
+        _ALIAS_TABLE = merged
+    return _ALIAS_TABLE
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
@@ -552,7 +571,7 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         if not main_prov or main_prov in {"auto", "main"}:
             return "custom"
         normalized = main_prov
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    return _provider_alias_table().get(normalized, normalized)
 
 
 # Sentinel from _fixed_temperature_for_model(): callers strip ``temperature`` entirely.
@@ -584,7 +603,7 @@ _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
 def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4/5.5/5.6, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
+    """True for gpt-5.4/5.5/5.6, gpt-6 Sol/Terra/Luna, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
 
     Other routes expose a larger window for the same slug and keep the user's threshold.
     Prefix-matched so ``-pro`` and dated snapshots track every 272K-capped family; ``-900k``
@@ -601,7 +620,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         return "900k" not in bare
     return bare == "gpt-daybreak-blue-latest" or any(
         bare == fam or bare.startswith(fam + "-") or bare.startswith(fam + ".")
-        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6"))
+        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-sol", "gpt-6-terra", "gpt-6-luna"))
 
 
 def _codex_route_bare_model(model: Optional[str], provider: Optional[str]) -> Optional[str]:
@@ -614,12 +633,40 @@ def _is_codex_spark(model: Optional[str], provider: Optional[str] = None) -> boo
     return _codex_route_bare_model(model, provider) == "gpt-5.3-codex-spark"
 
 
+def _is_openai_default_temperature_only(model: Optional[str]) -> bool:
+    """True for OpenAI reasoning families that 400 (``unsupported_value``) on any non-default
+    ``temperature``: gpt-5.x (incl. dated snapshots, ``-pro``, ``-codex``), o1/o3/o4. The
+    ``gpt-5-chat`` non-reasoning line still accepts it (#51083)."""
+    bare = _bare_model(model)
+    return bare.startswith(("gpt-5", "o1", "o3", "o4")) and not bare.startswith("gpt-5-chat")
+
+
+# Routes (host + model) that rejected ``temperature`` at runtime; the next call omits it up front
+# instead of paying the 400 round-trip again (the retry alone left #51083's first call to time out).
+_TEMPERATURE_REJECTED_ROUTES: set = set()
+
+
+def remember_temperature_rejection(
+    provider: Optional[str], base_url: Optional[str], rejected_kwargs: Dict[str, Any], error: BaseException,
+) -> None:
+    from agent.auxiliary_structured_output import _route_key
+    _TEMPERATURE_REJECTED_ROUTES.add((_route_key(provider, base_url), _bare_model(rejected_kwargs.get("model"))))
+
+
 def _fixed_temperature_for_model(
-    model: Optional[str], base_url: Optional[str] = None
+    model: Optional[str], base_url: Optional[str] = None, provider: Optional[str] = None,
 ) -> "Optional[float] | object":
-    """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot), a fixed ``float``, or ``None``."""
+    """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot, OpenAI reasoning families, routes that
+    already rejected it), a fixed ``float``, or ``None``."""
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        return OMIT_TEMPERATURE
+    if _is_openai_default_temperature_only(model):
+        logger.debug("Omitting temperature for %r (accepts only the default)", model)
+        return OMIT_TEMPERATURE
+    from agent.auxiliary_structured_output import _route_key
+    if (_route_key(provider, base_url), _bare_model(model)) in _TEMPERATURE_REJECTED_ROUTES:
+        logger.debug("Omitting temperature for %r (route rejected it earlier)", model)
         return OMIT_TEMPERATURE
     return 0.5 if _is_arcee_trinity_thinking(model) else None
 
@@ -792,8 +839,12 @@ def _task_prefers_fast_model(task: Optional[str]) -> bool:
         _get_auxiliary_task_config(task).get("prefer_fast_model"), default=False)
 
 
-# Dedicated vision models for direct providers whose main chat model differs.
-_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5v-turbo"}
+# Dedicated vision models for direct providers whose main chat model differs. zai: glm-5.3-flash
+# is the only image-capable GLM id served on every Z.AI surface (pay-as-you-go and Coding Plan,
+# global and CN); the former glm-5v-turbo pin 404s / 1211 "Unknown Model" on the coding endpoints
+# (#111429). ZaiProfile has no default_vision_model(), so dropping the pin would route vision to
+# the user's text-only chat model and skip Z.AI entirely.
+_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5.3-flash"}
 
 
 def _resolve_provider_vision_default(provider: str) -> Optional[str]:
@@ -910,6 +961,15 @@ _NOUS_MODEL = "google/gemini-3.6-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
+_AUTH_JSON_PATH_AT_IMPORT = _AUTH_JSON_PATH
+
+
+def _auth_json_path():
+    """Active profile's ``auth.json`` at call time (a patched ``_AUTH_JSON_PATH`` still wins). The
+    import-time constant is the LAUNCH profile's; under multiplexing a secondary's auxiliary calls
+    would otherwise authenticate to Nous with the default profile's token."""
+    from hermes_cli.auth import _auth_file_path
+    return _AUTH_JSON_PATH if _AUTH_JSON_PATH != _AUTH_JSON_PATH_AT_IMPORT else _auth_file_path()
 
 # Hosts exposing BOTH ``…/anthropic`` and a sibling OpenAI ``…/v1``. Matched on the URL *host*
 # only: unconditional rewrites break Anthropic-only gateways.
@@ -980,9 +1040,13 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
         return True, None
 
 
-def _peek_pool_entry(provider: str) -> Optional[Any]:
-    """Best-effort current/next pool entry without mutating selection order."""
-    pool = _load_pool_with_credentials(provider, " (peek)")
+def _peek_pool_entry(provider: str, pool: Any = None) -> Optional[Any]:
+    """Best-effort current/next pool entry without mutating selection order.
+
+    ``pool`` skips the disk re-read when the caller already loaded it.
+    """
+    if pool is None:
+        pool = _load_pool_with_credentials(provider, " (peek)")
     if pool is None:
         return None
     try:
@@ -1048,7 +1112,7 @@ def _nous_min_key_ttl_seconds() -> int:
 
 
 def _scoped_key_env(name: str) -> str:
-    """Read a provider API key env var through the profile secret scope.
+    """Read a provider API key (or its paired base-URL) env var through the profile secret scope.
 
     In agent turns the scope's verdict is authoritative (a scoped miss must not borrow another
     profile's key); unscoped startup/CLI paths fall back to os.environ.
@@ -1071,8 +1135,13 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
         item_type = _field(item, "type")
         if item_type == "message":
             for part in (_field(item, "content") or []):
-                if _field(part, "type") in {"output_text", "text"}:
+                part_type = _field(part, "type")
+                if part_type in {"output_text", "text"}:
                     text_parts.append(_field(part, "text", ""))
+                elif part_type == "refusal":
+                    # A refusal part carries the model's explanation; dropping it turns a
+                    # refusal-only turn into an empty response that gets retried.
+                    text_parts.append(_field(part, "refusal", ""))
         elif item_type == "function_call":
             tool_calls_raw.append(SimpleNamespace(
                 id=_field(item, "call_id", ""), type="function",
@@ -1110,11 +1179,19 @@ class _CodexStreamGuard:
     from ``_aux_stream_total_ceiling`` still terminates a pathological drip.
     """
 
-    def __init__(self, client: Any, total_timeout: Optional[float]):
+    def __init__(
+        self, client: Any, total_timeout: Optional[float],
+        no_progress_timeout: Optional[float] = None,
+    ):
         self._client = client
         self.total_timeout = total_timeout
         self._start = time.monotonic()
-        self.no_progress_timeout = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
+        # Task-scoped override (auxiliary.<task>.no_progress_timeout, #108104); falls back to the
+        # built-in default when unset or not a positive number.
+        if isinstance(no_progress_timeout, (int, float)) and no_progress_timeout > 0:
+            self.no_progress_timeout = float(no_progress_timeout)
+        else:
+            self.no_progress_timeout = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
         # Progress-aware stream deadlines (supersedes the old single absolute kill at ``total_timeout``).
         # Three regimes: 1. First token: the stream must produce its first substantive payload within
         # ``no_progress_timeout`` (60s default) or we fail fast and let the caller's normal retry/fallback
@@ -1321,7 +1398,6 @@ class _CodexCompletionsAdapter:
 
     def _build_responses_kwargs(self, kwargs: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Any]:
         """chat.completions kwargs → Responses API kwargs, ``(resp_kwargs, model, timeout)``; mirrors codex.py::build_kwargs."""
-        from utils import base_url_host_matches
         # Separate system/instructions from replayable conversation messages, then route the rest through
         # the SINGLE shared chat->Responses converter used by the main agent transport
         # (agent/transports/codex.py). Maintaining a private conversion loop here let chat-style messages
@@ -1331,12 +1407,49 @@ class _CodexCompletionsAdapter:
         # includes assistant tool_calls + role="tool" results). The shared converter encodes assistant tool
         # calls as `function_call` items and tool results as `function_call_output` items with a valid
         # call_id, so every Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _classify_responses_issuer,
+            _responses_tools,
+            _wire_model_identity,
+            classify_responses_route,
+        )
+        from agent.transports.codex import _alias_wire_tools
         model = kwargs.get("model", self._model)
+        wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
-        is_xai = base_url_host_matches(host, "x.ai") or base_url_host_matches(host, "api.x.ai")
         is_copilot = base_url_host_matches(host, "githubcopilot.com")
-        is_github = is_copilot or base_url_host_matches(host, "models.github.ai")
+        # Same route classifier as the main transport, so the issuer stamp matches what it minted.
+        route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
+        is_xai = route.is_xai_responses
+        is_github = route.is_github_responses
+        tools = kwargs.get("tools")
+        if tools:
+            # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
+            # chat_completion_helpers.py parity. Deep-copy first — sanitizers mutate inner dicts
+            # in place and would strip the caller's tool registry.
+            try:
+                import copy as _copy
+                from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
+                tools = _copy.deepcopy(list(tools))
+                tools, _ = strip_pattern_and_format(tools)
+                tools, _ = strip_slash_enum(tools)
+            except Exception as exc:
+                logger.warning(
+                    "Auxiliary client: failed to sanitize tool schemas for "
+                    "Codex/xAI Responses path: %s", exc,
+                )
+        # Tool schemas go through the SAME converter (``strict: False``) and the SAME reserved-name
+        # aliasing (OpenCode / Perplexity / xAI) as agent/transports/codex.py::build_kwargs. A private
+        # list here sent raw names without ``strict``, so title/compression/MoA calls 400ed on routes
+        # where the main loop worked (#114260). The alias map is request-local: it rides on the payload
+        # (``_wire_aliases``, popped in ``create()``), never on the instance — aux adapters are shared.
+        wire_tools, wire_aliases = _alias_wire_tools(
+            _responses_tools(tools),
+            {"provider": getattr(self._client, "_hermes_aux_effective_provider", "") or None, "base_url": host},
+            is_xai,
+        )
+        renamed = {original: alias for alias, original in wire_aliases.items()}
         # System → ``instructions``; the rest goes through the SINGLE shared chat→Responses
         # converter (a private loop here once let role="tool" leak into input[]; the shared one
         # encodes tool history as function_call/function_call_output).
@@ -1346,20 +1459,30 @@ class _CodexCompletionsAdapter:
             content = msg.get("content") or ""
             if msg.get("role", "user") == "system":
                 instructions = content if isinstance(content, str) else str(content)
-            else:
-                replay_messages.append(msg)
+                continue
+            # Replayed history names each tool the way THIS request declares it.
+            if renamed and msg.get("tool_calls"):
+                msg = {**msg, "tool_calls": [
+                    {**tc, "function": {**tc["function"], "name": renamed[tc["function"]["name"]]}}
+                    if isinstance(tc, dict) and (tc.get("function") or {}).get("name") in renamed else tc
+                    for tc in msg["tool_calls"]
+                ]}
+            replay_messages.append(msg)
         # Copilot binds replayed codex_message_items ids to a backend connection that doesn't
         # survive credential rotation (401 on replay) — same guard as build_kwargs. Aux calls
         # never send ``context_management`` (main-turn feature): no compaction checkpoint.
         # Auxiliary calls (context compression, flush_memories, MoA aggregation) go through this adapter
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
         # independently. See #32716.
+        # Aux requests run their own model; stamp/filter reasoning provenance against it, not the main agent's.
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=is_copilot, native_compaction_eligible=False
+            replay_messages, is_github_responses=is_copilot,
+            current_issuer_kind=_classify_responses_issuer(base_url=host, **route._asdict()),
+            current_issuer_model=wire_model, native_compaction_eligible=False,
         )
         resp_kwargs: Dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
-            "model": _strip_codex_ctx_variant(model), "instructions": instructions,
+            "model": wire_model, "instructions": instructions,
             "input": input_items or [{"role": "user", "content": ""}], "store": False,
         }
         # Forward the chat.completions timeout; otherwise a Codex stream can sit behind a
@@ -1379,47 +1502,25 @@ class _CodexCompletionsAdapter:
             if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
                 resp_kwargs["service_tier"] = service_tier.strip()
             reasoning_cfg = extra_body.get("reasoning")
-            # ``enabled: False`` leaves reasoning/include unset (Codex still thinks by default).
-            if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
-                # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
-                # per-model clamp with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra" rejected).
-                from agent.codex_responses_adapter import classify_responses_route
+            if isinstance(reasoning_cfg, dict):
+                # Shared per-model vocabulary with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra"
+                # rejected; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
+                # #76255). ``enabled: False`` goes on the wire as ``effort: none`` where the vocabulary has it,
+                # since an omitted field leaves the model's default effort on (#75227).
                 from agent.reasoning_effort import clamp_effort
                 from agent.transports.codex import _codex_efforts_for_route
-                is_codex_backend = classify_responses_route(SimpleNamespace(base_url=host)).is_codex_backend
-                effort = clamp_effort(
-                    reasoning_cfg.get("effort") or "medium",
-                    _codex_efforts_for_route(model, host, is_codex_backend=is_codex_backend),
-                )
-                resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
-                resp_kwargs["include"] = ["reasoning.encrypted_content"]
-        tools = kwargs.get("tools")
-        if tools:
-            # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
-            # chat_completion_helpers.py parity. Deep-copy first — sanitizers mutate inner dicts
-            # in place and would strip the caller's tool registry.
-            try:
-                import copy as _copy
-                from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
-                tools = _copy.deepcopy(list(tools))
-                tools, _ = strip_pattern_and_format(tools)
-                tools, _ = strip_slash_enum(tools)
-            except Exception as exc:
-                logger.warning(
-                    "Auxiliary client: failed to sanitize tool schemas for "
-                    "Codex/xAI Responses path: %s", exc,
-                )
-            converted = []
-            for t in tools:
-                fn = t.get("function", {}) if isinstance(t, dict) else {}
-                name = fn.get("name")
-                if name:
-                    converted.append({
-                        "type": "function", "name": name, "description": fn.get("description", ""),
-                        "parameters": fn.get("parameters", {}),
-                    })
-            if converted:
-                resp_kwargs["tools"] = converted
+                supported = _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend)
+                if supported and reasoning_cfg.get("enabled") is not False:
+                    # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default.
+                    effort = clamp_effort(reasoning_cfg.get("effort") or "medium", supported)
+                    resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
+                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                elif "none" in supported and not is_xai:
+                    resp_kwargs["reasoning"] = {"effort": "none"}
+        if wire_tools:
+            resp_kwargs["tools"] = wire_tools
+        if wire_aliases:
+            resp_kwargs["_wire_aliases"] = wire_aliases
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
@@ -1462,13 +1563,15 @@ class _CodexCompletionsAdapter:
         # from ``response.output_item.done``: the high-level ``responses.stream()`` rebuilds from
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
+        wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
-        guard = _CodexStreamGuard(self._client, total_timeout)
+        guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
         try:
             guard.start()
-            from agent.codex_runtime import _bypass_sdk_request_transform, _consume_codex_event_stream
+            from agent.codex_runtime import _consume_codex_event_stream
+            from agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
-            stream_kwargs = _bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -1489,6 +1592,10 @@ class _CodexCompletionsAdapter:
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
             text_parts, tool_calls_raw, usage = _parse_codex_final_response(final)
+            # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
+            for tc in tool_calls_raw or ():
+                if tc.function.name in wire_aliases:
+                    tc.function.name = wire_aliases[tc.function.name]
         except Exception as exc:
             if guard.timed_out.is_set():
                 raise TimeoutError(guard.timeout_message()) from exc
@@ -1859,9 +1966,10 @@ def _read_nous_auth() -> Optional[dict]:
             "source": "pool",
         }
     try:
-        if not _AUTH_JSON_PATH.is_file():
+        auth_path = _auth_json_path()
+        if not auth_path.is_file():
             return None
-        data = json.loads(_AUTH_JSON_PATH.read_text(encoding="utf-8-sig"))
+        data = json.loads(auth_path.read_text(encoding="utf-8-sig"))
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})
@@ -1941,8 +2049,11 @@ def _resolve_nous_runtime_api(
             stale_access_token=stale_access_token or None,
         )
     except Exception as exc:
-        logger.debug("Auxiliary Nous runtime credential resolution failed: %s", exc)
+        # Kept at WARNING (once per message) and remembered: the ladder falls back silently, and
+        # without this the goal judge only ever saw "judge error: RuntimeError" (#42177).
+        record_nous_credential_failure(exc)
         return None
+    clear_nous_credential_failure()
     return _creds_pair(creds)
 
 
@@ -1971,8 +2082,8 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                 ).strip()
                 _url = lambda v: str(v or "").strip().rstrip("/")  # noqa: E731
                 base_url = _xai_validate_inference_base_url(
-                    _url(os.getenv("HERMES_XAI_BASE_URL", ""))
-                    or _url(os.getenv("XAI_BASE_URL", ""))
+                    _url(_scoped_key_env("HERMES_XAI_BASE_URL"))
+                    or _url(_scoped_key_env("XAI_BASE_URL"))
                     or _url(getattr(entry, "runtime_base_url", None))
                     or _url(getattr(entry, "base_url", None)),
                     fallback=DEFAULT_XAI_OAUTH_BASE_URL,
@@ -2039,6 +2150,15 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
             return _try_anthropic()
+        if provider_id == "copilot":
+            # Explicit-config gate: ambient gh-CLI credentials must not silently become aux fallback (#114740).
+            with contextlib.suppress(ImportError):
+                from hermes_cli.auth import is_provider_explicitly_configured
+                if not is_provider_explicitly_configured("copilot"):
+                    continue
+        model = _get_aux_model_for_provider(provider_id) or None
+        if model is None:
+            continue  # skip provider if we don't know a valid aux model
         pool_present, entry = _select_pool_entry(provider_id)
         if pool_present:
             api_key = _pool_runtime_api_key(entry)
@@ -2061,9 +2181,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if isinstance(runtime.get("api_key"), str) and runtime["api_key"]:
                 api_key = runtime["api_key"]
             via = " (session endpoint)"
-        model = _get_aux_model_for_provider(provider_id) or None
-        if model is None:
-            continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
         # Native Gemini, else OpenAI-wire + Anthropic rewrap.
         base_url = _to_openai_base_url(raw_base_url)
@@ -2163,7 +2280,7 @@ def _warn_paid_lane_once(model: str) -> None:
     )
 
 
-def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
     if free_only and not _is_free_model(or_model):
@@ -2189,7 +2306,8 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
         logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
     or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY")
     if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
+        _mark_provider_unhealthy(
+            "openrouter", ttl=60, reason=_describe_openrouter_unavailable(or_model), level=logging.DEBUG)
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return _create_openai_client(
@@ -2218,19 +2336,11 @@ def _describe_openrouter_unavailable(model: str = None) -> str:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
-    # Cross-session rate guard: another session's 429 means skip Nous rather than pile onto the tapped RPH bucket.
-    with contextlib.suppress(Exception):
-        from agent.nous_rate_guard import nous_rate_limit_remaining
-        _remaining = nous_rate_limit_remaining()
-        if _remaining is not None and _remaining > 0:
-            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", _remaining)
-            _mark_provider_unhealthy("nous", ttl=_remaining)
-            return None, None
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
         logger.warning("Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).")
-        _mark_provider_unhealthy("nous", ttl=60)
+        _mark_provider_unhealthy("nous", ttl=60, reason="no Nous authentication found", level=logging.DEBUG)
         return None, None
     if runtime is None and nous:
         logger.debug("Auxiliary Nous: runtime JWT refresh failed; checking stored auth.json token.")
@@ -2243,11 +2353,25 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "Auxiliary Nous client unavailable: no usable inference JWT found "
                 "(run: hermes auth add nous)."
             )
-            _mark_provider_unhealthy("nous", ttl=60)
+            _mark_provider_unhealthy("nous", ttl=60, reason="no usable Nous inference JWT", level=logging.DEBUG)
             return None, None
         base_url = str(
-            (nous or {}).get("inference_base_url") or os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
+            (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
         ).rstrip("/")
+    with contextlib.suppress(Exception):
+        from agent.nous_rate_guard import nous_rate_limit_remaining
+        from hermes_cli.anon_auth import is_anonymous_request
+        anonymous = is_anonymous_request("nous", api_key)
+        remaining = nous_rate_limit_remaining(anonymous=anonymous)
+        if remaining is not None and remaining > 0:
+            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", remaining)
+            # The health marker is provider-wide, so a full-length anonymous cooldown would
+            # outlive signing in mid-cooldown; bound it instead of re-resolving credentials
+            # (auth store lock, pool read) on every auxiliary call for the cooldown's duration.
+            _mark_provider_unhealthy(
+                "nous", ttl=min(remaining, 60.0) if anonymous else remaining,
+                reason="Nous Portal rate-limited", level=logging.INFO)
+            return None, None
     lane = "vision" if vision else "text"
     # The free tier's host serves exactly one model, for every lane: asking it for the Portal's
     # recommended aux model is a guaranteed 429 ``model_not_free``. Pin the route's model instead.
@@ -2482,10 +2606,16 @@ def _relay_sync_completion(
         return _run_protected_sync_provider_call(callback, kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
-    return relay_llm.execute_current(
-        kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-        name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata, defer_logical_completion=True,
+    from agent.auxiliary_hooks import run_with_aux_hooks
+    model_name = str(kwargs.get("model") or fallback_model)
+    return run_with_aux_hooks(
+        lambda: relay_llm.execute_current(
+            kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+            name=provider_name, model_name=model_name, metadata=metadata,
+            defer_logical_completion=True,
+        ),
+        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
     )
 
 
@@ -2503,9 +2633,15 @@ async def _relay_async_completion(
         return await callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
-    return await relay_llm.execute_current_async(
-        kwargs, callback, name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata, defer_logical_completion=True,
+    from agent.auxiliary_hooks import arun_with_aux_hooks
+    model_name = str(kwargs.get("model") or fallback_model)
+    return await arun_with_aux_hooks(
+        lambda: relay_llm.execute_current_async(
+            kwargs, callback, name=provider_name, model_name=model_name,
+            metadata=metadata, defer_logical_completion=True,
+        ),
+        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
     )
 
 
@@ -2515,15 +2651,23 @@ def _relay_sync_stream(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
+    # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
+    # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
+    create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))  # noqa: E731
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return client.chat.completions.create(**kwargs)
+        return create(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
-    return relay_llm.stream_current(
-        kwargs, lambda request: client.chat.completions.create(**request), name=provider_name,
-        model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
-        completed_response_predicate=lambda value: hasattr(value, "choices"),
+    from agent.auxiliary_hooks import run_with_aux_hooks
+    model_name = str(kwargs.get("model") or fallback_model)
+    return run_with_aux_hooks(
+        lambda: relay_llm.stream_current(
+            kwargs, create, name=provider_name, model_name=model_name, finalizer=dict,
+            metadata=metadata, completed_response_predicate=lambda value: hasattr(value, "choices"),
+        ),
+        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""), streaming=True,
     )
 
 
@@ -2584,7 +2728,7 @@ def set_runtime_main(
         "requested_provider": (requested_provider or "").strip().lower(),
         "model": (model or "").strip(),
         "base_url": (base_url or "").strip(),
-        "api_key": api_key.strip() if isinstance(api_key, str) else api_key if callable(api_key) else "",
+        "api_key": _normalize_api_key(api_key),
         "api_mode": (api_mode or "").strip(),
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
@@ -2626,13 +2770,21 @@ def clear_runtime_main() -> None:
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint like the main CLI (env OPENAI_BASE_URL or config-saved)."""
     try:
+        from hermes_cli.auth import AuthError
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested="custom")
+    except AuthError as exc:
+        # Bare 'custom' with nothing configured fails fast in the main resolver: there is no
+        # custom endpoint, so do NOT fall through to a stale env OPENAI_BASE_URL that the main
+        # resolver deliberately never consults.
+        logger.debug("Auxiliary client: no custom endpoint configured: %s", exc)
+        return None, None, None
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None
     if not isinstance(runtime, dict):
-        openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+        # Base URL is per-profile like the key one line below (a scoped key must not hit the default's proxy).
+        openai_base = _scoped_key_env("OPENAI_BASE_URL").rstrip("/")
         if not openai_base:
             return None, None, None
         runtime = {"base_url": openai_base, "api_key": _scoped_key_env("OPENAI_API_KEY")}
@@ -2714,9 +2866,11 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         real_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
     if custom_mode == "anthropic_messages":
-        # Third-party Anthropic-compatible gateway — never OAuth (that's api.anthropic.com only).
+        # OAuth identity only when the host is exactly api.anthropic.com (key_cmd callable included,
+        # #114967); third-party Anthropic-compatible gateways never get it.
         try:
             from agent.anthropic_adapter import build_anthropic_client
+            from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
         except ImportError:
             logger.warning(
@@ -2724,7 +2878,8 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
             return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
-        return AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False), model
+        return AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base,
+                                        is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), model
     # URL-based anthropic detection for custom endpoints without explicit api_mode.
     _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
     return _maybe_wrap_anthropic(_fallback_client, model, custom_key, custom_base, custom_mode), model
@@ -2753,6 +2908,12 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _codex_base_url_override() -> str:
+    """Profile-scoped ``HERMES_CODEX_BASE_URL`` (same read as the API-key env vars: under a
+    multiplexer the routed profile's .env decides the endpoint, never a sibling's process env)."""
+    return _scoped_key_env("HERMES_CODEX_BASE_URL").rstrip("/")
+
+
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     """CodexAuxiliaryClient for an explicit model; (None, None) without a Codex OAuth token.
 
@@ -2766,13 +2927,14 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         return None, None
     pool_present, entry = _select_pool_entry("openai-codex")
     codex_token = _pool_runtime_api_key(entry) if pool_present else None
+    codex_override = _codex_base_url_override()
     if codex_token:
-        base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+        base_url = codex_override or _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
     else:
         codex_token = _read_codex_access_token()
         if not codex_token:
             return None, None
-        base_url = _CODEX_AUX_BASE_URL
+        base_url = codex_override or _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token, base_url=base_url,
@@ -2838,7 +3000,7 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token
@@ -2881,7 +3043,9 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider", "session_id", "cache_scope",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2927,6 +3091,7 @@ def _get_provider_chain() -> List[tuple]:
 _AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
 _aux_unhealthy_until: Dict[Any, float] = {}
 _aux_unhealthy_logged_at: Dict[Any, float] = {}
+_aux_unhealthy_reason: Dict[Any, str] = {}
 # resolved_provider / explicit-config names → chain labels.
 _AUX_UNHEALTHY_LABEL_ALIASES = {
     "openrouter": "openrouter", "nous": "nous", "custom": "local/custom",
@@ -2942,10 +3107,16 @@ def _normalize_chain_label(provider: str) -> str:
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
 
 
+_AUX_UNHEALTHY_PAYMENT_REASON = "payment / credit error"
+
+
 def _mark_provider_unhealthy(
     provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
+    reason: str = _AUX_UNHEALTHY_PAYMENT_REASON, level: int = logging.WARNING,
 ) -> None:
-    """Hide one provider endpoint until the TTL expires after a confirmed payment error."""
+    """Hide one provider endpoint until the TTL expires. ``reason`` is what the log says and what the
+    skip line echoes: absent credentials are an expected state (DEBUG), a confirmed 402 is a fault
+    (WARNING) — the old fixed payment wording sent local-only users chasing billing (#64144)."""
     label = _normalize_chain_label(provider)
     if not label:
         return
@@ -2953,10 +3124,12 @@ def _mark_provider_unhealthy(
     ttl = _AUX_UNHEALTHY_TTL_SECONDS if ttl is None else ttl
     expires_at = time.time() + ttl
     _aux_unhealthy_until[key] = expires_at
-    logger.warning(
-        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
+    _aux_unhealthy_reason[key] = reason
+    logger.log(
+        level,
+        "Auxiliary: marking %s unhealthy for %ds (%s). "
         "Subsequent auxiliary calls will skip it until %s.",
-        label, int(ttl), time.strftime("%H:%M:%S", time.localtime(expires_at)),
+        label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
     )
 
 
@@ -2971,6 +3144,7 @@ def _is_provider_unhealthy(label: str, base_url: Optional[str] = None) -> bool:
     if time.time() >= expires_at:
         _aux_unhealthy_until.pop(key, None)
         _aux_unhealthy_logged_at.pop(key, None)
+        _aux_unhealthy_reason.pop(key, None)
         return False
     return True
 
@@ -2985,8 +3159,9 @@ def _log_skip_unhealthy(
         _aux_unhealthy_logged_at[key] = now
         expires_at = _aux_unhealthy_until.get(key, now)
         logger.info(
-            "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
-            task or "call", label, max(0, int(expires_at - now)),
+            "Auxiliary %s: skipping %s (%s, retry in %ds)",
+            task or "call", label, _aux_unhealthy_reason.get(key, _AUX_UNHEALTHY_PAYMENT_REASON),
+            max(0, int(expires_at - now)),
         )
 
 
@@ -2994,6 +3169,7 @@ def _reset_aux_unhealthy_cache() -> None:
     """Clear the unhealthy cache (tests / explicit user reset)."""
     _aux_unhealthy_until.clear()
     _aux_unhealthy_logged_at.clear()
+    _aux_unhealthy_reason.clear()
 
 
 def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
@@ -3001,13 +3177,15 @@ def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
     return any(kw in text for kw in needles)
 
 
-# Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies), plus daily/weekly quota
+# Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies). The main classifier's
+# ``_BILLING_PATTERNS`` is the single source (#107166: the two lists had drifted, so OpenRouter's org
+# "Budget limit exceeded" / "Key limit exceeded" 403s were billing for the main loop but not for the aux
+# ladder, and aux fallback never fired); the aux list only adds broader phrasings and daily/weekly quota
 # exhaustion (functionally credit exhaustion; "resource exhausted" is the Vertex/gRPC quota phrasing —
 # also serialized by SDK wrappers and NIM as RESOURCE_EXHAUSTED / ResourceExhausted / resource-exhausted).
-_PAYMENT_KEYWORDS = (
-    "credits", "insufficient funds", "can only afford", "billing", "payment required",
-    "out of funds", "run out of funds", "balance_depleted", "no usable credits",
-    "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
+_PAYMENT_KEYWORDS = _BILLING_PATTERNS + (
+    "credits", "insufficient funds", "can only afford", "billing",
+    "isn't available on the free tier", "key limit exceeded", "budget limit",
     "requires a subscription", "upgrade for access", "upgrade for higher limits",
     "reached your session usage limit", "quota exceeded", "quota_exceeded",
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
@@ -3042,6 +3220,12 @@ _RATE_LIMIT_BILLING_KEYWORDS = (
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
     "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
 )
+
+
+def _is_overloaded_error(exc: Exception) -> bool:
+    """Server busy, credential fine ("at capacity upstream … not your API key's rate limit"): back off,
+    never bench the credential (#108349). Same phrase table as the main classifier."""
+    return _contains_any(str(exc).lower(), _OVERLOADED_PATTERNS)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -3134,10 +3318,7 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
     if not param_lower:
         return False
     err_lower = str(exc).lower()
-    return param_lower in err_lower and _contains_any(err_lower, (
-        "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
-        "unknown parameter", "unrecognized request argument", "unrecognized parameter", "invalid parameter",
-    ))
+    return param_lower in err_lower and _contains_any(err_lower, UNSUPPORTED_PARAM_MARKERS)
 
 
 def _is_structured_output_rejection(exc: Exception) -> bool:
@@ -3157,6 +3338,12 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
         return True
     if "response_format" in err_lower and "unavailable" in err_lower:
         return True
+    # Gateways that validate the request body with a strict pydantic model reject the
+    # OBJECT-form json_schema by shape ("str type expected" on response_format.json_schema,
+    # 422) rather than by naming the feature. The field is what they refuse; the retry
+    # without it is the same remedy, so treat the shape error as a rejection too.
+    if "response_format" in err_lower and "json_schema" in err_lower:
+        return True
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
 
 
@@ -3173,6 +3360,47 @@ def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
         else:
             retry_kwargs.pop("extra_body", None)
         changed = True
+    return retry_kwargs if changed else None
+
+
+def _is_reasoning_field_rejection(exc: Exception) -> bool:
+    """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
+    ``thinking``/``think``). Chat-only models behind OpenAI-compatible relays reject the top-level
+    ``reasoning_effort: none`` a disabled ``reasoning_config`` projects on the custom profile
+    ("Unrecognized request argument supplied: reasoning_effort", #112781); the route default is
+    the right answer for such a model, so the reaction is one retry without any reasoning field."""
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    return is_reasoning_field_rejection(str(exc))
+
+
+def _is_reasoning_required_rejection(exc: Exception) -> bool:
+    """Provider 400 refusing to switch reasoning OFF ("Reasoning is mandatory for this endpoint and cannot
+    be disabled"): the field is understood, only the disable is refused, so the rung steps the effort up to
+    the floor instead of dropping the field (agent/auxiliary_reasoning_floor.py)."""
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    return is_reasoning_required_rejection(str(exc))
+
+
+def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without reasoning wire controls (top-level ``reasoning_effort``, the adapter's
+    private ``_reasoning_config`` and every ``extra_body`` reasoning key); None when nothing was
+    removed, so call sites don't retry an unchanged request."""
+    retry_kwargs = dict(kwargs)
+    changed = retry_kwargs.pop("reasoning_effort", None) is not None
+    changed = retry_kwargs.pop("_reasoning_config", None) is not None or changed
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict):
+        remaining = {k: v for k, v in extra_body.items() if str(k).strip().lower() not in _PROFILE_REASONING_KEYS}
+        if len(remaining) != len(extra_body):
+            if remaining:
+                retry_kwargs["extra_body"] = remaining
+            else:
+                retry_kwargs.pop("extra_body", None)
+            changed = True
     return retry_kwargs if changed else None
 
 
@@ -3232,8 +3460,10 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
 # stalls the serialised turn queue). A same-provider retry after a full-budget timeout costs another
 # whole ``timeout`` window, so they skip straight to fallback; fast blips still retry.
 # Fast blips (a streaming-close or a 5xx) still retry, since those are cheap. See issue #54465 for the
-# compression case.
-_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision"})
+# compression case. Title generation joins them because its retries multiplied the user's
+# ``auxiliary.title_generation.timeout`` (~4x: three full windows plus backoff) on a slow local
+# model, and the auto-title thread outlived the deadline the user thought they had set (#89445, #66251).
+_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation"})
 
 
 def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:
@@ -3247,13 +3477,20 @@ def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> boo
 
 
 def _evict_cached_clients(provider: str) -> None:
-    """Drop cached auxiliary clients for a provider so fresh creds are used."""
+    """Drop this profile's cached auxiliary clients for a provider so fresh creds are used.
+
+    Scoped to the calling profile (``hermes_home_key()`` is the first key slot): a rotation in
+    one profile must not drop another profile's client for the same provider in a multiplexing
+    gateway, since that profile's credentials did not change. Entries are popped, not closed:
+    a concurrent caller may be mid-request on the shared client (closing it raises ReadError /
+    "client has been closed" for them); the dropped client is retired by GC like the FIFO
+    overflow path in ``_get_cached_client``.
+    """
     normalized = _normalize_aux_provider(provider)
+    home = hermes_home_key()
     with _client_cache_lock:
-        for key in [key for key in _client_cache if _normalize_aux_provider(str(key[0])) == normalized]:
-            client = _client_cache.get(key, (None, None, None))[0]
-            if client is not None:
-                _close_cached_client(client)
+        for key in [key for key in _client_cache
+                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized]:
             _client_cache.pop(key, None)
 
 
@@ -3275,19 +3512,57 @@ def _evict_cached_client_instance(target: Any) -> bool:
     return evicted
 
 
+def _pool_credential_digest(pool: Any, entry: Any = None) -> str:
+    """Secret-safe digest over the runtime key(s) backing the cache hint.
+
+    When ``entry`` (the peeked selection) carries a key, only THAT key is digested: rotating a
+    sibling account must not churn this entry's cached client. Otherwise every pool entry
+    contributes, taken WITHOUT availability filters (``pool.entries()``, not ``peek()``): an entry
+    benched by a per-model cooldown still counts, so a token rotated while the cooldown is active
+    changes the digest too (#113022 point 5). Only the blake2b of the keys enters the cache key.
+    """
+    keys = [k for k in (_pool_runtime_api_key(entry),) if k] if entry is not None else []
+    if not keys:
+        try:
+            entries_fn = getattr(pool, "entries", None)
+            entries = entries_fn() if callable(entries_fn) else []
+        except Exception as exc:
+            logger.debug("Auxiliary client: could not list pool entries for digest: %s", exc)
+            return ""
+        keys = sorted(k for k in (_pool_runtime_api_key(e) for e in entries or ()) if k)
+    if not keys:
+        return ""
+    digest = hashlib.blake2b(digest_size=16)
+    for key in keys:
+        digest.update(key.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _pool_cache_hint(provider: str, *, main_runtime: Optional[Dict[str, Any]] = None) -> str:
-    """Return a stable cache discriminator for pooled providers."""
+    """Return a cache discriminator that follows the pooled credential, not just its entry id.
+
+    ``<provider>:<entry id>:<digest of that entry's key>`` when ``peek()`` names an entry,
+    ``<provider>::<digest of every entry's key>`` when every entry is filtered out (cooldown)
+    but keyed entries exist. A token rotated or
+    refreshed by another process yields a new client instead of a 401 round trip on the cached
+    one; the stale entry ages out through the non-closing FIFO cap (#113022).
+    """
     normalized = _normalize_aux_provider(provider)
     if normalized == "auto":
         runtime = _normalize_main_runtime(main_runtime)
         normalized = _normalize_aux_provider(runtime.get("provider") or _read_main_provider())
     if normalized in {"", "auto", "custom"}:
         return ""
-    entry = _peek_pool_entry(normalized)
-    if entry is None:
+    pool = _load_pool_with_credentials(normalized, " (cache hint)")
+    if pool is None:
         return ""
-    entry_id = str(getattr(entry, "id", "") or "").strip()
-    return f"{normalized}:{entry_id}" if entry_id else ""
+    entry = _peek_pool_entry(normalized, pool)
+    digest = _pool_credential_digest(pool, entry)
+    entry_id = str(getattr(entry, "id", "") or "").strip() if entry is not None else ""
+    if not entry_id and not digest:
+        return ""
+    return f"{normalized}:{entry_id}:{digest}"
 
 
 # Ordered (host, provider) tables for inferring a backend from a client base URL.
@@ -3299,6 +3574,9 @@ _POOL_PROVIDER_BY_HOST = (
 _AUTH_REFRESH_PROVIDER_BY_HOST = (
     ("api.githubcopilot.com", "copilot"), ("chatgpt.com", "openai-codex"),
     ("api.anthropic.com", "anthropic"), ("inference-api.nousresearch.com", "nous"),
+    # An aux call that inherits the main xai-oauth route arrives as "auto"; without this row the
+    # 403 bad-credentials rung skipped the refresh and benched the only grant (#84845).
+    ("api.x.ai", "xai-oauth"),
 )
 
 
@@ -3393,7 +3671,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return _rotate(401)
     if _is_payment_error(exc):
         return _rotate(402)
-    if _is_rate_limit_error(exc):
+    if _is_rate_limit_error(exc) and not _is_overloaded_error(exc):
         return _rotate(429)
     return False
 
@@ -3546,13 +3824,20 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
         return False
 
 
-def _auth_refresh_provider_for_route(resolved_provider: Optional[str], client_base_url: str) -> str:
+def _auth_refresh_provider_for_route(
+    resolved_provider: Optional[str], client_base_url: str, effective_provider: str = "",
+) -> str:
     """Provider whose short-lived credentials should be refreshed; auto-routed calls keep
     ``resolved_provider == "auto"``, so infer the backend from the client's base URL."""
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized and normalized != "auto":
         return normalized
-    return _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST) or normalized
+    host_provider = _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST)
+    # The auto client already knows it runs on the host's API-key sibling (``xai`` on api.x.ai):
+    # an XAI_API_KEY 401 must not spend a stale ``xai-oauth`` grant's refresh and switch routes.
+    if host_provider and host_provider == f"{_normalize_aux_provider(effective_provider)}-oauth":
+        return normalized
+    return host_provider or normalized
 
 
 def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[Dict[str, Any]]:
@@ -3719,12 +4004,17 @@ def _plan_fallback_candidate(
 
 def _quarantine_fallback_candidate(
     task: Optional[str], fb_label: str, fb_provider: str, fb_err: Exception, *,
-    base_url: str = "", tag: str = "",
+    base_url: str = "", tag: str = "", reason: Optional[str] = None,
 ) -> None:
-    """Refresh unavailable or still 401s: token is dead. Quarantine the candidate so the caller moves on."""
-    _mark_provider_unhealthy(fb_provider or fb_label, base_url=base_url)
-    logger.warning("Auxiliary %s%s: fallback candidate %s has a stale/unrefreshable "
-                   "credential (%s) — skipping to next fallback", task or "call", tag, fb_label, fb_err)
+    """The candidate cannot serve this walk (``reason`` = its ``_FALLBACK_REASONS`` capacity label,
+    None = dead token): mark it unhealthy so the ordered re-walk skips it and the caller moves on to
+    the next entry. Transient classes get a short hold, payment/quota and dead tokens the long one."""
+    _mark_provider_unhealthy(
+        fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
+        base_url=base_url, reason=reason or "stale fallback credential")
+    why = f"is out of capacity ({reason})" if reason else "has a stale/unrefreshable credential"
+    logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
+                   task or "call", tag, fb_label, why, fb_err)
 
 
 def _plan_fallback_auth_retry(
@@ -3755,7 +4045,9 @@ def _call_fallback_candidate_sync(
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
-    provider and return None so the caller moves on. Non-auth errors raise.
+    provider and return None so the caller moves on. A capacity error (quota/rate-limit 429, 402,
+    connection, route-incompatible model, malformed response) also quarantines and returns None so
+    the ordered chain advances to the next configured entry (#106367); other errors raise.
 
     ``effective_timeout`` is the task-level deadline; a configured-chain candidate with its own ``timeout``
     entry gets that instead, so a fallback tuned differently from the primary is allowed its own budget
@@ -3779,20 +4071,31 @@ def _call_fallback_candidate_sync(
             ),
             task,
         )
+    from agent.auxiliary_fallback_recovery import send_with_parameter_rungs
+
+    def _send_recovering(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
+        return send_with_parameter_rungs(
+            lambda c, kw: _send(c, kw, dest), client, request_kwargs, task=task)
     try:
-        return _send(fb_client, fb_kwargs, destination)
+        return _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
-            raise
+            capacity = fallback_candidate_unavailable_reason(fb_err)
+            if capacity is None:
+                raise
+            _quarantine_fallback_candidate(
+                task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
+                reason=capacity)
+            return None
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
         failed_destination = destination
         if retry is not None:
             failed_destination = retry[2]
             try:
-                return _send(*retry)
+                return _send_recovering(*retry)
             except Exception as retry_err:
-                if not _is_auth_error(retry_err):
+                if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
@@ -3818,20 +4121,31 @@ async def _call_fallback_candidate_async(
             await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
             task,
         )
+    from agent.auxiliary_fallback_recovery import send_with_parameter_rungs_async
+
+    async def _send_recovering(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
+        return await send_with_parameter_rungs_async(
+            lambda c, kw: _send(c, kw, dest), client, request_kwargs, task=task)
     try:
-        return await _send(fb_client, fb_kwargs, destination)
+        return await _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
-            raise
+            capacity = fallback_candidate_unavailable_reason(fb_err)
+            if capacity is None:
+                raise
+            _quarantine_fallback_candidate(
+                task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
+                tag=" (async)", reason=capacity)
+            return None
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""))
         failed_destination = destination
         if retry is not None:
             failed_destination = retry[2]
             try:
-                return await _send(*retry)
+                return await _send_recovering(*retry)
             except Exception as retry_err:
-                if not _is_auth_error(retry_err):
+                if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err,
@@ -3915,6 +4229,13 @@ def _try_main_agent_model_fallback(
             return None, None, ""
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
+        return None, None, ""
+    if task == "vision" and (
+            main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
+        # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a
+        # text-only main model turns a transient 429 into a guaranteed 400 (#108349).
+        logger.info("Auxiliary vision: %s on %s — main agent provider %s accepts no image input, not falling back",
+                    reason, failed_provider, main_provider)
         return None, None, ""
     main_base_url = _custom_health_base_url(main_provider)
     if _failed_backend_skip(
@@ -4325,7 +4646,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
     sync_base_url = str(sync_client.base_url)
-    async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
+    # A key_cmd/Entra client keeps its credential in the SDK's per-request provider slot, not in
+    # ``.api_key`` (which stays ""); rebuilding from the snapshot alone ships NO Authorization
+    # header. Configured default_headers (a named entry's extra_headers) are likewise carried over,
+    # merged last exactly as the SDK merges them on the sync client. See #109595.
+    from agent.auxiliary_async_rebuild import async_api_key, configured_default_headers
+    async_kwargs = {"api_key": async_api_key(sync_client), "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
     elif _is_official_codex_base_url(sync_base_url):
@@ -4338,6 +4664,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         except Exception:
             inferred = ""
         headers = _endpoint_default_headers(sync_base_url, inferred, is_vision=is_vision, xai=True)
+    headers = {**(headers or {}), **configured_default_headers(sync_client)}
     if headers:
         async_kwargs["default_headers"] = headers
     _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)
@@ -4473,7 +4800,7 @@ class _ResolveRequest(NamedTuple):
     async_mode: bool
     raw_codex: bool
     explicit_base_url: Optional[str]
-    explicit_api_key: Optional[str]
+    explicit_api_key: Optional[Union[str, Callable[[], str]]]
     api_mode: Optional[str]
     main_runtime: Optional[Dict[str, Any]]
     is_vision: bool
@@ -4481,6 +4808,13 @@ class _ResolveRequest(NamedTuple):
 
 
 _ResolveResult = Tuple[Optional[Any], Optional[str]]
+
+
+def _normalize_api_key(raw: Any) -> Union[str, Callable[[], str]]:
+    """A key_cmd/Entra callable passes through uncalled; strings are stripped; anything else is ''."""
+    if callable(raw) and not isinstance(raw, str):
+        return raw
+    return raw.strip() if isinstance(raw, str) else ""
 
 
 def _log_once_debug(seen: set, key: Any, msg: str, *args: Any) -> None:
@@ -4522,6 +4856,12 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
         )
         client._hermes_aux_effective_provider = "actual"
         return client
+    # OpenCode relay targets pick the wire per model; a task/provider-level api_mode is stale for
+    # every other model (#98799), so it is re-derived here like the main runtime does.
+    from agent.opencode_affinity import opencode_transport
+    _oc_mode, _oc_base = opencode_transport(req.provider, final_model_str, base_url_str)
+    if _oc_mode:
+        req, base_url_str = req._replace(api_mode=_oc_mode), _oc_base
     needs_codex = not (
         isinstance(client_obj, CodexAuxiliaryClient) or req.raw_codex
     ) and (
@@ -4537,7 +4877,17 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
                      "(api_mode=%s, model=%s, base_url=%s)",
                      req.api_mode or "auto-detected", final_model_str, base_url_str[:60] if base_url_str else "")
         return CodexAuxiliaryClient(client_obj, final_model_str)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, req.api_mode)
+    # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
+    # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
+    api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
+    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
+
+
+def _profile_declared_messages_wire(provider: str) -> Optional[str]:
+    """``"anthropic_messages"`` when the registered profile declares that api_mode, else None."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(str(provider or "").strip().lower())
+    return "anthropic_messages" if profile is not None and profile.api_mode == "anthropic_messages" else None
 
 
 def _route_client(req: _ResolveRequest, client_obj: Any, final_model_str: Optional[str]) -> _ResolveResult:
@@ -4622,8 +4972,9 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
-        raw_client = _create_openai_client(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL,
-                                           default_headers=_codex_cloudflare_headers(codex_token))
+        base_url = _codex_base_url_override() or _CODEX_AUX_BASE_URL
+        raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
+                                           default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
         return raw_client, _normalize_resolved_model(model, req.provider)
     client, default = _build_codex_client(model)
     return _route_or_warn(req, client, default, no_token_msg)
@@ -4647,14 +4998,24 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     custom_base = custom_key = wrap_base = ""
     if req.explicit_base_url:
         custom_base = _to_openai_base_url(req.explicit_base_url).strip()
+        # Ollama/vLLM/llama.cpp serve the OpenAI surface under /v1; a bare host posts to the
+        # native API and 404s (#106010). Only the alias group gets the tail — ``custom`` is verbatim.
+        if req.original_provider in _LOCAL_SERVER_ALIASES and not urlparse(custom_base).path.strip("/"):
+            custom_base = custom_base.rstrip("/") + "/v1"
         if req.api_mode == "anthropic_messages":
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
-        custom_key = (
-            (req.explicit_api_key or "").strip()
-            or _scoped_key_env("OPENAI_API_KEY")
-            or _read_main_api_key_if_same_host(custom_base)
-            or "no-key-required"  # local servers don't need auth
-        )
+        if req.original_provider in _LOCAL_SERVER_ALIASES:
+            # SECURITY: a local-server alias never borrows OPENAI_API_KEY or the main key —
+            # the alias means "this is my own server"; sending an OpenAI secret to whatever
+            # host base_url names is never intended. Explicit api_key or the placeholder only.
+            custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
+        else:
+            custom_key = (
+                _normalize_api_key(req.explicit_api_key)
+                or _scoped_key_env("OPENAI_API_KEY")
+                or _read_main_api_key_if_same_host(custom_base)
+                or "no-key-required"  # local servers don't need auth
+            )
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
@@ -4664,7 +5025,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         # Re-resolution loses the provider name and falls back to OpenRouter or a wrong API-key provider —
         # the main agent already solved this, we just need to reuse its answer. (#45472)
         _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
-        _main_key = str(main_runtime.get("api_key") or "").strip()
+        _main_key = _normalize_api_key(main_runtime.get("api_key"))
         if _main_base and _main_key:
             custom_base, custom_key = _main_base, _main_key
     if custom_base and custom_key:
@@ -4700,11 +5061,16 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     return None, None
 
 
-def _named_custom_openai_wire_client(custom_base: str, custom_key: Any):
-    """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL."""
+def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_headers: Optional[Dict[str, str]] = None):
+    """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL.
+
+    ``extra_headers`` is the entry's own header block (gateway routing tags, proxy auth): the main
+    runtime lifts it onto every request, so aux must too (#109595). SECURITY: never log the values."""
     _clean_base, _dq = _extract_url_query_params(_to_openai_base_url(custom_base))
     _extra = {"default_query": _dq} if _dq else {}
     _headers = _apply_user_default_headers(None)
+    if extra_headers:
+        _headers = {**(_headers or {}), **extra_headers}
     if _headers:
         _extra["default_headers"] = _headers
     return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
@@ -4728,7 +5094,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
-    custom_key = (req.explicit_api_key or "").strip() or _named_custom_api_key(custom_entry, provider, custom_base)
+    custom_key = _normalize_api_key(req.explicit_api_key) or _named_custom_api_key(custom_entry, provider, custom_base)
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
@@ -4742,6 +5108,8 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     if not custom_base:
         logger.warning("resolve_provider_client: named custom provider %r has no base_url", provider)
         return None, None
+    from hermes_cli.config import normalize_extra_headers
+    entry_headers = normalize_extra_headers(custom_entry.get("extra_headers"))
     final_model = _normalize_resolved_model(
         req.model
         or custom_entry.get("model")
@@ -4750,6 +5118,12 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         or "gpt-4o-mini",
         provider,
     )
+    # An OpenCode-family entry (``opencode-go-bridge``, #85589) persisted the api_mode of whichever
+    # model was selected at save time; the relay picks the wire per model (#98799).
+    from agent.opencode_affinity import opencode_transport
+    _oc_mode, _oc_base = opencode_transport(provider, final_model, custom_base)
+    if _oc_mode:
+        entry_api_mode, custom_base = _oc_mode, _oc_base
     logger.debug("resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                  provider, final_model, entry_api_mode or "chat_completions")
     # anthropic_messages: route via AnthropicAuxiliaryClient (mirrors _try_custom_endpoint);
@@ -4758,14 +5132,20 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     if entry_api_mode == "anthropic_messages":
         try:
             from agent.anthropic_adapter import build_anthropic_client
+            from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
+            if entry_headers:
+                # Same entry headers as the two OpenAI-wire arms; ``with_options`` merges onto the
+                # beta/credential-Omit headers the builder installed (#109595).
+                real_client = real_client.with_options(default_headers=entry_headers)
         except ImportError:
             logger.warning("Named custom provider %r declares api_mode=anthropic_messages but the anthropic SDK "
                            "is not installed — falling back to OpenAI-wire.", provider)
-            return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key), final_model)
+            return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key, entry_headers), final_model)
         return _route_client(
-            req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base, is_oauth=False), final_model)
-    client = _named_custom_openai_wire_client(custom_base, custom_key)
+            req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base,
+                                          is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), final_model)
+    client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
         client = CodexAuxiliaryClient(client, final_model)
@@ -4784,6 +5164,30 @@ def _resolve_azure_foundry_branch(req: _ResolveRequest) -> _ResolveResult:
                           "runtime resolution failed (run: hermes doctor for diagnostics)")
 
 
+def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any | None:
+    """Registered profile's own client for an ``api_key`` aux route, or ``None``.
+
+    Same registration seam as ``agent_runtime_helpers._provider_supplied_client`` (main agent)
+    and the ``external_process`` branch below: a profile whose wire protocol is not
+    OpenAI-over-HTTP overrides ``ProviderProfile.create_client()`` to supply its transport.
+    A profile that raises is logged and skipped — a third-party plugin can only fail to
+    provide a client, never take the auxiliary resolution down."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    try:
+        return profile.create_client(**client_kwargs)
+    except Exception:
+        logger.warning("resolve_provider_client: provider profile %r failed to create an "
+                       "auxiliary client; falling back to the standard client path",
+                       provider, exc_info=True)
+        return None
+
+
 def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: Callable) -> _ResolveResult:
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
@@ -4795,21 +5199,10 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     api_key = str(creds.get("api_key", "")).strip()
     # Explicit api_key override (fallback_model / custom_providers entry) lets callers
     # authenticate where no built-in credential is registered for this alias.
-    if req.explicit_api_key:
-        api_key = req.explicit_api_key.strip() or api_key
+    api_key = _normalize_api_key(req.explicit_api_key) or api_key
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
-    # OpenCode Zen free tier (*-free slugs) is served anonymously on the Zen relay only;
-    # any bearer (even a Go subscription key) is rejected, so route keyless regardless of creds.
-    try:
-        from hermes_cli.models import opencode_zen_free_runtime as _oc_free_rt
-        _free_rt = _oc_free_rt(provider, req.model)
-    except Exception:
-        _free_rt = None
-    if _free_rt is not None:
-        api_key = _free_rt["api_key"]
-        raw_base_url = str(_free_rt["base_url"]).rstrip("/")
     if provider == "actual":
         with contextlib.suppress(Exception):
             from hermes_cli.auth import (
@@ -4828,6 +5221,11 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if req.explicit_base_url and provider != "actual":
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
     final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
+    # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
+    profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
+    if profile_client is not None:
+        logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
+        return _route_client(req, profile_client, final_model)
     if provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
         if is_native_gemini_base_url(base_url):
@@ -4946,8 +5344,8 @@ _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResul
 
 def resolve_provider_client(
     provider: str, model: str = None, async_mode: bool = False, raw_codex: bool = False,
-    explicit_base_url: str = None, explicit_api_key: str = None, api_mode: str = None,
-    main_runtime: Optional[Dict[str, Any]] = None, is_vision: bool = False,
+    explicit_base_url: str = None, explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
+    api_mode: str = None, main_runtime: Optional[Dict[str, Any]] = None, is_vision: bool = False,
     task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: return a configured client (auth, base URL, API format) for a provider + optional model.
@@ -4961,6 +5359,7 @@ def resolve_provider_client(
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
     original_provider = (provider or "").strip().lower()
     provider = _normalize_aux_provider(provider)
+    api_mode = _canonical_api_mode(str(api_mode or "")).lower() or None
     # MoA chokepoint: "moa" is not an HTTP provider; resolve to the aggregator so direct callers don't
     # dead-end in unknown-provider. Unresolvable preset → leave untouched for the normal diagnostic.
     if provider == "moa":
@@ -5007,15 +5406,19 @@ def resolve_provider_client(
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
     )
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
+    alias_identity = original_provider.removeprefix("custom:")
+    # A configured provider whose name collides with a local-server alias is still a named
+    # provider. Resolve it before the alias's generic ``custom`` branch, which otherwise loses
+    # the configured base_url and can fall through to an unrelated credentialed provider.
+    if branch is None or alias_identity in _LOCAL_SERVER_ALIASES:
+        try:
+            result = _resolve_named_custom_branch(req)
+        except ImportError:
+            result = None
+        if result is not None:
+            return result
     if branch is not None:
         return branch(req)
-    # Named custom providers; an ImportError anywhere in the arm falls through to the built-ins.
-    try:
-        result = _resolve_named_custom_branch(req)
-    except ImportError:
-        result = None
-    if result is not None:
-        return result
     if provider == "azure-foundry":
         return _resolve_azure_foundry_branch(req)
     return _resolve_registry_branch(req)
@@ -5548,6 +5951,13 @@ def _get_cached_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
+    if client is not None and _aux_probe_active():
+        # Availability probes answer "resolvable?" and must leave the cache untouched: the
+        # probe stub (bare, or wrapped in a Codex/Anthropic adapter whose leaf is the stub)
+        # shares the runtime key, and a cached one is served to every later caller — the
+        # next probe dies in _compat_model() on stub attribute access, so check_fns flip to
+        # False and vision tools vanish for the process lifetime (#87654).
+        return client, model or default_model
     if client is not None:
         with _client_cache_lock:
             if cache_key not in _client_cache:
@@ -5561,13 +5971,7 @@ def _get_cached_client(
                 client, default_model, _ = _client_cache[cache_key]
                 # Race loser was never exposed to a caller — safe to close now.
                 _close_cached_client(built_client, close_async=async_mode)
-    return client, model or default_model
-
-
-# Aliases for direct REST APIs not modeled in PROVIDER_REGISTRY, so ``auxiliary.<task>.provider:
-# openai`` resolves to a working ``custom`` endpoint (OPENAI_API_KEY + api.openai.com) instead of
-# silently falling back to the main provider and sending OpenAI model names elsewhere.
-_AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {"openai": "https://api.openai.com/v1"}
+    return client, _compat_model(client, model, default_model)
 
 
 # MoA virtual provider: an *explicit* `provider: moa` override (either the caller-passed `provider` arg or
@@ -5589,30 +5993,13 @@ def _unwrap_moa_provider(prov: str, mdl: Optional[str]) -> Tuple[str, Optional[s
     return prov, mdl
 
 
-def _expand_direct_api_alias(prov: Optional[str], existing_base: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """``provider: openai`` → custom + the user's OpenAI endpoint, api.openai.com/v1 only as the last resort.
-
-    A ``providers.openai`` entry keeps the provider name so the named-custom branch applies its base_url and
-    key; otherwise ``OPENAI_BASE_URL`` (a proxy/gateway the OPENAI_API_KEY was issued for) wins over the
-    public endpoint — sending the proxy key to api.openai.com 401s and then quarantines a valid key.
-    """
-    if not prov:
-        return prov, existing_base
-    target_base = _AUX_DIRECT_API_BASE_URLS.get(prov.strip().lower())
-    if target_base is None:
-        return prov, existing_base
-    with contextlib.suppress(Exception):
-        from hermes_cli.runtime_provider import _get_named_custom_provider
-        if _get_named_custom_provider(prov) is not None:
-            return prov, existing_base
-    return "custom", existing_base or os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/") or target_base
-
-
 def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
     """True when a first-class provider keeps its identity alongside an explicit base_url."""
     normalized = str(prov or "").strip().lower()
     if normalized in {"", "auto", "custom"} or normalized.startswith("custom:"):
         return False
+    if normalized in _LOCAL_SERVER_ALIASES:
+        return True  # the custom branch applies the /v1 tail only when it still sees the alias
     try:
         from hermes_cli.providers import get_provider
         return get_provider(normalized) is not None
@@ -5643,7 +6030,9 @@ def _resolve_task_provider_model(
             cfg_key_env = str(task_config.get("key_env") or task_config.get("api_key_env") or "").strip()
             if cfg_key_env:
                 cfg_api_key = _scoped_key_env(cfg_key_env) or None
-        resolved_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        # User-facing spellings (``responses``, ``anthropic``, …) canonicalize here so every
+        # branch downstream compares against the transport names only (#39750).
+        resolved_api_mode = _canonical_api_mode(str(task_config.get("api_mode") or "")).lower() or None
     # 'auto' is a sentinel ("inherit / auto-detect"), not a model id — leaking it to the wire
     # yields a 200 with an error-text body that consumers accept as output. The explicit `model`
     # kwarg needs the same normalization: MoA slots forward preset `model:` fields through it.
@@ -5665,10 +6054,13 @@ def _resolve_task_provider_model(
             resolved_model = cfg_model
             cfg_base_url = None
             cfg_api_key = None
+    # One shared alias table with resolve_runtime_provider(): ``provider: openai`` routes the same
+    # way here (compression/vision/title) and on the runtime path (background review, curator, MoA).
+    from hermes_cli.runtime_provider_custom import expand_direct_api_alias
     if provider:
-        provider, base_url = _expand_direct_api_alias(provider, base_url)
+        provider, base_url = expand_direct_api_alias(provider, base_url)
     if cfg_provider:
-        cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
+        cfg_provider, cfg_base_url = expand_direct_api_alias(cfg_provider, cfg_base_url)
     # An explicit provider without base_url adopts the task's configured endpoint (same or
     # unnamed provider) so the early return below carries it. Explicit "auto" is excluded — it
     # must keep flowing through auto-resolution.
@@ -5683,7 +6075,8 @@ def _resolve_task_provider_model(
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if cfg_base_url and cfg_api_key:
-        return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+        kept = cfg_provider if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES else "custom"
+        return kept, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     if cfg_base_url and cfg_provider and cfg_provider != "auto":
         # base_url without api_key: keep the provider so it can resolve credentials from env
         # vars instead of locking into "custom".
@@ -5794,6 +6187,30 @@ def _compression_fast_lane_controls(
     return max_tokens, body
 
 
+def _get_task_no_progress_timeout(task: str) -> Optional[float]:
+    """``auxiliary.<task>.no_progress_timeout`` from config, or None when unset/invalid
+    (the Codex stream guard then keeps its built-in ``_AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS``
+    default). Lets an operator widen the substantive-progress window independently of the
+    overall request timeout — see #108104."""
+    if not task:
+        return None
+    raw = _get_auxiliary_task_config(task).get("no_progress_timeout")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (ValueError, TypeError):
+        value = 0.0
+    if isinstance(raw, bool) or value <= 0:
+        # Fail clearly: a typo here silently leaving the 60s default is exactly the
+        # "why did my 600s request abort after 60s" confusion the key exists to remove.
+        logger.warning(
+            "auxiliary.%s.no_progress_timeout=%r is not a positive number of seconds; "
+            "using the built-in %.0fs default", task, raw, _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS)
+        return None
+    return value
+
+
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """``auxiliary.<task>.timeout`` from config, else *default*."""
     if not task:
@@ -5850,8 +6267,10 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
 # During provider incidents each call also retries / fans out across the fallback chain, multiplying request
 # volume on already-degraded endpoints. A per-task semaphore caps in-flight calls so retry amplification
 # stays bounded. See #23324.
-_aux_sync_semaphores: Dict[str, Tuple[int, threading.BoundedSemaphore]] = {}
-_aux_async_semaphores: Dict[Tuple[str, int], Tuple[int, Any]] = {}
+# Keyed by profile home as well: the limit is the profile's ``auxiliary.<task>.max_concurrency``, and two
+# multiplexed profiles with different limits would otherwise rebuild (and reset) one shared semaphore.
+_aux_sync_semaphores: Dict[Tuple[str, str], Tuple[int, threading.BoundedSemaphore]] = {}
+_aux_async_semaphores: Dict[Tuple[str, str, int], Tuple[int, Any]] = {}
 _aux_sem_lock = threading.Lock()
 
 
@@ -5879,7 +6298,10 @@ def _cached_semaphore(store: dict, key: Any, limit: int, factory: Callable[[int]
 def _acquire_sync_aux_semaphore(task: Optional[str]) -> Optional[threading.BoundedSemaphore]:
     """Get a per-task sync semaphore, rebuilding it after a config change."""
     limit = _get_task_max_concurrency(task)
-    return None if limit is None else _cached_semaphore(_aux_sync_semaphores, task, limit, threading.BoundedSemaphore)
+    if limit is None:
+        return None
+    from hermes_constants import hermes_home_key
+    return _cached_semaphore(_aux_sync_semaphores, (hermes_home_key(), task), limit, threading.BoundedSemaphore)
 
 
 def _acquire_async_aux_semaphore(task: Optional[str]):
@@ -5892,7 +6314,8 @@ def _acquire_async_aux_semaphore(task: Optional[str]):
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return None
-    return _cached_semaphore(_aux_async_semaphores, (task, id(loop)), limit, asyncio.Semaphore)
+    from hermes_constants import hermes_home_key
+    return _cached_semaphore(_aux_async_semaphores, (hermes_home_key(), task, id(loop)), limit, asyncio.Semaphore)
 
 
 def _reset_aux_semaphores() -> None:
@@ -6035,6 +6458,21 @@ class _ProfileProjection(NamedTuple):
     reasoning_extra: Dict[str, Any]
     top_level: Dict[str, Any]
     handles_reasoning: bool
+    messages_wire: bool = False
+
+
+def _routes_to_custom_endpoint(provider_norm: str) -> bool:
+    """True when a profile-less provider name is really a configured OpenAI-compatible custom endpoint.
+
+    Keyed ``providers:`` / ``custom_providers`` entries (by bare key, or ``main``/``auto`` resolving to
+    one). An unconfigured name with only an explicit base_url keeps the generic nested fallback: the
+    operator declared nothing about that endpoint's wire, and the fireworks control contract pins it.
+    """
+    name = _normalize_aux_provider(provider_norm)
+    if name == "custom":
+        return True
+    from hermes_cli.runtime_provider import _get_named_custom_provider
+    return _get_named_custom_provider(name) is not None
 
 
 def _project_provider_profile(
@@ -6045,11 +6483,20 @@ def _project_provider_profile(
     reasoning_extra: Dict[str, Any] = {}
     top_level: Dict[str, Any] = {}
     handles_reasoning = False
+    messages_wire = False
     try:
         from providers import get_provider_profile
         from providers.base import ProviderProfile
         profile = get_provider_profile(provider_norm)
+        if profile is None and _routes_to_custom_endpoint(provider_norm):
+            # A keyed ``providers:`` entry referenced by its bare key (or via ``main``/``auto``) is
+            # the same OpenAI-compatible custom endpoint the main path already projects with the
+            # ``custom`` profile (``custom:<key>`` falls back inside get_provider_profile). Without
+            # it the generic nested ``extra_body.reasoning`` fallback below ships to a strict
+            # gateway that only accepts top-level ``reasoning_effort`` -> 400 (#75089).
+            profile = get_provider_profile("custom")
         if profile is not None:
+            messages_wire = profile.api_mode == "anthropic_messages"
             body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config) or {}
             reasoning_extra, top_level = profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config, supports_reasoning=reasoning_config is not None,
@@ -6065,7 +6512,7 @@ def _project_provider_profile(
             )
     except Exception as exc:
         logger.debug("_build_call_kwargs: provider profile projection failed for %s: %s", provider, exc)
-    return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning)
+    return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning, messages_wire)
 
 
 def _merge_aux_extra_body(
@@ -6073,13 +6520,36 @@ def _merge_aux_extra_body(
 ) -> Dict[str, Any]:
     """Caller extra_body + profile body/reasoning + generic reasoning fallback + Nous tags."""
     merged_extra = dict(extra_body or {})
+    caller_reasoning_fields = {
+        key: value for key, value in merged_extra.items()
+        if str(key).strip().lower() in _PROFILE_REASONING_KEYS and str(key).strip().lower() != "reasoning"
+    }
+    caller_disabled = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
+    if caller_disabled:
+        # The caller's thinking-off beats ``auxiliary.<task>.reasoning_effort`` (folded into
+        # ``extra_body.reasoning`` by _get_task_extra_body). Dropped BEFORE the profile merge so a
+        # profile that projects disabled reasoning onto its own wire (custom: top-level
+        # ``reasoning_effort=none``) never ships beside a task-level ``reasoning.effort`` — strict
+        # gateways 400 on the contradiction (#114020) — while a profile whose disabled shape IS
+        # ``extra_body.reasoning`` (OpenRouter) still lands it below.
+        merged_extra.pop("reasoning", None)
     merged_extra.update(projection.body)
     merged_extra.update(projection.reasoning_extra)
+    # Profiles supply route defaults, but an explicit vendor wire control in the task/call config
+    # is already provider-specific and must not be replaced by that default.
+    merged_extra.update(caller_reasoning_fields)
     if reasoning_config and isinstance(reasoning_config, dict) and not projection.handles_reasoning:
-        if reasoning_config.get("enabled") is False:
+        if caller_disabled:
             merged_extra["reasoning"] = {"enabled": False}
         else:
+            # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
             merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
+    # Caller/task ``extra_body.reasoning`` (``auxiliary.<task>.reasoning_effort`` folds in here via
+    # _get_task_extra_body) takes the same wire clamp: Hermes-only ``ultra`` never reaches the
+    # OpenAI-compat wire from any aux task (#112010).
+    if isinstance(merged_extra.get("reasoning"), dict):
+        from agent.reasoning_effort import clamp_reasoning_config
+        merged_extra["reasoning"] = clamp_reasoning_config(merged_extra["reasoning"])
     # Portal tags + sticky session_id fallback when the profile didn't supply them; session_id
     # keeps aux calls on the main turn's upstream instance (cache warmth) — tags alone are not
     # enough on /v1/messages.
@@ -6102,12 +6572,19 @@ def _build_call_kwargs(
     max_tokens: Optional[int] = None, tools: Optional[list] = None, timeout: float = 30.0,
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
+    no_progress_timeout: Optional[float] = None,
 ) -> dict:
-    """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+    """Build kwargs for .chat.completions.create() with model/provider adjustments.
+    ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
+    ``_CodexCompletionsAdapter.create``'s ``**kwargs`` catch-all); callers must only pass it
+    when the resolved client is a ``CodexAuxiliaryClient`` — real SDK clients don't accept it."""
     kwargs: Dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout}
+    if no_progress_timeout is not None:
+        kwargs["no_progress_timeout"] = no_progress_timeout
+    effective_base = base_url or (_current_custom_base_url() if provider == "custom" else "")
     # Per-model fixed/omitted temperature, then Opus 4.7+ sampling bans: it rejects any
     # non-default temperature/top_p/top_k, so drop silently rather than 400 when the aux model flips.
-    fixed_temperature = _fixed_temperature_for_model(model, base_url)
+    fixed_temperature = _fixed_temperature_for_model(model, effective_base, provider)
     if fixed_temperature is OMIT_TEMPERATURE:
         temperature = None  # strip — let server choose
     elif fixed_temperature is not None:
@@ -6116,7 +6593,6 @@ def _build_call_kwargs(
         from agent.anthropic_adapter import _forbids_sampling_params
         if not _forbids_sampling_params(model):
             kwargs["temperature"] = temperature
-    effective_base = base_url or (_current_custom_base_url() if provider == "custom" else "")
     provider_norm = str(provider or "").strip().lower()
     if max_tokens is not None and _forwards_max_tokens(provider, provider_norm, model, effective_base, task):
         kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))  # picks max_completion_tokens where needed
@@ -6124,25 +6600,45 @@ def _build_call_kwargs(
         kwargs["tools"] = _dedupe_tool_names(tools, provider, model)
     # Provider profiles are the source of truth for reasoning wire shapes (top-level, nested body,
     # or extra_body.reasoning); providers without a reasoning-aware profile keep the generic
-    # ``extra_body.reasoning`` fallback.
+    # ``extra_body.reasoning`` fallback. Clamp Hermes-internal levels (``ultra``) to the
+    # OpenAI-compat wire ONCE here, before either path sees the config — the same entry clamp the
+    # main transport applies (#89503); MoA aggregator/reference and aux calls 400'd without it (#112010).
+    from agent.reasoning_effort import clamp_reasoning_config
+    from agent.auxiliary_reasoning_floor import known_reasoning_floor
+    if isinstance(extra_body, dict):
+        task_reasoning = extra_body.get("reasoning")
+        if isinstance(task_reasoning, dict) and "enabled" in task_reasoning:
+            extra_body = dict(extra_body)
+            extra_body.pop("reasoning")
+            if reasoning_config is None:
+                reasoning_config = task_reasoning
+    reasoning_config = clamp_reasoning_config(
+        known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
-    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):
+    merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
+    if "response_format" in merged_extra:
+        from agent.auxiliary_structured_output import without_unsupported_response_format
+        merged_extra = without_unsupported_response_format(merged_extra, provider_norm, effective_base, model, task)
+    if merged_extra:
         kwargs["extra_body"] = merged_extra
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects
-    # /v1/messages.
+    # /v1/messages. A profile declaring api_mode=anthropic_messages (commandcode-anthropic) is on
+    # that wire regardless of URL shape — once it overrides build_api_kwargs_extras the generic
+    # ``extra_body.reasoning`` fallback the adapter used to read is gone, so this is the adapter's
+    # only path. _wrap_transport wraps such providers on the same declaration.
     if reasoning_config and isinstance(reasoning_config, dict):
         raw_base = base_url or ""
         if (
-            provider_norm == "anthropic" or _nous_on_messages_wire(provider_norm, model)
+            provider_norm == "anthropic" or projection.messages_wire or _nous_on_messages_wire(provider_norm, model)
             or _endpoint_speaks_anthropic_messages(raw_base) or _is_anthropic_compat_endpoint(provider_norm, raw_base)
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
-    # OpenCode relay session affinity — same key as the main turn so compression/title/vision
-    # calls stay on the conversation's warm backend.
-    from agent.opencode_affinity import merge_opencode_session_headers
-    return merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
+    # turn so compression/title/vision calls stay on the conversation's warm backend.
+    from agent.opencode_affinity import merge_session_affinity_headers
+    return merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
 
 
 def _validate_llm_response(
@@ -6176,6 +6672,11 @@ def _validate_llm_response(
                 f"adapter or custom endpoint compatibility."
             ) from exc
         response = recovered
+    from agent.transports.chat_completions import is_router_timeout_shim
+    if is_router_timeout_shim(response):
+        # HTTP-200 router failure shim (#68396): invalid like a malformed shape so the
+        # auxiliary fallback chain moves to the next candidate instead of titling with it.
+        raise RuntimeError(f"Auxiliary {task or 'call'}: provider returned a timeout shim instead of a completion")
     # Retain the provider-reported model for terminal relay route attribution.
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is not None:
@@ -6404,8 +6905,12 @@ def _create_with_progress_once(
     ``force_stream``, where a stream-only provider rejects the plain call by definition, so the original
     error is surfaced to the normal recovery chains instead.
     """
+    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     _notify_aux_dispatch()
-    _notify_aux_progress()  # Preserve the watchdog's historical dispatch tick.
+    # Dispatch alone is not forward progress: a 401/retry/fallback dispatch must not
+    # reset the compression inactivity fence, or a zero-output attempt runs to the
+    # total ceiling instead of idling out (#114938). Progress ticks only for
+    # substantive stream payloads or a completed usable response.
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
         response = client.chat.completions.create(**kwargs)
         if not _client_streams_internally(client):
@@ -6564,6 +7069,8 @@ class _ChatStreamAccumulator:
             self.content_parts.append(piece)
             made_progress = True
         reasoning_piece = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+        if reasoning_piece is None and isinstance(getattr(delta, "model_extra", None), dict):
+            reasoning_piece = delta.model_extra.get("reasoning") or delta.model_extra.get("reasoning_content")
         reasoning_piece = flatten_message_text(reasoning_piece, sep="")
         if reasoning_piece:
             self.reasoning_parts.append(reasoning_piece)
@@ -6627,8 +7134,9 @@ async def _acreate_with_progress(
 ) -> Any:
     """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
     chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
+    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     _notify_aux_dispatch()
-    _notify_aux_progress()
+    # Same contract as the sync twin (#114938): dispatch alone is not progress.
     if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):
         response = await client.chat.completions.create(**kwargs)
         if not _async_client_streams_internally(client):
@@ -6702,10 +7210,9 @@ def _resolve_call_client(
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit)
                 if fb_client is None:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
-                        f"Set the {_explicit.upper()}_API_KEY environment variable, or switch to "
-                        f"a different provider with `hermes model`.")
+                    nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
+                    raise AuxiliaryClientUnavailable(
+                        nous_detail or missing_provider_credentials_message(_explicit))
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(
@@ -6721,8 +7228,8 @@ def _resolve_call_client(
                     "auto", async_mode=async_mode, main_runtime=main_runtime, task=task)
                 effective_provider = _effective_provider_for_client(client, "auto")
     if client is None:
-        raise RuntimeError(f"No LLM provider configured for task={task} "
-                           f"provider={resolved_provider}. Run: hermes setup")
+        raise AuxiliaryClientUnavailable(f"No LLM provider configured for task={task} "
+                                         f"provider={resolved_provider}. Run: hermes setup")
     return _ResolvedAuxRoute(client, final_model, resolved_provider, effective_provider)
 
 
@@ -6758,6 +7265,12 @@ def _prepare_aux_request(
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
+    # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
+    # kwarg, so only resolve/forward it when the route is actually a Codex stream (#108104).
+    no_progress_timeout = (
+        _get_task_no_progress_timeout(task)
+        if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)) else None
+    )
     request_provider = effective_provider or resolved_provider
     if not async_mode:
         compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
@@ -6782,7 +7295,8 @@ def _prepare_aux_request(
     kwargs = _build_call_kwargs(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task)
+        reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
+        no_progress_timeout=no_progress_timeout)
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -6802,14 +7316,15 @@ class _LadderStep(NamedTuple):
     args: tuple
 
 
-_RERAISE_ORIGINAL = object()
-
 # Ordered (predicate, reason) pairs for the provider-fallback rung: first match
 # wins, so a payment-flavoured 429 reads as "payment error", not "rate limit".
 _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
     (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
-    (_is_invalid_aux_response_error, "invalid provider response"), (_is_connection_error, "connection error"),
+    (_is_invalid_aux_response_error, "invalid provider response"),
+    # Before the connection-error rung (its superset): a full-budget timeout must be named as one, or
+    # a slow local model reads as an unreachable endpoint (#89445).
+    (_is_timeout_error, "request timed out"), (_is_connection_error, "connection error"),
 )
 
 
@@ -6827,9 +7342,19 @@ def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
 
 def _param_rung_accepts(exc: Exception) -> bool:
     """After a parameter-strip retry: fall through to the max_tokens/payment/auth
-    chains with the stripped kwargs; re-raise anything those chains won't handle."""
+    chains with the stripped kwargs; re-raise anything those chains won't handle.
+    A 429 on the retry is the credential/provider-fallback rungs' job, so it falls
+    through too (the pre-ladder max_tokens rung accepted rate limits)."""
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
-            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc))
+            or _is_rate_limit_error(exc)
+            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
+            # Parameter rungs chain in any order (a reasoning-strip retry can 400 on temperature,
+            # a temperature-strip retry on max_tokens), and a route-gating 400 after a strip still
+            # reaches the provider-fallback rung.
+            or _is_unsupported_parameter_error(exc, "temperature")
+            or _is_reasoning_field_rejection(exc) or _is_reasoning_required_rejection(exc)
+            or _is_structured_output_rejection(exc)
+            or _is_model_incompatible_error(exc))
 
 
 def _credential_rung_accepts(exc: Exception) -> bool:
@@ -6842,52 +7367,89 @@ _LadderRoute = NamedTuple("_LadderRoute", [
     ("resolved_provider", str), ("resolved_model", Optional[str]), ("resolved_base_url", Optional[str]),
     ("resolved_api_key", Optional[str]), ("resolved_api_mode", Optional[str]),
     ("final_model", Optional[str]), ("main_runtime", Optional[Dict[str, Any]]),
-    ("route_info", Optional[Dict[str, str]]),
+    ("route_info", Optional[Dict[str, str]]), ("timeout", Optional[float]),
 ])
+
+
+def _without_temperature(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without ``temperature``; None when it was not sent."""
+    return {k: v for k, v in kwargs.items() if k != "temperature"} if "temperature" in kwargs else None
+
+
+def _without_max_tokens(kwargs: dict) -> dict:
+    """Copy *kwargs* without either output cap. Unlike the other strips this never returns None: a
+    route can translate the caller's cap into a field the wire kwargs no longer show (Codex
+    Responses), and the provider's own gateway may inject one — the 400 still names ``max_tokens``
+    and the identical request completes on retry (registry class #89897/#90257)."""
+    return {k: v for k, v in kwargs.items() if k not in ("max_tokens", "max_completion_tokens")}
+
+
+def _is_max_tokens_rejection(exc: Exception, client: Any) -> bool:
+    err_str = str(exc)
+    # ZAI vision models reject max_tokens with code 1210 and a message that never
+    # mentions "max_tokens", so detect it explicitly.
+    is_zai_param_error = "1210" in err_str and "bigmodel" in str(getattr(client, "base_url", ""))
+    return ("max_tokens" in err_str or "unsupported_parameter" in err_str
+            or _is_unsupported_parameter_error(exc, "max_tokens") or is_zai_param_error)
+
+
+def _parameter_rungs(client: Any, max_tokens: Optional[int]) -> tuple:
+    """Ordered ``(matches, strip, log message, remember)`` parameter rungs; ``strip`` returns None
+    when the field was not on the wire, so an unchanged request is never re-sent; ``remember``
+    (optional) records the rejection per route so the next call omits the field up front."""
+    return (
+        (lambda exc: _is_unsupported_parameter_error(exc, "temperature"), _without_temperature,
+         "provider rejected temperature; retrying without it", remember_temperature_rejection),
+        (_is_structured_output_rejection, _without_structured_output_format,
+         "provider rejected the structured-output format field; retrying without it "
+         "(schema enforcement degrades to prompt compliance)", remember_structured_output_rejection),
+        # A chat-only model on an OpenAI-compatible relay rejects the profile's thinking-off encoding
+        # (top-level ``reasoning_effort: none``), and strict-schema gateways reject the generic
+        # ``extra_body.reasoning`` fallback outright (#109774); the caller only wanted "no thinking",
+        # so retry with every reasoning field omitted and let the route default apply (#112781).
+        # The endpoint refuses the *disable* rather than the field (Nous Portal gpt-6-astra: "Reasoning is
+        # mandatory ... cannot be disabled"): step the effort up to the floor and remember the route so
+        # the next thinking-off aux call starts there. Ordered before the strip so a floor that still
+        # 400s falls through to it.
+        (_is_reasoning_required_rejection, with_reasoning_floor,
+         "provider requires reasoning; retrying at the floor effort", remember_reasoning_floor),
+        (_is_reasoning_field_rejection, _without_reasoning_fields,
+         "provider rejected the reasoning field; retrying without it (route default applies)", None),
+        (lambda exc: max_tokens is not None and _is_max_tokens_rejection(exc, client), _without_max_tokens,
+         "provider rejected the output cap; retrying without it", None),
+    )
 
 
 def _ladder_parameter_rungs(
     first_err: Exception, route: _LadderRoute, kwargs: Dict[str, Any], max_tokens: Optional[int],
 ):
-    """Rungs 1-3: retry without temperature / structured-output format / max_tokens.
+    """Parameter rungs: retry without temperature / structured-output format / reasoning field /
+    max_tokens. Rungs chain in whichever order the provider raises them (reasoning models reject
+    temperature AND max_tokens; a reasoning-strip retry can then trip temperature, #78273), each
+    field stripped at most once, so a request with N rejected fields recovers in N retries.
     Returns ``(response, None, kwargs)`` or ``(None, narrowed_err, stripped_kwargs)``."""
     client, task, tag = route.client, route.task, route.tag
-    if "temperature" in kwargs and _is_unsupported_parameter_error(first_err, "temperature"):
-        retry_kwargs = {k: v for k, v in kwargs.items() if k != "temperature"}
-        logger.info("Auxiliary %s%s: provider rejected temperature; retrying once without it",
-                    task or "call", tag)
+    rungs = list(_parameter_rungs(client, max_tokens))
+    while rungs:
+        hit = next((rung for rung in rungs
+                    if rung[0](first_err) and rung[1](kwargs) is not None), None)
+        if hit is None:
+            break
+        rungs.remove(hit)
+        matches, strip, message, remember = hit
+        retry_kwargs = strip(kwargs)
+        logger.info("Auxiliary %s%s: %s: %s", task or "call", tag, message, first_err)
+        rejection = first_err
         resp, first_err = yield from _rung(
             _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
         if first_err is None:
+            if remember is not None:
+                # Same key _build_call_kwargs looks up (base_info or resolved_base_url), so the
+                # memory hits when the client exposes no base_url but the task resolved one.
+                remember(route.resolved_provider, route.base_info or route.resolved_base_url,
+                         kwargs, rejection)
             return resp, None, retry_kwargs
         kwargs = retry_kwargs
-    if _is_structured_output_rejection(first_err):
-        retry_kwargs = _without_structured_output_format(kwargs)
-        if retry_kwargs is not None:
-            logger.info("Auxiliary %s%s: provider rejected the structured-output "
-                        "format field; retrying once without it (schema "
-                        "enforcement degrades to prompt compliance): %s", task or "call", tag, first_err)
-            resp, first_err = yield from _rung(
-                _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
-            if first_err is None:
-                return resp, None, retry_kwargs
-            kwargs = retry_kwargs
-    err_str = str(first_err)
-    # ZAI vision models reject max_tokens with code 1210 and a message that never
-    # mentions "max_tokens", so detect it explicitly.
-    _is_zai_param_error = "1210" in err_str and "bigmodel" in str(getattr(client, "base_url", ""))
-    if max_tokens is not None and (
-        "max_tokens" in err_str or "unsupported_parameter" in err_str
-        or _is_unsupported_parameter_error(first_err, "max_tokens") or _is_zai_param_error
-    ):
-        kwargs.pop("max_tokens", None)
-        kwargs.pop("max_completion_tokens", None)
-        resp, first_err = yield from _rung(
-            _LadderStep("call", (client, kwargs)),
-            lambda exc: _is_payment_error(exc) or _is_connection_error(exc) or _is_rate_limit_error(exc),
-        )
-        if first_err is None:
-            return resp, None, kwargs
     return None, first_err, kwargs
 
 
@@ -6941,7 +7503,10 @@ def _ladder_nous_rungs(
         step = _refreshed_nous_step(
             route, kwargs, "Auxiliary %s%s: refreshed Nous runtime credentials after 401, retrying")
         if step is not None:
-            return (yield step), None
+            resp, first_err = yield from _rung(
+                step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
+            if first_err is None:
+                return resp, None
     return None, first_err
 
 
@@ -6951,7 +7516,8 @@ def _ladder_credential_rungs(
     """OAuth credential refresh + same-provider retry, then credential-pool rotation.
     Returns ``(response, None)`` or ``(None, first_err)`` to fall through."""
     client, task, tag, resolved_provider = route.client, route.task, route.tag, route.resolved_provider
-    auth_refresh_provider = _auth_refresh_provider_for_route(resolved_provider, route.base_info)
+    auth_refresh_provider = _auth_refresh_provider_for_route(
+        resolved_provider, route.base_info, _effective_provider_for_client(client, ""))
     if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
         refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
@@ -6963,13 +7529,24 @@ def _ladder_credential_rungs(
                 _evict_cached_clients(resolved_provider)
             logger.info("Auxiliary %s%s: refreshed %s credentials after auth error, retrying",
                         task or "call", tag, auth_refresh_provider)
-            return (yield _LadderStep(
+            step = _LadderStep(
                 "retry_same_provider",
-                (auth_refresh_provider, route.resolved_model or route.final_model))), None
+                (auth_refresh_provider, route.resolved_model or route.final_model))
+            resp, first_err = yield from _rung(
+                step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
+            if first_err is None:
+                return resp, None
+            # ``first_err`` is now the retry's own failure, not the original auth error: the
+            # pool gate below and the ladder tail's eviction check both read this narrowed
+            # value. An unclaimed failure (e.g. a 500) re-raised out of ``_rung`` above
+            # instead, since the provider-fallback rung only acts on ``_FALLBACK_REASONS``.
     pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=route.main_runtime)
     # Capture the exact key used so recovery finds the right pool entry even if another
     # process rotated the pool meanwhile (current() would be None).
     _client_api_key = str(getattr(client, "api_key", "") or "")
+    # Gate on the narrowed error: a connection failure from the retry above arrives here
+    # unaccepted on purpose (a fresh key cannot fix an unreachable endpoint), so rotation
+    # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.
     if pool_provider and _credential_rung_accepts(first_err):
         recovery_err = first_err
         # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
@@ -6999,14 +7576,18 @@ def _ladder_credential_rungs(
 
 def _next_fallback_after_quarantine(
     task: Optional[str], resolved_provider: str, is_auto: bool, route: _LadderRoute,
-    failed_model: Optional[str], failure_scope: Any,
+    failed_model: Optional[str], failure_scope: Any, *, task_chain_only: bool = False,
 ) -> Tuple[Optional[Any], Optional[str], str]:
-    """Next candidate after a fallback entry was quarantined mid-request: remaining configured
-    entries (task chain, then main chain on auto) before the discovery chain."""
-    reason = "stale fallback credential"
+    """Next candidate after a fallback entry was quarantined mid-request (dead credential or a
+    capacity error): remaining configured entries (task chain, then main chain on auto) before the
+    discovery chain. ``task_chain_only`` (explicit-provider auth error) stops at the task chain —
+    the user never opted that task into discovery or the main model."""
+    reason = "fallback candidate unavailable"
     fb = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
         failed_base_url=route.base_info, failure_scope=failure_scope)
+    if task_chain_only:
+        return fb
     if fb[0] is None and is_auto:
         fb = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
@@ -7023,7 +7604,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     chain, explicit: main-agent-model net). Returns the response or None.
     Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
     response) bypass the explicit-provider gate — the provider cannot serve this request
-    regardless of user intent. Auth errors only fall back in auto mode."""
+    regardless of user intent. Auth errors from an explicit provider may only use the task's
+    own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
@@ -7035,7 +7617,12 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     reason = next((label for predicate, label in _FALLBACK_REASONS if predicate(first_err)), None)
     is_capacity_error = any(
         predicate(first_err) for predicate, label in _FALLBACK_REASONS if label != "auth error")
-    if reason is None or not (is_auto or is_capacity_error):
+    task_chain = _get_auxiliary_task_config(task).get("fallback_chain") if task else None
+    has_task_fallback_chain = isinstance(task_chain, list) and bool(task_chain)
+    explicit_auth_with_task_chain = (
+        reason == "auth error" and not is_auto and has_task_fallback_chain
+    )
+    if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
         return None
     if reason == "payment error":
         # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
@@ -7043,8 +7630,16 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         _mark_provider_unhealthy(
             _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
             or resolved_provider, base_url=route.base_info)
-    logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
-                task or "call", tag, reason, resolved_provider, first_err)
+    if reason == "request timed out":
+        # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
+        # local model is the fallback provider's complaint about a model it never had (#89445).
+        logger.warning("Auxiliary %s%s: request to %s timed out after %ss (raise auxiliary.%s.timeout "
+                       "for slow or reasoning models) on %s, trying fallback",
+                       task or "call", tag, route.base_info or resolved_provider, route.timeout,
+                       task or "call", resolved_provider)
+    else:
+        logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
+                    task or "call", tag, reason, resolved_provider, first_err)
     # Skip only the failed model for model-specific failures; 401/402 are provider-wide, so
     # auth keeps skipping the credential surface, while billing is scoped to the endpoint:
     # separate custom URLs can carry separate credentials (or no billing relationship at all).
@@ -7066,30 +7661,34 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
                 failure_scope=_chain_failure_scope, main_runtime=route.main_runtime)
-    elif fb_client is None:
+    elif fb_client is None and not explicit_auth_with_task_chain:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
-    if fb_client is not None:
-        # Second pass: the candidate credential was stale and quarantined — re-walk the CONFIGURED
-        # chains first (the quarantined entry is now unhealthy and skipped, so later entries get
-        # their turn), then discovery where the selection policy allows it.
-        for _pass in range(2):
-            _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
-            fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
-            if fb_resp is not None:
-                return fb_resp
-            if _pass == 0:
-                fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
-                    task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
-                if fb_client is None:
-                    break
+    # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
+    # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
+    # lands on the next entry, then discovery where the selection policy allows it (#106367).
+    # Bounded by construction: every pass quarantines its candidate and the walk stops as soon as
+    # re-selection hands back a lane already tried, so each lane is attempted at most once.
+    tried_lanes: set = set()
+    while fb_client is not None:
+        lane = (fb_label, fb_model, str(getattr(fb_client, "base_url", "") or ""))
+        if lane in tried_lanes:
+            break
+        tried_lanes.add(lane)
+        _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
+        fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
+        if fb_resp is not None:
+            return fb_resp
+        fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
+            task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
+            task_chain_only=explicit_auth_with_task_chain)
     # All fallback layers exhausted — one user-visible warning, then re-raise.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    # All fallback layers exhausted — emit a single user-visible warning so the operator
                    # knows aux task is about to fail. (#26882) The error itself is re-raised below.
                    # (#26882)
-                   "(fallback_chain + main agent model). Raising original error.",
+                   "(fallback_chain + main agent model). Raising the primary error.",
                    task or "call", tag, reason, resolved_provider)
     return None
 
@@ -7104,11 +7703,12 @@ def _aux_recovery_ladder(
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
     Each rung returns a response, narrows ``first_err`` and falls through, or re-raises.
-    Returns ``_RERAISE_ORIGINAL`` when exhausted (after evicting a connection-poisoned client)."""
+    Raises the narrowed ``first_err`` when exhausted (after evicting a connection-poisoned client)."""
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
-        resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info)
+        resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
+        kwargs.get("timeout"))
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp
@@ -7125,8 +7725,9 @@ def _aux_recovery_ladder(
         return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read
     # stream); evict so the next aux call rebuilds a fresh one.
-    # Drop it from the cache regardless of whether we found a fallback above so the next auxiliary call
-    # rebuilds a fresh client instead of reusing the dead one. See issue #23432.
+    # Reached only when no fallback answered, so the next auxiliary call rebuilds a fresh
+    # client instead of reusing the dead one. ``first_err`` is the narrowed error from the
+    # rungs above, not necessarily the original one. See issue #23432.
     # Mirror the sync path: drop poisoned clients on connection/timeout so the next aux call rebuilds. See
     # issue #23432.
     if _is_connection_error(first_err):
@@ -7135,7 +7736,9 @@ def _aux_recovery_ladder(
         except Exception:
             logger.debug("Auxiliary%s: cache eviction after connection error failed",
                          tag, exc_info=True)
-    return _RERAISE_ORIGINAL
+    # The narrowed error is the actionable one (e.g. a 404 "requires credits" from the
+    # retry after a healed 401), so surface it rather than the original.
+    raise first_err
 
 
 def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
@@ -7200,6 +7803,7 @@ def call_llm(
     prior_progress_hook = getattr(_aux_progress, "hook", None)
     try:
         with (
+            scoped_runtime_main(main_runtime),
             aux_progress_hook(
                 prior_progress_hook
                 if callable(prior_progress_hook)
@@ -7402,12 +8006,9 @@ def _call_llm_impl(
             if kind == "retry":
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
-        result = _drive_ladder(
+        return _drive_ladder(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
             _perform)
-        if result is _RERAISE_ORIGINAL:
-            raise
-        return result
 
 
 def _coerce_llm_message(response):
@@ -7492,12 +8093,13 @@ async def async_call_llm(
     if semaphore is not None:
         await semaphore.acquire()
     try:
-        return await _async_call_llm_impl(
-            task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-            main_runtime=main_runtime, messages=messages, temperature=temperature,
-            max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
-            reasoning_config=reasoning_config, route_info=route_info,
-        )
+        with scoped_runtime_main(main_runtime):
+            return await _async_call_llm_impl(
+                task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+                main_runtime=main_runtime, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
+                reasoning_config=reasoning_config, route_info=route_info,
+            )
     finally:
         if semaphore is not None:
             semaphore.release()
@@ -7553,12 +8155,9 @@ async def _async_call_llm_impl(
             fb_client, fb_model, fb_label = args
             fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
-        result = await _drive_ladder_async(
+        return await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
             _perform)
-        if result is _RERAISE_ORIGINAL:
-            raise
-        return result
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

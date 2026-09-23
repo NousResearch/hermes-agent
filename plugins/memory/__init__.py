@@ -28,7 +28,17 @@ logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
 ENTRY_POINTS_GROUP = "hermes_agent.memory_providers"
-_REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, Path] = {}
+# Per Hermes home (plugin managers are per home too): pruning under one multiplexed profile must
+# only retract that profile's provider skills, never a sibling profile's.
+_REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, dict[str, Path]] = {}
+# Native extensions whose first import must not race another thread (#58083 warm-up).
+_NATIVE_WARM_IMPORTS: Tuple[str, ...] = ("numpy",)
+
+
+def _registered_skills_for_active_home() -> dict[str, Path]:
+    from hermes_constants import hermes_home_key
+
+    return _REGISTERED_MEMORY_PROVIDER_SKILLS.setdefault(hermes_home_key(), {})
 
 # Synthetic parent package so user-installed providers don't collide with bundled ones.
 _USER_NAMESPACE = "_hermes_user_memory"
@@ -54,12 +64,13 @@ def _get_project_plugins_dir() -> Optional[Path]:
 def _is_memory_provider_dir(path: Path) -> bool:
     """Cheap text heuristic (no import): ``__init__.py`` mentions the memory provider contract."""
     init_file = path / "__init__.py"
-    if not init_file.exists():
-        return False
     try:
+        if not init_file.exists():
+            return False
         source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
         return "register_memory_provider" in source or "MemoryProvider" in source
-    except Exception:
+    except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
+        logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
         return False
 
 
@@ -191,6 +202,12 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
     if not provider_dir and entry_point is None:
         logger.debug("Memory provider '%s' not found in bundled, user plugins, or entry points", name)
         return None
+    if provider_dir is not None and _explicitly_disabled(name, provider_dir):
+        # The Plugins hub / `hermes plugins disable` park a user-installed provider in
+        # ``plugins.disabled``; the loader must honour it or "disabled" is a lie in the UI.
+        logger.warning("Memory provider '%s' is disabled via plugins.disabled; run `hermes plugins enable %s` "
+                       "or change memory.provider.", name, name)
+        return None
 
     def _load(_dir):
         if provider_dir:
@@ -198,6 +215,41 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
         return _load_provider_from_entry_point(entry_point, register_skills=register_skills)
 
     return _loader.load_named(name, provider_dir, _load, kind="Memory provider", noun="provider", logger=logger)
+
+
+def import_memory_provider_module(name: Optional[str] = None) -> bool:
+    """Import the provider's module (default: the configured ``memory.provider``) WITHOUT
+    constructing a provider — the later ``load_memory_provider`` then hits ``sys.modules``
+    instead of a fresh native extension load. Exists so ``hermes acp`` can pay the heavy
+    import (numpy / ML stack) on the main thread before any other thread starts: on Windows
+    a first-time native import racing another thread's import chain deadlocked
+    ``session/new`` (#58083). False when no provider is configured, the provider is
+    unknown or its import fails (agent init reports that)."""
+    name = name or _get_active_memory_provider()
+    if not name:
+        return False
+    imported = False
+    try:
+        if provider_dir := find_provider_dir(name):
+            imported = _loader.load_plugin_module(
+                _module_name(provider_dir, name), provider_dir, parents=("plugins", "plugins.memory"),
+                logger=logger, synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
+            ) is not None
+        elif (entry_point := find_provider_entry_point(name)) is not None:
+            entry_point.load()
+            imported = True
+    except Exception:
+        logger.debug("memory provider '%s' warm-up import failed", name, exc_info=True)
+    if imported:
+        # The deadlock is numpy's lazy ``_core`` init; hindsight defers that import to
+        # ``is_available()`` (sentence_transformers), so the provider module alone leaves
+        # it unwarmed. Every reporter's workaround was a plain ``import numpy`` up front.
+        for module in _NATIVE_WARM_IMPORTS:
+            try:
+                importlib.import_module(module)
+            except Exception:
+                logger.debug("warm-up import of %s skipped", module, exc_info=True)
+    return imported
 
 
 def _instantiate_subclass(namespace) -> Optional["MemoryProvider"]:
@@ -330,7 +382,7 @@ class _ProviderCollector:
 
             registered_path = get_plugin_manager().find_plugin_skill(qualified_name)
             if registered_path is not None:
-                _REGISTERED_MEMORY_PROVIDER_SKILLS[qualified_name] = registered_path
+                _registered_skills_for_active_home()[qualified_name] = registered_path
         except Exception as exc:
             logger.debug("Memory provider '%s' failed to register skill: %s", self.name, exc)
 
@@ -375,6 +427,28 @@ def _get_active_memory_provider() -> Optional[str]:
         return None
 
 
+def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
+    """True when a NON-bundled provider is parked in ``plugins.disabled`` under any spelling the
+    plugin commands write: the provider name, its directory name or its manifest ``name:``."""
+    if _MEMORY_PLUGINS_DIR in provider_dir.parents:
+        return False
+    try:
+        from hermes_cli.config import load_config
+        disabled = cfg_get(load_config(), "plugins", "disabled")
+    except Exception:
+        return False
+    if not isinstance(disabled, list):
+        return False
+    names = {name, provider_dir.name}
+    try:
+        import yaml
+        with open(provider_dir / "plugin.yaml", encoding="utf-8-sig") as f:
+            names.add(str((yaml.safe_load(f) or {}).get("name") or ""))
+    except Exception:
+        pass
+    return bool(names & {v for v in disabled if isinstance(v, str)})
+
+
 def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None) -> None:
     """Remove tracked skills that no longer belong to the active provider."""
     if active_provider is None:
@@ -383,12 +457,13 @@ def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None
     from hermes_cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
-    for qualified_name, registered_path in list(_REGISTERED_MEMORY_PROVIDER_SKILLS.items()):
+    registered = _registered_skills_for_active_home()
+    for qualified_name, registered_path in list(registered.items()):
         if qualified_name.partition(":")[0] == active_provider:
             continue
         if manager.find_plugin_skill(qualified_name) == registered_path:
             manager.remove_plugin_skill(qualified_name)
-        _REGISTERED_MEMORY_PROVIDER_SKILLS.pop(qualified_name, None)
+        registered.pop(qualified_name, None)
 
 
 def discover_plugin_cli_commands() -> List[dict]:

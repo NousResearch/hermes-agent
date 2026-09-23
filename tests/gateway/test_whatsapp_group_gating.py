@@ -121,6 +121,20 @@ def test_free_response_chats_bypass_mention_gating():
     assert adapter._should_process_message(_group_message("hello everyone")) is True
 
 
+def test_blank_free_response_chats_falls_through_to_env(monkeypatch):
+    """A present-but-blank ``free_response_chats: ''`` in config.yaml means unset: the env CSV applies."""
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_FREE_RESPONSE_CHATS", "123@g.us")
+    adapter = object.__new__(WhatsAppAdapter)
+    adapter.config = PlatformConfig(enabled=True, extra={"free_response_chats": ""})
+    assert adapter._whatsapp_free_response_chats() == {"123@g.us"}
+    # An explicit empty list is a real "no chats" value once no explicit env is set.
+    monkeypatch.setenv("WHATSAPP_FREE_RESPONSE_CHATS", "  ")
+    adapter.config = PlatformConfig(enabled=True, extra={"free_response_chats": []})
+    assert adapter._whatsapp_free_response_chats() == set()
+
+
 def test_free_response_chats_does_not_bypass_other_groups():
     adapter = _make_adapter(
         require_mention=True,
@@ -367,3 +381,16 @@ def test_native_mention_only_chats_extra_wins_over_env(monkeypatch):
     }
 
 
+def test_device_qualified_bot_ids_match_bare_mention_and_quote_ids():
+    """Baileys reports the bot's own ids as ``<user>:<device>@lid`` while inbound
+    mentionedJid / quoted participant ids are bare — both must normalize equal."""
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+    device_qualified = ["447999674698:14@s.whatsapp.net", "116342762025117:14@lid"]
+
+    assert adapter._should_process_message(
+        _group_message("hi there", botIds=device_qualified, mentionedIds=["116342762025117@lid"])
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("and this?", botIds=device_qualified, quotedParticipant="447999674698@s.whatsapp.net")
+    ) is True
+    assert adapter._should_process_message(_group_message("hello everyone", botIds=device_qualified)) is False

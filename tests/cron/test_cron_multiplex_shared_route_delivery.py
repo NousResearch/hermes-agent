@@ -107,3 +107,56 @@ def test_satellite_routes_exact_target_through_primary_adapter(tmp_path, monkeyp
 def test_shared_view_is_falsy_without_routes_or_primary_adapters():
     assert not SharedRouteAdapters({}, [])
     assert SharedRouteAdapters({Platform.DISCORD: object()}, []).get(Platform.DISCORD) is None
+
+
+def test_guild_scoped_route_authorizes_cron_target_even_when_satellite_has_no_platform_block(
+    tmp_path, monkeypatch,
+):
+    """The documented Discord route shape is ``guild_id + chat_id``. A cron target carries no guild
+    anchor, so the route must be matched on its target-exact discriminators; and the satellite's
+    missing/disabled ``platforms.discord`` block must not veto the PRIMARY's authorized transport
+    (#89302 sibling) — before, both fell to standalone "DISCORD_BOT_TOKEN is not set"."""
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "fitness"
+    sat_home.mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({
+        "gateway": {"multiplex_profiles": True, "profile_routes": [
+            {"platform": "discord", "guild_id": "G1", "chat_id": "C1", "profile": "fitness"}]},
+    }), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    primary = _primary_adapter()
+
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        shared = SharedRouteAdapters({Platform.DISCORD: primary}, _primary_profile_routes_for_current_home())
+        for satellite_platforms in ({}, {Platform.DISCORD: PlatformConfig(enabled=False)}):
+            primary.sent.clear()
+            config = MagicMock()
+            config.platforms = satellite_platforms
+            config.get_home_channel = lambda p: None
+            with patch("gateway.config.load_gateway_config", return_value=config):
+                error, standalone = _run(_job("C1"), shared)
+            assert error is None, error
+            assert primary.sent == ["C1"] and standalone == []
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_live_native_adapter_without_platform_block_is_not_treated_as_disabled():
+    """#89302: a live native adapter handed in by the gateway is the authorization; an absent
+    ``platforms.<p>`` block in the firing profile means "no config", not "disabled"."""
+    from cron.scheduler_delivery import _resolve_target_transport
+
+    config = MagicMock()
+    config.platforms = {}
+    adapter = object()
+    resolved, err = _resolve_target_transport(
+        {"id": "j"}, Platform.DISCORD, "discord", {"platform": "discord", "chat_id": "C1"},
+        {Platform.DISCORD: adapter}, config)
+    assert err is None and resolved[2] is adapter and resolved[1].enabled
+    # an explicitly disabled block still vetoes
+    config.platforms = {Platform.DISCORD: PlatformConfig(enabled=False)}
+    resolved, err = _resolve_target_transport(
+        {"id": "j"}, Platform.DISCORD, "discord", {"platform": "discord", "chat_id": "C1"},
+        {Platform.DISCORD: adapter}, config)
+    assert resolved is None and "not configured/enabled" in err

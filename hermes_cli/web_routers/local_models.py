@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import config as config_mod, web_deps
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, _config_profile_scope
 from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
@@ -191,7 +192,8 @@ def _router_request(endpoint: Dict[str, Any], path: str, *, timeout: float, payl
 
 
 def _load_config() -> dict:
-    return _quiet(config_mod.load_config, {})
+    """Read-only config for status/garnish paths that must render degraded, never 500."""
+    return _quiet(config_mod.load_config_readonly, {})
 
 
 def _runtime_section() -> dict:
@@ -200,9 +202,12 @@ def _runtime_section() -> dict:
 
 def _set_runtime_enabled(enabled: bool) -> dict:
     """Persist ``local_runtime.enabled`` and return the config written."""
-    config = config_mod.load_config()
-    config.setdefault("local_runtime", {})["enabled"] = enabled
-    config_mod.save_config(config)
+    # Runs on quickstart/activate/stop job threads; the RMW span races the dashboard's
+    # debounced PUT /api/config autosave without the lock.
+    with _CONFIG_MUTATION_LOCK:
+        config = config_mod.load_config()
+        config.setdefault("local_runtime", {})["enabled"] = enabled
+        config_mod.save_config(config)
     return config
 
 
@@ -258,13 +263,25 @@ def _ensure_server(job: Dict[str, Any], config: dict, model_id: str, *, fail_det
     _step(job, "starting-server", "Starting the local server")
     sup = _start_local_server(config, fail_detail)
 
-    def rescan_if_unknown() -> None:
-        if model_id not in sup.models():
+    def rescan_if_unknown(known: Dict[str, Any]) -> None:
+        if model_id not in known:
             job["detail"] = "Refreshing the local server"
             bootstrap.refresh_local_runtime()
 
     if sup is not None:
-        _quiet(rescan_if_unknown, None, debug=skip_msg)
+        _quiet(lambda: rescan_if_unknown(sup.models()), None, debug=skip_msg)
+        return
+    # A server owned by another process: ensure_local_runtime returned None, so the supervisor
+    # path above never ran — but the same spawn-only listing gap applies. Probe the live
+    # listing through the persisted endpoint and bounce when it lacks the model.
+    endpoint = _state_endpoint()
+    if endpoint is not None:
+
+        def _known_models() -> Dict[str, Any]:
+            data = (_router_request(endpoint, "/models", timeout=10) or {}).get("data", [])
+            return {m.get("id"): m for m in data}
+
+        _quiet(lambda: rescan_if_unknown(_known_models()), None, debug=skip_msg)
 
 
 def _assign_default(job: Dict[str, Any], model_id: str) -> None:
@@ -375,9 +392,12 @@ def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int =
             if length and file_done[0] != length:
                 raise RuntimeError(f"Download ended at {file_done[0]:,} bytes but the server "
                                    f"said {length:,} — connection dropped? Removed; try again")
-        shutil.move(str(tmp), str(dest))
+        job["detail"] = "Finishing"
+        binaries.replace_when_released(tmp, dest)
     except Exception:
-        tmp.unlink(missing_ok=True)
+        # Best effort: a leftover that cannot be removed must not hide the error that left it.
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
         raise
 
 
@@ -640,7 +660,7 @@ def _restart_on_new_tag(job: Dict[str, Any], tag: str, previous: list) -> bool:
 
 
 @router.post("/api/local-models/runtime/install")
-async def local_models_runtime_install(body: RuntimeInstallBody):
+async def local_models_runtime_install(body: RuntimeInstallBody, profile: Optional[str] = None):
     tag, backend = _runtime_target(body.backend)
     plan = _resolve_assets_or_400(tag, backend)
     job = _job("runtime-install", f"llama.cpp {tag} ({backend})")
@@ -648,9 +668,13 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
     def _run():
         previous = binaries.installed_tags()
         _step(job, "downloading", f"Fetching {len(plan.assets)} package(s) for {backend}")
-        binaries.ensure_runtime_installed(tag, backend, progress=_runtime_progress_hook(job))
-        # Restart failure is logged only: the new build is installed either way and the next boot serves it.
-        restarted = _quiet(lambda: _restart_on_new_tag(job, tag, previous), False, warn="post-update restart skipped: %s")
+        # The engine binaries are machine-global, but ensure_local_runtime also regenerates the
+        # launch presets under get_hermes_home() — scope so those land in the named profile.
+        with _config_profile_scope(profile):
+            binaries.ensure_runtime_installed(tag, backend, progress=_runtime_progress_hook(job))
+            # Restart failure is logged only: the new build is installed either way and the next boot serves it.
+            restarted = _quiet(lambda: _restart_on_new_tag(job, tag, previous), False,
+                               warn="post-update restart skipped: %s")
         # N-1 retention, only after the new tag verified: keep it + the newest previous build as the rollback pin target.
         _quiet(lambda: binaries.prune_old_tags([tag] + [t for t in previous if t != tag][:1]), None,
                warn="runtime prune skipped: %s")
@@ -708,12 +732,20 @@ async def local_models_delete(model_id: str):
 
 # ── quickstart: one click from nothing to a working default ──
 def _quickstart_target(body: QuickstartBody, budget):
-    """(entry, variant) to set up: explicit id, else this machine's recommendation, else the first servable entry."""
+    """Resolve an explicit model, or start with the machine's automatic recommendation.
+
+    With no recommendation, require an explicit choice before starting setup.
+    """
     if body.model_id:
         candidates = [_entry_or_404(body.model_id)]
     else:
         picked = catalog.recommended_entry(budget, _eligible_entries())
-        candidates = ([picked[0]] if picked else []) + [e for e in catalog.CATALOG if not picked or e.id != picked[0].id]
+        if picked is None:
+            raise HTTPException(
+                status_code=409,
+                detail="No automatic recommendation for this machine — open Local Models to browse or choose a model explicitly",
+            )
+        candidates = [picked[0]] + [e for e in catalog.CATALOG if e.id != picked[0].id]
     for candidate in candidates:
         choice = catalog.select_variant(candidate, budget)
         if choice is not None and not _engine_too_old(candidate.min_engine):
@@ -723,10 +755,10 @@ def _quickstart_target(body: QuickstartBody, budget):
 
 
 @router.post("/api/local-models/quickstart")
-async def local_models_quickstart(body: QuickstartBody):
+async def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
-    missing), make it the default. Each leg is the same code the individual routes run, so 'Configure' and
-    quickstart can never disagree. Preflight rejects (no servable entry, engine too old) fail the POST
+    missing), make it the default. Each leg uses the same code as the individual setup routes.
+    Preflight rejects (no automatic recommendation or no servable choice) fail the POST
     synchronously so the button can explain itself; everything slow runs in the job with phase/byte progress."""
     entry, variant = _quickstart_target(body, hardware.probe_budget(planning=True))
     tag, backend = _runtime_target()
@@ -750,11 +782,14 @@ async def local_models_quickstart(body: QuickstartBody):
             job["done_bytes"] = 0
             job["total_bytes"] = download_bytes
             _run_download_plan(job, download_plan, entry.display_name)
-        # Activate: same sequence as /activate's job body.
-        _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
-                       fail_detail="The local server could not start — open Local Models for details",
-                       skip_msg="quickstart rescan check skipped")
-        _assign_default(job, variant.model_id)
+        # Activate: same sequence as /activate's job body, and the same scope. Quickstart IS
+        # `activate` plus a download: _set_runtime_enabled and _assign_default both reach
+        # save_config, so without this the config.yaml write lands in the launch profile.
+        with _config_profile_scope(profile):
+            _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
+                           fail_detail="The local server could not start — open Local Models for details",
+                           skip_msg="quickstart rescan check skipped")
+            _assign_default(job, variant.model_id)
         _finish(job, f"{entry.display_name} is ready — new chats use it")
 
     _spawn_job(job, "lr-quickstart", _run, fail_msg="quickstart failed: %s", on_exit=_QUICKSTART_LOCK.release)
@@ -764,21 +799,19 @@ async def local_models_quickstart(body: QuickstartBody):
 
 # ── server lifecycle: turn the engine on/off ─────────────────
 def _terminate_state_pid() -> None:
-    """Server owned by another process (or an orphan): terminate via the state file's pid, then clear the state."""
-    import psutil  # type: ignore
+    """Explicit recovery, never raw-PID termination of another live owner."""
+    from hermes_cli.local_runtime.recovery import stop_recorded_orphan
 
-    state = json.loads(supervisor.state_path().read_text(encoding="utf-8"))
-    pid = int(state.get("pid") or 0)
-    if pid > 0 and psutil.pid_exists(pid):
-        psutil.Process(pid).terminate()
-    supervisor.state_path().unlink(missing_ok=True)
+    if not stop_recorded_orphan():
+        raise HTTPException(status_code=409, detail=(
+            "Another Hermes process owns this server, or its ownership could not be verified"))
 
 
 def _stop_server() -> None:
     if bootstrap.get_supervisor() is not None:
         bootstrap.shutdown_local_runtime()
-    elif _state_endpoint() is not None:
-        _quiet(_terminate_state_pid, None)  # best-effort
+    else:
+        _terminate_state_pid()
     _set_runtime_enabled(False)
 
 
@@ -796,8 +829,12 @@ async def local_models_server(body: ServerActionBody):
     action = (body.action or "").strip().lower()
     if action not in _SERVER_ACTIONS:
         raise HTTPException(status_code=400, detail="action must be 'stop' or 'start'")
-    with _http_error(502):
+    try:
         await asyncio.to_thread(_SERVER_ACTIONS[action])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True, "action": action}
 
 
@@ -821,7 +858,7 @@ def local_models_eject(body: ModelEjectBody):
 
 
 @router.post("/api/local-models/activate")
-async def local_models_activate(body: ModelActivateBody):
+async def local_models_activate(body: ModelActivateBody, profile: Optional[str] = None):
     """Make a downloaded model the default for new chats: a config write via the same machinery as
     /api/model/set plus making sure the server is up. NO model loading (residency v2: models load on first
     inference; an empty router costs nothing). Kept as a job for UI continuity."""
@@ -831,12 +868,16 @@ async def local_models_activate(body: ModelActivateBody):
     job = _job("model-activate", body.model_id, model_id=body.model_id)
 
     def _run():
-        _ensure_server(job, config_mod.load_config(), body.model_id,
-                       fail_detail=_SERVER_START_FAILED, skip_msg="activate rescan check skipped")
-        _step(job, "setting-default", "Making it your default")
-        _set_runtime_enabled(True)
-        _assign_default(job, body.model_id)
-        _finish(job, f"{body.model_id} is the default for new chats")
+        # The llama runtime is one host-wide process, but "my default model" is a
+        # config.yaml write — scope it to the profile the request names, inside the job
+        # thread (the contextvar override must be set where the write happens).
+        with _config_profile_scope(profile):
+            _ensure_server(job, config_mod.load_config(), body.model_id,
+                           fail_detail=_SERVER_START_FAILED, skip_msg="activate rescan check skipped")
+            _step(job, "setting-default", "Making it your default")
+            _set_runtime_enabled(True)
+            _assign_default(job, body.model_id)
+            _finish(job, f"{body.model_id} is the default for new chats")
 
     _spawn_job(job, "lr-model-activate", _run, fail_msg="model activate failed: %s")
     return {"job_id": job["job_id"]}

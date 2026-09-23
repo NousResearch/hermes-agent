@@ -10,14 +10,17 @@ import {
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
+  isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
   isModelPickerCommand,
   isPickerCommand,
   rankSkillCommands,
   rememberDesktopCommandsCatalog,
   resolveDesktopCommand,
-  slashCompletionGroup
+  slashCompletionGroup,
+  TS_ONLY_NO_DESKTOP_SURFACE
 } from './desktop-slash-commands'
+import desktopSlashRegistry from './desktop-slash-registry.json'
 
 function registryCatalog(
   modes: Record<string, DesktopSlashArgumentMode | null>,
@@ -53,7 +56,6 @@ const REGISTRY_CATALOG = registryCatalog(
     '/btw': 'text',
     '/debug': null,
     '/goal': 'mixed',
-    '/wisdom': 'mixed',
     '/personality': 'options',
     '/queue': 'text',
     '/retry': null,
@@ -63,13 +65,7 @@ const REGISTRY_CATALOG = registryCatalog(
     '/loop': 'mixed',
     '/lcm': 'text'
   },
-  {
-    '/tasks': '/agents',
-    '/background': '/bg',
-    '/q': '/queue',
-    '/proactive': '/loop',
-    '/collective-wisdom-install': '/wisdom'
-  }
+  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
 )
 
 describe('desktop slash command curation', () => {
@@ -108,15 +104,6 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashCommandArgumentMode('/btw')).toBe('text')
     expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
     expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
-  })
-
-  it('surfaces the shared /wisdom command and hides its legacy install alias', () => {
-    expect(resolveDesktopCommand('/wisdom')?.surface).toEqual({ kind: 'exec' })
-    expect(desktopSlashCommandArgumentMode('/wisdom')).toBe('mixed')
-    expect(isDesktopSlashSuggestion('/wisdom')).toBe(true)
-    expect(isDesktopSlashCommand('/wisdom')).toBe(true)
-    expect(isDesktopSlashSuggestion('/collective-wisdom-install')).toBe(false)
-    expect(isDesktopSlashCommand('/collective-wisdom-install')).toBe(true)
   })
 
   it('groups complete.slash rows by backend kind, not the desktop table', () => {
@@ -485,5 +472,53 @@ describe('rankSkillCommands', () => {
     })
 
     expect(ranked.map(row => row.text)).toEqual(['/sessions', '/research'])
+  })
+})
+
+describe('registry-derived block-list (contract with hermes_cli/commands.py)', () => {
+  beforeEach(() => rememberDesktopCommandsCatalog(undefined))
+
+  it('marks every registry row with a reason unavailable offline, without a hand-typed copy', () => {
+    for (const [name, reason] of Object.entries(desktopSlashRegistry)) {
+      if (reason === null || reason === 'hidden') {
+        continue
+      }
+
+      const spec = resolveDesktopCommand(name)
+
+      // A desktop-owned action (e.g. /model picker) may override the registry.
+      if (spec?.surface.kind === 'unavailable') {
+        expect(spec.surface.reason).toBe(reason)
+      }
+
+      expect(isDesktopSlashSuggestion(name)).toBe(false)
+    }
+  })
+
+  it('recognizes offered built-ins and their aliases offline as Commands, never as skills (#116159)', () => {
+    // Cold catalog: nothing remembered, nothing cached. /context has no
+    // desktop disposition and no hand-typed TS row, so only the dump can
+    // vouch for it — and it must, or the popover files it under Skills and
+    // Enter takes the extension path.
+    for (const name of ['/context', '/ctx', '/usage']) {
+      expect(desktopSlashRegistry[name as keyof typeof desktopSlashRegistry]).toBeNull()
+      expect(isDesktopSlashExtensionCommand(name)).toBe(false)
+      expect(slashCompletionGroup(name)).toBe('Commands')
+      expect(isDesktopSlashCommand(name)).toBe(true)
+      expect(resolveDesktopCommand(name)?.surface.kind).toBe('exec')
+    }
+
+    // Control: an unknown skill command still groups as a skill offline.
+    expect(slashCompletionGroup('/gif-search')).toBe('Skills')
+  })
+
+  it('keeps the TS-only list disjoint from the registry dump', () => {
+    for (const names of Object.values(TS_ONLY_NO_DESKTOP_SURFACE)) {
+      for (const name of names) {
+        expect(name in desktopSlashRegistry, `${name} is in the Python registry — drop the TS row`).toBe(false)
+        expect(isDesktopSlashSuggestion(name)).toBe(false)
+        expect(isDesktopSlashCommand(name)).toBe(false)
+      }
+    }
   })
 })

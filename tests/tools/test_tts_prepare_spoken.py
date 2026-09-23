@@ -1,10 +1,11 @@
 """Unit tests for the shared TTS text cleaner (tools/tts_text_normalize).
 
 Covers the consolidated preprocessing pipeline: <think> reasoning blocks
-(#34213), emoji strip (#13311/#18598), file-mutation verifier footer
-(#40772), newline flattening for newline-sensitive providers (#9004), and
-the wiring of the ONE shared cleaner into both the text_to_speech tool
-path and the voice-mode paths.
+(#34213), visible leading Reasoning:/thinking： labels (#107044), emoji
+strip (#13311/#18598), file-mutation verifier footer (#40772), newline
+flattening for newline-sensitive providers (#9004), and the wiring of the
+ONE shared cleaner into both the text_to_speech tool path and the
+voice-mode paths.
 """
 
 import json
@@ -139,3 +140,38 @@ class TestSharedCleanerWiring:
         spoken = adapter.prepare_tts_text("<think>plan</think>Hello there")
         assert "plan" not in spoken
         assert "Hello there" in spoken
+
+
+class TestLeadingReasoningLabelStrip:
+    """Visible leading section labels must not be spoken (#107044)."""
+
+    def test_leading_reasoning_label_stripped(self):
+        spoken = prepare_spoken_text("Reasoning: This is the visible answer.")
+        assert "This is the visible answer" in spoken
+        assert not spoken.lower().lstrip().startswith("reasoning")
+
+    def test_leading_thinking_fullwidth_colon_stripped(self):
+        spoken = prepare_spoken_text("thinking：请继续。")
+        assert "请继续" in spoken
+        assert "thinking" not in spoken.lower()
+
+    def test_mid_prose_reasoning_preserved(self):
+        spoken = prepare_spoken_text("The reasoning is clear.")
+        assert "reasoning" in spoken.lower()
+
+    def test_leading_label_then_newline_stripped(self):
+        spoken = prepare_spoken_text("Reasoning\nThis is the body.")
+        assert "This is the body" in spoken
+        assert not spoken.lower().lstrip().startswith("reasoning")
+
+    def test_non_allowlisted_summary_label_preserved(self):
+        spoken = prepare_spoken_text("Summary: hello")
+        assert "Summary" in spoken
+
+    def test_leading_analysis_and_chinese_labels_stripped(self):
+        spoken = prepare_spoken_text("分析：可见回答。")
+        assert "可见回答" in spoken
+        assert not spoken.lstrip().startswith("分析")
+        spoken_en = prepare_spoken_text("Analysis: The visible answer.")
+        assert "The visible answer" in spoken_en
+        assert not spoken_en.lower().lstrip().startswith("analysis")

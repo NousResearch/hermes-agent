@@ -852,6 +852,7 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
 
 def _restart_macos_launchd_gateways(
     restarted_services: list, failed_or_stale_units: list, drain_budget: float, *, require_supervision: bool = False,
+    external_pids: set[int] | None = None,
 ) -> None:
     """Restart every launchd-managed gateway after an update (macOS).
 
@@ -869,14 +870,18 @@ def _restart_macos_launchd_gateways(
     from hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, legacy_launchd_labels_for_install,
         _graceful_restart_via_sigusr1, _launchd_kickstart,
-        _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
+        _locate_launchd_gateway_service, _wait_for_launchd_service_pid, _launchctl_supervised_pid,
     )
     if require_supervision:
         listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         if listing.returncode != 0:
             failed_or_stale_units.append("launchd (listing failed)")
             return
-    _restarted, _failed = _restart_launchd_gateway_after_update(supervision_verify=True)
+    current_label = get_launchd_label()
+    if _launchctl_supervised_pid(current_label) in (external_pids or set()):
+        _restarted, _failed = [], []
+    else:
+        _restarted, _failed = _restart_launchd_gateway_after_update(supervision_verify=True)
     restarted_services.extend(_restarted)
     failed_or_stale_units.extend(_failed)
     current_label = get_launchd_label()
@@ -896,6 +901,8 @@ def _restart_macos_launchd_gateways(
             # Locate = liveness + domain in one probe; kickstart and fresh-PID checks
             # reuse that domain so a sibling is never probed in one and restarted in another.
             domain, old_pid = _locate_launchd_gateway_service(label)
+            if old_pid in (external_pids or set()):
+                continue
             if domain is None:
                 if require_supervision and get_launchd_plist_path().with_name(f"{label}.plist").exists():
                     failed_or_stale_units.append(label)
@@ -995,6 +1002,8 @@ def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) 
             if not isinstance(profile, str) or not profile:
                 continue
             if kind == "gateway":
+                if getattr(runtime, "detail", {}).get("code_root"):
+                    continue
                 if profile in skip_profiles:
                     continue
                 if supervisor in _FRESH_RESTART_SUPERVISORS:
@@ -1126,7 +1135,7 @@ def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: s
 
 def _restart_one_systemd_gateway_unit(
     svc_name: str, *, scope: str, scope_cmd: list, drain_budget: float, _manage_cmd_cache: dict,
-    restarted_services: list, failed_or_stale_units: list,
+    restarted_services: list, failed_or_stale_units: list, external_pids: set[int] | None = None,
 ) -> None:
     """Restart one active systemd gateway/serve unit: graceful SIGUSR1 drain, then forced restart.
 
@@ -1135,6 +1144,14 @@ def _restart_one_systemd_gateway_unit(
     check = _systemctl(scope_cmd + ["is-active", svc_name], timeout=5)
     if check.stdout.strip() != "active":
         return
+
+    if external_pids and _service_unit_supports_graceful_sigusr1_restart(svc_name):
+        show = _systemctl(scope_cmd + ["show", svc_name, "--property=MainPID", "--value"], timeout=5)
+        try:
+            if int((show.stdout or "").strip() or 0) in external_pids:
+                return
+        except ValueError:
+            pass
 
     # None ⇒ no non-interactive privilege path; avoid manage-units verbs
     # entirely or polkit prompts inside the captured subprocess.
@@ -1227,7 +1244,7 @@ def _restart_one_systemd_gateway_unit(
     )
 
 
-def _restart_systemd_gateway_units(restarted_services, failed_or_stale_units, restarted_scoped_units, drain_budget):
+def _restart_systemd_gateway_units(restarted_services, failed_or_stale_units, restarted_scoped_units, drain_budget, external_pids=None):
     """Restart every active hermes-gateway*/hermes-serve* systemd unit (user + system).
 
     Settled units → ``restarted_services`` (bare) and ``restarted_scoped_units``
@@ -1274,6 +1291,7 @@ def _restart_systemd_gateway_units(restarted_services, failed_or_stale_units, re
                     _manage_cmd_cache=_manage_cmd_cache,
                     restarted_services=restarted_services,
                     failed_or_stale_units=failed_or_stale_units,
+                    external_pids=external_pids,
                 ),
                 on_unit_timeout=_on_unit_timeout,
             )
@@ -1322,7 +1340,7 @@ class _GatewayRestartOutcome:
             )
 
 
-def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None:
+def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget, external_pids=None) -> None:
     """Drain/stop every manual (non-service) gateway and print the restart summary.
 
     Mutates ``out`` in place; raises so the caller's abort recovery fires.
@@ -1334,7 +1352,8 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
     )
     # Exclude just-restarted service PIDs so we don't kill what systemd/launchd spawned.
     service_pids = _get_service_pids(all_profiles=True)
-    manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
+    manual_pids = [pid for pid in find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
+                   if pid not in (external_pids or set())]
     profile_processes = {
         proc.pid: proc
         for proc in find_profile_gateway_processes(exclude_pids=service_pids)
@@ -1397,6 +1416,33 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
             print("    Restart manually: hermes gateway run")
             if unmapped_count > 1:
                 print("    (or: hermes -p <profile> gateway run  for each profile)")
+
+
+def _verified_external_gateway_pids(plan) -> set[int]:
+    """Only exclude still-live pre-swap gateways whose checkout remains foreign."""
+    from gateway.status import live_gateway_pid_for_home
+    from hermes_cli.update_receipt import _gateway_code_root, _profile_homes, _updater_code_root
+
+    homes = dict(_profile_homes())
+    expected = _updater_code_root()
+    if expected is None:
+        return set()
+    external = set()
+    for runtime in getattr(plan, "runtimes", ()) or ():
+        if getattr(runtime, "kind", None) != "gateway" or not getattr(runtime, "detail", {}).get("code_root"):
+            continue
+        home = homes.get(runtime.profile)
+        if home is None or not isinstance(runtime.pid, int):
+            continue
+        try:
+            if live_gateway_pid_for_home(home) != runtime.pid:
+                continue
+            root = _gateway_code_root(runtime.pid, home)
+            if root is not None and root != expected and str(root) == runtime.detail["code_root"]:
+                external.add(runtime.pid)
+        except (OSError, ValueError):
+            continue
+    return external
 
 
 def _force_kill_stuck_gateways(killed_pids) -> None:
@@ -1559,16 +1605,22 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         except Exception:
             out.pre_restart_gateway_pids = None
 
+        external_pids = _verified_external_gateway_pids(_pre_update_plan)
+        if out.pre_restart_gateway_pids is not None:
+            out.pre_restart_gateway_pids = [pid for pid in out.pre_restart_gateway_pids if pid not in external_pids]
+
         _restart_systemd_gateway_units(
-            out.restarted_services, out.failed_or_stale_units, restarted_scoped_units, _drain_budget
+            out.restarted_services, out.failed_or_stale_units, restarted_scoped_units, _drain_budget,
+            external_pids=external_pids,
         )
 
         # macOS: EVERY ai.hermes.gateway* LaunchAgent (systemd parity).
         if is_macos():
             with suppress(FileNotFoundError, ImportError):
-                _restart_macos_launchd_gateways(out.restarted_services, out.failed_or_stale_units, _drain_budget)
+                _restart_macos_launchd_gateways(out.restarted_services, out.failed_or_stale_units, _drain_budget,
+                                                external_pids=external_pids)
 
-        _restart_manual_gateways(out, _drain_budget)
+        _restart_manual_gateways(out, _drain_budget, external_pids=external_pids)
 
         if out.failed_or_stale_units:
             out.incomplete = True

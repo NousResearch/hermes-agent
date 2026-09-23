@@ -417,6 +417,8 @@ def match_runtime_outcomes(
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
 
         def _outcome(r: RuntimeRecord) -> str:
+            if r.kind == "gateway" and r.pid in killed:
+                return "stopped"
             if r.kind == "gateway" and (r.detail.get("code_root") or r.pid in (external_gateway_pids or set())):
                 return "external"
             killed_here = r.pid is not None and r.pid in killed

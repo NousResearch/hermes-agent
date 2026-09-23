@@ -186,3 +186,46 @@ def test_unknown_gateway_checkout_remains_restart_debt(tmp_path, monkeypatch):
     )
     assert outcomes[0]["outcome"] == "unaccounted"
     assert update_inventory.report_unaccounted_runtimes(outcomes) is True
+
+
+def test_external_gateway_is_not_a_manual_restart_target(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    import hermes_cli.gateway as gateway
+
+    external_root = _checkout(tmp_path, "external")
+    external_home = tmp_path / "external-home"
+    external_home.mkdir()
+    profiles = tmp_path / "root-home" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "work").symlink_to(external_home, target_is_directory=True)
+    own_root = update_receipt._updater_code_root()
+    assert own_root is not None
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        monkeypatch.setattr(update_receipt, "_profile_homes", lambda: [("work", profiles / "work")])
+        monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda _home: process.pid)
+        monkeypatch.setattr(update_receipt, "_gateway_code_root", lambda _pid, _home: external_root.resolve())
+        plan = update_inventory.UpdatePlan(runtimes=[update_inventory._runtime(
+            "gateway", "work", process.pid, "manual", detail={"code_root": str(external_root.resolve())},
+        )])
+        external_pids = update_cmd_fleet._verified_external_gateway_pids(plan)
+        assert external_pids == {process.pid}
+        monkeypatch.setattr(gateway, "_get_service_pids", lambda **_kw: set())
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda **_kw: [process.pid])
+        monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **_kw: [])
+        outcome = update_cmd_fleet._GatewayRestartOutcome(
+            incomplete=False, phase_errors=[], pre_restart_gateway_pids=[], restarted_services=[],
+            failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+        )
+        update_cmd_fleet._restart_manual_gateways(outcome, 0, external_pids=external_pids)
+        assert process.poll() is None
+        assert outcome.killed_pids == set()
+        # A missing ownership proof must not exempt this process from the restart sweep.
+        monkeypatch.setattr(update_receipt, "_gateway_code_root", lambda _pid, _home: None)
+        assert update_cmd_fleet._verified_external_gateway_pids(plan) == set()
+        assert own_root != external_root.resolve()
+    finally:
+        process.terminate()
+        process.wait(timeout=5)

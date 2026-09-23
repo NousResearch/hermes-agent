@@ -244,7 +244,8 @@ def retry_invalid_response(
     from agent.conversation_loop import _arm_fallback_restart
     from agent.retry_utils import jittered_backoff
     from agent.turn_recovery import (
-        classify_codex_soft_failure, describe_invalid_response, interruptible_backoff_sleep,
+        _recover_stale_codex_reasoning, classify_codex_soft_failure,
+        describe_invalid_response, interruptible_backoff_sleep,
     )
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> InvalidResponseVerdict:
@@ -265,11 +266,12 @@ def retry_invalid_response(
     # Retry status is buffered and only surfaced if every retry+fallback exhausts.
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
 
-    # Codex reports quota exhaustion as HTTP 200 ``status=failed`` — the SDK never raises, so the
-    # exception path's credential-pool rotation never sees it. Same-provider recovery for the
-    # pool-recoverable reasons FIRST (a healthy sibling account beats burning cross-provider
-    # fallback); content-policy and other failures keep the fallback/retry path (#24159).
+    # HTTP-200 Codex failures never reach the raised-error recovery path. Repair rejected
+    # reasoning replay first, then rotate pool credentials for quota/auth failures before fallback.
     _soft, _soft_ctx = classify_codex_soft_failure(agent, response)
+    if _soft is not None and _soft.reason == FailoverReason.invalid_encrypted_content:
+        if _recover_stale_codex_reasoning(agent, _retry, messages):
+            return _verdict("continue")
     if _soft is not None and (_soft.reason in (FailoverReason.rate_limit, FailoverReason.billing) or _soft.is_auth):
         _recovered, _retry.has_retried_429 = agent._recover_with_credential_pool(
             status_code=None, has_retried_429=_retry.has_retried_429, classified_reason=_soft.reason,

@@ -112,11 +112,15 @@ class TestSendTelegramStandaloneProxy:
     def test_no_proxy_env_uses_plain_bot(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Without TELEGRAM_PROXY (and no inherited HTTPS_PROXY/etc), Bot()
-        is constructed plainly — no ``request``/``get_updates_request``
-        kwargs, and HTTPXRequest is not invoked at all.
+        """Without TELEGRAM_PROXY (and no inherited HTTPS_PROXY/etc) and with
+        the fallback-IP transport disabled, Bot() is constructed plainly — no
+        ``request``/``get_updates_request`` kwargs, and HTTPXRequest is not
+        invoked at all. (With fallback enabled, the default, the no-proxy path
+        uses TelegramFallbackTransport — see test_send_message_telegram_fallback.py.)
         """
         from tools.send_message_tool import _send_telegram
+
+        monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "1")
 
         # Wipe every env var resolve_proxy_url() inspects so the host's
         # ambient proxy settings can't flip this test green-or-red.

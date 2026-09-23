@@ -67,14 +67,20 @@ _TELEGRAM_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429",
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
-    """Retry delay in seconds, or None when final: honours ``retry_after``; timeouts are
-    never retried (the send may have gone through); 5xx/429 back off exponentially."""
+    """Retry delay in seconds, or None when final: honours ``retry_after``; connect failures back off
+    (nothing was sent yet); other timeouts are never retried (the send may have gone through); 5xx/429
+    back off exponentially."""
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
         try:
             return max(float(retry_after), 0.0)
         except (TypeError, ValueError):
             return 1.0
+    # PTB re-raises httpx.ConnectTimeout as a bare TimedOut, textually identical to a read timeout, so
+    # classify on the chained cause: httpcore only raises Connect* before any request byte is written.
+    import httpx
+    if isinstance(exc.__cause__, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return float(2 ** attempt)
     text = str(exc).lower()
     if "timed out" in text or "timeout" in text:
         return None
@@ -104,15 +110,37 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
+def _telegram_fallback_bot(token):
+    """Direct Bot routed through ``TelegramFallbackTransport``, as the gateway adapter routes its own
+    requests: a failed connect on the primary api.telegram.org path is retried against a known Telegram
+    IP with TLS SNI/Host preserved. Uses ``TELEGRAM_FALLBACK_IPS`` when set, else ``SEED_FALLBACK_IPS``.
+    No DoH discovery here: the gateway runs it once per process, but a one-shot send would repeat those
+    network round-trips on every call. ``HERMES_TELEGRAM_DISABLE_FALLBACK_IPS`` opts out, as it does for
+    the gateway."""
+    from telegram import Bot
+    if os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return Bot(token=token)
+    try:
+        from telegram.request import HTTPXRequest
+        from plugins.platforms.telegram.telegram_network import (
+            SEED_FALLBACK_IPS, TelegramFallbackTransport, parse_fallback_ip_env)
+        ips = parse_fallback_ip_env(os.getenv("TELEGRAM_FALLBACK_IPS")) or list(SEED_FALLBACK_IPS)
+        return Bot(token=token, request=HTTPXRequest(httpx_kwargs={"transport": TelegramFallbackTransport(ips)}))
+    except Exception as fallback_err:
+        logger.warning("send_message: failed to attach Telegram fallback transport (%s), using a direct connection",
+                       fallback_err)
+        return Bot(token=token)
+
+
 def _telegram_bot(token):
     """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
-    blocked); falls back to a direct connection."""
+    blocked); otherwise on the gateway's fallback-IP transport; falls back to a direct connection."""
     from telegram import Bot
     try:
         from gateway.platforms.base import resolve_proxy_url
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         if not proxy:
-            return Bot(token=token)
+            return _telegram_fallback_bot(token)
         from telegram.request import HTTPXRequest
         logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
         return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))

@@ -2,7 +2,7 @@ name: telnyx-provider
 repo: https://github.com/team-telnyx/hermes-inference-provider
 sha: f53c20e80f84b4a880a7f2b4f1ed2f8b3fa1d11c
 description: Vendor-maintained Telnyx inference provider with an authenticated live model catalog, hosted open models, frontier routes, and catalog-derived pricing.
-maintainer: Telnyx
+maintainer: team-telnyx
 tier: community
 category: models
 requires_hermes: ">=0.21.4"

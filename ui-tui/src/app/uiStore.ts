@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { MOUSE_TRACKING } from '../config/env.js'
+import { MOUSE_TRACKING, SCREEN_READER_OVERRIDE } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
 import { bootTheme } from '../lib/themeBoot.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -28,6 +28,7 @@ const buildUiState = (): UiState => ({
   pasteCollapseLines: 5,
   pasteCollapseChars: 2000,
   sections: {},
+  screenReader: SCREEN_READER_OVERRIDE === true,
   sessionTitle: '',
   showReasoning: false,
   sid: null,

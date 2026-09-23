@@ -490,7 +490,7 @@ const StatusRulePane = memo(function StatusRulePane({
 }: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
   const ui = useStore($uiState)
 
-  if (ui.statusBar !== at) {
+  if (ui.screenReader || ui.statusBar !== at) {
     return null
   }
 
@@ -546,14 +546,16 @@ export const AppLayout = memo(function AppLayout({
   // Inline mode skips AlternateScreen so the host terminal's native
   // scrollback captures rows scrolled off the top; composer + progress
   // stay anchored via normal flex-column flow.
-  const Shell = INLINE_MODE ? Fragment : AlternateScreen
-  const shellProps = INLINE_MODE ? {} : { mouseTracking }
+  const inlineMode = INLINE_MODE || ui.screenReader
+  const Shell = inlineMode ? Fragment : AlternateScreen
+  const shellProps = inlineMode ? {} : { mouseTracking }
 
   return (
     <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1} position="relative">
+        {ui.screenReader ? <Text color={ui.theme.color.muted}>[screen reader mode: on]</Text> : null}
         <Box flexDirection="row" flexGrow={1}>
-          {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
+          {!ui.screenReader && !overlay.agents && !overlay.journey && <AmbientRail side="left" />}
           {overlay.agents ? (
             <PerfPane id="agents">
               <AgentsOverlayPane />
@@ -567,7 +569,7 @@ export const AppLayout = memo(function AppLayout({
               <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
             </PerfPane>
           )}
-          {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
+          {!ui.screenReader && !overlay.agents && !overlay.journey && <AmbientRail side="right" />}
         </Box>
 
         {!overlay.agents && !overlay.journey && (
@@ -601,7 +603,7 @@ export const AppLayout = memo(function AppLayout({
           </>
         )}
 
-        {!overlay.agents && <PetPane />}
+        {!ui.screenReader && !overlay.agents && <PetPane />}
       </Box>
 
       <ActiveWidgetSlot />

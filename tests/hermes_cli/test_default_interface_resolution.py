@@ -53,6 +53,15 @@ def _args(**kw):
     return SimpleNamespace(**kw)
 
 
+def test_screen_reader_flag_parses_before_and_after_chat_subcommand():
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, _chat_parser = build_top_level_parser()
+
+    assert parser.parse_args(["--screen-reader", "--tui"]).screen_reader is True
+    assert parser.parse_args(["chat", "--screen-reader", "--tui"]).screen_reader is True
+
+
 def _fake_tty(monkeypatch, interactive: bool):
     """Pin stdin/stdout TTY-ness — pytest's capture is never a real TTY."""
     import sys as _sys

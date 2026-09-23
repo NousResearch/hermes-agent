@@ -877,6 +877,8 @@ DEFAULT_CONFIG = {
         "language": "en",
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Accessibility mode for the Ink TUI: static text, no alternate screen, and no status chrome.
+        "accessibility": {"screen_reader": False},
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock
         # status-bar read-outs ticking and the bottom chrome from going stale. 0 disables it if it
         # fights terminal auto-scroll in non-fullscreen mode.

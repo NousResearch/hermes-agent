@@ -47,6 +47,15 @@ describe('applyDisplay', () => {
     expect(s.streaming).toBe(false)
   })
 
+  it('enables screen-reader rendering from display accessibility config', () => {
+    applyDisplay(
+      { config: { display: { accessibility: { screen_reader: true } } } },
+      vi.fn()
+    )
+
+    expect($uiState.get().screenReader).toBe(true)
+  })
+
   it('hydrates the destructive slash confirmation policy from approvals', () => {
     const setBell = vi.fn()
 

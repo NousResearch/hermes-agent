@@ -17,6 +17,7 @@ import {
 } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
+import { SCREEN_READER_OVERRIDE } from '../config/env.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -270,10 +271,11 @@ export const applyDisplay = (
 ) => {
   const d = cfg?.config?.display ?? {}
   const approvals = cfg?.config?.approvals
+  const screenReader = SCREEN_READER_OVERRIDE ?? d.accessibility?.screen_reader === true
 
-  setBell(!!d.bell_on_complete)
+  setBell(screenReader || !!d.bell_on_complete)
 
-  setBellOnPrompt?.(!!d.bell_on_prompt)
+  setBellOnPrompt?.(screenReader || !!d.bell_on_prompt)
 
   applyConfiguredTuiTheme(d.tui_theme)
 
@@ -305,6 +307,7 @@ export const applyDisplay = (
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
     sections: resolveSections(d.sections),
+    screenReader,
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
     statusBarFields: normalizeStatusBarFields(d.status_bar?.fields),

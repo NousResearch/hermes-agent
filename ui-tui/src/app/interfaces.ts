@@ -347,6 +347,7 @@ export interface UiState {
   pasteCollapseChars: number
 
   sections: SectionVisibility
+  screenReader: boolean
   sessionTitle: string
   showReasoning: boolean
   indicatorStyle: IndicatorStyle

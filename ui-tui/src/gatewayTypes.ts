@@ -73,6 +73,7 @@ export type {
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
+  accessibility?: { screen_reader?: unknown }
   battery?: boolean
   bell_on_complete?: boolean
   bell_on_prompt?: boolean

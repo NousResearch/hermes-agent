@@ -54,6 +54,9 @@ export const MOUSE_TRACKING: MouseTrackingMode = resolvedBootMouseEnabled ? 'all
 
 export const NO_CONFIRM_DESTRUCTIVE = truthy(process.env.HERMES_TUI_NO_CONFIRM)
 
+// An explicit shell/CLI setting wins over config for the current TUI process.
+export const SCREEN_READER_OVERRIDE = parseToggle(process.env.HERMES_SCREEN_READER)
+
 // Set by the dashboard PTY launcher. This is intentionally narrower than
 // INLINE_MODE: users can opt into inline terminal rendering locally, but the
 // browser-embedded TUI has no healthy restart path after an idle exit.

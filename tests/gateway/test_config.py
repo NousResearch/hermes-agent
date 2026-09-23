@@ -1418,6 +1418,27 @@ class TestApiServerEnvOverride:
 
 
 class TestWebhookEnvOverride:
+    def test_config_enabled_webhook_reads_env_port_and_secret(self, tmp_path, monkeypatch):
+        """A config.yaml-enabled webhook still receives its .env listener settings."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.setenv("WEBHOOK_PORT", "9012")
+        monkeypatch.setenv("WEBHOOK_SECRET", "webhook-env-secret")
+
+        webhook = load_gateway_config().platforms[Platform.WEBHOOK]
+
+        assert webhook.enabled is True
+        assert webhook.extra["port"] == 9012
+        assert webhook.extra["secret"] == "webhook-env-secret"
+
     def test_env_key_does_not_reenable_explicitly_disabled_webhook(self):
         """An explicit ``platforms.webhook.enabled: false`` must survive
         _apply_env_overrides() even when WEBHOOK_ENABLED is truthy in the env.

@@ -87,9 +87,20 @@ class GatewaySessionOptionsMixin:
 
     @contextlib.asynccontextmanager
     async def _session_admission(self, session_key: str):
-        """Hold the admission lock for a commit or a /login clear."""
-        async with self._session_admission_lock(session_key):
-            yield
+        """Hold the admission lock for a commit or a /login clear. On release, a boot-resume that
+        deferred behind it is rescheduled once (after any turn already parked on the lock)."""
+        try:
+            async with self._session_admission_lock(session_key):
+                yield
+        finally:
+            deferred = self.__dict__.get("_resume_deferred_keys")
+            if deferred and session_key in deferred:
+                platform = deferred.pop(session_key)
+                asyncio.get_running_loop().call_soon(self._schedule_resume_pending_sessions, platform)
+
+    def _defer_resume_until_admission_free(self, session_key: str, platform: Any) -> None:
+        """Remember a boot-resume skipped because a commit held the admission lock."""
+        self.__dict__.setdefault("_resume_deferred_keys", {})[session_key] = platform
 
     # ------------------------------------------------------------- durable commit
 

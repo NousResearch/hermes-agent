@@ -1330,21 +1330,33 @@ class GatewayInboundMixin:
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
         # passes the "already running" guard and spins up a duplicate agent for the same session.
-        _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
-        if _limit_message is not None:
-            logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
-            return _limit_message
+        # The claim holds the session admission lock a runtime-options commit holds across its
+        # busy check and durable write, so a turn is never admitted in the middle of one: it parks
+        # here until the commit settles. Nothing inside awaits, so an uncontended claim never yields.
+        _admission = self._session_admission_lock(_quick_key)
+        _waited_for_commit = _admission.locked()
+        async with _admission:
+            # Another event parked behind the same commit may have claimed first: take the
+            # running-session path instead of claiming over its turn and generation.
+            _claimed_meanwhile = _waited_for_commit and self._is_session_running(_quick_key)
+            if not _claimed_meanwhile:
+                _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
+                if _limit_message is not None:
+                    logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
+                    return _limit_message
 
-        event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
+                event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 
-        _claim_state = self._session_state(_quick_key)
-        if _active_session_lease is not None:
-            _claim_state.turn.lease = _active_session_lease
-        _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
-        _claim_state.turn.event = event
-        _claim_state.turn.started_ts = time.time()
-        self._persist_active_agents()
-        _run_generation = self._begin_session_run_generation(_quick_key)
+                _claim_state = self._session_state(_quick_key)
+                if _active_session_lease is not None:
+                    _claim_state.turn.lease = _active_session_lease
+                _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
+                _claim_state.turn.event = event
+                _claim_state.turn.started_ts = time.time()
+                self._persist_active_agents()
+                _run_generation = self._begin_session_run_generation(_quick_key)
+        if _claimed_meanwhile:
+            return await self._hm_handle_running_session_message(event, source, _quick_key)
 
         try:
             try:

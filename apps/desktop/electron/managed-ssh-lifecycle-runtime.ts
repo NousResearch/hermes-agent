@@ -603,6 +603,7 @@ export function createManagedSshLifecycleRuntime(deps: any) {
     managedSshConfig,
     captureManagedSshScopes,
     openManagedSshUpdateTransport,
+    readManagedSshRecoveryRecords,
     updateManagedSshConnection,
     resumeManagedSshRecoveries
   }

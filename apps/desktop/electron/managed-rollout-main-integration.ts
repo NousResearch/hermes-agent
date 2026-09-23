@@ -8,6 +8,7 @@ import { canonicalRepositoryId, installationFingerprint, sourceFingerprint } fro
 import { createManagedRolloutJournal, type ManagedRolloutJournal } from './managed-rollout-journal'
 import { createManagedRolloutProductionAdapters } from './managed-rollout-production-adapters'
 import { observeManagedRemoteUpdate } from './managed-ssh-update'
+import type { ManagedSshRecoveryRecord } from './managed-ssh-update-service'
 import * as remoteLifecycle from './remote-lifecycle'
 import * as windowsRemote from './windows-remote-lifecycle'
 
@@ -26,14 +27,8 @@ export interface ManagedRolloutMainIntegrationOptions {
   reviewManifestPath: string
   assuranceRoot: string
   journalRoot: string
-  recoverManagedSsh?: (record: {
-    connectionId: string
-    correlationId: string
-    phase: 'prepared' | 'launching'
-    scopes: readonly any[]
-    source: any
-  }) => Promise<void>
-  recoveryScopes?: (source: any, scopes: readonly any[]) => readonly any[]
+  readRecoveryRecord?: (connectionId: string, correlationId: string) => ManagedSshRecoveryRecord | null
+  recoverManagedSsh?: (record: ManagedSshRecoveryRecord) => Promise<void>
 }
 
 function remoteGitCommand(repositoryRoot: string, args: readonly string[]): string {
@@ -574,14 +569,22 @@ async function reprobeRemote(options: ManagedRolloutMainIntegrationOptions, auth
 }
 
 async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, authorization: any) {
-  if (!options.recoverManagedSsh) {
+  if (!options.recoverManagedSsh || !options.readRecoveryRecord) {
     return { correlationId: authorization.correlationId, clearanceProved: false }
   }
 
-  const source = options.getSource(authorization.connectionId)
+  const record = options.readRecoveryRecord(authorization.connectionId, authorization.correlationId)
 
-  if (!source) {return { correlationId: authorization.correlationId, clearanceProved: false }}
-  const transport = await options.openTransport(source)
+  if (
+    !record || record.connectionId !== authorization.connectionId ||
+    record.correlationId !== authorization.correlationId ||
+    record.source?.id !== authorization.connectionId || record.source.kind !== 'ssh' ||
+    !Array.isArray(record.scopes) || !['prepared', 'launching'].includes(record.phase)
+  ) {
+    return { correlationId: authorization.correlationId, clearanceProved: false }
+  }
+
+  const transport = await options.openTransport(record.source)
 
   try {
     const raw: any = await observeManagedRemoteUpdate(transport.target, authorization.correlationId)
@@ -593,23 +596,13 @@ async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, auth
       return { correlationId: typeof receipt?.correlationId === 'string' ? receipt.correlationId : '', clearanceProved: false }
     }
 
-    const captured = await options.captureScopes(source)
+    await options.recoverManagedSsh(record)
 
-    const scopes = options.recoveryScopes?.(source, captured) ?? captured.map(scope => ({
-      key: String(scope.key),
-      kind: 'legacy',
-      profile: String(scope.profile || 'default')
-    }))
+    // The service may return after a blocked or incomplete restoration. Only
+    // removal of the original durable obligation proves local clearance.
+    const remaining = options.readRecoveryRecord(authorization.connectionId, authorization.correlationId)
 
-    await options.recoverManagedSsh({
-      connectionId: authorization.connectionId,
-      correlationId: authorization.correlationId,
-      phase: 'launching',
-      scopes,
-      source
-    })
-
-    return { correlationId: authorization.correlationId, clearanceProved: true }
+    return { correlationId: authorization.correlationId, clearanceProved: remaining === null }
   } finally {
     await transport.close().catch(() => undefined)
   }

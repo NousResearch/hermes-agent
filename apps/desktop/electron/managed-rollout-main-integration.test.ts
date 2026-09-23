@@ -348,11 +348,21 @@ describe('managed rollout main integration', () => {
   })
 
   test('wires read-only reprobe and correlated recovery through the production integration', async () => {
-    let recoveryRecord: any = null
+    const durableScope = { key: 'ssh:profile:default', kind: 'registry', profile: 'default' }
+    let durableRecord: any = {
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      phase: 'launching',
+      scopes: [durableScope],
+      source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
+    }
+    let recoveredRecord: any = null
 
     const { integration } = makeIntegration(TARGET_SHA, {
+      readRecoveryRecord: () => durableRecord,
       recoverManagedSsh: async (record: any) => {
-        recoveryRecord = record
+        recoveredRecord = record
+        durableRecord = null
       }
     })
 
@@ -393,11 +403,59 @@ describe('managed rollout main integration', () => {
       correlationId: CORRELATION_ID,
       clearanceProved: true
     })
-    expect(recoveryRecord).toMatchObject({
+    expect(recoveredRecord).toMatchObject({
       connectionId: CONNECTION_ID,
       correlationId: CORRELATION_ID,
       phase: 'launching',
-      scopes: []
+      scopes: [durableScope],
+      source: { label: 'original-host' }
     })
+  })
+
+  test('Recover refuses clearance without the original durable scope record', async () => {
+    const recoverManagedSsh = vi.fn(async () => undefined)
+    const { integration } = makeIntegration(TARGET_SHA, {
+      readRecoveryRecord: () => null,
+      recoverManagedSsh
+    })
+
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent',
+      launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA }
+    } as any)
+
+    await expect((integration.observe as any).recover({
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID
+    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    expect(recoverManagedSsh).not.toHaveBeenCalled()
+  })
+
+  test('Recover leaves clearance unproved while an original scope remains pending', async () => {
+    const record = {
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      phase: 'launching',
+      scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
+      source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
+    }
+    const recoverManagedSsh = vi.fn(async () => undefined)
+    const { integration } = makeIntegration(TARGET_SHA, {
+      readRecoveryRecord: () => record,
+      recoverManagedSsh
+    })
+
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent',
+      launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA }
+    } as any)
+
+    await expect((integration.observe as any).recover({
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID
+    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    expect(recoverManagedSsh).toHaveBeenCalledWith(record)
   })
 })

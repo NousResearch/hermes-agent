@@ -2,14 +2,12 @@ import path from 'node:path'
 
 import type { App, BrowserWindow, IpcMain } from 'electron'
 
-import { backendScopePrefix } from './connection-registry'
 import type { createDesktopConnectionAssembly } from './desktop-connection-assembly'
 import { readVerifiedHostKeyFingerprint } from './managed-rollout-host-key'
 import { registerManagedRolloutIpc } from './managed-rollout-ipc-runtime'
 import { createManagedRolloutMainIntegration } from './managed-rollout-main-integration'
 import { createManagedRolloutProvider } from './managed-rollout-provider'
 import type { createManagedSshLifecycleRuntime } from './managed-ssh-lifecycle-runtime'
-import { managedSshRecoveryScopes } from './managed-ssh-update'
 
 interface DesktopRuntimeDeps {
   app: Pick<App, 'getPath'>
@@ -58,13 +56,15 @@ export function registerManagedRolloutDesktopRuntime(deps: DesktopRuntimeDeps) {
     reviewManifestPath: path.join(root, 'review.json'),
     assuranceRoot: path.join(root, 'assurance'),
     journalRoot: path.join(root, 'journal'),
+    readRecoveryRecord: (connectionId, correlationId) =>
+      lifecycle.readManagedSshRecoveryRecords().find(record =>
+        record.connectionId === connectionId && record.correlationId === correlationId
+      ) || null,
     recoverManagedSsh: record => {
       assertOwner()
 
       return lifecycle.managedSshUpdateService.recover({ ...record, scopes: [...record.scopes] })
-    },
-    recoveryScopes: (source, scopes) =>
-      managedSshRecoveryScopes(scopes, backendScopePrefix(source.id))
+    }
   })
 
   const provider = createManagedRolloutProvider({

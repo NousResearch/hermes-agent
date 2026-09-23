@@ -6,8 +6,14 @@ import { modeBound } from '@/store/interface-mode'
 // hidden, so every existing store carries an `approval-mode` the user never
 // chose. v2 seeds from v1 minus that id: other customizations survive, the
 // pill appears once on update, and hiding it again persists here.
-const STATUSBAR_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden.v2'
-const LEGACY_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden'
+// v2 (`hermes.desktop.statusbarHidden.v2`) also shipped `context-usage` hidden,
+// so a store at the default layout carries a context meter the user never
+// turned off — yet the gauge answers the one question that can cost a session
+// (context about to overflow), unlike the other per-turn diagnostics. v3 seeds
+// from v2 minus that id: the meter appears once on update, and hiding it again
+// persists to v3 like any other customization.
+const STATUSBAR_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden.v3'
+const LEGACY_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden.v2'
 // v1 (`hermes.desktop.statusbarVisible`) shipped a stretch where the bar was
 // opt-in, so many stores hold a `false` the user never chose. v2 is read fresh
 // and the v1 key is deliberately NOT seeded from: every existing install comes
@@ -33,14 +39,18 @@ export function toggleStatusbarVisible() {
 // route shortcuts (cron/webhooks/agents) and the terminal toggle are
 // navigation, not status, so they start out of the way. The approval pill
 // (the yolo zap) stays: whether dangerous commands run unasked is state the
-// user should see at a glance. The per-turn
-// session readouts (running/session timers, context meter, cache hit rate,
-// tokens/sec) are diagnostics most users don't watch, so they start hidden too
-// and the bar stays quiet mid-turn.
+// user should see at a glance. The per-turn session readouts (running/session
+// timers, cache hit rate, tokens/sec) are diagnostics most users don't watch,
+// so they start hidden and the bar stays quiet mid-turn.
+//
+// `context-usage` is the exception among per-turn readouts: it answers the one
+// question that can cost a session (context about to overflow), so it ships
+// visible. Its gauge reads from the same `session.context_breakdown` RPC the
+// popover uses, so it costs nothing when no turn has run yet (a resumed session
+// reports an estimate, not a provider call).
 export const STATUSBAR_HIDDEN_BY_DEFAULT: readonly string[] = [
   'agents',
   'cache-hit-rate',
-  'context-usage',
   'cron',
   'running-timer',
   'session-timer',
@@ -66,7 +76,10 @@ function legacyHiddenSeed(): string[] {
   }
 
   try {
-    return sanitizeHiddenIds(JSON.parse(raw)).filter(id => id !== 'approval-mode')
+    // Drop the ids this app shipped hidden that the user never chose:
+    // `approval-mode` (v1) and `context-usage` (v2). Their removals are the
+    // one-time "it appears on update" migrations; re-hiding persists to v3.
+    return sanitizeHiddenIds(JSON.parse(raw)).filter(id => id !== 'approval-mode' && id !== 'context-usage')
   } catch {
     return [...STATUSBAR_HIDDEN_BY_DEFAULT]
   }

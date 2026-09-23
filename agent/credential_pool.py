@@ -1012,15 +1012,19 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         with self._lock:
             return bool(self._entries)
 
-    def has_available(self, *, model: Optional[str] = None) -> bool:
+    def has_available(self, *, model: Optional[str] = None, ignore_model_cooldowns: bool = False) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown.
 
         ``_available_entries`` is not read-only (it prunes aged-out DEAD
         manual entries and persists), so it must run under ``self._lock``
         like every other caller or a probe can race a concurrent rotation.
+        ``ignore_model_cooldowns`` is the provider-level read (pickers,
+        ``hermes auth status``): per-model benches stay visible for every
+        model that did not fail.
         """
         with self._lock:
-            available, _pending = self._available_entries(model=model)
+            available, _pending = self._available_entries(
+                model=model, ignore_model_cooldowns=ignore_model_cooldowns)
             return bool(available)
 
     def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
@@ -1998,6 +2002,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
+        ignore_model_cooldowns: bool = False,
     ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -2007,6 +2012,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         xai-oauth), which are returned as *pending_refresh* so the caller
         refreshes them outside the lock instead of stalling every pool
         consumer during cross-process flock acquisition + OAuth network I/O.
+
+        *ignore_model_cooldowns* answers the PROVIDER-level question ("is any
+        entry usable for some model?"): per-model benches (Anthropic 429s,
+        Codex ChatGPT entitlement 400s) are facts about (credential, model)
+        pairs and must not bench the whole provider — otherwise one
+        unsupported-model request hides the provider from every picker while
+        every other model still works. Leasing paths keep the conservative
+        default so an unscoped route never reuses a benched credential.
         """
         now = time.time()
         cleared_any = False
@@ -2043,7 +2056,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                         entries_to_prune.append(entry.id)  # can't mutate while iterating
                         cleared_any = True
                 continue
-            if model_cooldown_until(entry, model) is not None:
+            if not ignore_model_cooldowns and model_cooldown_until(entry, model) is not None:
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)

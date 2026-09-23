@@ -168,12 +168,15 @@ def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False)
 
     Legacy opaque ``auth.json`` pool values that do not deserialize into ``PooledCredential``
     stay visible (``raw_pool_present``); a real pool's availability is authoritative — an
-    all-exhausted/dead pool is not authenticated."""
+    all-exhausted/dead pool is not authenticated. Per-model benches (Codex ChatGPT
+    entitlement 400s, Anthropic per-model 429s) are (credential, model) facts and do NOT
+    make the provider unusable — otherwise one request for an unsupported model hides the
+    provider from every picker while all its other models still work."""
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider)
         if pool.has_credentials():
-            return pool.has_available()
+            return pool.has_available(ignore_model_cooldowns=True)
     except Exception:
         pass
     return raw_pool_present

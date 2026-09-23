@@ -100,3 +100,31 @@ def test_all_entries_rejecting_falls_back_to_session_marker(pool):
     ) is None
     assert _mark_entitlement_rejected_model(agent, _entitlement_400()) is True
     assert _is_entitlement_rejected(agent, "openai-codex", MODEL)
+
+
+def test_provider_level_availability_ignores_per_model_benches(pool):
+    """A per-model entitlement bench must not make the provider unusable for pickers.
+
+    The provider-level read (`has_available(ignore_model_cooldowns=True)`, used by
+    `_credential_pool_is_usable` for every model picker) stays True while the benched
+    model itself stays unselectable; the conservative unscoped default is unchanged.
+    """
+    pool.mark_exhausted_and_rotate(
+        status_code=400, api_key_hint=TOKENS[0], credential_id="cred-0",
+        failure_reason="model_entitlement", model=MODEL,
+    )
+    # Provider-level: both credentials remain visible despite the (credential, model) bench.
+    assert pool.has_credentials()
+    assert pool.has_available(ignore_model_cooldowns=True)
+    # Leasing for the benched model rotates away; for any other model it still leases.
+    assert pool.select(model=MODEL).id == "cred-1"
+    assert pool.select(model=OTHER_MODEL).id == "cred-0"
+
+    # Sole-credential case: bench every entry for the model — provider stays listed.
+    pool.mark_exhausted_and_rotate(
+        status_code=400, api_key_hint=TOKENS[1], credential_id="cred-1",
+        failure_reason="model_entitlement", model=MODEL,
+    )
+    assert pool.has_available(ignore_model_cooldowns=True)
+    assert pool.select(model=MODEL) is None
+    assert pool.select(model=OTHER_MODEL).id in {"cred-0", "cred-1"}

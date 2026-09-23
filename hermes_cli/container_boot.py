@@ -108,6 +108,10 @@ def reconcile_profile_gateways(
     # the slots anyway — the container shipped the opt-out topology by accident. The key is retired
     # as a topology switch (hermes_cli/gateway_multiplex_mode.py), so there is nothing to read.
     named = [(name, entry, _read_desired_state(entry)) for name, entry in _named_profile_dirs(hermes_home)]
+    # The exception is a `gateway.standalone` profile: the root multiplexer never serves it
+    # (profiles_to_serve excludes it), so it boots its own slot from its own intent, beside the root.
+    from hermes_cli.profiles import profile_is_standalone
+    standalone = {name for name, entry, _prior in named if profile_is_standalone(entry)}
 
     # A legacy `gateway run` container with no state yet seeds `running` (pre-s6 behavior).
     legacy_default_state = _maybe_migrate_legacy_gateway_run_state(
@@ -118,7 +122,8 @@ def reconcile_profile_gateways(
     # booted with ZERO gateways: it has no root state (or "stopped"), every named slot is now
     # registered down unconditionally, and every action reported "registered" — a container that
     # looks healthy while nothing is listening.
-    fold = fold_named_slot_intent(default_prior_state, ((name, prior) for name, _dir, prior in named))
+    fold = fold_named_slot_intent(
+        default_prior_state, ((name, prior) for name, _dir, prior in named if name not in standalone))
     folded, default_should_start = list(fold.folded), fold.root_should_start
     if folded and default_prior_state not in _AUTOSTART_STATES:
         log.warning("%s", boot_notice(folded))
@@ -129,8 +134,8 @@ def reconcile_profile_gateways(
                                 folded_into_root=bool(folded)))
 
     for name, entry, prior_state in named:
-        # Registered down, always: a started named slot IS a second gateway on this host.
-        should_start = False
+        # Registered down unless standalone: any other started named slot IS a second gateway on this host.
+        should_start = name in standalone and prior_state in _AUTOSTART_STATES
         if not dry_run:
             _cleanup_stale_runtime_files(entry)
             _register_service(scandir, name, start=should_start)

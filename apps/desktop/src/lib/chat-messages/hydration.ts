@@ -238,6 +238,45 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   return content
 }
 
+/**
+ * An assistant row with NO visible content — empty/blank `content` (and no
+ * codex sidecar, no tool_calls) — but non-empty `reasoning` is a retry-churn
+ * artifact, not a reply. It must never enter the merge loop: `toChatMessages`
+ * would otherwise graft its reasoning onto a retained text bubble via the
+ * tool-attach path, and a post-merge filter cannot see it (the bubble still
+ * has text). Reasoning is a private scratchpad, not a substitute for an
+ * answer — drop these rows before merging.
+ */
+function isDropOnlyReasoningAssistant(message: SessionMessage): boolean {
+  if (message.role !== 'assistant') {
+    return false
+  }
+
+  const visibleContent =
+    message.display_content !== undefined
+      ? message.display_content
+      : message.content || message.text || message.context || message.name
+
+  if (visibleContent && String(visibleContent).trim()) {
+    return false
+  }
+
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+    return false
+  }
+
+  if (codexMessageItemText(message)) {
+    return false
+  }
+
+  const reasoning =
+    message.reasoning ||
+    message.reasoning_content ||
+    (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
+
+  return Boolean(reasoning)
+}
+
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
@@ -248,6 +287,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   // (see ChatMessage.serverRowSpan).
   let pendingToolRows = 0
   let activeAssistantIndex: null | number = null
+
+  // Drop retry-churn artifacts BEFORE merging: a reasoning-only row that
+  // enters the loop can graft its reasoning onto a retained text bubble via
+  // the tool-attach path (`pendingToolParts` / `activeAssistant`), and the
+  // end filter cannot see it because the bubble still has text.
+  const visibleRows = messages.filter(message => !isDropOnlyReasoningAssistant(message))
 
   const clearPendingTools = () => {
     pendingToolParts = []
@@ -309,7 +354,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     clearPendingTools()
   }
 
-  messages.forEach((message, index) => {
+  visibleRows.forEach((message, index) => {
     if (message.role === 'tool') {
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 
@@ -487,7 +532,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null
   })
-  flushPendingTools(messages.length)
+  flushPendingTools(visibleRows.length)
 
   const withoutGeneratedImageEchoes = result.map(message =>
     message.role === 'assistant'

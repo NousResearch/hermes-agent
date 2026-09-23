@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test && npm run lint"
+    "test:build-output": "node scripts/assert-relative-build.mjs",
+    "check": "npm run typecheck && npm run test && npm run lint && npm run build && npm run test:build-output"
   },
   "dependencies": {
     "@hermes/shared": "file:../apps/shared",

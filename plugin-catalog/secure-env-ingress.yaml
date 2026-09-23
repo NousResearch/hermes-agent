@@ -1,12 +1,12 @@
 name: secure-env-ingress
 repo: https://github.com/web3blind/hermes-secure-env-plugin
-sha: cf57ca7e7d0cf11ce1e9c1cd860eb617372d8193
+sha: 6c03c0f35e5b8b8ca89d096a77baba260b61e223
 subdir: secure_env_ingress
 description: One-use HTTPS forms for adding missing environment secrets outside Telegram chat and LLM input.
 maintainer: web3blind
 tier: community
 category: tools
-version: "0.1.0"
+version: "0.2.0"
 docs_url: https://github.com/web3blind/hermes-secure-env-plugin#readme
 platforms: [linux]
 capabilities:

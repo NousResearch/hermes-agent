@@ -106,6 +106,11 @@ class DelegateEvent(str, enum.Enum):
     TASK_THINKING = "delegate.task_thinking"
     TASK_TOOL_STARTED = "delegate.tool_started"
     TASK_TOOL_COMPLETED = "delegate.tool_completed"
+    # Child-side diagnostic (stale-kill, retry chatter): teed from
+    # ``StatusOutputMixin._buffer_diagnostic_status`` so a parent watching the
+    # progress callback sees mid-flight provider silence that the child's
+    # retry buffer would otherwise hold until terminal failure.
+    TASK_DIAGNOSTIC = "delegate.task_diagnostic"
 
 # Legacy child-agent event strings → DelegateEvent.
 _LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
@@ -127,6 +132,7 @@ _EVENT_HANDLERS: Dict[Any, Optional[str]] = {
     DelegateEvent.TASK_THINKING: "_on_thinking",
     DelegateEvent.TASK_PROGRESS: "_on_progress",
     DelegateEvent.TASK_TOOL_COMPLETED: None,
+    DelegateEvent.TASK_DIAGNOSTIC: "_on_diagnostic",
 }
 
 def _normalize_event(event_type: Any) -> Any:
@@ -379,6 +385,44 @@ class _ChildProgressRelay:
         text = preview or tool_name or ""
         self._tree_line(f'💭 "{_short(text, 55)}"')
         self._relay("subagent.thinking", preview=text)
+
+    def _on_diagnostic(self, tool_name, preview, args, kwargs):
+        """Child diagnostic (stale-kill etc.): CLI tree + parent progress + warning-status sinks."""
+        text = str(kwargs.get("text") or preview or tool_name or "")
+        attempt = kwargs.get("attempt")
+        giveup = kwargs.get("giveup")
+        label = text
+        if attempt is not None and giveup is not None:
+            label = f"{text} (attempt {attempt}/{giveup})"
+        elif attempt is not None:
+            label = f"{text} (attempt {attempt})"
+        # CLI spinner / tree (same surface as thinking/tools).
+        self._tree_line(f"⚠️ {_short(label, 70)}")
+        # Parent progress callback gets the formal wire string + fields (identity
+        # kwargs added by _relay). Live-log observers key on the wire string.
+        diag_kw = {k: kwargs[k] for k in ("text", "api_call", "attempt", "giveup") if k in kwargs and kwargs[k] is not None}
+        if "text" not in diag_kw and text:
+            diag_kw["text"] = text
+        self._relay(DelegateEvent.TASK_DIAGNOSTIC.value, preview=text, **diag_kw)
+        # Gateway / TUI warning-status presentation (no new surface — same
+        # render_notification rail as subagent failure lines).
+        parent = self.parent_scope
+        if parent is not None and text:
+            from gateway.warning_notifications import render_notification
+            render_notification(
+                lambda: self._relay_status_sink(label),
+                platform=getattr(parent, "_notification_platform", getattr(parent, "platform", "cli")),
+                user_config=getattr(parent, "_notification_config", None),
+            )
+
+    def _relay_status_sink(self, label: str) -> None:
+        """Push a diagnostic line onto the parent's status_callback when present."""
+        parent = self.parent_scope
+        status_cb = getattr(parent, "status_callback", None) if parent is not None else None
+        if status_cb:
+            with _quiet("Parent status_callback failed: %s"):
+                from gateway.warning_notifications import DiagnosticText
+                status_cb("lifecycle", DiagnosticText(f"⚠️ {label}"))
 
     def _on_progress(self, tool_name, preview, args, kwargs):
         # Pre-batched summary from a nested orchestrator's grandchild arrives in the tool_name slot: render distinctly

@@ -420,11 +420,34 @@ def _on_tool_progress(
     # tool-progress chrome: it must survive display.tool_progress=off like todo.updated does.
     if event_type.startswith("subagent."):
         return _progress_subagent(sid, name, preview, _kwargs, event_type)
+    # Child diagnostic teed from stale-kill / retry buffer — session notification rail.
+    if event_type == "delegate.task_diagnostic":
+        return _progress_task_diagnostic(sid, name, preview, _kwargs)
     if not _tool_progress_enabled(sid):
         return
     handler, requires = _PROGRESS_HANDLERS.get(event_type, (None, None))
     if handler is not None and (requires is None or {"name": name, "preview": preview}[requires]):
         handler(sid, name, preview, _kwargs)
+
+
+def _progress_task_diagnostic(sid, name, preview, kw):
+    """Render TASK_DIAGNOSTIC as a warning-status session notification (no new surface)."""
+    text = str(kw.get("text") or preview or name or "")
+    if not text:
+        return
+    attempt, giveup = kw.get("attempt"), kw.get("giveup")
+    if attempt is not None and giveup is not None:
+        text = f"{text} (attempt {attempt}/{giveup})"
+    elif attempt is not None:
+        text = f"{text} (attempt {attempt})"
+    from gateway.warning_notifications import DiagnosticText, render_notification
+    line = DiagnosticText(f"⚠️ {text}")
+    render_notification(
+        lambda: _emit("status.update", sid, {"kind": "warn", "text": str(line)}),
+        platform="tui",
+        diagnostic=True,
+        user_config=None,
+    )
 
 
 def register(server) -> None:

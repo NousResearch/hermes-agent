@@ -70,10 +70,13 @@ def _normalize_role(r: Optional[str]) -> str:
 
 DEFAULT_MAX_ITERATIONS = 250
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
-# Stale-heartbeat thresholds (cycles of _HEARTBEAT_INTERVAL with no progress). Progress = iteration, current_tool OR
-# last_activity_ts advancing; an in-flight model wait refreshes last_activity_ts, so slow models are not "idle". Idle
-# stays tight so a truly wedged child doesn't mask the gateway timeout; in-tool is much higher so legitimately long
-# tools can finish.
+# Stale-heartbeat thresholds (cycles of _HEARTBEAT_INTERVAL with no progress). Progress = iteration,
+# current_tool OR last_activity_ts advancing. A *healthy* in-flight model wait refreshes
+# last_activity_ts (direct_api_call's activity heartbeat), so slow models are not "idle". A
+# *retry after a stale-kill* does NOT refresh last_activity_ts — that loop is silence, not
+# progress, and the idle threshold must still trip (rather than waiting out HERMES_STREAM_STALE_GIVEUP).
+# Idle stays tight so a truly wedged child doesn't mask the gateway timeout; in-tool is much higher
+# so legitimately long tools can finish.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
 

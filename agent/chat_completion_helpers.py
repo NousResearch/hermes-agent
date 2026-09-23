@@ -576,6 +576,13 @@ def _report_stale_nonstream_kill(agent, api_kwargs: dict, elapsed: float, stale_
 
 
 def _touch_stale_kill_activity(agent, elapsed: float) -> None:
+    """Record a stale kill on the activity *description* only when the first
+    attempt dies; a retry after a prior stale kill must NOT advance
+    ``last_activity_ts`` — otherwise a child stuck in the HERMES_STREAM_STALE_GIVEUP
+    loop looks forever-live to the parent heartbeat (idle threshold never trips)."""
+    if _stale_streak(agent) > 1:
+        # Streak already includes this kill; retries are silence, not progress.
+        return
     try:
         agent._touch_activity(f"stale non-streaming call killed after {int(elapsed)}s")
     except Exception:
@@ -841,13 +848,19 @@ class _InlineRequest:
     """Lifecycle state for one inline non-streaming request (#75301). Every transition
     happens under ``lock``: ``done`` stops a late timer bumping the stale streak after
     unwind; ``cancelled`` lets an interrupt own the outcome so a racing timer can't
-    misclassify the kill as staleness; ``stale`` is the one-shot transition."""
+    misclassify the kill as staleness; ``stale`` is the one-shot transition.
 
-    def __init__(self, agent, api_kwargs: dict, stale_timeout: float, call_start: float):
+    ``refresh_activity`` is False on a stale-kill *retry*: the parent delegation
+    heartbeat must not treat a looping unresponsive-provider wait as progress.
+    """
+
+    def __init__(self, agent, api_kwargs: dict, stale_timeout: float, call_start: float,
+                 *, refresh_activity: bool = True):
         self.agent = agent
         self.api_kwargs = api_kwargs
         self.stale_timeout = stale_timeout
         self.call_start = call_start
+        self.refresh_activity = refresh_activity
         self.client = None
         self.done = False
         self.stale = False
@@ -861,6 +874,10 @@ class _InlineRequest:
     def _activity_heartbeat(self) -> None:
         # Never put the API call itself on another worker thread — that is the nested-pool
         # deadlock this path exists to avoid (#60203). This ticker only refreshes the clock.
+        # Skipped entirely on a stale-kill retry so the parent idle heartbeat can trip.
+        if not self.refresh_activity:
+            self._hb_stop.wait()
+            return
         while not self._hb_stop.wait(_DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS):
             with contextlib.suppress(Exception):
                 self.agent._touch_activity("waiting for non-streaming API response")
@@ -956,13 +973,19 @@ def direct_api_call(agent, api_kwargs: dict):
     """Run a non-streaming LLM call inline on the conversation thread (cron turns,
     delegated children — see ``should_use_direct_api_call``): no interrupt worker,
     so the nested-pool deadlock cannot occur. An activity heartbeat keeps
-    ``last_activity_ts`` advancing (else the stall monitor interrupts a healthy
-    wait at ~450s). A stale-call watchdog bounds the request (#80759): the timer
-    aborts in-flight sockets via the registered hook, and a per-call ``timeout``
-    equal to the stale budget is the backstop when the abort finds nothing (#85252).
-    Both surface a retryable ``TimeoutError`` for the outer retry loop."""
+    ``last_activity_ts`` advancing on a *healthy* first wait (else the stall
+    monitor interrupts a healthy wait at ~450s). A retry after a stale kill does
+    **not** refresh activity — that loop is silence, not progress. A stale-call
+    watchdog bounds the request (#80759): the timer aborts in-flight sockets via
+    the registered hook, and a per-call ``timeout`` equal to the stale budget is
+    the backstop when the abort finds nothing (#85252). Both surface a retryable
+    ``TimeoutError`` for the outer retry loop."""
     _check_stale_giveup(agent)
-    agent._touch_activity("waiting for non-streaming API response")
+    # A prior consecutive stale kill means this call is a retry: do not advance
+    # last_activity_ts (parent heartbeat would never see idle).
+    stale_retry = _stale_streak(agent) > 0
+    if not stale_retry:
+        agent._touch_activity("waiting for non-streaming API response")
     # Resolve the budget BEFORE the heartbeat starts: the resolver may raise
     # (fail-closed), and a leaked heartbeat thread would mask real stalls forever.
     call_start = time.time()
@@ -972,7 +995,9 @@ def direct_api_call(agent, api_kwargs: dict):
     hard_timeout = _inline_nonstream_hard_timeout(stale_timeout)
     if hard_timeout is not None and "timeout" not in api_kwargs:
         api_kwargs = {**api_kwargs, "timeout": hard_timeout}
-    request = _InlineRequest(agent, api_kwargs, stale_timeout, call_start)
+    request = _InlineRequest(
+        agent, api_kwargs, stale_timeout, call_start, refresh_activity=not stale_retry,
+    )
     request.start_watchdogs()
 
     # Only a clean return reports the reuse reason; errors/interrupts really

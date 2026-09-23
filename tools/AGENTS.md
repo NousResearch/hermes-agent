@@ -134,7 +134,14 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
+subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child diagnostics:** a child's
+`_buffer_diagnostic_status` (stale-kill, retry chatter) still buffers for terminal flush, and *also*
+tees a `DelegateEvent.TASK_DIAGNOSTIC` (`delegate.task_diagnostic`) through the child's live
+`tool_progress_callback` so the parent (CLI spinner, gateway `render_notification` warning-status,
+TUI session notifications, live transcript at `~/.hermes/cache/delegation/live/`) sees mid-flight
+provider silence instead of 45 minutes of quiet. A *healthy* in-flight model wait refreshes
+`last_activity_ts`; a *retry after a stale-kill* does not — that loop is silence and the parent
+heartbeat idle threshold (450s) must still trip. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on

@@ -723,12 +723,12 @@ PLATFORM_HINTS = {
         "formatting. SMS messages are limited to ~1600 characters, so be brief and direct."
     ),
     "bluebubbles": (
-        # The adapter runs strip_markdown(): markers vanish but the layout stays, and [label](url) loses its URL.
+        # The adapter runs strip_markdown(keep_link_targets=True): markers vanish, the layout stays.
         "You are texting via iMessage (BlueBubbles). Replies arrive as plain text bubbles, so write like a person "
         "texting: short and conversational, answer first, no preamble or recap. Markdown does not render and is "
         "stripped, so skip headers, tables, code fences and backticks; for a few items use short lines or a "
         "sentence rather than nested bullets. Put a command or code snippet on its own line as plain text so it "
-        "can be copied. Write links as bare URLs (iMessage auto-links them); [text](url) links lose the URL. "
+        "can be copied. Write links as bare URLs (iMessage auto-links them). "
         f"{_MEDIA_NATIVE}Images (.jpg, .png, .heic) appear as photos and other files arrive as attachments."
     ),
     "mattermost": (

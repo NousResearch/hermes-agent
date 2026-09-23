@@ -1587,12 +1587,12 @@ def register(ctx) -> None:
         pii_safe=True,  # E.164 phone numbers: redact session descriptions before they reach the LLM
         allow_update_command=True,
         # Grounded in spectrum-ts markdownToIMessageText + sidecar send-format.mjs: headings -> bold, tables ->
-        # "a | b" rows, code -> Unicode math-monospace; any message containing a URL is sent as raw text.
+        # "a | b" rows, code -> Unicode math-monospace; any message containing a URL is stripped to plain text.
         platform_hint=(
             "You are texting via iMessage (Photon). Write like a person texting: short and conversational, "
-            "answer first, no preamble or recap. Markdown mostly does not survive here: a message containing "
-            "a link is sent as raw text (every *, #, ``` and | shows literally), headings flatten to bold, "
-            "tables to pipe-separated lines, and backtick or code-block text turns into Unicode look-alike "
+            "answer first, no preamble or recap. Markdown mostly does not survive here: any message containing "
+            "a link is sent as plain text with all formatting stripped, headings flatten to bold, tables to "
+            "pipe-separated lines, and backtick or code-block text turns into Unicode look-alike "
             "glyphs that break when copied. So no headers, tables, code fences or backticks; an occasional "
             "**bold** word is fine in a message without links. Put a command or code snippet on its own line "
             "as plain text so it copies and runs. Write links as bare URLs; a message that is only a URL "

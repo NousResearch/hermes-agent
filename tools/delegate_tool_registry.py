@@ -6,6 +6,7 @@ import logging
 import json
 import threading
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
 from tools.registry import tool_error
@@ -52,6 +53,7 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     if not sid:
         return
     record.setdefault("accepting_steer", True)
+    record.setdefault("_authority_generation", str(uuid.uuid4()))
     with _active_subagents_lock:
         _active_subagents[sid] = record
 
@@ -166,6 +168,39 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
         return _current_session_steer_authority(owner_session_id)
     except Exception:
         return None, None
+
+def owned_subagent_status(
+    subagent_id: str,
+    *,
+    owner_session_id: Optional[str] = None,
+    owner_transport: Any = None,
+    owner_session_record: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Return public status for a subagent the caller owns, or None.
+
+    Includes ``generation`` — the authority token required by interrupt RPCs.
+    Ownership is verified against the live session slot (transport follows reattach),
+    not the capture-time copy on the registry record.
+    """
+    if not subagent_id:
+        return None
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None:
+            return None
+        if owner_session_id is not None:
+            if (record.get("owner_session_id") != owner_session_id
+                    or owner_transport is None
+                    or not _subagent_transport_matches(record, owner_transport)
+                    or record.get("owner_session_record") is not owner_session_record):
+                return None
+        return {
+            "subagent_id": subagent_id,
+            "generation": str(record.get("_authority_generation") or ""),
+            "status": record.get("status"),
+            "goal": record.get("goal"),
+        }
+
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
 _PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})

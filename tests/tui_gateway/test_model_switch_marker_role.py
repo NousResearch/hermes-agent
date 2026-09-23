@@ -107,6 +107,62 @@ class TestModelSwitchMarkerDedup:
         assert session["history_version"] == 2  # one increment per switch
 
 
+class TestModelSwitchMarkerMergedWithUserTurn:
+    """The per-request alternation repair merges a marker with the user turn after it, and that
+    merged entry is committed back to session history. The next switch must peel the stale marker
+    off, not drop the entry: dropping it lost the user's message and glued the assistant replies
+    around it into one turn."""
+
+    def test_next_switch_keeps_user_turn_merged_into_marker(self) -> None:
+        from agent.agent_runtime_helpers import repair_message_sequence
+
+        session: dict = {"session_key": "s", "history": [
+            {"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}]}
+        _append_model_switch_marker(session, model="model-b", provider="p")
+        # One turn after the switch, as the gateway runs it: repair before the request, then commit.
+        messages = list(session["history"]) + [{"role": "user", "content": "q2"}]
+        repair_message_sequence(None, messages)
+        session["history"] = messages + [{"role": "assistant", "content": "a2"}]
+
+        _append_model_switch_marker(session, model="model-c", provider="p")
+
+        assert [(h["role"], h["content"]) for h in session["history"] if not _is_marker(h)] == [
+            ("user", "q1"), ("assistant", "a1"), ("user", "q2"), ("assistant", "a2")]
+        markers = [h for h in session["history"] if _is_marker(h)]
+        assert len(markers) == 1 and "model-c" in markers[0]["content"]
+
+    def test_unmerged_entry_loses_marker_metadata(self) -> None:
+        from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
+
+        merged = {
+            "role": "user",
+            # Model names can carry brackets; the marker must still peel off whole.
+            "content": f"{_MODEL_SWITCH_MARKER_PREFIX}claude-opus[1m] via provider p. Use it.]\n\nq2",
+            "display_kind": "model_switch",
+            "api_content": "stale sidecar",
+        }
+        session: dict = {"session_key": "s", "history": [merged]}
+        assert not _is_marker(merged)
+        _append_model_switch_marker(session, model="model-c", provider="p")
+        assert session["history"][0] is merged  # peeled in place, not replaced
+        assert merged == {"role": "user", "content": "q2"}
+
+    def test_stacked_markers_merged_into_one_entry_are_all_peeled(self) -> None:
+        stacked = {"role": "user", "content": "\n\n".join(
+            [_make_marker_entry("model-a")["content"], _make_marker_entry("model-b")["content"], "q2"])}
+        session: dict = {"session_key": "s", "history": [stacked]}
+        _append_model_switch_marker(session, model="model-c", provider="p")
+        assert stacked["content"] == "q2"
+
+    def test_markers_merged_only_with_each_other_are_dropped(self) -> None:
+        both = {"role": "user", "content": "\n\n".join(
+            [_make_marker_entry("model-a")["content"], _make_marker_entry("model-b")["content"]])}
+        assert _is_marker(both)
+        session: dict = {"session_key": "s", "history": [both]}
+        _append_model_switch_marker(session, model="model-c", provider="p")
+        assert len(session["history"]) == 1 and "model-c" in session["history"][0]["content"]
+
+
 def _make_marker_entry(model: str) -> dict:
     from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
 

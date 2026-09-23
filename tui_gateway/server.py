@@ -1666,12 +1666,38 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
 _MODEL_SWITCH_MARKER_PREFIX = "[System: The active model for this chat has changed to "
 
 
+def _strip_model_switch_markers(content: str) -> str:
+    """``content`` without its leading marker(s). The per-request alternation repair
+    (``_merge_consecutive_users``) joins a marker and the user turn after it with a blank line, and
+    that merged entry is committed back to session history; the marker itself never spans one."""
+    while content.startswith(_MODEL_SWITCH_MARKER_PREFIX):
+        content = content.partition("\n\n")[2]
+    return content
+
+
 def _is_model_switch_marker(entry: Any) -> bool:
-    """Whether a history entry is a (self-replacing) model-switch marker."""
+    """Whether a history entry is ONLY a (self-replacing) model-switch marker. An entry the alternation
+    repair merged with a real user turn is not: dropping it would drop the user's message too."""
     if not isinstance(entry, dict):
         return False
     content = entry.get("content")
-    return isinstance(content, str) and content.startswith(_MODEL_SWITCH_MARKER_PREFIX)
+    return (isinstance(content, str) and content.startswith(_MODEL_SWITCH_MARKER_PREFIX)
+            and not _strip_model_switch_markers(content).strip())
+
+
+def _unmerge_model_switch_marker(entry: Any) -> None:
+    """Peel a stale marker off an entry the alternation repair merged with the next user turn,
+    in place (identity-keyed DB flush bookkeeping must still see the same dict)."""
+    if not isinstance(entry, dict):
+        return
+    content = entry.get("content")
+    if not isinstance(content, str) or not content.startswith(_MODEL_SWITCH_MARKER_PREFIX):
+        return
+    entry["content"] = _strip_model_switch_markers(content)
+    if entry.get("display_kind") == "model_switch":
+        entry.pop("display_kind", None)
+    # The sidecar still carries the marker; replaying it would resend what was just removed.
+    entry.pop("api_content", None)
 
 
 def _is_pivot_marker(entry: Any) -> bool:
@@ -1700,6 +1726,8 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     with session.get("history_lock") or contextlib.nullcontext():
         history = session.setdefault("history", [])
         history[:] = [h for h in history if not _is_model_switch_marker(h)]
+        for h in history:
+            _unmerge_model_switch_marker(h)
         history.append(entry)
         session["history_version"] = int(session.get("history_version", 0)) + 1
     try:
@@ -1709,7 +1737,12 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             _ensure_session_db_row(session)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
-                db.append_message(session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                row_id = db.append_message(
+                    session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                # Stamp the durable id: an unstamped row above the history's highest id reads as a foreign
+                # turn to _adopt_out_of_band_turns, which appended this marker a second time.
+                if isinstance(row_id, int):
+                    entry["_row_id"] = row_id
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
 

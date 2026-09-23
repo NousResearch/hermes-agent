@@ -2280,7 +2280,10 @@ _USAGE_STATE: Dict[str, Any] = {
     "session_cost_status": "unknown",
     "session_cost_source": "none",
     # Status-bar latency/velocity history (last 10 calls), shared by loop + codex_runtime.
+    # Latency is the whole call; decode is first token to stream end (falls back to the
+    # whole call when nothing streamed), so tokens/s reads generation speed, not prefill wait.
     "_api_latency_history": lambda: deque(maxlen=10),
+    "_api_decode_history": lambda: deque(maxlen=10),
     "_api_output_history": lambda: deque(maxlen=10),
 }
 

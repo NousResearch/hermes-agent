@@ -178,11 +178,16 @@ def record_response_usage(
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
-    # Rolling history for status-bar averages (last 10).
+    # Rolling history for status-bar averages (last 10). The three deques are appended
+    # together so readers can zip them.
     with suppress(Exception):
         hist = getattr(agent, "_api_latency_history", None)
         if hist is not None:
             hist.append(float(api_duration))
+        dhist = getattr(agent, "_api_decode_history", None)
+        if dhist is not None:
+            decode_seconds = getattr(agent, "_last_api_decode_seconds", None)
+            dhist.append(float(api_duration if decode_seconds is None else decode_seconds))
         ohist = getattr(agent, "_api_output_history", None)
         if ohist is not None:
             ohist.append(int(canonical_usage.output_tokens or 0))

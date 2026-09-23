@@ -3909,7 +3909,7 @@ export const zh = defineLocale({
       toggleFreeTier: 'Free tier',
       toggleWorkspace: '工作区',
       cacheHitRateTitle: '本会话的提示缓存命中率 — 缓存 token 更便宜，越高越省',
-      tokensPerSecondTitle: '每秒输出 token 数，取最近 10 次模型调用的平均值',
+      tokensPerSecondTitle: '模型生成期间的每秒输出 token 数（不含首 token 等待时间），取最近 10 次模型调用',
       agents: '代理',
       closeAgents: '关闭代理',
       openAgents: '打开代理',

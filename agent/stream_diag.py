@@ -24,7 +24,8 @@ STREAM_DIAG_HEADERS = (
 
 def stream_diag_init() -> Dict[str, Any]:
     """Fresh per-attempt diagnostic dict; mutated in place by the streaming functions and read by the retry block."""
-    return {"started_at": time.time(), "first_chunk_at": None, "chunks": 0, "bytes": 0, "headers": {}, "http_status": None}
+    return {"started_at": time.time(), "first_chunk_at": None, "first_token_at": None, "chunks": 0, "bytes": 0,
+            "headers": {}, "http_status": None}
 
 
 def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response: Any) -> None:

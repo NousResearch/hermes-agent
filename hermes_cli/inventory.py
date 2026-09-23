@@ -360,9 +360,25 @@ def _apply_featured(rows: list[dict]) -> None:
     except Exception:
         get_model_info = None  # type: ignore[assignment]
 
+    try:
+        from hermes_cli.providers import is_routing_aggregator
+    except Exception:
+        is_routing_aggregator = None  # type: ignore[assignment]
+
     for row in rows:
         slug = str(row.get("slug") or "").strip().lower()
         models = row.get("models") or []
+
+        # A user-defined ``models:`` list is an explicit allow-list — ranking it against
+        # models.dev release dates can only hide entries the user configured by hand. The
+        # same question ("is this an aggregator?") is answered canonically by
+        # is_routing_aggregator(); deriving it from model-id spelling misread every
+        # mixed-prefix user provider as a multi-lab aggregator.
+        if row.get("is_user_defined") or not (
+            is_routing_aggregator and is_routing_aggregator(slug)
+        ):
+            row["featured_models"] = []
+            continue
 
         by_lab: dict[str, list[tuple[int, str, str]]] = {}  # only multi-lab aggregators get a shortlist
         for pos, model in enumerate(models):

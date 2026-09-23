@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from argparse import SUPPRESS
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
@@ -31,4 +32,10 @@ def build_acp_parser(subparsers, *, cmd_acp: Callable) -> None:
         "--yes", "-y", action="store_true", dest="assume_yes",
         help="Accept all prompts (used by --setup-browser to skip the "
              "~400 MB Chromium download confirmation).")
+    # SUPPRESS, like ``hermes chat -t``, so a top-level ``hermes -t … acp`` value survives.
+    acp_parser.add_argument(
+        "-t", "--toolsets", default=SUPPRESS,
+        help="Comma-separated toolsets enabled for every session this ACP process serves "
+             "(default: the ACP platform toolsets). A client can scope a single session further "
+             "via the session/new `_meta.hermes.toolsets` extension.")
     acp_parser.set_defaults(func=cmd_acp)

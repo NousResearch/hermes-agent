@@ -35,6 +35,80 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
 
+### Narrowing the toolset
+
+The default suits most editor work, but a host can narrow it — for the whole
+process, for a single session, or both.
+
+**Per process** — pass `--toolsets` (or `-t`) when you launch the server:
+
+```bash
+hermes acp --toolsets "file,web"
+```
+
+Every session this process serves is then built with exactly those toolsets
+instead of `hermes-acp`. Names are the ones `hermes tools` lists (see the
+[toolsets reference](../../reference/toolsets-reference.md)). The flag belongs
+to the process, not to the sessions: relaunch without it and those sessions are
+back on the default.
+
+`--toolsets` doubles as the MCP spawn filter it already is elsewhere in the CLI:
+only `mcp_servers` entries from `config.yaml` whose name appears in the list are
+started, so `--toolsets "file,web"` also means no configured MCP server is
+launched. Without the flag (or with `all`), every configured server is spawned
+as before, and its `mcp-<name>` toolset is added on top of the session's
+selection either way.
+
+**Per session** — an ACP client that drives one long-lived Hermes process for
+several projects can scope each session as it opens it, via the `_meta`
+extension map on `session/new`:
+
+```json
+{
+  "method": "session/new",
+  "params": {
+    "cwd": "/home/me/project",
+    "mcpServers": [],
+    "_meta": { "hermes": { "toolsets": ["file", "web"] } }
+  }
+}
+```
+
+It takes a JSON array of toolset names (a comma-separated string also works),
+and overrides `--toolsets` for that session only. The `hermes` nesting is
+required: `_meta.hermes` is the namespace Hermes already uses for its own ACP
+extensions, and `_meta` itself is shared, so a bare `_meta.toolsets` is ignored
+like any other unrecognized `_meta` key — that name may well belong to a
+different client's extension.
+
+Omit the key entirely to make no request. A key that *is* present but unusable
+— an empty array, a non-array value, or an unknown toolset name — is rejected
+with an invalid-params error, so a client that meant to narrow is never quietly
+handed the full default toolset instead.
+
+The same key may be sent on `session/load` and `session/resume`, where it
+re-scopes a session restored from `state.db` after a process restart.
+
+A session's own selection is remembered: it survives a model switch, a fork
+(children inherit the parent's scope), and a restart. MCP servers a client
+attaches to the session are added on top of the selection and are not
+persisted, so a restored session does not carry toolsets for servers that are
+gone.
+
+:::warning Narrowing only, by convention — not a sandbox
+
+Both levers take any toolset name, so they can also *widen* the surface past
+the curated `hermes-acp` set — `all` (or `*`) spans every toolset, including
+the messaging, cronjob and `clarify` tools that `hermes-acp` deliberately
+leaves out. Treat this as a configuration knob for a trusted host, not as a
+security boundary: a client that can open a session can choose its own
+toolsets. Use the `approvals` settings in `config.yaml` for anything you
+actually need enforced.
+
+:::
+
+Passing neither leaves the historical behavior unchanged.
+
 ## Installation
 
 Install Hermes normally, then add the ACP extra from the install checkout:
@@ -268,12 +342,14 @@ therefore runs shell commands on the host without prompting. I asked one to run
 Selecting `Anyone` hands that same shell access to every author who can reach
 the channel. Buzz does not warn when you pick it.
 
-Neither of the obvious mitigations works today:
+Of the obvious mitigations:
 
 - `approvals.mode: manual` does make Hermes raise the permission request, but
   Buzz auto-approves it and the command still runs.
 - `platform_toolsets.acp` does not narrow the ACP toolset, so it cannot be used
   to drop `terminal`.
+- `hermes acp --toolsets` does drop it — but only if you control the command
+  Buzz spawns, which not every harness lets you configure.
 
 `!shutdown` from the owner stops the agent in any mode, and Buzz ignores that
 command from everyone else.

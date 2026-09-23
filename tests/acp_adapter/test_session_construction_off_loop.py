@@ -62,7 +62,7 @@ async def test_handlers_restore_unknown_sessions_off_the_loop(call):
     waits on the restore lock; the per-session handlers must not do that on the loop."""
     manager = SessionManager(agent_factory=_slow_factory)
 
-    def slow_restore(session_id):
+    def slow_restore(session_id, toolsets=None):
         time.sleep(BUILD_SECONDS)
         return None
 
@@ -92,7 +92,7 @@ def test_concurrent_restores_of_one_session_build_a_single_agent():
     manager = SessionManager(agent_factory=lambda: SimpleNamespace(model="m"))
     restores = []
 
-    def slow_restore(session_id):
+    def slow_restore(session_id, toolsets=None):
         restores.append(session_id)
         time.sleep(0.2)
         return manager._install_state(session_id, manager._agent_factory(), "/tmp", "m", [], persist=False)

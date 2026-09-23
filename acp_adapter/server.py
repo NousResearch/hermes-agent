@@ -34,7 +34,9 @@ from acp_adapter.events import (
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
-from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.session import (
+    SessionManager, SessionState, _expand_acp_enabled_toolsets, _normalize_acp_toolsets, _unknown_acp_toolsets,
+)
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
 from agent.interrupt_compat import request_hard_interrupt
@@ -251,9 +253,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     _MODE_TO_EDIT_APPROVAL_POLICY = {mode: spec[0] for mode, spec in _MODES.items()}
     _EDIT_APPROVAL_POLICY_TO_MODE = {spec[0]: mode for mode, spec in _MODES.items()}
 
-    def __init__(self, session_manager: SessionManager | None = None):
+    def __init__(self, session_manager: SessionManager | None = None, default_toolsets: Any = None):
+        """``default_toolsets``: process-wide selection from ``hermes acp --toolsets``, applied to
+        every session that does not scope itself (ignored when a ``session_manager`` is injected)."""
         super().__init__()
-        self.session_manager = session_manager or SessionManager()
+        self.session_manager = session_manager or SessionManager(default_toolsets=default_toolsets)
         self._conn: Optional[acp.Client] = None
 
     # ---- Connection lifecycle -----------------------------------------------
@@ -606,17 +610,49 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self._schedule_mcp_late_refresh(state)
         logger.info(log, *log_args)
 
+    @staticmethod
+    def _requested_toolsets(kwargs: dict[str, Any]) -> list[str] | None:
+        """Per-session tool scope from ``_meta.hermes.toolsets`` — a JSON array of toolset names
+        or a comma-separated string, under the ``_meta.hermes`` namespace this adapter already
+        uses for its own ``_meta`` (see ``provenance.py``). The acp library splats ``_meta`` into
+        handler kwargs, so ``kwargs["hermes"]`` is the spec-conformant read; a top-level
+        ``toolsets`` field is dropped by the request model.
+
+        Every other ``_meta`` key is ignored, a bare ``_meta.toolsets`` included: ``_meta`` is a
+        shared extension map and another client may well use that name for its own purposes.
+
+        Absent (or JSON ``null``) means "no selection" and the process default applies. Present
+        but unusable — ``[]``, ``7``, ``{}``, an unknown name — is an ``invalid_params`` error: a
+        client that meant to narrow must never be silently handed the full default toolset.
+
+        Blocking (the registry import, and plugin discovery for an unknown name), so callers run
+        it off the event loop."""
+        hermes_meta = kwargs.get("hermes")
+        value = hermes_meta.get("toolsets") if isinstance(hermes_meta, dict) else None
+        if value is None:
+            return None
+        from acp.exceptions import RequestError
+        names = _normalize_acp_toolsets(value)
+        if not names:
+            raise RequestError.invalid_params(
+                {"details": "_meta.hermes.toolsets must be a non-empty array of toolset names"})
+        if unknown := _unknown_acp_toolsets(names):
+            raise RequestError.invalid_params({"details": f"Unknown toolset(s): {', '.join(unknown)}"})
+        return names
+
     async def new_session(self, cwd: str, mcp_servers: list | None = None, **kwargs: Any) -> NewSessionResponse:
+        toolsets = await asyncio.to_thread(self._requested_toolsets, kwargs)
         # Agent construction (config, memory-provider import, SessionDB) is slow and fully
         # blocking; inline it froze the loop serving every JSON-RPC request (#58083).
-        state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+        state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd, toolsets=toolsets)
         await self._attach_session_mcp(state, mcp_servers, "New session %s (cwd=%s)", state.session_id, cwd)
         return NewSessionResponse(session_id=state.session_id, **await self._session_response_fields(state))
 
     async def load_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> LoadSessionResponse | None:
-        state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
+        toolsets = await asyncio.to_thread(self._requested_toolsets, kwargs)
+        state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd, toolsets)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None
@@ -626,10 +662,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     async def resume_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> ResumeSessionResponse:
-        state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
+        toolsets = await asyncio.to_thread(self._requested_toolsets, kwargs)
+        state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd, toolsets)
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
-            state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+            state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd, toolsets=toolsets)
         await self._attach_session_mcp(state, mcp_servers, "Resumed session %s", state.session_id)
         return ResumeSessionResponse(**await self._session_response_fields(state, "resume"))
 

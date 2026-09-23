@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -229,7 +230,9 @@ _PROFILE_NAME_RULE = (
 
 def _suggest_profile_name(name: str) -> str:
     """Best-effort valid id derived from *name* (``'My Work'`` -> ``'my-work'``); ``my-work`` if nothing usable."""
-    candidate = re.sub(r"[^a-z0-9_-]+", "-", name.strip().lower()).strip("-_")[:64]
+    # Fold accents first so 'Müşteri' suggests 'musteri', not 'm-teri'.
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    candidate = re.sub(r"[^a-z0-9_-]+", "-", ascii_name.strip().lower()).strip("-_")[:64]
     return candidate if _PROFILE_ID_RE.match(candidate) else "my-work"
 
 

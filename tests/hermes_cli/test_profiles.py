@@ -89,6 +89,15 @@ class TestValidateProfileName:
         with pytest.raises(ValueError):
             validate_profile_name(name)
 
+    @pytest.mark.parametrize(("name", "suggested"), [
+        ("Müşteri Destek", "musteri-destek"),
+        ("Café", "cafe"),
+        ("My Work", "my-work"),
+    ])
+    def test_invalid_name_error_suggests_accent_folded_id(self, name, suggested):
+        with pytest.raises(ValueError, match=f"for example: {suggested}\\)"):
+            validate_profile_name(name)
+
 
 # ===================================================================
 # TestGetProfileDir

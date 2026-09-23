@@ -30,6 +30,15 @@ describe('resolveVersionStatus', () => {
     expect(status.tooltip).toContain('12 commits behind main')
   })
 
+  it('exposes the cached update reading in the client tooltip', () => {
+    const checkedAt = 'Last checked Sep 23, 2026, 8:15 AM'
+    const status = client({ behind: 12, branch: 'main', checkedAt, version: '0.4.2' })
+
+    expect(status.tooltip).toContain(checkedAt)
+    expect(status.checkedAt).toBe(checkedAt)
+    expect(client({ behind: 12, version: '0.4.2' }).checkedAt).toBeUndefined()
+  })
+
   // FAIL-BEFORE (#84591 class): a shallow install reports behind:null +
   // updateAvailable. The client target ignored updateAvailable entirely, so
   // the statusbar showed no update at all — and further back, the fabricated

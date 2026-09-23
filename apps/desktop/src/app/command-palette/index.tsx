@@ -59,6 +59,7 @@ import {
 } from '@/lib/icons'
 import { getServers } from '@/lib/mcp-servers'
 import { normalize } from '@/lib/text'
+import { fmtDateTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
 import { $repoWorktrees } from '@/store/coding-status'
@@ -578,9 +579,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     const apply = backend ? backendApply : clientApply
     const status = backend ? backendStatus : clientStatus
 
-    return resolveVersionStatus({
+    const checkedAt =
+      !backend && status?.fetchedAt ? t.settings.about.lastChecked(fmtDateTime.format(status.fetchedAt)) : undefined
+
+    const versionStatus = resolveVersionStatus({
       applying: apply.applying || apply.stage === 'restart',
       behind: status?.behind ?? 0,
+      checkedAt,
       copy: t.shell.statusbar,
       remote: backend,
       restarting: apply.stage === 'restart',
@@ -588,7 +593,9 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       target: backend ? 'backend' : 'client',
       updateAvailable: status?.updateAvailable,
       version: backend ? status?.currentVersion : desktopVersion?.appVersion
-    }).label
+    })
+
+    return versionStatus.checkedAt ? `${versionStatus.label} · ${versionStatus.checkedAt}` : versionStatus.label
   }, [backendApply, backendStatus, clientApply, clientStatus, connection?.mode, desktopVersion?.appVersion, t])
 
   // cmdk's onSelect doesn't forward the triggering event — keep the last

@@ -31,6 +31,8 @@ export interface VersionStatusInput {
   applyMessage?: string
   behind?: number
   branch?: string
+  /** Human-readable last-checked label for the cached update reading, when known. */
+  checkedAt?: string
   copy: VersionStatusCopy
   /** Remote mode: the client is one of two versions on screen, so it says so. */
   remote: boolean
@@ -45,6 +47,7 @@ export interface VersionStatusInput {
 }
 
 export interface VersionStatusResult {
+  checkedAt?: string
   /** Secondary text beside the label — the commit sha, when it adds anything. */
   detail?: string
   /** An update is waiting: callers tint the row with it. */
@@ -60,6 +63,7 @@ export function resolveVersionStatus({
   applying,
   behind = 0,
   branch,
+  checkedAt,
   copy,
   remote,
   restarting,
@@ -94,6 +98,7 @@ export function resolveVersionStatus({
     busy && (applyMessage || copy.updateInProgress),
     !busy && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
     !busy && behind <= 0 && available && copy.update,
+    !busy && checkedAt,
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
     client && branch && copy.branch(branch)
@@ -102,6 +107,7 @@ export function resolveVersionStatus({
     .join(' · ')
 
   return {
+    checkedAt: !busy ? checkedAt : undefined,
     detail: client && version && sha && !busy && !remote ? sha : undefined,
     hasUpdate: !busy && available,
     label: busy ? `${base} · ${restarting ? copy.restart : copy.update}` : `${base}${hint}`,

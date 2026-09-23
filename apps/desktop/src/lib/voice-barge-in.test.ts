@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { bargeInTriggerLevels, DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER, monitorSpeechDuringPlayback } from './voice-barge-in'
+import {
+  bargeInTriggerLevels,
+  DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER,
+  monitorSpeechDuringPlayback
+} from './voice-barge-in'
 
 // Drive the real monitor with a fake mic: `micLevel` is the byte-domain RMS
 // level the analyser reports, `playing` is the TTS-flowing flag, and each

@@ -27,9 +27,7 @@ export const $voiceStopPhrase = atom<string | null>(BACKEND_DEFAULT_STOP_PHRASES
 
 /** How the desktop matcher should treat `voice.stop_phrases` (#117801). */
 export type VoiceStopPhraseConfig =
-  | { mode: 'default' }
-  | { mode: 'custom'; phrases: readonly string[] }
-  | { mode: 'disabled' }
+  { mode: 'default' } | { mode: 'custom'; phrases: readonly string[] } | { mode: 'disabled' }
 
 // Full matcher config — kept in sync with `$voiceStopPhrase` so the spoken
 // stop recognizer honours the same list the notice advertises.

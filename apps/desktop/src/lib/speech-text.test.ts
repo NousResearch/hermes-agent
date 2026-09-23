@@ -7,9 +7,7 @@ describe('sanitizeTextForSpeech', () => {
     // The "code block omitted" summary used to be read aloud as English text
     // (#86602). Code that can't be spoken should be silence, not a sentence.
     // The "here is code:" colon also closes: the voice never waits on it.
-    expect(sanitizeTextForSpeech('Here is code:\n```ts\nconst x = 1\n```\nDone.')).toBe(
-      'Here is code. Done.'
-    )
+    expect(sanitizeTextForSpeech('Here is code:\n```ts\nconst x = 1\n```\nDone.')).toBe('Here is code. Done.')
   })
 
   it('still keeps normal prose and inline code readable', () => {
@@ -94,9 +92,7 @@ Second sentence.`
 
   it('does not speak a placeholder word for URLs', () => {
     // Used to say the English word "link" (#86602); URLs are silence now.
-    expect(sanitizeTextForSpeech('See https://example.com/a-huge-page for details')).toBe(
-      'See for details'
-    )
+    expect(sanitizeTextForSpeech('See https://example.com/a-huge-page for details')).toBe('See for details')
   })
 
   it('keeps ~~strike~~ readable instead of speaking tildes', () => {
@@ -112,9 +108,9 @@ Second sentence.`
   it('closes a colon that a code block used to follow', () => {
     // The real repro: "one line added to the regex list:" then a code fence.
     // The voice hit the colon, found a wall of punctuation, and stuttered.
-    expect(
-      sanitizeTextForSpeech('One line added to the regex list:\n```ts\nconst x = 1\n```\nBye.')
-    ).toBe('One line added to the regex list. Bye.')
+    expect(sanitizeTextForSpeech('One line added to the regex list:\n```ts\nconst x = 1\n```\nBye.')).toBe(
+      'One line added to the regex list. Bye.'
+    )
   })
 
   it('closes a colon that ends the speakable text', () => {

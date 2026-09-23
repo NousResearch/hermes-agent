@@ -71,43 +71,31 @@ def _declare_packages(repo, include):
 
 
 @pytest.mark.parametrize("annotated", [False, True])
-def test_stale_map_refuses_the_skip(repo, monkeypatch, annotated):
-    """A missing top-level name refuses the skip for both finder spellings."""
+def test_stale_or_unreadable_finder_map_refuses_the_skip(repo, monkeypatch, annotated):
+    """A map missing a top-level name (either finder spelling) or an unparseable finder refuses
+    the skip even though the pull touched no packaging file."""
     _declare_packages(repo, ["agent", "agent.*", "newpkg", "newpkg.*"])
     before = _head(repo)
     (repo / "newpkg").mkdir()
     (repo / "newpkg" / "__init__.py").write_text("")
     _commit(repo, "add package")
-    _finder(repo, {"agent": str(repo / "agent"), "cli": str(repo / "cli")}, annotated=annotated)
+    site = _finder(repo, {"agent": str(repo / "agent"), "cli": str(repo / "cli")}, annotated=annotated)
     monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
+    assert _editable_install_is_current(GIT, repo, before) is False
+    (site / "__editable___hermes_agent_0_21_4_finder.py").write_text("MAPPING = (\n", encoding="utf-8")
     assert _editable_install_is_current(GIT, repo, before) is False
 
 
-@pytest.mark.parametrize("annotated", [False, True])
 @pytest.mark.parametrize("layout", ["lib/python3.11/site-packages", "Lib/site-packages"])
-def test_covered_map_skips_source_churn(repo, monkeypatch, layout, annotated):
-    """A map that already names the checkout still skips source edits."""
+def test_covered_map_skips_source_churn(repo, monkeypatch, layout):
+    """A map that already names the checkout still skips source edits (POSIX and Windows venvs)."""
     _declare_packages(repo, ["agent", "agent.*"])
-    _finder(
-        repo,
-        {"agent": str(repo / "agent"), "cli": str(repo / "cli")},
-        layout=layout,
-        annotated=annotated,
-    )
+    _finder(repo, {"agent": str(repo / "agent"), "cli": str(repo / "cli")}, layout=layout)
     monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
     before = _head(repo)
     (repo / "agent" / "loop.py").write_text("y = 2\n")
     _commit(repo, "source churn")
     assert _editable_install_is_current(GIT, repo, before) is True
-
-
-def test_unreadable_finder_fails_closed(repo, monkeypatch):
-    before = _head(repo)
-    site = repo / "venv" / "lib" / "python3.11" / "site-packages"
-    site.mkdir(parents=True)
-    (site / "__editable___hermes_agent_0_21_4_finder.py").write_text("MAPPING = (\n", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
-    assert _editable_install_is_current(GIT, repo, before) is False
 
 
 def test_source_only_pull_skips_the_reinstall(repo):

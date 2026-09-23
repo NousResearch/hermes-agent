@@ -934,15 +934,27 @@ def cmd_install(
     _install_python_dependencies(target, console, skip=no_deps)
     _display_after_install(target, identifier)
 
-    if enable is None:
-        enable = _is_tty() and _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
-    if enable:
-        _set_plugin_enabled(installed_name, enable=True)
-        console.print(f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.")
-    else:
+    is_memory = installed_manifest.get("category") == "memory" or (
+        entry is not None and entry.category == "memory"
+    )
+    if is_memory:
+        # Memory setup owns provider selection; a generic allow-list entry cannot activate it.
+        enable = False
         console.print(
-            f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
+            "[dim]Memory provider installed. Run `hermes memory setup` to select and configure it. "
+            "Activation uses memory.provider, not plugins.enabled; "
+            "the current memory provider selection is unchanged.[/dim]"
+        )
+    else:
+        if enable is None:
+            enable = _is_tty() and _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
+        if enable:
+            _set_plugin_enabled(installed_name, enable=True)
+            console.print(f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.")
+        else:
+            console.print(
+                f"[dim]Plugin installed but not enabled. "
+                f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
 
     # Non-interactive installs and declines leave declared capabilities ungranted (fail closed).
     declared_caps = _declared_capabilities_from_manifest(installed_manifest, installed_name)

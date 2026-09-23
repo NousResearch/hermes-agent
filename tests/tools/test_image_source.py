@@ -115,6 +115,43 @@ class TestLocalBackend:
         assert res.data == svg_bytes
 
 
+class TestPseudoScheme:
+    """Some local models (notably gpt-oss) return a filesystem path they were
+    handed as ``image_url: /abs/path`` but prefix a bare ``path:`` / ``local:``
+    pseudo-scheme onto it. It is not a real URI (no ``//``), so it fell through
+    to the path branch and failed as "media file not found"."""
+
+    @pytest.mark.asyncio
+    async def test_path_pseudo_scheme_prefix_is_stripped(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "img_deadbeef.jpg"
+        img.write_bytes(PNG)
+        res = await isrc.resolve_image_source(
+            f"path:{img}", isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_local_pseudo_scheme_prefix_with_space_is_stripped(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "pic.png"
+        img.write_bytes(PNG)
+        res = await isrc.resolve_image_source(
+            f"local: {img}", isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_real_unsupported_scheme_still_rejected(self, tmp_path, monkeypatch):
+        """The strip must not swallow a genuine URI scheme."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        with pytest.raises(isrc.UnsupportedScheme):
+            await isrc.resolve_image_source(
+                "s3://bucket/key.png", isrc.ResolveContext())
+
+
 class TestNonLocalBackendConfinement:
     """The security model: under a sandbox backend, host reads are confined to
     the media caches; every other path is read inside the sandbox."""

@@ -68,7 +68,10 @@ export const ga: Translations = {
     },
     nav: {
       analytics: "Anailís",
+      apiKeys: "Eochracha API",
       chat: "Comhrá",
+      chatCli: "CLI",
+      chatUi: "Comhrá UI",
       config: "Cumraíocht",
       cron: "Cron",
       documentation: "Doiciméadú",

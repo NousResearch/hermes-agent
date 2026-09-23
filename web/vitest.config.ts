@@ -20,6 +20,13 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}"],
+    // React's act() is only exported from the development bundle; vitest
+    // defaults NODE_ENV="test" but the React 19 CJS entry gates act behind
+    // the production guard so we explicitly force development here. This
+    // matches apps/desktop's vitest setup.
+    env: {
+      NODE_ENV: "development",
+    },
     // The first test in a file pays env init + full module transform, and page
     // suites (SessionsPage) legitimately run 3.5-4.5s on green CI runners —
     // right against vitest's 5s default, so a loaded runner tips them into a

@@ -68,7 +68,10 @@ export const it: Translations = {
     },
     nav: {
       analytics: "Analisi",
+      apiKeys: "Chiavi API",
       chat: "Chat",
+      chatCli: "CLI",
+      chatUi: "Chat UI",
       config: "Configurazione",
       cron: "Cron",
       documentation: "Documentazione",

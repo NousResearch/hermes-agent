@@ -68,7 +68,10 @@ export const uk: Translations = {
     },
     nav: {
       analytics: "Аналітика",
+      apiKeys: "API-ключі",
       chat: "Чат",
+      chatCli: "CLI",
+      chatUi: "Чат UI",
       config: "Конфігурація",
       cron: "Cron",
       documentation: "Документація",

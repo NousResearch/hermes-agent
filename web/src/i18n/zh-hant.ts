@@ -68,7 +68,10 @@ export const zhHant: Translations = {
     },
     nav: {
       analytics: "分析",
+      apiKeys: "API 金鑰",
       chat: "對話",
+      chatCli: "CLI",
+      chatUi: "聊天介面",
       config: "設定",
       cron: "排程任務",
       documentation: "文件",

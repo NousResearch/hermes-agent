@@ -28,10 +28,10 @@ function source(id: string, installId: string): ProductionSource {
   return { id, kind: 'ssh', label: id, host: `${id}.example.test`, user: 'hermes', port: 22, remoteProfile: 'default' }
 }
 
-function inspection(sourceValue: ProductionSource, installId: string, sourceFingerprint: string): ProductionInventoryInspection {
+function inspection(sourceValue: ProductionSource, installId: string, sourceFingerprint: string, codeRoot = ROOT): ProductionInventoryInspection {
   return {
     installId,
-    codeRoot: ROOT,
+    codeRoot,
     repositoryId: REPOSITORY,
     headSha: 'f'.repeat(40),
     requiredScopeIds: [`scope:${installId}`],
@@ -117,7 +117,7 @@ test('captures a coherent inventory revision and routes Git through the inspecte
     listSources: () => sources,
     inspectSource: async current => current.id === CONNECTION_A
       ? inspection(current, INSTALL_A, SOURCE_A)
-      : inspection(current, INSTALL_B, SOURCE_B),
+      : inspection(current, INSTALL_B, SOURCE_B, `${ROOT}-b`),
     git: async (connectionId, args, repositoryRoot) => {
       gitCalls.push(`${connectionId}:${repositoryRoot}:${args.join(' ')}`)
       return 'ok'
@@ -153,6 +153,24 @@ test('consolidates multiple configured connections to one installation with dete
   assert.equal(snapshot!.observations[0].connectionId, CONNECTION_A)
   assert.deepEqual(snapshot!.observations[0].aliasConnectionIds, [CONNECTION_B])
   assert.equal(await adapters.sourceReader.git(['status', '--short'], ROOT), '')
+})
+
+test('fails closed when distinct installations claim the same canonical repository root', async () => {
+  const sources = [source(CONNECTION_A, INSTALL_A), source(CONNECTION_B, INSTALL_B)]
+  const adapters = createManagedRolloutProductionAdapters({
+    nowMono: () => 1000,
+    listSources: () => sources,
+    inspectSource: async current => current.id === CONNECTION_A
+      ? inspection(current, INSTALL_A, SOURCE_A)
+      : inspection(current, INSTALL_B, SOURCE_B),
+    git: async () => '',
+    reviewManifestPath: 'unused',
+    assuranceRoot: 'unused'
+  })
+  const snapshot = await adapters.inventoryReader.capture()
+  assert.ok(snapshot)
+  assert.equal(snapshot!.observations.length, 2)
+  await assert.rejects(() => adapters.sourceReader.git(['status', '--short'], ROOT), /reviewed-repository-source-unavailable/)
 })
 
 

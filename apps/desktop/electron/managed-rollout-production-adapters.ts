@@ -217,6 +217,7 @@ export function createManagedRolloutProductionAdapters(
         }
       })
 
+      repositoryOwners.clear()
       const groups = new Map<string, any[]>()
       for (const item of observations) {
         const key = `${item.observation.installId}:${item.observation.codeRoot}:${item.observation.repositoryId}`
@@ -229,8 +230,9 @@ export function createManagedRolloutProductionAdapters(
         entries.sort((left, right) => left.source.id.localeCompare(right.source.id))
         const primary = entries[0]
         primary.observation.aliasConnectionIds = entries.slice(1).map(item => item.source.id)
-        repositoryOwners.set(primary.observation.codeRoot, primary.source.id)
-        for (const alias of entries.slice(1)) repositoryOwners.set(alias.observation.codeRoot, primary.source.id)
+        const priorOwner = repositoryOwners.get(primary.observation.codeRoot)
+        if (priorOwner === undefined) repositoryOwners.set(primary.observation.codeRoot, primary.source.id)
+        else if (priorOwner !== primary.source.id) repositoryOwners.set(primary.observation.codeRoot, null)
         return primary.observation
       })
       const ordered = consolidated.sort((left, right) => left.installId.localeCompare(right.installId))

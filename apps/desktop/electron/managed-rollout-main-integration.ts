@@ -1,7 +1,7 @@
-import { buildHealthEvidence } from './managed-rollout-evidence'
+import { buildHealthEvidence, runEvidenceSweep } from './managed-rollout-evidence'
 import { createManagedRolloutJournal } from './managed-rollout-journal'
 import { createManagedRolloutProductionAdapters } from './managed-rollout-production-adapters'
-import { canonicalRepositoryId, installationFingerprint } from './managed-rollout-identity'
+import { canonicalRepositoryId } from './managed-rollout-identity'
 import { observeManagedRemoteUpdate } from './managed-ssh-update'
 import * as remoteLifecycle from './remote-lifecycle'
 import * as windowsRemote from './windows-remote-lifecycle'
@@ -161,63 +161,130 @@ async function runGit(options: ManagedRolloutMainIntegrationOptions, connectionI
   }
 }
 
-function evidenceAdapter(inventoryReader: { capture: () => Promise<any> }) {
+function evidenceAdapter(
+  options: ManagedRolloutMainIntegrationOptions,
+  inventoryReader: { capture: () => Promise<any> },
+  runGitForSource: (connectionId: string, args: readonly string[], repositoryRoot: string) => Promise<unknown>
+) {
   return {
     async sweep(state: any) {
       const inventory = await inventoryReader.capture()
       const rows = inventory?.observations || []
-      const byInstall = new Map(rows.map((row: any) => [row.installId, row]))
-      const active = Object.values(state.attempts).filter((attempt: any) => !attempt.excluded)
-      const admissions = active.map((attempt: any) => {
-        const row: any = byInstall.get(attempt.installId)
-        const installation = row
-          ? installationFingerprint({ installId: row.installId, codeRoot: row.codeRoot, repositoryId: row.repositoryId })
-          : ''
-        const valid = Boolean(row && row.sourceFingerprint === attempt.sourceFingerprint && installation === attempt.installationFingerprint)
-        return {
-          installId: attempt.installId,
-          installationFingerprint: valid ? installation : '',
-          sourceFingerprint: valid ? row.sourceFingerprint : '',
-          reviewedSource: attempt.reviewedSource,
-          observationGeneration: 1,
-          observedAt: new Date().toISOString()
-        }
+      const byInstall = new Map<string, any>(rows.map((row: any) => [row.installId, row]))
+      const attempts = Object.values(state.attempts) as any[]
+      const targets = attempts.map(attempt => ({
+        installId: attempt.installId,
+        requiredScopeIds: byInstall.get(attempt.installId)?.requiredScopeIds ?? null,
+        wave: attempt.wave,
+        excluded: Boolean(attempt.excluded)
+      }))
+      const epochId = `managed-rollout:${state.id}:${state.revision}:${state.queueGeneration}`
+      const sweep = await runEvidenceSweep(
+        targets,
+        async (target, context) => {
+          const attempt = attempts.find(candidate => candidate.installId === target.installId)
+          if (!attempt) throw new Error('sweep-attempt-missing')
+          const authorization = {
+            rolloutId: state.id,
+            installId: attempt.installId,
+            connectionId: attempt.connectionId,
+            installationFingerprint: attempt.installationFingerprint,
+            sourceFingerprint: attempt.sourceFingerprint,
+            targetSha: attempt.targetSha,
+            reviewedSource: attempt.reviewedSource,
+            correlationId: attempt.correlationId,
+            queueGeneration: state.queueGeneration
+          }
+          const observed = await observeHealth(options, authorization, null, context.epochId)
+          const head = String(await runGitForSource(
+            attempt.connectionId,
+            ['rev-parse', 'HEAD'],
+            attempt.reviewedSource.repositoryRoot
+          )).trim()
+          if (head !== attempt.targetSha) {
+            return {
+              health: buildHealthEvidence({
+                ...observed.health,
+                checkoutSha: head || null,
+                installReady: false,
+                reasons: [...observed.health.reasons, 'target-head-mismatch']
+              })
+            }
+          }
+          return observed
+        },
+        { epochId, nowMono: options.nowMono }
+      )
+      const byObservedInstall = new Map(sweep.observations.map(observation => [observation.installId, observation]))
+      const healthy = attempts.filter(attempt => !attempt.excluded).every(attempt => {
+        const observation = byObservedInstall.get(attempt.installId)
+        return Boolean(
+          observation && observation.health.installId === attempt.installId &&
+          observation.health.checkoutSha === attempt.targetSha &&
+          observation.health.installReady && observation.health.markerClear &&
+          observation.health.receiptCorrelated && observation.health.receiptSucceeded &&
+          observation.health.dependencyReady && observation.health.recoveryClear
+        )
       })
-      const valid = Boolean(inventory) && admissions.every((admission: any) => admission.installationFingerprint && admission.sourceFingerprint)
+      const valid = sweep.ok && healthy
+      const admissions = sweep.observations.map(observation => {
+        const attempt = attempts.find(candidate => candidate.installId === observation.installId)
+        return {
+          installId: observation.installId,
+          installationFingerprint: attempt?.installationFingerprint || '',
+          sourceFingerprint: attempt?.sourceFingerprint || '',
+          reviewedSource: attempt?.reviewedSource,
+          observationGeneration: 1,
+          observedAt: observation.health.observedAt
+        }
+      }).filter(admission => admission.reviewedSource)
       return {
         rolloutId: state.id,
         revision: state.revision,
         queueGeneration: state.queueGeneration,
         processGeneration: 1,
         valid,
-        reason: valid ? null : 'inventory-evidence-mismatch',
+        reason: valid ? null : (sweep.errors[0]?.reason || (healthy ? 'evidence-sweep-incomplete' : 'health-evidence-not-proven')),
         admissions
       }
     }
   }
 }
 
-async function observeRemote(options: ManagedRolloutMainIntegrationOptions, input: any) {
-  const source = options.getSource(input.authorization.connectionId)
-  if (!source) return { outcome: 'unverified' as const, receipt: input.update.receipt, health: null, authorization: input.authorization }
+async function observeHealth(
+  options: ManagedRolloutMainIntegrationOptions,
+  authorization: any,
+  expectedReceipt: any = null,
+  observationId = authorization.correlationId,
+  expectedScopes: readonly any[] | null = null
+) {
+  const source = options.getSource(authorization.connectionId)
+  if (!source) throw new Error('observed-source-connection-unavailable')
   const transport = await options.openTransport(source)
   try {
-    const raw: any = await observeManagedRemoteUpdate(transport.target, input.authorization.correlationId)
+    const raw: any = await observeManagedRemoteUpdate(transport.target, authorization.correlationId)
     const installId = await readInstallId(transport.target)
     const scopes = await options.captureScopes(source)
-    const receipt = input.update.receipt
-    const receiptCorrelated = Boolean(receipt?.correlationId === input.authorization.correlationId && raw.receipt?.correlationId === input.authorization.correlationId)
-    const receiptSucceeded = Boolean(receipt && ['updated', 'already-current'].includes(receipt.outcome) && raw.receipt?.outcome === receipt.outcome)
+    const receipt = expectedReceipt || raw.receipt
+    const receiptCorrelated = Boolean(
+      raw.receipt?.correlationId === authorization.correlationId &&
+      (!expectedReceipt || expectedReceipt.correlationId === authorization.correlationId)
+    )
+    const receiptSucceeded = Boolean(
+      raw.receipt && ['updated', 'already-current'].includes(raw.receipt.outcome) &&
+      (!expectedReceipt || expectedReceipt.outcome === raw.receipt.outcome)
+    )
     const markerClear = raw.marker === 'absent' || raw.marker === 'dead'
     const recoveryClear = markerClear && ['absent', 'dead'].includes(raw.launchIntent)
-    const dependencyReady = raw.coordinatorReady?.correlationId === input.authorization.correlationId
+    const dependencyReady = raw.coordinatorReady?.correlationId === authorization.correlationId
     const scopeResults = await Promise.all(scopes.map(async (scope: any) => {
       const state = scope.state
-      let processIdentityVerified = false
-      if (state?.ssh && state.pid && state.spawnNonce && state.hermesPath && state.hermesHome && state.ownershipId) {
-        processIdentityVerified = await verifyProcessIdentity(transport.target, scope)
-      }
-      const restored = input.update.scopes?.find((item: any) => item.profile === scope.profile)?.restored === true
+      const processIdentityVerified = state?.ssh && state.pid && state.spawnNonce && state.hermesPath && state.hermesHome && state.ownershipId
+        ? await verifyProcessIdentity(transport.target, scope)
+        : false
+      const restored = expectedReceipt
+        ? expectedScopes?.find((item: any) => item.profile === scope.profile)?.restored === true
+        : true
       return {
         scopeId: String(scope.key),
         profile: String(scope.profile),
@@ -228,7 +295,7 @@ async function observeRemote(options: ManagedRolloutMainIntegrationOptions, inpu
       }
     }))
     const health = buildHealthEvidence({
-      observationId: input.authorization.correlationId,
+      observationId,
       observedAt: new Date().toISOString(),
       installId: installId || null,
       checkoutSha: receipt?.postSha || raw.receipt?.postSha || null,
@@ -247,16 +314,23 @@ async function observeRemote(options: ManagedRolloutMainIntegrationOptions, inpu
         ...(recoveryClear ? [] : ['recovery-not-clear'])
       ]
     })
-    const outcome: 'updated' | 'already-current' | 'failed' | 'refused' | 'unverified' = receiptSucceeded && receipt?.outcome === 'already-current'
+    return { health, receipt }
+  } finally {
+    await transport.close().catch(() => undefined)
+  }
+}
+
+async function observeRemote(options: ManagedRolloutMainIntegrationOptions, input: any) {
+  try {
+    const observed = await observeHealth(options, input.authorization, input.update.receipt, input.authorization.correlationId, input.update.scopes || [])
+    const outcome: 'updated' | 'already-current' | 'failed' | 'refused' | 'unverified' = observed.receipt?.outcome === 'already-current'
       ? 'already-current'
       : input.update.ok && input.update.updateOk && input.update.restoreOk
         ? 'updated'
         : input.update.outcome === 'refused' ? 'refused' : 'failed'
-    return { outcome, receipt, health, authorization: input.authorization }
+    return { outcome, receipt: observed.receipt, health: observed.health, authorization: input.authorization }
   } catch {
     return { outcome: 'unverified' as const, receipt: input.update.receipt, health: null, authorization: input.authorization }
-  } finally {
-    await transport.close().catch(() => undefined)
   }
 }
 
@@ -277,7 +351,11 @@ export function createManagedRolloutMainIntegration(options: ManagedRolloutMainI
   return {
     adapters,
     journal,
-    evidence: evidenceAdapter(adapters.inventoryReader),
+    evidence: evidenceAdapter(
+      options,
+      adapters.inventoryReader,
+      (connectionId, args, repositoryRoot) => runGit(options, connectionId, args, repositoryRoot)
+    ),
     observe: { observe: (input: any) => observeRemote(options, input) }
   }
 }

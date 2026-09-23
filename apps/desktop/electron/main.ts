@@ -16392,7 +16392,7 @@ async function requestManagedSshUpdate(rawId) {
 ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
 
 const managedRolloutIntegration = createManagedRolloutMainIntegration({
-  nowMono: () => Date.now(),
+  nowMono: () => Number(process.hrtime.bigint() / 1_000_000n),
   listSources: () => readDesktopConnectionsRegistry().connections,
   getSource: connectionId => readDesktopConnectionsRegistry().connections.find(connection => connection.id === connectionId) || null,
   managedSshConfig,

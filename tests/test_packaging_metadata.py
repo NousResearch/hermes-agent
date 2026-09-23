@@ -436,6 +436,52 @@ def test_security_pins_present_in_mirrored_lazy_features():
     )
 
 
+# Some lazy SDKs resolve unpinned transitive requirements.  A mirrored index
+# can omit their upload timestamps, which makes uv's relative exclude-newer
+# cutoff reject every available version.  Keep these documented resolver
+# exceptions next to the packaging contract that guards the cutoff.
+_REQUIRED_LAZY_TRANSITIVE_EXCLUDE_NEWER_EXCEPTIONS = {
+    "platform.telegram": {"python-telegram-bot": {"tornado"}},
+}
+
+
+def test_lazy_dependency_transitives_exempt_from_exclude_newer():
+    """Telegram webhooks must resolve Tornado when mirrors lack upload dates.
+
+    ``python-telegram-bot[webhooks]`` installs Tornado transitively.  Unlike
+    the SDK it is not exact-pinned in Hermes metadata, so the generic
+    exact-pin check cannot protect it.  With ``exclude-newer = "14 days"``,
+    an index that omits upload timestamps filters every Tornado release and
+    makes the Telegram lazy install fail with "there are no versions".
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data.get("tool", {}).get("uv", {})
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+
+    whitelist = {
+        _canonical(name)
+        for name, enabled in uv_cfg.get("exclude-newer-package", {}).items()
+        if enabled is False
+    }
+    by_feature = _lazy_deps_by_feature()
+    missing = []
+    for feature, dependencies in _REQUIRED_LAZY_TRANSITIVE_EXCLUDE_NEWER_EXCEPTIONS.items():
+        pins = _pins_from_specs(by_feature.get(feature, ()))
+        for dependency, transitives in dependencies.items():
+            assert _canonical(dependency) in pins, (
+                f"{feature} no longer exact-pins {dependency}; update the "
+                "transitive exclude-newer contract"
+            )
+            missing.extend(sorted(_canonical(name) for name in transitives - whitelist))
+
+    assert not missing, (
+        "lazy SDK transitive dependencies are subject to exclude-newer but "
+        "need resolver exceptions when a mirrored index has no upload dates: "
+        f"{missing}"
+    )
+
+
 def _extra_closure(extras: dict, name: str) -> set:
     """Names of every extra reachable from ``hermes-agent[name]`` self-references."""
     seen, todo = set(), [name]

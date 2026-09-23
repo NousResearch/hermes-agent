@@ -590,6 +590,10 @@ sounddevice = false
 starlette = false
 supermemory = false
 tenacity = false
+# python-telegram-bot[webhooks] resolves Tornado transitively.  Mirrors that
+# omit upload timestamps otherwise let the relative cutoff reject every
+# release, making the Telegram lazy install unsatisfiable (#119704).
+tornado = false
 ty = false
 tzdata = false
 unpaddedbase64 = false

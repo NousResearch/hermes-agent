@@ -2,8 +2,10 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
+import { PreviewTilePane } from './preview'
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
 import { PreviewPane } from './preview-pane'
 
@@ -452,6 +454,7 @@ describe('PreviewPane console state', () => {
       source: 'http://localhost:5174',
       url: 'http://localhost:5174'
     } as const
+
     const rendered = render(<PreviewPane reloadRequest={0} tabId="browser" target={target} />)
     const webview = rendered.container.querySelector('webview') as HTMLElement
     const reloadIgnoringCache = vi.fn()
@@ -756,5 +759,128 @@ describe('PreviewPane guest external handoff', () => {
     guestMessage(webview, 'https://example.com', 'something-else')
 
     expect(openExternal).not.toHaveBeenCalled()
+  })
+})
+
+describe('PreviewPane local HTML Render|Source toggle', () => {
+  const target = {
+    kind: 'file' as const,
+    label: 'page.html',
+    path: '/work/page.html',
+    previewKind: 'html' as const,
+    source: '/work/page.html',
+    url: 'file:///work/page.html'
+  }
+
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+
+  beforeEach(() => {
+    $connection.set({ mode: 'local' } as never)
+    desktopWindow.hermesDesktop = {
+      readFileText: vi.fn(async () => ({ byteSize: 22, path: target.path, text: '<!doctype html><p>x</p>' }))
+    } as unknown as Window['hermesDesktop']
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(Date.now()), 0)
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
+  })
+
+  afterEach(() => {
+    cleanup()
+    closeRightRail()
+    $connection.set(null)
+    delete desktopWindow.hermesDesktop
+    vi.unstubAllGlobals()
+  })
+
+  it('defaults a browsed HTML file to Render and toggles Source on the same tab', async () => {
+    openPreview(target)
+
+    const tabId = previewTabId(target)
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(<PreviewTilePane tabId={tabId} />)
+    })
+
+    expect(rendered.getAllByRole('button', { name: 'PREVIEW' })).toHaveLength(1)
+    expect(rendered.getByRole('button', { name: 'SOURCE' })).toBeTruthy()
+    expect(rendered.container.querySelector('webview')).toBeInstanceOf(HTMLElement)
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.target.renderMode).toBe('preview')
+
+    await act(async () => {
+      fireEvent.click(rendered.getByRole('button', { name: 'SOURCE' }))
+    })
+
+    expect(rendered.container.querySelector('webview')).toBeNull()
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.id).toBe(tabId)
+    expect($previewTabs.get()[0]?.target.renderMode).toBe('source')
+
+    // Source mode keeps one header: the switcher sits on the file header row
+    // next to Edit, as it does for Markdown, not on a second bar above it.
+    await waitFor(() => expect(rendered.getAllByRole('button', { name: 'PREVIEW' })).toHaveLength(1), {
+      container: rendered.container
+    })
+    expect(rendered.getAllByRole('button', { name: 'SOURCE' })).toHaveLength(1)
+    const edit = rendered.getByRole('button', { name: /^Edit/ })
+    const previewButton = rendered.getByRole('button', { name: 'PREVIEW' })
+    expect(previewButton.closest('.border-b')).toBe(edit.closest('.border-b'))
+
+    await act(async () => {
+      fireEvent.click(rendered.getByRole('button', { name: 'PREVIEW' }))
+    })
+
+    expect(rendered.container.querySelector('webview')).toBeInstanceOf(HTMLElement)
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.id).toBe(tabId)
+    expect($previewTabs.get()[0]?.target.renderMode).toBe('preview')
+  })
+
+  it('lands on Source, not Diff, when Source is picked for a file with uncommitted changes', async () => {
+    desktopWindow.hermesDesktop = {
+      ...desktopWindow.hermesDesktop,
+      git: { fileDiff: vi.fn(async () => '--- a/page.html\n+++ b/page.html\n-<p>x</p>\n+<p>y</p>\n') },
+      gitRoot: vi.fn(async () => '/work')
+    } as unknown as Window['hermesDesktop']
+
+    openPreview(target)
+
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(<PreviewTilePane tabId={previewTabId(target)} />)
+    })
+
+    await act(async () => {
+      fireEvent.click(rendered.getByRole('button', { name: 'SOURCE' }))
+    })
+
+    await waitFor(() => expect(rendered.getByRole('button', { name: 'DIFF' })).toBeTruthy(), {
+      container: rendered.container
+    })
+    const activeMode = (name: string) => rendered.getByRole('button', { name }).classList.contains('underline')
+
+    expect(activeMode('SOURCE')).toBe(true)
+    expect(activeMode('DIFF')).toBe(false)
+  })
+
+  it('offers no Render mode for a remote HTML file that fell back to source', async () => {
+    // local-preview marks a remote HTML file whose data URL failed validation
+    // as a source-only transient target; there is nothing to render it with.
+    const fallback = { ...target, renderMode: 'source' as const, transient: true }
+
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(<PreviewPane target={fallback} />)
+    })
+
+    await waitFor(() => expect(rendered.getByRole('button', { name: /^Edit/ })).toBeTruthy(), {
+      container: rendered.container
+    })
+    expect(rendered.queryByRole('button', { name: 'PREVIEW' })).toBeNull()
+    expect(rendered.container.querySelector('webview')).toBeNull()
   })
 })

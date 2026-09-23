@@ -231,7 +231,7 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+        with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "vision"})
@@ -271,7 +271,7 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+        with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
@@ -320,7 +320,7 @@ class TestCaptureResponse:
 
         fake_backend = self._ax_backend_with(600)
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=fake_backend):
+        with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
 
         parsed = json.loads(out)
@@ -332,6 +332,26 @@ class TestCaptureResponse:
         # the JSON view is partial and can re-issue with a tighter scope.
         assert "truncated to" in parsed["summary"]
 
+    def test_capture_ax_ignores_stale_max_elements_argument(self):
+        """`max_elements` was removed from the schema; the surfaced window is a
+        fixed cap with the full tree spilled to elements_file. A stale caller
+        still passing max_elements must not be able to raise the cap.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        fake_backend = self._ax_backend_with(5000)
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
+            out = cu_tool.handle_computer_use(
+                {"action": "capture", "mode": "ax", "max_elements": 10_000}
+            )
+        parsed = json.loads(out)
+        # Ignored: cap stays at the fixed default regardless of the argument.
+        assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS
+        assert parsed["total_elements"] == 5000
+        assert parsed["truncated_elements"] == 5000 - cu_tool._DEFAULT_MAX_ELEMENTS
+        # The full tree is spilled so nothing is lost.
+        assert parsed.get("elements_file")
 
 class TestCuaCaptureImageDimensions:
     def test_png_dimensions_are_sniffed_from_image_bytes(self):

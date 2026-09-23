@@ -79,10 +79,7 @@ DRIVERS: dict[str, Driver] = {
 # Cells that are red on current main for a tracked, open bug. Strict: the test
 # FAILS as soon as the cell turns green, so the entry is removed with the fix
 # instead of silently masking a later regression of the same cell.
-KNOWN_RED: dict[tuple[str, str], str] = {
-    # ACP builds its AIAgent without the configured agent.disabled_toolsets.
-    ("acp (stdio)", "toolset_restriction"): "#74582",
-}
+KNOWN_RED: dict[tuple[str, str], str] = {}
 
 
 @dataclass

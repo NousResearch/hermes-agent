@@ -17,6 +17,12 @@ from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
 
+# In-memory dedup for repeated Telegram updates (issue #68502).
+# Telegram may deliver the same update more than once; suppress duplicates with a
+# short TTL keyed on (chat_id, message_id) for message-bearing updates.
+_TELEGRAM_DEDUP_TTL: float = 30.0  # seconds
+_telegram_dedup_cache: Dict[tuple, float] = {}
+
 from agent.deadline import run_bounded_async
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal,
@@ -2771,6 +2777,23 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _on_platform_update(self, update, context) -> None:
         """Catch-all PTB handler (group 99) firing ``gateway_platform_event`` per inbound update with a
         stable envelope (no raw SDK objects) and an internal auth source. Never raises into PTB."""
+        # Deduplicate repeated inbound updates from Telegram retries (#68502).
+        # Telegram may deliver the same update more than once; suppress duplicates with a
+        # short in-memory TTL keyed on (chat_id, message_id) for message-bearing updates.
+        message = getattr(update, "effective_message", None) or getattr(update, "message", None)
+        if message is not None:
+            chat = getattr(message, "chat", None)
+            chat_id = str(getattr(chat, "id", "")).strip() if chat is not None else None
+            message_id = getattr(message, "message_id", None)
+            if chat_id and message_id is not None and str(message_id).strip():
+                key = (chat_id, str(message_id).strip())
+                now = time.monotonic()
+                seen = _telegram_dedup_cache.get(key)
+                if seen is not None and now - seen < _TELEGRAM_DEDUP_TTL:
+                    logger.debug("[%s] dedup: suppressing duplicate update for %s", self.name, key)
+                    return
+                _telegram_dedup_cache[key] = now
+
         # Last handler group PTB runs: stamp before any early return so the dispatch counter covers
         # gateways without the plugin hook (#102260).
         self._updates_dispatched_total = getattr(self, "_updates_dispatched_total", 0) + 1

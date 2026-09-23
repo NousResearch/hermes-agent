@@ -117,10 +117,10 @@ class TestSignalHelpers:
 
 
     def test_parse_comma_list(self):
-        from gateway.platforms.signal import _parse_comma_list
-        assert _parse_comma_list("+1234, +5678 , +9012") == ["+1234", "+5678", "+9012"]
-        assert _parse_comma_list("") == []
-        assert _parse_comma_list("  ,  ,  ") == []
+        from gateway.platforms.signal_egress import parse_comma_list
+        assert parse_comma_list("+1234, +5678 , +9012") == ["+1234", "+5678", "+9012"]
+        assert parse_comma_list("") == []
+        assert parse_comma_list("  ,  ,  ") == []
 
 
     def test_guess_extension_wav_routes_to_audio_cache(self):

@@ -39,6 +39,8 @@ from gateway.platforms.signal_rate_limit import (
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
 from gateway.platforms._shared import get_scoped_secret as _sig_secret
+from gateway.platforms.signal_egress import (
+    BLOCKED_ERROR as _BLOCKED_ERROR, dm_send_allowlist, outbound_allowed, parse_comma_list)
 from utils import TRUTHY_STRINGS
 
 logger = logging.getLogger(__name__)
@@ -62,11 +64,6 @@ _SKIP_IMAGE_LOG = {
     "oversize": lambda url, detail: ("Signal: image too large (%d bytes), skipping %s", detail, url)}
 _QUOTE_AUTHOR_KEYS = (
     "author", "authorNumber", "authorUuid", "authorAci", "authorServiceId", "authorServiceIdString")
-
-
-def _parse_comma_list(value: str) -> List[str]:
-    """Split a comma-separated string into a list, stripping whitespace."""
-    return [v.strip() for v in value.split(",") if v.strip()]
 
 
 def _guess_extension(data: bytes) -> str:
@@ -195,20 +192,13 @@ class SignalAdapter(BasePlatformAdapter):
         # Allowlists are per-profile (scoped reads); group policy derives from the group allowlist's
         # presence. The DM allowlist mirrors run.py's SIGNAL_ALLOWED_USERS so reaction hooks (which
         # fire before run.py's auth gate) can skip unauthorized senders; "*" = open.
-        self.group_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")))
+        self.group_allow_from = set(parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")))
         _rm_cfg = extra.get("require_mention")
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
                                 else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
-        self.dm_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
-        # Outbound DM allowlist: explicit SIGNAL_SEND_ALLOWED_USERS wins; otherwise fall back to
-        # the inbound allowlist, and if that is open ("*") fail closed (block all DM sends).
-        _send_raw = _sig_secret("SIGNAL_SEND_ALLOWED_USERS", "")
-        if _send_raw:
-            self.dm_send_allow = set(_parse_comma_list(_send_raw))
-        elif "*" not in self.dm_allow_from:
-            self.dm_send_allow = set(self.dm_allow_from)
-        else:
-            self.dm_send_allow = set()
+        self.dm_allow_from = set(parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
+        # Outbound egress allowlist (fail-closed); decision shared with the standalone sender.
+        self.dm_send_allow = dm_send_allowlist()
         self.client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
@@ -579,16 +569,9 @@ class SignalAdapter(BasePlatformAdapter):
                     self._remember_recipient_identifiers(number, service_id)
             return self._recipient_uuid_by_number.get(chat_id, chat_id)
 
-    def _outbound_allowed(self, chat_id: str) -> bool:
-        """Outbound egress gate. Groups: allowed only when on the group allowlist (unset = no group
-        sends). DMs: allowed only when on the outbound allowlist (fail-closed by default)."""
-        if chat_id.startswith("group:"):
-            return chat_id[6:] in self.group_allow_from
-        return chat_id in self.dm_send_allow
-
     async def _with_target(self, params: Dict[str, Any], chat_id: str, *, resolve: bool = True) -> Dict[str, Any]:
         """Add the groupId / recipient routing key for *chat_id* to *params* (in place)."""
-        if not self._outbound_allowed(chat_id):
+        if not outbound_allowed(chat_id, self.dm_send_allow, self.group_allow_from):
             logger.warning("Signal: blocked outbound to non-allowlisted target %s", redact_phone(chat_id))
             raise SignalOutboundBlocked(chat_id)
         if chat_id.startswith("group:"):
@@ -733,7 +716,7 @@ class SignalAdapter(BasePlatformAdapter):
         try:
             base_params = await self._with_target({"account": self.account}, chat_id)
         except SignalOutboundBlocked:
-            return SendResult(success=False, error="outbound blocked: target not on allowlist")
+            return SendResult(success=False, error=_BLOCKED_ERROR)
         chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
         last_result = None
         for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
@@ -832,7 +815,7 @@ class SignalAdapter(BasePlatformAdapter):
         try:
             base_params = await self._with_target({"account": self.account, "message": ""}, chat_id)
         except SignalOutboundBlocked:
-            return SendResult(success=False, error="outbound blocked: target not on allowlist")
+            return SendResult(success=False, error=_BLOCKED_ERROR)
         per = SIGNAL_MAX_ATTACHMENTS_PER_MSG
         att_batches = [attachments[i:i + per] for i in range(0, len(attachments), per)]
         n_batches = len(att_batches)
@@ -912,7 +895,7 @@ class SignalAdapter(BasePlatformAdapter):
             params = await self._with_target(
                 {"account": self.account, "message": caption or "", "attachments": [file_path]}, chat_id)
         except SignalOutboundBlocked:
-            return SendResult(success=False, error="outbound blocked: target not on allowlist")
+            return SendResult(success=False, error=_BLOCKED_ERROR)
         _, err = await self._rpc_send(params, fail_error)
         return err or SendResult(success=True)
 

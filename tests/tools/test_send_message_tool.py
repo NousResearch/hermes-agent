@@ -1434,6 +1434,10 @@ def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
 
 
 class TestSendSignalChunking:
+    @pytest.fixture(autouse=True)
+    def _allow_target(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_SEND_ALLOWED_USERS", "+15557654321")
+
     def test_text_only_single_rpc(self, monkeypatch):
         fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
         _install_signal_http(monkeypatch, fake)
@@ -1478,6 +1482,35 @@ class TestSendSignalChunking:
         # Only the existing file made it into the RPC
         params = fake.calls[0]["payload"]["params"]
         assert len(params["attachments"]) == 1
+
+
+class TestSendSignalEgressAllowlist:
+    """The standalone JSON-RPC path honours the adapter's egress allowlist: blocked targets never POST."""
+
+    _EXTRA = {"http_url": "http://localhost:8080", "account": "+15551234567"}
+
+    def test_dm_listed_target_sends_and_unlisted_is_blocked(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_SEND_ALLOWED_USERS", "+15557654321")
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        blocked = asyncio.run(_send_signal(self._EXTRA, "+15550009999", "hi"))
+        assert "blocked" in blocked["error"]
+        assert fake.calls == []
+
+        assert asyncio.run(_send_signal(self._EXTRA, "+15557654321", "hi"))["success"] is True
+        assert fake.calls[0]["payload"]["params"]["recipient"] == ["+15557654321"]
+
+    def test_group_target_gated_by_group_allowlist(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "allowedgrp")
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        assert "blocked" in asyncio.run(_send_signal(self._EXTRA, "group:othergrp", "hi"))["error"]
+        assert fake.calls == []
+
+        assert asyncio.run(_send_signal(self._EXTRA, "group:allowedgrp", "hi"))["success"] is True
+        assert fake.calls[0]["payload"]["params"]["groupId"] == "allowedgrp"
 
 
 # ── _send_via_adapter standalone fallback ────────────────────────────────

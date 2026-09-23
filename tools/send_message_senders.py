@@ -448,10 +448,18 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return {"error": "httpx not installed"}
     from gateway.platforms import signal_rate_limit as rl
     from gateway.platforms.signal_format import markdown_to_signal
+    from gateway.platforms import signal_egress
+    from gateway.platforms.helpers import redact_phone
     try:
         http_url, account = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/"), extra.get("account", "")
         if not account:
             return {"error": "Signal account not configured"}
+        # Same egress gate as SignalAdapter._with_target: this path posts JSON-RPC directly.
+        if not signal_egress.outbound_allowed(chat_id, signal_egress.dm_send_allowlist(),
+                                              signal_egress.group_allowlist()):
+            shown = "group:***" if chat_id.startswith("group:") else redact_phone(chat_id)
+            logger.warning("Signal: blocked outbound to non-allowlisted target %s", shown)
+            return _error(f"Signal {signal_egress.BLOCKED_ERROR} ({shown})")
         valid_media = media_files or []
         attachment_paths = []
         for media_path, _is_voice in valid_media:

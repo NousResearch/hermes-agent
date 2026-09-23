@@ -271,6 +271,19 @@ def test_spawned_action_carries_the_named_profile(client, homes, seams, tmp_path
     assert [argv[:2] for _name, argv in seams["spawn"]] == [["-p", "worker_beta"]]
 
 
+@pytest.mark.parametrize("route", sorted(SPAWNING))
+def test_spawned_action_scoped_to_default_still_carries_the_selector(
+    client, homes, seams, tmp_path, route
+):
+    """``default`` is a real named target, not "no override": a pooled ``-p X serve``
+    backend must still put ``-p default`` in the child's argv or the subprocess resolves
+    the ambient home and the action lands on X."""
+    resp = SPAWNING[route](client, "default", tmp_path)
+
+    assert resp.status_code == 200, resp.text
+    assert [argv[:2] for _name, argv in seams["spawn"]] == [["-p", "default"]]
+
+
 @pytest.mark.parametrize("route", ["sessions-prune", "sessions-empty", "sessions-bulk-delete"])
 def test_session_route_opens_the_named_profiles_store(client, homes, seams, tmp_path, route):
     resp = DESTRUCTIVE[route](client, "worker_beta", tmp_path)

@@ -84,6 +84,16 @@ class _BrokerProcessHandle:
                     chunk = self._conn.recv(4096)
                 except BlockingIOError:
                     return None
+                except OSError:
+                    self._conn.close()
+                    self._close_stdin_handle()
+                    self._failure = EnvironmentConnectionError(
+                        "configured local execution broker failed during command execution",
+                        retry_hint=(
+                            "Restart the operator-owned broker service and retry the command."
+                        ),
+                    )
+                    raise self._failure
                 if chunk:
                     if len(self._reply) + len(chunk) > MAX_REPLY_BYTES:
                         self._reply = b""

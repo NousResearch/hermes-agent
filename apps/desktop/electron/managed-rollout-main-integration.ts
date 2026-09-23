@@ -31,6 +31,11 @@ export interface ManagedRolloutMainIntegrationOptions {
   recoverManagedSsh?: (record: ManagedSshRecoveryRecord) => Promise<void>
 }
 
+type SourceInspectionOptions = Pick<
+  ManagedRolloutMainIntegrationOptions,
+  'managedSshConfig' | 'readHostKeyFingerprint' | 'effectiveConfigFingerprint'
+>
+
 function remoteGitCommand(repositoryRoot: string, args: readonly string[]): string {
   return `git -C ${remoteLifecycle.expandRemotePath(repositoryRoot)} ${args.map(remoteLifecycle.shq).join(' ')}`
 }
@@ -128,61 +133,78 @@ async function verifyProcessIdentity(target: any, scope: any, options: ManagedRo
   )
 }
 
-async function inspectSource(options: ManagedRolloutMainIntegrationOptions, source: any, context?: SweepProbeContext) {
+async function inspectConnectedSource(options: SourceInspectionOptions, source: any, target: any) {
   if (source?.kind !== 'ssh') {return null}
   const config = options.managedSshConfig(source)
 
   if (!config) {return null}
+  const isWindows = target.platform === 'Windows'
+  const runtime = isWindows
+    ? await windowsRemote.probeWindowsRemote(target.ssh, target.hermesPath)
+    : null
+  const hermesPath = runtime?.hermesPath || target.hermesPath
+  const remoteGit = async (args: readonly string[]) =>
+    String(await target.ssh.exec(`git -C "$(dirname ${remoteLifecycle.expandRemotePath(hermesPath)})" ${args.map(remoteLifecycle.shq).join(' ')}`, { timeoutMs: 10_000 })).trim()
+  const [sourceData, installId] = isWindows
+    ? [parseLastJson(await target.ssh.exec(windowsInspectionCommand(runtime))), await windowsInstallId(target, runtime)]
+    : [{
+        codeRoot: await remoteGit(['rev-parse', '--show-toplevel']),
+        originUrl: await remoteGit(['remote', 'get-url', 'origin']),
+        headSha: await remoteGit(['rev-parse', 'HEAD'])
+      }, await remoteLifecycle.readRemoteInstallId(target.ssh)]
+  const codeRoot = String(sourceData.codeRoot || '')
+  const originUrl = String(sourceData.originUrl || '')
+  const headSha = String(sourceData.headSha || '')
+
+  if (!installId || !/^[0-9a-f]{32}$/.test(String(installId)) || !/^[0-9a-f]{40}$/.test(headSha)) {return null}
+
+  return {
+    installId: String(installId),
+    codeRoot,
+    repositoryId: canonicalRepositoryId(originUrl),
+    headSha,
+    source: {
+      connectionId: source.id,
+      connectionConfigRevision: await options.effectiveConfigFingerprint(config),
+      verifiedHostKeyFingerprint: await options.readHostKeyFingerprint(config),
+      remoteUser: String(config.user || ''),
+      port: Number(config.port || 22),
+      configuredProfile: String(config.remoteProfile || 'default'),
+      configuredCodePath: hermesPath
+    }
+  }
+}
+
+/** Check the actual selected SSH target, rather than opening a second route that may differ. */
+export async function verifyManagedRolloutSelectedTarget(
+  options: SourceInspectionOptions,
+  source: any,
+  target: any,
+  expected: { installId: string; installationFingerprint: string; sourceFingerprint: string }
+): Promise<void> {
+  const inspection = await inspectConnectedSource(options, source, target)
+
+  if (!inspection) {throw new Error('managed-rollout-source-binding-changed')}
+  const installation = installationFingerprint(inspection)
+  const fingerprint = sourceFingerprint({ ...inspection.source, installationFingerprint: installation })
+
+  if (inspection.installId !== expected.installId || installation !== expected.installationFingerprint ||
+      fingerprint !== expected.sourceFingerprint) {
+    throw new Error('managed-rollout-source-binding-changed')
+  }
+}
+
+async function inspectSource(options: ManagedRolloutMainIntegrationOptions, source: any, context?: SweepProbeContext) {
+  if (source?.kind !== 'ssh' || !options.managedSshConfig(source)) {return null}
   const transport = await options.openTransport(source, context)
 
   try {
-    const target = boundedTarget(transport.target, options, context)
-    const isWindows = target.platform === 'Windows'
+    const inspection = await inspectConnectedSource(options, source, boundedTarget(transport.target, options, context))
 
-    const runtime = isWindows
-      ? await windowsRemote.probeWindowsRemote(target.ssh, target.hermesPath)
-      : null
-
-    const hermesPath = runtime?.hermesPath || target.hermesPath
-
-    const remoteGit = async (args: readonly string[]) =>
-      String(await target.ssh.exec(`git -C "$(dirname ${remoteLifecycle.expandRemotePath(hermesPath)})" ${args.map(remoteLifecycle.shq).join(' ')}`, { timeoutMs: 10_000 })).trim()
-
-    const [sourceData, installId] = isWindows
-      ? [parseLastJson(await target.ssh.exec(windowsInspectionCommand(runtime))), await windowsInstallId(target, runtime)]
-      : [{
-          codeRoot: await remoteGit(['rev-parse', '--show-toplevel']),
-          originUrl: await remoteGit(['remote', 'get-url', 'origin']),
-          headSha: await remoteGit(['rev-parse', 'HEAD'])
-        }, await remoteLifecycle.readRemoteInstallId(target.ssh)]
-
-    const codeRoot = String(sourceData.codeRoot || '')
-    const originUrl = String(sourceData.originUrl || '')
-    const headSha = String(sourceData.headSha || '')
-
-    if (!installId || !/^[0-9a-f]{32}$/.test(String(installId)) || !/^[0-9a-f]{40}$/.test(headSha)) {return null}
+    if (!inspection) {return null}
     const scopes = await options.captureScopes(source)
-    const config = options.managedSshConfig(source)
 
-    if (!config) {return null}
-    const connectionConfigRevision = source.effectiveConfigFingerprint || await options.effectiveConfigFingerprint(config)
-
-    return {
-      installId: String(installId),
-      codeRoot,
-      repositoryId: canonicalRepositoryId(originUrl),
-      headSha,
-      requiredScopeIds: scopes.map(scope => String(scope.key)).sort(),
-      source: {
-        connectionId: source.id,
-        connectionConfigRevision,
-        verifiedHostKeyFingerprint: await options.readHostKeyFingerprint(config),
-        remoteUser: String(config.user || ''),
-        port: Number(config.port || 22),
-        configuredProfile: String(config.remoteProfile || 'default'),
-        configuredCodePath: hermesPath
-      }
-    }
+    return { ...inspection, requiredScopeIds: scopes.map(scope => String(scope.key)).sort() }
   } catch {
     return null
   } finally {

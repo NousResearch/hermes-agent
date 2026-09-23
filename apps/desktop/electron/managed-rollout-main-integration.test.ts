@@ -10,8 +10,8 @@ vi.mock('./managed-ssh-update', () => ({
 
 import type { ManagedRolloutAttempt, ManagedRolloutState } from './managed-rollout-coordinator'
 import { buildHealthEvidence } from './managed-rollout-evidence'
-import { installationFingerprint } from './managed-rollout-identity'
-import { createManagedRolloutMainIntegration } from './managed-rollout-main-integration'
+import { installationFingerprint, sourceFingerprint } from './managed-rollout-identity'
+import { createManagedRolloutMainIntegration, verifyManagedRolloutSelectedTarget } from './managed-rollout-main-integration'
 import { observeManagedRemoteUpdate } from './managed-ssh-update'
 
 const INSTALL_ID = 'a'.repeat(32)
@@ -76,7 +76,7 @@ function makeIntegration(
     })
   }
 
-  const integration = createManagedRolloutMainIntegration({
+  const options = {
     nowMono: () => 1000,
     processOwner: () => true,
     listSources: () => [...targets.values()].map(item => item.source),
@@ -90,9 +90,10 @@ function makeIntegration(
     assuranceRoot: path.join(directory, 'assurance'),
     journalRoot: path.join(directory, 'journal'),
     ...extra
-  })
+  }
+  const integration = createManagedRolloutMainIntegration(options)
 
-  return { integration, source, ssh }
+  return { integration, source, target, options, ssh }
 }
 
 function attempt(
@@ -249,6 +250,30 @@ async function promotionFixture(
 }
 
 describe('managed rollout main integration', () => {
+  test('rechecks the exact selected transport target before a coordinator launch', async () => {
+    const { integration, source, target, options } = makeIntegration()
+    const inventory = await integration.adapters.inventoryReader.capture()
+    const observed = inventory!.observations[0]
+    const expectedInstallation = installationFingerprint({ installId: INSTALL_ID, codeRoot: ROOT, repositoryId: REPOSITORY_ID })
+    const expected = {
+      installId: INSTALL_ID,
+      installationFingerprint: expectedInstallation,
+      sourceFingerprint: sourceFingerprint({ ...observed.source, installationFingerprint: expectedInstallation })
+    }
+    const openTransport = vi.spyOn(options, 'openTransport')
+
+    await expect(verifyManagedRolloutSelectedTarget(options, source, target, expected)).resolves.toBeUndefined()
+    expect(openTransport).not.toHaveBeenCalled()
+
+    const otherSsh = {
+      exec: vi.fn(async (command: string) => command.includes('if [ -f') ? NEXT_INSTALL_ID : target.ssh.exec(command))
+    }
+
+    await expect(verifyManagedRolloutSelectedTarget(options, source, { ...target, ssh: otherSsh }, expected))
+      .rejects.toThrow('managed-rollout-source-binding-changed')
+    expect(openTransport).not.toHaveBeenCalled()
+  })
+
   test('refuses journal reconstruction before a process owner is acquired', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-rollout-owner-refusal-'))
     temporaryDirectories.push(directory)

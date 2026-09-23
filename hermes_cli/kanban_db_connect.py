@@ -837,6 +837,11 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    ("requires_repo_change", "requires_repo_change INTEGER NOT NULL DEFAULT 0"),
+    ("requires_clean_worktree", "requires_clean_worktree INTEGER NOT NULL DEFAULT 0"),
+    ("integration_target", "integration_target TEXT"),
+    ("workspace_start_head", "workspace_start_head TEXT"),
+    ("workspace_repo_root", "workspace_repo_root TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

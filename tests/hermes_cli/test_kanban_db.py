@@ -44,6 +44,49 @@ def _init_git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
 
 
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _prepare_git_task(
+    conn: sqlite3.Connection,
+    repo: Path,
+    *,
+    workspace_kind: str = "worktree",
+    requires_repo_change: bool = False,
+    requires_clean_worktree: bool | None = None,
+    integration_target: str | None = None,
+) -> tuple[str, Path]:
+    branch = "wt/completion-guard"
+    workspace = repo if workspace_kind == "dir" else repo / ".worktrees" / "completion-guard"
+    task_id = kb.create_task(
+        conn,
+        title="change repository",
+        workspace_kind=workspace_kind,
+        workspace_path=str(workspace),
+        branch_name=branch if workspace_kind == "worktree" else None,
+        requires_repo_change=requires_repo_change,
+        requires_clean_worktree=requires_clean_worktree,
+        integration_target=integration_target,
+    )
+    assert kb.claim_task(conn, task_id) is not None
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.requires_repo_change is requires_repo_change
+    expected_clean = workspace_kind == "worktree" if requires_clean_worktree is None else requires_clean_worktree
+    assert task.requires_clean_worktree is expected_clean
+    assert task.integration_target == integration_target
+    if workspace_kind == "worktree":
+        resolved, resolved_branch = kbw._resolve_worktree_workspace(task)
+        kbw.set_branch_name(conn, task_id, resolved_branch)
+    else:
+        resolved = kbw.resolve_workspace(task)
+    kbw.set_workspace_path(conn, task_id, resolved)
+    return task_id, resolved
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------
@@ -158,12 +201,26 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             )
         }
+        legacy_task = kb.get_task(migrated, "legacy")
+        assert legacy_task is not None
+        assert legacy_task.title == "old board task"
+        assert legacy_task.status == "ready"
+        assert kb.complete_task(migrated, "legacy", summary="legacy completion")
+        migrated_legacy_task = kb.get_task(migrated, "legacy")
 
     # Additive columns added by migration:
     assert "session_id" in task_columns
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
+    assert {
+        "requires_repo_change", "requires_clean_worktree", "integration_target",
+        "workspace_start_head", "workspace_repo_root",
+    } <= task_columns
     assert "run_id" in event_columns
+    assert legacy_task.requires_repo_change is False
+    assert legacy_task.requires_clean_worktree is False
+    assert migrated_legacy_task is not None
+    assert migrated_legacy_task.status == "done"
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
@@ -806,6 +863,152 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
     ).stdout
     assert f"worktree {target}" in listed
     assert f"branch refs/heads/{branch}" in listed
+
+
+def test_complete_task_rejects_dirty_dedicated_worktree_with_paths(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kbc.connect() as conn:
+        task_id, workspace = _prepare_git_task(conn, repo)
+        dirty = workspace / "unfinished.txt"
+        dirty.write_text("not committed\n", encoding="utf-8")
+
+        with pytest.raises(kb.GitCompletionError, match=r"unfinished\.txt"):
+            kb.complete_task(conn, task_id, summary="done")
+
+        assert kb.get_task(conn, task_id).status == "running"
+
+
+def test_complete_task_rolls_back_when_worktree_changes_during_completion(
+    kanban_home, tmp_path, monkeypatch,
+):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kbc.connect() as conn:
+        task_id, workspace = _prepare_git_task(conn, repo)
+        original_gate = kb._gate_git_completion
+        gate_calls = 0
+
+        def mutate_after_first_gate(conn, task_id, metadata):
+            nonlocal gate_calls
+            gate_calls += 1
+            original_gate(conn, task_id, metadata)
+            if gate_calls == 1:
+                (workspace / "concurrent.txt").write_text("raced completion\n", encoding="utf-8")
+
+        monkeypatch.setattr(kb, "_gate_git_completion", mutate_after_first_gate)
+
+        with pytest.raises(kb.GitCompletionError, match=r"concurrent\.txt"):
+            kb.complete_task(conn, task_id, summary="done")
+
+        assert gate_calls == 2
+        assert kb.get_task(conn, task_id).status == "running"
+
+
+def test_complete_task_rejects_required_repo_change_without_new_commit(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kbc.connect() as conn:
+        task_id, _ = _prepare_git_task(conn, repo, requires_repo_change=True)
+
+        with pytest.raises(kb.GitCompletionError, match="HEAD did not change"):
+            kb.complete_task(conn, task_id, summary="done")
+
+
+@pytest.mark.parametrize("candidate", ["does-not-exist", "unreachable"])
+def test_complete_task_rejects_missing_or_unreachable_declared_commit(
+    kanban_home, tmp_path, candidate,
+):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    unreachable = None
+    if candidate == "unreachable":
+        _git(repo, "checkout", "-b", "other")
+        (repo / "other.txt").write_text("other\n", encoding="utf-8")
+        _git(repo, "add", "other.txt")
+        _git(repo, "commit", "-m", "other")
+        unreachable = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "checkout", "main")
+
+    with kbc.connect() as conn:
+        task_id, _ = _prepare_git_task(conn, repo)
+        declared = unreachable or "does-not-exist"
+
+        with pytest.raises(kb.GitCompletionError, match="declared commit"):
+            kb.complete_task(conn, task_id, summary="done", metadata={"commit": declared})
+
+
+def test_complete_task_accepts_clean_local_commit_and_releases_review_child(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kbc.connect() as conn:
+        task_id, workspace = _prepare_git_task(conn, repo, requires_repo_change=True)
+        child = kb.create_task(conn, title="review", parents=[task_id], assignee="reviewer")
+        (workspace / "change.txt").write_text("finished\n", encoding="utf-8")
+        _git(workspace, "add", "change.txt")
+        _git(workspace, "commit", "-m", "finish task")
+        commit = _git(workspace, "rev-parse", "HEAD")
+
+        assert kb.complete_task(
+            conn, task_id, summary="done", metadata={"commit": commit, "changed_files": ["change.txt"]},
+        )
+
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_complete_task_rejects_commit_not_integrated_in_target(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kbc.connect() as conn:
+        task_id, workspace = _prepare_git_task(
+            conn, repo, requires_repo_change=True, integration_target="main",
+        )
+        (workspace / "change.txt").write_text("finished\n", encoding="utf-8")
+        _git(workspace, "add", "change.txt")
+        _git(workspace, "commit", "-m", "finish task")
+        commit = _git(workspace, "rev-parse", "HEAD")
+
+        with pytest.raises(kb.GitCompletionError, match="not integrated in main"):
+            kb.complete_task(conn, task_id, summary="done", metadata={"commit": commit})
+
+
+def test_complete_task_ignores_unrelated_dirt_in_shared_dir(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kbc.connect() as conn:
+        task_id, workspace = _prepare_git_task(conn, repo, workspace_kind="dir")
+        commit = _git(workspace, "rev-parse", "HEAD")
+        (workspace / "third-party.txt").write_text("concurrent work\n", encoding="utf-8")
+
+        assert kb.complete_task(conn, task_id, summary="checked", metadata={"commit": commit})
+
+
+def test_complete_task_honors_explicit_clean_requirement_for_shared_dir(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kbc.connect() as conn:
+        task_id, workspace = _prepare_git_task(
+            conn, repo, workspace_kind="dir", requires_clean_worktree=True,
+        )
+        (workspace / "unfinished.txt").write_text("not committed\n", encoding="utf-8")
+
+        with pytest.raises(kb.GitCompletionError, match=r"unfinished\.txt"):
+            kb.complete_task(conn, task_id, summary="done")
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "running"
+
+
+def test_complete_task_rejects_detached_head_when_task_branch_is_expected(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kbc.connect() as conn:
+        task_id, workspace = _prepare_git_task(conn, repo)
+        _git(workspace, "checkout", "--detach")
+
+        with pytest.raises(kb.GitCompletionError, match="detached HEAD"):
+            kb.complete_task(conn, task_id, summary="done")
 
 
 # ---------------------------------------------------------------------------

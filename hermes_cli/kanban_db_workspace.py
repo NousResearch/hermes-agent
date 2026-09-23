@@ -583,7 +583,21 @@ def _set_task_column(conn: sqlite3.Connection, task_id: str, column: str, value:
 
 
 def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str) -> None:
-    _set_task_column(conn, task_id, "workspace_path", str(path))
+    workspace = Path(path).expanduser()
+    with _kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET workspace_path = ? WHERE id = ?", (str(workspace), task_id))
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_start_head FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row or row["workspace_kind"] not in {"worktree", "dir"} or row["workspace_start_head"]:
+            return
+        start_head = _kb._git_out(workspace, "rev-parse", "HEAD")
+        repo_root = _kb._git_out(workspace, "rev-parse", "--show-toplevel")
+        if start_head and repo_root:
+            conn.execute(
+                "UPDATE tasks SET workspace_start_head = ?, workspace_repo_root = ? WHERE id = ?",
+                (start_head, repo_root, task_id),
+            )
 
 
 def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) -> None:

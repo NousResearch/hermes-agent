@@ -383,6 +383,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
+            requires_repo_change=bool(getattr(args, "requires_repo_change", False)),
+            requires_clean_worktree=getattr(args, "requires_clean_worktree", None),
+            integration_target=getattr(args, "integration_target", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -928,6 +931,9 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
                                         force=bool(getattr(args, "force", False)))
+            except kb.GitCompletionError as exc:
+                fail_msg[tid] = str(exc)
+                return False
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "

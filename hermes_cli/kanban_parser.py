@@ -170,6 +170,12 @@ _SPECS = [
              help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch; "
                   "an explicit 'scratch' also opts out of a project-scoped board's project)"),
         _arg("--branch", help="Branch name for worktree tasks, e.g. wt/t6-wire"),
+        _arg("--requires-repo-change", action="store_true",
+             help="Refuse completion unless Git HEAD advances from its dispatch-time commit"),
+        _arg("--requires-clean-worktree", action=argparse.BooleanOptionalAction, default=None,
+             help="Require a clean checkout at completion (default: true for worktree)"),
+        _arg("--integration-target", metavar="REF",
+             help="Require the completed commit to be an ancestor of this Git ref"),
         _arg("--project",
              help="Link to a project (id or slug). Anchors the task's "
                   "worktree under the project's primary repo with a "

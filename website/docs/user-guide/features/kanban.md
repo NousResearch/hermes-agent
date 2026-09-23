@@ -126,6 +126,22 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), reaps workers that outlived their finished run (a worker still alive after its own `kanban_complete`/`kanban_block` is terminated once its run has been closed for two minutes, leaving it time to finish its final turn — matched by PID *and* spawn-time fingerprint, so a recycled PID is never signalled; recorded as a `terminal_worker_reaped` event), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
+### Git completion guard
+
+New `worktree` tasks require a clean checkout before `kanban_complete` can move
+them to `done`. The dispatcher records the starting HEAD when it materializes
+the workspace; `--requires-repo-change` additionally requires HEAD to advance.
+Use `--integration-target origin/main` only for merge or release tasks: ordinary
+implementation tasks may complete with a local commit so they can release a
+dependent review task. A declared `metadata.commit` must exist and be reachable
+from the workspace HEAD. A configured integration target must contain that
+commit. Detached HEAD is rejected when the task has an expected branch.
+
+Shared `dir:<path>` workspaces do not fail merely because unrelated files are
+dirty; Hermes validates only an explicitly declared commit there. The schema
+migration is additive. Existing task rows retain the legacy disabled default,
+while newly created `worktree` tasks receive the clean-worktree requirement.
+
 ## Boards (multi-project)
 
 Boards let you separate unrelated streams of work — one per project, repo,

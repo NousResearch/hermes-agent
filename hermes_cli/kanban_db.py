@@ -732,6 +732,11 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    requires_repo_change: bool = False
+    requires_clean_worktree: bool = False
+    integration_target: Optional[str] = None
+    workspace_start_head: Optional[str] = None
+    workspace_repo_root: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -749,6 +754,8 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            requires_repo_change=bool(g("requires_repo_change")),
+            requires_clean_worktree=bool(g("requires_clean_worktree")),
         )
 
 
@@ -762,6 +769,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "integration_target", "workspace_start_head", "workspace_repo_root",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -966,7 +974,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Git completion contract. Worktree tasks default to a clean checkout;
+    -- repo-changing tasks must advance from the HEAD captured at dispatch.
+    requires_repo_change INTEGER NOT NULL DEFAULT 0,
+    requires_clean_worktree INTEGER NOT NULL DEFAULT 0,
+    integration_target   TEXT,
+    workspace_start_head TEXT,
+    workspace_repo_root  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1260,6 +1275,8 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    requires_repo_change: bool = False, requires_clean_worktree: Optional[bool] = None,
+    integration_target: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1307,10 +1324,17 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    integration_target = str(integration_target).strip() if integration_target else None
 
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
+    if requires_clean_worktree is None:
+        requires_clean_worktree = workspace_kind == "worktree"
+    if (requires_repo_change or requires_clean_worktree or integration_target) and workspace_kind not in {
+        "dir", "worktree",
+    }:
+        raise ValueError("Git completion requirements need workspace_kind='dir' or 'worktree'")
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
@@ -1359,8 +1383,10 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        completion_contract, requires_repo_change,
+                        requires_clean_worktree, integration_target
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1370,6 +1396,8 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        1 if requires_repo_change else 0, 1 if requires_clean_worktree else 0,
+                        integration_target,
                     ),
                 )
                 for pid in parents:
@@ -2720,6 +2748,131 @@ def _claim_is_live(trow) -> bool:
     )
 
 
+class GitCompletionError(ValueError):
+    """Raised when a Git-backed task cannot prove a clean, truthful completion."""
+
+
+def _completion_git(path: Path, *args: str) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(path), *args], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=5, check=False,
+        )
+    except Exception as exc:
+        raise GitCompletionError(f"completion blocked: git inspection failed at {path}: {exc}") from exc
+
+
+def _gate_git_completion(
+    conn: sqlite3.Connection, task_id: str, metadata: Optional[dict],
+) -> None:
+    """Fail closed on claims about a task's Git checkout before marking it done."""
+    task = get_task(conn, task_id)
+    if task is None or task.workspace_kind not in {"worktree", "dir"}:
+        return
+    declared_raw = metadata.get("commit") if isinstance(metadata, dict) else None
+    declared = str(declared_raw).strip() if declared_raw is not None else ""
+    needs_git = bool(
+        task.workspace_kind == "worktree" or task.requires_repo_change or task.requires_clean_worktree
+        or task.integration_target or declared
+    )
+    if not needs_git:
+        return
+    if not task.workspace_path:
+        raise GitCompletionError("completion blocked: Git workspace path was not recorded")
+    workspace = Path(task.workspace_path).expanduser()
+    head_result = _completion_git(workspace, "rev-parse", "--verify", "HEAD^{commit}")
+    if head_result.returncode != 0:
+        raise GitCompletionError(f"completion blocked: workspace is not a readable Git checkout: {workspace}")
+    head = head_result.stdout.strip()
+
+    if task.requires_clean_worktree:
+        status = _completion_git(
+            workspace, "status", "--porcelain=v1", "--untracked-files=all", "-z",
+        )
+        if status.returncode != 0:
+            raise GitCompletionError("completion blocked: could not inspect worktree status")
+        entries = [entry for entry in status.stdout.split("\0") if entry]
+        dirty_paths: set[str] = set()
+        index = 0
+        while index < len(entries):
+            entry = entries[index]
+            dirty_paths.add(entry[3:])
+            if len(entry) >= 2 and ("R" in entry[:2] or "C" in entry[:2]) and index + 1 < len(entries):
+                index += 1
+                dirty_paths.add(entries[index])
+            index += 1
+        if dirty_paths:
+            raise GitCompletionError(
+                "completion blocked: required-clean checkout is dirty: "
+                + ", ".join(sorted(dirty_paths))
+            )
+
+    if task.workspace_kind == "worktree" and task.branch_name:
+        branch = _completion_git(workspace, "symbolic-ref", "--quiet", "--short", "HEAD")
+        current_branch = branch.stdout.strip() if branch.returncode == 0 else ""
+        if not current_branch:
+            raise GitCompletionError(
+                f"completion blocked: detached HEAD; expected branch {task.branch_name}"
+            )
+        if current_branch != task.branch_name:
+            raise GitCompletionError(
+                f"completion blocked: checkout is on {current_branch}, expected {task.branch_name}"
+            )
+
+    if task.requires_repo_change:
+        if not task.workspace_start_head:
+            raise GitCompletionError("completion blocked: starting HEAD was not recorded")
+        if head == task.workspace_start_head:
+            raise GitCompletionError("completion blocked: HEAD did not change from the recorded starting commit")
+
+    verified_commit = head
+    if declared:
+        resolved = _completion_git(workspace, "rev-parse", "--verify", f"{declared}^{{commit}}")
+        if resolved.returncode != 0:
+            raise GitCompletionError(f"completion blocked: declared commit does not exist: {declared}")
+        verified_commit = resolved.stdout.strip()
+        reachable = _completion_git(workspace, "merge-base", "--is-ancestor", verified_commit, head)
+        if reachable.returncode != 0:
+            raise GitCompletionError(
+                f"completion blocked: declared commit is not reachable from HEAD: {declared}"
+            )
+        changed_files = metadata.get("changed_files") if isinstance(metadata, dict) else None
+        if changed_files and task.workspace_start_head:
+            if not isinstance(changed_files, (list, tuple)):
+                raise GitCompletionError("completion blocked: metadata.changed_files must be a list")
+            diff = _completion_git(
+                workspace, "diff", "--name-only", "-z",
+                f"{task.workspace_start_head}..{verified_commit}",
+            )
+            if diff.returncode != 0:
+                raise GitCompletionError("completion blocked: could not verify declared changed_files")
+            committed_paths = {p for p in diff.stdout.split("\0") if p}
+            announced = {str(p).strip() for p in changed_files if str(p).strip()}
+            missing = sorted(announced - committed_paths)
+            if missing:
+                raise GitCompletionError(
+                    "completion blocked: declared commit does not contain announced changed_files: "
+                    + ", ".join(missing)
+                )
+
+    if task.integration_target:
+        target = _completion_git(
+            workspace, "rev-parse", "--verify", f"{task.integration_target}^{{commit}}",
+        )
+        if target.returncode != 0:
+            raise GitCompletionError(
+                f"completion blocked: integration target does not exist: {task.integration_target}"
+            )
+        integrated = _completion_git(
+            workspace, "merge-base", "--is-ancestor", verified_commit, target.stdout.strip(),
+        )
+        if integrated.returncode != 0:
+            raise GitCompletionError(
+                f"completion blocked: commit {verified_commit} is not integrated in "
+                f"{task.integration_target}"
+            )
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2774,6 +2927,10 @@ def complete_task(
         # _claim_is_live for what "live" means.
         if expected_run_id is None and not force and trow and _claim_is_live(trow):
             raise LiveClaimError(task_id)
+        # Keep inspection and transition in the same board write transaction.
+        # Git cannot join SQLite's transaction, but this removes board-level
+        # races and leaves only the dedicated worker as a checkout writer.
+        _gate_git_completion(conn, task_id, metadata)
         sql = """
                 UPDATE tasks
                    SET status       = 'done',
@@ -2816,6 +2973,10 @@ def complete_task(
             _completed_event_payload(result, event_summary, verified_cards, metadata),
             run_id=run_id,
         )
+        # Git cannot participate in SQLite's transaction. Revalidate after all
+        # completion writes so a checkout mutation during the transition raises
+        # and rolls the transaction back instead of persisting a stale ``done``.
+        _gate_git_completion(conn, task_id, metadata)
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)

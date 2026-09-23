@@ -345,10 +345,10 @@ def _request_agent_overrides(
 ) -> Dict[str, Any]:
     """Extract per-request model/provider/options for _run_agent.
 
-    The virtual model (``hermes-agent``) means "gateway default". A bare ``model`` without
-    ``provider`` is honored only when ``allow_bare_model`` (generic clients hardcode "gpt-4o";
-    OpenAI-compatible handlers pass the ``direct_model_requests`` opt-in, Hermes-native
-    endpoints always allow it). An explicit ``provider`` is always honored.
+    The virtual model (``hermes-agent``) means "gateway default". A non-virtual ``model`` is
+    a request-scoped model selection; OpenAI-compatible handlers honor it just like the
+    Hermes-native endpoints. ``allow_bare_model`` remains available to callers that explicitly
+    need to suppress a bare model while accepting an explicit ``provider``.
     """
     if not isinstance(body, dict):
         return {}
@@ -1180,15 +1180,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             extra.get("model_name", _get_scoped_secret("API_SERVER_MODEL_NAME", "")))
         # alias (client "model") -> {model, provider?, api_key? (UPSTREAM, never logged), base_url?}
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(extra.get("model_routes"))
-        # Opt-in bare ``model`` passthrough on OpenAI-compatible surfaces (generic clients
-        # hardcode "gpt-4o" etc., hence off by default).
-        # Off by default: generic OpenAI clients routinely hardcode model names ("gpt-4o", ...), and
-        # existing deployments rely on those falling back to the gateway default rather than switching the
-        # executing model. Requests that send an explicit ``provider`` — and the Hermes-native session-chat
-        # and /v1/runs endpoints — are always honored regardless of this flag. (Idea credit: PR #22825 by
-        # @mssteuer.)
+        # OpenAI-compatible clients use their ``model`` field for routing, so honor bare
+        # non-virtual model ids by default. The flag is retained as an explicit compatibility
+        # opt-out for deployments that intentionally collapse all bare requests onto the global
+        # model; configured model_routes and explicit providers retain their usual precedence.
         self._direct_model_requests: bool = _coerce_request_bool(
-            extra.get("direct_model_requests"), default=False)
+            extra.get("direct_model_requests"), default=True)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None

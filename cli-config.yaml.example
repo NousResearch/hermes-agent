@@ -1056,9 +1056,10 @@ group_sessions_per_user: true
 # ─────────────────────────────────────────────────────────────────────────────
 # Route different API clients to different models/providers on a single
 # Hermes deployment.  Clients choose a backend by sending a specific string
-# as the OpenAI ``model`` field.  Unmapped model values fall back to the
-# global model configured in the ``model:`` section above, and an explicit
-# session /model override always wins over a route.
+# as the OpenAI ``model`` field.  An unmapped non-virtual model is routed
+# directly; set ``direct_model_requests: false`` below only when legacy
+# clients must fall back to the global model. An explicit session /model
+# override always wins over a route.
 #
 # Configure via the ``platforms.api_server.extra.model_routes`` gateway
 # config block:
@@ -1068,6 +1069,7 @@ group_sessions_per_user: true
 #       enabled: true
 #       extra:
 #         key: "your-api-server-secret"
+#         # direct_model_requests: false  # legacy global-default behavior
 #         model_routes:
 #           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
 #           minimax-m2:

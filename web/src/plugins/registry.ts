@@ -45,6 +45,25 @@ import { registerSlot, PluginSlot } from "./slots";
 
 type RegistryListener = () => void;
 
+export type ChatSubmitResult =
+  | { ok: true }
+  | { ok: false; reason: "inactive" | "disconnected" | "input_blocked" | "invalid_text" };
+
+type ChatSubmitHandler = (text: string) => ChatSubmitResult;
+
+// ChatPage owns the PTY and installs this narrow bridge only while its input
+// pipeline is live. Plugins never receive the socket, terminal, or token.
+let chatSubmitHandler: ChatSubmitHandler | null = null;
+
+export function setChatSubmitHandler(handler: ChatSubmitHandler | null): void {
+  chatSubmitHandler = handler;
+}
+
+function submitChatText(text: string): ChatSubmitResult {
+  if (typeof text !== "string") return { ok: false, reason: "invalid_text" };
+  return chatSubmitHandler?.(text) ?? { ok: false, reason: "inactive" };
+}
+
 const _registered: Map<string, React.ComponentType> = new Map();
 const _loadErrors: Map<string, string> = new Map();
 const _listeners: Set<RegistryListener> = new Set();
@@ -119,6 +138,11 @@ export function exposePluginSDK() {
     // Contract version of the plugin SDK surface (see plugins/sdk.d.ts).
     // Bump on backwards-incompatible changes; additive changes don't need it.
     sdkVersion: SDK_CONTRACT_VERSION,
+    host: {
+      chat: {
+        submitText: submitChatText,
+      },
+    },
     // React core — plugins use these instead of importing react
     React,
     hooks: {

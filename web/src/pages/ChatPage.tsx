@@ -94,7 +94,7 @@ import {
 } from "@/lib/pty-close-copy";
 import { ptyAttachToken } from "@/lib/pty-attach-token";
 import { loseWebglContexts } from "@/lib/xterm-webgl-release";
-import { PluginSlot } from "@/plugins";
+import { PluginSlot, setChatSubmitHandler } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { errorMessage } from "@/lib/api-error";
@@ -1538,6 +1538,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
       });
 
+      // Keep the plugin capability at the same narrow boundary as keyboard
+      // input. A hidden persistent ChatPage must not receive text for another
+      // route, and reconnect/ended states retain the existing input block.
+      setChatSubmitHandler((text) => {
+        if (!isActiveRef.current) return { ok: false, reason: "inactive" };
+        if (ws.readyState !== WebSocket.OPEN) return { ok: false, reason: "disconnected" };
+        if (shouldBlockPtyInput(ptyStateRef.current)) {
+          return { ok: false, reason: "input_blocked" };
+        }
+        forwardPtyData(text, false);
+        forwardPtyData("\r", false);
+        term.focus();
+        return { ok: true };
+      });
+
       onResizeDisposable = term.onResize(({ cols, rows }) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(`\x1b[RESIZE:${cols};${rows}]`);
@@ -1562,6 +1577,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       clearResumeLoadingTimers();
       setResumeHydrating(false);
       onDataDisposable?.dispose();
+      setChatSubmitHandler(null);
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();

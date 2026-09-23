@@ -4108,7 +4108,7 @@ def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str
 
 
 def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
-    """Done-parent handoffs: newest ``completed`` run's summary+metadata,
+    """Done (or archived-after-done) parent handoffs: newest ``completed`` run's summary+metadata,
     falling back to ``task.result`` for pre-runs-table data. Stamped with a
     relative age so the worker re-verifies stale upstream results."""
     parent_rows = conn.execute(
@@ -4117,11 +4117,15 @@ def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str
     wrote_header = False
     for pid in (r["parent_id"] for r in parent_rows):
         pt = get_task(conn, pid)
-        if not pt or pt.status != "done":
+        if not pt or pt.status not in ("done", "archived"):
             continue
         runs = [r for r in list_runs(conn, pid) if r.outcome == "completed"]
         runs.sort(key=lambda r: r.started_at, reverse=True)
         run = runs[0] if runs else None
+        # Archiving a finished parent must not erase its handoff from children
+        # that are still open; an archived parent that never completed has none.
+        if pt.status == "archived" and run is None:
+            continue
         if not wrote_header:
             lines.append("## Parent task results")
             lines.append(

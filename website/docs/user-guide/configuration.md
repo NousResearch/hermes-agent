@@ -226,6 +226,8 @@ terminal:
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
+  shell_init_files: []      # Local backend: files sourced before the login-shell env snapshot (e.g. ~/.zshrc, ~/.nvm/nvm.sh); ~ and ${VAR} expand, missing files are skipped. A non-empty list replaces the whole auto-source default below, not just ~/.bashrc
+  auto_source_bashrc: true  # Local backend, non-Windows only: with shell_init_files empty, source ~/.profile, ~/.bash_profile, then ~/.bashrc so tools registered there (nvm, asdf, pyenv) stay visible
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
@@ -261,6 +263,8 @@ warns about directories over 1 GB elsewhere under `cache/` that no pruner covers
 `desktop.font_family` sets the font for chat and the rest of the Hermes Desktop interface (the terminal pane has its own key above). Give it one installed family name (for example, `OpenDyslexic` or `Atkinson Hyperlegible`) or a CSS font stack; Hermes keeps the active theme's own stack behind it so CJK and emoji glyphs still resolve, and an empty value uses the theme's font. Edit it in **Settings → Appearance → Chat Font**.
 
 `terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.
+
+If terminal commands report `command not found` for tools like `nvm` or `pyenv`, see the [FAQ](../reference/faq.md) entry on `node: command not found`.
 
 For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 

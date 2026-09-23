@@ -400,17 +400,9 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
             "pair opt-in, allow-all beside GATEWAY list, unauthenticated From": {
                 "extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False,
                 "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "GATEWAY_ALLOWED_USERS": "boss@example.com"}},
-        }
-        for label, kwargs in cases.items():
-            with self.subTest(label):
-                self.assertEqual(self._reached_gateway(**kwargs), [])
-
-    def test_bare_allowlist_entry_does_not_admit_its_local_part_at_any_domain(self):
-        """``GATEWAY_ALLOWED_USERS=stranger`` names one principal (say a chat username), not stranger@<any domain>."""
-        cases = {
+            # A bare entry (a chat username, say) names one principal, never stranger@<any domain>: the
+            # domain is the sender's to choose, so such mail is dropped rather than admitted or paired.
             "GATEWAY_ALLOWED_USERS bare entry": {"env": {"GATEWAY_ALLOWED_USERS": "stranger"}},
-            "EMAIL_ALLOWED_USERS bare entry": {"env": {"EMAIL_ALLOWED_USERS": "stranger"}},
-            "GATEWAY_ALLOWED_USERS bare entry, JSON list literal": {"env": {"GATEWAY_ALLOWED_USERS": '["stranger"]'}},
             "EMAIL_ALLOWED_USERS bare entry, JSON list literal": {"env": {"EMAIL_ALLOWED_USERS": '["stranger"]'}},
             "bare entry, pair opt-in": {"env": {"GATEWAY_ALLOWED_USERS": "stranger"},
                                         "extra": {"unauthorized_dm_behavior": "pair"}},

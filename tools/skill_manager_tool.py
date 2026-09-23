@@ -219,8 +219,11 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
+    """Skill dirs under ``root`` via the shared reader-side walker (``os.walk(followlinks=True)``),
+    so a skill installed as a directory symlink resolves here exactly as it does for skill_view;
+    ``Path.rglob`` never descends into a linked directory (#54195)."""
+    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
         if not is_excluded_skill_path(skill_md):
             yield skill_md.parent
 

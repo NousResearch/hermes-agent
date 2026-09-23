@@ -607,7 +607,15 @@ function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessag
 
     const folded = lastFoldedResponseText(message)
 
-    return folded === needle || isStrictAnswerTextExtension(folded, needle)
+    if (folded === needle || isStrictAnswerTextExtension(folded, needle)) {
+      return true
+    }
+
+    // A pure-text turn folds its consecutive sealed interims into one row's
+    // parts. A mid-turn segment is neither identical to the folded row's whole
+    // text nor a prefix of it, yet the row already carries it — re-appending
+    // the sealed bubble renders that segment a second time (#119540).
+    return textWithoutReferenceLines(chatMessageText(message)).trim().includes(needle)
   })
 }
 

@@ -761,6 +761,53 @@ describe('preserveLocalPendingTurnMessages', () => {
     ])
   })
 
+  // #119540: a pure-text turn folds its consecutive sealed interims into one
+  // committed row (toChatMessages appends their parts). The first segment still
+  // pairs by role ordinal, but every later segment is a mid-row slice — not
+  // identical, not a prefix in either direction — so it fell through to
+  // preserved.push and rendered the same answer a second time.
+  it('drops sealed interim segments the folded committed row already carries', () => {
+    const committed = (texts: string[]): ChatMessage =>
+      ({ id: '9-assistant', role: 'assistant', rowId: 99, parts: texts.map(text => textPart(text)) }) as ChatMessage
+
+    for (const [separator, segments] of [
+      [' ', ['First segment.', 'Second segment.']],
+      ['\n\n', ['First segment.', 'Second segment.']],
+      [' ', ['Two tools that make the', 'the build repeat']]
+    ] as const) {
+      const next = [
+        msg('1-user', 'user', 'q'),
+        committed(segments.map((text, index) => (index === 0 ? `${text}${separator}` : text)))
+      ]
+
+      const previous = [
+        msg('user-1', 'user', 'q'),
+        ...segments.map((text, index) =>
+          msg(`assistant-stream-${index + 1}`, 'assistant', text, { interim: true, pending: false }))
+      ]
+
+      expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual(['1-user', '9-assistant'])
+    }
+  })
+
+  // No over-dropping: a sealed interim the same-turn committed row does NOT
+  // carry is still the only copy of that text and must survive the fold check.
+  it('keeps a sealed interim no same-turn committed row carries', () => {
+    const next = [msg('1-user', 'user', 'q'), msg('9-assistant', 'assistant', 'Only the first segment.', { rowId: 99 })]
+
+    const previous = [
+      msg('user-1', 'user', 'q'),
+      msg('assistant-stream-1', 'assistant', 'First segment.', { interim: true, pending: false }),
+      msg('assistant-stream-2', 'assistant', 'Never persisted tail.', { interim: true, pending: false })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      '9-assistant',
+      'assistant-stream-2'
+    ])
+  })
+
   it('still drops optimistic rows separated from the live run by an assistant reply', () => {
     const previous = [
       msg('user-stale', 'user', 'compressed-away prompt'),

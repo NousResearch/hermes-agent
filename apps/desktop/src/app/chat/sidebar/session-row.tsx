@@ -25,7 +25,7 @@ import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
-import { normalizeProfileKey } from '@/store/profile'
+import { normalizeProfileKey, profileNameFor, $profiles } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
@@ -74,6 +74,12 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
    *  flat cross-profile lists — Pinned and search results in the All-profiles
    *  view — where no group header communicates ownership (#66003). */
   showProfile?: boolean
+  /** Name the owning profile in the row's metadata line, beside the model, for
+   *  lists that merge profiles (#89888). Skipped for the default profile (a
+   *  mark on every row that says "the normal one" is noise) and by callers
+   *  whose list already says who owns the row — a profile-grouped list, or a
+   *  view narrowed to a single profile. */
+  showProfileName?: boolean
   /** Inbox-style card: workspace header, title + last-message preview, and a
    *  model · size footer. The flat recents list opts in via the filter menu;
    *  dense tree surfaces (projects, messaging, pins) keep the one-line row. */
@@ -137,6 +143,7 @@ function SidebarSessionRowImpl({
   dragging = false,
   dragHandleProps,
   showProfile = false,
+  showProfileName = false,
   card = false,
   className,
   style,
@@ -149,11 +156,27 @@ function SidebarSessionRowImpl({
   const title = sessionTitle(session)
   const density = useStore($sessionListDensity)
   const fmt = t.sidebar
+  // The default profile has no mark worth spending a row slot on — a chip on
+  // every row that says "the normal one" is noise. Named profiles only.
+  const hasProfileTag = normalizeProfileKey(session.profile) !== 'default'
+  // #89888: a list that merges profiles must say whose chat each row is. The
+  // name comes from the live roster (Bot Mode title → display_name → slug);
+  // until that roster lands — or for a profile it no longer lists — the owning
+  // key names itself, since that key IS the profile's name.
+  const profileKey = showProfileName && hasProfileTag ? normalizeProfileKey(session.profile) : null
+  const rosterName = useStoreSelector($profiles, profiles =>
+    profileKey ? profileNameFor(profiles, profileKey) : null
+  )
+  const owningProfileName = profileKey ? (rosterName ?? profileKey) : null
 
-  const details = sessionRowDetails(session, {
-    messageCount: fmt.messageCount,
-    toolCallCount: fmt.toolCallCount
-  })
+  const details = sessionRowDetails(
+    session,
+    {
+      messageCount: fmt.messageCount,
+      toolCallCount: fmt.toolCallCount
+    },
+    { profileName: owningProfileName }
+  )
 
   const timestamp = session.last_active || session.started_at
   const age = formatAge(timestamp, r)
@@ -167,9 +190,6 @@ function SidebarSessionRowImpl({
   // Pinned metadata occupies the actions slot and swaps out for the kebab on
   // hover, so the row reserves the same width either way and never reflows.
   const pinnedAge = rowMeta.includes('updated')
-  // The default profile has no mark worth spending a row slot on — a chip on
-  // every row that says "the normal one" is noise. Named profiles only.
-  const hasProfileTag = normalizeProfileKey(session.profile) !== 'default'
   const pinnedProfile = hasProfileTag && rowMeta.includes('profile')
   // The branch's PR, if the row was asked to show one. A selector, not a plain
   // useStore: a repo's PRs land as a single map write, and only the rows on
@@ -275,7 +295,10 @@ function SidebarSessionRowImpl({
 
   // Card footer line: which model worked on it and how big it got. Rendered
   // as separate spans with a flex gap — a joined string can't put real space
-  // between them (HTML collapses runs of whitespace to one).
+  // between them (HTML collapses runs of whitespace to one). In a list that
+  // merges profiles the owner leads the line, same as the metadata line does
+  // for one-line rows (#89888) — the card has no metadata line to carry it.
+  const owner = card ? owningProfileName : null
   const model = card && session.model ? displayModelName(session.model) : ''
   const size = card && session.message_count > 0 ? r.messageCount(session.message_count) : ''
   // Live plan progress ("3/7"), far right of the footer. A selector keyed to
@@ -584,13 +607,14 @@ function SidebarSessionRowImpl({
                     </span>
                   ) : null}
                 </div>
-                {model || size || todoProgress ? (
+                {owner || model || size || todoProgress ? (
                   <span
                     className={cn(
                       'flex min-w-0 items-baseline gap-2 text-[0.625rem] text-(--ui-text-tertiary)',
                       SIDEBAR_TRUNCATED_LEADING
                     )}
                   >
+                    {owner ? <span className="min-w-0 truncate text-(--ui-text-quaternary)">{owner}</span> : null}
                     {model ? <span className="min-w-0 truncate">{model}</span> : null}
                     {size ? <span className="shrink-0 tabular-nums">{size}</span> : null}
                     {todoProgress ? (
@@ -631,6 +655,7 @@ function rowPropsEqual(a: SidebarSessionRowProps, b: SidebarSessionRowProps): bo
     a.reorderable === b.reorderable &&
     a.dragging === b.dragging &&
     a.showProfile === b.showProfile &&
+    a.showProfileName === b.showProfileName &&
     a.card === b.card &&
     a.dragHandleProps === b.dragHandleProps &&
     a.className === b.className &&

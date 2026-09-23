@@ -2404,6 +2404,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter._bot_name = "Hermes"
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
         adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter._fetch_message_resources = AsyncMock(return_value=([], []))
         adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
@@ -2559,6 +2560,38 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         self.assertEqual(event.reply_to_message_id, "om_root")
         self.assertEqual(event.reply_to_text, "parent text")
 
+    def test_reply_inherits_parent_attachment_resources(self):
+        adapter = self._build_adapter()
+        adapter._fetch_message_resources = AsyncMock(return_value=(
+            ["/tmp/quoted.docx"],
+            ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+        ))
+        message = SimpleNamespace(
+            content=json.dumps({"text": "review this"}),
+            message_type="text",
+            message_id="m_reply",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id="m_file",
+            upper_message_id=None,
+            thread_id=None,
+        )
+
+        asyncio.run(adapter._process_inbound_message(
+            data=message,
+            message=message,
+            sender_id=None,
+            chat_type="group",
+            message_id="m_reply",
+        ))
+
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.media_urls, ["/tmp/quoted.docx"])
+        self.assertEqual(
+            event.media_types,
+            ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+        )
+
     def test_explicit_thread_id_is_preserved(self):
         adapter = self._build_adapter()
         message = SimpleNamespace(
@@ -2625,6 +2658,30 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         # The rendered text should still have the bot name substituted.
         result = asyncio.run(adapter._fetch_message_text("m_parent"))
         self.assertEqual(result, "@Hermes hi")
+
+    def test_fetch_message_resources_downloads_and_caches_parent_attachments(self):
+        adapter = self._build_adapter()
+        adapter._message_resource_cache = OrderedDict()
+        adapter._download_feishu_message_resources = AsyncMock(return_value=(
+            ["/tmp/report.pdf"], ["application/pdf"],
+        ))
+        parent = SimpleNamespace(
+            body=SimpleNamespace(content=json.dumps({"file_key": "file_1"})),
+            msg_type="file",
+            mentions=[],
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[parent])
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+
+        first = asyncio.run(adapter._fetch_message_resources("m_parent"))
+        second = asyncio.run(adapter._fetch_message_resources("m_parent"))
+
+        self.assertEqual(first, (["/tmp/report.pdf"], ["application/pdf"]))
+        self.assertEqual(second, first)
+        adapter._download_feishu_message_resources.assert_awaited_once()
+        adapter._client.im.v1.message.get.assert_called_once()
 
 
 class TestFeishuMentionEndToEnd(unittest.TestCase):
@@ -2749,4 +2806,3 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-

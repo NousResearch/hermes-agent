@@ -225,6 +225,9 @@ class MicroCompactionMixin:
         # Telemetry baseline; taken only once an exchange exists so no-op turns don't pay.
         _started_at = time.monotonic()
         _tokens_before = estimate_messages_tokens_rough(messages)
+        # The history this pass rewrites, and the store's watermark, before the slow summary call: the commit
+        # keeps what another surface or a concurrent write added instead of archiving it unseen.
+        _held, _start_watermark = list(messages), self._micro_start_watermark()
 
         def _telemetry(outcome: str, result: List[Dict[str, Any]], **extra: Any) -> None:
             self._emit_micro_compaction_telemetry(
@@ -237,7 +240,7 @@ class MicroCompactionMixin:
         if self._needs_defrag():
             defragged = self._defrag_rolling_summary(messages)
             if defragged:
-                self._sync_micro_compact_to_db(messages)
+                self._sync_micro_compact_to_db(messages, held=_held, start_watermark=_start_watermark)
                 self._reset_micro_failure_tracking()
             outcome = "defrag" if defragged else "defrag_failed"
             _telemetry(outcome, messages, tokens_after=estimate_messages_tokens_rough(messages))
@@ -260,7 +263,7 @@ class MicroCompactionMixin:
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end, supersede=_cumulative)
         self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
-        self._sync_micro_compact_to_db(result)
+        self._sync_micro_compact_to_db(result, held=_held, start_watermark=_start_watermark)
         _telemetry(
             "absorbed", result, tokens_after=estimate_messages_tokens_rough(result), exchange_tokens=_exchange_tokens,
         )
@@ -344,7 +347,21 @@ class MicroCompactionMixin:
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
-    def _sync_micro_compact_to_db(self, compacted_messages: List[Dict[str, Any]]) -> None:
+    def _micro_start_watermark(self) -> Optional[int]:
+        """The store's active watermark before a pass's slow step, or None where the store has none."""
+        session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
+        watermark_of = getattr(session_db, "get_active_message_watermark", None)
+        if not session_id or not callable(watermark_of):
+            return None
+        try:
+            return watermark_of(session_id)
+        except Exception:
+            return None
+
+    def _sync_micro_compact_to_db(
+        self, compacted_messages: List[Dict[str, Any]], *, held: Optional[List[Dict[str, Any]]] = None,
+        start_watermark: Optional[int] = None,
+    ) -> None:
         """Persist the micro-compacted set to the session DB atomically and stamp rows persisted.
         Without this the old exchange rows stay ``active=1`` and a resume double-loads both the
         summary and the originals."""
@@ -361,8 +378,11 @@ class MicroCompactionMixin:
                 message for message in compacted_messages
                 if isinstance(message, dict) and message.get(_cc()._DB_PERSISTED_MARKER)
             ]
+            watermark = None
+            if held is not None and start_watermark is not None:
+                watermark = _cc()._archive_watermark_for(session_db, session_id, held, start_watermark)
             session_db.archive_and_compact(
-                session_id, compacted_messages, carried_messages=carried_messages)
+                session_id, compacted_messages, carried_messages=carried_messages, watermark=watermark)
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)

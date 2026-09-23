@@ -1870,6 +1870,9 @@ class GatewayShutdownMixin:
 
     async def _stop_finalize_agents_and_adapters(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Detached restart launch, agent finalization, idle-cache cleanup, adapter teardown."""
+        stop_becky = getattr(self, "_stop_becky_loops_bridge", None)
+        if callable(stop_becky):
+            await stop_becky()
         if self._restart_requested and self._restart_detached:
             with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart: %s"):
                 await self._launch_detached_restart_command()

@@ -16,6 +16,7 @@ from agent.message_metadata import append_message
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
+from agent.turn_events import record_turn_tool_events
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -149,7 +150,21 @@ def run_tool_round(
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
+    _tool_messages_start = len(messages)
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    try:
+        record_turn_tool_events(
+            agent,
+            assistant_message,
+            messages,
+            _tool_messages_start,
+        )
+    except Exception:
+        agent._turn_tool_events = []
+        logging.warning(
+            "Unable to record Becky turn tool outcomes; keeping loop open",
+            exc_info=True,
+        )
 
     if getattr(agent, "_incremental_persistence_failed", False):
         # Tool result could not be made canonical: never send the in-memory result to

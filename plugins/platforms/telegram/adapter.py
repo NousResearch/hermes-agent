@@ -545,6 +545,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._inflight_update_ids: dict = {}
         self._update_admission = None
         self._bot: Optional[Bot] = None
+        self._becky_close_command_handler = None
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -6437,6 +6438,36 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        if not self._is_user_authorized_from_message(msg):
+            self._log_blocked_user(msg)
+            return
+        if self._is_becky_close_command(msg.text, getattr(getattr(self, "_bot", None), "username", None)):
+            handler = getattr(self, "_becky_close_command_handler", None)
+            chat_id = str(getattr(getattr(msg, "chat", None), "id", "")).strip()
+            thread_id = self._effective_message_thread_id(msg) or ""
+            user_id = str(getattr(getattr(msg, "from_user", None), "id", "")).strip()
+            message_id = str(getattr(msg, "message_id", "")).strip()
+            result = "Topic close is unavailable."
+            if callable(handler):
+                try:
+                    result = await handler(chat_id=chat_id, thread_id=thread_id, user_id=user_id, message_id=message_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error("Telegram /close command failed", exc_info=True)
+            if result:
+                metadata: Dict[str, Any] = {"thread_id": thread_id, "notify": True}
+                try:
+                    if thread_id and int(chat_id) > 0:
+                        metadata.update({
+                            "telegram_dm_topic_reply_fallback": True,
+                            "direct_messages_topic_id": thread_id,
+                            "telegram_reply_to_message_id": message_id,
+                        })
+                except (TypeError, ValueError):
+                    pass
+                await self.send(chat_id, str(result), metadata=metadata)
+            return
         if not self._should_process_message(msg, is_command=True):
             return
         if not self._is_user_authorized_from_message(msg):
@@ -6450,6 +6481,23 @@ class TelegramAdapter(BasePlatformAdapter):
             self._enqueue_text_event(event)
             return
         await self.handle_message(event)
+
+    def set_becky_close_command_handler(self, handler: Any | None) -> None:
+        self._becky_close_command_handler = handler
+
+    @staticmethod
+    def _is_becky_close_command(text: str, bot_username: Optional[str] = None) -> bool:
+        parts = str(text).strip().split()
+        if len(parts) != 1:
+            return False
+        command = parts[0].casefold()
+        if command == "/close":
+            return True
+        if not command.startswith("/close@"):
+            return False
+        target = command.removeprefix("/close@").strip()
+        configured = str(bot_username or "").lstrip("@").casefold()
+        return bool(target and configured and target == configured)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""

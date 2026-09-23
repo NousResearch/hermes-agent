@@ -735,6 +735,40 @@ def _run_agent_tool_execution_middleware(
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
+    try:
+        from model_tools import becky_one_shot_dispatch_claim
+
+        one_shot_claim = becky_one_shot_dispatch_claim(function_name, outer=True)
+    except Exception:
+        # This is an authorization boundary, not optional instrumentation.
+        # If the gate cannot be imported or evaluated, fail closed so a private
+        # one-shot can never fall through to an arbitrary handler.
+        logger.exception("Becky one-shot dispatch gate failed closed")
+        one_shot_claim = False
+    if one_shot_claim is False:
+        message = json.dumps(
+            {"error": "This private one-shot permits exactly one reviewed create tool call."},
+            ensure_ascii=False,
+        )
+        _emit_terminal_post_tool_call(
+            agent,
+            function_name=function_name,
+            function_args=function_args,
+            result=message,
+            effective_task_id=effective_task_id,
+            tool_call_id=tool_call_id,
+            status="blocked",
+            error_type="becky_one_shot_policy",
+            error_message="Private one-shot tool policy blocked the call",
+            middleware_trace=list(middleware_trace or []),
+        )
+        return _ManagedToolResult(
+            result=message,
+            args=function_args,
+            middleware_trace=middleware_trace if middleware_trace is not None else [],
+            blocked=True,
+            dispatched=False,
+        )
     from agent import relay_tools
     from hermes_cli.middleware import (
         apply_tool_request_middleware,

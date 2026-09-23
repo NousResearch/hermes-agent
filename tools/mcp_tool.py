@@ -31,6 +31,12 @@ from tools.mcp_tool_server_run import MCPServerRunMixin
 from tools.mcp_tool_health import MCPServerHealthMixin
 
 
+def _annotation_mutation_spec(mcp_tool: Any):
+    """Compatibility export for MCP mutation metadata parsing."""
+    from tools.mcp_tool_registration import _annotation_mutation_spec as parse
+    return parse(mcp_tool)
+
+
 # Wall-clock bound on the fail-open OSV malware preflight before a stdio spawn; just ABOVE
 # osv_check._TIMEOUT (10s) so it only bites when a stalled SSL handshake defeats that.
 _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0

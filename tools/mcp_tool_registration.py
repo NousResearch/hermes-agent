@@ -47,8 +47,41 @@ def _normalize_server_trust(value: Any) -> str:
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable."""
     annotations = getattr(mcp_tool, "annotations", None)
-    hint = annotations.get("readOnlyHint") if isinstance(annotations, dict) else getattr(annotations, "readOnlyHint", None)
+    hint = annotations.get("readOnlyHint", annotations.get("read_only_hint")) if isinstance(annotations, dict) else getattr(annotations, "readOnlyHint", None)
+    if hint is None and annotations is not None and not isinstance(annotations, dict):
+        hint = getattr(annotations, "read_only_hint", None)
     return hint is True
+
+
+def _annotation_mutation_spec(mcp_tool: Any) -> Any:
+    """Parse additive Hermes mutation metadata; malformed declarations fail closed."""
+    metadata = getattr(mcp_tool, "meta", None)
+    if metadata is None:
+        metadata = getattr(mcp_tool, "_meta", None)
+    raw = metadata.get("hermesMutation") if isinstance(metadata, dict) else None
+    if raw is None:
+        annotations = getattr(mcp_tool, "annotations", None)
+        raw = annotations.get("hermesMutation") if isinstance(annotations, dict) else getattr(annotations, "hermesMutation", None) if annotations is not None else None
+    if not isinstance(raw, dict) or _annotation_read_only_hint(mcp_tool):
+        return None
+    try:
+        from agent.action_mutations import MutationSpec
+        return MutationSpec(
+            action_type=raw["action_type"], provider=raw["provider"], operation=raw["operation"],
+            one_shot=False, requires_receipt=False, destination_arg=raw.get("destination_arg"))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _annotation_mutation_payload(mcp_tool: Any) -> dict[str, Any] | None:
+    spec = _annotation_mutation_spec(mcp_tool)
+    if spec is None:
+        return None
+    return {
+        "action_type": spec.action_type, "provider": spec.provider, "operation": spec.operation,
+        "one_shot": spec.one_shot, "requires_receipt": spec.requires_receipt,
+        **({"destination_arg": spec.destination_arg} if spec.destination_arg else {}),
+    }
 
 
 def _record_tool_trust_metadata(server_name: str, config: dict, tools: List[Any], key=None) -> None:
@@ -229,7 +262,8 @@ def _cached_tools(raws: Iterable[Any]) -> List[SimpleNamespace]:
     are dropped. Missing or non-dict ``annotations`` (older cache files) fail closed to write-capable."""
     return [SimpleNamespace(name=raw["name"], description=raw.get("description") or "",
                             inputSchema=raw["inputSchema"] if isinstance(raw.get("inputSchema"), dict) else {},
-                            annotations=raw["annotations"] if isinstance(raw.get("annotations"), dict) else None)
+                            annotations=raw["annotations"] if isinstance(raw.get("annotations"), dict) else None,
+                            meta=raw.get("_meta") if isinstance(raw.get("_meta"), dict) else None)
             for raw in raws if isinstance(raw, dict) and raw.get("name")]
 
 
@@ -241,6 +275,7 @@ class _Candidate:
     origin: str
     schema: dict
     handler: Callable
+    mutation: Any = None
 
     @property
     def is_utility(self) -> bool:
@@ -259,7 +294,7 @@ def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[
         _schema._scan_mcp_description(name, t.name, t.description or "")
         schema = _schema._convert_mcp_schema(name, t)
         handler = _handlers._make_tool_handler(name, t.name, tool_timeout)
-        out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler))
+        out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler, _annotation_mutation_spec(t)))
     return out
 
 
@@ -345,7 +380,8 @@ def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: C
             continue
         registry.register(
             name=c.registry_name, toolset=toolset_name, schema=c.schema, handler=c.handler, check_fn=check_fn,
-            is_async=False, description=c.schema.get("description") or "", scope=scope_value)
+            is_async=False, description=c.schema.get("description") or "", scope=scope_value,
+            mutation=c.mutation)
         if registry.get_toolset_for_tool(c.registry_name) == toolset_name:
             _track_mcp_tool_server(c.registry_name, name)
             if scope_value is not None:
@@ -379,7 +415,11 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
             tools_payload.append({
                 "name": t.name, "description": t.description or "",
                 "inputSchema": schema_obj if isinstance(schema_obj, dict) else {},
-                "annotations": {"readOnlyHint": _annotation_read_only_hint(t)},  # lazy path trust-gates identically
+                "annotations": {
+                    "readOnlyHint": _annotation_read_only_hint(t),
+                    **({"hermesMutation": _annotation_mutation_payload(t)} if _annotation_mutation_payload(t) else {}),
+                },
+                **({"_meta": {"hermesMutation": _annotation_mutation_payload(t)}} if _annotation_mutation_payload(t) else {}),
             })
         utility_payload = [{"schema": e["schema"], "handler_key": e["handler_key"]}
                            for e in _select_utility_schemas(name, server, config)]

@@ -1250,7 +1250,7 @@ class TurnRunner:
         agent._notification_platform = ctx.source.platform
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
-        agent.tool_progress_callback = ctx.progress_callback
+        agent.tool_progress_callback = None if ctx.private_run else ctx.progress_callback
         # Discord's one-time voice ack and Slack's task cards both ride the authoritative start
         # callback, so neither infers identity from tool names.
         agent.tool_start_callback = (
@@ -1259,9 +1259,10 @@ class TurnRunner:
         )
         agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
-        agent.stream_delta_callback = stream_delta_cb
-        agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
-        agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
+        agent.stream_delta_callback = None if ctx.private_run else stream_delta_cb
+        agent.interim_assistant_callback = None if ctx.private_run else (interim_assistant_cb if want_interim_messages else None)
+        agent.status_callback = None if ctx.private_run else ctx._status_callback_sync
+        agent.notice_callback = None if ctx.private_run else self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
@@ -1289,7 +1290,7 @@ class TurnRunner:
         agent.clarify_callback = self._clarify_callback_sync
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
-        agent.thinking_progress = ctx._thinking_enabled
+        agent.thinking_progress = False if ctx.private_run else ctx._thinking_enabled
         if ctx.mute_notification_reply:
             # Controls and operational event/step callbacks remain wired. These
             # presentation callbacks are rebound on every next turn.

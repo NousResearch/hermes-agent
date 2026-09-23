@@ -1380,6 +1380,9 @@ class GatewayStartupMixin:
         """Post-connect wiring: services, boot notifications, startup restore, recovered watchers."""
         from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
         await self._start_post_connect_services(connected_count)
+        start_becky = getattr(self, "_start_becky_loops_bridge", None)
+        if callable(start_becky):
+            await start_becky()
         # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries).
         if connected_count > 0:
             await asyncio.sleep(1.0)

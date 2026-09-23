@@ -610,6 +610,7 @@ def finalize_turn(
         "final_response": final_response,
         "last_reasoning": _last_turn_reasoning(messages),
         "messages": messages,
+        "turn_tool_events": list(getattr(agent, "_turn_tool_events", []) or []),
         "api_calls": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,

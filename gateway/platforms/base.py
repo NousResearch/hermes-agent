@@ -171,6 +171,13 @@ def _reply_anchor_for_event(event) -> str | None:
         # message — replying to the topic seed/anchor can render outside the active lane.
         if getattr(source, "chat_type", None) != "dm":
             return None
+        metadata = getattr(event, "metadata", None)
+        if (
+            isinstance(metadata, dict)
+            and metadata.get("becky_dashboard_reply") is True
+            and getattr(event, "reply_to_message_id", None) is not None
+        ):
+            return getattr(event, "reply_to_message_id")
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)

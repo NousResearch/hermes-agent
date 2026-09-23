@@ -258,6 +258,54 @@ async def test_empty_success_still_gets_empty_response_warning(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_agent_handler_preserves_bounded_auto_close_result_on_event(
+    monkeypatch, tmp_path
+):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "Done.",
+        "messages": [
+            {"role": "user", "content": "add a task"},
+            {"role": "assistant", "content": "Done."},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "completed": True,
+        "failed": False,
+        "partial": False,
+        "interrupted": False,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "turn_tool_events": [
+            {
+                "name": "mcp_todoist_add_tasks",
+                "requested_name": "mcp_todoist_add_tasks",
+                "success": True,
+                "arguments": {"action": "add", "task": "secret task text"},
+            }
+        ],
+    })
+    event = _event()
+
+    response = await runner._handle_message_with_agent(
+        event, _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response == "Done."
+    bounded = getattr(event, "_becky_auto_close_result")
+    assert bounded["turn_exit_reason"] == "text_response(finish_reason=stop)"
+    assert bounded["turn_tool_events"] == [
+        {
+            "name": "mcp_todoist_add_tasks",
+            "requested_name": "mcp_todoist_add_tasks",
+            "success": True,
+            "arguments": {"action": "add"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     text = "Use [SILENT] when no answer is needed."

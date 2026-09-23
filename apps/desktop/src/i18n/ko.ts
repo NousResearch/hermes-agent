@@ -558,7 +558,7 @@ export const ko = defineLocale({
   },
 
   sendDiagnostics: {
-    title: 'Nous에 진단 정보 보내기',
+    title: 'Nous에 진단 정보 전송',
     privacyNotice:
       '디버그 번들을 Nous 내부 저장소에 업로드합니다(공개 붙여넣기 서비스가 아닙니다). 시스템 정보(OS, 버전, 공급자, 어떤 API 키가 설정되어 있는지 — 키 자체는 절대 포함하지 않음)와 에이전트·게이트웨이·데스크톱 로그 전체(각 최대 512KB)가 담기며, 여기에는 대화 내용, 도구 출력, 파일 경로가 포함될 가능성이 높습니다. 비밀 정보는 업로드 전에 가려집니다. 번들은 Nous 직원과 허용된 Discord 모더레이터만 볼 수 있고 14일 뒤 자동 삭제됩니다.',
     upload: '업로드',
@@ -582,7 +582,7 @@ export const ko = defineLocale({
 
   titlebar: {
     hideSidebar: '사이드바 숨기기',
-    showSidebar: '사이드바 보기',
+    showSidebar: '사이드바 표시',
     search: '검색',
     searchTitle: '세션, 화면, 동작 검색',
     swapSidebarSides: '사이드바 좌우 바꾸기',
@@ -978,7 +978,7 @@ export const ko = defineLocale({
         },
         backgroundDone: {
           label: '백그라운드 작업 완료',
-          description: '백그라운드로 전송한 터미널 명령이 끝났습니다.'
+          description: '백그라운드로 보낸 터미널 명령이 끝났습니다.'
         },
         credits: {
           label: '크레딧 알림',
@@ -1089,7 +1089,7 @@ export const ko = defineLocale({
       backdropTitle: '대화 배경',
       backdropDesc: '대화 뒤에 흐릿하게 보이는 조각상 이미지입니다.',
       userBubbleTitle: '메시지 말풍선',
-      userBubbleDesc: '내가 전송한 메시지의 투명도입니다. 0이면 불투명하고, 100이면 테두리만 남습니다.',
+      userBubbleDesc: '내가 보낸 메시지의 투명도입니다. 0이면 불투명하고, 100이면 테두리만 남습니다.',
       introSplashTitle: '시작 화면',
       introSplashDesc: '빈 대화에 표시되는 워드마크와 안내 문구입니다.',
       reactionsTitle: '메시지 반응',
@@ -1166,7 +1166,7 @@ export const ko = defineLocale({
         adoptFailed: slug => `${slug}을(를) 입양하지 못했습니다`,
         uninstallFailed: slug => `${slug}을(를) 제거하지 못했습니다`,
         renameFailed: slug => `${slug}의 이름을 바꾸지 못했습니다`,
-        exportFailed: slug => `${slug}을(를) 내전송하지 못했습니다`,
+        exportFailed: slug => `${slug}을(를) 내보내지 못했습니다`,
         noneAvailable: '지금 켤 수 있는 펫이 없습니다.',
         turnOnFailed: '펫을 켜지 못했습니다.',
         turnOffFailed: '펫을 끄지 못했습니다.'
@@ -1964,7 +1964,7 @@ export const ko = defineLocale({
       ram: label => `RAM ${label}`,
       unifiedMemory: '통합 메모리',
       modelsTitle: '모델',
-      recommended: '추천',
+      recommended: '권장',
       recommendedReason: {
         'best-quality-resident':
           'GPU 안에서 전부 돌면서 최고 속도를 내는 모델 중 품질이 가장 높습니다. 이 하드웨어에서 예상되는 속도와 품질을 함께 따져 고릅니다.',
@@ -2980,7 +2980,7 @@ export const ko = defineLocale({
     imported: '프로필을 가져왔습니다',
     exported: '프로필을 내보냈습니다',
     failedImport: '프로필을 가져오지 못했습니다',
-    failedExport: '프로필을 내전송하지 못했습니다',
+    failedExport: '프로필을 내보내지 못했습니다',
     allProfiles: '모든 프로필',
     showAllProfiles: '모든 프로필 보기',
     switchToProfile: name => `${name}(으)로 전환`,
@@ -4013,7 +4013,7 @@ export const ko = defineLocale({
     otherProviders: '다른 공급자',
     haveApiKey: 'API 키가 있습니다',
     chooseLater: '공급자는 나중에 고를게요',
-    recommended: '추천',
+    recommended: '권장',
     connected: '연결됨',
     featuredPitch: '구독 하나로 300개 이상의 프런티어 모델 — Hermes를 쓰는 권장 방식',
     fireworksPitch: '모델 API 직접 연결 — Fireworks가 호스팅하는 프런티어 모델',
@@ -4666,7 +4666,7 @@ export const ko = defineLocale({
         ssl_cert_verification: {
           title: '보안 연결에 실패했습니다',
           body: provider =>
-            `Hermes가 ${provider}와의 보안 연결을 확인하지 못했습니다. 네트워크나 프록시 설정을 확인하거나 공급자를 바꾼 뒤 메시지를 다시 보내세요.`
+            `Hermes가 ${provider} 보안 연결을 검증하지 못했습니다. 네트워크나 프록시 설정을 확인하거나 공급자를 바꾼 뒤 메시지를 다시 보내세요.`
         },
         context_overflow: {
           title: '이 대화가 너무 깁니다',
@@ -4781,7 +4781,7 @@ export const ko = defineLocale({
       errorOpenLogsFailed: '로그 폴더를 열지 못했습니다',
       errorOpenDesktopLogs: '데스크톱 로그 열기',
       errorCopyDiagnostics: '오류 세부 정보 복사',
-      errorSendDiagnostics: '진단 정보 보내기',
+      errorSendDiagnostics: '진단 정보 전송',
       filesChanged: count => `파일 ${count}개 변경됨`,
       reviewChanges: '리뷰',
       readAloudFailed: '소리 내어 읽기 실패',
@@ -4805,7 +4805,7 @@ export const ko = defineLocale({
     },
     approval: {
       gatewayDisconnected:
-        'Hermes가 지금 오프라인입니다. 명령은 (승인 제한 시간까지) 답변을 기다리고 있습니다. 재연결한 뒤 보내세요.',
+        'Hermes가 지금 오프라인입니다. 명령은 (승인 제한 시간까지) 답변을 기다리고 있습니다. 재연결한 뒤 다시 보내세요.',
       sendFailed: '답변을 전송하지 못했습니다',
       reconnect: '재연결',
       timedOutSystemLine:
@@ -4825,7 +4825,7 @@ export const ko = defineLocale({
     },
     clarify: {
       notReady: '확인 요청이 아직 준비되지 않았습니다',
-      gatewayDisconnected: 'Hermes가 지금 오프라인입니다. 재연결한 뒤 보내세요.',
+      gatewayDisconnected: 'Hermes가 지금 오프라인입니다. 재연결한 뒤 다시 보내세요.',
       sendFailed: '확인 답변을 전송하지 못했습니다',
       loadingQuestion: '질문을 불러오는 중…',
       other: '기타(직접 입력)',
@@ -4878,7 +4878,7 @@ export const ko = defineLocale({
       envRequired: '필수 자격 증명을 먼저 입력하세요',
       sendFailed: 'MCP 설정 응답을 전송하지 못했습니다',
       reloadFailed: '서버는 저장했지만 MCP 도구를 다시 불러오지 못했습니다 — 다음 세션에 반영됩니다',
-      gatewayDisconnected: 'Hermes가 지금 오프라인입니다. 재연결한 뒤 보내세요.'
+      gatewayDisconnected: 'Hermes가 지금 오프라인입니다. 재연결한 뒤 다시 보내세요.'
     },
     tool: {
       copyCode: '코드 복사',
@@ -4940,8 +4940,8 @@ export const ko = defineLocale({
         actionQuoted: (action, value) => `“${value}” ${action}`,
         actionTarget: (action, target) => `${target} ${action}`,
         prefixedDone: (prefix, action) => `${prefix} ${action}`,
-        runningPrefixedTool: (prefix, action) => `${prefix} ${action}`,
-        runningTool: action => `${action}`
+        runningPrefixedTool: (prefix, action) => `${prefix} ${action} 실행 중`,
+        runningTool: action => `${action} 실행 중`
       },
       titles: {
         browser_click: {
@@ -4973,7 +4973,7 @@ export const ko = defineLocale({
           pendingAction: '목록을 가져오는 중'
         },
         memory: { done: '메모리에 저장함', pending: '메모리에 저장하는 중', pendingAction: '저장하는 중' },
-        patch: { done: '파일에 패치를 적용함', pending: '파일에 패치를 적용하는 중', pendingAction: '패치하는 중' },
+        patch: { done: '파일에 패치를 적용함', pending: '파일에 패치를 적용하는 중', pendingAction: '적용하는 중' },
         read_file: { done: '파일을 읽음', pending: '파일을 읽는 중', pendingAction: '읽는 중' },
         search_files: { done: '파일을 검색함', pending: '파일을 검색하는 중', pendingAction: '검색하는 중' },
         session_search_recall: {
@@ -4991,7 +4991,7 @@ export const ko = defineLocale({
     }
   },
   prompts: {
-    gatewayDisconnected: 'Hermes가 지금 오프라인입니다. 재연결한 뒤 다시 전송하세요.',
+    gatewayDisconnected: 'Hermes가 지금 오프라인입니다. 재연결한 뒤 다시 보내세요.',
     reconnect: '재연결',
     sudoSendFailed: 'sudo 비밀번호를 전송하지 못했습니다',
     secretSendFailed: '비밀 값을 전송하지 못했습니다',
@@ -5091,7 +5091,7 @@ export const ko = defineLocale({
     modelSwitchStaleNotice: '선택이 변경되어 모델 전환이 적용되지 않았습니다.',
     hydrationSyncing: (profile: string) => `${profile} 동기화 중…`,
     sessionExported: '세션을 내보냈습니다',
-    sessionExportFailed: '세션을 내전송하지 못했습니다',
+    sessionExportFailed: '세션을 내보내지 못했습니다',
     imageSaved: '이미지를 저장했습니다',
     downloadStarted: '다운로드를 시작했습니다',
     restartToUseSaveImage: '이미지 저장을 사용하려면 Hermes Desktop을 재시작하세요.',

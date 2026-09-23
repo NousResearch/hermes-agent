@@ -492,6 +492,43 @@ describe('buildToolView title actions', () => {
     expect(web.title).toBe('example.com/docs を読み取り中')
     expect(web.titleAction).toEqual({ prefix: 'example.com/docs を', text: '読み取り中', suffix: '' })
   })
+
+  it('keeps the Korean pending action shimmerable and distinct from the done title', () => {
+    setRuntimeI18nLocale('ko')
+
+    // Dynamic title: the verb comes from `actions.running`.
+    const terminal = buildToolView(part({ args: { command: 'npm test' }, result: undefined, toolName: 'terminal' }), '')
+    const terminalDone = buildToolView(part({ args: { command: 'npm test' }, toolName: 'terminal' }), '')
+
+    expect(terminal.title).not.toBe(terminalDone.title)
+    expect(terminal.titleAction?.text).toBe('실행 중')
+    expect(terminal.title).toContain('실행 중')
+
+    // Static title: the verb comes from `titles.todo.pendingAction`, which has to be a
+    // substring of `titles.todo.pending` for the action to be found.
+    const todo = buildToolView(part({ result: undefined, toolName: 'todo' }), '')
+    const todoDone = buildToolView(part({ toolName: 'todo' }), '')
+
+    expect(todo.title).not.toBe(todoDone.title)
+    expect(todo.titleAction?.text).toBe('갱신하는 중')
+    expect(todo.title).toContain('갱신하는 중')
+  })
+
+  // An unmapped tool falls back to the generic templates, whose pending title has to
+  // carry `actions.running` verbatim or `titlePartsFromAction` finds nothing to shimmer.
+  it('marks the action on generic and prefixed fallback titles in Korean', () => {
+    setRuntimeI18nLocale('ko')
+
+    const generic = buildToolView(part({ result: undefined, toolName: 'some_unmapped_tool' }), '')
+    const genericDone = buildToolView(part({ toolName: 'some_unmapped_tool' }), '')
+    const prefixed = buildToolView(part({ result: undefined, toolName: 'web_unmapped_probe' }), '')
+    const prefixedDone = buildToolView(part({ toolName: 'web_unmapped_probe' }), '')
+
+    expect(generic.titleAction?.text).toBe('실행 중')
+    expect(generic.title).not.toBe(genericDone.title)
+    expect(prefixed.titleAction?.text).toBe('실행 중')
+    expect(prefixed.title).not.toBe(prefixedDone.title)
+  })
 })
 
 describe('clampForDisplay', () => {

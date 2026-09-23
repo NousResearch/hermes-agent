@@ -3959,8 +3959,9 @@ class GatewayTurnMixin:
         except Exception as _edit_err:
             logger.warning(fail_exc, _sk, _edit_err)
             return
-        if fail_result is not None and not getattr(_res, "success", True):
-            logger.warning(fail_result, _sk, getattr(_res, "error", None))
+        if not getattr(_res, "success", True):
+            if fail_result is not None:
+                logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
         logger.info(*ok)

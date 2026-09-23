@@ -5,6 +5,7 @@ desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals
 from __future__ import annotations
 
 import contextlib
+from typing import Optional
 
 from .method_ctx import bind_module
 
@@ -311,10 +312,23 @@ def _kb_completed(task, payload: dict, title: str) -> str:
     return f" done — {title}{handoff}"
 
 
-def _kb_timed_out(task, payload: dict, title: str) -> str:
+def _kb_timed_out(task, payload: dict, title: str) -> Optional[str]:
+    """None when the card has since finished — the retry claim must come from the LIVE row.
+
+    The ``timed_out`` event is a true record of one attempt; by render time the card may
+    have been retried and completed, so "will retry" here is the false alarm (see
+    ``gateway.kanban_watchers_notifier.retry_notice_claim``).
+    """
+    from gateway.kanban_watchers_notifier import no_retry_clause, retry_notice_claim
+    limit = 0
     with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+        limit = int(payload.get("limit_seconds") or 0)
+    claim = retry_notice_claim(task)
+    if claim == "terminal":
+        return None  # the card's own terminal notice already told the story
+    if claim == "pending":
+        return f" timed out (max_runtime={limit}s); will retry"
+    return f" timed out (max_runtime={limit}s); {no_retry_clause(task)}"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
@@ -339,7 +353,10 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
     title = (getattr(task, "title", None) or task_id)[:120]
     who = getattr(task, "assignee", None) or ""
     prefix = f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + (f"@{who} " if who else "")
-    return f"{prefix}Kanban {task_id}{fmt(task, getattr(ev, 'payload', None) or {}, title)}"
+    suffix = fmt(task, getattr(ev, 'payload', None) or {}, title)
+    if suffix is None:
+        return None  # stale notice: the event happened, but saying it would lie about the card
+    return f"{prefix}Kanban {task_id}{suffix}"
 
 
 def _kb_board_key(_kb, board_meta) -> tuple[str, str]:

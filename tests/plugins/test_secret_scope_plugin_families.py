@@ -164,6 +164,53 @@ class TestImageGenFamily:
 
         assert DeepInfraImageGenProvider().is_available() is False
 
+    def test_openai_image_gen_base_url_scoped_wins_over_environ(
+        self, multiplex_scope, monkeypatch
+    ):
+        """``_resolve_endpoint()``'s base_url leg must honor the profile scope exactly
+        like its api_key leg three lines below it — not read raw ``os.environ``."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://env-other-profile.example/v1")
+        multiplex_scope({"OPENAI_BASE_URL": "https://scoped-profile.example/v1"})
+
+        import plugins.image_gen.openai as openai_image_gen
+
+        base_url, _ = openai_image_gen._resolve_endpoint()
+        assert base_url == "https://scoped-profile.example/v1"
+
+    def test_openai_image_gen_base_url_scoped_miss_does_not_borrow_environ(
+        self, multiplex_scope, monkeypatch
+    ):
+        # Env holds another profile's endpoint; the active profile's scope has none.
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://env-other-profile.example/v1")
+        multiplex_scope({})
+
+        import plugins.image_gen.openai as openai_image_gen
+
+        base_url, _ = openai_image_gen._resolve_endpoint()
+        assert base_url == ""
+
+    def test_meta_ai_base_url_scoped_wins_over_environ(self, multiplex_scope, monkeypatch):
+        monkeypatch.setenv("META_BASE_URL", "https://env-other-profile.example/v1")
+        multiplex_scope({"META_BASE_URL": "https://scoped-profile.example/v1"})
+
+        import importlib
+
+        meta_ai_plugin = importlib.import_module("plugins.image_gen.meta-ai")
+
+        assert meta_ai_plugin._resolve_base_url() == "https://scoped-profile.example/v1"
+
+    def test_meta_ai_base_url_scoped_miss_does_not_borrow_environ(
+        self, multiplex_scope, monkeypatch
+    ):
+        monkeypatch.setenv("META_BASE_URL", "https://env-other-profile.example/v1")
+        multiplex_scope({})
+
+        import importlib
+
+        meta_ai_plugin = importlib.import_module("plugins.image_gen.meta-ai")
+
+        assert meta_ai_plugin._resolve_base_url() == meta_ai_plugin.DEFAULT_BASE_URL
+
 
 # ---------------------------------------------------------------------------
 # Family C — browser/web plugins

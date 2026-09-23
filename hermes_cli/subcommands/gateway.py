@@ -142,6 +142,16 @@ def build_gateway_parser(
     _flag(gateway_migrate, "--dry-run", dest="dry_run", help="Print the plan and blockers without changing anything")
     _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
 
+    gateway_preflight = gateway_subparsers.add_parser(
+        "preflight", help="Report the gateway mode this host will boot into",
+        description="Compute the boot-time multiplex verdict without starting (or changing) "
+            "anything: prints `mode: multiplex` or `mode: standalone (default only)`, the reason, "
+            "every blocker with its remedy, and the profile roster that will be served. Exit 0 "
+            "when the host will multiplex (or is single-profile), 1 when a blocker keeps it "
+            "standalone. Use it to check a box BEFORE booting it.")
+    _flag(gateway_preflight, "--json", dest="json",
+          help="Print the report as machine-readable JSON")
+
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant
     # delivery key, written to .env. See website/docs/developer-guide/relay-connector-contract.md. EXPERIMENTAL.
     gateway_enroll = gateway_subparsers.add_parser("enroll",

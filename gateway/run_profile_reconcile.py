@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -28,6 +29,27 @@ logger = logging.getLogger(__name__)
 
 _PROFILE_RESCAN_INTERVAL_SECS = 30.0
 _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
+
+#: A degraded (standalone) host re-warns at most this often; keyed by home so a process serving a
+#: switched HERMES_HOME does not inherit the old home's silence window.
+_STANDALONE_WARN_INTERVAL_SECONDS = 600.0
+_standalone_warn_last: Dict[str, float] = {}
+
+
+def _warn_standalone_once() -> None:
+    """The boot guard kept this host standalone: keep saying so while it lasts, but rate-limited —
+    ``reconcile_served_profiles`` fires on every rescan (every 30 s), which would drown the log.
+    Process state, not config; resets on restart, which is fine for a reminder."""
+    from hermes_constants import get_default_hermes_root
+    home = str(get_default_hermes_root())
+    now = time.monotonic()
+    last = _standalone_warn_last.get(home)
+    if last is not None and now - last < _STANDALONE_WARN_INTERVAL_SECONDS:
+        return
+    _standalone_warn_last[home] = now
+    from gateway.status import read_runtime_status
+    reason = (read_runtime_status() or {}).get("multiplex_standalone_reason") or "no reason recorded"
+    logger.warning("Host is standalone (default only): %s. Run: hermes gateway preflight", reason)
 
 
 def profile_serve_signature(home: "Path") -> tuple:
@@ -97,6 +119,7 @@ class GatewayProfileReconcileMixin:
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
         result: Dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "reason": reason}
         if not self._multiplex_on():
+            _warn_standalone_once()
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
         if not self._running or self._served_profile_homes is None:
             # Startup enumerates profiles/ itself; a rescan before it finishes has nothing to diff against.

@@ -129,6 +129,25 @@ def implicit_multiplex_blocker() -> Optional[str]:
     return None
 
 
+def compute_multiplex_decision(config) -> MultiplexDecision:
+    """The boot verdict, PURE: no config mutation, no runtime-status write. ``resolve_multiplex_mode``
+    applies it; ``hermes gateway preflight`` reports it for a host that is not booting yet."""
+    current = getattr(config, "multiplex_profiles", None)
+    if current:
+        return MultiplexDecision(True, "config")
+    retired_opt_out = current is False
+    try:
+        blocker = implicit_multiplex_blocker()
+    except Exception as exc:  # a broken preflight must not take the gateway down with it
+        logger.warning("Multiplex preflight failed; starting standalone: %s", exc, exc_info=True)
+        blocker = f"preflight failed ({exc})"
+    if blocker:
+        return MultiplexDecision(False, "guard", blocker)
+    if retired_opt_out:
+        return MultiplexDecision(True, "retired-opt-out", RETIRED_OPT_OUT_REASON)
+    return MultiplexDecision(True, "default", "gateway.multiplex_profiles unset; default applies")
+
+
 def resolve_multiplex_mode(config) -> MultiplexDecision:
     """Settle ``config.multiplex_profiles`` for one gateway boot; the config is updated in place.
 
@@ -140,21 +159,7 @@ def resolve_multiplex_mode(config) -> MultiplexDecision:
     a duplicate bot credential), so a host that genuinely cannot fold still comes up standalone and
     says why, and it converges by itself once ``hermes gateway migrate --multiplex`` has run.
     """
-    current = getattr(config, "multiplex_profiles", None)
-    if current:
-        return MultiplexDecision(True, "config")
-    retired_opt_out = current is False
-    try:
-        blocker = implicit_multiplex_blocker()
-    except Exception as exc:  # a broken preflight must not take the gateway down with it
-        logger.warning("Multiplex preflight failed; starting standalone: %s", exc, exc_info=True)
-        blocker = f"preflight failed ({exc})"
-    if blocker:
-        decision = MultiplexDecision(False, "guard", blocker)
-    elif retired_opt_out:
-        decision = MultiplexDecision(True, "retired-opt-out", RETIRED_OPT_OUT_REASON)
-    else:
-        decision = MultiplexDecision(True, "default", "gateway.multiplex_profiles unset; default applies")
+    decision = compute_multiplex_decision(config)
     config.multiplex_profiles = decision.enabled
     return decision
 

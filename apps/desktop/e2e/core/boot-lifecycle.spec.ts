@@ -37,7 +37,11 @@ import {
 import { assertTranscriptOracle, installDuplicateSampler, type OracleTarget } from './oracle'
 import { gate, startScriptedProvider } from './provider'
 
-const nonce = Math.random().toString(36).slice(2, 8).replace(/[^a-z0-9]/g, 'x').padEnd(4, 'q')
+const nonce = Math.random()
+  .toString(36)
+  .slice(2, 8)
+  .replace(/[^a-z0-9]/g, 'x')
+  .padEnd(4, 'q')
 const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
 const TOOL_TAG = `core-orphan-${nonce}`
@@ -77,6 +81,7 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
 
   // Background census: every backend pid ever observed.
   const seenBackends = new Set<number>()
+
   const census = setInterval(() => {
     for (const proc of backendProcesses(sandbox)) {
       seenBackends.add(proc.pid)
@@ -113,10 +118,16 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
       expect(victim).toBeTruthy()
       process.kill(victim!.pid, 'SIGKILL')
       await expect
-        .poll(() => backendProcesses(sandbox).map(p => p.pid).filter(pid => pid !== victim!.pid).length, {
-          timeout: 120_000,
-          message: 'a replacement backend is spawned'
-        })
+        .poll(
+          () =>
+            backendProcesses(sandbox)
+              .map(p => p.pid)
+              .filter(pid => pid !== victim!.pid).length,
+          {
+            timeout: 120_000,
+            message: 'a replacement backend is spawned'
+          }
+        )
         .toBe(1)
       await waitForInteractive(app, page)
       provider.script(U(2), [{ text: [`${A(2)} `, 'after ', 'respawn'] }])
@@ -134,21 +145,32 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
     await test.step('quit mid-turn with a running tool child: zero processes remain', async () => {
       const hold = gate()
       provider.script(U(3), [
-        { text: [`${A(3)} `, 'starting ', 'tool'], toolCalls: [{ name: 'terminal', args: { command: `exec -a ${TOOL_TAG} sleep 3600` } }] },
+        {
+          text: [`${A(3)} `, 'starting ', 'tool'],
+          toolCalls: [{ name: 'terminal', args: { command: `exec -a ${TOOL_TAG} sleep 3600` } }]
+        },
         { text: [`${A(3)}b `, 'never ', 'reached'], holdAfterFirstChunk: hold }
       ])
       await send(page, `${U(3)} long tool`, 'Enter', ws)
-      await expect.poll(() => taggedProcesses(TOOL_TAG).length, { timeout: 120_000, message: 'tool child running' }).toBeGreaterThan(0)
+      await expect
+        .poll(() => taggedProcesses(TOOL_TAG).length, { timeout: 120_000, message: 'tool child running' })
+        .toBeGreaterThan(0)
       expect(sandboxProcesses(sandbox).length).toBeGreaterThan(0)
 
       await app.close()
       closed = true
       clearInterval(census)
       await expect
-        .poll(() => [...sandboxProcesses(sandbox), ...taggedProcesses(TOOL_TAG)].map(p => `${p.pid} ${p.cmdline.slice(0, 120)}`), {
-          timeout: 60_000,
-          message: 'no sandbox process (backend, tool child, Electron helper) survives quit'
-        })
+        .poll(
+          () =>
+            [...sandboxProcesses(sandbox), ...taggedProcesses(TOOL_TAG)].map(
+              p => `${p.pid} ${p.cmdline.slice(0, 120)}`
+            ),
+          {
+            timeout: 60_000,
+            message: 'no sandbox process (backend, tool child, Electron helper) survives quit'
+          }
+        )
         .toEqual([])
       hold.open()
     })
@@ -188,7 +210,9 @@ test('relaunching the same home: one backend per boot, zero after each quit, tra
         const ws = recordWebSockets(page)
         await waitForInteractive(app, page)
         await installDuplicateSampler(page)
-        await expect.poll(() => backendProcesses(sandbox).length, { message: `one backend on launch ${launch}` }).toBe(1)
+        await expect
+          .poll(() => backendProcesses(sandbox).length, { message: `one backend on launch ${launch}` })
+          .toBe(1)
 
         if (launch === 1) {
           provider.script(U(1), [{ text: [`${A(1)} `, 'persisted ', 'across ', 'launches'] }])
@@ -202,7 +226,9 @@ test('relaunching the same home: one backend per boot, zero after each quit, tra
           await page.evaluate(id => {
             window.location.hash = `#/${encodeURIComponent(id)}`
           }, session.sessionId)
-          await expect(page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()).toContainText(A(1), {
+          await expect(
+            page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()
+          ).toContainText(A(1), {
             timeout: 60_000
           })
         }

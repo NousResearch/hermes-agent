@@ -59,7 +59,9 @@ export function createCoreSandbox(label: string): CoreSandbox {
   // depend on the runner's keyring rather than on Hermes.
   const bin = path.join(root, 'bin')
   fs.mkdirSync(bin, { recursive: true })
-  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\necho "no oauth token found for github.com" >&2\nexit 1\n', { mode: 0o755 })
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\necho "no oauth token found for github.com" >&2\nexit 1\n', {
+    mode: 0o755
+  })
 
   return {
     root,
@@ -75,7 +77,7 @@ export function createCoreSandbox(label: string): CoreSandbox {
   }
 }
 
-export function providerConfigYaml(providerUrl: string, extra = ''): string {
+export function providerConfigYaml(providerUrl: string, extra = '', approvals: 'manual' | 'off' = 'off'): string {
   return `model:
   default: mock-model
   provider: mock
@@ -92,13 +94,18 @@ auxiliary:
   title_generation:
     enabled: false
 approvals:
-  mode: "off"
+  mode: "${approvals}"
 ${extra}`
 }
 
-export function writeProviderHome(dir: string, providerUrl: string, extra = ''): void {
+export function writeProviderHome(
+  dir: string,
+  providerUrl: string,
+  extra = '',
+  approvals: 'manual' | 'off' = 'off'
+): void {
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(path.join(dir, 'config.yaml'), providerConfigYaml(providerUrl, extra))
+  fs.writeFileSync(path.join(dir, 'config.yaml'), providerConfigYaml(providerUrl, extra, approvals))
   fs.writeFileSync(path.join(dir, '.env'), 'MOCK_API_KEY=core-e2e-key\n')
 }
 
@@ -291,11 +298,13 @@ export function startTcpProxy(targetPort: number): Promise<TcpProxy> {
   const server = net.createServer(client => {
     const upstream = net.connect(targetPort, '127.0.0.1')
     live.add(client)
+
     const forget = () => {
       live.delete(client)
       client.destroy()
       upstream.destroy()
     }
+
     client.on('error', forget)
     upstream.on('error', forget)
     client.on('close', forget)
@@ -343,6 +352,7 @@ export async function routePrimaryWebSocket(app: ElectronApplication, backendPor
       const handlers = (ipcMain as any)._invokeHandlers as Map<string, (...args: any[]) => Promise<any>>
       const from = `ws://127.0.0.1:${backendPort}/`
       const to = `ws://127.0.0.1:${proxyPort}/`
+
       const rewrite = (value: any): any => {
         if (typeof value === 'string') {
           return value.startsWith(from) ? to + value.slice(from.length) : value
@@ -449,9 +459,7 @@ export async function waitForInteractive(app: ElectronApplication, page: Page, t
   await expect
     .poll(
       () =>
-        app
-          .evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible() ?? false)
-          .catch(() => false),
+        app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible() ?? false).catch(() => false),
       { timeout, intervals: [250] }
     )
     .toBe(true)
@@ -539,7 +547,11 @@ export function storedSessionForMarker(sandbox: CoreSandbox, profile: string, ma
 }
 
 /** The backend's persisted display transcript (REST, the same read the renderer hydrates from). */
-export async function persistedTranscript(page: Page, sessionId: string, profile?: string): Promise<PersistedMessage[]> {
+export async function persistedTranscript(
+  page: Page,
+  sessionId: string,
+  profile?: string
+): Promise<PersistedMessage[]> {
   const query = profile ? `&profile=${encodeURIComponent(profile)}` : ''
 
   const result = await page.evaluate(

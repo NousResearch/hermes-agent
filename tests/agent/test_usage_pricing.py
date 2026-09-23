@@ -1,4 +1,7 @@
+from decimal import Decimal
 from types import SimpleNamespace
+
+import pytest
 
 from agent.usage_pricing import (
     _OFFICIAL_DOCS_PRICING,
@@ -9,7 +12,6 @@ from agent.usage_pricing import (
     normalize_usage,
     resolve_billing_route,
 )
-from decimal import Decimal
 
 
 def test_astra_whole_request_price_tier_includes_cache_writes():
@@ -36,10 +38,38 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
     assert below.amount_usd < above.amount_usd
 
 
+_MODELS_DEV_REGISTRY = {
+    "openai": {"models": {"gpt-5-nano": {"cost": {"input": 0.05, "output": 0.4, "cache_read": 0.005}}}},
+    "xai": {"models": {"grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}}}},
+}
+_USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
 
 
+@pytest.fixture
+def models_dev_registry(monkeypatch):
+    """A models.dev cache holding the vendors' rate cards; the providers' own /models carry no prices."""
+    import agent.models_dev as models_dev
+
+    monkeypatch.setattr(models_dev, "_models_dev_cache", _MODELS_DEV_REGISTRY)
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_a, **_k: {})
 
 
+@pytest.mark.parametrize(("provider", "base_url", "model", "expected"), [
+    ("openai-api", "https://api.openai.com/v1", "gpt-5-nano", ("estimated", Decimal("0.455"))),
+    ("openai", "", "gpt-5-nano", ("estimated", Decimal("0.455"))),
+    ("xai", "https://api.x.ai/v1", "grok-4.3", ("estimated", Decimal("3.95"))),
+    # The vendor's list price needs the vendor's own API: same provider name on
+    # someone else's host, a downgraded origin, a subscription route or a custom
+    # endpoint keep ``unknown`` rather than inheriting it.
+    ("xai", "https://grok-relay.example.com/v1", "grok-4.3", ("unknown", None)),
+    ("xai", "http://api.x.ai/v1", "grok-4.3", ("unknown", None)),
+    ("xai-oauth", "https://api.x.ai/v1", "grok-4.3", ("unknown", None)),
+    ("custom", "https://api.x.ai/v1", "grok-4.3", ("unknown", None)),
+])
+def test_direct_first_party_route_prices_models_missing_from_snapshot(models_dev_registry, provider, base_url, model, expected):
+    cost = estimate_usage_cost(model, _USAGE, provider=provider, base_url=base_url)
+
+    assert (cost.status, cost.amount_usd) == expected
 
 
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():

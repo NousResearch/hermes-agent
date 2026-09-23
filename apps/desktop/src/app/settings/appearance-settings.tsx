@@ -6,6 +6,7 @@ import { useDebounced } from '@/app/hooks/use-debounced'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -883,16 +884,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('window-layout') && (
             <ListRow
               action={
-                <SegmentedControl
-                  onChange={id => {
+                <Switch
+                  aria-label={a.backdropTitle}
+                  checked={backdrop}
+                  onCheckedChange={checked => {
                     triggerHaptic('selection')
-                    setBackdrop(id === 'on')
+                    setBackdrop(checked)
                   }}
-                  options={[
-                    { id: 'off', label: t.common.off },
-                    { id: 'on', label: t.common.on }
-                  ]}
-                  value={backdrop ? 'on' : 'off'}
                 />
               }
               description={a.backdropDesc}
@@ -904,16 +902,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('chat-display') && (
             <ListRow
               action={
-                <SegmentedControl
-                  onChange={id => {
+                <Switch
+                  aria-label={a.hideThreadTimelineTitle}
+                  checked={hideThreadTimeline}
+                  onCheckedChange={checked => {
                     triggerHaptic('selection')
-                    setHideThreadTimeline(id === 'on')
+                    setHideThreadTimeline(checked)
                   }}
-                  options={[
-                    { id: 'off', label: t.common.off },
-                    { id: 'on', label: t.common.on }
-                  ]}
-                  value={hideThreadTimeline ? 'on' : 'off'}
                 />
               }
               description={a.hideThreadTimelineDesc}
@@ -925,16 +920,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('general') && (
             <ListRow
               action={
-                <SegmentedControl
-                  onChange={id => {
+                <Switch
+                  aria-label={a.introSplashTitle}
+                  checked={introSplash}
+                  onCheckedChange={checked => {
                     triggerHaptic('selection')
-                    setIntroSplash(id === 'on')
+                    setIntroSplash(checked)
                   }}
-                  options={[
-                    { id: 'off', label: t.common.off },
-                    { id: 'on', label: t.common.on }
-                  ]}
-                  value={introSplash ? 'on' : 'off'}
                 />
               }
               description={a.introSplashDesc}
@@ -957,16 +949,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('chat-display') && (
             <ListRow
               action={
-                <SegmentedControl
-                  onChange={id => {
+                <Switch
+                  aria-label={a.reactionsTitle}
+                  checked={reactionsEnabled}
+                  onCheckedChange={checked => {
                     triggerHaptic('selection')
-                    setReactionsEnabled(id === 'on')
+                    setReactionsEnabled(checked)
                   }}
-                  options={[
-                    { id: 'off', label: t.common.off },
-                    { id: 'on', label: t.common.on }
-                  ]}
-                  value={reactionsEnabled ? 'on' : 'off'}
                 />
               }
               description={a.reactionsDesc}
@@ -978,16 +967,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             <ListRow
               action={
                 <div className="flex flex-col items-end gap-1.5">
-                  <SegmentedControl
-                    onChange={id => {
+                  <Switch
+                    aria-label={a.tipsTitle}
+                    checked={tipsEnabled}
+                    onCheckedChange={checked => {
                       triggerHaptic('selection')
-                      setTipsEnabled(id === 'on')
+                      setTipsEnabled(checked)
                     }}
-                    options={[
-                      { id: 'off', label: t.common.off },
-                      { id: 'on', label: t.common.on }
-                    ]}
-                    value={tipsEnabled ? 'on' : 'off'}
                   />
                   {/* A tip shows once (✕ or timer), so this is the only way to a
                       second lap. It appears once there is something to bring back. */}
@@ -1013,16 +999,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('general') && (
             <ListRow
               action={
-                <SegmentedControl
-                  onChange={id => {
+                <Switch
+                  aria-label={a.toursTitle}
+                  checked={toursEnabled}
+                  onCheckedChange={checked => {
                     triggerHaptic('selection')
-                    setToursEnabled(id === 'on')
+                    setToursEnabled(checked)
                   }}
-                  options={[
-                    { id: 'off', label: t.common.off },
-                    { id: 'on', label: t.common.on }
-                  ]}
-                  value={toursEnabled ? 'on' : 'off'}
                 />
               }
               description={a.toursDesc}
@@ -1033,16 +1016,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('chat-display') && (
             <ListRow
               action={
-                <SegmentedControl
-                  onChange={id => {
+                <Switch
+                  aria-label={a.vibeHeartsTitle}
+                  checked={vibeHeartsEnabled}
+                  onCheckedChange={checked => {
                     triggerHaptic('selection')
-                    setVibeHeartsEnabled(id === 'on')
+                    setVibeHeartsEnabled(checked)
                   }}
-                  options={[
-                    { id: 'off', label: t.common.off },
-                    { id: 'on', label: t.common.on }
-                  ]}
-                  value={vibeHeartsEnabled ? 'on' : 'off'}
                 />
               }
               description={a.vibeHeartsDesc}
@@ -1071,16 +1051,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('chat-display') && (
             <ListRow
               action={
-                <SegmentedControl
-                  onChange={id => {
+                <Switch
+                  aria-label={a.hideCodeDiffsTitle}
+                  checked={hideCodeDiffs}
+                  onCheckedChange={checked => {
                     triggerHaptic('selection')
-                    setHideCodeDiffs(id === 'on')
+                    setHideCodeDiffs(checked)
                   }}
-                  options={[
-                    { id: 'off', label: t.common.off },
-                    { id: 'on', label: t.common.on }
-                  ]}
-                  value={hideCodeDiffs ? 'on' : 'off'}
                 />
               }
               description={withModeNote(a.hideCodeDiffsDesc, hideCodeDiffsShadowed)}
@@ -1092,16 +1069,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('chat-display') && (
             <ListRow
               action={
-                <SegmentedControl
-                  onChange={id => {
+                <Switch
+                  aria-label={a.reasoningCollapsedTitle}
+                  checked={reasoningCollapsedByDefault}
+                  onCheckedChange={checked => {
                     triggerHaptic('selection')
-                    setReasoningCollapsedByDefault(id === 'on')
+                    setReasoningCollapsedByDefault(checked)
                   }}
-                  options={[
-                    { id: 'off', label: t.common.off },
-                    { id: 'on', label: t.common.on }
-                  ]}
-                  value={reasoningCollapsedByDefault ? 'on' : 'off'}
                 />
               }
               description={withModeNote(a.reasoningCollapsedDesc, reasoningCollapsedShadowed)}

@@ -7,8 +7,8 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -257,13 +257,10 @@ export function PetSettings() {
           title={
             <div className="flex items-center justify-between gap-3">
               <span>{copy.chooseTitle}</span>
-              <SegmentedControl
-                onChange={id => void toggle(id === 'on')}
-                options={[
-                  { id: 'off', label: copy.off },
-                  { id: 'on', label: copy.on }
-                ]}
-                value={enabled ? 'on' : 'off'}
+              <Switch
+                aria-label={copy.chooseTitle}
+                checked={enabled}
+                onCheckedChange={checked => void toggle(checked)}
               />
             </div>
           }
@@ -301,16 +298,13 @@ export function PetSettings() {
         {enabled && (
           <ListRow
             action={
-              <SegmentedControl
-                onChange={id => {
-                  setPetRoam(id === 'on')
+              <Switch
+                aria-label={copy.roamTitle}
+                checked={roam}
+                onCheckedChange={checked => {
+                  setPetRoam(checked)
                   triggerHaptic('crisp')
                 }}
-                options={[
-                  { id: 'off', label: copy.off },
-                  { id: 'on', label: copy.on }
-                ]}
-                value={roam ? 'on' : 'off'}
               />
             }
             description={copy.roamDesc}

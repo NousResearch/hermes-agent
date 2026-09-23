@@ -2946,10 +2946,21 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
         if isinstance(_maybe_ctx, str):
             memory_context = sanitize_memory_context(_maybe_ctx)
     elif memory_manager:
-        with contextlib.suppress(Exception):
+        # A non-required checkpoint must never be skipped silently: when the provider raises,
+        # the summary is built without its insights and (for archiving providers) the
+        # pre-compression snapshot is missing -- with no trace anywhere in the logs.
+        try:
             _maybe_ctx = memory_manager.on_pre_compress(messages, evidence_messages=evidence_messages)
             if isinstance(_maybe_ctx, str):
                 memory_context = sanitize_memory_context(_maybe_ctx)
+        except Exception as exc:
+            logger.warning(
+                "Non-required pre-compress checkpoint failed; compression continues without it: %s",
+                exc, exc_info=True,
+            )
+    else:
+        logger.debug("No memory provider active; this compression carries no pre-compress checkpoint")
+    logger.debug("Pre-compress checkpoint context: %d chars", len(memory_context or ""))
     return memory_context
 
 

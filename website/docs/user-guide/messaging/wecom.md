@@ -104,6 +104,34 @@ streaming is enabled by default (`display.platforms.wecom.streaming: true` in
 `config.yaml`); set it to `false` to restore single-shot delivery.
 :::
 
+## Interactive Cards (DM only)
+
+The adapter renders two interactive surfaces as native WeCom **template cards**
+(`card_type: button_interaction`). Cards are **DM-only by design**: WeCom's
+template-card contract is single-chat only, so group chats keep the plain-text
+flows (approval stays `/approve`, `/model` falls back to the text listing).
+When a user taps a card button, WeCom pushes a `template_card_event` over the
+same WebSocket; the adapter authorizes the sender against the DM allowlist
+before acting, and updates the card in place via `aibot_respond_update_msg`
+inside WeCom's 5-second reply window.
+
+### Exec approval cards
+
+Dangerous-command approvals (`send_exec_approval`) render as a card with one
+button per choice — Allow Once / Allow Session / Always Allow / Deny (the smart
+deny variant offers only Allow Once and Deny). The tap resolves through the
+same `tools.approval.resolve_gateway_approval` path as the text `/approve`
+flow, so approvals work exactly as before, just with buttons. The card is
+replaced by a text_notice confirming the outcome after the tap.
+
+### Model picker cards
+
+`/model` with no arguments renders a model picker card listing up to 6
+candidate models (the current provider's models first, the active model
+flagged with ✓). Tapping a model switches immediately; the card flips to a
+"switching…" notice and the result is delivered as a follow-up markdown
+message. More models than fit on one card? Type `/model <name>` directly.
+
 ## Configuration Options
 
 Set these in `config.yaml` under `platforms.wecom.extra`:

@@ -36,6 +36,7 @@ from utils import env_float
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
+from plugins.platforms.wecom.cards import WeComCardMixin, APP_CMD_RESPOND_UPDATE
 from plugins.platforms.wecom.streaming import (
     WeComStreamMixin, ReplyQueue, StreamTurn, APP_CMD_RESPONSE,
     STREAM_NOT_SUBSCRIBED_ERRCODE, MAX_STREAM_CONTENT_LENGTH,
@@ -98,7 +99,7 @@ def _content_of(container: Dict[str, Any], key: str) -> str:
     return str(_dict_or_empty(container, key).get("content") or "").strip()
 
 
-class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
+class WeComAdapter(WeComCardMixin, WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     ALLOW_ALL_ENV_PREFIX = "WECOM"
@@ -150,6 +151,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         self._stream_expired_chats, self._group_chat_ids = set(), set()  # groups can't receive proactive APP_CMD_SEND
         # Per-chat FIFO send queues (normal + control lanes) + token buckets — see send_queue.py.
         self._chat_queues, self._chat_workers, self._control_queues, self._control_workers, self._chat_token_usage = {}, {}, {}, {}, {}
+        # Interactive template cards (exec approval + model picker) — DM only, see cards.py.
+        self._init_card_state()
 
     def _startup_failure(self, code: str, message: str, log_msg: str, *args: Any) -> bool:
         self._set_fatal_error(code, message, retryable=True)
@@ -342,10 +345,21 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         if cmd in CALLBACK_COMMANDS:
             await self._on_message(payload)
         elif cmd == APP_CMD_EVENT_CALLBACK:
-            # Kicked by server (another connection exists): suppress reconnect like the official SDK.
-            if str((payload.get("body") or {}).get("event_type") or "") == "disconnected_event":
+            # Two event kinds ride this frame: server kicks (disconnected_event) and
+            # interactive template-card taps (template_card_event, DM-only cards).
+            event = body_dict.get("event") if isinstance(body_dict.get("event"), dict) else {}
+            event_type = str(event.get("eventtype") or event.get("event_type") or (body_dict or {}).get("event_type") or "")
+            if event_type == "disconnected_event":
+                # Kicked by server (another connection exists): suppress reconnect like the official SDK.
                 logger.warning("[%s] Kicked by server (another WS connection established). Suppressing reconnect to avoid mutual kicking. Check for duplicate gateway instances.", self.name)
                 self._running = False
+            elif event_type == "template_card_event":
+                try:
+                    await self._handle_template_card_event(payload)
+                except Exception as exc:
+                    logger.error("[%s] template_card_event handling failed: %s", self.name, exc, exc_info=True)
+            else:
+                logger.info("[%s] Unhandled event callback: eventtype=%r", self.name, event_type or "(empty or unknown)")
         elif cmd != APP_CMD_PING:
             logger.info("[%s] Unrouted websocket payload dropped: cmd=%r req_id=%s body_keys=%s", self.name, cmd or "(empty)", req_id or "(none)", list(body_dict.keys()) if body_dict is not None else None)
 

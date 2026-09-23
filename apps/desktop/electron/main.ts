@@ -343,7 +343,8 @@ import {
   type LocalBackendSpawnPriority,
   type LocalBackendSpawnRequest,
   registerLocalBackendExitFinalizer,
-  releaseLocalBackendSlotAfterExit
+  releaseLocalBackendSlotAfterExit,
+  spawnPriorityFrom
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
@@ -378,13 +379,13 @@ import {
   findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
   type RegistrySessionSource,
-  spliceRegistrySessionRows,
-  tagRegistrySessionResponse
+  spliceRegistrySessionRows
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import { backendQuitNeedsWait, createQuitTeardownCoordinator } from './quit-teardown'
+import { createRegistryApiDispatcher } from './registry-api-dispatch'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -1639,10 +1640,6 @@ const backgroundSlotRetryBackoff = new BackgroundSlotRetryBackoff()
 // renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS (45s, src/lib/with-timeout.ts) so
 // the queued ticket fails before the renderer does and the user sees why.
 const POOL_SLOT_WAIT_MS = 30_000
-
-function spawnPriorityFrom(value: unknown): LocalBackendSpawnPriority {
-  return value === 'foreground' ? 'foreground' : 'background'
-}
 
 // Foreground intent for a dial whose pool entry does not exist yet: a user
 // click that joins an in-flight backendDialClaims claim never re-enters
@@ -17183,28 +17180,30 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
-
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
         ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
       )
-
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
-
   const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,
     body: request?.body,
     upload: request?.upload,
     timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   })
-
   desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)
-
   return (request?.method || 'GET').toUpperCase() === 'GET'
     ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
     : response
 }
+const dispatchRegistryApiRequest = createRegistryApiDispatcher({
+  afterProfileRequest: (connectionId, request, response, backendMode) =>
+    desktopProfilePreferences.afterProfileRequest(connectionId, request, response, backendMode ?? ''),
+  backendDialClaims,
+  ensureRegistryBackend,
+  fetchJsonForBackend,
+  profileRouteOptions
 
 function registryConnectionKind(connectionId) {
   const registry = readDesktopConnectionsRegistry()

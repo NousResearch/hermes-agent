@@ -205,7 +205,7 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
         "_live_session_payload",
         lambda sid, session, **_k: {"session_id": sid, "message_count": 0, "messages": [], "info": {}},
     )
-    monkeypatch.setattr(server, "_child_run_active", lambda _key: False)
+    monkeypatch.setattr(server, "_child_run_active", lambda *a, **k: False)
 
     resp = _resume(session_id="s1", profile="work")
 

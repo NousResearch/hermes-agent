@@ -18,31 +18,40 @@ from .method_ctx import bind_module
 _child_mirrors: dict[str, dict] = {}
 _child_mirrors_lock = threading.Lock()
 # Child sids with a run in flight (refreshed per relayed event, popped on complete) so a
-# lazy watch resume reports running=true during a silent long tool.
-_active_child_runs: dict[str, float] = {}
+# lazy watch resume reports running=true during a silent long tool. Keyed on the child's
+# profile home: stored ids are timestamps that exist in several profiles' stores, so a
+# bare-key hit would report ANOTHER profile's run as active here.
+_active_child_runs: dict[tuple[str | None, str], float] = {}
 # Anything quiet this long lost its completion event — don't pin "running".
 _CHILD_RUN_STALE_S = 3600.0
 _CHILD_DELTA_EVENTS = {"subagent.thinking": "reasoning.delta", "subagent.text": "message.delta",
                        "subagent.start": "message.delta"}
 
 
-def _child_run_active(child_key: str) -> bool:
-    ts = _active_child_runs.get(child_key)
+def _child_run_profile(profile_home) -> str | None:
+    """Normalize a profile home (Path from resume ctx, str from session records) to the
+    same form ``_live_profile_matches`` compares against."""
+    return str(profile_home) if profile_home else None
+
+
+def _child_run_active(child_key: str, profile_home=None) -> bool:
+    ts = _active_child_runs.get((_child_run_profile(profile_home), child_key))
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
-def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
+def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home=None) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
+    home = _child_run_profile(profile_home)
     # Liveness registry first: accurate with no window open (one opened mid-run knows busy).
     if event_type == "subagent.complete":
-        _active_child_runs.pop(child_key, None)
+        _active_child_runs.pop((home, child_key), None)
     else:
-        _active_child_runs[child_key] = time.time()
+        _active_child_runs[(home, child_key)] = time.time()
     # Mirror only into a live watch session NOT upgraded to a full agent (an upgraded one owns
     # a real native stream). Either way drop state so a reopened window starts fresh.
-    live = _find_live_session_by_key(child_key)
+    live = _find_live_session_by_key(child_key, home)
     if live is None or live[1].get("agent") is not None:
         with _child_mirrors_lock:
             _child_mirrors.pop(child_key, None)

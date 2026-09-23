@@ -1084,7 +1084,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
         return
     # A lazy watch session spectating an in-flight child must stay lazy so the subagent live-mirror keeps
     # flowing (it bails once agent is set); incidental RPCs via _sess() would upgrade it mid-stream.
-    if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+    if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""), session.get("profile_home") or None):
         return
     with session.setdefault("agent_build_lock", threading.Lock()):
         if ready.is_set() or session.get("agent_build_started"):

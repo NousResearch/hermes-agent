@@ -159,10 +159,37 @@ def get_process_hermes_home() -> Path:
     """Hermes home of the running process, ignoring task overrides.
 
     For process-level assets (theme YAML, dashboard plugin manifests) that must stay visible while a
-    request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
+    request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``), and the
+    reference every "does this task serve a ROUTED home" decision compares the override against.
+    Once pinned (``pin_process_hermes_home``) the answer is frozen: a host that mirrors the served
+    profile into ``os.environ["HERMES_HOME"]`` per turn would otherwise re-label the launch home on
+    every turn and every served profile would look like the launch one (#119242).
     """
+    if _PINNED_PROCESS_HOME is not None:
+        return _PINNED_PROCESS_HOME
     val = os.environ.get("HERMES_HOME", "").strip()
     return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
+
+
+# The launch home, frozen the moment this process starts serving a second profile
+# (``agent.secret_scope.set_multiplex_active(True)``) or when an embedding host pins it explicitly.
+_PINNED_PROCESS_HOME: Path | None = None
+
+
+def pin_process_hermes_home(path: "str | Path | None" = None) -> Path:
+    """Freeze the launch home; the first pin wins. ``None`` pins the home the process env names NOW,
+    so it must run before any per-turn mirror of ``HERMES_HOME`` — the same moment
+    ``tui_gateway.launch_profile_policy.capture_launch_env`` freezes the env."""
+    global _PINNED_PROCESS_HOME
+    if _PINNED_PROCESS_HOME is None:
+        _PINNED_PROCESS_HOME = _expand_hermes_home(str(path)) if path else get_process_hermes_home()
+    return _PINNED_PROCESS_HOME
+
+
+def unpin_process_hermes_home() -> None:
+    """Follow ``HERMES_HOME`` live again (single-profile mode; tests that stand hosts up and down)."""
+    global _PINNED_PROCESS_HOME
+    _PINNED_PROCESS_HOME = None
 
 
 # Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,

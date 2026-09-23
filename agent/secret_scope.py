@@ -29,9 +29,18 @@ _MULTIPLEX_ACTIVE: bool = False
 
 
 def set_multiplex_active(active: bool) -> None:
-    """Mark whether the process is a profile multiplexer (get_secret fails closed)."""
+    """Mark whether the process is a profile multiplexer (get_secret fails closed).
+
+    Activation also freezes the launch home (``hermes_constants.pin_process_hermes_home``): from
+    here on "is this task routed" compares the override against the home the process was launched
+    with, not against whatever a host later mirrors into ``os.environ["HERMES_HOME"]``."""
     global _MULTIPLEX_ACTIVE
+    from hermes_constants import pin_process_hermes_home, unpin_process_hermes_home
     _MULTIPLEX_ACTIVE = bool(active)
+    if _MULTIPLEX_ACTIVE:
+        pin_process_hermes_home()
+    else:
+        unpin_process_hermes_home()
 
 
 def is_multiplex_active() -> bool:

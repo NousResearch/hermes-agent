@@ -469,6 +469,7 @@ export interface HermesConfig {
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown
+    barge_in_threshold_multiplier?: unknown
   }
 }
 

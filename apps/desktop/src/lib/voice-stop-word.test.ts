@@ -71,6 +71,20 @@ describe('isVoiceStopCommand', () => {
     expect(isVoiceStopCommand('goodbye', config)).toBe(false)
   })
 
+  it('matches configured phrases regardless of Unicode form and script punctuation (#117801)', () => {
+    const config = { mode: 'custom' as const, phrases: ['отбой', 'стоп', '停止'] }
+
+    // Whisper can emit decomposed (NFD) Cyrillic: "й" as "и" + combining breve.
+    expect(isVoiceStopCommand('Отбой.'.normalize('NFD'), config)).toBe(true)
+    expect(isVoiceStopCommand('«Стоп»', config)).toBe(true)
+    expect(isVoiceStopCommand('停止。', config)).toBe(true)
+    expect(isVoiceStopCommand('стоп машина', config)).toBe(false)
+  })
+
+  it('matches the built-in list with typographic apostrophes', () => {
+    expect(isVoiceStopCommand('That’s all.', { mode: 'default' })).toBe(true)
+  })
+
   it('disables spoken stop when voice.stop_phrases is an empty list', () => {
     expect(isVoiceStopCommand('stop', { mode: 'disabled' })).toBe(false)
     expect(isVoiceStopCommand('отбой', { mode: 'disabled' })).toBe(false)

@@ -381,11 +381,15 @@ def test_plugin_send_reaches_a_peer_and_opens_a_window(plugin, monkeypatch):
 
 
 def test_every_model_call_counts_and_credits_show(plugin):
-    plugin.hooks["post_api_request"](usage={"total_tokens": 1200}, platform="telegram")
+    plugin.hooks["post_api_request"](
+        usage={"total_tokens": 1200, "input_tokens": 200, "cache_read_tokens": 900,
+               "output_tokens": 100, "reasoning_tokens": 60}, platform="telegram")
     plugin.hooks["post_api_request"](usage={"total_tokens": 800}, platform="cron")
     plugin.hooks["post_auxiliary_call"](usage={"total_tokens": 50}, aux_task="compression")
     plugin.hooks["post_auxiliary_call"](usage=None, aux_task="title")
     assert store.tokens_used_today() == 2050
+    first = json.loads(store.usage_path().read_text().splitlines()[0])
+    assert first == {**first, "in": 200, "cached": 900, "out": 100, "reasoning": 60}
 
     with store.locked_state() as (drives, _):
         drives["meta"]["credits"] = {"total": 5.0, "used": 0.46, "remaining": 4.54}

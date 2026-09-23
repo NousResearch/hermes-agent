@@ -295,7 +295,9 @@ def events_since(since: Optional[datetime], limit: int = 12) -> List[Dict[str, A
 # auxiliary calls), recorded by the plugin's post_api_request / post_auxiliary_call hooks.
 # ---------------------------------------------------------------------------
 
-def record_usage(tokens: int, source: str) -> None:
+def record_usage(tokens: int, source: str, **detail: int) -> None:
+    """Append one model call. ``detail`` keeps the breakdown when known (fresh input,
+    cached input, output, reasoning), which is what the bill actually depends on."""
     if _dry_run or tokens <= 0:
         return
     path = usage_path()
@@ -304,7 +306,8 @@ def record_usage(tokens: int, source: str) -> None:
         if path.exists() and path.stat().st_size > EVENTS_MAX_BYTES:
             os.replace(path, path.with_suffix(".jsonl.1"))
     record = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-              "tokens": int(tokens), "src": source}
+              "tokens": int(tokens), "src": source,
+              **{k: int(v) for k, v in detail.items() if v}}
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
 

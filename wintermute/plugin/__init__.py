@@ -206,9 +206,24 @@ def _usage_tokens(usage: Any) -> int:
         return 0
 
 
+def _usage_detail(usage: Any) -> Dict[str, int]:
+    """fresh input / cached input / output / reasoning, as short keys for usage.jsonl."""
+    if not isinstance(usage, dict):
+        return {}
+    keys = {"in": "input_tokens", "cached": "cache_read_tokens", "out": "output_tokens",
+            "reasoning": "reasoning_tokens"}
+    detail = {}
+    for short, name in keys.items():
+        try:
+            detail[short] = int(usage.get(name) or 0)
+        except (TypeError, ValueError):
+            pass
+    return detail
+
+
 def _on_post_api_request(usage: Any = None, platform: str = "", **_: Any) -> None:
     try:
-        store.record_usage(_usage_tokens(usage), (platform or "chat").lower())
+        store.record_usage(_usage_tokens(usage), (platform or "chat").lower(), **_usage_detail(usage))
         _maybe_refresh_credits()
     except Exception:
         logger.exception("wintermute: post_api_request failed")
@@ -216,7 +231,7 @@ def _on_post_api_request(usage: Any = None, platform: str = "", **_: Any) -> Non
 
 def _on_post_auxiliary_call(usage: Any = None, aux_task: str = "", **_: Any) -> None:
     try:
-        store.record_usage(_usage_tokens(usage), f"aux:{aux_task or '?'}")
+        store.record_usage(_usage_tokens(usage), f"aux:{aux_task or '?'}", **_usage_detail(usage))
     except Exception:
         logger.exception("wintermute: post_auxiliary_call failed")
 

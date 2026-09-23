@@ -279,3 +279,86 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# cost — opt-in session cumulative estimated cost
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "cost,expected",
+    [
+        (0.00042, "≈$0.0004"),   # < $0.01: 4 decimals
+        (0.175, "≈$0.175"),      # < $1: 3 decimals
+        (1.2345, "≈$1.23"),      # >= $1: 2 decimals
+    ],
+)
+def test_format_footer_cost_precision_bands(cost, expected):
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        session_cost_usd=cost, fields=("cost",),
+    )
+    assert out == expected
+
+
+def test_format_footer_cost_none_skips_field():
+    """Unmeasured cost (None) drops the whole column — never a ``$?`` artifact."""
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        session_cost_usd=None, fields=("cost",),
+    )
+    assert out == ""
+    assert "≈" not in out
+
+
+@pytest.mark.parametrize("cost", [0, 0.0, -0.5, -1.0])
+def test_format_footer_cost_nonpositive_skipped(cost):
+    """Zero / negative cost is missing data, not a real figure."""
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        session_cost_usd=cost, fields=("cost",),
+    )
+    assert out == ""
+    assert "≈" not in out
+
+
+def test_cost_not_in_default_fields():
+    """``cost`` is opt-in: unset ``fields`` renders byte-identically to before."""
+    from gateway.runtime_footer import _DEFAULT_FIELDS
+
+    assert "cost" not in _DEFAULT_FIELDS
+    out = format_runtime_footer(
+        model="openai/gpt-5.4", context_tokens=50_247, context_length=1_000_000,
+        cwd="/var/data", session_cost_usd=1.2345,
+    )
+    assert out == "gpt-5.4 · 5% · /var/data"
+
+
+def test_format_footer_cost_joined_in_field_order():
+    """Existing field order/semantics are unchanged; cost joins where listed."""
+    out = format_runtime_footer(
+        model="m", context_tokens=1, context_length=100, cwd="",
+        session_cost_usd=0.175, fields=("model", "context_pct", "cost"),
+    )
+    assert out == "m · 1% · ≈$0.175"
+
+
+def test_build_footer_line_threads_session_cost():
+    """End-to-end: enabled footer with ``cost`` in fields renders the value."""
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "cost"],
+                }
+            }
+        },
+        platform_key="discord",
+        model="gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        session_cost_usd=0.175,
+    )
+    assert out == "gpt-5.4 · ≈$0.175"

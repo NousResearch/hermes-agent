@@ -1961,12 +1961,40 @@ class TurnRunner:
         agent = ctx.agent_holder[0]
         has_comp = bool(agent) and hasattr(agent, "context_compressor")
         comp = agent.context_compressor if has_comp else None
+        # Session cumulative estimated cost for the footer's opt-in ``cost`` field. Primary
+        # source = the persisted session row (``sessions.estimated_cost_usd``,
+        # ``actual_cost_usd`` preferred while it is non-zero), read through the same handle the
+        # runner already uses for session rows (``_current_message_count``): it flushes queued
+        # token deltas first, so the figure includes this turn, and being a DB row it survives
+        # gateway restarts. The gateway SessionEntry deliberately carries no cost (the agent
+        # persists usage itself) and ``agent.session_estimated_cost_usd`` resets with the
+        # process, so the live counter only tops the value up. Any failure degrades to None ->
+        # the footer skips the column; this never raises.
+        _session_cost_usd = None
+        with suppress(Exception):
+            _cost_sources = []
+            _session_db = getattr(self._runner, "_session_db", None)
+            if _session_db is not None and ctx.session_id:
+                # run_sync is off-loop (executor); sync DB is fine.
+                row = _session_db._db.get_session(ctx.session_id) or {}
+                _actual = row.get("actual_cost_usd")
+                _estimated = row.get("estimated_cost_usd")
+                if _actual and float(_actual) > 0:
+                    _cost_sources.append(float(_actual))
+                elif _estimated:
+                    _cost_sources.append(float(_estimated))
+            _in_memory_cost = getattr(agent, "session_estimated_cost_usd", 0.0) if agent else 0.0
+            if _in_memory_cost:
+                _cost_sources.append(float(_in_memory_cost))
+            if _cost_sources:
+                _session_cost_usd = max(_cost_sources)
         usage = {
             "last_prompt_tokens": getattr(comp, "last_prompt_tokens", 0) if has_comp else 0,
             "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
             "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
             "model": getattr(agent, "model", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
+            "session_cost_usd": _session_cost_usd,
         }
         compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure

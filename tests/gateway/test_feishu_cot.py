@@ -329,7 +329,7 @@ async def test_default_off_does_not_call_adapter():
         start_native_cot=lambda *_: pytest.fail("COT must stay off")
     )
     ctx = TurnContext(native_cot_mode="off", source=SimpleNamespace(chat_id="oc"))
-    runner = TurnRunner(SimpleNamespace(_adapter_for_source=lambda _: adapter), ctx)
+    runner = TurnRunner(SimpleNamespace(_delivery_adapter_for=lambda _: adapter), ctx)
 
     await runner.start_native_cot()
     assert ctx.native_cot is None
@@ -349,7 +349,7 @@ async def test_create_failure_falls_back_to_existing_tool_progress():
         progress_mode="all",
         _run_still_current=lambda: True,
     )
-    runner = TurnRunner(SimpleNamespace(_adapter_for_source=lambda _: adapter), ctx)
+    runner = TurnRunner(SimpleNamespace(_delivery_adapter_for=lambda _: adapter), ctx)
 
     await runner.start_native_cot()
     runner.progress_callback(
@@ -515,7 +515,7 @@ async def test_bridge_request_budget_allows_slow_create_update_and_complete(monk
     gateway = object.__new__(GatewayRunner)
     monkeypatch.setattr(
         gateway,
-        "_adapter_for_source",
+        "_delivery_adapter_for",
         lambda source: SimpleNamespace(start_native_cot=start),
     )
     ctx = TurnContext(
@@ -566,7 +566,7 @@ async def test_http_transport_timeout_cancels_without_late_side_effect(stage, mo
     client._base_url = "http://127.0.0.1:1"  # Never contact Feishu, including on the red base.
     client._token, client._token_expires_at = "test-token", float("inf")
     gateway = object.__new__(GatewayRunner)
-    gateway._adapter_for_source = lambda _: SimpleNamespace(start_native_cot=client.start)
+    gateway._delivery_adapter_for = lambda _: SimpleNamespace(start_native_cot=client.start)
     ctx = TurnContext(native_cot_mode="brief", source=SimpleNamespace(chat_id="oc"),
                       _run_still_current=lambda: True)
     turn = TurnRunner(gateway, ctx)
@@ -674,7 +674,7 @@ async def test_proxy_turn_uses_native_cot_lifecycle(outcome, monkeypatch):
     adapter = SimpleNamespace(start_native_cot=client.start)
     gateway = object.__new__(GatewayRunner)
     gateway.adapters = {Platform.FEISHU: adapter}
-    gateway._adapter_for_source = lambda _: adapter
+    gateway._delivery_adapter_for = lambda _: adapter
     gateway._get_proxy_url = lambda: "https://proxy.invalid"
     gateway._resolve_turn_toolsets = lambda *_: ([], [])
     current = [True]
@@ -840,7 +840,7 @@ async def test_local_turn_returns_final_or_queue_followup_while_complete_is_slow
     adapter = SimpleNamespace(start_native_cot=client.start, send=AsyncMock())
     gateway = object.__new__(GatewayRunner)
     gateway.adapters = {Platform.FEISHU: adapter}
-    gateway._adapter_for_source = lambda _: adapter
+    gateway._delivery_adapter_for = lambda _: adapter
     gateway._get_proxy_url = lambda: None
     gateway._resolve_turn_toolsets = lambda *_: ([], [])
     gateway._run_still_current_fn = lambda *_: lambda: True

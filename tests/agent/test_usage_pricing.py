@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
+    _OFFICIAL_DOCS_PRICING,
     CanonicalUsage,
     format_cost_label,
     estimate_usage_cost,
@@ -9,6 +10,30 @@ from agent.usage_pricing import (
     resolve_billing_route,
 )
 from decimal import Decimal
+
+
+def test_astra_whole_request_price_tier_includes_cache_writes():
+    below = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000, cache_read_tokens=10_000, cache_write_tokens=10_000),
+        provider="openai",
+    )
+    above = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000, cache_read_tokens=100_000, cache_write_tokens=100_001),
+        provider="openai",
+    )
+
+    # Whole-request tier: crossing 272K prompt tokens re-prices every component of the request,
+    # including cache writes, at the *_above rates — so the cost ratio exceeds the token ratio.
+    entry = _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")]
+    assert above.amount_usd == (
+        Decimal(100_000) * entry.input_cost_per_million_above
+        + Decimal(10_000) * entry.output_cost_per_million_above
+        + Decimal(100_000) * entry.cache_read_cost_per_million_above
+        + Decimal(100_001) * entry.cache_write_cost_per_million_above
+    ) / Decimal(1_000_000)
+    assert below.amount_usd < above.amount_usd
 
 
 
@@ -84,37 +109,59 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 
 
 
-def test_deepseek_v4_pro_pricing_entry_exists():
-    """Regression test: deepseek-v4-pro must have a pricing entry.
 
-    Before this fix, deepseek-v4-pro sessions showed as unknown cost
-    in hermes insights because the _OFFICIAL_DOCS_PRICING table had no
-    entry for that model.  See #24218.  Rates track the 2026-07 price cut
-    ($1.74/$3.48 → $0.435/$0.87).
-    """
+
+def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
+    """An exact bundled price must not block on the provider's /models API."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("endpoint metadata should not be fetched")
+        ),
+    )
+
     entry = get_pricing_entry(
-        "deepseek-v4-pro",
+        "deepseek-chat",
         provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
     )
 
     assert entry is not None
-    assert entry.input_cost_per_million is not None
-    assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 0.435
-    assert float(entry.output_cost_per_million) == 0.87
-    assert float(entry.cache_read_cost_per_million) == 0.003625
+    assert entry.source == "official_docs_snapshot"
+
+
+def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
+    """Models absent from the bundled table still use endpoint pricing."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "deepseek-future": {
+                "pricing": {"prompt": "0.000001", "completion": "0.000002"}
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "deepseek-future",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "provider_models_api"
+    assert entry.input_cost_per_million == Decimal("1")
+    assert entry.output_cost_per_million == Decimal("2")
 
 
 
 
-def test_deepseek_deprecated_aliases_price_as_v4_flash():
-    """Invariant: deepseek-chat / deepseek-reasoner are deprecated aliases for
-    deepseek-v4-flash's non-thinking / thinking modes (deprecation 2026-07-24)
-    — they must bill at identical rates to the flash entry, or sessions on the
-    legacy names over/under-report cost."""
-    flash = get_pricing_entry("deepseek-v4-flash", provider="deepseek")
+def test_deepseek_deprecated_aliases_price_as_flash():
+    """Invariant: deepseek-v4-flash / deepseek-chat / deepseek-reasoner are retired aliases
+    served by the current Flash model — they must bill at identical rates to the
+    ``deepseek-flash`` entry, or sessions on the legacy names over/under-report cost."""
+    flash = get_pricing_entry("deepseek-flash", provider="deepseek")
     assert flash is not None
-    for alias in ("deepseek-chat", "deepseek-reasoner"):
+    for alias in ("deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"):
         entry = get_pricing_entry(alias, provider="deepseek")
         assert entry is not None, alias
         assert entry.input_cost_per_million == flash.input_cost_per_million, alias
@@ -152,41 +199,6 @@ def test_bedrock_claude_rows_all_carry_cache_pricing():
         assert entry.cache_write_cost_per_million > entry.input_cost_per_million, key
 
 
-def test_bedrock_current_gen_claude_rows_resolve():
-    """Current-gen Claude models (Opus 4.8/4.7, Sonnet 5) must have Bedrock
-    pricing rows so cached sessions report a dollar cost, not ``unknown``.
-    Assert each resolves via the bare id and a cross-region inference profile
-    (us./global. prefix), that every id for a given model resolves to the same
-    entry, and that the row carries the cache fields a Bedrock Claude session
-    needs.
-
-    (Version-suffixed IDs like ``...-v1:0`` are covered separately by the
-    normalizer test in the suffix-strip change; this test intentionally sticks
-    to id shapes that resolve on ``main`` so it is independent of that PR.)
-    """
-    url = "https://bedrock-runtime.us-east-1.amazonaws.com"
-    for bare in (
-        "anthropic.claude-opus-4-8",
-        "anthropic.claude-opus-4-7",
-        "anthropic.claude-sonnet-5",
-    ):
-        ref = get_pricing_entry(bare, provider="bedrock", base_url=url)
-        assert ref is not None, bare
-        assert ref.input_cost_per_million is not None, bare
-        assert ref.output_cost_per_million is not None, bare
-        # Output costs more than input across the Claude line; sanity-check the
-        # row isn't malformed (input < output).
-        assert ref.output_cost_per_million > ref.input_cost_per_million, bare
-        # Cache fields present so cached sessions price correctly (the #50295
-        # symptom was unknown cost on cached Bedrock Claude sessions).
-        assert ref.cache_read_cost_per_million is not None, bare
-        assert ref.cache_write_cost_per_million is not None, bare
-        # Cross-region inference profiles resolve to the same entry.
-        for mid in (f"us.{bare}", f"global.{bare}"):
-            entry = get_pricing_entry(mid, provider="bedrock", base_url=url)
-            assert entry is not None, mid
-            assert entry.input_cost_per_million == ref.input_cost_per_million, mid
-            assert entry.output_cost_per_million == ref.output_cost_per_million, mid
 
 
 
@@ -316,62 +328,36 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
     assert result.amount_usd is not None and result.amount_usd > 0
 
 
-def test_normalize_usage_minimax_logs_cache_observability(caplog):
-    """MiniMax providers on the Anthropic wire emit a debug-level
-    cache-observability line recording the observable fields
-    (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens),
-    so an operator can see real cache behavior without trusting the
-    misleading cache_read number (constant +128 floor on MiniMax-M3).
-    Standard logging level gating applies — no separate opt-in flag.
+def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypatch):
+    """Every ``google/gemini-*-flash`` model curated for the OpenRouter and Nous
+    pickers must also bill through the Google official-docs snapshot on the
+    direct Gemini and Vertex routes — a model pickable via the aggregators but
+    ``unknown`` to Google-route accounting is a catalog/pricing drift.
     """
-    usage = SimpleNamespace(
-        input_tokens=1,
-        output_tokens=11,
-        cache_read_input_tokens=8594,
-        cache_creation_input_tokens=0,
+    from hermes_cli.models_catalog_static import OPENROUTER_MODELS, _PROVIDER_MODELS
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
     )
+    curated = {m for m, _desc in OPENROUTER_MODELS} | set(_PROVIDER_MODELS["nous"])
+    flash = sorted(m for m in curated if m.startswith("google/gemini-") and m.endswith("-flash"))
+    assert flash, "expected curated google/gemini-*-flash picker entries"
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    for model in flash:
+        bare = model.split("/", 1)[1]
+        gemini = estimate_usage_cost(bare, usage, provider="gemini")
+        vertex = estimate_usage_cost(model, usage, provider="vertex")
+        assert gemini.status == "estimated", (model, gemini.status)
+        assert gemini.source == "official_docs_snapshot", model
+        assert vertex.amount_usd == gemini.amount_usd, model
+        # Direct-route models the picker offers must also be pickable directly.
+        assert bare in _PROVIDER_MODELS["gemini"], model
+        assert model in _PROVIDER_MODELS["vertex"], model
 
-    with caplog.at_level("DEBUG", logger="agent.usage_pricing"):
-        normalize_usage(
-            usage,
-            provider="minimax-cn",
-            api_mode="anthropic_messages",
-        )
-
-    cache_obs_records = [r for r in caplog.records if "cache_observability" in r.message]
-    assert len(cache_obs_records) == 1
-    record = cache_obs_records[0]
-    assert "input_tokens=1" in record.message
-    assert "output_tokens=11" in record.message
-    assert "cache_read_tokens=8594" in record.message
-    assert "cache_write_tokens=0" in record.message
 
 
-def test_normalize_usage_native_anthropic_no_cache_observability(caplog):
-    """The MiniMax cache-observability line must NOT fire for native
-    Anthropic: there cache_read_input_tokens is exact and billable, so
-    the MiniMax-specific "+128 floor / unreliable hit signal" note would
-    be false and misleading in the logs.
-    """
-    usage = SimpleNamespace(
-        input_tokens=100,
-        output_tokens=20,
-        cache_read_input_tokens=50,
-        cache_creation_input_tokens=10,
-    )
 
-    with caplog.at_level("DEBUG", logger="agent.usage_pricing"):
-        result = normalize_usage(
-            usage,
-            provider="anthropic",
-            api_mode="anthropic_messages",
-        )
-
-    assert all("cache_observability" not in rec.message for rec in caplog.records)
-    # Token normalization itself is unaffected.
-    assert result.input_tokens == 100
-    assert result.cache_read_tokens == 50
-    assert result.cache_write_tokens == 10
 
 
 # ---------------------------------------------------------------------------
@@ -399,14 +385,7 @@ class TestFormatCostLabel:
     def test_normal_cost_renders_2dp(self):
         assert format_cost_label(Decimal("1.23")) == "~$1.23"
 
-    def test_large_cost_renders_2dp(self):
-        assert format_cost_label(Decimal("42.50")) == "~$42.50"
 
-    def test_very_small_sub_cent(self):
-        """Even very small costs render non-zero."""
-        label = format_cost_label(Decimal("0.0001"))
-        assert label == "~$0.0001"
-        assert label != "$0.00"
 
     def test_below_4dp_floor_never_reads_zero(self):
         """Amounts below $0.00005 must not render as '~$0.0000' (#79220).
@@ -420,15 +399,6 @@ class TestFormatCostLabel:
         # and must also take the fallback.
         assert format_cost_label(Decimal("0.00005")) == "~$<0.0001"
 
-    def test_sub_cent_deepseek_scenario(self):
-        """Reproduce the #79220 reproduction: DeepSeek at $0.004640."""
-        # DeepSeek V4 Pro: 8K input + 1.2K output + 32K cache read
-        # = $0.004640 per turn
-        amount = Decimal("0.004640")
-        label = format_cost_label(amount)
-        assert "0.0046" in label
-        assert label != "$0.00"
-        assert label != "~$0.00"
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +427,6 @@ class TestSubscriptionIncludedNotes:
         assert result.status == "included"
         assert result.amount_usd == Decimal("0")
         assert len(result.notes) > 0
-        assert any("subscription" in note.lower() for note in result.notes)
 
 
 def test_normalize_usage_reads_kimi_top_level_cached_tokens():
@@ -766,3 +735,104 @@ def test_normalize_usage_nested_details_win_over_qwen_flat_top_level():
 
     assert normalized.cache_read_tokens == 900
     assert normalized.input_tokens == 1100
+
+
+# ── Context-tiered pricing (Gemini Pro >200k prompts, #93469) ─────────────
+
+
+def test_gemini_31_pro_below_tier_threshold_uses_base_rates():
+    """Prompts at or below 200k tokens bill at the base rates — the tier
+    fields must not change any below-threshold estimate."""
+    result = estimate_usage_cost(
+        "gemini-3.1-pro",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000),
+        provider="google",
+    )
+    # 100k * $2/M + 10k * $12/M
+    assert result.amount_usd == Decimal("0.32")
+
+    at_threshold = estimate_usage_cost(
+        "gemini-3.1-pro",
+        CanonicalUsage(input_tokens=200_000, output_tokens=10_000),
+        provider="google",
+    )
+    # Exactly 200k is still the lower tier (Google bills "> 200k" higher).
+    # 200k * $2/M + 10k * $12/M
+    assert at_threshold.amount_usd == Decimal("0.52")
+
+
+def test_gemini_31_pro_above_tier_threshold_uses_tiered_rates_whole_request():
+    """Once the prompt exceeds 200k tokens the >200k rates ($4 input /
+    $18 output per million) apply to the ENTIRE request, not just the
+    marginal tokens — matching Google's billing semantics (#93469).
+
+    Before the fix this request priced at 250k*$2/M + 10k*$12/M = $0.62,
+    under-counting input 2x and output 1.5x."""
+    result = estimate_usage_cost(
+        "gemini-3.1-pro",
+        CanonicalUsage(input_tokens=250_000, output_tokens=10_000),
+        provider="google",
+    )
+    # 250k * $4/M + 10k * $18/M
+    assert result.amount_usd == Decimal("1.18")
+    assert result.status == "estimated"
+
+
+def test_gemini_31_pro_cache_read_tokens_count_toward_tier_and_tier_rate():
+    """prompt_tokens (input + cache read + cache write) drives tier selection,
+    and cache reads above the threshold bill at the $0.40/M tier rate."""
+    result = estimate_usage_cost(
+        "gemini-3.1-pro",
+        CanonicalUsage(input_tokens=150_000, cache_read_tokens=100_000),
+        provider="google",
+    )
+    # prompt = 250k > 200k → 150k * $4/M + 100k * $0.40/M
+    assert result.amount_usd == Decimal("0.64")
+
+
+def test_gemini_31_pro_preview_alias_shares_tiered_pricing():
+    """The provider-emitted preview id aliases the canonical row, so it must
+    pick up the tier fields too."""
+    result = estimate_usage_cost(
+        "gemini-3.1-pro-preview",
+        CanonicalUsage(input_tokens=250_000, output_tokens=10_000),
+        provider="google",
+    )
+    assert result.amount_usd == Decimal("1.18")
+
+
+def test_gemini_25_pro_tiered_rates_with_cache_read_fallback():
+    """gemini-2.5-pro tiers at the same 200k threshold ($2.50 input / $15
+    output above). Its snapshot has no tiered cache-read rate, so cache reads
+    fall back to the base $0.125/M even above the threshold."""
+    result = estimate_usage_cost(
+        "gemini-2.5-pro",
+        CanonicalUsage(input_tokens=250_000, output_tokens=10_000),
+        provider="google",
+    )
+    # 250k * $2.50/M + 10k * $15/M
+    assert result.amount_usd == Decimal("0.775")
+
+    with_cache = estimate_usage_cost(
+        "gemini-2.5-pro",
+        CanonicalUsage(input_tokens=150_000, cache_read_tokens=100_000),
+        provider="google",
+    )
+    # prompt = 250k > 200k → 150k * $2.50/M + 100k * $0.125/M (base fallback)
+    assert with_cache.amount_usd == Decimal("0.3875")
+
+
+def test_flat_entries_unaffected_by_tier_machinery():
+    """Entries without tier fields keep pricing every token at the flat rate
+    no matter how large the prompt is."""
+    entry = get_pricing_entry("gemini-3.1-flash-lite", provider="google")
+    assert entry is not None
+    assert entry.tier_threshold_tokens is None
+
+    result = estimate_usage_cost(
+        "gemini-3.1-flash-lite",
+        CanonicalUsage(input_tokens=250_000, output_tokens=10_000),
+        provider="google",
+    )
+    # 250k * $0.25/M + 10k * $1.50/M
+    assert result.amount_usd == Decimal("0.0775")

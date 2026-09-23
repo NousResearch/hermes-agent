@@ -10,11 +10,14 @@ ten minutes, so the throwaway can be the one that survives.
 from __future__ import annotations
 
 import types
+import weakref
 
 import pytest
 
 from gateway.config import Platform
-from gateway.run import TurnRunner
+from gateway.session import SessionSource
+from gateway.run import GatewayRunner
+from gateway.run_turn_runner import TurnRunner
 
 
 def _attach(lane):
@@ -53,3 +56,99 @@ def test_the_rename_waits_for_the_model_title(lane):
 
     callback("Fix flaky auth test", "llm")
     assert renames == ["Fix flaky auth test"]
+
+
+@pytest.mark.anyio
+async def test_native_thread_rename_passes_only_the_initial_name_guard():
+    """The shared rename lane must honor the strict native adapter contract."""
+    calls: list[tuple[str, str, str | None]] = []
+
+    class StrictNativeAdapter:
+        async def rename_thread(
+            self,
+            thread_id: str,
+            name: str,
+            *,
+            only_if_current_name: str | None = None,
+        ) -> bool:
+            calls.append((thread_id, name, only_if_current_name))
+            return True
+
+    class NativeRenameRunner:
+        _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
+        _sanitize_discord_thread_title = GatewayRunner._sanitize_discord_thread_title
+        _rename_discord_auto_thread_for_session_title = (
+            GatewayRunner._rename_discord_auto_thread_for_session_title
+        )
+
+        def __init__(self, adapter):
+            self.adapters = {Platform.DISCORD: adapter}
+
+        def _delivery_adapter_for(self, source):
+            return self.adapters[source.platform]
+
+    source = types.SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="999",
+        chat_type="thread",
+        thread_id="999",
+        auto_thread_created=True,
+        auto_thread_initial_name="Initial words",
+    )
+
+    runner = NativeRenameRunner(StrictNativeAdapter())
+    await runner._rename_discord_auto_thread_for_session_title(
+        source,
+        "session-1",
+        "Semantic Session Title",
+    )
+
+    assert calls == [("999", "Semantic Session Title", "Initial words")]
+
+
+def test_title_thread_copy_preserves_transport_adapter_ref(monkeypatch):
+    """Multiplex-routed sources must keep their transport owner for side effects."""
+    captured_sources = []
+
+    class Adapter:
+        pass
+
+    adapter = Adapter()
+
+    async def noop():
+        return None
+
+    def fake_schedule(coro, loop, logger=None, log_message=None):
+        coro.close()
+        return None
+
+    monkeypatch.setattr("gateway.run.safe_schedule_threadsafe", fake_schedule)
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        profile="runtime-profile",
+        auto_thread_created=True,
+        auto_thread_initial_name="Initial words",
+    )
+    source._transport_adapter_ref = weakref.ref(adapter)
+
+    runner = types.SimpleNamespace(
+        _gateway_loop=types.SimpleNamespace(is_closed=lambda: False),
+        _schedule_rename_from_title_thread=GatewayRunner._schedule_rename_from_title_thread,
+    )
+
+    runner._schedule_rename_from_title_thread(
+        runner,
+        source,
+        lambda copied: captured_sources.append(copied) or noop(),
+        "Discord semantic thread rename",
+    )
+
+    assert len(captured_sources) == 1
+    copied = captured_sources[0]
+    assert copied is not source
+    assert copied.profile == "runtime-profile"
+    assert copied._transport_adapter_ref() is adapter

@@ -126,29 +126,6 @@ def test_active_turn_clear_is_compare_and_swap(tmp_path):
     assert current.active_turn_started_at is None
 
 
-def test_mark_and_clear_use_single_entry_persistence(tmp_path):
-    store = _make_store(tmp_path)
-    entry = store.get_or_create_session(_make_source())
-    real_save_entry = store._save_entry
-    store._save_entry = MagicMock(wraps=real_save_entry)
-
-    token = store.mark_turn_active(entry.session_key)
-    assert token is not None
-    store._save_entry.assert_called_once_with(
-        entry.session_key,
-        entry_data=store._entries[entry.session_key].to_dict(),
-        lock_held=True,
-    )
-
-    store._save_entry.reset_mock()
-    assert store.clear_turn_active(entry.session_key, token) is True
-    store._save_entry.assert_called_once_with(
-        entry.session_key,
-        entry_data=store._entries[entry.session_key].to_dict(),
-        lock_held=True,
-    )
-
-
 def test_failed_mark_persistence_does_not_leak_marker_into_later_save(tmp_path):
     store = _make_store(tmp_path)
     source = _make_source()

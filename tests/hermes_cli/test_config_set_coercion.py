@@ -42,6 +42,18 @@ class TestNumericCoercion:
         v = _read(tmp_path, "agent", "max_turns")
         assert v == -2.5 and isinstance(v, float)
 
+    def test_lossy_decimal_identifier_stays_string(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        client_id = "123456789012.98765432109876"
+
+        cfg.set_config_value("mcp_servers.example.oauth.client_id", client_id)
+
+        saved = _read(
+            tmp_path, "mcp_servers", "example", "oauth", "client_id"
+        )
+        assert saved == client_id
+        assert isinstance(saved, str)
+
 
 class TestNullCoercion:
     @pytest.mark.parametrize("token", ["null", "none", "None", "~"])

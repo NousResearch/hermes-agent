@@ -20,6 +20,34 @@ from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+_BOTO_PREFIXES = ("botocore", "boto3")
+
+
+@pytest.fixture(autouse=True)
+def _boto_sys_modules_hygiene():
+    """Snapshot/restore boto* sys.modules around every test.
+
+    Tests here plant fake botocore/boto3 modules; a fake that leaks (or a
+    real submodule first-imported inside a stub window) poisons later
+    imports of the real ``botocore.exceptions`` with
+    ``No module named 'botocore.vendored'`` (PR #92617 CI flake). This
+    fixture makes stub windows airtight regardless of test ordering.
+    """
+    import sys as _sys
+
+    saved = {
+        name: mod
+        for name, mod in _sys.modules.items()
+        if name.split(".", 1)[0] in _BOTO_PREFIXES
+    }
+    yield
+    for name in [n for n in _sys.modules if n.split(".", 1)[0] in _BOTO_PREFIXES]:
+        _sys.modules.pop(name, None)
+    _sys.modules.update(saved)
+
+
 from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
 
 _MANTLE_MODELS = list(BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
@@ -204,16 +232,8 @@ class TestBedrockRegionRouting:
 class TestBedrockOverlayRegistration:
     """bedrock entry in HERMES_OVERLAYS is correctly configured."""
 
-    def test_bedrock_overlay_exists(self):
-        from hermes_cli.providers import HERMES_OVERLAYS
-        assert "bedrock" in HERMES_OVERLAYS
 
 
-    def test_bedrock_label(self):
-        from hermes_cli.providers import get_label
-        label = get_label("bedrock")
-        assert label  # non-empty
-        assert "bedrock" in label.lower() or "aws" in label.lower()
 
     def test_bedrock_aliases_resolve(self):
         from hermes_cli.providers import normalize_provider

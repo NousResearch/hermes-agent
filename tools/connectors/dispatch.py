@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 from tools.registry import tool_error
 from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
-from tools.connectors.gateway.merge import assemble_results, fill_remote_failure, partition_calls
+from tools.connectors.gateway.merge import assemble_results, partition_calls
 
 
 def dispatch_connector_call(name, arguments, tool_call_id):
@@ -27,20 +27,30 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
         return tool_error(f"too many calls: {len(calls)} > max {MAX_CALLS_PER_DISPATCH}. "
                           "Retry with fewer calls per batch.")
     partition = partition_calls(calls)
-    if partition.local:
-        from tools.tool_search_validation import local_batch_error
-        return tool_error(local_batch_error(calls))
     entries = list(partition.errors)
-    for offset, plan in enumerate(partition.remote):
+    plans = {
+        plan.position: (plan.name, plan.arguments, False)
+        for plan in partition.remote
+    }
+    plans.update({
+        position: (str(call.get("name") or ""), dict(call.get("arguments") or {}), True)
+        for position, call in partition.local
+    })
+    ordered = sorted(plans.items())
+    for offset, (position, (name, arguments, is_local)) in enumerate(ordered):
         if is_interrupted():
-            # Check before every entry so /stop prevents unstarted remote side effects.
-            entries.extend(fill_remote_failure(
-                partition.remote[offset:], "Stopped by the user before this call was made.",
-                code="INTERRUPTED"))
+            # Check before every entry so /stop prevents unstarted side effects.
+            entries.extend({
+                "index": pending_position,
+                "name": pending_name,
+                "error": {"code": "INTERRUPTED", "message": "Stopped by the user before this call was made."},
+            } for pending_position, (pending_name, _pending_args, _is_local) in ordered[offset:])
             break
         # Each entry must run its own policy and middleware.
+        dispatch_name = "tool_call" if is_local else name
+        dispatch_args = {"calls": [{"name": name, "arguments": arguments}]} if is_local else arguments
         payload = handle_function_call(
-            plan.name, plan.arguments, **asdict(ids), user_task=user_task,
+            dispatch_name, dispatch_args, **asdict(ids), user_task=user_task,
             enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),
             skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
             skip_tool_execution_middleware=False,
@@ -50,7 +60,7 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
             value = json.loads(payload) if isinstance(payload, str) else payload
         except ValueError:
             value = payload
-        entry = {"index": plan.position, "name": plan.name}
+        entry = {"index": position, "name": name}
         if isinstance(value, dict) and "error" in value:
             error = value["error"]
             entry["error"] = error if isinstance(error, dict) else {"code": "TOOL_ERROR", "message": str(error)}

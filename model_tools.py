@@ -727,9 +727,7 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
     underlying_name, underlying_args, err = ts.resolve_underlying_call(args)
     if err or not underlying_name:
         return tool_error(err or "tool_call could not be resolved"), None
-    if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
-        if not ts.connections_in_scope(current_defs):
-            return tool_error("Connectors are not available in this session."), None
+    if underlying_name in {ts.CONNECTOR_BATCH_SENTINEL, ts.LOCAL_BATCH_SENTINEL}:
         return None, (underlying_name, underlying_args)
     # Defense in depth: resolve_underlying_call only checks the global
     # registry; also require membership in the session-scoped catalog.
@@ -902,13 +900,17 @@ def handle_function_call(
         result, underlying = bridged
         if underlying is None:
             return _emit(result, duration_ms=_elapsed_ms(start))
-        from tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
-        if underlying[0] == CONNECTOR_BATCH_SENTINEL:
-            return _emit(dispatch_connector_batch(
+        from tools import tool_search as ts
+        from tools.connectors import dispatch_connector_batch
+        if underlying[0] in {ts.CONNECTOR_BATCH_SENTINEL, ts.LOCAL_BATCH_SENTINEL}:
+            # The ordered dispatcher re-enters handle_function_call for every
+            # entry, so each real tool owns its one post_tool_call event. Do not
+            # emit an additional observer event for the synthetic bridge call.
+            return dispatch_connector_batch(
                 underlying[1]["calls"], ids, user_task=user_task,
                 enabled_tools=enabled_tools, middleware_trace=trace,
                 enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-            ), duration_ms=_elapsed_ms(start))
+            )
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
             skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,

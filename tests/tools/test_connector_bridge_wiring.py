@@ -79,15 +79,14 @@ def test_resolve_single_connector_entry_returns_sentinel():
     assert args["calls"][0]["arguments"] == {"to": "x"}
 
 
-def test_resolve_multi_local_batch_echoes_first_entry_as_the_retry_shape():
-    # The correction restates the valid single-entry shape with the caller's OWN first
-    # entry (a 9B model re-sent the identical two-entry array when told only the rule).
+def test_resolve_multi_local_batch_returns_ordered_batch_sentinel():
+    from tools.tool_search import LOCAL_BATCH_SENTINEL
+
     first = {"name": "some_local_tool", "arguments": {"query": "alpha", "limit": 20}}
     name, args, err = resolve_underlying_call({"calls": [first, {"name": "another_local", "arguments": {}}]})
-    assert name is None
-    assert "you sent 2" in err
-    retry = err.split("Retry with only: ", 1)[1].split(" then issue", 1)[0]
-    assert json.loads(retry) == {"calls": [first]}
+    assert err is None
+    assert name == LOCAL_BATCH_SENTINEL
+    assert args["calls"][0] == first
 
 
 def test_resolve_unknown_name_points_at_tool_search_not_direct_call():

@@ -211,6 +211,22 @@ def test_repeated_post_tool_observation_is_idempotent(tmp_path: Path) -> None:
     assert len(journal.list(after_cursor=None, limit=10).events) == 1
 
 
+def test_event_key_is_stable_without_optional_runtime_identifiers(tmp_path: Path) -> None:
+    journal = ActionJournal(tmp_path / "actions.sqlite3", profile_key="becky")
+    kwargs = {
+        "function_name": "mcp_todoist_add_tasks",
+        "function_args": {"tasks": [{"content": "private"}]},
+        "result": {"success": True},
+        "status": "ok",
+        "journal": journal,
+    }
+    first = record_tool_mutation(**kwargs)
+    second = record_tool_mutation(**kwargs)
+    assert first is not None and second is not None
+    assert first.source_event_key == second.source_event_key
+    assert len(journal.list(after_cursor=None, limit=10).events) == 1
+
+
 def test_common_post_tool_boundary_records_normal_workflow_mutation(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -228,6 +244,40 @@ def test_common_post_tool_boundary_records_normal_workflow_mutation(
         tool_call_id="call-normal",
         status="ok",
     )
+    from hermes_constants import hermes_home_key
+
+    journal = ActionJournal(
+        tmp_path / "profile" / "gateway" / "becky-actions.sqlite3",
+        profile_key=hermes_home_key(tmp_path / "profile"),
+    )
+    assert len(journal.list(after_cursor=None, limit=10).events) == 1
+    close_action_journals()
+
+
+def test_real_dispatch_boundary_records_normal_telegram_mutation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The ordinary function-call dispatcher reaches the journal observer."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    from agent.action_mutations import close_action_journals
+    import model_tools
+
+    close_action_journals()
+    monkeypatch.setattr(
+        model_tools.registry,
+        "dispatch",
+        lambda *_args, **_kwargs: {"success": True},
+    )
+    result = model_tools.handle_function_call(
+        "mcp_google_calendar_create_event",
+        {"summary": "private appointment"},
+        task_id="telegram-task",
+        session_id="telegram-session",
+        turn_id="telegram-turn",
+        tool_call_id="telegram-call",
+    )
+    assert result == {"success": True}
+
     from hermes_constants import hermes_home_key
 
     journal = ActionJournal(

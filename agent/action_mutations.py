@@ -8,13 +8,15 @@ construct the bounded event projection sent to the profile-local journal.
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Mapping
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID, uuid5
 
 from gateway.action_journal import ActionJournal, MutationEvent, MutationStatus, MutationType
 
@@ -276,6 +278,8 @@ def _resolve_spec(
 def _event_key(
     *,
     function_name: str,
+    function_args: Mapping[str, Any] | None,
+    task_id: str,
     session_id: str,
     turn_id: str,
     tool_call_id: str,
@@ -284,17 +288,29 @@ def _event_key(
     override = _EVENT_KEY_OVERRIDE.get()
     if override is not None:
         return override
+    try:
+        args_blob = json.dumps(
+            function_args if isinstance(function_args, Mapping) else {},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+    except Exception:
+        # The arguments are only used transiently to make an otherwise
+        # unlabelled call deterministic; never persist or log this fallback.
+        args_blob = "{}"
+    args_digest = hashlib.sha256(args_blob.encode("utf-8")).hexdigest()
     identity = "\0".join(
         (
+            str(task_id or ""),
             str(session_id or ""),
             str(turn_id or ""),
             str(tool_call_id or ""),
             str(api_request_id or ""),
             str(function_name),
+            args_digest,
         )
     )
-    if not any((session_id, turn_id, tool_call_id, api_request_id)):
-        return uuid4()
     return uuid5(_EVENT_NAMESPACE, identity)
 
 
@@ -367,6 +383,7 @@ def record_tool_mutation(
     function_args: Mapping[str, Any] | None,
     result: Any,
     status: str | None,
+    task_id: str = "",
     session_id: str = "",
     turn_id: str = "",
     tool_call_id: str = "",
@@ -392,6 +409,8 @@ def record_tool_mutation(
         return None
     key = _event_key(
         function_name=function_name,
+        function_args=arguments,
+        task_id=task_id,
         session_id=session_id,
         turn_id=turn_id,
         tool_call_id=tool_call_id,

@@ -1241,6 +1241,7 @@ def _emit_post_tool_call_hook(
             function_args=function_args,
             result=result,
             status=observed_status,
+            task_id=task_id or "",
             session_id=session_id or "",
             turn_id=turn_id or "",
             tool_call_id=tool_call_id or "",

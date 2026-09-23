@@ -2680,7 +2680,17 @@ async def start_becky_loops_bridge(
                         # gateway lost its response. Do not post a duplicate;
                         # surface an incomplete operation for reconciliation.
                         raise RuntimeError("action loop message delivery is ambiguous")
+                    if stage == "topic_creating" and not thread_id:
+                        # Topic creation is also an external side effect. If
+                        # the process died after Telegram accepted it but
+                        # before the receipt was durably written, retrying the
+                        # create call could produce a duplicate topic.
+                        raise RuntimeError("action loop topic creation is ambiguous")
                     if not isinstance(thread_id, str) or not _POSITIVE_TELEGRAM_ID_RE.fullmatch(thread_id):
+                        action_journal.update_start_loop_progress(
+                            idempotency_key,
+                            {"stage": "topic_creating"},
+                        )
                         thread_id = await create_topic(
                             chat_id=config.chat_id,
                             title=title,

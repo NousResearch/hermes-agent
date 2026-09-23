@@ -5561,9 +5561,12 @@ class TurnRunner:
         )
         # None = no per-platform override → follow global config
         _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
+            not ctx.private_run
+            and (
+                _scfg.enabled and _scfg.transport != "off"
+                if _plat_streaming is None
+                else bool(_plat_streaming)
+            )
         )
         _want_stream_deltas = _streaming_enabled
         _want_interim_messages = ctx.interim_assistant_messages_enabled
@@ -5957,9 +5960,13 @@ class TurnRunner:
             else None
         )
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
-        agent.stream_delta_callback = _stream_delta_cb
-        agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-        agent.status_callback = ctx._status_callback_sync
+        agent.stream_delta_callback = None if ctx.private_run else _stream_delta_cb
+        agent.interim_assistant_callback = (
+            None
+            if ctx.private_run
+            else (_interim_assistant_cb if _want_interim_messages else None)
+        )
+        agent.status_callback = None if ctx.private_run else ctx._status_callback_sync
         # Credits / out-of-band notices (usage bands, depletion, restored).
         # Messaging has no persistent status bar, so each notice is a
         # standalone push: render to a single plaintext line and deliver via
@@ -7490,7 +7497,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from agent.action_mutations import (
             REVIEWED_MUTATIONS,
-            get_action_journal,
             reviewed_mutation_spec,
         )
         from gateway.becky_actions import OneShotResult
@@ -7527,13 +7533,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
 
         source = SessionSource(
-            # WEBHOOK has no platform adapter and disables progress delivery;
-            # the configured Telegram chat is used only for profile scoping.
-            platform=Platform.WEBHOOK,
-            chat_id="becky-shortcut",
+            # Preserve the configured Telegram/profile scope. ``private_run``
+            # below suppresses every outbound progress/status surface.
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
             chat_type="dm",
             user_id="becky-shortcut",
             user_name="Becky Shortcut",
+            profile=getattr(self, "_becky_profile_name", None),
         )
         policy = (
             "This is a private Becky Shortcut one-shot. Execute immediately only "
@@ -7560,12 +7567,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_id=f"becky-one-shot-{idempotency_key}",
                     session_key=f"becky-one-shot:{idempotency_key}",
                     message_type="text",
+                    private_run=True,
                 )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning("Becky one-shot agent execution failed", exc_info=True)
             return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+
+        # Use the journal selected when the authenticated bridge was started.
+        # The agent turn may temporarily enter a routed profile scope; looking
+        # up the process-global journal after that scope exits can otherwise
+        # read a different profile than the mutation observer wrote.
+        journal = getattr(self, "_becky_action_journal", None)
+        if journal is None:
+            from agent.action_mutations import get_action_journal
+
+            journal = get_action_journal()
+        mutation = journal.get(idempotency_key)
+        if mutation is not None:
+            # The mutation observer is authoritative. A model may emit a
+            # blocked follow-up after the one permitted handler call; that
+            # must not turn an already-attempted action into ``needs_loop``.
+            if (
+                mutation.action_type.value in {"calendar", "todoist", "note"}
+                and mutation.operation
+                in {"create_event", "create_task", "create_note"}
+            ):
+                return OneShotResult(
+                    schema_version="1",
+                    disposition=mutation.status.value,
+                    event=mutation,
+                )
 
         events = result.get("turn_tool_events") if isinstance(result, dict) else None
         if not isinstance(events, list) or len(events) != 1:
@@ -7584,7 +7617,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         spec = reviewed_mutation_spec(tool_name)
         if spec is None or not spec.one_shot:
             return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
-        journal = get_action_journal()
         mutation = journal.get(idempotency_key)
         if mutation is None:
             return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
@@ -7876,6 +7908,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             db = getattr(self._session_db, "_db", None)
             if config is None or db is None:
                 return
+            # Pin the bridge and its one-shot executor to the startup profile's
+            # durable journal.  Agent turns may enter another profile scope,
+            # but dashboard receipts must remain isolated to this bridge.
+            from agent.action_mutations import get_action_journal
+
+            self._becky_action_journal = get_action_journal()
+            self._becky_profile_name = (
+                self._active_profile_name()
+                if getattr(getattr(self, "config", None), "multiplex_profiles", False)
+                else None
+            )
             telegram_adapter = self.adapters.get(Platform.TELEGRAM)
             if telegram_adapter is not None:
                 setter = getattr(telegram_adapter, "set_becky_close_command_handler", None)
@@ -7922,6 +7965,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_store=getattr(self, "session_store", None),
                 topic_sender=topic_sender,
                 topic_controller=topic_controller,
+                action_journal=self._becky_action_journal,
                 one_shot_executor=self._execute_becky_one_shot,
                 agent_dispatcher=(
                     self._dispatch_becky_agent_reply
@@ -28674,6 +28718,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        private_run: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -28694,6 +28739,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                private_run=private_run,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -28707,6 +28753,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                private_run=private_run,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -28850,6 +28897,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        private_run: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -28943,6 +28991,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
+        if private_run:
+            progress_mode = "off"
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
@@ -28989,7 +29039,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            not private_run
+            and progress_mode not in {"off", "log"}
+            and source.platform != Platform.WEBHOOK
+        )
         # Live working-state status for text-rendering typing indicators
         # (Slack's assistant status line). Independent of tool_progress —
         # Slack defaults tool_progress off (permanent lines spam channels)
@@ -29000,6 +29054,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _live_status_mode = resolve_display_setting(
             user_config, platform_key, "live_status", "full"
         )
+        if private_run:
+            _live_status_mode = "off"
         _live_status_adapter = self._adapter_for_source(source)
         if not getattr(_live_status_adapter, "supports_status_text", False):
             _live_status_adapter = None
@@ -29007,7 +29063,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _live_status_adapter = None
         # "log" mode: tool calls are written to ~/.hermes/logs/tool_calls.log
         # instead of the chat (#3459 / #3458). Gateway-only by design.
-        log_mode_enabled = progress_mode == "log" and source.platform != Platform.WEBHOOK
+        log_mode_enabled = (
+            not private_run
+            and progress_mode == "log"
+            and source.platform != Platform.WEBHOOK
+        )
         log_queue: "queue.Queue | None" = queue.Queue() if log_mode_enabled else None
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
@@ -29018,7 +29078,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
+            not private_run
+            and source.platform != Platform.WEBHOOK
             and interim_assistant_messages_mode != "off"
         )
         # thinking_progress is independent — if enabled, we need the progress
@@ -29031,6 +29092,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
+        if private_run:
+            _thinking_enabled = False
         # Slack-native task cards (#29483): when the Slack adapter's opt-in
         # is set, tool progress renders as native plan/task cards via
         # chat.startStream — the progress queue is needed even though Slack
@@ -29039,7 +29102,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _progress_adapter_for_native = self._adapter_for_source(source)
         _native_slack_task_cards = False
         if (
-            source.platform == Platform.SLACK
+            not private_run
+            and source.platform == Platform.SLACK
             and _progress_adapter_for_native is not None
             and hasattr(_progress_adapter_for_native, "native_task_cards_enabled")
         ):
@@ -29095,7 +29159,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # are collected here and deleted after the final response lands.
         # Failed runs skip cleanup so the bubbles remain as breadcrumbs.
         _cleanup_progress = bool(
-            resolve_display_setting(user_config, platform_key, "cleanup_progress")
+            not private_run
+            and resolve_display_setting(user_config, platform_key, "cleanup_progress")
         )
         _cleanup_adapter = self._adapter_for_source(source) if _cleanup_progress else None
         # getattr, not attribute access — same duck-typed-adapter guard as the
@@ -29159,6 +29224,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            private_run=private_run,
         )
         turn_runner = TurnRunner(self, turn_ctx)
         # Callback invoked by agent on tool lifecycle events — extracted to
@@ -29360,7 +29426,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         turn_ctx._event_callback_sync = turn_runner._event_callback_sync
 
         # Bridge sync status_callback → async adapter.send for context pressure
-        _status_adapter = self._adapter_for_source(source)
+        _status_adapter = None if private_run else self._adapter_for_source(source)
         _status_chat_id = source.chat_id
         if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
             # Feishu topics only keep messages inside the topic when they are
@@ -29407,7 +29473,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         #
         # Gates: voice input, auto-TTS enabled for this chat, adapter
         # supports streaming, and a usable streaming TTS provider configured.
-        _stts_adapter = self._adapter_for_source(source)
+        _stts_adapter = None if private_run else self._adapter_for_source(source)
         _is_voice_input = (
             message_type is not None
             and str(getattr(message_type, "value", message_type)).lower() == "voice"
@@ -29578,7 +29644,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             default=True,
             allow_generic=True,
         )
-        if _long_running_mode == "off":
+        if private_run or _long_running_mode == "off":
             _NOTIFY_INTERVAL = None
         _notify_start = time.time()
 

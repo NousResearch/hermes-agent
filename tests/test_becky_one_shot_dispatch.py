@@ -45,3 +45,25 @@ def test_one_shot_dispatch_allows_one_reviewed_handler(monkeypatch) -> None:
             "mcp__todoist__create_task", {"content": "Buy eggs"}
         )
     assert calls == ["mcp__todoist__create_task"]
+
+
+def test_outer_dispatch_blocks_direct_delegate_branch_before_handler(monkeypatch) -> None:
+    from agent import tool_executor
+
+    calls: list[str] = []
+    monkeypatch.setattr(tool_executor, "_emit_terminal_post_tool_call", lambda *a, **k: None)
+    with model_tools.becky_one_shot_dispatch_scope(
+        {"mcp__todoist__create_task"}
+    ):
+        result = tool_executor._run_agent_tool_execution_middleware(
+            object(),
+            function_name="delegate_task",
+            function_args={"task": "mutate something"},
+            effective_task_id="task",
+            tool_call_id="call",
+            execute=lambda _args: calls.append("handler") or "unsafe",
+        )
+
+    assert result.blocked is True
+    assert result.dispatched is False
+    assert calls == []

@@ -102,6 +102,8 @@ class TurnContext:
     log_mode_enabled: bool = False
     interim_assistant_messages_enabled: bool = False
     needs_progress_queue: bool = False
+    # Machine-driven private run: never publish progress/status/stream output.
+    private_run: bool = False
 
     # --- lazy-imported callables captured from the outer body -------------
     AIAgent: Any = None

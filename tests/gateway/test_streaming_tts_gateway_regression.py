@@ -155,3 +155,53 @@ def test_run_agent_voice_turn_no_name_error(monkeypatch, tmp_path):
     assert result["final_response"] == "Hello from the agent."
 
 
+def test_private_run_suppresses_stream_status_and_typing(monkeypatch, tmp_path):
+    """A Shortcut execution keeps the Telegram profile but never publishes."""
+    _setup_monkeypatches(monkeypatch, tmp_path)
+    runner = _make_runner()
+
+    class _CountingAdapter:
+        supports_status_text = True
+
+        def __init__(self):
+            self.calls = []
+
+        async def send(self, *args, **kwargs):
+            self.calls.append(("send", args, kwargs))
+            return SimpleNamespace(success=True, message_id="1")
+
+        async def send_typing(self, *args, **kwargs):
+            self.calls.append(("typing", args, kwargs))
+
+        async def edit_message(self, *args, **kwargs):
+            self.calls.append(("edit", args, kwargs))
+            return SimpleNamespace(success=True)
+
+        def _should_auto_tts_for_chat(self, _chat_id):
+            return True
+
+        def get_pending_message(self, _session_key):
+            return None
+
+    adapter = _CountingAdapter()
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner,
+        "_adapter_for_source",
+        lambda self, source: adapter,
+    )
+
+    async def _run():
+        return await runner._run_agent(
+            message="Create one event",
+            context_prompt="private",
+            history=[],
+            source=_make_voice_source(),
+            session_id="session-private",
+            session_key="agent:main:telegram:dm:12345",
+            message_type=MessageType.VOICE,
+            private_run=True,
+        )
+
+    result = asyncio.new_event_loop().run_until_complete(_run())
+    assert result["final_response"] == "Hello from the agent."
+    assert adapter.calls == []

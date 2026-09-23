@@ -38,6 +38,38 @@ def _assert_inherited_notify_sub(subs: list[dict]) -> None:
     assert subs[0]["notifier_profile"] == "default"
 
 
+def test_direct_create_task_in_gateway_context_auto_subscribes_origin(kanban_home):
+    """Higher-level mission tools that call create_task directly still notify the originating chat."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(
+        platform="telegram",
+        source="telegram",
+        chat_id="chat-direct",
+        chat_type="dm",
+        user_id="founder",
+        session_id="session-direct",
+        profile="default",
+        message_id="msg-1",
+        async_delivery=True,
+    )
+    try:
+        with kbc.connect() as conn:
+            task_id = kb.create_task(conn, title="direct mission task", assignee="patch")
+            subs = kbn.list_notify_subs(conn, task_id)
+    finally:
+        clear_session_vars(tokens)
+
+    assert len(subs) == 1
+    sub = subs[0]
+    assert sub["platform"] == "telegram"
+    assert sub["chat_id"] == "chat-direct"
+    assert sub["chat_type"] == "dm"
+    assert sub["user_id"] == "founder"
+    assert sub["notifier_profile"] == "default"
+    assert sub["delivery_mode"] == "notify+wake"
+
+
 def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
     """delivery_mode persists; an explicit re-subscribe is last-write-wins, a
     ``None`` re-subscribe leaves the existing mode untouched, an unknown value

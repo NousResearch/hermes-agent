@@ -4073,11 +4073,15 @@ def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
         "tools at the absolute paths below:"
     )
     for att in attachments:
-        size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
-        size_str = f", {size_kb} KB" if size_kb else ""
-        ctype = f", {att.content_type}" if att.content_type else ""
-        lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
+        lines.append(_ctx_attachment_line(att))
     lines.append("")
+
+
+def _ctx_attachment_line(att: Attachment) -> str:
+    size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
+    size_str = f", {size_kb} KB" if size_kb else ""
+    ctype = f", {att.content_type}" if att.content_type else ""
+    return f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`"
 
 
 def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
@@ -4144,6 +4148,13 @@ def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str
         meta_line = _ctx_metadata_line(run.metadata) if run is not None else None
         if meta_line:
             lines.append(meta_line)
+        # A parent's full output often lives in an attachment (a research map, a
+        # spec) because the summary is capped; without these paths the child has
+        # only the summary and re-does the parent's work.
+        parent_attachments = list_attachments(conn, pid)
+        if parent_attachments:
+            lines.append("Attachments (read at these absolute paths):")
+            lines.extend(_ctx_attachment_line(att) for att in parent_attachments)
         lines.append("")
 
 

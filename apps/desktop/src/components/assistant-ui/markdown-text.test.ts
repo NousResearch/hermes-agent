@@ -102,6 +102,33 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('`items[0]`')
   })
 
+  it('strips raw web citation markers from prose and tables without touching code or math', () => {
+    const firstCitation = '\uE200cite\uE202turn0search11\uE201'
+    const combinedCitations = '\uE200cite\uE202turn0search11\uE202turn2search0\uE201'
+
+    const input = [
+      `A prose citation${firstCitation} should not render as glyphs.`,
+      '',
+      '| Source | Detail |',
+      '| --- | --- |',
+      `| One | Table citation${combinedCitations} is removed. |`,
+      '',
+      `Keep \`${firstCitation}\` and $x${combinedCitations} + 1$ unchanged.`,
+      '',
+      '```text',
+      combinedCitations,
+      '```'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('A prose citation should not render as glyphs.')
+    expect(output).toContain('| One | Table citation is removed. |')
+    expect(output).toContain(`\`${firstCitation}\``)
+    expect(output).toContain(`$x${combinedCitations} + 1$`)
+    expect(output).toContain(['```text', combinedCitations, '```'].join('\n'))
+  })
+
   it('demotes title/url blocks wrapped in malformed inline fences', () => {
     const input = [
       '**🚢 TOMORROW (Fajardo, crystal clear cays, pickup avail):**',

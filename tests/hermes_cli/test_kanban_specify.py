@@ -69,9 +69,14 @@ def _patch_aux_client(content: str, *, model: str = "test-model"):
 # specify_task (module-level entry point)
 # ---------------------------------------------------------------------------
 
-def test_specify_task_happy_path(kanban_home):
+def test_specify_task_promotes_title_without_rewriting_existing_body(kanban_home):
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="rough", triage=True)
+        tid = kb.create_task(
+            conn,
+            title="rough",
+            body="**Binding criteria**\n- Preserve this exact requirement.",
+            triage=True,
+        )
 
     content = jsonlib.dumps({
         "title": "Refined rough",
@@ -87,10 +92,79 @@ def test_specify_task_happy_path(kanban_home):
 
     with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+        comments = kb.list_comments(conn, tid)
     # Parent-free → recompute_ready promotes to ready.
     assert task.status == "ready"
     assert task.title == "Refined rough"
-    assert "**Goal**" in (task.body or "")
+    assert task.body == "**Binding criteria**\n- Preserve this exact requirement."
+    specified = next(event for event in events if event.kind == "specified")
+    assert specified.payload == {"changed_fields": ["title"]}
+    assert "title" in comments[-1].body
+    assert "body" not in comments[-1].body
+
+
+def test_specify_task_rewrites_body_only_when_explicitly_requested(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough", body="Original body", triage=True)
+
+    content = jsonlib.dumps({"title": "Refined rough", "body": "**Goal**\nA concrete goal."})
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace", rewrite_body=True)
+
+    assert outcome.ok is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.title == "Refined rough"
+    assert task.body == "**Goal**\nA concrete goal."
+
+
+def test_specify_task_malformed_response_preserves_existing_body(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough", body="Must not be replaced", triage=True)
+
+    p, _ = _patch_aux_client("This is not JSON")
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task.body == "Must not be replaced"
+    specified = next(event for event in events if event.kind == "specified")
+    assert specified.payload is None
+
+
+def test_specify_task_empty_response_does_not_promote_or_change_body(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough", body="Must not be replaced", triage=True)
+
+    p, _ = _patch_aux_client("")
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is False
+    assert outcome.reason == "LLM returned an empty response"
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status == "triage"
+    assert task.body == "Must not be replaced"
+
+
+def test_cli_rewrite_body_flag_is_explicit_opt_in(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough", body="Original body", triage=True)
+
+    content = jsonlib.dumps({"title": "Refined rough", "body": "Replacement body"})
+    p, _ = _patch_aux_client(content)
+    with p:
+        assert _run_cli("specify", tid, "--rewrite-body") == 0
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.body == "Replacement body"
 
 
 
@@ -137,5 +211,3 @@ def test_cli_specify_tenant_filter(kanban_home, capsys):
         assert kb.get_task(conn, outside).status == "triage"
         # The inside task was promoted.
         assert kb.get_task(conn, inside).status in {"todo", "ready"}
-
-

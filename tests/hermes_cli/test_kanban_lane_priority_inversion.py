@@ -132,6 +132,7 @@ def test_high_priority_card_behind_two_lower_holders_is_flagged_and_holders_surv
         second = kbd.dispatch_once(conn, spawn_fn=spawn_alive, max_in_progress_per_profile=2)
         after = {r["id"]: (r["status"], r["claim_lock"]) for r in conn.execute(
             "SELECT id, status, claim_lock FROM tasks WHERE id IN (?, ?)", (high_holder, low_holder))}
+        kb.create_task(conn, title="queued elsewhere", assignee="default")
         starved_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (starved,)).fetchone()
         events = kb.list_events(conn, starved)
         runs = kb.list_runs(conn, starved)
@@ -148,4 +149,4 @@ def test_high_priority_card_behind_two_lower_holders_is_flagged_and_holders_surv
         starved_row, events, runs, now=int(time.time()) + 600, config=CAP_2, lanes=lanes)
     [diag] = [d for d in diags if d.kind == "lane_priority_inversion"]
     assert diag.data["outranked_holders"] == [low_holder]
-    assert diag.data["idle_profiles"] == ["default", "reviewer"]
+    assert diag.data["idle_profiles"] == ["reviewer"]

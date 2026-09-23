@@ -739,7 +739,9 @@ def _redact_strict_url_credentials(text: str) -> str:
     network references); preserves keys, separators, public params, hosts, paths."""
     text = _STRICT_URL_PARAM_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}=***"
-        if _canonical_url_param_name(m.group(2)) in _SENSITIVE_QUERY_PARAMS else m.group(0), text)
+        if (_canonical_url_param_name(m.group(2)) in _SENSITIVE_QUERY_PARAMS
+            or re.fullmatch(_JSON_KEY_NAMES, _canonical_url_param_name(m.group(2)), re.IGNORECASE))
+        else m.group(0), text)
     return _STRICT_URL_USERINFO_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2).partition(':')[0]}:***@" if ":" in m.group(2) else f"{m.group(1)}***@",
         text)
@@ -1132,12 +1134,12 @@ _BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,
 
 def redact_for_egress(text: str) -> str:
     """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
-    telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
-    sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
-    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned."""
+    telemetry). URL credentials are masked here, unlike navigation/tool text; the bearer
+    sweep catches opaque values with no vendor prefix. Fails CLOSED: if the redactor
+    raises, the raw text is never returned."""
     text = str(text or "")
     try:
-        text = redact_sensitive_text(text, force=True)
+        text = redact_sensitive_text(text, force=True, redact_url_credentials=True)
     except Exception:
         return REDACTION_UNAVAILABLE
     if "earer" in text:

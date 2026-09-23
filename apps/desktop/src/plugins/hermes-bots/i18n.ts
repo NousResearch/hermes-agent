@@ -37,6 +37,21 @@ import { getPluginCtx } from './shared'
 type BotsMessages = {
   /** Left rail: the bot + group-chat roster. */
   editor: {
+    fullConfigHint: string
+    liveCapabilities: string
+    editSoul: string
+    remoteCapabilitiesHint: string
+    skillsEnabled: (enabled: number, total: number) => string
+    toolsetsEnabled: (enabled: number, total: number) => string
+    mcpServers: string
+    providerCustom: string
+    modelCustom: string
+    backToDropdowns: string
+    inheritLaunch: string
+    enterManually: string
+    gatewayDefault: string
+    modelNameExample: string
+    modelSwitchFailed: string
     newDescription: string
     name: string
     title: string
@@ -309,6 +324,26 @@ type BotsMessages = {
   }
   /** Skills hub + MCP setup surfaces embedded in the bot editor. */
   tools: {
+    installHint: (name: string) => string
+    installed: (name: string) => string
+    installFailed: (name: string) => string
+    searchHint: string
+    resizeHint: string
+    addServerFailed: string
+    noTarget: string
+    setKeyFailed: (name: string) => string
+    configured: (name: string) => string
+    authenticated: (name: string) => string
+    testFailed: string
+    completeSignIn: string
+    needsSetup: (name: string) => string
+    setUpDone: string
+    saveTest: string
+    authorizing: string
+    working: string
+    setupFailed: string
+    signIn: string
+    setUp: string
     skillsHub: string
     filterSkills: string
     searchHub: string
@@ -370,6 +405,31 @@ type BotsMessages = {
   /** Bot-scoped scheduled jobs. Generic scheduling chrome (weekday names,
    *  Daily/Hourly, the job verbs) resolves against core's `cron` section. */
   cron: {
+    untitled: string
+    nameNul: string
+    instructionNul: string
+    minutesFromNow: string
+    hoursFromNow: string
+    daysFromNow: string
+    stopAfter: string
+    runsHint: string
+    detailDescription: string
+    status: string
+    active: string
+    paused: string
+    schedule: string
+    rawSchedule: string
+    repeat: string
+    nextRun: string
+    overdueSince: string
+    lastRun: string
+    lastResult: string
+    workdir: string
+    succeeded: string
+    failed: string
+    deliveryFailed: string
+    blockedConfig: string
+    legacyUnsafe: string
     filterHint: string
     needsRosterFirst: string
     staleNotice: string
@@ -413,6 +473,22 @@ type BotsMessages = {
 
 const en: BotsMessages = {
   editor: {
+    fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
+    liveCapabilities: 'Capabilities (applies immediately — skills, tools, MCP)',
+    editSoul: 'SOUL.md (persona + agent-messaging protocol)',
+    remoteCapabilitiesHint:
+      'Remote capabilities require a newer desktop. Model and SOUL changes remain staged until you save.',
+    skillsEnabled: (enabled, total) => `Skills (${enabled}/${total} enabled)`,
+    toolsetsEnabled: (enabled, total) => `Toolsets (${enabled}/${total} enabled — unchecking all restores the default)`,
+    mcpServers: 'MCP servers',
+    providerCustom: 'Provider (Custom)',
+    modelCustom: 'Model (Custom)',
+    backToDropdowns: '← Back to dropdowns',
+    inheritLaunch: 'Inherit (launch profile)',
+    enterManually: '✏️ Enter manually…',
+    gatewayDefault: 'gateway default',
+    modelNameExample: 'e.g. model name',
+    modelSwitchFailed: 'Model switch failed',
     newDescription: 'A named teammate with its own memory, skills, and chat. It can message your other agents.',
     name: 'Name',
     title: 'Title',
@@ -678,6 +754,26 @@ const en: BotsMessages = {
     answerTo: member => `Answer @${member}`
   },
   tools: {
+    installHint: name => `Install "${name}" and add it to the list above`,
+    installed: name => `Skill "${name}" installed`,
+    installFailed: name => `Installing "${name}" failed`,
+    searchHint: 'Searching community + well-known sources — can take ~10s…',
+    resizeHint: 'Drag the corner to resize.',
+    addServerFailed: 'Could not add server',
+    noTarget: 'No target profile',
+    setKeyFailed: key => `Failed to set ${key}`,
+    configured: name => `${name} configured`,
+    authenticated: name => `${name} authenticated`,
+    testFailed: 'Server test failed after setup',
+    completeSignIn: 'Complete sign-in in your browser...',
+    needsSetup: keys => `needs setup (${keys}) — restart the gateway to enable in-app setup`,
+    setUpDone: 'set up ✓',
+    saveTest: 'Save & test',
+    authorizing: 'Authorizing…',
+    working: 'Working…',
+    setupFailed: 'Setup failed',
+    signIn: 'Sign in…',
+    setUp: 'Set up…',
     skillsHub: 'Hermes Skills Hub',
     filterSkills: 'Filter skills…',
     searchHub: 'Search the hub (community + well-known sources)…',
@@ -734,6 +830,31 @@ const en: BotsMessages = {
     controlTaken: 'Another viewer took control. Watching only.'
   },
   cron: {
+    untitled: 'Untitled job',
+    nameNul: 'Job name cannot contain NUL (U+0000).',
+    instructionNul: 'Job instruction cannot contain NUL (U+0000).',
+    minutesFromNow: 'minutes from now',
+    hoursFromNow: 'hours from now',
+    daysFromNow: 'days from now',
+    stopAfter: 'Stop after',
+    runsHint: 'runs (blank = forever)',
+    detailDescription: 'What this job runs, and when it runs next.',
+    status: 'Status',
+    active: 'Active',
+    paused: 'Paused',
+    schedule: 'Schedule',
+    rawSchedule: 'Schedule (raw)',
+    repeat: 'Repeat',
+    nextRun: 'Next run',
+    overdueSince: 'Overdue since',
+    lastRun: 'Last run',
+    lastResult: 'Last result',
+    workdir: 'Working directory',
+    succeeded: 'Succeeded',
+    failed: 'Failed',
+    deliveryFailed: 'Ran, but delivery failed',
+    blockedConfig: 'Blocked by configuration (not run)',
+    legacyUnsafe: 'Paused for security: delete and recreate this legacy job before running it again.',
     filterHint:
       'Scheduled jobs exist in this profile but none are tagged for this bot. Name a job "[bot:<name>] …" to show it here, or see them in Cron below.',
     needsRosterFirst: 'This bot has to appear in the roster first.',
@@ -776,6 +897,22 @@ const en: BotsMessages = {
 
 const ja: BotsMessages = {
   editor: {
+    fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
+    liveCapabilities: '機能（即時適用 — スキル、ツール、MCP）',
+    editSoul: 'SOUL.md（人格 + エージェント間メッセージプロトコル）',
+    remoteCapabilitiesHint:
+      'リモート機能には新しいデスクトップアプリが必要です。モデルと SOUL の変更は保存するまで適用されません。',
+    skillsEnabled: (enabled, total) => `スキル（${enabled}/${total} 有効）`,
+    toolsetsEnabled: (enabled, total) => `ツールセット（${enabled}/${total} 有効 — すべて解除すると既定値に戻ります）`,
+    mcpServers: 'MCP サーバー',
+    providerCustom: 'プロバイダー（カスタム）',
+    modelCustom: 'モデル（カスタム）',
+    backToDropdowns: '← 選択リストに戻る',
+    inheritLaunch: '継承（起動プロファイル）',
+    enterManually: '✏️ 手動入力…',
+    gatewayDefault: 'ゲートウェイの既定値',
+    modelNameExample: '例：モデル名',
+    modelSwitchFailed: 'モデルの切り替えに失敗しました',
     newDescription:
       '独自のメモリ、スキル、チャットを持つ名前付きの仲間です。他のエージェントとメッセージをやり取りできます。',
     name: '名前',
@@ -1042,6 +1179,26 @@ const ja: BotsMessages = {
     answerTo: member => `@${member}に回答`
   },
   tools: {
+    installHint: name => `「${name}」をインストールして上の一覧に追加`,
+    installed: name => `スキル「${name}」をインストールしました`,
+    installFailed: name => `「${name}」のインストールに失敗しました`,
+    searchHint: 'コミュニティと主要なソースを検索中 — 約 10 秒かかる場合があります…',
+    resizeHint: '角をドラッグしてサイズを変更できます。',
+    addServerFailed: 'サーバーを追加できませんでした',
+    noTarget: '対象プロファイルがありません',
+    setKeyFailed: key => `${key} の設定に失敗しました`,
+    configured: name => `${name} を設定しました`,
+    authenticated: name => `${name} の認証が完了しました`,
+    testFailed: '設定後のサーバーテストに失敗しました',
+    completeSignIn: 'ブラウザーでサインインを完了してください…',
+    needsSetup: keys => `設定が必要（${keys}）— アプリ内で設定するにはゲートウェイを再起動してください`,
+    setUpDone: '設定済み ✓',
+    saveTest: '保存してテスト',
+    authorizing: '認証中…',
+    working: '処理中…',
+    setupFailed: '設定に失敗しました',
+    signIn: 'サインイン…',
+    setUp: '設定…',
     skillsHub: 'Hermes スキルハブ',
     filterSkills: 'スキルを絞り込み…',
     searchHub: 'ハブを検索（コミュニティと既知のソース）…',
@@ -1101,6 +1258,31 @@ const ja: BotsMessages = {
     controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。'
   },
   cron: {
+    untitled: '無題のジョブ',
+    nameNul: 'ジョブ名に NUL (U+0000) は使用できません。',
+    instructionNul: 'ジョブの指示に NUL (U+0000) は使用できません。',
+    minutesFromNow: '分後',
+    hoursFromNow: '時間後',
+    daysFromNow: '日後',
+    stopAfter: '実行上限',
+    runsHint: '回（空欄で無制限）',
+    detailDescription: 'このジョブの実行内容と次回の実行日時。',
+    status: '状態',
+    active: '有効',
+    paused: '一時停止',
+    schedule: 'スケジュール',
+    rawSchedule: 'スケジュール（元の値）',
+    repeat: '繰り返し',
+    nextRun: '次回実行',
+    overdueSince: '実行予定超過',
+    lastRun: '前回実行',
+    lastResult: '前回の結果',
+    workdir: '作業ディレクトリ',
+    succeeded: '成功',
+    failed: '失敗',
+    deliveryFailed: '実行済みですが、配信に失敗しました',
+    blockedConfig: '設定によりブロック（未実行）',
+    legacyUnsafe: '安全のため一時停止中です。この旧形式のジョブを削除して作り直してから実行してください。',
     filterHint:
       'このプロファイルには定期実行ジョブがありますが、このボット向けのタグが付いたものはありません。ジョブ名を「[bot:<名前>] …」にするとここに表示されます。下のCronでも確認できます。',
     needsRosterFirst: 'このボットは先に名簿に表示される必要があります。',
@@ -1143,6 +1325,21 @@ const ja: BotsMessages = {
 
 const zh: BotsMessages = {
   editor: {
+    fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
+    liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
+    editSoul: 'SOUL.md（人格 + 智能体消息协议）',
+    remoteCapabilitiesHint: '远程功能需要更新桌面应用。模型和 SOUL 的更改会在保存后生效。',
+    skillsEnabled: (enabled, total) => `技能（已启用 ${enabled}/${total}）`,
+    toolsetsEnabled: (enabled, total) => `工具集（已启用 ${enabled}/${total} — 全部取消勾选可恢复默认值）`,
+    mcpServers: 'MCP 服务器',
+    providerCustom: '提供商（自定义）',
+    modelCustom: '模型（自定义）',
+    backToDropdowns: '← 返回下拉选项',
+    inheritLaunch: '继承（启动配置文件）',
+    enterManually: '✏️ 手动输入…',
+    gatewayDefault: '网关默认值',
+    modelNameExample: '例如：模型名称',
+    modelSwitchFailed: '模型切换失败',
     newDescription: '拥有独立记忆、技能和聊天的具名队友，可以与你的其他智能体互发消息。',
     name: '名称',
     title: '显示名称',
@@ -1398,6 +1595,26 @@ const zh: BotsMessages = {
     answerTo: member => `回答 @${member}`
   },
   tools: {
+    installHint: name => `安装“${name}”并添加到上方列表`,
+    installed: name => `技能“${name}”已安装`,
+    installFailed: name => `安装“${name}”失败`,
+    searchHint: '正在搜索社区和常用来源 — 可能需要约 10 秒…',
+    resizeHint: '拖动角落可调整大小。',
+    addServerFailed: '无法添加服务器',
+    noTarget: '没有目标配置文件',
+    setKeyFailed: key => `无法设置 ${key}`,
+    configured: name => `${name} 已配置`,
+    authenticated: name => `${name} 已验证身份`,
+    testFailed: '配置后的服务器测试失败',
+    completeSignIn: '请在浏览器中完成登录…',
+    needsSetup: keys => `需要设置（${keys}）— 重启网关以启用应用内设置`,
+    setUpDone: '已设置 ✓',
+    saveTest: '保存并测试',
+    authorizing: '正在授权…',
+    working: '正在处理…',
+    setupFailed: '设置失败',
+    signIn: '登录…',
+    setUp: '设置…',
     skillsHub: 'Hermes 技能中心',
     filterSkills: '筛选技能…',
     searchHub: '搜索技能中心（社区和常见来源）…',
@@ -1454,6 +1671,31 @@ const zh: BotsMessages = {
     controlTaken: '另一位查看者已接管控制。仅可观看。'
   },
   cron: {
+    untitled: '未命名任务',
+    nameNul: '任务名称不能包含 NUL (U+0000)。',
+    instructionNul: '任务指令不能包含 NUL (U+0000)。',
+    minutesFromNow: '分钟后',
+    hoursFromNow: '小时后',
+    daysFromNow: '天后',
+    stopAfter: '运行上限',
+    runsHint: '次（留空则持续运行）',
+    detailDescription: '此任务的内容和下次运行时间。',
+    status: '状态',
+    active: '运行中',
+    paused: '已暂停',
+    schedule: '计划',
+    rawSchedule: '计划（原始值）',
+    repeat: '重复',
+    nextRun: '下次运行',
+    overdueSince: '逾期起始时间',
+    lastRun: '上次运行',
+    lastResult: '上次结果',
+    workdir: '工作目录',
+    succeeded: '成功',
+    failed: '失败',
+    deliveryFailed: '已运行，但发送失败',
+    blockedConfig: '配置阻止了运行（未执行）',
+    legacyUnsafe: '为安全起见已暂停：请删除并重新创建此旧任务，然后再运行。',
     filterHint:
       '此配置档案中有定时任务，但没有一个标记给这个机器人。将任务命名为“[bot:<名称>] …”即可显示在这里，也可以在下方的 Cron 中查看。',
     needsRosterFirst: '这个机器人需要先出现在名册中。',
@@ -1496,6 +1738,21 @@ const zh: BotsMessages = {
 
 const zhHant: BotsMessages = {
   editor: {
+    fullConfigHint: '完整設定需要更新閘道（更新 Hermes 後請重新啟動閘道）。',
+    liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
+    editSoul: 'SOUL.md（人格 + 智慧代理訊息協定）',
+    remoteCapabilitiesHint: '遠端功能需要更新桌面應用程式。模型和 SOUL 的變更會在儲存後生效。',
+    skillsEnabled: (enabled, total) => `技能（已啟用 ${enabled}/${total}）`,
+    toolsetsEnabled: (enabled, total) => `工具集（已啟用 ${enabled}/${total} — 全部取消勾選可還原預設值）`,
+    mcpServers: 'MCP 伺服器',
+    providerCustom: '供應商（自訂）',
+    modelCustom: '模型（自訂）',
+    backToDropdowns: '← 返回下拉選項',
+    inheritLaunch: '繼承（啟動設定檔）',
+    enterManually: '✏️ 手動輸入…',
+    gatewayDefault: '閘道預設值',
+    modelNameExample: '例如：模型名稱',
+    modelSwitchFailed: '模型切換失敗',
     newDescription: '擁有獨立記憶、技能和聊天的具名隊友，可以與你的其他智慧代理互傳訊息。',
     name: '名稱',
     title: '顯示名稱',
@@ -1751,6 +2008,26 @@ const zhHant: BotsMessages = {
     answerTo: member => `回覆 @${member}`
   },
   tools: {
+    installHint: name => `安裝「${name}」並新增至上方清單`,
+    installed: name => `技能「${name}」已安裝`,
+    installFailed: name => `安裝「${name}」失敗`,
+    searchHint: '正在搜尋社群和常用來源 — 可能需要約 10 秒…',
+    resizeHint: '拖曳角落可調整大小。',
+    addServerFailed: '無法新增伺服器',
+    noTarget: '沒有目標設定檔',
+    setKeyFailed: key => `無法設定 ${key}`,
+    configured: name => `${name} 已設定`,
+    authenticated: name => `${name} 已驗證身分`,
+    testFailed: '設定後的伺服器測試失敗',
+    completeSignIn: '請在瀏覽器中完成登入…',
+    needsSetup: keys => `需要設定（${keys}）— 重新啟動閘道以啟用應用程式內設定`,
+    setUpDone: '已設定 ✓',
+    saveTest: '儲存並測試',
+    authorizing: '正在授權…',
+    working: '正在處理…',
+    setupFailed: '設定失敗',
+    signIn: '登入…',
+    setUp: '設定…',
     skillsHub: 'Hermes 技能中心',
     filterSkills: '篩選技能…',
     searchHub: '搜尋技能中心（社群和常見來源）…',
@@ -1807,6 +2084,31 @@ const zhHant: BotsMessages = {
     controlTaken: '另一位檢視者已接手控制。僅可觀看。'
   },
   cron: {
+    untitled: '未命名工作',
+    nameNul: '工作名稱不能包含 NUL (U+0000)。',
+    instructionNul: '工作指令不能包含 NUL (U+0000)。',
+    minutesFromNow: '分鐘後',
+    hoursFromNow: '小時後',
+    daysFromNow: '天後',
+    stopAfter: '執行上限',
+    runsHint: '次（留空則持續執行）',
+    detailDescription: '此工作的內容和下次執行時間。',
+    status: '狀態',
+    active: '啟用中',
+    paused: '已暫停',
+    schedule: '排程',
+    rawSchedule: '排程（原始值）',
+    repeat: '重複',
+    nextRun: '下次執行',
+    overdueSince: '逾期起始時間',
+    lastRun: '上次執行',
+    lastResult: '上次結果',
+    workdir: '工作目錄',
+    succeeded: '成功',
+    failed: '失敗',
+    deliveryFailed: '已執行，但傳送失敗',
+    blockedConfig: '設定阻止了執行（未執行）',
+    legacyUnsafe: '基於安全考量已暫停：請刪除並重新建立此舊工作，然後再執行。',
     filterHint:
       '此設定檔中有排程工作，但沒有任何一個標記給這個機器人。將工作命名為「[bot:<名稱>] …」即可顯示在這裡，也可以在下方的 Cron 中查看。',
     needsRosterFirst: '這個機器人需要先出現在名冊中。',

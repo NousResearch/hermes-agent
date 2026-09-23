@@ -21,6 +21,7 @@ import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
+import { resolveDraftWelcomeProfile } from '@/lib/chat-welcome'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -31,7 +32,14 @@ import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $hydrationSyncProfile,
+  $newChatProfile,
+  $newChatRoute,
+  $profiles
+} from '@/store/profile'
 import {
   $connection,
   $contextSuggestions,
@@ -536,6 +544,13 @@ const ChatViewContent = memo(function ChatViewContent({
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
   const activeGatewayProfile = useStore($activeGatewayProfile)
+  const newChatProfile = useStore($newChatProfile)
+  const newChatRoute = useStore($newChatRoute)
+  const draftWelcomeProfile = resolveDraftWelcomeProfile({
+    activeProfile: activeGatewayProfile,
+    newChatProfile,
+    routeProfile: newChatRoute?.profile ?? null
+  })
   const contextSuggestions = useStore($contextSuggestions)
   // Per-session (SessionView) reads — a tile IS its session, so these come
   // from the view slice, not the global atoms (which track the primary only).
@@ -841,6 +856,7 @@ const ChatViewContent = memo(function ChatViewContent({
             onCancel={haltRun}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
+            profile={draftWelcomeProfile}
             scrollProfile={modelOptionsProfile || activeGatewayProfile}
             sessionId={activeSessionId}
             sessionKey={threadKey}

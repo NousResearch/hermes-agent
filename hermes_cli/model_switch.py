@@ -737,7 +737,16 @@ def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
         f"Pick one with /model <exact-model-name>.")
 
 
-def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, str, str]]:
+def _provider_identity(name: str, user_providers: Optional[dict] = None,
+                       custom_providers: Optional[list] = None) -> str:
+    """Id a provider name routes to, e.g. ``custom:<name>`` for a legacy ``custom_providers``
+    entry, so an alias naming it by its bare name compares equal to the resolved provider."""
+    pdef = resolve_provider_full(name, user_providers, custom_providers) if name else None
+    return pdef.id if pdef is not None else normalize_provider(name or "")
+
+
+def resolve_alias(raw_input: str, current_provider: str, user_providers: Optional[dict] = None,
+                  custom_providers: Optional[list] = None) -> Optional[tuple[str, str, str]]:
     """Resolve a short alias against the current provider's catalog.
 
     Direct aliases (and reverse lookup by exact model id) win; then :data:`MODEL_ALIASES` is
@@ -756,10 +765,11 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
     # different providers: prefer the one served by current_provider, since insertion order is
     # not a routing decision and the wrong alias hands back another provider's base_url.
     reverse_fallback: Optional[tuple[str, str, str]] = None
+    current_id = _provider_identity(current_provider, user_providers, custom_providers)
     for alias_name, da in DIRECT_ALIASES.items():
         if da.model.lower() != key:
             continue
-        if normalize_provider(da.provider or "") == normalize_provider(current_provider or ""):
+        if _provider_identity(da.provider, user_providers, custom_providers) == current_id:
             return (da.provider, da.model, alias_name)
         if reverse_fallback is None:
             reverse_fallback = (da.provider, da.model, alias_name)
@@ -1237,7 +1247,7 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
                 f"Specify the model explicitly: /model <model-name> --provider {st.explicit_provider}")
 
     try:
-        alias_result = resolve_alias(st.new_model, st.target_provider)
+        alias_result = resolve_alias(st.new_model, st.target_provider, st.user_providers, st.custom_providers)
     except AmbiguousAliasError as err:
         return st.fail(_ambiguous_alias_message(err), target_provider=st.target_provider)
     if alias_result is not None:
@@ -1245,7 +1255,8 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         # Adopt the alias (and with it its base_url and key) only when it belongs to the provider
         # the user named: a reverse model-id match may land on another provider's alias, and
         # honouring it would send the turn to that provider's endpoint under this one's identity.
-        if normalize_provider(alias_provider or "") == normalize_provider(st.target_provider or ""):
+        if (_provider_identity(alias_provider, st.user_providers, st.custom_providers)
+                == _provider_identity(st.target_provider, st.user_providers, st.custom_providers)):
             st.resolved_alias = alias_name
     return None
 

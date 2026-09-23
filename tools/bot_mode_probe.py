@@ -328,9 +328,10 @@ _EPOCH_RE_TEXT = r"Capability epoch: ([0-9a-f]{12})"
 
 def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     """12-hex digest of the capability surface for ``home``'s profile: disabled skills +
-    enabled toolsets + MCP config, SOUL.md bytes, installed skill names, the Bot-Mode roster
-    (+ roles), peers and the relay roster. Deliberately NOT cached — the point is detecting
-    on-disk drift against a stored prompt's epoch. Never raises ("unavailable" on failure)."""
+    enabled toolsets + MCP config, the effective ``model.supports_vision`` override, SOUL.md
+    bytes, installed skill names, the Bot-Mode roster (+ roles), peers and the relay roster.
+    Deliberately NOT cached — the point is detecting on-disk drift against a stored prompt's
+    epoch. Never raises ("unavailable" on failure)."""
     import hashlib
     import json
 
@@ -350,6 +351,12 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
             reset_hermes_home_override(token)
         skills_cfg = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
         tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        # Match image routing's strict coercion so equivalent YAML spellings
+        # have one epoch, while a real active vision-route flip rebuilds Bot Chat.
+        from agent.image_routing import _coerce_capability_bool
+
+        surface["model_supports_vision"] = _coerce_capability_bool(model_cfg.get("supports_vision"))
         surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
         surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
         mcp = cfg.get("mcp_servers")

@@ -17,6 +17,7 @@ import {
   previewTabId,
   type PreviewTarget,
   progressPreviewServerRestart,
+  renderedHtmlTarget,
   setPreviewRenderMode
 } from './preview'
 
@@ -201,6 +202,21 @@ describe('preview store', () => {
     openPreview({ ...target, renderMode: 'preview' })
 
     expect($previewTarget.get()?.renderMode).toBe('preview')
+  })
+
+  it('renders an agent hand-over of an HTML file even when its tab sits in Source', () => {
+    const target = fileTarget('/work/handed.html')
+
+    openPreview(target)
+    setPreviewRenderMode(previewTabId(target), 'source')
+    openPreview(renderedHtmlTarget(target))
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTarget.get()?.renderMode).toBe('preview')
+
+    // An explicit mode and non-HTML targets pass through untouched.
+    expect(renderedHtmlTarget({ ...target, renderMode: 'source' }).renderMode).toBe('source')
+    expect(renderedHtmlTarget({ ...fileTarget('/work/notes.md'), previewKind: 'text' }).renderMode).toBeUndefined()
   })
 
   it('falls back to a neighbouring tab when the active one closes, and clears the selection on the last', () => {

@@ -9,7 +9,7 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget, openPreviewTargetInBrowser } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
-import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
+import { $previewTabSources, closePreviewForSource, openPreview, renderedHtmlTarget } from '@/store/preview'
 import { type PreviewArtifact } from '@/store/preview-status'
 
 interface PreviewStatusRowProps {
@@ -49,7 +49,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     setOpening(true)
 
     try {
-      openPreview(await resolveTarget())
+      openPreview(renderedHtmlTarget(await resolveTarget()))
     } catch (error) {
       notifyError(error, t.preview.unavailable)
     } finally {

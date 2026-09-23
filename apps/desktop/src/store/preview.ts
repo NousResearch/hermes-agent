@@ -20,6 +20,9 @@ import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
  * anywhere else — they close when you close them.
  */
 
+/** How an HTML file target shows: the live page, or its source. */
+export type PreviewRenderMode = 'preview' | 'source'
+
 export interface PreviewTarget {
   binary?: boolean
   byteSize?: number
@@ -38,7 +41,7 @@ export interface PreviewTarget {
   mimeType?: string
   path?: string
   previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
-  renderMode?: 'preview' | 'source'
+  renderMode?: PreviewRenderMode
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */
   transient?: boolean
@@ -503,16 +506,24 @@ function browserTabId(tabs: PreviewTab[]): RightRailTabId {
 /** HTML files open rendered unless the caller asks for a mode. A re-open keeps
  *  the mode the tab is already in, so refreshing the target never undoes a
  *  user's Source pick. */
-function withRenderMode(target: PreviewTarget, open?: PreviewTarget): PreviewTarget {
+function withRenderMode(target: PreviewTarget, existing?: PreviewTarget): PreviewTarget {
   if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode) {
     return target
   }
 
-  return { ...target, renderMode: open?.renderMode ?? 'preview' }
+  return { ...target, renderMode: existing?.renderMode ?? 'preview' }
+}
+
+/** An agent hand-over means "show the page": an HTML file opens rendered even
+ *  when its tab is sitting in Source, unlike a re-open from the Files pane. */
+export function renderedHtmlTarget(target: PreviewTarget): PreviewTarget {
+  return target.kind === 'file' && target.previewKind === 'html' && !target.renderMode
+    ? { ...target, renderMode: 'preview' }
+    : target
 }
 
 /** Flip a tab between live Render and Source in place. Same tab id. */
-export function setPreviewRenderMode(tabId: string, renderMode: 'preview' | 'source') {
+export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMode) {
   const current = $previewTabs.get()
   const index = current.findIndex(tab => tab.id === tabId)
 

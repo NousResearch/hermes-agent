@@ -37,6 +37,8 @@ def _make_pycache(repo: Path, subdir: str = "hermes_cli") -> Path:
 def test_sweep_clears_pycache_when_checkout_changed(monkeypatch, tmp_path):
     repo = _make_repo(tmp_path, sha="b" * 40)
     cache = _make_pycache(repo)
+    dependency_cache = _make_pycache(repo, ".venv/lib/python3.11/site-packages/dependency")
+    git_cache = _make_pycache(repo, ".git/internal")
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
     # Stamp records a different (older) fingerprint.
     (repo / main_web_build._BYTECODE_FINGERPRINT_FILE).write_text(
@@ -46,15 +48,11 @@ def test_sweep_clears_pycache_when_checkout_changed(monkeypatch, tmp_path):
     hermes_main._sweep_stale_bytecode_if_checkout_changed()
 
     assert not cache.exists()
+    assert dependency_cache.exists()
+    assert git_cache.exists()
     # Stamp updated to the current fingerprint.
     recorded = (repo / main_web_build._BYTECODE_FINGERPRINT_FILE).read_text(encoding="utf-8")
     assert recorded.strip().endswith("b" * 40)
-
-
-
-
-
-
 
 # ---------------------------------------------------------------------------
 # Plugin-update sibling site: __pycache__ under ~/.hermes/plugins/<name>
@@ -76,5 +74,3 @@ def test_clear_plugin_bytecode_removes_nested_caches(tmp_path):
     assert removed == 2
     assert not top.exists()
     assert not nested.exists()
-
-

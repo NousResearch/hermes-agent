@@ -120,7 +120,6 @@ def make_tool_progress_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
-    turn_state: Dict[str, Any] | None = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
@@ -132,8 +131,6 @@ def make_tool_progress_cb(
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
         if event_type == "tool.completed" and name:
-            if turn_state is not None:
-                turn_state["saw_completion"] = True
             # The executor's verdict: a cancelled/errored tool may return plain text the heuristic misses.
             close_tool_call(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, name, kwargs.get("result"),
@@ -254,7 +251,7 @@ def make_message_cb(
 
 def make_step_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]], turn_state: Dict[str, Any] | None = None,
+    tool_call_meta: Dict[str, Dict[str, Any]],
 ) -> Callable:
     """Create a ``step_callback(api_call_count: int, prev_tools: list)`` for AIAgent."""
 
@@ -273,24 +270,24 @@ def make_step_cb(
 
             if not tool_name:
                 continue
-            # ``tool.completed`` already closed this call with its own result;
-            # this callback is the fallback for runtimes that never project one.
-            if not (turn_state or {}).get("saw_completion"):
-                queue = _upgrade_queue(tool_call_ids, tool_name)
-                if not queue:
-                    continue
-                tc_id = queue.popleft()
-                meta = tool_call_meta.pop(tc_id, {})
-                # ``prev_tools`` carries the wire ``arguments`` JSON *string*; the content
-                # builders index it as a dict, so an uncoerced string raised inside this
-                # (swallowed) callback and the bubble never closed.
-                _send_update(conn, session_id, loop, build_tool_complete(
-                    tc_id, tool_name, result=str(result) if result is not None else None,
-                    function_args=coerce_tool_args(function_args) if function_args else meta.get("args"),
-                    snapshot=meta.get("snapshot"),
-                ))
-                if not queue:
-                    tool_call_ids.pop(tool_name, None)
+            # ``tool.completed`` already closed this call with its own result (empty queue
+            # below stands down); this callback is the fallback for runtimes that never
+            # project one.
+            queue = _upgrade_queue(tool_call_ids, tool_name)
+            if not queue:
+                continue
+            tc_id = queue.popleft()
+            meta = tool_call_meta.pop(tc_id, {})
+            # ``prev_tools`` carries the wire ``arguments`` JSON *string*; the content
+            # builders index it as a dict, so an uncoerced string raised inside this
+            # (swallowed) callback and the bubble never closed.
+            _send_update(conn, session_id, loop, build_tool_complete(
+                tc_id, tool_name, result=str(result) if result is not None else None,
+                function_args=coerce_tool_args(function_args) if function_args else meta.get("args"),
+                snapshot=meta.get("snapshot"),
+            ))
+            if not queue:
+                tool_call_ids.pop(tool_name, None)
             if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
                 _send_update(conn, session_id, loop, plan_update)
 

@@ -72,6 +72,18 @@ Because everything routes through one OAuth-authenticated Portal session, you do
 
 [Native Windows](../user-guide/windows-native.md) makes per-tool API key setup its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
 
+### Pricing and free models
+
+Model usage is billed per token against your Nous credit balance, and hosted tool calls bill to the same balance. The [Models page](https://portal.nousresearch.com/models) on the Portal lists the catalog with each model's input and output rate in US dollars per one million tokens, updated from the live catalog.
+
+**Free models.** The catalog includes free models, grouped under **Free Models** on the Models page and marked **FREE** in the price column. The Portal's **Free** plan ($0) covers free models only, at standard rate limits and with no monthly credits, so you can try Hermes Agent without a paid subscription.
+
+**Paid plans.** Plus ($20/month), Super ($100/month), and Ultra ($200/month) each include monthly credits with a 10% bonus: $22, $110, and $220 respectively. Their credit rollover caps are $10, $50, and $100. Paid plans are not limited to free models, and they include hosted [Tool Gateway](#the-nous-tool-gateway) usage and high rate limits. You can also add a one-off top-up to your balance from the Portal. Current plans are listed under **Subscription** on the [Portal home page](https://portal.nousresearch.com/).
+
+:::tip Keeping spend predictable
+Per-token rates vary widely across the catalog, from free models to frontier flagships, and Hermes may make several model calls per user turn. Check a model's rate on the Models page before you settle on a daily driver, and use `/model` to switch between a frontier model for hard tasks and a cheaper one for routine work.
+:::
+
 ## A note on Hermes 4
 
 Nous Research's own **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is available through the Portal at heavily discounted rates. These are **frontier hybrid-reasoning chat models** — strong at math, science, instruction following, schema adherence, roleplay, and long-form writing.

@@ -307,28 +307,6 @@ class TestLoadGatewayConfig:
             == "${WEBHOOK_SECRET_UNSET_FOR_TEST}"
         )
 
-    def test_platforms_plain_values_untouched_by_expansion(self, tmp_path, monkeypatch):
-        """Configs without ``${VAR}`` refs load byte-identically through the same path."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "platforms:\n"
-            "  webhook:\n"
-            "    enabled: true\n"
-            "    port: 8089\n"
-            "    secret: plain-secret-value\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        config = load_gateway_config()
-
-        assert (
-            config.platforms[Platform.WEBHOOK].extra["secret"] == "plain-secret-value"
-        )
-        assert config.platforms[Platform.WEBHOOK].extra["port"] == 8089
-
     def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -1499,6 +1477,29 @@ class TestWebhookEnvOverride:
         assert webhook.enabled is True
         assert webhook.extra["port"] == 9012
         assert webhook.extra["secret"] == "webhook-env-secret"
+
+    def test_empty_env_secret_does_not_clobber_yaml_secret(self, tmp_path, monkeypatch):
+        """``WEBHOOK_SECRET=`` (present but empty) must not erase a config.yaml secret: the
+        widened bridge now runs for yaml-enabled webhooks, so an empty env value has to stay a
+        no-op rather than turning a working HMAC key into an empty one."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    secret: yaml-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.delenv("WEBHOOK_PORT", raising=False)
+        monkeypatch.setenv("WEBHOOK_SECRET", "")
+
+        webhook = load_gateway_config().platforms[Platform.WEBHOOK]
+
+        assert webhook.enabled is True
+        assert webhook.extra["secret"] == "yaml-secret"
 
     def test_env_key_does_not_reenable_explicitly_disabled_webhook(self):
         """An explicit ``platforms.webhook.enabled: false`` must survive

@@ -815,20 +815,26 @@ def _validate_execve_payload(argv: list[str], env: dict[str, str]) -> None:
 def _current_service_unit(
     *, pid: int | None = None, proc_root: Path = Path("/proc")
 ) -> str | None:
-    """Return the innermost service unit containing this process, if any."""
+    """Return the innermost service below this user's systemd manager, if any."""
     try:
         membership = (
             proc_root / str(os.getpid() if pid is None else pid) / "cgroup"
         ).read_text(encoding="utf-8")
     except OSError:
         return None
+    user_manager = f"user@{os.geteuid()}.service"
     for line in membership.splitlines():
         fields = line.split(":", 2)
         if len(fields) != 3 or fields[0] != "0" or fields[1]:
             continue
-        component = Path(fields[2]).name
-        if component.endswith(".service") and component != ".service":
-            return component
+        components = Path(fields[2]).parts
+        try:
+            manager_index = components.index(user_manager)
+        except ValueError:
+            continue
+        for component in reversed(components[manager_index + 1 :]):
+            if component.endswith(".service") and component != ".service":
+                return component
     return None
 
 

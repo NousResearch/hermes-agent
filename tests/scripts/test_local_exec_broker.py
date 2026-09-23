@@ -740,12 +740,20 @@ def test_scopes_bind_only_to_the_current_service(tmp_path, monkeypatch):
     cgroup.write_text(
         "malformed\n"
         "11:pids:/user.slice/user-1000.slice/user@1000.service\n"
-        "0::/user.slice/app.slice/hermes-local-exec-broker.service\n",
+        f"0::/user.slice/user-{os.geteuid()}.slice/"
+        f"user@{os.geteuid()}.service/app.slice/"
+        "hermes-local-exec-broker.service\n",
         encoding="utf-8",
     )
     assert broker._current_service_unit(pid=123, proc_root=proc_root) == (
         "hermes-local-exec-broker.service"
     )
+
+    cgroup.write_text(
+        "0::/system.slice/hermes-local-exec-broker.service\n",
+        encoding="utf-8",
+    )
+    assert broker._current_service_unit(pid=123, proc_root=proc_root) is None
 
     launches = []
 

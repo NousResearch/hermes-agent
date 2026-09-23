@@ -867,6 +867,17 @@ class TestListProfiles:
         assert profiles._count_skills(profile_env / ".hermes") == 3
         assert [p.name for p in list_profiles()] == ["default"]
 
+    def test_list_command_separator_lines_up_with_columns(self, profile_env, capsys):
+        from argparse import Namespace
+        from hermes_cli.profile_cmd import _profile_list
+
+        _profile_list(Namespace())
+        header, rule, row = capsys.readouterr().out.strip("\n").splitlines()[:3]
+        rule_starts = [i for i, ch in enumerate(rule) if ch == "─" and rule[i - 1] == " "]
+        header_starts = [header.index(col) for col in ("Profile", "Model", "Gateway", "Alias", "Distribution")]
+        assert rule_starts == header_starts
+        assert row.index("stopped") == header.index("Gateway")
+
 
 # ===================================================================
 # TestActiveProfile

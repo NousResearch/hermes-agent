@@ -25,6 +25,7 @@ describe('applyDisplay', () => {
         config: {
           display: {
             bell_on_complete: true,
+            compact: true,
             details_mode: 'expanded',
             inline_diffs: false,
             show_reasoning: true,
@@ -39,6 +40,7 @@ describe('applyDisplay', () => {
 
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(true)
+    expect(s.bannerCompact).toBe(true)
     expect(s.compact).toBe(true)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)

@@ -290,6 +290,7 @@ export const applyDisplay = (
 
   patchUiState({
     battery: !!d.battery,
+    bannerCompact: !!d.compact,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
     // Fail safe: only YAML boolean false disables the prompt. A transient

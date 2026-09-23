@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-nutrition_search.py — Search USDA FoodData Central for nutrition info.
+nutrition_search.py: Search USDA FoodData Central for nutrition info.
 
 Usage:
   python3 nutrition_search.py "chicken breast"

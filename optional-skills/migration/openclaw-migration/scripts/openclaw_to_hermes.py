@@ -227,7 +227,7 @@ MIGRATION_PRESETS: dict[str, set[str]] = {
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Item shape constants — kept stable for downstream consumers of report.json.
+# Item shape constants: kept stable for downstream consumers of report.json.
 # Inspired by OpenClaw's src/plugin-sdk/migration.ts so both sides speak the
 # same vocabulary.  Values intentionally match the strings already produced
 # by this script (migrated/archived/skipped/conflict/error) so the addition
@@ -344,7 +344,7 @@ def resolve_secret_input(value: Any, env: Optional[dict[str, str]] = None) -> Op
         ref_id = value.get("id", "")
         if source == "env" and ref_id and env:
             return env.get(ref_id, "").strip() or None
-        # File/exec sources can't be resolved here — return None
+        # File/exec sources can't be resolved here: return None
     return None
 
 
@@ -395,7 +395,7 @@ def load_yaml_file(path: Path) -> dict[str, Any]:
             f"({exc}). Fix it with `hermes config edit` (or move it aside), then "
             f"re-run the migration."
         ) from exc
-    # An empty file parses to None — a legitimate state with nothing to lose.
+    # An empty file parses to None: a legitimate state with nothing to lose.
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -412,7 +412,7 @@ def dump_yaml_file(path: Path, data: dict[str, Any]) -> None:
 
     Only ever reached after :func:`load_yaml_file` has successfully read the
     same path, so the mapping being written is the real file's content plus the
-    merged section — never a silently-empty stand-in.  Writing atomically means
+    merged section: never a silently-empty stand-in.  Writing atomically means
     an interrupted migration cannot leave a truncated config.yaml behind.
 
     Inlined rather than importing ``utils.atomic_write_text``: this script is
@@ -453,7 +453,7 @@ def dump_yaml_file(path: Path, data: dict[str, Any]) -> None:
                 pass
             # fsync the copied target so the durability claim holds on the
             # cross-device path too (mirrors utils.atomic_replace, including
-            # its swallow — a failed fsync must not report the already-copied
+            # its swallow: a failed fsync must not report the already-copied
             # write as failed).
             try:
                 target_fd = os.open(target, os.O_RDONLY)
@@ -517,7 +517,7 @@ def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
 #
 # Case-preserving: ``OpenClaw`` → ``Hermes`` (prose), but lowercase matches
 # like ``openclaw`` → ``hermes`` (so filesystem paths like ``~/.openclaw``
-# become ``~/.hermes`` — the real Hermes home — not the broken ``~/.Hermes``).
+# become ``~/.hermes``: the real Hermes home: not the broken ``~/.Hermes``).
 _REBRAND_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'\bOpen[\s-]?Claw\b', re.IGNORECASE), 'Hermes'),
     (re.compile(r'\bClawdBot\b', re.IGNORECASE), 'Hermes'),
@@ -558,7 +558,7 @@ def parse_existing_memory_entries(path: Path) -> list[str]:
 
     Splits on ``ENTRY_DELIMITER`` only, matching ``MemoryStore._parse_entries``
     in ``tools/memory_tool.py``: a store with no delimiter is ONE intact entry.
-    Do NOT fall back to :func:`extract_markdown_entries` — it is the *source*
+    Do NOT fall back to :func:`extract_markdown_entries`: it is the *source*
     parser (workspace/MEMORY.md and friends), it drops fenced code blocks and
     table rows and splits a block into one entry per bullet, and the merged
     result is written back over the destination.
@@ -693,11 +693,11 @@ def relative_label(path: Path, root: Path) -> str:
 #
 # The report JSON persists to disk inside the migration output directory and
 # frequently ends up in bug reports or support channels.  Anything that looks
-# like a credential — by key name or by value shape — is replaced with
+# like a credential: by key name or by value shape: is replaced with
 # "[redacted]" before the report is written.
 #
 # Modelled on OpenClaw's src/plugin-sdk/migration.ts so both migration tools
-# redact consistently.  Pure function — safe to call on any plain-data dict.
+# redact consistently.  Pure function: safe to call on any plain-data dict.
 # ───────────────────────────────────────────────────────────────────────
 REDACTED_MIGRATION_VALUE = "[redacted]"
 
@@ -884,10 +884,10 @@ class Migrator:
                 try:
                     ws_path.relative_to(self.source_root)
                 except ValueError:
-                    # ws_path is outside source_root — use it as custom workspace
+                    # ws_path is outside source_root: use it as custom workspace
                     self._custom_workspace = ws_path
 
-        # Read-only probe for the memory limits, during construction — nothing
+        # Read-only probe for the memory limits, during construction: nothing
         # is written from here, so an unreadable config just falls back to the
         # defaults.  Every path that WRITES config.yaml refuses separately (see
         # run_if_selected), so this cannot become a silent overwrite.
@@ -1094,7 +1094,7 @@ class Migrator:
             return
         # If a previous config.yaml write hit a conflict/error during apply,
         # skip remaining config-mutating options rather than risk a partial
-        # write.  Dry-run mode never blocks — the user needs the full preview
+        # write.  Dry-run mode never blocks: the user needs the full preview
         # to decide how to proceed (re-run with --overwrite, etc.).
         if (
             self.execute
@@ -1116,7 +1116,7 @@ class Migrator:
         except ConfigReadError as exc:
             # The destination config.yaml is present but unreadable, so this
             # step cannot merge into it.  Record the refusal against the
-            # config path — record() then flips _config_apply_blocked, and the
+            # config path: record() then flips _config_apply_blocked, and the
             # remaining config-mutating options short-circuit above instead of
             # each rediscovering the same unreadable file.  The file itself is
             # left byte-identical.
@@ -1179,7 +1179,7 @@ class Migrator:
         """Structured warnings surfaced on the report for downstream consumers.
 
         Modelled on OpenClaw's extensions/migrate-hermes/plan.ts warnings[].
-        Keep the messages actionable — they show up in summary.md and the
+        Keep the messages actionable: they show up in summary.md and the
         JSON report.
         """
         warnings: list[str] = []
@@ -1479,7 +1479,7 @@ class Migrator:
         )
         if isinstance(workspace, str) and workspace.strip():
             ws_path = workspace.strip()
-            # Skip if the workspace points inside the OpenClaw source directory —
+            # Skip if the workspace points inside the OpenClaw source directory: 
             # that path will be stale after migration and would cause the Hermes
             # gateway to use the old OpenClaw workspace as its cwd, picking up
             # OpenClaw's AGENTS.md, MEMORY.md, etc.
@@ -1731,7 +1731,7 @@ class Migrator:
                 if isinstance(oai_key, str) and oai_key.strip():
                     secret_additions["VOICE_TOOLS_OPENAI_KEY"] = oai_key.strip()
 
-        # Also check the OpenClaw .env file — many users store keys there
+        # Also check the OpenClaw .env file: many users store keys there
         # instead of inline in openclaw.json
         openclaw_env = self.load_openclaw_env()
         env_key_mapping = {
@@ -1750,7 +1750,7 @@ class Migrator:
             if val and hermes_key not in secret_additions:
                 secret_additions[hermes_key] = val
 
-        # Check the openclaw.json "env" sub-object — some OpenClaw setups
+        # Check the openclaw.json "env" sub-object: some OpenClaw setups
         # store API keys here instead of in a separate .env file.
         # Keys can be at env.<KEY> or env.vars.<KEY>.
         json_env = config.get("env")
@@ -3016,7 +3016,7 @@ class Migrator:
             "",
             "**Strongly recommended:** Run `hermes claw cleanup` to rename the OpenClaw",
             "directory to `.openclaw.pre-migration`. This prevents the agent from finding it.",
-            "The directory is renamed, not deleted — you can undo this at any time.",
+            "The directory is renamed, not deleted: you can undo this at any time.",
             "",
             "If you skip this step and notice the agent getting confused about workspaces",
             "or todo lists, run `hermes claw cleanup` to fix it.",

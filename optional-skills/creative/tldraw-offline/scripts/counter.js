@@ -1,19 +1,19 @@
-// Interactive Counter — a tldraw offline document script.
+// Interactive Counter: a tldraw offline document script.
 //
 // HOW TO RUN IT ON YOUR MACHINE:
 //   1. Open tldraw offline, create or open a document.
 //   2. Develop → Reveal Script…  (creates script/main.js + a workspace folder)
 //   3. Replace the contents of script/main.js with THIS file, and save.
 //   4. The app reruns the script automatically. You'll see a "Counter" panel
-//      with MINUS / RESET / PLUS buttons — click them; the number updates live.
+//      with MINUS / RESET / PLUS buttons: click them; the number updates live.
 //   5. File → Save to persist the script into the .tldraw file. Now the file
 //      *is* a little app: reopen it anywhere and the buttons still work.
 //
 // This is the document-script contract (from the app's script-context.d.ts):
 //   export default function ({ editor, helpers, signal }) { ... }
-//     editor  — the live tldraw Editor
-//     helpers — editor-bound conveniences (richTextToPlainText, etc.)
-//     signal  — an AbortSignal fired before the script reruns / on close;
+//     editor: the live tldraw Editor
+//     helpers: editor-bound conveniences (richTextToPlainText, etc.)
+//     signal: an AbortSignal fired before the script reruns / on close;
 //               register ALL cleanup on it so re-saving never leaks listeners.
 
 import { createShapeId, toRichText } from 'tldraw'
@@ -44,7 +44,7 @@ export default function ({ editor, helpers, signal }) {
 			props: { geo: 'rectangle', w: 360, h: 160, color: 'black', fill: 'none', richText: toRichText('0'), size: 'xl' },
 			meta: { ui: 'display', count: 0 },
 		})
-		// Button labels are load-bearing — the click handler finds buttons by text.
+		// Button labels are load-bearing: the click handler finds buttons by text.
 		ensure({
 			id: IDS.dec, type: 'geo', x: 40, y: 270,
 			props: { geo: 'rectangle', w: 100, h: 80, color: 'red', fill: 'solid', richText: toRichText('MINUS'), size: 'l' },

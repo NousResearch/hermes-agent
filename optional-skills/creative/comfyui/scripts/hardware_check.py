@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""hardware_check.py — Detect whether this machine can realistically run ComfyUI locally.
+"""hardware_check.py: Detect whether this machine can realistically run ComfyUI locally.
 
 Improvements over v1:
   - Multi-GPU detection: scans all NVIDIA / AMD GPUs, picks the best one (most VRAM)
@@ -80,7 +80,7 @@ def is_rosetta() -> bool:
         return False
     if platform.machine() == "arm64":
         return False
-    # x86_64 on Darwin — could be Intel Mac or Rosetta. Probe sysctl.
+    # x86_64 on Darwin: could be Intel Mac or Rosetta. Probe sysctl.
     out = _run(["sysctl", "-in", "sysctl.proc_translated"]).strip()
     return out == "1"
 
@@ -186,7 +186,7 @@ def detect_apple_silicon() -> dict | None:
         pass
     ram_gb = round(mem_bytes / (1024**3), 1) if mem_bytes else 0.0
 
-    # Detect chip variant ("Pro", "Max", "Ultra") — affects performance even at same gen
+    # Detect chip variant ("Pro", "Max", "Ultra"): affects performance even at same gen
     variant = None
     for v in ("Ultra", "Max", "Pro"):
         if v in chip:
@@ -289,13 +289,13 @@ def classify(gpu: dict | None, ram_gb: float, free_disk_gb: float, *, wsl: bool,
     if rosetta:
         notes.append(
             "Detected Python running under Rosetta on Apple Silicon. "
-            "ComfyUI MPS support requires native ARM64 Python — install via "
+            "ComfyUI MPS support requires native ARM64 Python: install via "
             "`brew install python` or arm64 Miniforge, then re-run."
         )
         return "cloud", "comfy-cloud", notes
 
     if wsl and gpu and gpu["vendor"] == "nvidia":
-        notes.append("Detected WSL2 + NVIDIA — confirm `nvidia-smi` works in your WSL distro before installing.")
+        notes.append("Detected WSL2 + NVIDIA: confirm `nvidia-smi` works in your WSL distro before installing.")
 
     if free_disk_gb and free_disk_gb < MIN_FREE_DISK_GB:
         notes.append(
@@ -317,7 +317,7 @@ def classify(gpu: dict | None, ram_gb: float, free_disk_gb: float, *, wsl: bool,
             "No supported accelerator found (NVIDIA CUDA / AMD ROCm / Apple Silicon / Intel Arc)."
         )
         notes.append(
-            "CPU-only ComfyUI works but is unusably slow for modern models — use Comfy Cloud."
+            "CPU-only ComfyUI works but is unusably slow for modern models: use Comfy Cloud."
         )
         return "cloud", "comfy-cloud", notes
 
@@ -330,20 +330,20 @@ def classify(gpu: dict | None, ram_gb: float, free_disk_gb: float, *, wsl: bool,
             gen_str += f" {variant}"
         if mem < MIN_MAC_RAM_GB:
             notes.append(
-                f"{gen_str} with {mem} GB unified memory — below the {MIN_MAC_RAM_GB} GB practical minimum."
+                f"{gen_str} with {mem} GB unified memory: below the {MIN_MAC_RAM_GB} GB practical minimum."
             )
             notes.append("SD1.5 may work; SDXL/Flux will swap or OOM. Recommend Comfy Cloud.")
             return "cloud", "comfy-cloud", notes
         if mem < OK_MAC_RAM_GB:
             notes.append(
-                f"{gen_str} with {mem} GB — SDXL works but slow. Flux/video likely too tight."
+                f"{gen_str} with {mem} GB: SDXL works but slow. Flux/video likely too tight."
             )
             return "marginal", "apple-silicon", notes
-        notes.append(f"{gen_str} with {mem} GB unified memory — good for SDXL/Flux.")
+        notes.append(f"{gen_str} with {mem} GB unified memory: good for SDXL/Flux.")
         return "ok", "apple-silicon", notes
 
     if gpu["vendor"] == "intel":
-        notes.append("Intel Arc detected — ComfyUI IPEX support is experimental; Comfy Cloud is more reliable.")
+        notes.append("Intel Arc detected: ComfyUI IPEX support is experimental; Comfy Cloud is more reliable.")
         return "marginal", "intel", notes
 
     # Discrete NVIDIA / AMD
@@ -351,19 +351,19 @@ def classify(gpu: dict | None, ram_gb: float, free_disk_gb: float, *, wsl: bool,
     name = gpu["name"]
     if vram < MIN_VRAM_GB_USABLE:
         notes.append(
-            f"{name} has only {vram} GB VRAM — below the {MIN_VRAM_GB_USABLE} GB practical minimum."
+            f"{name} has only {vram} GB VRAM: below the {MIN_VRAM_GB_USABLE} GB practical minimum."
         )
         notes.append("Most modern models won't load. Recommend Comfy Cloud.")
         return "cloud", "comfy-cloud", notes
     if vram < OK_VRAM_GB:
         notes.append(
-            f"{name} ({vram} GB VRAM) — SD1.5 works, SDXL tight, Flux/video unlikely."
+            f"{name} ({vram} GB VRAM): SD1.5 works, SDXL tight, Flux/video unlikely."
         )
         return "marginal", gpu["vendor"], notes
     if vram < GREAT_VRAM_GB:
-        notes.append(f"{name} ({vram} GB VRAM) — SDXL comfortable, Flux possible with optimizations.")
+        notes.append(f"{name} ({vram} GB VRAM): SDXL comfortable, Flux possible with optimizations.")
         return "ok", gpu["vendor"], notes
-    notes.append(f"{name} ({vram} GB VRAM) — can run everything including Flux/video.")
+    notes.append(f"{name} ({vram} GB VRAM): can run everything including Flux/video.")
     return "ok", gpu["vendor"], notes
 
 
@@ -386,7 +386,7 @@ def build_report(*, check_pytorch: bool = False) -> dict:
     # Intel Mac: arm64 detect failed AND no other GPU paths
     if gpu is None and sysname == "Darwin" and arch != "arm64" and not rosetta:
         notes = [
-            "Intel Mac detected — no MPS backend available.",
+            "Intel Mac detected: no MPS backend available.",
             "ComfyUI will fall back to CPU which is unusably slow. Use Comfy Cloud.",
         ]
         report = {
@@ -462,9 +462,9 @@ def main(argv: list[str] | None = None) -> int:
         if report["gpu"]:
             g = report["gpu"]
             if g["vendor"] == "apple":
-                print(f"GPU:       {g['name']} — {g.get('unified_memory_gb', 0)} GB unified memory")
+                print(f"GPU:       {g['name']}: {g.get('unified_memory_gb', 0)} GB unified memory")
             else:
-                print(f"GPU:       {g['name']} — {g.get('vram_gb', 0)} GB VRAM")
+                print(f"GPU:       {g['name']}: {g.get('vram_gb', 0)} GB VRAM")
                 if g.get("all_gpus") and len(g["all_gpus"]) > 1:
                     print(f"           ({len(g['all_gpus'])} GPUs total; using best by VRAM)")
         else:
@@ -482,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
                     line += " + MPS"
                 print(line)
             else:
-                print(f"PyTorch:   not available — {pt.get('reason')}")
+                print(f"PyTorch:   not available: {pt.get('reason')}")
         for n in report["notes"]:
             print(f"  • {n}")
 

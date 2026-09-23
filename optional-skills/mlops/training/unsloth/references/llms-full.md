@@ -460,38 +460,38 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 | ------------------------------------------------------------------------------------------ | ---------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | [**gpt-oss** ](https://docs.unsloth.ai/models/gpt-oss-how-to-run-and-fine-tune)            | 120b                   | [link](https://huggingface.co/unsloth/gpt-oss-120b-GGUF)                        | [link](https://huggingface.co/unsloth/gpt-oss-120b-unsloth-bnb-4bit)                        |
 |                                                                                            | 20b                    | [link](https://huggingface.co/unsloth/gpt-oss-20b-GGUF)                         | [link](https://huggingface.co/unsloth/gpt-oss-20b-unsloth-bnb-4bit)                         |
-| [**DeepSeek-V3.1**](https://docs.unsloth.ai/models/deepseek-v3.1-how-to-run-locally)       | Terminus               | [link](https://huggingface.co/unsloth/DeepSeek-V3.1-Terminus-GGUF)              | —                                                                                           |
-|                                                                                            | V3.1                   | [link](https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF)                       | —                                                                                           |
+| [**DeepSeek-V3.1**](https://docs.unsloth.ai/models/deepseek-v3.1-how-to-run-locally)       | Terminus               | [link](https://huggingface.co/unsloth/DeepSeek-V3.1-Terminus-GGUF)              |: |
+|                                                                                            | V3.1                   | [link](https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF)                       |: |
 | [**Qwen3-VL**](https://docs.unsloth.ai/models/qwen3-vl-how-to-run-and-fine-tune)           | 2B-Instruct            | [link](https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF)                | [link](https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit)                |
 |                                                                                            | 2B-Thinking            | [link](https://huggingface.co/unsloth/Qwen3-VL-2B-Thinking-GGUF)                | [link](https://huggingface.co/unsloth/Qwen3-VL-2B-Thinking-unsloth-bnb-4bit)                |
 |                                                                                            | 4B-Instruct            | [link](https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF)                | [link](https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-unsloth-bnb-4bit)                |
 |                                                                                            | 4B-Thinking            | [link](https://huggingface.co/unsloth/Qwen3-VL-4B-Thinking-GGUF)                | [link](https://huggingface.co/unsloth/Qwen3-VL-4B-Thinking-unsloth-bnb-4bit)                |
 |                                                                                            | 8B-Instruct            | [link](https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF)                | [link](https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit)                |
 |                                                                                            | 8B-Thinking            | [link](https://huggingface.co/unsloth/Qwen3-VL-8B-Thinking-GGUF)                | [link](https://huggingface.co/unsloth/Qwen3-VL-8B-Thinking-unsloth-bnb-4bit)                |
-|                                                                                            | 30B-A3B-Instruct       | [link](https://huggingface.co/unsloth/Qwen3-VL-30B-A3B-Instruct-GGUF)           | —                                                                                           |
-|                                                                                            | 30B-A3B-Thinking       | [link](https://huggingface.co/unsloth/Qwen3-VL-30B-A3B-Thinking-GGUF)           | —                                                                                           |
+|                                                                                            | 30B-A3B-Instruct       | [link](https://huggingface.co/unsloth/Qwen3-VL-30B-A3B-Instruct-GGUF)           |: |
+|                                                                                            | 30B-A3B-Thinking       | [link](https://huggingface.co/unsloth/Qwen3-VL-30B-A3B-Thinking-GGUF)           |: |
 |                                                                                            | 32B-Instruct           | [link](https://huggingface.co/unsloth/Qwen3-VL-32B-Instruct-GGUF)               | [link](https://huggingface.co/unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit)               |
 |                                                                                            | 32B-Thinking           | [link](https://huggingface.co/unsloth/Qwen3-VL-32B-Thinking-GGUF)               | [link](https://huggingface.co/unsloth/Qwen3-VL-32B-Thinking-unsloth-bnb-4bit)               |
-|                                                                                            | 235B-A22B-Instruct     | [link](https://huggingface.co/unsloth/Qwen3-VL-235B-A22B-Instruct-GGUF)         | —                                                                                           |
-|                                                                                            | 235B-A22B-Thinking     | [link](https://huggingface.co/unsloth/Qwen3-VL-235B-A22B-Thinking-GGUF)         | —                                                                                           |
-| [**Qwen3-2507**](https://docs.unsloth.ai/models/qwen3-how-to-run-and-fine-tune/qwen3-2507) | 30B-A3B-Instruct       | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF)         | —                                                                                           |
-|                                                                                            | 30B-A3B-Thinking       | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF)         | —                                                                                           |
-|                                                                                            | 235B-A22B-Thinking     | [link](https://huggingface.co/unsloth/Qwen3-235B-A22B-Thinking-2507-GGUF/)      | —                                                                                           |
-|                                                                                            | 235B-A22B-Instruct     | [link](https://huggingface.co/unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF/)      | —                                                                                           |
-| **Qwen3-Coder**                                                                            | 30B-A3B                | [link](https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF)        | —                                                                                           |
-|                                                                                            | 480B-A35B              | [link](https://huggingface.co/unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF)      | —                                                                                           |
+|                                                                                            | 235B-A22B-Instruct     | [link](https://huggingface.co/unsloth/Qwen3-VL-235B-A22B-Instruct-GGUF)         |: |
+|                                                                                            | 235B-A22B-Thinking     | [link](https://huggingface.co/unsloth/Qwen3-VL-235B-A22B-Thinking-GGUF)         |: |
+| [**Qwen3-2507**](https://docs.unsloth.ai/models/qwen3-how-to-run-and-fine-tune/qwen3-2507) | 30B-A3B-Instruct       | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF)         |: |
+|                                                                                            | 30B-A3B-Thinking       | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF)         |: |
+|                                                                                            | 235B-A22B-Thinking     | [link](https://huggingface.co/unsloth/Qwen3-235B-A22B-Thinking-2507-GGUF/)      |: |
+|                                                                                            | 235B-A22B-Instruct     | [link](https://huggingface.co/unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF/)      |: |
+| **Qwen3-Coder**                                                                            | 30B-A3B                | [link](https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF)        |: |
+|                                                                                            | 480B-A35B              | [link](https://huggingface.co/unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF)      |: |
 | **Granite-4.0 (new)**                                                                      | H-Small                | [link](https://huggingface.co/unsloth/granite-4.0-h-small-GGUF)                 | [link](https://huggingface.co/unsloth/granite-4.0-h-small-unsloth-bnb-4bit)                 |
-| **GLM (new)**                                                                              | 4.6                    | [link](https://huggingface.co/unsloth/GLM-4.6-GGUF)                             | —                                                                                           |
-|                                                                                            | 4.5-Air                | [link](https://huggingface.co/unsloth/GLM-4.5-Air-GGUF)                         | —                                                                                           |
-| **Kimi-K2-0905**                                                                           | 1T                     | [link](https://huggingface.co/unsloth/Kimi-K2-Instruct-0905-GGUF)               | —                                                                                           |
+| **GLM (new)**                                                                              | 4.6                    | [link](https://huggingface.co/unsloth/GLM-4.6-GGUF)                             |: |
+|                                                                                            | 4.5-Air                | [link](https://huggingface.co/unsloth/GLM-4.5-Air-GGUF)                         |: |
+| **Kimi-K2-0905**                                                                           | 1T                     | [link](https://huggingface.co/unsloth/Kimi-K2-Instruct-0905-GGUF)               |: |
 | **Gemma 3n**                                                                               | E2B                    | [link](https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF)                     | [link](https://huggingface.co/unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit)                     |
 |                                                                                            | E4B                    | [link](https://huggingface.co/unsloth/gemma-3n-E4B-it-GGUF)                     | [link](https://huggingface.co/unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit)                     |
 | **DeepSeek-R1-0528**                                                                       | R1-0528-Qwen3-8B       | [link](https://huggingface.co/unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF)           | [link](https://huggingface.co/unsloth/DeepSeek-R1-0528-Qwen3-8B-unsloth-bnb-4bit)           |
-|                                                                                            | R1-0528                | [link](https://huggingface.co/unsloth/DeepSeek-R1-0528-GGUF)                    | —                                                                                           |
+|                                                                                            | R1-0528                | [link](https://huggingface.co/unsloth/DeepSeek-R1-0528-GGUF)                    |: |
 | **Mistral**                                                                                | Magistral Small (2509) | [link](https://huggingface.co/unsloth/Magistral-Small-2509-GGUF)                | [link](https://huggingface.co/unsloth/Magistral-Small-2509-unsloth-bnb-4bit)                |
 |                                                                                            | Magistral Small (2507) | [link](https://huggingface.co/unsloth/Magistral-Small-2507-GGUF)                | [link](https://huggingface.co/unsloth/Magistral-Small-2507-unsloth-bnb-4bit)                |
 |                                                                                            | Small 3.2 24B (2506)   | [link](https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF) | [link](https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit) |
-| FLUX.1                                                                                     | Kontext-dev            | [link](https://huggingface.co/unsloth/FLUX.1-Kontext-dev-GGUF)                  | —                                                                                           |
+| FLUX.1                                                                                     | Kontext-dev            | [link](https://huggingface.co/unsloth/FLUX.1-Kontext-dev-GGUF)                  |: |
 | **Qwen3**                                                                                  | 0.6 B                  | [link](https://huggingface.co/unsloth/Qwen3-0.6B-GGUF)                          | [link](https://huggingface.co/unsloth/Qwen3-0.6B-unsloth-bnb-4bit)                          |
 |                                                                                            | 1.7 B                  | [link](https://huggingface.co/unsloth/Qwen3-1.7B-GGUF)                          | [link](https://huggingface.co/unsloth/Qwen3-1.7B-unsloth-bnb-4bit)                          |
 |                                                                                            | 4 B                    | [link](https://huggingface.co/unsloth/Qwen3-4B-GGUF)                            | [link](https://huggingface.co/unsloth/Qwen3-4B-unsloth-bnb-4bit)                            |
@@ -499,12 +499,12 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 |                                                                                            | 14 B                   | [link](https://huggingface.co/unsloth/Qwen3-14B-GGUF)                           | [link](https://huggingface.co/unsloth/Qwen3-14B-unsloth-bnb-4bit)                           |
 |                                                                                            | 30B-A3B                | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF)                       | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-bnb-4bit)                               |
 |                                                                                            | 32 B                   | [link](https://huggingface.co/unsloth/Qwen3-32B-GGUF)                           | [link](https://huggingface.co/unsloth/Qwen3-32B-unsloth-bnb-4bit)                           |
-|                                                                                            | 235B-A22B              | [link](https://huggingface.co/unsloth/Qwen3-235B-A22B-GGUF)                     | —                                                                                           |
+|                                                                                            | 235B-A22B              | [link](https://huggingface.co/unsloth/Qwen3-235B-A22B-GGUF)                     |: |
 | **Llama 4**                                                                                | Scout 17B 16E          | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF)      | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-bnb-4bit)      |
-|                                                                                            | Maverick 17B 128E      | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF)  | —                                                                                           |
-| **Grok 2**                                                                                 | 270B                   | [link](https://huggingface.co/unsloth/grok-2-GGUF)                              | —                                                                                           |
-| **Qwen-2.5 Omni**                                                                          | 3 B                    | [link](https://huggingface.co/unsloth/Qwen2.5-Omni-3B-GGUF)                     | —                                                                                           |
-|                                                                                            | 7 B                    | [link](https://huggingface.co/unsloth/Qwen2.5-Omni-7B-GGUF)                     | —                                                                                           |
+|                                                                                            | Maverick 17B 128E      | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF)  |: |
+| **Grok 2**                                                                                 | 270B                   | [link](https://huggingface.co/unsloth/grok-2-GGUF)                              |: |
+| **Qwen-2.5 Omni**                                                                          | 3 B                    | [link](https://huggingface.co/unsloth/Qwen2.5-Omni-3B-GGUF)                     |: |
+|                                                                                            | 7 B                    | [link](https://huggingface.co/unsloth/Qwen2.5-Omni-7B-GGUF)                     |: |
 | **Phi-4**                                                                                  | Reasoning-plus         | [link](https://huggingface.co/unsloth/Phi-4-reasoning-plus-GGUF)                | [link](https://huggingface.co/unsloth/Phi-4-reasoning-plus-unsloth-bnb-4bit)                |
 |                                                                                            | Reasoning              | [link](https://huggingface.co/unsloth/Phi-4-reasoning-GGUF)                     | [link](https://huggingface.co/unsloth/phi-4-reasoning-unsloth-bnb-4bit)                     |
 
@@ -514,12 +514,12 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 | ----------------- | ---------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | **DeepSeek-V3.1** | Terminus               | [link](https://huggingface.co/unsloth/DeepSeek-V3.1-Terminus-GGUF)        |                                                                                       |
 |                   | V3.1                   | [link](https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF)                 |                                                                                       |
-| **DeepSeek-V3**   | V3-0324                | [link](https://huggingface.co/unsloth/DeepSeek-V3-0324-GGUF)              | —                                                                                     |
-|                   | V3                     | [link](https://huggingface.co/unsloth/DeepSeek-V3-GGUF)                   | —                                                                                     |
-| **DeepSeek-R1**   | R1-0528                | [link](https://huggingface.co/unsloth/DeepSeek-R1-0528-GGUF)              | —                                                                                     |
+| **DeepSeek-V3**   | V3-0324                | [link](https://huggingface.co/unsloth/DeepSeek-V3-0324-GGUF)              |: |
+|                   | V3                     | [link](https://huggingface.co/unsloth/DeepSeek-V3-GGUF)                   |: |
+| **DeepSeek-R1**   | R1-0528                | [link](https://huggingface.co/unsloth/DeepSeek-R1-0528-GGUF)              |: |
 |                   | R1-0528-Qwen3-8B       | [link](https://huggingface.co/unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF)     | [link](https://huggingface.co/unsloth/DeepSeek-R1-0528-Qwen3-8B-unsloth-bnb-4bit)     |
-|                   | R1                     | [link](https://huggingface.co/unsloth/DeepSeek-R1-GGUF)                   | —                                                                                     |
-|                   | R1 Zero                | [link](https://huggingface.co/unsloth/DeepSeek-R1-Zero-GGUF)              | —                                                                                     |
+|                   | R1                     | [link](https://huggingface.co/unsloth/DeepSeek-R1-GGUF)                   |: |
+|                   | R1 Zero                | [link](https://huggingface.co/unsloth/DeepSeek-R1-Zero-GGUF)              |: |
 |                   | Distill Llama 3 8 B    | [link](https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF)  | [link](https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-8B-unsloth-bnb-4bit)  |
 |                   | Distill Llama 3.3 70 B | [link](https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-70B-GGUF) | [link](https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-70B-bnb-4bit)         |
 |                   | Distill Qwen 2.5 1.5 B | [link](https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF) | [link](https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit) |
@@ -532,22 +532,22 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 | Model         | Variant             | GGUF                                                                           | Instruct (4-bit)                                                                       |
 | ------------- | ------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
 | **Llama 4**   | Scout 17 B-16 E     | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF)     | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-bnb-4bit) |
-|               | Maverick 17 B-128 E | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF) | —                                                                                      |
+|               | Maverick 17 B-128 E | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E-Instruct-GGUF) |: |
 | **Llama 3.3** | 70 B                | [link](https://huggingface.co/unsloth/Llama-3.3-70B-Instruct-GGUF)             | [link](https://huggingface.co/unsloth/Llama-3.3-70B-Instruct-bnb-4bit)                 |
 | **Llama 3.2** | 1 B                 | [link](https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF)              | [link](https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-bnb-4bit)                  |
 |               | 3 B                 | [link](https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF)              | [link](https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-bnb-4bit)                  |
-|               | 11 B Vision         | —                                                                              | [link](https://huggingface.co/unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit)  |
-|               | 90 B Vision         | —                                                                              | [link](https://huggingface.co/unsloth/Llama-3.2-90B-Vision-Instruct-bnb-4bit)          |
+|               | 11 B Vision         |: | [link](https://huggingface.co/unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit)  |
+|               | 90 B Vision         |: | [link](https://huggingface.co/unsloth/Llama-3.2-90B-Vision-Instruct-bnb-4bit)          |
 | **Llama 3.1** | 8 B                 | [link](https://huggingface.co/unsloth/Llama-3.1-8B-Instruct-GGUF)              | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit)             |
-|               | 70 B                | —                                                                              | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit)            |
-|               | 405 B               | —                                                                              | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-405B-Instruct-bnb-4bit)           |
-| **Llama 3**   | 8 B                 | —                                                                              | [link](https://huggingface.co/unsloth/llama-3-8b-Instruct-bnb-4bit)                    |
-|               | 70 B                | —                                                                              | [link](https://huggingface.co/unsloth/llama-3-70b-bnb-4bit)                            |
-| **Llama 2**   | 7 B                 | —                                                                              | [link](https://huggingface.co/unsloth/llama-2-7b-chat-bnb-4bit)                        |
-|               | 13 B                | —                                                                              | [link](https://huggingface.co/unsloth/llama-2-13b-bnb-4bit)                            |
-| **CodeLlama** | 7 B                 | —                                                                              | [link](https://huggingface.co/unsloth/codellama-7b-bnb-4bit)                           |
-|               | 13 B                | —                                                                              | [link](https://huggingface.co/unsloth/codellama-13b-bnb-4bit)                          |
-|               | 34 B                | —                                                                              | [link](https://huggingface.co/unsloth/codellama-34b-bnb-4bit)                          |
+|               | 70 B                |: | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit)            |
+|               | 405 B               |: | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-405B-Instruct-bnb-4bit)           |
+| **Llama 3**   | 8 B                 |: | [link](https://huggingface.co/unsloth/llama-3-8b-Instruct-bnb-4bit)                    |
+|               | 70 B                |: | [link](https://huggingface.co/unsloth/llama-3-70b-bnb-4bit)                            |
+| **Llama 2**   | 7 B                 |: | [link](https://huggingface.co/unsloth/llama-2-7b-chat-bnb-4bit)                        |
+|               | 13 B                |: | [link](https://huggingface.co/unsloth/llama-2-13b-bnb-4bit)                            |
+| **CodeLlama** | 7 B                 |: | [link](https://huggingface.co/unsloth/codellama-7b-bnb-4bit)                           |
+|               | 13 B                |: | [link](https://huggingface.co/unsloth/codellama-13b-bnb-4bit)                          |
+|               | 34 B                |: | [link](https://huggingface.co/unsloth/codellama-34b-bnb-4bit)                          |
 
 ### Gemma models:
 
@@ -563,8 +563,8 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 | **MedGemma** | 4 B (vision)  | [link](https://huggingface.co/unsloth/medgemma-4b-it-GGUF)   | [link](https://huggingface.co/unsloth/medgemma-4b-it-unsloth-bnb-4bit)       |
 |              | 27 B (vision) | [link](https://huggingface.co/unsloth/medgemma-27b-it-GGUF)  | [link](https://huggingface.co/unsloth/medgemma-27b-text-it-unsloth-bnb-4bit) |
 | **Gemma 2**  | 2 B           | [link](https://huggingface.co/unsloth/gemma-2-it-GGUF)       | [link](https://huggingface.co/unsloth/gemma-2-2b-it-bnb-4bit)                |
-|              | 9 B           | —                                                            | [link](https://huggingface.co/unsloth/gemma-2-9b-it-bnb-4bit)                |
-|              | 27 B          | —                                                            | [link](https://huggingface.co/unsloth/gemma-2-27b-it-bnb-4bit)               |
+|              | 9 B           |: | [link](https://huggingface.co/unsloth/gemma-2-9b-it-bnb-4bit)                |
+|              | 27 B          |: | [link](https://huggingface.co/unsloth/gemma-2-27b-it-bnb-4bit)               |
 
 ### Qwen models:
 
@@ -577,20 +577,20 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 |                            | 14 B       | [link](https://huggingface.co/unsloth/Qwen3-14B-GGUF)                        | [link](https://huggingface.co/unsloth/Qwen3-14B-unsloth-bnb-4bit)               |
 |                            | 30 B-A3B   | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF)                    | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-bnb-4bit)                   |
 |                            | 32 B       | [link](https://huggingface.co/unsloth/Qwen3-32B-GGUF)                        | [link](https://huggingface.co/unsloth/Qwen3-32B-unsloth-bnb-4bit)               |
-|                            | 235 B-A22B | [link](https://huggingface.co/unsloth/Qwen3-235B-A22B-GGUF)                  | —                                                                               |
-| **Qwen 2.5 Omni**          | 3 B        | [link](https://huggingface.co/unsloth/Qwen2.5-Omni-3B-GGUF)                  | —                                                                               |
-|                            | 7 B        | [link](https://huggingface.co/unsloth/Qwen2.5-Omni-7B-GGUF)                  | —                                                                               |
+|                            | 235 B-A22B | [link](https://huggingface.co/unsloth/Qwen3-235B-A22B-GGUF)                  |: |
+| **Qwen 2.5 Omni**          | 3 B        | [link](https://huggingface.co/unsloth/Qwen2.5-Omni-3B-GGUF)                  |: |
+|                            | 7 B        | [link](https://huggingface.co/unsloth/Qwen2.5-Omni-7B-GGUF)                  |: |
 | **Qwen 2.5 VL**            | 3 B        | [link](https://huggingface.co/unsloth/Qwen2.5-VL-3B-Instruct-GGUF)           | [link](https://huggingface.co/unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit)  |
 |                            | 7 B        | [link](https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF)           | [link](https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-unsloth-bnb-4bit)  |
 |                            | 32 B       | [link](https://huggingface.co/unsloth/Qwen2.5-VL-32B-Instruct-GGUF)          | [link](https://huggingface.co/unsloth/Qwen2.5-VL-32B-Instruct-unsloth-bnb-4bit) |
 |                            | 72 B       | [link](https://huggingface.co/unsloth/Qwen2.5-VL-72B-Instruct-GGUF)          | [link](https://huggingface.co/unsloth/Qwen2.5-VL-72B-Instruct-unsloth-bnb-4bit) |
-| **Qwen 2.5**               | 0.5 B      | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit)           |
-|                            | 1.5 B      | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit)           |
-|                            | 3 B        | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2.5-3B-Instruct-bnb-4bit)             |
-|                            | 7 B        | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2.5-7B-Instruct-bnb-4bit)             |
-|                            | 14 B       | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2.5-14B-Instruct-bnb-4bit)            |
-|                            | 32 B       | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2.5-32B-Instruct-bnb-4bit)            |
-|                            | 72 B       | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2.5-72B-Instruct-bnb-4bit)            |
+| **Qwen 2.5**               | 0.5 B      |: | [link](https://huggingface.co/unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit)           |
+|                            | 1.5 B      |: | [link](https://huggingface.co/unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit)           |
+|                            | 3 B        |: | [link](https://huggingface.co/unsloth/Qwen2.5-3B-Instruct-bnb-4bit)             |
+|                            | 7 B        |: | [link](https://huggingface.co/unsloth/Qwen2.5-7B-Instruct-bnb-4bit)             |
+|                            | 14 B       |: | [link](https://huggingface.co/unsloth/Qwen2.5-14B-Instruct-bnb-4bit)            |
+|                            | 32 B       |: | [link](https://huggingface.co/unsloth/Qwen2.5-32B-Instruct-bnb-4bit)            |
+|                            | 72 B       |: | [link](https://huggingface.co/unsloth/Qwen2.5-72B-Instruct-bnb-4bit)            |
 | **Qwen 2.5 Coder (128 K)** | 0.5 B      | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-0.5B-Instruct-128K-GGUF) | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-0.5B-Instruct-bnb-4bit)     |
 |                            | 1.5 B      | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-1.5B-Instruct-128K-GGUF) | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-1.5B-Instruct-bnb-4bit)     |
 |                            | 3 B        | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-3B-Instruct-128K-GGUF)   | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-3B-Instruct-bnb-4bit)       |
@@ -598,17 +598,17 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 |                            | 14 B       | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-14B-Instruct-128K-GGUF)  | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-14B-Instruct-bnb-4bit)      |
 |                            | 32 B       | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-32B-Instruct-128K-GGUF)  | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-32B-Instruct-bnb-4bit)      |
 | **QwQ**                    | 32 B       | [link](https://huggingface.co/unsloth/QwQ-32B-GGUF)                          | [link](https://huggingface.co/unsloth/QwQ-32B-unsloth-bnb-4bit)                 |
-| **QVQ (preview)**          | 72 B       | —                                                                            | [link](https://huggingface.co/unsloth/QVQ-72B-Preview-bnb-4bit)                 |
-| **Qwen 2 (chat)**          | 1.5 B      | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2-1.5B-Instruct-bnb-4bit)             |
-|                            | 7 B        | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2-7B-Instruct-bnb-4bit)               |
-|                            | 72 B       | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2-72B-Instruct-bnb-4bit)              |
-| **Qwen 2 VL**              | 2 B        | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2-VL-2B-Instruct-unsloth-bnb-4bit)    |
-|                            | 7 B        | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2-VL-7B-Instruct-unsloth-bnb-4bit)    |
-|                            | 72 B       | —                                                                            | [link](https://huggingface.co/unsloth/Qwen2-VL-72B-Instruct-bnb-4bit)           |
+| **QVQ (preview)**          | 72 B       |: | [link](https://huggingface.co/unsloth/QVQ-72B-Preview-bnb-4bit)                 |
+| **Qwen 2 (chat)**          | 1.5 B      |: | [link](https://huggingface.co/unsloth/Qwen2-1.5B-Instruct-bnb-4bit)             |
+|                            | 7 B        |: | [link](https://huggingface.co/unsloth/Qwen2-7B-Instruct-bnb-4bit)               |
+|                            | 72 B       |: | [link](https://huggingface.co/unsloth/Qwen2-72B-Instruct-bnb-4bit)              |
+| **Qwen 2 VL**              | 2 B        |: | [link](https://huggingface.co/unsloth/Qwen2-VL-2B-Instruct-unsloth-bnb-4bit)    |
+|                            | 7 B        |: | [link](https://huggingface.co/unsloth/Qwen2-VL-7B-Instruct-unsloth-bnb-4bit)    |
+|                            | 72 B       |: | [link](https://huggingface.co/unsloth/Qwen2-VL-72B-Instruct-bnb-4bit)           |
 
 ### Mistral models:
 
-<table><thead><tr><th width="174">Model</th><th>Variant</th><th>GGUF</th><th>Instruct (4-bit)</th></tr></thead><tbody><tr><td><strong>Mistral Small</strong></td><td>3.2-24 B (2506)</td><td><a href="https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit">link</a></td></tr><tr><td></td><td>3.1-24 B (2503)</td><td><a href="https://huggingface.co/unsloth/Mistral-Small-3.1-24B-Instruct-2503-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Mistral-Small-3.1-24B-Instruct-2503-unsloth-bnb-4bit">link</a></td></tr><tr><td></td><td>3-24 B (2501)</td><td><a href="https://huggingface.co/unsloth/Mistral-Small-24B-Instruct-2501-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Mistral-Small-24B-Instruct-2501-unsloth-bnb-4bit">link</a></td></tr><tr><td><strong>Magistral</strong></td><td>Small-24 B (2506)</td><td><a href="https://huggingface.co/unsloth/Magistral-Small-2506-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Magistral-Small-2506-unsloth-bnb-4bit">link</a></td></tr><tr><td><strong>Devstral</strong></td><td>Small-24 B (2507)</td><td><a href="https://huggingface.co/unsloth/Devstral-Small-2507-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Devstral-Small-2507-unsloth-bnb-4bit">link</a></td></tr><tr><td></td><td>Small-24 B (2505)</td><td><a href="https://huggingface.co/unsloth/Devstral-Small-2505-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Devstral-Small-2505-unsloth-bnb-4bit">link</a></td></tr><tr><td><strong>Pixtral</strong></td><td>12 B (2409)</td><td>—</td><td><a href="https://huggingface.co/unsloth/Pixtral-12B-2409-bnb-4bit">link</a></td></tr><tr><td>Mistral <strong>Small</strong></td><td>2409-22 B</td><td>—</td><td><a href="https://huggingface.co/unsloth/Mistral-Small-Instruct-2409-bnb-4bit">link</a></td></tr><tr><td>Mistral <strong>NeMo</strong></td><td>12 B (2407)</td><td><a href="https://huggingface.co/unsloth/Mistral-Nemo-Instruct-2407-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit">link</a></td></tr><tr><td>Mistral <strong>Large</strong></td><td>2407</td><td>—</td><td><a href="https://huggingface.co/unsloth/Mistral-Large-Instruct-2407-bnb-4bit">link</a></td></tr><tr><td><strong>Mistral 7 B</strong></td><td>v0.3</td><td>—</td><td><a href="https://huggingface.co/unsloth/mistral-7b-instruct-v0.3-bnb-4bit">link</a></td></tr><tr><td></td><td>v0.2</td><td>—</td><td><a href="https://huggingface.co/unsloth/mistral-7b-instruct-v0.2-bnb-4bit">link</a></td></tr><tr><td><strong>Mixtral</strong></td><td>8 × 7 B</td><td>—</td><td><a href="https://huggingface.co/unsloth/Mixtral-8x7B-Instruct-v0.1-unsloth-bnb-4bit">link</a></td></tr></tbody></table>
+<table><thead><tr><th width="174">Model</th><th>Variant</th><th>GGUF</th><th>Instruct (4-bit)</th></tr></thead><tbody><tr><td><strong>Mistral Small</strong></td><td>3.2-24 B (2506)</td><td><a href="https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit">link</a></td></tr><tr><td></td><td>3.1-24 B (2503)</td><td><a href="https://huggingface.co/unsloth/Mistral-Small-3.1-24B-Instruct-2503-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Mistral-Small-3.1-24B-Instruct-2503-unsloth-bnb-4bit">link</a></td></tr><tr><td></td><td>3-24 B (2501)</td><td><a href="https://huggingface.co/unsloth/Mistral-Small-24B-Instruct-2501-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Mistral-Small-24B-Instruct-2501-unsloth-bnb-4bit">link</a></td></tr><tr><td><strong>Magistral</strong></td><td>Small-24 B (2506)</td><td><a href="https://huggingface.co/unsloth/Magistral-Small-2506-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Magistral-Small-2506-unsloth-bnb-4bit">link</a></td></tr><tr><td><strong>Devstral</strong></td><td>Small-24 B (2507)</td><td><a href="https://huggingface.co/unsloth/Devstral-Small-2507-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Devstral-Small-2507-unsloth-bnb-4bit">link</a></td></tr><tr><td></td><td>Small-24 B (2505)</td><td><a href="https://huggingface.co/unsloth/Devstral-Small-2505-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Devstral-Small-2505-unsloth-bnb-4bit">link</a></td></tr><tr><td><strong>Pixtral</strong></td><td>12 B (2409)</td><td>, </td><td><a href="https://huggingface.co/unsloth/Pixtral-12B-2409-bnb-4bit">link</a></td></tr><tr><td>Mistral <strong>Small</strong></td><td>2409-22 B</td><td>, </td><td><a href="https://huggingface.co/unsloth/Mistral-Small-Instruct-2409-bnb-4bit">link</a></td></tr><tr><td>Mistral <strong>NeMo</strong></td><td>12 B (2407)</td><td><a href="https://huggingface.co/unsloth/Mistral-Nemo-Instruct-2407-GGUF">link</a></td><td><a href="https://huggingface.co/unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit">link</a></td></tr><tr><td>Mistral <strong>Large</strong></td><td>2407</td><td>, </td><td><a href="https://huggingface.co/unsloth/Mistral-Large-Instruct-2407-bnb-4bit">link</a></td></tr><tr><td><strong>Mistral 7 B</strong></td><td>v0.3</td><td>, </td><td><a href="https://huggingface.co/unsloth/mistral-7b-instruct-v0.3-bnb-4bit">link</a></td></tr><tr><td></td><td>v0.2</td><td>, </td><td><a href="https://huggingface.co/unsloth/mistral-7b-instruct-v0.2-bnb-4bit">link</a></td></tr><tr><td><strong>Mixtral</strong></td><td>8 × 7 B</td><td>, </td><td><a href="https://huggingface.co/unsloth/Mixtral-8x7B-Instruct-v0.1-unsloth-bnb-4bit">link</a></td></tr></tbody></table>
 
 ### Phi models:
 
@@ -619,9 +619,9 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 |             | Mini-Reasoning   | [link](https://huggingface.co/unsloth/Phi-4-mini-reasoning-GGUF) | [link](https://huggingface.co/unsloth/Phi-4-mini-reasoning-unsloth-bnb-4bit) |
 |             | Phi-4 (instruct) | [link](https://huggingface.co/unsloth/phi-4-GGUF)                | [link](https://huggingface.co/unsloth/phi-4-unsloth-bnb-4bit)                |
 |             | mini (instruct)  | [link](https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF)  | [link](https://huggingface.co/unsloth/Phi-4-mini-instruct-unsloth-bnb-4bit)  |
-| **Phi-3.5** | mini             | —                                                                | [link](https://huggingface.co/unsloth/Phi-3.5-mini-instruct-bnb-4bit)        |
-| **Phi-3**   | mini             | —                                                                | [link](https://huggingface.co/unsloth/Phi-3-mini-4k-instruct-bnb-4bit)       |
-|             | medium           | —                                                                | [link](https://huggingface.co/unsloth/Phi-3-medium-4k-instruct-bnb-4bit)     |
+| **Phi-3.5** | mini             |: | [link](https://huggingface.co/unsloth/Phi-3.5-mini-instruct-bnb-4bit)        |
+| **Phi-3**   | mini             |: | [link](https://huggingface.co/unsloth/Phi-3-mini-4k-instruct-bnb-4bit)       |
+|             | medium           |: | [link](https://huggingface.co/unsloth/Phi-3-medium-4k-instruct-bnb-4bit)     |
 
 ### Other (GLM, Orpheus, Smol, Llava etc.) models:
 
@@ -630,19 +630,19 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 | GLM            | 4.5-Air           | [link](https://huggingface.co/unsloth/GLM-4.5-Air-GGUF)                        |                                                                           |
 |                | 4.5               | [4.5](https://huggingface.co/unsloth/GLM-4.5-GGUF)                             |                                                                           |
 |                | 4-32B-0414        | [4-32B-0414](https://huggingface.co/unsloth/GLM-4-32B-0414-GGUF)               |                                                                           |
-| Hunyuan        | A13B              | [link](https://huggingface.co/unsloth/Hunyuan-A13B-Instruct-GGUF)              | —                                                                         |
+| Hunyuan        | A13B              | [link](https://huggingface.co/unsloth/Hunyuan-A13B-Instruct-GGUF)              |: |
 | Orpheus        | 0.1-ft (3B)       | [link](https://app.gitbook.com/o/HpyELzcNe0topgVLGCZY/s/xhOjnexMCB3dmuQFQ2Zq/) | [link](https://huggingface.co/unsloth/orpheus-3b-0.1-ft-unsloth-bnb-4bit) |
-| **LLava**      | 1.5 (7 B)         | —                                                                              | [link](https://huggingface.co/unsloth/llava-1.5-7b-hf-bnb-4bit)           |
-|                | 1.6 Mistral (7 B) | —                                                                              | [link](https://huggingface.co/unsloth/llava-v1.6-mistral-7b-hf-bnb-4bit)  |
-| **TinyLlama**  | Chat              | —                                                                              | [link](https://huggingface.co/unsloth/tinyllama-chat-bnb-4bit)            |
+| **LLava**      | 1.5 (7 B)         |: | [link](https://huggingface.co/unsloth/llava-1.5-7b-hf-bnb-4bit)           |
+|                | 1.6 Mistral (7 B) |: | [link](https://huggingface.co/unsloth/llava-v1.6-mistral-7b-hf-bnb-4bit)  |
+| **TinyLlama**  | Chat              |: | [link](https://huggingface.co/unsloth/tinyllama-chat-bnb-4bit)            |
 | **SmolLM 2**   | 135 M             | [link](https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF)              | [link](https://huggingface.co/unsloth/SmolLM2-135M-Instruct-bnb-4bit)     |
 |                | 360 M             | [link](https://huggingface.co/unsloth/SmolLM2-360M-Instruct-GGUF)              | [link](https://huggingface.co/unsloth/SmolLM2-360M-Instruct-bnb-4bit)     |
 |                | 1.7 B             | [link](https://huggingface.co/unsloth/SmolLM2-1.7B-Instruct-GGUF)              | [link](https://huggingface.co/unsloth/SmolLM2-1.7B-Instruct-bnb-4bit)     |
-| **Zephyr-SFT** | 7 B               | —                                                                              | [link](https://huggingface.co/unsloth/zephyr-sft-bnb-4bit)                |
-| **Yi**         | 6 B (v1.5)        | —                                                                              | [link](https://huggingface.co/unsloth/Yi-1.5-6B-bnb-4bit)                 |
-|                | 6 B (v1.0)        | —                                                                              | [link](https://huggingface.co/unsloth/yi-6b-bnb-4bit)                     |
-|                | 34 B (chat)       | —                                                                              | [link](https://huggingface.co/unsloth/yi-34b-chat-bnb-4bit)               |
-|                | 34 B (base)       | —                                                                              | [link](https://huggingface.co/unsloth/yi-34b-bnb-4bit)                    |
+| **Zephyr-SFT** | 7 B               |: | [link](https://huggingface.co/unsloth/zephyr-sft-bnb-4bit)                |
+| **Yi**         | 6 B (v1.5)        |: | [link](https://huggingface.co/unsloth/Yi-1.5-6B-bnb-4bit)                 |
+|                | 6 B (v1.0)        |: | [link](https://huggingface.co/unsloth/yi-6b-bnb-4bit)                     |
+|                | 34 B (chat)       |: | [link](https://huggingface.co/unsloth/yi-34b-chat-bnb-4bit)               |
+|                | 34 B (base)       |: | [link](https://huggingface.co/unsloth/yi-34b-bnb-4bit)                    |
 | {% endtab %}   |                   |                                                                                |                                                                           |
 
 {% tab title="• Instruct 16-bit" %}
@@ -758,7 +758,7 @@ Unsloth model catalog for all our [Dynamic](https://docs.unsloth.ai/basics/unslo
 |                          | 14 B      | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-14B-Instruct-128K)  |
 |                          | 32 B      | [link](https://huggingface.co/unsloth/Qwen2.5-Coder-32B-Instruct-128K)  |
 | **QwQ**                  | 32 B      | [link](https://huggingface.co/unsloth/QwQ-32B)                          |
-| **QVQ (preview)**        | 72 B      | —                                                                       |
+| **QVQ (preview)**        | 72 B      |: |
 | **Qwen 2 (Chat)**        | 1.5 B     | [link](https://huggingface.co/unsloth/Qwen2-1.5B-Instruct)              |
 |                          | 7 B       | [link](https://huggingface.co/unsloth/Qwen2-7B-Instruct)                |
 |                          | 72 B      | [link](https://huggingface.co/unsloth/Qwen2-72B-Instruct)               |
@@ -821,21 +821,21 @@ Base models are usually used for fine-tuning purposes:
 |              | 14 B              | [link](https://huggingface.co/unsloth/Qwen3-14B-Base)            | [link](https://huggingface.co/unsloth/Qwen3-14B-Base-unsloth-bnb-4bit)                 |
 |              | 30B-A3B           | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-Base)        | [link](https://huggingface.co/unsloth/Qwen3-30B-A3B-Base-bnb-4bit)                     |
 | **Llama 4**  | Scout 17B 16E     | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E)     | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-bnb-4bit) |
-|              | Maverick 17B 128E | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E) | —                                                                                      |
+|              | Maverick 17B 128E | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E) |: |
 
 ### **Llama models:**
 
 | Model         | Variant           | Base (16-bit)                                                    | Base (4-bit)                                                |
 | ------------- | ----------------- | ---------------------------------------------------------------- | ----------------------------------------------------------- |
-| **Llama 4**   | Scout 17B 16E     | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E)     | —                                                           |
-|               | Maverick 17B 128E | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E) | —                                                           |
-| **Llama 3.3** | 70 B              | [link](https://huggingface.co/unsloth/Llama-3.3-70B)             | —                                                           |
-| **Llama 3.2** | 1 B               | [link](https://huggingface.co/unsloth/Llama-3.2-1B)              | —                                                           |
-|               | 3 B               | [link](https://huggingface.co/unsloth/Llama-3.2-3B)              | —                                                           |
-|               | 11 B Vision       | [link](https://huggingface.co/unsloth/Llama-3.2-11B-Vision)      | —                                                           |
-|               | 90 B Vision       | [link](https://huggingface.co/unsloth/Llama-3.2-90B-Vision)      | —                                                           |
-| **Llama 3.1** | 8 B               | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-8B)         | —                                                           |
-|               | 70 B              | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-70B)        | —                                                           |
+| **Llama 4**   | Scout 17B 16E     | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E)     |: |
+|               | Maverick 17B 128E | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E) |: |
+| **Llama 3.3** | 70 B              | [link](https://huggingface.co/unsloth/Llama-3.3-70B)             |: |
+| **Llama 3.2** | 1 B               | [link](https://huggingface.co/unsloth/Llama-3.2-1B)              |: |
+|               | 3 B               | [link](https://huggingface.co/unsloth/Llama-3.2-3B)              |: |
+|               | 11 B Vision       | [link](https://huggingface.co/unsloth/Llama-3.2-11B-Vision)      |: |
+|               | 90 B Vision       | [link](https://huggingface.co/unsloth/Llama-3.2-90B-Vision)      |: |
+| **Llama 3.1** | 8 B               | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-8B)         |: |
+|               | 70 B              | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-70B)        |: |
 | **Llama 3**   | 8 B               | [link](https://huggingface.co/unsloth/llama-3-8b)                | [link](https://huggingface.co/unsloth/llama-3-8b-bnb-4bit)  |
 | **Llama 2**   | 7 B               | [link](https://huggingface.co/unsloth/llama-2-7b)                | [link](https://huggingface.co/unsloth/llama-2-7b-bnb-4bit)  |
 |               | 13 B              | [link](https://huggingface.co/unsloth/llama-2-13b)               | [link](https://huggingface.co/unsloth/llama-2-13b-bnb-4bit) |
@@ -864,15 +864,15 @@ Base models are usually used for fine-tuning purposes:
 
 | Model         | Variant           | Base (16-bit)                                                    | Base (4-bit)                                                |
 | ------------- | ----------------- | ---------------------------------------------------------------- | ----------------------------------------------------------- |
-| **Llama 4**   | Scout 17B 16E     | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E)     | —                                                           |
-|               | Maverick 17B 128E | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E) | —                                                           |
-| **Llama 3.3** | 70 B              | [link](https://huggingface.co/unsloth/Llama-3.3-70B)             | —                                                           |
-| **Llama 3.2** | 1 B               | [link](https://huggingface.co/unsloth/Llama-3.2-1B)              | —                                                           |
-|               | 3 B               | [link](https://huggingface.co/unsloth/Llama-3.2-3B)              | —                                                           |
-|               | 11 B Vision       | [link](https://huggingface.co/unsloth/Llama-3.2-11B-Vision)      | —                                                           |
-|               | 90 B Vision       | [link](https://huggingface.co/unsloth/Llama-3.2-90B-Vision)      | —                                                           |
-| **Llama 3.1** | 8 B               | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-8B)         | —                                                           |
-|               | 70 B              | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-70B)        | —                                                           |
+| **Llama 4**   | Scout 17B 16E     | [link](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E)     |: |
+|               | Maverick 17B 128E | [link](https://huggingface.co/unsloth/Llama-4-Maverick-17B-128E) |: |
+| **Llama 3.3** | 70 B              | [link](https://huggingface.co/unsloth/Llama-3.3-70B)             |: |
+| **Llama 3.2** | 1 B               | [link](https://huggingface.co/unsloth/Llama-3.2-1B)              |: |
+|               | 3 B               | [link](https://huggingface.co/unsloth/Llama-3.2-3B)              |: |
+|               | 11 B Vision       | [link](https://huggingface.co/unsloth/Llama-3.2-11B-Vision)      |: |
+|               | 90 B Vision       | [link](https://huggingface.co/unsloth/Llama-3.2-90B-Vision)      |: |
+| **Llama 3.1** | 8 B               | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-8B)         |: |
+|               | 70 B              | [link](https://huggingface.co/unsloth/Meta-Llama-3.1-70B)        |: |
 | **Llama 3**   | 8 B               | [link](https://huggingface.co/unsloth/llama-3-8b)                | [link](https://huggingface.co/unsloth/llama-3-8b-bnb-4bit)  |
 | **Llama 2**   | 7 B               | [link](https://huggingface.co/unsloth/llama-2-7b)                | [link](https://huggingface.co/unsloth/llama-2-7b-bnb-4bit)  |
 |               | 13 B              | [link](https://huggingface.co/unsloth/llama-2-13b)               | [link](https://huggingface.co/unsloth/llama-2-13b-bnb-4bit) |
@@ -885,19 +885,19 @@ Base models are usually used for fine-tuning purposes:
 |             | 4 B     | [link](https://huggingface.co/unsloth/gemma-3-4b-pt)  | [link](https://huggingface.co/unsloth/gemma-3-4b-pt-unsloth-bnb-4bit)  |
 |             | 12 B    | [link](https://huggingface.co/unsloth/gemma-3-12b-pt) | [link](https://huggingface.co/unsloth/gemma-3-12b-pt-unsloth-bnb-4bit) |
 |             | 27 B    | [link](https://huggingface.co/unsloth/gemma-3-27b-pt) | [link](https://huggingface.co/unsloth/gemma-3-27b-pt-unsloth-bnb-4bit) |
-| **Gemma 2** | 2 B     | [link](https://huggingface.co/unsloth/gemma-2-2b)     | —                                                                      |
-|             | 9 B     | [link](https://huggingface.co/unsloth/gemma-2-9b)     | —                                                                      |
-|             | 27 B    | [link](https://huggingface.co/unsloth/gemma-2-27b)    | —                                                                      |
+| **Gemma 2** | 2 B     | [link](https://huggingface.co/unsloth/gemma-2-2b)     |: |
+|             | 9 B     | [link](https://huggingface.co/unsloth/gemma-2-9b)     |: |
+|             | 27 B    | [link](https://huggingface.co/unsloth/gemma-2-27b)    |: |
 
 ### **Mistral models:**
 
 | Model       | Variant          | Base (16-bit)                                                      | Base (4-bit)                                                    |
 | ----------- | ---------------- | ------------------------------------------------------------------ | --------------------------------------------------------------- |
-| **Mistral** | Small 24B 2501   | [link](https://huggingface.co/unsloth/Mistral-Small-24B-Base-2501) | —                                                               |
-|             | NeMo 12B 2407    | [link](https://huggingface.co/unsloth/Mistral-Nemo-Base-2407)      | —                                                               |
+| **Mistral** | Small 24B 2501   | [link](https://huggingface.co/unsloth/Mistral-Small-24B-Base-2501) |: |
+|             | NeMo 12B 2407    | [link](https://huggingface.co/unsloth/Mistral-Nemo-Base-2407)      |: |
 |             | 7B v0.3          | [link](https://huggingface.co/unsloth/mistral-7b-v0.3)             | [link](https://huggingface.co/unsloth/mistral-7b-v0.3-bnb-4bit) |
 |             | 7B v0.2          | [link](https://huggingface.co/unsloth/mistral-7b-v0.2)             | [link](https://huggingface.co/unsloth/mistral-7b-v0.2-bnb-4bit) |
-|             | Pixtral 12B 2409 | [link](https://huggingface.co/unsloth/Pixtral-12B-Base-2409)       | —                                                               |
+|             | Pixtral 12B 2409 | [link](https://huggingface.co/unsloth/Pixtral-12B-Base-2409)       |: |
 
 ### **Other (TTS, TinyLlama) models:**
 
@@ -1127,9 +1127,9 @@ If you're new, follow our step-by-step [Fine-tuning Guide](https://docs.unsloth.
 
 #### 📂 Container Structure
 
-* `/workspace/work/` — Your mounted work directory
-* `/workspace/unsloth-notebooks/` — Example fine-tuning notebooks
-* `/home/unsloth/` — User home directory
+* `/workspace/work/`, Your mounted work directory
+* `/workspace/unsloth-notebooks/`, Example fine-tuning notebooks
+* `/home/unsloth/`, User home directory
 
 ### 📖 Usage Example
 
@@ -2538,7 +2538,7 @@ LoRA uses 16-bit precision, while QLoRA is a 4-bit fine-tuning method.
 
 ### Hyperparameters & Recommendations:
 
-<table><thead><tr><th width="154.39678955078125">Hyperparameter</th><th width="383.6192626953125">Function</th><th>Recommended Settings</th></tr></thead><tbody><tr><td><strong>LoRA Rank</strong> (<code>r</code>)</td><td>Controls the number of trainable parameters in the LoRA adapter matrices. A higher rank increases model capacity but also memory usage.</td><td>8, 16, 32, 64, 128<br><br>Choose 16 or 32</td></tr><tr><td><strong>LoRA Alpha</strong> (<code>lora_alpha</code>)</td><td>Scales the strength of the fine-tuned adjustments in relation to the rank (<code>r</code>).</td><td><code>r</code> (standard) or <code>r * 2</code> (common heuristic). <a href="#lora-alpha-and-rank-relationship">More details here</a>.</td></tr><tr><td><strong>LoRA Dropout</strong></td><td>A regularization technique that randomly sets a fraction of LoRA activations to zero during training to prevent overfitting. <strong>Not that useful</strong>, so we default set it to 0. </td><td>0 (default) to 0.1</td></tr><tr><td><strong>Weight Decay</strong></td><td>A regularization term that penalizes large weights to prevent overfitting and improve generalization. Don't use too large numbers!</td><td>0.01 (recommended) - 0.1</td></tr><tr><td><strong>Warmup Steps</strong></td><td>Gradually increases the learning rate at the start of training.</td><td>5-10% of total steps</td></tr><tr><td><strong>Scheduler Type</strong></td><td>Adjusts the learning rate dynamically during training.</td><td><code>linear</code> or <code>cosine</code></td></tr><tr><td><strong>Seed (<code>random_state</code>)</strong></td><td>A fixed number to ensure reproducibility of results.</td><td>Any integer (e.g., <code>42</code>, <code>3407</code>)</td></tr><tr><td><strong>Target Modules</strong></td><td><p>Specify which parts of the model you want to apply LoRA adapters to — either the attention, the MLP, or both.</p><p><br>Attention: <code>q_proj, k_proj, v_proj, o_proj</code><br><br>MLP: <code>gate_proj, up_proj, down_proj</code></p></td><td>Recommended to target all major linear layers: <code>q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj</code>.</td></tr></tbody></table>
+<table><thead><tr><th width="154.39678955078125">Hyperparameter</th><th width="383.6192626953125">Function</th><th>Recommended Settings</th></tr></thead><tbody><tr><td><strong>LoRA Rank</strong> (<code>r</code>)</td><td>Controls the number of trainable parameters in the LoRA adapter matrices. A higher rank increases model capacity but also memory usage.</td><td>8, 16, 32, 64, 128<br><br>Choose 16 or 32</td></tr><tr><td><strong>LoRA Alpha</strong> (<code>lora_alpha</code>)</td><td>Scales the strength of the fine-tuned adjustments in relation to the rank (<code>r</code>).</td><td><code>r</code> (standard) or <code>r * 2</code> (common heuristic). <a href="#lora-alpha-and-rank-relationship">More details here</a>.</td></tr><tr><td><strong>LoRA Dropout</strong></td><td>A regularization technique that randomly sets a fraction of LoRA activations to zero during training to prevent overfitting. <strong>Not that useful</strong>, so we default set it to 0. </td><td>0 (default) to 0.1</td></tr><tr><td><strong>Weight Decay</strong></td><td>A regularization term that penalizes large weights to prevent overfitting and improve generalization. Don't use too large numbers!</td><td>0.01 (recommended) - 0.1</td></tr><tr><td><strong>Warmup Steps</strong></td><td>Gradually increases the learning rate at the start of training.</td><td>5-10% of total steps</td></tr><tr><td><strong>Scheduler Type</strong></td><td>Adjusts the learning rate dynamically during training.</td><td><code>linear</code> or <code>cosine</code></td></tr><tr><td><strong>Seed (<code>random_state</code>)</strong></td><td>A fixed number to ensure reproducibility of results.</td><td>Any integer (e.g., <code>42</code>, <code>3407</code>)</td></tr><tr><td><strong>Target Modules</strong></td><td><p>Specify which parts of the model you want to apply LoRA adapters to, either the attention, the MLP, or both.</p><p><br>Attention: <code>q_proj, k_proj, v_proj, o_proj</code><br><br>MLP: <code>gate_proj, up_proj, down_proj</code></p></td><td>Recommended to target all major linear layers: <code>q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj</code>.</td></tr></tbody></table>
 
 ## :deciduous\_tree: Gradient Accumulation and Batch Size equivalency
 
@@ -2783,12 +2783,12 @@ trainer = train_on_responses_only(
 The model memorizes the training data, including its statistical noise, and consequently fails to generalize to unseen data.
 
 {% hint style="success" %}
-If your training loss drops below 0.2, your model is likely **overfitting** — meaning it may perform poorly on unseen tasks.
+If your training loss drops below 0.2, your model is likely **overfitting**: meaning it may perform poorly on unseen tasks.
 
-One simple trick is LoRA alpha scaling — just multiply the alpha value of each LoRA matrix by 0.5. This effectively scales down the impact of fine-tuning.
+One simple trick is LoRA alpha scaling: just multiply the alpha value of each LoRA matrix by 0.5. This effectively scales down the impact of fine-tuning.
 
 **This is closely related to merging / averaging weights.** \
-You can take the original base (or instruct) model, add the LoRA weights, then divide the result by 2. This gives you an averaged model — which is functionally equivalent to reducing the `alpha` by half.
+You can take the original base (or instruct) model, add the LoRA weights, then divide the result by 2. This gives you an averaged model: which is functionally equivalent to reducing the `alpha` by half.
 {% endhint %}
 
 **Solution:**
@@ -3306,7 +3306,7 @@ This means GRPO is extremely efficient. Previously PPO needed to train multiple 
 1. Maths equations can be easily verified. Eg 2+2 = 4.
 2. Code output can be verified as having executed correctly or not.
 3. Designing verifiable reward functions can be tough, and so most examples are math or code.
-4. Use-cases for GRPO isn’t just for code or math—its reasoning process can enhance tasks like email automation, database retrieval, law, and medicine, greatly improving accuracy based on your dataset and reward function - the trick is to define a <mark style="background-color:yellow;">**rubric - ie a list of smaller verifiable rewards, and not a final all consuming singular reward.**</mark> OpenAI popularized this in their [reinforcement learning finetuning (RFT)](https://platform.openai.com/docs/guides/reinforcement-fine-tuning) offering for example.
+4. Use-cases for GRPO isn’t just for code or math, its reasoning process can enhance tasks like email automation, database retrieval, law, and medicine, greatly improving accuracy based on your dataset and reward function - the trick is to define a <mark style="background-color:yellow;">**rubric - ie a list of smaller verifiable rewards, and not a final all consuming singular reward.**</mark> OpenAI popularized this in their [reinforcement learning finetuning (RFT)](https://platform.openai.com/docs/guides/reinforcement-fine-tuning) offering for example.
 
 {% columns %}
 {% column %} <mark style="background-color:red;">**Why "Group Relative"?**</mark>
@@ -3461,7 +3461,7 @@ In Reinforcement Learning a **Reward Function** and a **Verifier** serve distinc
 **Verifier**:
 
 * Determines whether the generated response is correct or incorrect.
-* It does not assign a numerical score—it simply verifies correctness.
+* It does not assign a numerical score, it simply verifies correctness.
 * Example: If a model generates "5" for "2+2", the verifier checks and labels it as "wrong" (since the correct answer is 4).
 * Verifiers can also execute code (e.g., in Python) to validate logic, syntax, and correctness without needing manual evaluation.
 
@@ -3522,7 +3522,7 @@ If you’ve checked out our [**Advanced GRPO Colab Notebook**](#grpo-notebooks),
 * Apply Pre-finetuning strategies to avoid GRPO’s default tendency to just learn formatting
 * Boost evaluation accuracy with regex-based matching
 * Create custom GRPO templates beyond generic prompts like `think`, e.g., `<start_working_out></end_working_out>`
-* Apply proximity-based scoring — models get more reward for closer answers (e.g., predicting 9 instead of 10 is better than 3) while outliers are penalized
+* Apply proximity-based scoring: models get more reward for closer answers (e.g., predicting 9 instead of 10 is better than 3) while outliers are penalized
 
 #### GSM8K Reward Functions
 
@@ -4853,9 +4853,9 @@ If you're new, follow our step-by-step [Fine-tuning Guide](https://docs.unsloth.
 
 #### 📂 Container Structure
 
-* `/workspace/work/` — Your mounted work directory
-* `/workspace/unsloth-notebooks/` — Example fine-tuning notebooks
-* `/home/unsloth/` — User home directory
+* `/workspace/work/`: Your mounted work directory
+* `/workspace/unsloth-notebooks/`: Example fine-tuning notebooks
+* `/home/unsloth/`: User home directory
 
 ### 📖 Usage Example
 
@@ -5382,7 +5382,7 @@ steps, outcome = execute_strategy(always_move_left, GameBoard(size=8, seed=42, t
 
 Generated strategies are **Python functions**. To keep execution safe and prevent reward hacking:
 
-* **Module whitelist check** — only allow Python stdlib symbols:
+* **Module whitelist check**: only allow Python stdlib symbols:
 
   ```python
   from unsloth import check_python_modules
@@ -7741,7 +7741,7 @@ from openai import OpenAI
 import json
 openai_client = OpenAI(
     base_url = "http://127.0.0.1:8001/v1",
-    api_key = "sk-no-key-required",  # dummy placeholder — local server ignores auth
+    api_key = "sk-no-key-required",  # dummy placeholder, local server ignores auth
 )
 completion = openai_client.chat.completions.create(
     model = "unsloth/GLM-4.6",
@@ -8231,7 +8231,7 @@ from openai import OpenAI
 import json
 openai_client = OpenAI(
     base_url = "http://127.0.0.1:8001/v1",
-    api_key = "sk-no-key-required",  # dummy placeholder — local server ignores auth
+    api_key = "sk-no-key-required",  # dummy placeholder, local server ignores auth
 )
 completion = openai_client.chat.completions.create(
     model = "unsloth/DeepSeek-V3.1-Terminus",
@@ -9150,7 +9150,7 @@ All uploads use Unsloth [Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dyn
 
 We also uploaded Qwen3 with native 128K context length. Qwen achieves this by using YaRN to extend its original 40K window to 128K.
 
-[Unsloth](https://github.com/unslothai/unsloth) also now supports fine-tuning and [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) of Qwen3 and Qwen3 MOE models — 2x faster, with 70% less VRAM, and 8x longer context lengths. Fine-tune Qwen3 (14B) for free using our [Colab notebook.](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_\(14B\)-Reasoning-Conversational.ipynb)
+[Unsloth](https://github.com/unslothai/unsloth) also now supports fine-tuning and [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) of Qwen3 and Qwen3 MOE models: 2x faster, with 70% less VRAM, and 8x longer context lengths. Fine-tune Qwen3 (14B) for free using our [Colab notebook.](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_\(14B\)-Reasoning-Conversational.ipynb)
 
 <a href="#running-qwen3" class="button primary">Running Qwen3 Tutorial</a> <a href="#fine-tuning-qwen3-with-unsloth" class="button secondary">Fine-tuning Qwen3</a>
 
@@ -9248,7 +9248,7 @@ text = tokenizer.apply_chat_template(
 )
 ```
 
-In thinking mode, the model will generate an extra `<think>...</think>` block before the final answer — this lets it "plan" and sharpen its responses.
+In thinking mode, the model will generate an extra `<think>...</think>` block before the final answer: this lets it "plan" and sharpen its responses.
 
 **Non-thinking mode:**
 
@@ -9265,7 +9265,7 @@ text = tokenizer.apply_chat_template(
 )
 ```
 
-This mode will provide final responses directly — no `<think>` blocks, no chain-of-thought.
+This mode will provide final responses directly: no `<think>` blocks, no chain-of-thought.
 
 ### 🦙 Ollama: Run Qwen3 Tutorial
 
@@ -9483,7 +9483,7 @@ Qwen released 2507 (July 2025) updates for their [Qwen3](https://docs.unsloth.ai
 
 The thinking models '**Qwen3-30B-A3B-Thinking-2507**' and '**Qwen3-235B-A22B-Thinking-2507**' excel at reasoning, with the 235B achieving SOTA results in logic, math, science, coding, and advanced academic tasks.
 
-[Unsloth](https://github.com/unslothai/unsloth) also now supports fine-tuning and [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) of Qwen3-2507 models — 2x faster, with 70% less VRAM, and 8x longer context lengths
+[Unsloth](https://github.com/unslothai/unsloth) also now supports fine-tuning and [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) of Qwen3-2507 models: 2x faster, with 70% less VRAM, and 8x longer context lengths
 
 <a href="#run-qwen3-30b-a3b-2507-tutorials" class="button secondary">Run 30B-A3B</a><a href="#run-qwen3-235b-a22b-thinking-2507" class="button secondary">Run 235B-A22B</a><a href="#fine-tuning-qwen3-2507-with-unsloth" class="button secondary">Fine-tune Qwen3-2507</a>
 
@@ -14949,7 +14949,7 @@ Instead of solely focusing on tone, cadence, and pitch, the priority should be e
 {% endhint %}
 
 {% hint style="info" %}
-With some models like **Sesame-CSM-1B**, you might notice voice variation across generations using speaker ID 0 because it's a **base model**—it doesn’t have fixed voice identities. Speaker ID tokens mainly help maintain **consistency within a conversation**, not across separate generations.
+With some models like **Sesame-CSM-1B**, you might notice voice variation across generations using speaker ID 0 because it's a **base model**, it doesn’t have fixed voice identities. Speaker ID tokens mainly help maintain **consistency within a conversation**, not across separate generations.
 
 To get a consistent voice, provide **contextual examples**, like a few reference audio clips or prior utterances. This helps the model mimic the desired voice more reliably. Without this, variation is expected, even with the same speaker ID.
 {% endhint %}

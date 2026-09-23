@@ -1,9 +1,9 @@
 # Volume Generation
 
 Three traditions for producing many ideas fast:
-- **Crazy 8s** — Google Ventures Sprint method. Codified in *Sprint* (Knapp et al., 2016).
-- **Brainwriting 6-3-5** — Bernd Rohrbach, 1968. German design-method literature.
-- **James Webb Young** — *A Technique for Producing Ideas* (1940). 60-page book; canonical advertising-copywriter manual.
+- **Crazy 8s**: Google Ventures Sprint method. Codified in *Sprint* (Knapp et al., 2016).
+- **Brainwriting 6-3-5**: Bernd Rohrbach, 1968. German design-method literature.
+- **James Webb Young**: *A Technique for Producing Ideas* (1940). 60-page book; canonical advertising-copywriter manual.
 
 ## When to use
 
@@ -22,7 +22,7 @@ Three traditions for producing many ideas fast:
 
 1. Fold a sheet into 8 panels (or use a printed grid).
 2. Set a timer for **8 minutes**.
-3. Sketch one idea per panel — eight ideas, one minute each.
+3. Sketch one idea per panel, eight ideas, one minute each.
 4. Sketch, don't write. Visual format forces concretization.
 5. After timer: pick 1–3 strongest panels.
 6. Group share.
@@ -35,15 +35,15 @@ Outperforms verbal brainstorming consistently in academic creativity research (D
 
 1. **6 participants**, each with a sheet.
 2. Each writes **3 ideas** in **5 minutes**, in a row at the top.
-3. Papers rotate. Each participant now sees the previous 3 ideas; writes 3 *new* ones — building or fresh.
+3. Papers rotate. Each participant now sees the previous 3 ideas; writes 3 *new* ones, building or fresh.
 4. Repeat until each sheet has been seen by all 6.
 5. Result: 6 × 6 × 3 = 108 ideas in 30 minutes.
 
-## James Webb Young — 5 stages
+## James Webb Young, 5 stages
 
 Honest about the *temporal* structure of idea formation. Most methods assume ideas come on demand; Young's account is that they often don't, and the work is upstream.
 
-1. **Gather material.** Specific *and* general material. Most idea-generators fail here. *"Just one more idea about the product, just one more bit of factual material — many a time these have made all the difference."*
+1. **Gather material.** Specific *and* general material. Most idea-generators fail here. *"Just one more idea about the product, just one more bit of factual material, many a time these have made all the difference."*
 2. **Mentally digest.** Turn the material over. Make tentative partial connections. Don't reach for a final idea.
 3. **Drop it.** Stop working. Sleep, walk, watch a movie. The unconscious works on it.
 4. **The idea arrives.** Often during a shower or walk. *"It will come to you when you are least expecting it."*

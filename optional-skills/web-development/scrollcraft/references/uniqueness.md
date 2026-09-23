@@ -404,7 +404,7 @@ whatever `node <skill>/scripts/workspace.mjs` prints. It is per-user and it
 starts empty: the gate is about not repeating **yourself**, so your first build
 has nothing to clear and every build after it does.
 
-A worked twelve-row registry ships as `EXAMPLES.md` in the upstream scroll-craft repository *(upstream repo — not vendored in this port)*. Read it to see what a filled table looks like and which shapes tend
+A worked twelve-row registry ships as `EXAMPLES.md` in the upstream scroll-craft repository *(upstream repo, not vendored in this port)*. Read it to see what a filled table looks like and which shapes tend
 to collide. It is illustration, not constraint: those are somebody else's
 builds and they do not gate yours.
 

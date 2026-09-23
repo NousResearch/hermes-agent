@@ -18,11 +18,11 @@ The vision-holder. Reads the brief and brand guide, decomposes into a task
 graph, comments to steer creative direction, approves the final cut.
 
 - **Toolsets:** kanban, terminal, file
-- **Skills:** no extra skill needed — the kanban orchestration guidance
+- **Skills:** no extra skill needed, the kanban orchestration guidance
   (decomposition playbook, "decompose, don't execute" discipline) is
   auto-injected into every kanban worker's system prompt. Add
   `creative-ideation` if the brief is wide-open and needs framing help.
-- **Personality:** Tied to the brand voice — see `assets/soul.md.tmpl`
+- **Personality:** Tied to the brand voice, see `assets/soul.md.tmpl`
 
 The director has the same toolset as everyone else, but its `SOUL.md` rules
 **forbid** execution. The "decompose, don't execute" discipline is enforced
@@ -59,7 +59,7 @@ follow. Often produces still reference frames using image-generation APIs or
 local skills.
 
 - **Toolsets:** kanban, terminal, file
-- **Skills:** any project-specific design skill —
+- **Skills:** any project-specific design skill,
   `claude-design` (UI/web), `sketch` (quick mockup variants),
   `popular-web-designs` (matching known web aesthetic), `pixel-art` (retro),
   `ascii-art` (terminal/retro), `excalidraw` (hand-drawn frames),
@@ -72,7 +72,7 @@ Maps the brief to a beat-by-beat shot list with timing. Critical for narrative
 film and music video. Often pairs with a diagramming tool.
 
 - **Toolsets:** kanban, file
-- **Skills:** a diagram skill — `excalidraw` (sketch),
+- **Skills:** a diagram skill, `excalidraw` (sketch),
   `architecture-diagram` (technical/system), `concept-diagrams` (educational/
   scientific)
 - **Outputs:** `storyboard.md` with one row per scene/shot, optional
@@ -121,9 +121,9 @@ instead of overloading one. Each loads a different creative skill.
 | `renderer-pixel` | `pixel-art` | Retro game aesthetic with era-correct palettes |
 | `renderer-comic` | `baoyu-comic` | Knowledge-comic style narrative scenes |
 | `renderer-meme` | `meme-generation` *(optional)* | Meme-style stills for satirical/social content |
-| `renderer-procedural` | (none — Python with PIL + ffmpeg directly) | Custom procedural content where no skill fits |
+| `renderer-procedural` | (none, Python with PIL + ffmpeg directly)| Custom procedural content where no skill fits |
 | `renderer-video` | (external image-to-video API: Runway / Kling / Luma) | Animating still images in narrative film |
-| `renderer-motion-graphics` | (external — Remotion CLI) | Motion graphics, kinetic typography, UI animations |
+| `renderer-motion-graphics` | (external, Remotion CLI)| Motion graphics, kinetic typography, UI animations |
 
 For external-API renderers, the profile holds the API client logic; no extra
 skill is loaded (kanban guidance is auto-injected into every kanban worker),
@@ -162,9 +162,9 @@ audio's energy.
 
 - **Toolsets:** kanban, terminal, file
 - **Skills:** `songsee` (audio visualization), plus one of:
-  - `songwriting-and-ai-music` — when commissioning lyrics + Suno prompts
-  - `heartmula` — when generating music with the open-source local model
-  - `spotify` — when sourcing existing tracks
+  - `songwriting-and-ai-music`: when commissioning lyrics + Suno prompts
+  - `heartmula`: when generating music with the open-source local model
+  - `spotify`: when sourcing existing tracks
 - **Outputs:** `audio/track.mp3`, `audio/beats.json`, optional
   `audio/track-spectrogram.png`
 
@@ -175,7 +175,7 @@ Generates voiceover audio. Calls a TTS API directly; no Hermes skill required
 supply pre-recorded VO instead of generation.
 
 - **Toolsets:** kanban, terminal, file
-- **Skills:** none — kanban guidance is auto-injected into every kanban worker
+- **Skills:** none, kanban guidance is auto-injected into every kanban worker
 - **External APIs:** ElevenLabs, OpenAI TTS, etc.
 - **Outputs:** `audio/voiceover/line-NN.mp3`, `audio/voiceover/timeline.mp3`
 
@@ -197,18 +197,18 @@ Assembles the final cut from clips. Uses ffmpeg for stitching, fades,
 transitions. Reviews each clip for pacing and quality before assembly.
 
 - **Toolsets:** kanban, terminal, file
-- **Skills:** none — kanban guidance is auto-injected into every kanban worker
+- **Skills:** none, kanban guidance is auto-injected into every kanban worker
 - **External tools:** ffmpeg, ffprobe
 - **Outputs:** `output/final.mp4`, `output/final-noaudio.mp4`
 
 ### colorist
 
-Color grading. Usually optional — if the renderers already produce
+Color grading. Usually optional, if the renderers already produce
 brand-consistent output and the editor just stitches, the colorist is overkill.
 Worth including for narrative film with hero shots.
 
 - **Toolsets:** kanban, terminal, file
-- **Skills:** none — kanban guidance is auto-injected into every kanban worker
+- **Skills:** none, kanban guidance is auto-injected into every kanban worker
 - **Outputs:** `output/final-graded.mp4`
 
 ### audio-mixer
@@ -217,7 +217,7 @@ Mixes voiceover + music + SFX into a final audio track. Sets levels, ducks
 music under VO, normalizes loudness (LUFS).
 
 - **Toolsets:** kanban, terminal, file
-- **Skills:** none — kanban guidance is auto-injected into every kanban worker
+- **Skills:** none, kanban guidance is auto-injected into every kanban worker
 - **External tools:** ffmpeg with `loudnorm` filter, optional `sox`
 - **Outputs:** `audio/final-mix.mp3`
 
@@ -227,7 +227,7 @@ Burns subtitles into the video, generates SRT, handles accessibility. Can also
 generate captions from audio via Whisper.
 
 - **Toolsets:** kanban, terminal, file
-- **Skills:** none — kanban guidance is auto-injected into every kanban worker
+- **Skills:** none, kanban guidance is auto-injected into every kanban worker
 - **External tools:** Whisper (CLI or API), ffmpeg subtitle filters
 - **Outputs:** `output/captions.srt`, `output/final-captioned.mp4`
 
@@ -237,7 +237,7 @@ Final encode + format variants. Produces deliverables for each platform target
 (square for IG, vertical for TikTok, full HD for YouTube, etc.).
 
 - **Toolsets:** kanban, terminal, file
-- **Skills:** none — kanban guidance is auto-injected into every kanban worker
+- **Skills:** none, kanban guidance is auto-injected into every kanban worker
 - **Outputs:** `output/final-1080.mp4`, `output/final-9x16.mp4`, etc.
 
 ## QA roles
@@ -250,22 +250,22 @@ quality). Distinct from the cinematographer (who reviews visuals during
 production) and the editor (who reviews for assembly).
 
 - **Toolsets:** kanban, terminal, file, video, vision
-- **Skills:** none — kanban guidance is auto-injected into every kanban worker
+- **Skills:** none, kanban guidance is auto-injected into every kanban worker
 - **Review tools:** `video_analyze` (native clip review via multimodal LLM),
   `vision_analyze` (frame/thumbnail review), ffprobe
 - **Outputs:** `review-notes.md`, comments on tasks
 
 ### brand-cop
 
-Reviews specifically for brand compliance — colors, typography, voice. Use
+Reviews specifically for brand compliance, colors, typography, voice. Use
 when the brand guidelines are detailed and a generic reviewer might miss
 violations.
 
 - **Toolsets:** kanban, file
-- **Skills:** none — kanban guidance is auto-injected into every kanban worker
+- **Skills:** none, kanban guidance is auto-injected into every kanban worker
 - **Outputs:** comments + `brand-review.md`
 
-## Composing teams — heuristics
+## Composing teams: heuristics
 
 - **Always:** director + at least one renderer + editor.
 - **Add writer** if scripted dialogue / narration / on-screen text exceeds a

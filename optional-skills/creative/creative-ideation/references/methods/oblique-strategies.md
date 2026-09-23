@@ -16,7 +16,7 @@ Brian Eno + Peter Schmidt, 1975. A deck of ~110 gnomic cards for breaking studio
 
 ## Procedure
 
-1. Pick a card by random index (not by what feels appropriate — that defeats the operation).
+1. Pick a card by random index (not by what feels appropriate, that defeats the operation).
 2. Apply it literally to the next decision in front of you. **The card is trusted even if its appropriateness is quite unclear** (Eno).
 3. Make the move it suggests.
 4. Don't over-explain. The card; what it means here; the move. Done.

@@ -11,11 +11,11 @@ All reuse is credited here.
 
 ### What was ported
 
-**`scripts/palettes.py`** — the `PALETTES` dict containing 23 named RGB
+**`scripts/palettes.py`**: the `PALETTES` dict containing 23 named RGB
 palettes (hardware and artistic). Values are reproduced verbatim from
 `scripts/pixelart.py` of pixel-art-studio.
 
-**`scripts/pixel_art_video.py`** — the 12 procedural animation init/draw pairs
+**`scripts/pixel_art_video.py`**: the 12 procedural animation init/draw pairs
 (`stars`, `fireflies`, `leaves`, `dust_motes`, `sparkles`, `rain`,
 `lightning`, `bubbles`, `embers`, `snowflakes`, `neon_pulse`, `heat_shimmer`)
 and the `SCENES` → layer mapping. Ported from `scripts/pixelart_video.py`
@@ -37,7 +37,7 @@ with minor refactors:
 - Sobel edge-aware downsampling (requires scipy; not worth the dep)
 - Bayer / Atkinson dither (would need numpy reimplementation; kept scope tight)
 - Pollinations text-to-image generation (`pixelart_image.py`,
-  `generate_base()` in `pixelart_video.py`) — Hermes has `image_generate`
+  `generate_base()` in `pixelart_video.py`), Hermes has `image_generate`
 
 ### License compatibility
 

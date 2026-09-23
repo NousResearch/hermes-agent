@@ -4,7 +4,7 @@
 // git-ignored scratch directory in repos that only commit ADRs + CONTEXT.md.
 
 export const META = {
-  title: 'Example Agent',                 // "<title> Atlas" in the tab; "<title> — System Definition" in SYSTEM.md
+  title: 'Example Agent',                 // "<title> Atlas" in the tab; "<title>: System Definition" in SYSTEM.md
   artifactUrl: '',                        // fill after first publish; keep it stable across rebuilds
   sourcePath: 'docs/example/atlas/data.mjs',
   buildCmd: 'bun docs/example/atlas/build.mjs',
@@ -36,7 +36,7 @@ export const GROUPS = [
 //   ghost: true → dashed "designed for, not built"
 //   one: one-sentence summary (shown first) · what: plain description · how: implementation (may use <code>, <mark>)
 //   steps: [[name, desc], …] → the "go inside" view
-//   cond: questions — string (open) | {q, r} (resolved, r = answer + date) | {q, to} (routed to a named next step)
+//   cond: questions: string (open) | {q, r} (resolved, r = answer + date) | {q, to} (routed to a named next step)
 export const NODES = [
   { id: 'U', code: 'U', name: 'Web chat', short: 'WEB CHAT', group: 'loop', gx: 1.5, gy: 7.5, w: 2, d: 2, h: 44, kind: 'screen',
     one: 'The page where you talk to the agent.',
@@ -45,7 +45,7 @@ export const NODES = [
     steps: [['Open', 'Create or continue a session.'], ['Stream', 'Render deltas.']],
     cond: ['Where does the page live?', { q: 'Auth scheme?', r: 'Reuse existing session JWT (2026-01-01).' }] },
   { id: 'I', code: 'I', name: 'Root agent', short: 'AGENT', group: 'loop', gx: 10, gy: 2.5, w: 3, d: 3, h: 64, kind: 'tall',
-    one: 'The brain — one durable conversation per person.', what: '…', how: '…', steps: [['turn.started', '…'], ['Model call', '…'], ['Tools', '…'], ['Stream', '…']], cond: [] },
+    one: 'The brain: one durable conversation per person.', what: '…', how: '…', steps: [['turn.started', '…'], ['Model call', '…'], ['Tools', '…'], ['Stream', '…']], cond: [] },
   { id: 'M', code: 'M', name: 'Memory', short: 'MEMORY', group: 'mem', gx: 6.5, gy: 9.5, w: 3, d: 3, h: 24, kind: 'store',
     one: 'What the agent knows about you.', what: '…', how: '…', steps: [['Write', '…'], ['Read', '…']], cond: [{ q: 'Vendor?', to: 'Memory deep dive' }] },
   { id: 'P', code: 'P', name: 'Proactive', short: 'PROACTIVE', group: 'off', ghost: true, gx: 12.5, gy: -1, w: 2, d: 2, h: 34,
@@ -58,7 +58,7 @@ export const FLOWS = [
     ['U', 'I', 'user message', { message: 'can you move my 3pm?' }, 'yx'],
     ['I', 'M', 'recall', { query: 'move my 3pm', k: 12 }, 'xy'],
     ['M', 'I', 'memories', { hits: 2 }, 'xy'],
-    ['I', 'U', 'message.appended', { delta: 'Sure —' }, 'yx'],
+    ['I', 'U', 'message.appended', { delta: 'Sure: ' }, 'yx'],
   ] },
 ];
 

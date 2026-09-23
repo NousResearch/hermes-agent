@@ -1,4 +1,4 @@
-# CourtListener — Free Law Project
+# CourtListener, Free Law Project
 
 ## 1. Summary
 
@@ -48,14 +48,14 @@ Key fields emitted by `fetch_courtlistener.py`:
 - **OFAC SDN** ↔ `case_name` (sanctions-related civil/criminal cases)
 
 Join key: party name from `case_name`. Note: `case_name` often abbreviates
-("Smith v. Jones" rather than full party names) — use the full case URL
+("Smith v. Jones" rather than full party names), use the full case URL
 to get all parties.
 
 ## 6. Data Quality
 
 - Older opinions (pre-1990) often lack docket numbers and judges
 - State coverage is more uneven than federal
-- PACER docket coverage depends on RECAP user submissions — not exhaustive
+- PACER docket coverage depends on RECAP user submissions, not exhaustive
 - Sealed documents are excluded
 - Party names in case captions don't always match filing names exactly
 
@@ -88,7 +88,7 @@ Pass `--token` or set `COURTLISTENER_TOKEN`.
 - Court opinions are public domain
 - Free Law Project provides the data under CC0 / public domain dedication
 - No commercial use restrictions on opinion text or metadata
-- Some PACER PDFs have copyright on layout (not text) — fair use applies
+- Some PACER PDFs have copyright on layout (not text), fair use applies
 
 ## 9. References
 

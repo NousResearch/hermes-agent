@@ -90,9 +90,9 @@ python ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
 ```
 
 Flags:
-- `--limit N` — show top N tokens (default: 20)
-- `--all` — show all tokens, no dust filter, no limit
-- `--no-prices` — skip CoinGecko price lookups (faster, RPC-only)
+- `--limit N`: show top N tokens (default: 20)
+- `--all`: show all tokens, no dust filter, no limit
+- `--no-prices`: skip CoinGecko price lookups (faster, RPC-only)
 
 Output includes: SOL balance + USD value, token list with prices sorted
 by value, dust count, NFT summary, total portfolio value in USD.
@@ -152,7 +152,7 @@ python ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
   whales --min-sol 500
 ```
 
-Note: scans the latest block only — point-in-time snapshot, not historical.
+Note: scans the latest block only: point-in-time snapshot, not historical.
 
 ### 7. Network Stats
 
@@ -181,21 +181,21 @@ PYTH, HNT, RNDR, WEN, W, TNSR, DRIFT, bSOL, JLP, WIF, MEW, BOME, PENGU.
 
 ## Pitfalls
 
-- **CoinGecko rate-limits** — free tier allows ~10-30 requests/minute.
+- **CoinGecko rate-limits**: free tier allows ~10-30 requests/minute.
   Price lookups use 1 request per token. Wallets with many tokens may
   not get prices for all of them. Use `--no-prices` for speed.
-- **Public RPC rate-limits** — Solana mainnet public RPC limits requests.
+- **Public RPC rate-limits**: Solana mainnet public RPC limits requests.
   For production use, set SOLANA_RPC_URL to a private endpoint
   (Helius, QuickNode, Triton).
-- **NFT detection is heuristic** — amount=1 + decimals=0. Compressed
+- **NFT detection is heuristic**: amount=1 + decimals=0. Compressed
   NFTs (cNFTs) and Token-2022 NFTs won't appear.
-- **Whale detector scans latest block only** — not historical. Results
+- **Whale detector scans latest block only**: not historical. Results
   vary by the moment you query.
-- **Transaction history** — public RPC keeps ~2 days. Older transactions
+- **Transaction history**: public RPC keeps ~2 days. Older transactions
   may not be available.
-- **Token names** — ~25 well-known tokens are labeled by name. Others
+- **Token names**: ~25 well-known tokens are labeled by name. Others
   show abbreviated mint addresses. Use the `token` command for full info.
-- **Retry on 429** — both RPC and CoinGecko calls retry up to 2 times
+- **Retry on 429**: both RPC and CoinGecko calls retry up to 2 times
   with exponential backoff on rate-limit errors.
 
 ---

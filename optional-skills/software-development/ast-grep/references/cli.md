@@ -1,4 +1,4 @@
-# CLI reference — `sg` / `ast-grep`
+# CLI reference, `sg` / `ast-grep`
 
 Compact reference for the underlying `sg` binary that the helper wraps. Use this when the helper isn't enough or when you want to invoke `sg` directly.
 
@@ -6,7 +6,7 @@ Compact reference for the underlying `sg` binary that the helper wraps. Use this
 
 ---
 
-## `sg run` — one-shot search/rewrite
+## `sg run`: one-shot search/rewrite
 
 The default subcommand. `sg -p 'foo'` is shorthand for `sg run -p 'foo'`.
 
@@ -34,7 +34,7 @@ sg run [OPTIONS] --pattern <PATTERN> [PATHS...]
 | `-A, -B, -C <N>` | Context lines after / before / around each match. |
 | `-j, --threads <N>` | Thread count (default: heuristic; `0` = auto). |
 
-### `--update-all` + `--json` — the trap
+### `--update-all` + `--json`: the trap
 
 `sg` silently ignores `--update-all` when `--json` is set. To preview AND apply, run **two passes**:
 
@@ -75,7 +75,7 @@ sg run -p 'def $F($$$):' --lang py --debug-query=ast --stdin <<< 'def foo(): pas
 
 ---
 
-## `sg scan` — YAML rule scanner
+## `sg scan`, YAML rule scanner
 
 Run a configuration of YAML rules across files. Used for project-wide lints and codemods.
 
@@ -125,7 +125,7 @@ sg scan --format sarif src/ > sarif.json
 
 ---
 
-## `sg test` — run rule snapshot tests
+## `sg test`: run rule snapshot tests
 
 ```bash
 sg test [OPTIONS]
@@ -154,7 +154,7 @@ __snapshots__/
 
 ---
 
-## `sg new` — scaffold
+## `sg new`: scaffold
 
 ```bash
 sg new <COMMAND> [NAME] [OPTIONS]
@@ -180,7 +180,7 @@ sg new test no-console --yes
 
 ---
 
-## `sg lsp` — language server
+## `sg lsp`: language server
 
 ```bash
 sg lsp -c sgconfig.yml
@@ -190,7 +190,7 @@ Speak LSP over stdin/stdout. Configure your editor (VS Code extension, Neovim `n
 
 ---
 
-## `sg completions` — shell completions
+## `sg completions`: shell completions
 
 ```bash
 sg completions bash >> ~/.bashrc
@@ -226,6 +226,6 @@ sg scan --format github src/ || exit 1
 
 ## See also
 
-- `references/yaml-rules.md` — rule schema (`pattern`, `kind`, `regex`, `inside`, `has`, `all`, `any`, `not`, `matches`, `transform`, `fix`).
-- `references/sgconfig.md` — project configuration.
+- `references/yaml-rules.md`: rule schema (`pattern`, `kind`, `regex`, `inside`, `has`, `all`, `any`, `not`, `matches`, `transform`, `fix`).
+- `references/sgconfig.md`: project configuration.
 - Official: <https://ast-grep.github.io/reference/cli.html>

@@ -1,4 +1,4 @@
-When to load: writing or debugging a graph.json document — full field-by-field format, enums, limits.
+When to load: writing or debugging a graph.json document, full field-by-field format, enums, limits.
 
 # Authoring a graph document
 

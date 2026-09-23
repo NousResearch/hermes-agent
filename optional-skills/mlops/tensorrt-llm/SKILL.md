@@ -40,7 +40,7 @@ NVIDIA's open-source library for optimizing LLM inference with high performance 
 ### Installation
 
 ```bash
-# Docker (recommended) — images are on NGC (nvcr.io), not Docker Hub.
+# Docker (recommended): images are on NGC (nvcr.io), not Docker Hub.
 # Replace x.y.z with the desired version (e.g. 1.2.1). Browse tags on NGC:
 # https://catalog.ngc.nvidia.com/orgs/nvidia/teams/tensorrt-llm/containers/release/tags
 docker pull nvcr.io/nvidia/tensorrt-llm/release:x.y.z

@@ -1,4 +1,4 @@
-# NYC ACRIS — NYC Real Property Records
+# NYC ACRIS, NYC Real Property Records
 
 ## 1. Summary
 
@@ -34,7 +34,7 @@ Key fields emitted by `fetch_nyc_acris.py` (Parties joined to Master):
 
 ## 4. Coverage
 
-- NYC 5 boroughs only — other counties have their own recorders
+- NYC 5 boroughs only, other counties have their own recorders
 - 1966 → present (older filings exist on microfilm at the County Clerk)
 - Updated nightly
 - ~70M+ party records cumulative
@@ -47,7 +47,7 @@ Key fields emitted by `fetch_nyc_acris.py` (Parties joined to Master):
 - **ICIJ Offshore** ↔ `name` (NYC properties owned via offshore vehicles)
 
 Join key: normalized party name. NYC property records typically store names
-as "LAST, FIRST" or full LLC names — use `entity_resolution.py`.
+as "LAST, FIRST" or full LLC names, use `entity_resolution.py`.
 
 ## 6. Data Quality
 

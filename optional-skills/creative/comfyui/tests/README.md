@@ -6,7 +6,7 @@ without any setup; cloud integration tests need a Comfy Cloud API key.
 ## Running
 
 ```bash
-# Unit tests only (no network required) — runs in <1s
+# Unit tests only (no network required): runs in <1s
 python3 -m pytest tests/ -c tests/pytest.ini -o addopts="-p no:xdist"
 
 # Including cloud integration tests

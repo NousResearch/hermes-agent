@@ -20,7 +20,7 @@ Control Philips Hue lights and scenes via a Hue Bridge from the terminal.
 ## Prerequisites
 
 ```bash
-# Linux (pre-built binary — releases ship tarballs, not bare binaries)
+# Linux (pre-built binary: releases ship tarballs, not bare binaries)
 curl -sL "https://github.com/openhue/openhue-cli/releases/latest/download/openhue_Linux_x86_64.tar.gz" \
   | tar -xz -C ~/.hermes/cache/scratch openhue \
   && install -m 0755 ~/.hermes/cache/scratch/openhue ~/.local/bin/openhue
@@ -108,5 +108,5 @@ openhue set room "Living Room" --off
 - Bridge must be on the same local network as the machine running Hermes
 - First run requires physically pressing the button on the Hue Bridge to authorize
 - Colors only work on color-capable bulbs (not white-only models)
-- Light and room names are case-sensitive — use `openhue get light` to check exact names
+- Light and room names are case-sensitive, use `openhue get light` to check exact names
 - Works great with cron jobs for scheduled lighting (e.g. dim at bedtime, bright at wake)

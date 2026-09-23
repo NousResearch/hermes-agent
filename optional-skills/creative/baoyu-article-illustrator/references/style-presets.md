@@ -8,19 +8,19 @@ A preset expands to a type + style + optional palette combination. Users can ove
 
 | Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
-| `tech-explainer` | `infographic` | `blueprint` | — | API docs, system metrics, technical deep-dives |
-| `system-design` | `framework` | `blueprint` | — | Architecture diagrams, system design |
-| `architecture` | `framework` | `vector-illustration` | — | Component relationships, module structure |
-| `science-paper` | `infographic` | `scientific` | — | Research findings, lab results, academic |
+| `tech-explainer` | `infographic` | `blueprint` |: | API docs, system metrics, technical deep-dives |
+| `system-design` | `framework` | `blueprint` |: | Architecture diagrams, system design |
+| `architecture` | `framework` | `vector-illustration` |: | Component relationships, module structure |
+| `science-paper` | `infographic` | `scientific` |: | Research findings, lab results, academic |
 
 ### Knowledge & Education
 
 | Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
-| `knowledge-base` | `infographic` | `vector-illustration` | — | Concept explainers, tutorials, how-to |
-| `saas-guide` | `infographic` | `notion` | — | Product guides, SaaS docs, tool walkthroughs |
-| `tutorial` | `flowchart` | `vector-illustration` | — | Step-by-step tutorials, setup guides |
-| `process-flow` | `flowchart` | `notion` | — | Workflow documentation, onboarding flows |
+| `knowledge-base` | `infographic` | `vector-illustration` |: | Concept explainers, tutorials, how-to |
+| `saas-guide` | `infographic` | `notion` |: | Product guides, SaaS docs, tool walkthroughs |
+| `tutorial` | `flowchart` | `vector-illustration` |: | Step-by-step tutorials, setup guides |
+| `process-flow` | `flowchart` | `notion` |: | Workflow documentation, onboarding flows |
 | `warm-knowledge` | `infographic` | `vector-illustration` | `warm` | Product showcases, team intros, feature cards, brand content |
 | `edu-visual` | `infographic` | `vector-illustration` | `macaron` | Knowledge summaries, concept explainers, educational articles |
 | `hand-drawn-edu` | `flowchart` | `sketch-notes` | `macaron` | Hand-drawn educational diagrams, process explainers, onboarding visuals |
@@ -32,26 +32,26 @@ A preset expands to a type + style + optional palette combination. Users can ove
 
 | Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
-| `data-report` | `infographic` | `editorial` | — | Data journalism, metrics reports, dashboards |
-| `versus` | `comparison` | `vector-illustration` | — | Tech comparisons, framework shootouts |
-| `business-compare` | `comparison` | `elegant` | — | Product evaluations, strategy options |
+| `data-report` | `infographic` | `editorial` |: | Data journalism, metrics reports, dashboards |
+| `versus` | `comparison` | `vector-illustration` |: | Tech comparisons, framework shootouts |
+| `business-compare` | `comparison` | `elegant` |: | Product evaluations, strategy options |
 
 ### Narrative & Creative
 
 | Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
-| `storytelling` | `scene` | `warm` | — | Personal essays, reflections, growth stories |
-| `lifestyle` | `scene` | `watercolor` | — | Travel, wellness, lifestyle, creative |
-| `history` | `timeline` | `elegant` | — | Historical overviews, milestones |
-| `evolution` | `timeline` | `warm` | — | Progress narratives, growth journeys |
+| `storytelling` | `scene` | `warm` |: | Personal essays, reflections, growth stories |
+| `lifestyle` | `scene` | `watercolor` |: | Travel, wellness, lifestyle, creative |
+| `history` | `timeline` | `elegant` |: | Historical overviews, milestones |
+| `evolution` | `timeline` | `warm` |: | Progress narratives, growth journeys |
 
 ### Editorial & Opinion
 
 | Preset | Type | Style | Palette | Best For |
 |----------|------|-------|---------|----------|
-| `opinion-piece` | `scene` | `screen-print` | — | Op-eds, commentary, critical essays |
-| `editorial-poster` | `comparison` | `screen-print` | — | Debate, contrasting viewpoints |
-| `cinematic` | `scene` | `screen-print` | — | Dramatic narratives, cultural essays |
+| `opinion-piece` | `scene` | `screen-print` |: | Op-eds, commentary, critical essays |
+| `editorial-poster` | `comparison` | `screen-print` |: | Debate, contrasting viewpoints |
+| `cinematic` | `scene` | `screen-print` |: | Dramatic narratives, cultural essays |
 
 ## Content Type → Preset Recommendations
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fetch_logs.py — Retrieve workflow execution diagnostics from a ComfyUI server.
+fetch_logs.py: Retrieve workflow execution diagnostics from a ComfyUI server.
 
 When a workflow errors, the server's /history (local) or /jobs (cloud) entry
 contains the full Python traceback. This script makes it easy to fetch by

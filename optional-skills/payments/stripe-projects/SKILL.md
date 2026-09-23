@@ -70,7 +70,7 @@ This creates `.projects/vault/vault.json` (encrypted credential store) and prepa
 stripe projects catalog
 ```
 
-Lists every provider Stripe Projects supports — databases, hosting, auth, AI, analytics, messaging, etc.
+Lists every provider Stripe Projects supports, databases, hosting, auth, AI, analytics, messaging, etc.
 
 ### 3. Add a service
 
@@ -105,10 +105,10 @@ stripe projects rotate <provider>      # rotate credentials
 ## Pitfalls
 
 - **`.env` writes are real writes.** The CLI appends to whatever `.env` is in the project root. If the user's `.env` is gitignored (normal), the keys land safely; if not, this skill could be a credential-leak vector. Always check `.gitignore` first.
-- **Per-project state.** `.projects/vault/vault.json` is per-project. Provisioning the same service in two different projects creates two separate resources — and two bills.
+- **Per-project state.** `.projects/vault/vault.json` is per-project. Provisioning the same service in two different projects creates two separate resources, and two bills.
 - **Billing happens on Stripe's side.** Tier prompts during `add`/`upgrade` are real charges; surface them to the user before confirming.
 - **Provider availability changes.** The catalog grows; if a provider the user names isn't listed, `stripe projects catalog | grep <name>` first instead of failing the `add` call.
-- **Credentials in vault are encrypted but `.env` is plaintext.** Standard `.env` hygiene applies — never commit it.
+- **Credentials in vault are encrypted but `.env` is plaintext.** Standard `.env` hygiene applies, never commit it.
 - **Removing a service does NOT always destroy the underlying resource.** Some providers leave a paused/dormant resource behind. Check the provider's own dashboard after `remove` for high-cost services (managed databases especially).
 
 ## Verification

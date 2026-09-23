@@ -71,10 +71,10 @@ Check if the output directory exists (e.g., via `test -d "comic/{topic-slug}"`).
 ```
 question: "Existing content found at comic/{topic-slug}. How to proceed?"
 options:
-  - "Regenerate storyboard — Keep images, regenerate storyboard and characters only"
-  - "Regenerate images — Keep storyboard, regenerate images only"
-  - "Backup and regenerate — Backup to {slug}-backup-{timestamp}, then regenerate all"
-  - "Exit — Cancel, keep existing content unchanged"
+  - "Regenerate storyboard: Keep images, regenerate storyboard and characters only"
+  - "Regenerate images: Keep storyboard, regenerate images only"
+  - "Backup and regenerate: Backup to {slug}-backup-{timestamp}, then regenerate all"
+  - "Exit: Cancel, keep existing content unchanged"
 ```
 
 Save result and handle accordingly:
@@ -99,7 +99,7 @@ Save result and handle accordingly:
 
 **Use `clarify` with the independent questions in one `questions` array**, in priority order:
 
-> **Timeout handling (CRITICAL)**: if `clarify` returns `"outcome": "timed_out"`, every response marked `"status": "unanswered"` is a per-question default, NOT blanket consent — do not bail out of Step 2. Then, in your next user-visible message, explicitly surface every default that was taken (e.g. `"Defaulted style → ohmsha, narrative focus → concept explanation, audience → developers (clarify timed out on all three). Say the word to redirect."`). An unreported default is indistinguishable to the user from "the agent never asked."
+> **Timeout handling (CRITICAL)**: if `clarify` returns `"outcome": "timed_out"`, every response marked `"status": "unanswered"` is a per-question default, NOT blanket consent: do not bail out of Step 2. Then, in your next user-visible message, explicitly surface every default that was taken (e.g. `"Defaulted style → ohmsha, narrative focus → concept explanation, audience → developers (clarify timed out on all three). Say the word to redirect."`). An unreported default is indistinguishable to the user from "the agent never asked."
 
 ### Question 1: Visual Style
 
@@ -108,11 +108,11 @@ If a preset is recommended (see `auto-selection.md`), show it first:
 ```
 question: "Which visual style for this comic?"
 options:
-  - "[preset name] preset (Recommended) — [preset description] with special rules"
-  - "[recommended art] + [recommended tone] (Recommended) — Best match for your content"
-  - "ligne-claire + neutral — Classic educational, Logicomix style"
-  - "ohmsha preset — Educational manga with visual metaphors, gadgets, NO talking heads"
-  - "Custom — Specify your own art + tone or preset"
+  - "[preset name] preset (Recommended): [preset description] with special rules"
+  - "[recommended art] + [recommended tone] (Recommended): Best match for your content"
+  - "ligne-claire + neutral: Classic educational, Logicomix style"
+  - "ohmsha preset: Educational manga with visual metaphors, gadgets, NO talking heads"
+  - "Custom: Specify your own art + tone or preset"
 ```
 
 **Preset vs Art+Tone**: Presets include special rules beyond art+tone. `ohmsha` = manga + neutral + visual metaphor rules + character roles + NO talking heads. Plain `manga + neutral` does NOT include these rules.
@@ -122,10 +122,10 @@ options:
 ```
 question: "What should the comic emphasize? (Pick the primary focus; mention others in a follow-up if needed)"
 options:
-  - "Biography/life story — Follow a person's journey through key life events"
-  - "Concept explanation — Break down complex ideas visually"
-  - "Historical event — Dramatize important historical moments"
-  - "Tutorial/how-to — Step-by-step educational guide"
+  - "Biography/life story: Follow a person's journey through key life events"
+  - "Concept explanation: Break down complex ideas visually"
+  - "Historical event: Dramatize important historical moments"
+  - "Tutorial/how-to: Step-by-step educational guide"
 ```
 
 ### Question 3: Target Audience
@@ -133,10 +133,10 @@ options:
 ```
 question: "Who is the primary reader?"
 options:
-  - "General readers — Broad appeal, accessible content"
-  - "Students/learners — Educational focus, clear explanations"
-  - "Industry professionals — Technical depth, domain knowledge"
-  - "Children/young readers — Simplified language, engaging visuals"
+  - "General readers: Broad appeal, accessible content"
+  - "Students/learners: Educational focus, clear explanations"
+  - "Industry professionals: Technical depth, domain knowledge"
+  - "Children/young readers: Simplified language, engaging visuals"
 ```
 
 ### Question 4: Outline Review
@@ -144,8 +144,8 @@ options:
 ```
 question: "Do you want to review the outline before image generation?"
 options:
-  - "Yes, let me review (Recommended) — Review storyboard and characters before generating images"
-  - "No, generate directly — Skip outline review, start generating immediately"
+  - "Yes, let me review (Recommended): Review storyboard and characters before generating images"
+  - "No, generate directly: Skip outline review, start generating immediately"
 ```
 
 ### Question 5: Prompt Review
@@ -153,8 +153,8 @@ options:
 ```
 question: "Review prompts before generating images?"
 options:
-  - "Yes, review prompts (Recommended) — Review image generation prompts before generating"
-  - "No, skip prompt review — Proceed directly to image generation"
+  - "Yes, review prompts (Recommended): Review image generation prompts before generating"
+  - "No, skip prompt review: Proceed directly to image generation"
 ```
 
 **After responses**:
@@ -224,10 +224,10 @@ These are the canonical ohmsha-style characters. Do NOT create custom characters
 ```
 question: "Ready to generate images with this outline?"
 options:
-  - "Yes, proceed (Recommended) — Generate character sheet and comic pages"
-  - "Edit storyboard first — I'll modify storyboard.md before continuing"
-  - "Edit characters first — I'll modify characters/characters.md before continuing"
-  - "Edit both — I'll modify both files before continuing"
+  - "Yes, proceed (Recommended): Generate character sheet and comic pages"
+  - "Edit storyboard first: I'll modify storyboard.md before continuing"
+  - "Edit characters first: I'll modify characters/characters.md before continuing"
+  - "Edit both: I'll modify both files before continuing"
 ```
 
 **After response**:
@@ -247,7 +247,7 @@ Create image generation prompts for all pages.
 
 **For each page (cover + pages)**:
 1. Create prompt following art style + tone guidelines
-2. **Embed character descriptions** inline (copy relevant traits from `characters/characters.md`) — `image_generate` is prompt-only, so the prompt text is the sole vehicle for character consistency
+2. **Embed character descriptions** inline (copy relevant traits from `characters/characters.md`), `image_generate` is prompt-only, so the prompt text is the sole vehicle for character consistency
 3. Save to `prompts/NN-{cover|page}-[slug].md` using `write_file`
    - **Backup rule**: If prompt file exists, rename to `prompts/NN-{cover|page}-[slug]-backup-YYYYMMDD-HHMMSS.md`
 
@@ -258,7 +258,7 @@ Create image generation prompts for all pages.
 ## Visual Style
 Art: [art style] | Tone: [tone] | Layout: [layout type]
 
-## Character Reference (embedded inline — maintain exact traits below)
+## Character Reference (embedded inline: maintain exact traits below)
 - [Character A]: [detailed visual traits from characters/characters.md]
 - [Character B]: [detailed visual traits from characters/characters.md]
 
@@ -294,9 +294,9 @@ Art: [art style] | Tone: [tone] | Layout: [layout type]
 ```
 question: "Ready to generate images with these prompts?"
 options:
-  - "Yes, proceed (Recommended) — Generate all comic page images"
-  - "Edit prompts first — I'll modify prompts/*.md before continuing"
-  - "Regenerate prompts — Regenerate all prompts with different approach"
+  - "Yes, proceed (Recommended): Generate all comic page images"
+  - "Edit prompts first: I'll modify prompts/*.md before continuing"
+  - "Regenerate prompts: Regenerate all prompts with different approach"
 ```
 
 **After response**:
@@ -308,9 +308,9 @@ options:
 
 ## Step 7: Generate Images
 
-With confirmed prompts from Step 5/6, use the `image_generate` tool. The tool accepts only `prompt` and `aspect_ratio` (`landscape` | `portrait` | `square`) and **returns a URL** — it does not accept reference images and does not write local files. Every invocation must be followed by a download step.
+With confirmed prompts from Step 5/6, use the `image_generate` tool. The tool accepts only `prompt` and `aspect_ratio` (`landscape` | `portrait` | `square`) and **returns a URL**: it does not accept reference images and does not write local files. Every invocation must be followed by a download step.
 
-**Aspect ratio mapping** — map the storyboard's `aspect_ratio` to the tool's enum:
+**Aspect ratio mapping**: map the storyboard's `aspect_ratio` to the tool's enum:
 
 | Storyboard ratio | `image_generate` format |
 |------------------|-------------------------|
@@ -333,7 +333,7 @@ Character sheet is recommended for multi-page comics with recurring characters, 
 | Condition | Action |
 |-----------|--------|
 | Multi-page comic with detailed/recurring characters | Generate character sheet (recommended) |
-| Preset with simplified characters (e.g., four-panel minimalist) | Skip — prompt descriptions are sufficient |
+| Preset with simplified characters (e.g., four-panel minimalist) | Skip, prompt descriptions are sufficient|
 | Single-page comic | Skip unless characters are complex |
 
 **When generating**:
@@ -342,7 +342,7 @@ Character sheet is recommended for multi-page comics with recurring characters, 
 3. Call `image_generate` with `landscape` format
 4. Download the returned URL → save to `characters/characters.png`
 
-**Important**: the downloaded sheet is a **human-facing review artifact** (so the user can visually verify character design) and a reference for later regenerations or manual prompt edits. It does **not** drive Step 7.2 — page prompts were already written in Step 5 from the text descriptions in `characters/characters.md`. `image_generate` cannot accept images as visual input, so the text is the sole cross-page consistency mechanism.
+**Important**: the downloaded sheet is a **human-facing review artifact** (so the user can visually verify character design) and a reference for later regenerations or manual prompt edits. It does **not** drive Step 7.2, page prompts were already written in Step 5 from the text descriptions in `characters/characters.md`. `image_generate` cannot accept images as visual input, so the text is the sole cross-page consistency mechanism.
 
 ### 7.2 Generate Comic Pages
 
@@ -350,19 +350,19 @@ Character sheet is recommended for multi-page comics with recurring characters, 
 1. Confirm each prompt file exists at `prompts/NN-{cover|page}-[slug].md`
 2. Confirm that each prompt has character descriptions embedded inline (see Step 5). `image_generate` is prompt-only, so the prompt text is the sole consistency mechanism.
 
-**Page Generation Strategy**: every page prompt must embed character descriptions (sourced from `characters/characters.md`) inline. This is done during Step 5, uniformly whether or not the PNG sheet was produced in 7.1 — the PNG is only a review/regeneration aid, never a generation input.
+**Page Generation Strategy**: every page prompt must embed character descriptions (sourced from `characters/characters.md`) inline. This is done during Step 5, uniformly whether or not the PNG sheet was produced in 7.1, the PNG is only a review/regeneration aid, never a generation input.
 
 **Example embedded prompt** (`prompts/01-page-xxx.md`):
 
 ```markdown
 # Page 01: [Title]
 
-## Character Reference (embedded inline — maintain consistency)
+## Character Reference (embedded inline: maintain consistency)
 - 大雄：Japanese boy, round glasses, yellow shirt, navy shorts, worried expression...
 - 哆啦 A 梦：Round blue robot cat, white belly, red nose, golden bell, 4D pocket...
 
 ## Page Content
-[Original page prompt body — panels, dialogue, visual metaphors]
+[Original page prompt body: panels, dialogue, visual metaphors]
 ```
 
 **For each page (cover + pages)**:

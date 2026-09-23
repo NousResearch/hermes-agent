@@ -20,6 +20,7 @@ import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFree
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { notify, notifyError } from '@/store/notifications'
 import { guidedOnboardingActive } from '@/store/onboarding-gate'
+import { $settingsOwner } from '@/store/settings-scope'
 import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -474,18 +475,33 @@ async function refreshProviders() {
   }
 
   const generation = flowGeneration
+  const state = $desktopOnboarding.get()
+  const target = state.targetScope ?? state.targetProfile
+
+  const isCurrent = () => {
+    const current = $desktopOnboarding.get()
+
+    return (
+      generation === flowGeneration &&
+      (current.targetScope ?? current.targetProfile) === target &&
+      (!state.manual ||
+        typeof target === 'string' ||
+        !target?.connectionOwner ||
+        $settingsOwner.get() === target)
+    )
+  }
+
   providersRefreshPromise = (async () => {
     try {
-      const state = $desktopOnboarding.get()
-      const { providers } = await listOAuthProviders(state.targetScope ?? state.targetProfile)
+      const { providers } = await listOAuthProviders(target)
 
-      if (generation !== flowGeneration) {
+      if (!isCurrent()) {
         return
       }
 
       patch({ mode: providers.length > 0 ? 'oauth' : 'apikey', providers })
     } catch {
-      if (generation !== flowGeneration) {
+      if (!isCurrent()) {
         return
       }
 
@@ -1067,7 +1083,7 @@ export async function saveOnboardingApiKey(
   try {
     await setEnvVar(envKey, trimmed, ctx.scope ?? ctx.profile)
 
-    if (generation !== flowGeneration) {
+    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
       return { ok: false }
     }
 
@@ -1087,6 +1103,10 @@ export async function saveOnboardingApiKey(
 
     return { ok: true }
   } catch (error) {
+    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+      return { ok: false }
+    }
+
     notifyError(error, `Could not save ${label}`)
 
     return { ok: false, message: errMessage(error) }
@@ -1132,7 +1152,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   try {
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key, ctx.scope ?? ctx.profile)
 
-    if (generation !== flowGeneration) {
+    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
       return { ok: false }
     }
 
@@ -1147,6 +1167,10 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     model = (probe.models?.[0] ?? '').trim()
     resolvedUrl = probe.resolved_base_url?.trim() || url
   } catch {
+    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+      return { ok: false }
+    }
+
     return { ok: false, message: `Could not reach ${url}.` }
   }
 
@@ -1163,19 +1187,19 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
       ctx.scope ?? ctx.profile
     )
 
-    if (generation !== flowGeneration) {
+    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
       return { ok: false }
     }
 
     await ctx.requestGateway('reload.env').catch(() => undefined)
 
-    if (generation !== flowGeneration) {
+    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
       return { ok: false }
     }
 
     const runtime = await checkRuntime(ctx)
 
-    if (generation !== flowGeneration) {
+    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
       return { ok: false }
     }
 
@@ -1191,6 +1215,10 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
 
     return { ok: true }
   } catch (error) {
+    if (generation !== flowGeneration || ctx.isCurrent?.() === false) {
+      return { ok: false }
+    }
+
     notifyError(error, 'Could not save local endpoint')
 
     return { ok: false, message: errMessage(error) }

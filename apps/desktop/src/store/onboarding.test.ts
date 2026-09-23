@@ -11,6 +11,7 @@ import {
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
+  saveOnboardingApiKey,
   saveOnboardingLocalEndpoint,
   setOnboardingModel,
   submitOnboardingCode
@@ -209,7 +210,6 @@ describe('refreshOnboarding', () => {
   })
 
   it('stops provider setup after its gateway owner changes while env reload is pending', async () => {
-    const { saveOnboardingApiKey } = await import('./onboarding')
     const requests: string[] = []
     let releaseReload!: () => void
     let current = true
@@ -253,6 +253,34 @@ describe('refreshOnboarding', () => {
 
     await expect(pending).resolves.toEqual({ ok: false })
     expect(requests.some(path => path.startsWith('/api/model/'))).toBe(false)
+  })
+
+  it('does not notify after a credential write rejects for a retired owner', async () => {
+    let rejectWrite!: (error: Error) => void
+    let current = true
+    const notifyError = vi.spyOn(notifications, 'notifyError')
+
+    installApiMock(async ({ path }) => {
+      if (path === '/api/env') {
+        return new Promise((_, reject) => {
+          rejectWrite = reject
+        })
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const pending = saveOnboardingApiKey('FIREWORKS_API_KEY', 'fake-key', 'Fireworks', {
+      isCurrent: () => current,
+      requestGateway: async () => ({}) as never
+    })
+
+    await vi.waitFor(() => expect(rejectWrite).toBeTypeOf('function'))
+    current = false
+    rejectWrite(new Error('retired owner'))
+
+    await expect(pending).resolves.toEqual({ ok: false })
+    expect(notifyError).not.toHaveBeenCalled()
   })
 
   beforeEach(() => {
@@ -675,6 +703,36 @@ describe('saveOnboardingLocalEndpoint', () => {
       throw new Error(`unexpected gateway method: ${method}`)
     }
   }
+
+  it('stops before assigning a local endpoint when its owner changes during the probe', async () => {
+    const calls: string[] = []
+    let resolveProbe!: (value: unknown) => void
+    let current = true
+
+    installApiMock(async ({ path }: { path: string }) => {
+      calls.push(path)
+
+      if (path === '/api/providers/validate') {
+        return new Promise(resolve => {
+          resolveProbe = resolve
+        })
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const pending = saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
+      isCurrent: () => current,
+      requestGateway: readyGateway()
+    })
+
+    await vi.waitFor(() => expect(calls).toContain('/api/providers/validate'))
+    current = false
+    resolveProbe({ ok: true, reachable: true, message: '', models: ['llama-3.1-8b'] })
+
+    await expect(pending).resolves.toEqual({ ok: false })
+    expect(calls).not.toContain('/api/model/set')
+  })
 
   it('errors when the endpoint advertises no models (nothing to route to)', async () => {
     const calls: string[] = []

@@ -194,6 +194,10 @@ export function useEnvCredentials(scope: null | ProfileScope): UseEnvCredentials
       return
     }
 
+    if (scopeRef.current !== target) {
+      return
+    }
+
     setSaving(key)
 
     try {

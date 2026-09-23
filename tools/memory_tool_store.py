@@ -96,6 +96,11 @@ class MemoryStore:
     # See #42405.
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
+    # Store-usage fraction above which a zero-match single-op failure stops echoing
+    # the entry list (see _zero_match_failure). 90% matches the "near full" regime
+    # where the field loop was observed (98% usage, every miss re-paying ~2KB).
+    _ECHO_SKIP_USAGE_FRACTION = 0.9
+
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
                  memory_enabled: bool = True, user_profile_enabled: bool = True):
         self.memory_entries: List[str] = []
@@ -235,6 +240,31 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message, current_entries=self._entries_for(target), usage=self._usage(target)))
 
+    def _zero_match_failure(self, target: str, old_text: str, verb: str) -> Dict[str, Any]:
+        """A single replace/remove that matched no entry. Echoing the full store
+        is the model's fastest self-correction while the store is small, but the
+        entries are ALREADY in the system prompt (frozen snapshot) — so once the
+        store is near full, the echo re-pays the entire store per failed call.
+        That growth is what made consolidation retries self-defeating (#97316):
+        each miss made the context BIGGER, the model retried, and the retry
+        missed again. Above the threshold drop the echo; the usage line plus
+        /memory give the model everything it needs at a fraction of the cost."""
+        entries = self._entries_for(target)
+        usage = self._char_count(target)
+        limit = self._char_limit(target)
+        near_full = limit > 0 and (usage / limit) >= self._ECHO_SKIP_USAGE_FRACTION
+        if near_full:
+            message = (f"No entry matched '{old_text}'. The store is near its char limit "
+                       f"({self._usage(target)}), so the full entry list is not repeated here — "
+                       f"it is already in your system prompt, or run /memory to view it. "
+                       f"Retry with the exact text of the entry you want to {verb}, or free "
+                       f"space first by removing stale entries.")
+            return self._consolidation_failure(
+                _error(message, usage=self._usage(target)))
+        return self._consolidation_failure(_error(
+            f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
+            f"of the entry you want to {verb}.", current_entries=entries))
+
     def _batch_failure(self, target: str, message: str) -> Dict[str, Any]:
         """Batch-abort failure WITHOUT ``current_entries``: the store did not change and the
         caller already holds the inventory, so echoing it made each consolidation retry
@@ -315,7 +345,8 @@ class MemoryStore:
             return _error("old_text cannot be empty.")
         return self._edit(target, old_text.strip(), None, matched_entry)
 
-    def _locate(self, entries: List[str], old_text: str, verb: str, matched_entry: Optional[str] = None):
+    def _locate(self, target: str, entries: List[str], old_text: str, verb: str,
+                matched_entry: Optional[str] = None):
         """Index of the entry *old_text* selects, or the error dict the edit returns. A write
         staged for approval carries the FULL entry it was reviewed against (*matched_entry*):
         only that exact entry qualifies, so replay never hits a newer entry that still
@@ -328,16 +359,14 @@ class MemoryStore:
             return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
                           matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
         if idx is None:
-            return self._consolidation_failure(_error(
-                f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
-                f"of the entry you want to {verb}.", current_entries=entries))
+            return self._zero_match_failure(target, old_text, verb)
         return idx
 
     def resolve_entry(self, target: str, old_text: str, verb: str) -> Dict[str, Any]:
         """``{"success": True, "matched_entry": <full entry>}`` for the entry *old_text* selects
         now, read under the lock, or the error the direct edit would return."""
         def _resolve(entries, limit):
-            idx = self._locate(entries, old_text.strip(), verb)
+            idx = self._locate(target, entries, old_text.strip(), verb)
             return idx if isinstance(idx, dict) else {"success": True, "matched_entry": entries[idx]}
         return self._mutate(target, _resolve, skip_drift=True)
 
@@ -345,7 +374,7 @@ class MemoryStore:
               matched_entry: Optional[str] = None) -> Dict[str, Any]:
         """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*."""
         def _apply(entries, limit):
-            idx = self._locate(entries, old_text, "replace" if new_content else "remove", matched_entry)
+            idx = self._locate(target, entries, old_text, "replace" if new_content else "remove", matched_entry)
             if isinstance(idx, dict):
                 return idx
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]

@@ -62,15 +62,20 @@ def test_reason_is_classified_as_skipped_not_failed(monkeypatch):
     )
 
 
-def test_unmanaged_install_refuses_live_venv_mutation(monkeypatch):
-    """An unmanaged environment still cannot be mutated under a live process."""
+def test_unmanaged_safe_install_reaches_the_install_ladder(monkeypatch):
+    """A normal unmanaged venv remains installable when no hazard is present."""
     monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: None)
-    _no_installer(monkeypatch)
+    called = []
+    monkeypatch.setattr(
+        lazy_deps, "_venv_pip_install",
+        lambda specs: called.append(specs) or lazy_deps._InstallResult(False, "", "installer ran"),
+    )
 
     with pytest.raises(FeatureUnavailable) as excinfo:
         lazy_deps.ensure(FEATURE, prompt=False)
 
-    assert "running Hermes interpreter" in excinfo.value.reason
+    assert called == [("some-pkg==1.0",)]
+    assert "installer ran" in excinfo.value.reason
 
 
 def test_durable_install_target_overrides_the_guard(monkeypatch, tmp_path):

@@ -433,6 +433,21 @@ class TestRefreshActiveFeatures:
 
 
 class TestInstallSpecs:
+    def test_live_venv_hazard_is_blocked_before_an_installer_command(self, monkeypatch):
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(ld, "_live_venv_install_refusal", lambda _specs: "package directory is a symlink")
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *_a, **_kw: pytest.fail("install_specs reached the installer for a live-venv hazard"),
+        )
+
+        result = ld.install_specs(["somepkg==1.2.3"])
+
+        assert result.blocked is True
+        assert result.reason == "package directory is a symlink"
+        assert result.command == ""
+
     def test_uv_tier_runs_from_the_checkout_so_exclude_newer_applies(self, monkeypatch, tmp_path):
         """uv reads ``[tool.uv] exclude-newer`` from the cwd project only; a plugin-dep install launched from
         $HOME or a gateway service must still run under the checkout's quarantine, so the uv invocation

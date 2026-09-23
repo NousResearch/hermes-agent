@@ -1,11 +1,11 @@
 """Lazy dependency installer for opt-in Hermes backends.
 
-Backends call :func:`ensure(feature)` on first import; missing packages install only into a
-durable target when ``security.allow_lazy_installs`` permits them. The running Hermes
-interpreter is never mutated: replacement installs can uninstall files used by live sibling
-processes. Durable-target mode (``HERMES_LAZY_INSTALL_TARGET``, sealed images) APPENDS the
-target to ``sys.path`` so core site-packages wins every collision and a lazy package can only
-add modules, never shadow core; PyPI-by-name specs only (``_spec_is_safe``);
+Backends call :func:`ensure(feature)` on first import.  Missing packages install into the active
+venv on normal local deployments, unless the destination has a known live-install hazard;
+``security.allow_lazy_installs`` still gates both modes. Durable-target mode
+(``HERMES_LAZY_INSTALL_TARGET``, sealed images) APPENDS the target to ``sys.path`` so core
+site-packages wins every collision and a lazy package can only add modules, never shadow core;
+PyPI-by-name specs only (``_spec_is_safe``);
 ``ensure`` accepts only the :data:`LAZY_DEPS` allowlist; failures surface pip's stderr, no retry.
 """
 
@@ -267,16 +267,83 @@ def _lazy_install_target() -> Optional[Path]:
     return Path(raw) if raw else None
 
 
-def _live_venv_install_refusal() -> str:
-    """Explain why lazy installs must not mutate the interpreter running Hermes.
+def _canonical_dist_name(name: str) -> str:
+    """PEP 503 normalization without importing packaging just to inspect metadata."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
-    ``uv pip install`` removes an existing distribution before replacing it.
-    Doing that in this process's own environment can leave imported modules or
-    sibling Hermes processes executing files that have just been uninstalled.
-    Lazy installs therefore require the isolated durable target instead.
+
+def _dist_info_matches(entry: Path, package: str) -> bool:
+    """Fallback for a malformed or dangling dist-info directory without METADATA."""
+    parts = [re.escape(part) for part in re.split(r"[-_.]+", package) if part]
+    return bool(parts and re.match(rf"^{'[-_.]+'.join(parts)}[-_.][0-9].*\.dist-info$", entry.name, re.IGNORECASE))
+
+
+def _dist_info_name(entry: Path) -> Optional[str]:
+    """Read the distribution Name from a dist-info METADATA file, if available."""
+    try:
+        for line in (entry / "METADATA").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lower().startswith("name:"):
+                return line.partition(":")[2].strip()
+    except OSError:
+        pass
+    return None
+
+
+def _module_loaded(root: Path) -> bool:
+    """Whether *root* or one of its submodules is already loaded in this process."""
+    return any(module == root.name or module.startswith(f"{root.name}.") for module in sys.modules)
+
+
+def _installed_import_names(spec: str, target: Optional[Path]) -> set[str]:
+    """Top-level package and single-file module names owned by an installed distribution."""
+    names: set[str] = set()
+    try:
+        import importlib.metadata as _md
+
+        dist = next(iter(_md.distributions(name=_pkg_name_from_spec(spec), path=[str(target)])), None) if target is not None else _md.distribution(_pkg_name_from_spec(spec))
+        for entry in dist.files or () if dist is not None else ():
+            top = entry.parts[0] if entry.parts else ""
+            if not top or top.startswith(".") or top.endswith((".dist-info", ".egg-info")):
+                continue
+            root = Path(dist.locate_file(top))
+            if root.is_dir():
+                names.add(root.name)
+            elif root.suffix in {".py", ".so", ".pyd", ".dylib"}:
+                names.add(root.name.split(".", 1)[0])
+    except Exception:
+        pass
+    return names
+
+
+def _live_venv_install_refusal(specs: tuple[str, ...]) -> Optional[str]:
+    """Return a refusal for a known unsafe active-venv replacement, if any.
+
+    ``uv pip install`` removes a distribution before replacing it.  A durable
+    target never touches site-packages, but a normal local venv must refuse
+    replacements when its metadata/package layout is already unsafe or the
+    package is imported by this process.
     """
-    return ("refusing to install into the running Hermes interpreter environment; "
-            "configure a durable lazy-install target or install the dependency before starting Hermes")
+    dest = Path(sysconfig.get_paths()["purelib"])
+    for spec in specs:
+        package = _pkg_name_from_spec(spec)
+        wanted_name = _canonical_dist_name(package)
+        metadata = sorted(
+            entry for entry in dest.glob("*.dist-info")
+            if (_canonical_dist_name(name) == wanted_name if (name := _dist_info_name(entry)) else _dist_info_matches(entry, package))
+        )
+        if any(entry.is_symlink() for entry in metadata):
+            return f"{package} dist-info is a symlink in {dest}; use a durable lazy-install target or repair the environment"
+        if len(metadata) > 1:
+            return (
+                f"found multiple dist-info directories for {package!r} in {dest}; normalize the environment with "
+                f"uv sync --locked --extra all --python {sys.executable}. Never hand-patch package contents"
+            )
+        for root in _installed_dist_roots(spec, dest):
+            if root.is_symlink():
+                return f"{package} package directory is a symlink in {dest}; use a durable lazy-install target or repair the environment"
+        if any(_module_loaded(Path(name)) for name in _installed_import_names(spec, dest)):
+            return f"{package} is already imported by this process; restart Hermes or use a durable lazy-install target"
+    return None
 
 
 def _ensure_target_ready(target: Path) -> Optional[str]:
@@ -583,23 +650,27 @@ def _after_successful_install(specs: tuple[str, ...], target: Optional[Path], dr
 
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_lines: tuple[str, ...] = (),
                       dry_run: bool = False) -> _InstallResult:
-    """Install ``specs`` via the uv -> pip -> ensurepip ladder into the durable ``--target``.
-    Refuse to mutate the running interpreter when :data:`_LAZY_TARGET_ENV` is unset. Independent
-    of ``hermes_cli.tools_config._pip_install`` (no CLI dependency).
+    """Install ``specs`` via the uv -> pip -> ensurepip ladder, venv-scoped or into the durable
+    ``--target`` when :data:`_LAZY_TARGET_ENV` is set. Known hazardous live-venv replacements are
+    refused before invoking an installer. Independent of ``hermes_cli.tools_config._pip_install``.
 
     *constraint_lines* pins the resolver (plugin installs pass Hermes' own declared ranges so a plugin
     can never move a core package out of range); *dry_run* resolves without installing."""
     if not specs:
         return _InstallResult(True, "", "")
     target = _lazy_install_target()
-    if target is None:
-        return _InstallResult(False, "", _live_venv_install_refusal())
     constraints: Optional[Path] = None
     extra_args: list[str] = ["--dry-run"] if dry_run else []
-    if err := _ensure_target_ready(target):
-        return _InstallResult(False, "", err)
-    constraints = _core_constraints_file()
-    extra_args += ["--target", str(target)]
+    if target is not None:
+        if err := _ensure_target_ready(target):
+            return _InstallResult(False, "", err)
+        constraints = _core_constraints_file()
+        extra_args += ["--target", str(target)]
+    elif not dry_run and (refusal := _live_venv_install_refusal(specs)):
+        logger.warning("Refusing lazy install of %s into the live venv: %s", " ".join(specs), refusal)
+        return _InstallResult(False, "", refusal)
+    elif constraint_lines:
+        constraints = _write_constraints_file(constraint_lines)
     if constraints is not None:
         extra_args += ["--constraint", str(constraints)]
 
@@ -748,8 +819,9 @@ def feature_install_command(feature: str, *, venv_pip: bool = False) -> Optional
 @dataclass
 class InstallSpecsResult:
     """Outcome of :func:`install_specs` for one batch of pip specs. ``blocked`` means installs are gated
-    off (config kill switch, sealed venv without a durable target) or a spec failed validation — nothing
-    was executed, ``reason`` says why. ``command`` is the human-readable description of what ran."""
+    off (config kill switch, sealed venv without a durable target, live-venv safety refusal) or a spec
+    failed validation — nothing was executed, ``reason`` says why. ``command`` is the human-readable
+    description of what ran."""
     ok: bool
     blocked: bool = False
     reason: str = ""
@@ -777,6 +849,8 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
                   "and no writable install target is configured (HERMES_LAZY_INSTALL_TARGET)"
                   ) if sealed else "runtime installs disabled (security.allow_lazy_installs=false)"
         return InstallSpecsResult(ok=False, blocked=True, reason=reason)
+    if target is None and not dry_run and (refusal := _live_venv_install_refusal(cleaned)):
+        return InstallSpecsResult(ok=False, blocked=True, reason=refusal)
     display = "uv pip install " + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
     logger.info("%s pip specs %s (target=%s)", "Resolving" if dry_run else "Installing", " ".join(cleaned), target or "venv")
     try:

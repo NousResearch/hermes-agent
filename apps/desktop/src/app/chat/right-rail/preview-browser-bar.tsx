@@ -201,7 +201,11 @@ export function PreviewBrowserBar({
       <PaneStripGlyph
         icon={<Codicon name="x" size="0.8125rem" />}
         label={t.common.close}
-        onSelect={() => closeRightRailTab(BROWSER_TAB_ID)}
+        onSelect={() => {
+          // BROWSER_TAB_ID contract: closeRightRailTab is an idempotent no-op if the
+          // rail or tab was already closed through another path (index === -1 check).
+          closeRightRailTab(BROWSER_TAB_ID)
+        }}
       />
     </div>
   )

@@ -1,7 +1,16 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { BROWSER_TAB_ID, closeRightRailTab } from '@/store/preview'
 import { normalizePreviewAddress, PreviewBrowserBar } from './preview-browser-bar'
+
+vi.mock('@/store/preview', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/store/preview')>()
+  return {
+    ...actual,
+    closeRightRailTab: vi.fn(),
+  }
+})
 
 const baseProps = {
   canGoBack: false,
@@ -89,6 +98,7 @@ describe('PreviewBrowserBar', () => {
     expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Show preview console' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Open preview DevTools' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'Close' })).toBeTruthy()
     expect(address(rendered)).toBeTruthy()
   })
 
@@ -272,5 +282,12 @@ describe('PreviewBrowserBar', () => {
     // code-block copy icon (inline appearance, overlay on the field's edge).
     expect(copyButton.parentElement?.contains(address)).toBe(true)
     expect(copyButton.className).toContain('absolute')
+  })
+
+  it('closes the browser preview tab when the close glyph is clicked', () => {
+    render(<PreviewBrowserBar {...baseProps} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(closeRightRailTab).toHaveBeenCalledWith(BROWSER_TAB_ID)
   })
 })

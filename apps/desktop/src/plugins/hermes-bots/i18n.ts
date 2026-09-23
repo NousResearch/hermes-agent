@@ -36,6 +36,55 @@ import { getPluginCtx } from './shared'
 
 type BotsMessages = {
   /** Left rail: the bot + group-chat roster. */
+  editor: {
+    newDescription: string
+    name: string
+    title: string
+    description: string
+    createOn: string
+    general: string
+    capabilities: string
+    skills: string
+    tools: string
+    cloneFrom: string
+    freshProfile: string
+    inheritedModel: string
+    soul: string
+    shareKeys: string
+    shareKeysHint: string
+    createEmpty: string
+    nameTakenHint: string
+    nameFirstHint: string
+    newerDesktop: string
+    newerGateway: string
+    emptySkillsHint: string
+    defaultToolsHint: string
+    catalog: string
+    catalogInstalled: string
+    mcpHint: string
+    creating: string
+    createBot: string
+    auto: string
+    autoHint: string
+    unlock: string
+    lockFace: string
+    lockedHint: string
+    unlockedHint: string
+    noImageModel: string
+    checkingImage: string
+    chooseImage: string
+    editDescription: (name: string, profile: string) => string
+    nameTaken: (name: string) => string
+    nameTakenOn: (name: string, target: string) => string
+    currentConnection: (name: string) => string
+    remoteHint: (target: string) => string
+    cloneFromOn: (target: string) => string
+    catalogHint: (source: string) => string
+    sectionsFailed: (sections: string) => string
+    updated: (name: string) => string
+    created: (name: string) => string
+    createdOn: (name: string, target: string) => string
+  }
   roster: {
     search: string
     searchPlaceholder: string
@@ -363,6 +412,59 @@ type BotsMessages = {
 }
 
 const en: BotsMessages = {
+  editor: {
+    newDescription: 'A named teammate with its own memory, skills, and chat. It can message your other agents.',
+    name: 'Name',
+    title: 'Title',
+    description: 'Description',
+    createOn: 'Create on',
+    general: 'General',
+    capabilities: 'Capabilities',
+    skills: 'Skills',
+    tools: 'Tools',
+    cloneFrom: 'Clone from profile',
+    freshProfile: 'Fresh profile (bundled skills)',
+    inheritedModel: 'inherited from launch profile',
+    soul: 'SOUL.md (optional — replaces the generated persona)',
+    shareKeys: 'Share keys & accounts with the main profile',
+    shareKeysHint:
+      'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
+    createEmpty: 'Create empty (skip bundled skills)',
+    nameTakenHint: 'That name is taken — pick another before configuring capabilities.',
+    nameFirstHint: 'Name the bot first — a draft profile is created when you open this tab (discarded if you cancel).',
+    newerDesktop: 'Skills need a newer Hermes Desktop.',
+    newerGateway: 'Capability catalog needs a newer gateway (restart it after updating Hermes).',
+    emptySkillsHint: '“Create empty” is checked — no bundled skills will be installed.',
+    defaultToolsHint: 'Leaving all (or none) checked keeps the default toolset behavior.',
+    catalog: 'catalog',
+    catalogInstalled: 'catalog · installed',
+    mcpHint:
+      'Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries needing API keys route through setup first (credentials follow the shared keys setting).',
+    creating: 'Creating…',
+    createBot: 'Create Bot',
+    auto: 'Auto',
+    autoHint: 'Auto — the name decides',
+    unlock: 'Unlock',
+    lockFace: 'Lock face',
+    lockedHint: 'Face locked — renaming won’t change it.',
+    unlockedHint: 'Face follows the name.',
+    noImageModel:
+      'No image model available. If you just enabled one (or updated Hermes), restart the gateway: Ctrl+K → "Restart gateway".',
+    checkingImage: 'Checking image backend…',
+    chooseImage: 'Choose an image…',
+    editDescription: (name, profile) => `Appearance and role for ${name} (${profile}).`,
+    nameTaken: name => `An agent named "${name}" already exists.`,
+    nameTakenOn: (name, target) => `An agent named "${name}" already exists on ${target}.`,
+    currentConnection: name => `${name} (current)`,
+    remoteHint: target =>
+      `The agent is created on ${target} and appears in the roster as a Connections bot. Chat routes to that machine.`,
+    cloneFromOn: target => `Clone from profile (on ${target})`,
+    catalogHint: source => `Catalog from ${source} — unchecked skills are disabled after creation.`,
+    sectionsFailed: sections => `Some sections failed: ${sections}`,
+    updated: name => `${name} updated`,
+    created: name => `Bot "${name}" created`,
+    createdOn: (name, target) => `Bot "${name}" created on ${target}`
+  },
   roster: {
     search: 'Search bots and group chats',
     searchPlaceholder: 'Search bots and group chats…',
@@ -673,6 +775,61 @@ const en: BotsMessages = {
 }
 
 const ja: BotsMessages = {
+  editor: {
+    newDescription:
+      '独自のメモリ、スキル、チャットを持つ名前付きの仲間です。他のエージェントとメッセージをやり取りできます。',
+    name: '名前',
+    title: '表示名',
+    description: '説明',
+    createOn: '作成先',
+    general: '一般',
+    capabilities: '機能',
+    skills: 'スキル',
+    tools: 'ツール',
+    cloneFrom: '複製元のプロファイル',
+    freshProfile: '新規プロファイル（同梱スキル）',
+    inheritedModel: '起動時のプロファイルから継承',
+    soul: 'SOUL.md（任意 — 生成された人格を置き換えます）',
+    shareKeys: 'メインプロファイルとキー・アカウントを共有',
+    shareKeysHint:
+      'サブスクリプション、OAuth ログイン、API キーをコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
+    createEmpty: '空のプロファイルを作成（同梱スキルを除外）',
+    nameTakenHint: 'その名前は使用済みです。機能を設定する前に別の名前を選んでください。',
+    nameFirstHint:
+      '先にボットに名前を付けてください。このタブを開くと下書きプロファイルが作成されます（キャンセルすると破棄されます）。',
+    newerDesktop: 'スキルには新しい Hermes Desktop が必要です。',
+    newerGateway: '機能カタログには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
+    emptySkillsHint: '「空のプロファイルを作成」が選択されているため、同梱スキルはインストールされません。',
+    defaultToolsHint: 'すべて選択するか、何も選択しない場合は、既定のツールセット動作を維持します。',
+    catalog: 'カタログ',
+    catalogInstalled: 'カタログ · インストール済み',
+    mcpHint:
+      '設定済みサーバーはメインプロファイルからコピーされます。カタログは同梱 MCP メニューです。API キーが必要な項目は先に設定を行います（認証情報はキー共有設定に従います）。',
+    creating: '作成中…',
+    createBot: 'ボットを作成',
+    auto: '自動',
+    autoHint: '自動 — 名前から決定',
+    unlock: 'ロック解除',
+    lockFace: '顔を固定',
+    lockedHint: '顔を固定しました。名前を変えても変化しません。',
+    unlockedHint: '顔は名前に合わせて変わります。',
+    noImageModel:
+      '画像モデルがありません。有効にした直後や Hermes 更新後の場合は、Ctrl+K →「ゲートウェイを再起動」で再起動してください。',
+    checkingImage: '画像バックエンドを確認中…',
+    chooseImage: '画像を選択…',
+    editDescription: (name, profile) => `${name}（${profile}）の外観と役割。`,
+    nameTaken: name => `「${name}」というエージェントはすでに存在します。`,
+    nameTakenOn: (name, target) => `${target} には「${name}」というエージェントがすでに存在します。`,
+    currentConnection: name => `${name}（現在）`,
+    remoteHint: target =>
+      `エージェントは ${target} に作成され、接続先のボットとして一覧に表示されます。チャットはそのマシンに送られます。`,
+    cloneFromOn: target => `複製元のプロファイル（${target} 上）`,
+    catalogHint: source => `${source} のカタログです。未選択のスキルは作成後に無効になります。`,
+    sectionsFailed: sections => `一部の設定に失敗しました: ${sections}`,
+    updated: name => `${name} を更新しました`,
+    created: name => `ボット「${name}」を作成しました`,
+    createdOn: (name, target) => `${target} にボット「${name}」を作成しました`
+  },
   roster: {
     search: 'ボットとグループチャットを検索',
     searchPlaceholder: 'ボットとグループチャットを検索…',
@@ -985,6 +1142,57 @@ const ja: BotsMessages = {
 }
 
 const zh: BotsMessages = {
+  editor: {
+    newDescription: '拥有独立记忆、技能和聊天的具名队友，可以与你的其他智能体互发消息。',
+    name: '名称',
+    title: '显示名称',
+    description: '描述',
+    createOn: '创建位置',
+    general: '常规',
+    capabilities: '能力',
+    skills: '技能',
+    tools: '工具',
+    cloneFrom: '从配置档案克隆',
+    freshProfile: '新配置档案（内置技能）',
+    inheritedModel: '继承启动时的配置档案',
+    soul: 'SOUL.md（可选，将替换生成的人格）',
+    shareKeys: '与主配置档案共享密钥和账户',
+    shareKeysHint:
+      '订阅、OAuth 登录和 API 密钥保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
+    createEmpty: '创建空配置（跳过内置技能）',
+    nameTakenHint: '此名称已被占用，请先选择其他名称再配置能力。',
+    nameFirstHint: '请先为机器人命名，打开此标签页时将创建草稿配置档案（取消时会丢弃）。',
+    newerDesktop: '技能功能需要更新的 Hermes Desktop。',
+    newerGateway: '能力目录需要更新的网关（更新 Hermes 后请重启网关）。',
+    emptySkillsHint: '已勾选“创建空配置”，不会安装内置技能。',
+    defaultToolsHint: '全部勾选或全部不选将保留默认工具集行为。',
+    catalog: '目录',
+    catalogInstalled: '目录 · 已安装',
+    mcpHint:
+      '已配置的服务器从主配置档案复制；目录条目来自内置 MCP 菜单。需要 API 密钥的条目先进行设置（凭据遵循共享密钥设置）。',
+    creating: '正在创建…',
+    createBot: '创建机器人',
+    auto: '自动',
+    autoHint: '自动 — 由名称决定',
+    unlock: '解锁',
+    lockFace: '锁定外观',
+    lockedHint: '外观已锁定，重命名不会改变外观。',
+    unlockedHint: '外观随名称变化。',
+    noImageModel: '没有可用的图像模型。如果刚启用模型或更新了 Hermes，请重启网关：Ctrl+K →“重启网关”。',
+    checkingImage: '正在检查图像后端…',
+    chooseImage: '选择图像…',
+    editDescription: (name, profile) => `${name}（${profile}）的外观和职责。`,
+    nameTaken: name => `名为“${name}”的智能体已存在。`,
+    nameTakenOn: (name, target) => `${target} 上已存在名为“${name}”的智能体。`,
+    currentConnection: name => `${name}（当前）`,
+    remoteHint: target => `智能体将在 ${target} 上创建，并作为连接机器人显示在名册中。聊天将路由到该机器。`,
+    cloneFromOn: target => `从配置档案克隆（位于 ${target}）`,
+    catalogHint: source => `目录来自 ${source}，未勾选的技能将在创建后禁用。`,
+    sectionsFailed: sections => `部分设置失败：${sections}`,
+    updated: name => `已更新 ${name}`,
+    created: name => `已创建机器人“${name}”`,
+    createdOn: (name, target) => `已在 ${target} 上创建机器人“${name}”`
+  },
   roster: {
     search: '搜索机器人和群聊',
     searchPlaceholder: '搜索机器人和群聊…',
@@ -1287,6 +1495,57 @@ const zh: BotsMessages = {
 }
 
 const zhHant: BotsMessages = {
+  editor: {
+    newDescription: '擁有獨立記憶、技能和聊天的具名隊友，可以與你的其他智慧代理互傳訊息。',
+    name: '名稱',
+    title: '顯示名稱',
+    description: '描述',
+    createOn: '建立位置',
+    general: '一般',
+    capabilities: '功能',
+    skills: '技能',
+    tools: '工具',
+    cloneFrom: '從設定檔複製',
+    freshProfile: '新設定檔（內建技能）',
+    inheritedModel: '繼承啟動時的設定檔',
+    soul: 'SOUL.md（選填，將取代產生的人格）',
+    shareKeys: '與主要設定檔共用金鑰和帳戶',
+    shareKeysHint:
+      '訂閱、OAuth 登入和 API 金鑰保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
+    createEmpty: '建立空白設定（略過內建技能）',
+    nameTakenHint: '此名稱已被使用，請先選擇其他名稱再設定功能。',
+    nameFirstHint: '請先為機器人命名，開啟此分頁時將建立草稿設定檔（取消時會捨棄）。',
+    newerDesktop: '技能功能需要更新的 Hermes Desktop。',
+    newerGateway: '功能目錄需要更新的閘道（更新 Hermes 後請重新啟動閘道）。',
+    emptySkillsHint: '已勾選「建立空白設定」，不會安裝內建技能。',
+    defaultToolsHint: '全部勾選或全部不選將保留預設工具集行為。',
+    catalog: '目錄',
+    catalogInstalled: '目錄 · 已安裝',
+    mcpHint:
+      '已設定的伺服器從主要設定檔複製；目錄項目來自內建 MCP 選單。需要 API 金鑰的項目先進行設定（憑證遵循共用金鑰設定）。',
+    creating: '正在建立…',
+    createBot: '建立機器人',
+    auto: '自動',
+    autoHint: '自動 — 由名稱決定',
+    unlock: '解鎖',
+    lockFace: '鎖定外觀',
+    lockedHint: '外觀已鎖定，重新命名不會改變外觀。',
+    unlockedHint: '外觀隨名稱變化。',
+    noImageModel: '沒有可用的影像模型。如果剛啟用模型或更新了 Hermes，請重新啟動閘道：Ctrl+K →「重新啟動閘道」。',
+    checkingImage: '正在檢查影像後端…',
+    chooseImage: '選擇影像…',
+    editDescription: (name, profile) => `${name}（${profile}）的外觀和職責。`,
+    nameTaken: name => `名為「${name}」的智慧代理已存在。`,
+    nameTakenOn: (name, target) => `${target} 上已存在名為「${name}」的智慧代理。`,
+    currentConnection: name => `${name}（目前）`,
+    remoteHint: target => `智慧代理將在 ${target} 上建立，並作為連線機器人顯示在名冊中。聊天將路由到該機器。`,
+    cloneFromOn: target => `從設定檔複製（位於 ${target}）`,
+    catalogHint: source => `目錄來自 ${source}，未勾選的技能將在建立後停用。`,
+    sectionsFailed: sections => `部分設定失敗：${sections}`,
+    updated: name => `已更新 ${name}`,
+    created: name => `已建立機器人「${name}」`,
+    createdOn: (name, target) => `已在 ${target} 上建立機器人「${name}」`
+  },
   roster: {
     search: '搜尋機器人和群組聊天',
     searchPlaceholder: '搜尋機器人和群組聊天…',

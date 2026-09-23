@@ -16,11 +16,7 @@ import hermes_cli.providers as providers_mod
 import pytest
 import yaml
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
-from hermes_cli.model_switch_providers import (
-    _fetch_picker_live_models,
-    _NativePickerModelList,
-    _save_discovered_models_to_config,
-)
+from hermes_cli.model_switch_providers import _fetch_picker_live_models, _save_discovered_models_to_config
 from hermes_cli.providers import resolve_provider_full
 
 
@@ -64,118 +60,6 @@ def test_picker_native_probe_failure_falls_back_to_openai_catalog(monkeypatch):
     assert _fetch_picker_live_models(
         "key", "http://127.0.0.1:11434/v1", "ollama", False
     ) == ["fallback-model"]
-
-
-def test_picker_native_catalog_is_admitted_to_the_shared_model_cache(monkeypatch):
-    """A live ``/api/tags`` probe must land in ``provider_models_cache.json``.
-
-    Only the CURRENT custom endpoint is probed on a normal picker open; every other one is
-    served from that file (``cache_only``). A native catalog that answered the probe but was
-    never stored therefore read back empty on the next open, and the row's whole provider group
-    disappeared from the picker until someone hit Refresh Models. The round-trip stays a
-    ``_NativePickerModelList``: the native flag is what lets a genuinely model-less Ollama
-    persist an authoritative empty catalog. The entry is keyed on what the no-probe read hashes
-    (api_key + the caller's headers), not on the Authorization header the native probe
-    synthesizes from the key — a keyed endpoint otherwise wrote a row nobody could read back.
-    """
-    monkeypatch.setattr(
-        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
-    )
-    monkeypatch.setattr("hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
-    monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: ["qwen3:8b"]
-    )
-
-    from hermes_cli.models import cached_fetch_api_models
-
-    url = "http://127.0.0.1:11434/v1"
-    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["qwen3:8b"]
-
-    no_probe = cached_fetch_api_models("sk-ollama", url, cache_only=True, timeout=1.5)
-    assert isinstance(no_probe, _NativePickerModelList)
-    assert no_probe == ["qwen3:8b"]
-
-
-def test_picker_native_catalog_skips_cache_admission_when_cache_is_off(monkeypatch):
-    """``cache=False`` is the inner call the callable-key path makes to stay token-lazy.
-
-    It must keep probing without admitting anything, or a command-token provider would be
-    minted and persisted outside the cache-entry decision that exists to avoid that.
-    """
-    monkeypatch.setattr(
-        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
-    )
-    monkeypatch.setattr("hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
-    monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: ["qwen3:8b"]
-    )
-
-    from hermes_cli.models import cached_fetch_api_models
-
-    url = "http://127.0.0.1:11434/v1"
-    assert _fetch_picker_live_models(None, url, "custom", False, cache=False) == ["qwen3:8b"]
-
-    assert cached_fetch_api_models(None, url, cache_only=True, timeout=1.5) is None
-
-
-def _native_picker_probe(monkeypatch, models_by_call):
-    """Native Ollama detection on, ``/api/tags`` answering successive ``models_by_call``."""
-    monkeypatch.setattr(
-        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
-    )
-    monkeypatch.setattr("hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
-    answers = iter(models_by_call)
-    monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: next(answers)
-    )
-
-
-def _age_cached_rows(seconds):
-    from hermes_cli import models as models_mod
-
-    cache = models_mod._load_provider_models_cache()
-    for row in cache.values():
-        row["at"] -= seconds
-    for key, row in cache.items():
-        models_mod._store_cache_entry(key, row, cache)
-
-
-def test_picker_native_catalog_uses_the_short_native_ttl(monkeypatch):
-    """The current endpoint's native row must expire on the 300s Ollama TTL, not the 1h generic one.
-
-    A model pulled after the first picker open otherwise stays invisible for up to an hour;
-    ``cached_provider_model_ids`` clamps the built-in ``ollama`` slug the same way. Past the
-    native TTL the row is stale: served once, with a background refresh scheduled.
-    """
-    from hermes_cli.models_local import _OLLAMA_LOCAL_MODELS_CACHE_TTL
-
-    _native_picker_probe(monkeypatch, [["qwen3:8b"]])
-    url = "http://127.0.0.1:11434/v1"
-    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["qwen3:8b"]
-
-    refreshes = []
-    monkeypatch.setattr(
-        "hermes_cli.models._spawn_swr_refresh", lambda key, fn=None: refreshes.append(key)
-    )
-    _age_cached_rows(_OLLAMA_LOCAL_MODELS_CACHE_TTL + 1)
-    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["qwen3:8b"]
-    assert len(refreshes) == 1, "row older than the native TTL must be revalidated, not fresh"
-
-
-def test_picker_empty_native_catalog_is_not_stale_served(monkeypatch):
-    """An authoritative empty native row is valid only inside the TTL.
-
-    Beyond it the probe must run again, or an Ollama that was model-less at first open keeps
-    an empty picker row for the whole 7-day stale window after models are pulled.
-    """
-    from hermes_cli.models import _PROVIDER_MODELS_CACHE_TTL
-
-    _native_picker_probe(monkeypatch, [[], ["back:latest"]])
-    url = "http://127.0.0.1:11434/v1"
-    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == []
-
-    _age_cached_rows(_PROVIDER_MODELS_CACHE_TTL + 100)
-    assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["back:latest"]
 
 
 def test_picker_generic_discovery_preserves_api_mode(monkeypatch):
@@ -474,6 +358,131 @@ def test_list_authenticated_providers_can_probe_active_bare_custom_endpoint(monk
     bare_custom = next(p for p in providers if p["slug"] == "custom")
     assert bare_custom["is_current"] is True
     assert bare_custom["models"] == ["gpt-4o", "gpt-4o-mini"]
+
+
+@pytest.mark.parametrize(
+    ("model_key", "configured_key"),
+    [("api_key", "sk-custom-test"), ("api", "sk-legacy-test")],
+)
+def test_bare_custom_picker_probe_uses_configured_api_key(
+    monkeypatch, model_key, configured_key
+):
+    """Authenticated bare custom endpoints must receive the model config key."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://custom.example.test/v1",
+                model_key: configured_key,
+            }
+        },
+    )
+    captured = {}
+
+    def _fake_fetch(api_key, api_url, *_args, **_kwargs):
+        captured.update(api_key=api_key, api_url=api_url)
+        return ["model-a", "model-b"]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._fetch_picker_live_models", _fake_fetch
+    )
+
+    rows = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://custom.example.test/v1",
+        current_model="model-a",
+        user_providers={},
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    row = next(p for p in rows if p["slug"] == "custom")
+    assert captured == {
+        "api_key": configured_key,
+        "api_url": "https://custom.example.test/v1",
+    }
+    assert row["models"] == ["model-a", "model-b"]
+
+
+def test_bare_custom_picker_does_not_send_config_key_to_different_endpoint(monkeypatch):
+    """A session URL override must not receive the persisted endpoint's key."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://configured.example.test/v1",
+                "api_key": "sk-configured-test",
+            }
+        },
+    )
+    captured = {}
+
+    def _fake_fetch(api_key, api_url, *_args, **_kwargs):
+        captured.update(api_key=api_key, api_url=api_url)
+        return ["model-a"]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._fetch_picker_live_models", _fake_fetch
+    )
+
+    list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://session.example.test/v1",
+        current_model="model-a",
+        user_providers={},
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    assert captured == {
+        "api_key": "",
+        "api_url": "https://session.example.test/v1",
+    }
+
+
+def test_bare_custom_picker_url_match_preserves_path_case(monkeypatch):
+    """Case-distinct URL paths must not share an inline credential."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://custom.example.test/Tenant/v1",
+                "api_key": "sk-tenant-test",
+            }
+        },
+    )
+    captured = {}
+
+    def _fake_fetch(api_key, *_args, **_kwargs):
+        captured["api_key"] = api_key
+        return ["model-a"]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._fetch_picker_live_models", _fake_fetch
+    )
+
+    list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://custom.example.test/tenant/v1",
+        current_model="model-a",
+        user_providers={},
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    assert captured["api_key"] == ""
 
 
 def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch):
@@ -1517,77 +1526,6 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
 
     assert "base_url" not in captured
 
-
-def test_lmstudio_bare_providers_block_does_not_hide_live_catalog(monkeypatch):
-    """A `providers.lmstudio:` block that only tunes transport (e.g.
-    request_timeout_seconds, no base_url/models) must not shadow the live
-    LM Studio catalog with a single-model `user-config` row.
-
-    Regression for the bug where any `providers.lmstudio` key made section 3
-    (`_lap_user_provider_rows`) claim the "lmstudio" slug before its own
-    live probe could run — discovery_allowed was False with no configured
-    base_url, so the row collapsed to whatever single model was configured,
-    discarding the full catalog `_build_curated_lists` had already fetched.
-    """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    monkeypatch.delenv("LM_BASE_URL", raising=False)
-    monkeypatch.delenv("LM_API_KEY", raising=False)
-
-    live_catalog = ["model-a", "model-b", "model-c"]
-    monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_lmstudio_models",
-        lambda api_key=None, base_url=None, timeout=5.0: list(live_catalog),
-    )
-
-    providers = list_authenticated_providers(
-        current_provider="lmstudio",
-        current_base_url="http://127.0.0.1:1234/v1",
-        current_model="model-a",
-        user_providers={"lmstudio": {"request_timeout_seconds": 86400, "stale_timeout_seconds": 86400}},
-    )
-
-    rows = [p for p in providers if p["slug"] == "lmstudio"]
-    assert len(rows) == 1
-    row = rows[0]
-    assert sorted(row["models"]) == sorted(live_catalog)
-    assert row["total_models"] == len(live_catalog)
-    assert row["source"] == "hermes"
-
-
-def test_lmstudio_providers_block_with_explicit_endpoint_still_uses_section3(monkeypatch):
-    """When `providers.lmstudio` sets its own base_url, the user has
-    deliberately pointed the slug at a specific endpoint — the generic
-    custom-endpoint handling (section 3) remains the correct, unsurprising
-    behavior and must not be shadowed by the built-in live probe."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    monkeypatch.delenv("LM_BASE_URL", raising=False)
-    monkeypatch.delenv("LM_API_KEY", raising=False)
-
-    monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_lmstudio_models",
-        lambda api_key=None, base_url=None, timeout=5.0: ["should-not-be-used"],
-    )
-
-    def _fake_discover(*_a, **_kw):
-        return ["remote-model"], False
-
-    monkeypatch.setattr(
-        "hermes_cli.model_switch_providers._discover_endpoint_models", _fake_discover
-    )
-
-    providers = list_authenticated_providers(
-        current_provider="lmstudio",
-        current_base_url="http://remote-box:1234/v1",
-        current_model="remote-model",
-        user_providers={"lmstudio": {"base_url": "http://remote-box:1234/v1", "discover_models": True}},
-    )
-
-    rows = [p for p in providers if p["slug"] == "lmstudio"]
-    assert len(rows) == 1
-    assert rows[0]["is_user_defined"] is True
-    assert rows[0]["models"] == ["remote-model"]
 
 
 

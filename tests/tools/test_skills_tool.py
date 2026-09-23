@@ -1206,6 +1206,24 @@ class TestCrossRootIdenticalCopiesResolve:
         assert "Ambiguous skill name 'sdlc-review'" in result["error"]
         assert len(result["matches"]) == 2
 
+    def test_identical_skill_md_with_drifted_support_files_still_refuses(self, tmp_path):
+        """A stale profile copy whose SKILL.md is unchanged but whose scripts drifted from the
+        mount is a different skill: collapsing it would serve and run the stale support files."""
+        local_dir, mount = self._two_roots_with_one_skill(
+            tmp_path, local_body="IDENTICAL COPY", mount_body="IDENTICAL COPY")
+        for root, script in ((local_dir, "echo stale"), (mount, "echo current")):
+            scripts = root / "devops" / "sdlc-review" / "scripts"
+            scripts.mkdir()
+            (scripts / "run.sh").write_text(script)
+
+        p1, p2 = self._patch_dirs(local_dir, [mount])
+        with p1, p2:
+            result = json.loads(skill_view("sdlc-review"))
+
+        assert result["success"] is False, result
+        assert "Ambiguous skill name 'sdlc-review'" in result["error"]
+        assert len(result["matches"]) == 2
+
     def test_one_differing_copy_among_identical_ones_still_refuses(self, tmp_path):
         """All candidates must be provably the same skill: a third, differing copy keeps the
         refusal, so a same-named stranger can never be collapsed away."""

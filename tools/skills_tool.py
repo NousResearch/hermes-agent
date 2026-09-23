@@ -4,7 +4,6 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
-import hashlib
 import json
 import logging
 import os
@@ -513,12 +512,16 @@ def _rank_one_skill_candidate(candidate, all_dirs) -> tuple:
 
 def _provably_same_skill(candidates) -> bool:
     """True only when every candidate is the SAME skill: one resolved SKILL.md (symlink view)
-    or byte-identical content (copy). Anything else is two different skills sharing a name,
-    and picking one by depth would let ``<root>/evil`` (``name: github``) shadow the real one."""
+    or a byte-identical copy of the whole skill dir (SKILL.md plus scripts/, references/, ...).
+    Anything else is two different skills sharing a name, and picking one by depth would let
+    ``<root>/evil`` (``name: github``) shadow the real one — or a stale copy whose support files
+    drifted serve them under an unchanged SKILL.md."""
+    from tools.skills_guard import _content_digest
     try:
         if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
             return True
-        return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
+        return len({_content_digest(smd.parent if smd.name == "SKILL.md" else smd)
+                    for _sd, smd in candidates}) == 1
     except OSError:
         return False
 
@@ -556,8 +559,8 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         # The refusal below guards against one skill silently shadowing another. Copies of ONE
         # skill shadow nothing — whether they sit inside one search dir (``<root>/x`` symlink
         # view + ``<root>/cat/x`` copy) or in different ones (one corpus delivered by both the
-        # local tree and an ``external_dirs`` mount) — so rank them instead. Different content,
-        # an exact rank tie or an unowned path still refuses.
+        # local tree and an ``external_dirs`` mount) — so rank them instead. Different content
+        # (SKILL.md or any support file) or an exact rank tie still refuses.
         candidates = _collapse_one_skill_copies(name, candidates, all_dirs)
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]

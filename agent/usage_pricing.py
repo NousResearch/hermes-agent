@@ -474,9 +474,25 @@ def get_pricing_entry(
     if bundled_entry:
         return bundled_entry
     if route.base_url:
+        source_url = f"{route.base_url.rstrip('/')}/models"
+        metadata = fetch_endpoint_model_metadata(route.base_url, api_key=api_key or "")
         entry = _pricing_entry_from_metadata(
-            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""), route.model,
-            source_url=f"{route.base_url.rstrip('/')}/models",
+            metadata, route.model, source_url=source_url,
+            pricing_version="openai-compatible-models-api",
+        )
+        if entry:
+            return entry
+        # One forced-refresh retry: a transient /models failure caches an empty
+        # result for the TTL, which would otherwise condemn every session priced
+        # in that window to cost_status='unknown' / cost_source='none' (and, with
+        # no backfill, permanently). Re-fetch bypassing the failed cache before
+        # giving up. Blackholed endpoints still short-circuit here, so this adds
+        # a real network attempt only on the first failure of a blip.
+        metadata = fetch_endpoint_model_metadata(
+            route.base_url, api_key=api_key or "", force_refresh=True,
+        )
+        entry = _pricing_entry_from_metadata(
+            metadata, route.model, source_url=source_url,
             pricing_version="openai-compatible-models-api",
         )
         if entry:

@@ -12,6 +12,39 @@ from agent.usage_pricing import (
 from decimal import Decimal
 
 
+def test_get_pricing_entry_retries_with_force_refresh_when_fetch_is_empty(monkeypatch):
+    """Regression: a transient /models failure caches an empty result. get_pricing_entry
+    must re-fetch once with force_refresh (bypassing the stale-empty cache) before
+    falling through to None, so a single blip no longer condemns a session to
+    cost_status='unknown' (CYD cost-page 'Chart unavailable' root cause)."""
+    import agent.usage_pricing as up
+
+    calls = []
+
+    def fake_fetch(base_url, api_key="", force_refresh=False):
+        calls.append(force_refresh)
+        if not force_refresh:
+            return {}
+        return {"z-ai/glm-5.2": {"pricing": {"prompt": 0.0000009, "completion": 0.00000283, "cache_read": 0.00000016}}}
+
+    monkeypatch.setattr(up, "fetch_endpoint_model_metadata", fake_fetch)
+    entry = get_pricing_entry("z-ai/glm-5.2", provider="nous", base_url="https://inference-api.nousresearch.com/v1")
+    assert entry is not None
+    assert entry.source == "provider_models_api"
+    assert entry.input_cost_per_million is not None and entry.input_cost_per_million > 0
+    assert entry.output_cost_per_million is not None and entry.output_cost_per_million > 0
+    assert calls == [False, True]
+
+    # Both attempts empty -> still None, exactly two fetch attempts, no loop.
+    calls.clear()
+    monkeypatch.setattr(
+        up, "fetch_endpoint_model_metadata",
+        lambda *a, **k: calls.append(k.get("force_refresh", False)) or {},
+    )
+    assert get_pricing_entry("z-ai/glm-5.2", provider="nous", base_url="https://inference-api.nousresearch.com/v1") is None
+    assert calls == [False, True]
+
+
 def test_astra_whole_request_price_tier_includes_cache_writes():
     below = estimate_usage_cost(
         "gpt-6-astra",

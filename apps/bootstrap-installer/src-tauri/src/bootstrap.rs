@@ -171,14 +171,55 @@ pub async fn launch_hermes_desktop(
     install_root: String,
 ) -> Result<(), String> {
     let install_root = PathBuf::from(install_root);
-    let exe_path = resolve_hermes_desktop_exe(&install_root).ok_or_else(|| {
+    // Logged BEFORE the lookup: everything below can stall or fail, and until
+    // now the first trace came AFTER it, so a failure here left a log that
+    // simply stopped -- indistinguishable from the command never running.
+    tracing::info!(?install_root, "launch requested: locating the desktop exe");
+
+    // resolve_hermes_desktop_exe() does blocking std::fs metadata probes, and
+    // it was being awaited inline in this async command. Two problems, both
+    // observed in CI: it blocks the executor, and the Launch button is an
+    // unbounded spinner, so if a probe stalls the installer sits on
+    // "LAUNCHING" forever with no error and no log line. Seen repeatedly on
+    // Windows immediately after a desktop rebuild, where the probe targets a
+    // ~214 MB Electron binary written seconds earlier -- the shape of an
+    // on-access AV scan holding the metadata query. Run it off the executor
+    // and bound it, so this command ALWAYS settles into success or a message.
+    let probe_root = install_root.clone();
+    let resolved = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::task::spawn_blocking(move || resolve_hermes_desktop_exe(&probe_root)),
+    )
+    .await;
+
+    let missing = || {
         format!(
             "Couldn't find a built Hermes desktop at {}. The desktop build step \
              may have been skipped or failed. Run `hermes desktop` from a \
              terminal to build and launch it.",
             install_root.join("apps").join("desktop").join("release").display()
         )
-    })?;
+    };
+    let exe_path = match resolved {
+        Ok(Ok(Some(path))) => path,
+        Ok(Ok(None)) => return Err(missing()),
+        Ok(Err(join_err)) => {
+            tracing::error!(%join_err, "desktop exe lookup task failed");
+            return Err(missing());
+        }
+        Err(_elapsed) => {
+            tracing::error!(
+                ?install_root,
+                "timed out locating the desktop exe after 30s"
+            );
+            return Err(format!(
+                "Timed out looking for the Hermes desktop under {}. Antivirus \
+                 software can hold a freshly built binary; retry, or start it \
+                 with `hermes desktop` from a terminal.",
+                install_root.join("apps").join("desktop").join("release").display()
+            ));
+        }
+    };
 
     tracing::info!(?exe_path, "launching Hermes desktop");
 

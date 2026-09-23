@@ -44,12 +44,17 @@ def connect_plugin_mcp(activation: Dict[str, Any]) -> List[Dict[str, Any]]:
         try:
             register_mcp_servers({name: config})
             from tools.connectors.mcp import _registered_tool_names
-            tools = [t for t in _registered_tool_names(name) if not t.endswith(_utility_suffixes())]
+            registered = _registered_tool_names(name)
+            tools = [t for t in registered if not t.endswith(_utility_suffixes())]
         except Exception as exc:
             rows.append({"name": name, "connected": False, "tools": [], "error": str(exc)})
             continue
-        row: Dict[str, Any] = {"name": name, "connected": bool(tools), "tools": tools}
-        if not tools:
+        # Resource- or prompt-only MCP servers expose generated utility tools
+        # but no domain tools. They are still connected and usable even though
+        # those wrappers are intentionally omitted from the user-facing list.
+        connected = bool(registered)
+        row: Dict[str, Any] = {"name": name, "connected": connected, "tools": tools}
+        if not connected:
             row["error"] = _server_error(name) or "the server did not connect"
         rows.append(row)
     return rows

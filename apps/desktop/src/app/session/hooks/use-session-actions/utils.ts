@@ -586,28 +586,64 @@ function lastFoldedResponseText(message: ChatMessage): string {
   return afterTool ? text : ''
 }
 
+const toolCallIdsOf = (message: ChatMessage) =>
+  message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+
+const textPartsOf = (message: ChatMessage) =>
+  message.parts.flatMap(part => {
+    const text = part.type === 'text' ? textWithoutReferenceLines(part.text).trim() : ''
+
+    return text ? [text] : []
+  })
+
 /**
- * History folds a final answer into the preceding tool-round bubble. A live
- * stream bubble holding only that answer is the same occurrence, but full-bubble
- * equality cannot see it.
+ * History folds a tool-heavy turn into one bubble, while the live stream sealed
+ * each interim segment and the final answer as bubbles of their own. A settled
+ * live bubble is that same occurrence when one committed fold holds every tool
+ * call it ran (durable identity) and its text, either verbatim (a sealed middle
+ * segment, #119540) or as the final answer, equal or extended (#118670). This
+ * holds with a partial or missing completion receipt, where full-bubble
+ * equality sees neither.
  */
 function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessage): boolean {
-  const needle = textWithoutReferenceLines(chatMessageText(live)).trim()
+  const liveToolIds = toolCallIdsOf(live)
 
-  if (!needle || live.parts.some(part => part.type === 'tool-call')) {
+  if (liveToolIds.length && (live.pending === true || liveToolIds.some(id => !id))) {
+    return false
+  }
+
+  const liveTexts = textPartsOf(live)
+
+  const answer = liveToolIds.length
+    ? lastFoldedResponseText(live)
+    : textWithoutReferenceLines(chatMessageText(live)).trim()
+
+  if (!answer && !liveTexts.length && !liveToolIds.length) {
     return false
   }
 
   const lastUser = messages.findLastIndex(message => message.role === 'user' && !isGatewaySystemMarker(message))
 
   return messages.slice(lastUser + 1).some(message => {
-    if (message.role !== 'assistant' || isLiveTailReplyId(message.id)) {
+    if (message.role !== 'assistant' || isLiveTailRow(message)) {
       return false
+    }
+
+    const foldedToolIds = new Set(toolCallIdsOf(message))
+
+    if (!liveToolIds.every(id => foldedToolIds.has(id))) {
+      return false
+    }
+
+    const foldedTexts = new Set(textPartsOf(message))
+
+    if (live.pending !== true && liveTexts.every(text => foldedTexts.has(text))) {
+      return true
     }
 
     const folded = lastFoldedResponseText(message)
 
-    return folded === needle || isStrictAnswerTextExtension(folded, needle)
+    return Boolean(answer) && (folded === answer || isStrictAnswerTextExtension(folded, answer))
   })
 }
 
@@ -622,7 +658,8 @@ export function preserveLocalPendingTurnMessages(
   const acknowledged = acknowledgedTranscriptBoundary(nextMessages, previousMessages)
   const remainingNext = nextMessages.slice(acknowledged.storedIndex + 1)
   const acknowledgedTurn = nextMessages.slice(Math.max(0, acknowledged.storedIndex))
-  const lastStoredRowId = nextMessages.reduce((last, message) => Math.max(last, ...transcriptRowIds(message)), 0)
+  const storedRowIds = new Set(nextMessages.flatMap(transcriptRowIds))
+  const lastStoredRowId = [...storedRowIds].reduce((last, rowId) => Math.max(last, rowId), 0)
   const nextByRoleOrdinal = new Map<string, ChatMessage>()
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
@@ -738,6 +775,20 @@ export function preserveLocalPendingTurnMessages(
       message.durableComplete === true &&
       message.rowId !== undefined &&
       message.rowId <= lastStoredRowId
+    ) {
+      continue
+    }
+
+    // A turn that compressed mid-flight earns only a partial receipt, which
+    // cannot vouch for the whole bubble. Once the store has moved past every
+    // row it names and holds none of them, a later compaction rewrote the turn.
+    const receiptRowIds = message.persistedTurn?.row_ids ?? []
+
+    if (
+      isPendingAssistant &&
+      message.pending !== true &&
+      receiptRowIds.length > 0 &&
+      receiptRowIds.every(rowId => rowId <= lastStoredRowId && !storedRowIds.has(rowId))
     ) {
       continue
     }

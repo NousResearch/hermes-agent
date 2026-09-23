@@ -47,6 +47,7 @@ from gateway.run import (
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
+    RestartTestAdapter,
     make_restart_runner,
     make_restart_source,
 )
@@ -663,6 +664,49 @@ async def test_reconnect_reschedule_is_platform_scoped():
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.source == tg_source
+
+
+@pytest.mark.asyncio
+async def test_served_profile_reconnect_resumes_what_boot_deferred():
+    """A served profile's session whose own bot is offline at boot is deferred (never answered from the
+    default bot) "for the reconnect watcher" -- which must then resume it through that profile's bot."""
+    runner, primary = make_restart_runner()
+    runner.config.multiplex_profiles = True
+    runner._primary_profile_name = "default"
+    runner._profile_adapters = {"coder": {}}
+    runner._profile_failed_platforms = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm", user_id="u1", profile="coder"
+    )
+    entry = SessionEntry(
+        session_key="agent:coder:telegram:dm:c1",
+        session_id="sid-c",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+        transport_profile="coder",
+    )
+    runner.session_store._entries = {entry.session_key: entry}
+    primary.handle_message = AsyncMock()
+    assert runner._schedule_resume_pending_sessions() == 0  # boot: coder's bot is down
+
+    coder = RestartTestAdapter()
+    coder.handle_message = AsyncMock()
+    runner._sync_voice_mode_state_to_adapter = MagicMock()
+    runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=0)
+    runner._secondary_reconnect_attempt = AsyncMock(return_value=(coder, True))
+    await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM)
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+    primary.handle_message.assert_not_called()
+    coder.handle_message.assert_awaited_once()
+    assert coder.handle_message.await_args.args[0].source.profile == "coder"
 
 
 @pytest.mark.asyncio

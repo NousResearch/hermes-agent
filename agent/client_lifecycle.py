@@ -332,7 +332,8 @@ class ClientLifecycleMixin:
 
         def _contains_image(value: Any) -> bool:
             if isinstance(value, dict):
-                return value.get("type") in {"image_url", "input_image"} or any(
+                _part_type = value.get("type")
+                return (isinstance(_part_type, str) and _part_type in {"image_url", "input_image"}) or any(
                     _contains_image(v) for v in value.values()
                 )
             return isinstance(value, list) and any(_contains_image(v) for v in value)

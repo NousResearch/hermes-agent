@@ -198,17 +198,22 @@ class TestEngineDropsReplyEndToEnd:
         assert _count_reply(display) == 1
 
     @pytest.mark.parametrize(
-        "call_ids",
+        ("call_ids", "skip_reason"),
         [
             # Unique ids: the only slot is assistant-adjacent to the first call row.
-            pytest.param(("call_1", "call_2"), id="unique_ids"),
+            pytest.param(("call_1", "call_2"), "strict role alternation", id="unique_ids"),
             # A provider that reuses one id for every call (llama.cpp, see
             # ``_dedupe_tool_call_ids``): the ids cannot locate the slot, so the reply must
             # not be bound to a later round and land mid-chain.
-            pytest.param(("call_0", "call_0", "call_0"), id="constant_ids"),
+            pytest.param(("call_0", "call_0", "call_0"), "reuse tool-call ids", id="constant_ids"),
+            # Bridge ids ``call_id|item_id`` pair on the call half (coalesce_tool_call_id),
+            # so distinct item ids behind one call id are still a reused id.
+            pytest.param(
+                ("call_0|fc_1", "call_0|fc_2", "call_0|fc_3"), "reuse tool-call ids", id="composite_ids",
+            ),
         ],
     )
-    def test_tool_chain_slot_is_skipped(self, tmp_path, call_ids, caplog):
+    def test_tool_chain_slot_is_skipped(self, tmp_path, call_ids, skip_reason, caplog):
         """Mid-turn compaction: the engine folded the new user turn into the summary but kept
         the current tool chain (content-less tool-call assistants + tool results). The
         recovery is SKIPPED (logged) rather than committed as assistant;assistant or placed
@@ -229,7 +234,9 @@ class TestEngineDropsReplyEndToEnd:
         assert _count_reply(live) == 0
         assert all(m.get("tool_calls") for m in live if m.get("role") == "assistant")
         assert len([m for m in live if m.get("tool_calls")]) == len(call_ids)
-        assert any("not reinserting" in r.getMessage() for r in caplog.records)
+        assert any(
+            "not reinserting" in r.getMessage() and skip_reason in r.getMessage() for r in caplog.records
+        )
 
     def test_older_assistant_at_slot_is_not_displaced(self, tmp_path):
         """The engine kept an older assistant row ("noted") right where the reply would go,

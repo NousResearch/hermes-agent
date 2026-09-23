@@ -389,6 +389,105 @@ class TestAttachmentExtraction:
 # ---------------------------------------------------------------------------
 
 class TestEventBridge:
+    def test_poll_loop_retries_until_session_db_recovers(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import mcp_serve
+
+        bridge = mcp_serve.EventBridge()
+        bridge._running = True
+        db = MagicMock()
+        attempts = iter((None, None, db))
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: next(attempts))
+        monkeypatch.setattr(mcp_serve.time, "sleep", lambda _seconds: None)
+
+        def stop_after_poll(handle):
+            assert handle is db
+            bridge._running = False
+
+        monkeypatch.setattr(bridge, "_poll_once", stop_after_poll)
+
+        bridge._poll_loop()
+
+        db.close.assert_called_once_with()
+
+    def test_poll_loop_can_stop_before_session_db_recovers(self, monkeypatch):
+        import mcp_serve
+
+        bridge = mcp_serve.EventBridge()
+        bridge._running = True
+        attempts = 0
+
+        def unavailable():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 3:
+                bridge._running = False
+            return None
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", unavailable)
+        monkeypatch.setattr(mcp_serve.time, "sleep", lambda _seconds: None)
+
+        bridge._poll_loop()
+
+        assert attempts == 3
+
+    def test_poll_loop_baselines_history_after_late_session_db_recovery(
+        self, monkeypatch
+    ):
+        """Recovery must not replay messages written before the first poll."""
+        import mcp_serve
+
+        bridge = mcp_serve.EventBridge()
+        bridge._running = True
+        db = MagicMock()
+        session_key = "agent:main:telegram:dm:history"
+        session_id = "late-recovery"
+        history = [{
+            "id": 1,
+            "role": "user",
+            "content": "historical message",
+            "timestamp": "2026-03-29T15:00:00",
+        }]
+        current = history + [{
+            "id": 2,
+            "role": "assistant",
+            "content": "message after recovery",
+            "timestamp": "2026-03-29T15:00:01",
+        }]
+        db.get_messages.side_effect = [history, current]
+
+        monkeypatch.setattr(
+            mcp_serve,
+            "_get_session_db",
+            iter((None, db)).__next__,
+        )
+        monkeypatch.setattr(
+            mcp_serve,
+            "_load_sessions_index",
+            lambda: {session_key: {"session_id": session_id}},
+        )
+        # The first value is captured by the recovery baseline; the second
+        # opens the first real poll tick.
+        monkeypatch.setattr(
+            mcp_serve, "_read_state_db_mtime", iter((1.0, 2.0)).__next__
+        )
+        monkeypatch.setattr(mcp_serve.time, "sleep", lambda _seconds: None)
+
+        poll_once = bridge._poll_once
+
+        def stop_after_poll(handle):
+            poll_once(handle)
+            bridge._running = False
+
+        monkeypatch.setattr(bridge, "_poll_once", stop_after_poll)
+
+        bridge._poll_loop()
+
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert [event["content"] for event in events] == ["message after recovery"]
+        db.close.assert_called_once_with()
+
     def test_create(self):
         from mcp_serve import EventBridge
         b = EventBridge()

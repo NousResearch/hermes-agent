@@ -685,6 +685,151 @@ class TestReplyCapture:
 
 
 # --------------------------------------------------------------------------
+# Native streaming
+# --------------------------------------------------------------------------
+
+class TestNativeStreaming:
+    """The adapter declares native streaming so the gateway's stream consumer writes each
+    interim frame into the task's SSE stream. Before this, A2A had no edit_message and no
+    native transport, so every reply arrived as a single artifactUpdate at the very end --
+    measured on a live peer, the first and last frame landed in the same millisecond.
+
+    These drive the adapter directly (no HTTP, no LLM): the contract is what matters, and the
+    frame cadence itself belongs to the stream consumer (see
+    tests/gateway/test_stream_consumer_wecom_native.py for that half).
+    """
+
+    @staticmethod
+    def _fake_handler():
+        import io
+        return SimpleNamespace(wfile=io.BytesIO())
+
+    @staticmethod
+    def _frames(handler, req_id=None):
+        """Parse what was written into the fake socket into (kind, artifactId, text)."""
+        out = []
+        for line in handler.wfile.getvalue().decode("utf-8").splitlines():
+            if not line.startswith("data:"):
+                continue
+            envelope = json.loads(line[5:].strip())
+            payload = envelope.get("result") if "result" in envelope else envelope
+            if req_id is not None:
+                assert envelope.get("id") == req_id
+            if "artifactUpdate" in payload:
+                art = payload["artifactUpdate"]["artifact"]
+                text = "".join(p.get("text", "") for p in (art.get("parts") or []))
+                out.append(("artifact", art["artifactId"], text))
+            elif "statusUpdate" in payload:
+                out.append(("status", "", payload["statusUpdate"]["status"]["state"]))
+        return out
+
+    @staticmethod
+    def _register(adapter, context_id, handler, artifact_id, req_id=None):
+        adapter._live_streams[context_id] = {"handler": handler, "task_id": "task-s",
+                                            "artifact_id": artifact_id, "req_id": req_id}
+
+    def test_declares_native_streaming_and_not_editing(self):
+        """Editing must stay off: this adapter has no edit_message, so the edit transport
+        could never work and the consumer would degrade to one buffered send()."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+
+        assert A2AAdapter.SUPPORTS_NATIVE_STREAMING is True
+        assert A2AAdapter.SUPPORTS_MESSAGE_EDITING is False
+        assert _bare_adapter().supports_native_streaming() is True
+
+    def test_frame_without_a_live_stream_reports_fallback(self):
+        """False is the documented "unavailable" answer -- the caller then falls back to send()."""
+        adapter = _bare_adapter()
+        assert asyncio.run(adapter.send_stream_frame("hi", chat_id="ctx-none")) is False
+
+    def test_frames_are_cumulative_and_share_one_artifact_id(self):
+        """A fresh artifact id per frame would make the receiver concatenate the whole reply
+        once per frame, so the id has to be stable across the turn."""
+        adapter = _bare_adapter()
+        handler = self._fake_handler()
+        self._register(adapter, "ctx-s", handler, "art-stable", req_id=7)
+
+        async def run():
+            assert await adapter.send_stream_frame("half", chat_id="ctx-s") is True
+            assert await adapter.send_stream_frame("half and more", chat_id="ctx-s") is True
+
+        asyncio.run(run())
+        arts = [f for f in self._frames(handler, req_id=7) if f[0] == "artifact"]
+        assert [a[2] for a in arts] == ["half", "half and more"]
+        assert {a[1] for a in arts} == {"art-stable"}
+
+    def test_seed_frame_writes_nothing_but_keeps_native_alive(self):
+        """The consumer opens every native stream with an empty seed frame; it must report
+        success (or native streaming is disabled for the turn) without emitting an artifact."""
+        adapter = _bare_adapter()
+        handler = self._fake_handler()
+        self._register(adapter, "ctx-s", handler, "art-seed")
+
+        assert asyncio.run(adapter.send_stream_frame("", chat_id="ctx-s")) is True
+        assert self._frames(handler) == []
+
+    def test_finalize_frame_replaces_rather_than_appends(self):
+        """The consumer's closing frame repeats the accumulated text. Reusing the artifact id
+        makes it REPLACE the previous frame instead of adding a second artifact. Writing it is
+        deliberate: when a run ends without an authoritative reply (empty _emit_terminal
+        payload), that closing frame is the only complete copy the receiver ever gets."""
+        adapter = _bare_adapter()
+        handler = self._fake_handler()
+        self._register(adapter, "ctx-s", handler, "art-stable")
+
+        async def run():
+            await adapter.send_stream_frame("body", chat_id="ctx-s")
+            await adapter.send_stream_frame("body", finalize=True, chat_id="ctx-s")
+
+        asyncio.run(run())
+        arts = [f for f in self._frames(handler) if f[0] == "artifact"]
+        assert len(arts) == 2
+        assert {a[1] for a in arts} == {"art-stable"}
+        assert arts[-1][2] == "body"
+
+    def test_terminal_reuses_the_streamed_artifact_id(self):
+        """Same id -> the terminal replaces the last progressive frame. A fresh id would leave
+        two artifacts holding the same text, which the receiver concatenates twice."""
+        adapter = _bare_adapter()
+        handler = self._fake_handler()
+        self._register(adapter, "ctx-s", handler, "art-stable")
+
+        async def run():
+            await adapter.send_stream_frame("partial", chat_id="ctx-s")
+
+        asyncio.run(run())
+        handler.wfile.truncate(0)
+        handler.wfile.seek(0)
+        adapter._emit_terminal(handler, "task-s", "ctx-s", protocol.STATE_COMPLETED,
+                               "partial plus the rest", artifact_id="art-stable")
+        arts = [f for f in self._frames(handler) if f[0] == "artifact"]
+        assert len(arts) == 1
+        assert arts[0][1] == "art-stable"
+        assert arts[0][2] == "partial plus the rest"
+
+    def test_artifact_update_honours_an_explicit_id(self):
+        ev = protocol.artifact_update("task-x", "ctx-x", "t", artifact_id="fixed-id")
+        assert ev["artifactUpdate"]["artifact"]["artifactId"] == "fixed-id"
+        auto = protocol.artifact_update("task-x", "ctx-x", "t")
+        assert auto["artifactUpdate"]["artifact"]["artifactId"] != "fixed-id"
+
+    def test_live_streams_are_keyed_per_context(self):
+        """Two tasks can be in flight at once; frames must not cross over."""
+        adapter = _bare_adapter()
+        h1, h2 = self._fake_handler(), self._fake_handler()
+        self._register(adapter, "ctx-1", h1, "art-1")
+        self._register(adapter, "ctx-2", h2, "art-2")
+
+        async def run():
+            await adapter.send_stream_frame("one", chat_id="ctx-1")
+            await adapter.send_stream_frame("two", chat_id="ctx-2")
+
+        asyncio.run(run())
+        assert [f[2] for f in self._frames(h1)] == ["one"]
+        assert [f[2] for f in self._frames(h2)] == ["two"]
+        adapter._live_streams.clear()
+
+# --------------------------------------------------------------------------
 # Adapter RPC handlers (driven directly, no HTTP)
 # --------------------------------------------------------------------------
 

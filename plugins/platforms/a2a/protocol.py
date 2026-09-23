@@ -201,9 +201,14 @@ def status_update(task_id: str, context_id: str, state: str, text: str = "") -> 
     return {"statusUpdate": {"taskId": task_id, "contextId": context_id, "status": status}}
 
 
-def artifact_update(task_id: str, context_id: str, text: str) -> dict:
-    """v1.0 StreamResponse with an artifactUpdate member."""
-    artifact = {"artifactId": uuid.uuid4().hex, "parts": [text_part(text)]}
+def artifact_update(task_id: str, context_id: str, text: str, artifact_id: Optional[str] = None) -> dict:
+    """v1.0 StreamResponse with an artifactUpdate member.
+
+    ``artifact_id`` lets a caller keep ONE stable artifact across progressive frames: a
+    receiver replaces the artifact whose id it already has, whereas a fresh id per frame makes
+    it accumulate one artifact per frame and concatenate the whole reply once per frame.
+    Omitted -> fresh uuid (the historical single-shot behaviour)."""
+    artifact = {"artifactId": artifact_id or uuid.uuid4().hex, "parts": [text_part(text)]}
     return {"artifactUpdate": {"taskId": task_id, "contextId": context_id, "artifact": artifact}}
 
 

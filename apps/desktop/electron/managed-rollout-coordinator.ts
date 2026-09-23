@@ -208,6 +208,10 @@ function committed(attempt: ManagedRolloutAttempt): boolean {
   return attempt.state === 'authorized' || attempt.state === 'observed' || attempt.state === 'unverified'
 }
 
+function inFlight(attempt: ManagedRolloutAttempt): boolean {
+  return attempt.state === 'authorized' || attempt.state === 'observed'
+}
+
 function healthy(attempt: ManagedRolloutAttempt): boolean {
   return attempt.state === 'updated' || attempt.state === 'already-current'
 }
@@ -354,8 +358,9 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
 
   if (action.kind === 'resume') {
     if (state.phase !== 'paused') {return refuse(state, 'rollout-is-not-paused')}
+    if (state.stopRequested) {return refuse(state, 'rollout-stop-is-pending')}
     next.continuationRequired = false
-    next.phase = 'running'
+    next.phase = canFinishWave(next) && hasLaterWork(next) ? 'awaiting-promotion' : 'running'
 
     return { ok: true, state: next }
   }
@@ -371,7 +376,7 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
     }
 
     next.stopRequested = true
-    next.phase = Object.values(next.attempts).some(committed) ? 'paused' : 'stopped'
+    next.phase = Object.values(next.attempts).some(inFlight) ? 'paused' : 'stopped'
 
     return { ok: true, state: next }
   }
@@ -431,9 +436,10 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
     if (!['authorized', 'observed', 'unverified'].includes(attempt.state)) {return refuse(state, 'terminal-correlation-not-admissible')}
     attempt.state = action.outcome
 
-    if (!healthy(attempt)) {next.phase = 'attention-required'}
+    if (next.stopRequested && !Object.values(next.attempts).some(inFlight)) {next.phase = 'stopped'}
+    else if (!healthy(attempt)) {next.phase = 'attention-required'}
     else if (state.phase === 'paused') {
-      if (next.stopRequested && !Object.values(next.attempts).some(committed)) {next.phase = 'stopped'}
+      if (next.stopRequested && !Object.values(next.attempts).some(inFlight)) {next.phase = 'stopped'}
     }
     else if (canFinishWave(next)) {
       if (hasLaterWork(next)) {next.phase = 'awaiting-promotion'}

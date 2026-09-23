@@ -109,6 +109,45 @@ test('reducer admits legal edges and refuses backward launch-state edges', () =>
   assert.equal(reduceManagedRollout(state, { kind: 'terminal', installId: 'canary', outcome: 'updated' as const }).state.phase, 'awaiting-promotion')
 })
 
+test('resuming a paused healthy canary keeps its manual promotion gate', () => {
+  let state = runningState()
+
+  for (const action of [
+    { kind: 'record-intent' as const, installId: 'canary' },
+    { kind: 'launch-authorized' as const, installId: 'canary' },
+    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' as const },
+    { kind: 'pause' as const },
+    { kind: 'resume' as const }
+  ]) {
+    const transition = reduceManagedRollout(state, action)
+    assert.equal(transition.ok, true)
+    state = transition.state
+  }
+
+  assert.equal(state.phase, 'awaiting-promotion')
+  assert.equal(reduceManagedRollout(state, { kind: 'promote', auto: true }).ok, false)
+  assert.equal(reduceManagedRollout(state, { kind: 'promote', auto: false }).ok, true)
+})
+
+test('Stop releases scheduler ownership after an unverified terminal attempt', () => {
+  let state = runningState()
+
+  for (const action of [
+    { kind: 'record-intent' as const, installId: 'canary' },
+    { kind: 'launch-authorized' as const, installId: 'canary' },
+    { kind: 'terminal' as const, installId: 'canary', outcome: 'unverified' as const },
+    { kind: 'stop' as const }
+  ]) {
+    const transition = reduceManagedRollout(state, action)
+    assert.equal(transition.ok, true)
+    state = transition.state
+  }
+
+  assert.equal(state.phase, 'stopped')
+  assert.equal(state.attempts.canary.state, 'unverified')
+  assert.equal(reduceManagedRollout(state, { kind: 'record-intent', installId: 'later' }).ok, false)
+})
+
 test('duplicate start returns the original admission and cannot create a second rollout', async () => {
   const fixture = adapters()
   const coordinator = createManagedRolloutCoordinator(createManagedRolloutState(PLAN), fixture.deps)

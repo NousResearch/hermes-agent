@@ -954,6 +954,24 @@ class TestTranscribeXAI:
         data = call_kwargs.kwargs.get("data", call_kwargs[1].get("data", {}))
         assert data.get("language") == "fr"
         assert data.get("format") == "true"
+        assert data.get("model") == "grok-voice-transcribe-2.0"
+
+    def test_omitted_model_pins_transcribe_2(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        """xAI still defaults an omitted model to transcribe-1.0. Always send one."""
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        monkeypatch.delenv("STT_XAI_MODEL", raising=False)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "test", "language": "en", "duration": 1.0}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+            _transcribe_xai(sample_ogg, "")
+
+        data = mock_post.call_args.kwargs["data"]
+        assert data.get("model") == "grok-voice-transcribe-2.0"
 
     def test_oauth_credentials_ignore_stt_base_url_override(
         self,
@@ -1013,7 +1031,8 @@ class TestGetProviderXAI:
 # ============================================================================
 
 class TestTranscribeAudioXAIDispatch:
-    def test_model_default_is_grok_stt(self, sample_ogg):
+    def test_model_default_is_voice_transcribe_2(self, sample_ogg, monkeypatch):
+        monkeypatch.delenv("STT_XAI_MODEL", raising=False)
         with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "xai"}), \
              patch("tools.transcription_tools._get_provider", return_value="xai"), \
              patch("tools.transcription_tools._transcribe_xai",
@@ -1021,7 +1040,29 @@ class TestTranscribeAudioXAIDispatch:
             from tools.transcription_tools import transcribe_audio
             transcribe_audio(sample_ogg, model=None)
 
-        assert mock_xai.call_args[0][1] == "grok-stt"
+        assert mock_xai.call_args[0][1] == "grok-voice-transcribe-2.0"
+
+    def test_config_model_overrides_default(self, sample_ogg):
+        config = {"provider": "xai", "xai": {"model": "grok-voice-transcribe-1.0"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_xai.call_args[0][1] == "grok-voice-transcribe-1.0"
+
+    def test_legacy_grok_stt_alias_uses_current_default(self, sample_ogg):
+        config = {"provider": "xai", "xai": {"model": "grok-stt"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_xai.call_args[0][1] == "grok-voice-transcribe-2.0"
 
 # ============================================================================
 # _transcribe_elevenlabs

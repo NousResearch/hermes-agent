@@ -22,6 +22,11 @@ DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
 # Seconds for one STT HTTP request; shared by the OpenAI-SDK path and the QQ adapter so a
 # self-hosted model's cold start is not cut off at the old fixed 30s (#112939).
 DEFAULT_STT_TIMEOUT = 60.0
+# /v1/stt's server default moved from grok-voice-transcribe-1.0 to 2.0 between Sep 17 and
+# Sep 21 2026 and 1.0 is slated for retirement; naming the model keeps the wire deterministic
+# and lets STT_XAI_MODEL / stt.xai.model pin 1.0 for a rollback.
+DEFAULT_XAI_STT_MODEL = os.getenv("STT_XAI_MODEL", "grok-voice-transcribe-2.0")
+LEGACY_XAI_STT_MODEL = "grok-stt"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -54,6 +59,14 @@ CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command
 def _error_result(error: str, **extra: Any) -> Dict[str, Any]:
     """Standard failure envelope shared by every provider and validator."""
     return {"success": False, "transcript": "", "error": error, **extra}
+
+
+def normalize_xai_stt_model(model: Any) -> str:
+    """Return a valid xAI STT model, including compatibility for Hermes' old alias."""
+    value = str(model or "").strip()
+    if not value or value == LEGACY_XAI_STT_MODEL:
+        return DEFAULT_XAI_STT_MODEL
+    return value
 
 
 def _ok_result(transcript: str, provider: str) -> Dict[str, Any]:

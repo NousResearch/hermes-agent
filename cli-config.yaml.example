@@ -1659,6 +1659,11 @@ stt:
     max_retries: 1             # OpenAI SDK transport retries; set 0 to disable
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
+  # xai:
+  #   # Sent as the multipart ``model`` field. Hermes uses 2.0 by default;
+  #   # pin 1.0 only if a rollback is needed.
+  #   model: "grok-voice-transcribe-2.0"  # or grok-voice-transcribe-1.0
+  #   # language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect
   # deepinfra:
   #   # Model id is discovered live from the DeepInfra catalog filtered
   #   # by the `stt` surface tag — leave `model` blank to take the first

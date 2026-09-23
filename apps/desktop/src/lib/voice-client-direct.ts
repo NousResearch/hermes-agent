@@ -259,10 +259,15 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
   if (stt.wire === 'xai-stt') {
     const form = new FormData()
     form.set('file', audio, sttFileName(audio))
-    form.set('format', 'true')
 
+    if (stt.model) {
+      form.set('model', stt.model)
+    }
+
+    // xAI rejects format=true without a language (HTTP 400), so auto-detect drops the flag.
     if (stt.language) {
       form.set('language', stt.language)
+      form.set('format', 'true')
     }
 
     const response = await sttFetch(stt, `${stt.base_url.replace(/\/+$/, '')}/stt`, {

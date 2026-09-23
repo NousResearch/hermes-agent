@@ -379,6 +379,7 @@ it('loads and tracks saved gateways without mounting the statusbar or Settings',
   const bootFetch = deferred<void>()
   type Listener = Parameters<NonNullable<Window['hermesDesktop']['connections']['onChanged']>>[0]
   const listeners = new Set<Listener>()
+
   let registry: DesktopConnectionsRegistry = {
     version: 2,
     primary: primaryConn.connectionId,
@@ -388,6 +389,7 @@ it('loads and tracks saved gateways without mounting the statusbar or Settings',
       { id: coderConn.connectionId, kind: 'remote', label: 'Coder', tokenPreview: null, tokenSet: false }
     ]
   }
+
   const list = vi.fn(async () => registry)
   const setLastUsed = vi.fn(async () => ({ ok: true, registry }))
 

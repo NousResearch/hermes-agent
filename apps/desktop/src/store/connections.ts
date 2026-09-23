@@ -133,6 +133,7 @@ export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRe
     REGISTRY_READ_TIMEOUT_MS,
     'Timed out reading the connection registry'
   )
+
   setConnectionsRegistry(registry)
 
   return registry

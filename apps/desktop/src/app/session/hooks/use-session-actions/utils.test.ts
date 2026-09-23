@@ -1749,6 +1749,51 @@ describe('overlayConcurrentMessageChanges', () => {
       { type: 'text', text: ' + delta B' }
     ])
   })
+
+  // Switch back to a chat mid-reply: session.activate snapshots the first
+  // chunk, message.complete settles the live row, THEN the gated REST page
+  // resolves with the committed reply. Warm-activation composition order.
+  it('keeps one reply when message.complete lands while the switch-back hydrate is in flight', () => {
+    const snapshot = {
+      session_id: 'runtime-b',
+      inflight: { user: 'prompt b', assistant: 'A2 ', streaming: true }
+    }
+
+    const baseline = [
+      msg('user-optimistic', 'user', 'prompt b'),
+      msg('assistant-stream-1-2', 'assistant', 'A2 ', { pending: true })
+    ]
+
+    const current = [
+      baseline[0],
+      msg('assistant-stream-1-2', 'assistant', 'A2 finished while away', { pending: false })
+    ]
+
+    const persisted = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A2 finished while away', { rowId: 4 })
+    ]
+
+    const hydrated = appendLiveSessionProjection(persisted, snapshot)
+    const overlaid = overlayConcurrentMessageChanges(hydrated, baseline, current)
+
+    expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'A2 finished while away']
+    ])
+
+    // Before the commit the same snapshot still projects the running reply.
+    const running = overlayConcurrentMessageChanges(
+      appendLiveSessionProjection(persisted.slice(0, 1), snapshot),
+      baseline,
+      [baseline[0], msg('assistant-stream-1-2', 'assistant', 'A2 finished', { pending: true })]
+    )
+
+    expect(running.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['assistant-stream-1-2', 'A2 finished']
+    ])
+  })
 })
 
 describe('preserveEquivalentTranscript', () => {

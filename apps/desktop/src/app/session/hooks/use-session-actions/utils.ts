@@ -1034,11 +1034,24 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     isLiveTailRow(liveAssistantOfCurrentTurn)
   )
 
+  // An activate snapshot taken before the turn committed goes stale once REST
+  // returns the committed reply after the persisted prompt: its partial
+  // `inflight.assistant` is a prefix of that reply, and projecting it paints
+  // the answer twice (the extra row frozen on its first chunk).
+  const turnAlreadyCommitted = Boolean(
+    inflightUserAlreadyPersisted &&
+    !inflightError &&
+    liveAssistantOfCurrentTurn &&
+    !isLiveTailRow(liveAssistantOfCurrentTurn) &&
+    !liveAssistantOfCurrentTurn.parts.some(part => part.type === 'tool-call') &&
+    isStrictAnswerTextExtension(chatMessageText(liveAssistantOfCurrentTurn), inflightAssistant)
+  )
+
   const wantsAssistantRow = Boolean(
     inflightAssistant || inflightStreaming || inflightError || (inflightUser && queuedUser)
   )
 
-  const projectAssistantDump = wantsAssistantRow && !(turnAlreadyStructured && !inflightError)
+  const projectAssistantDump = wantsAssistantRow && !turnAlreadyCommitted && !(turnAlreadyStructured && !inflightError)
 
   const pushCorrection = (correction: string, index: number): void => {
     if (persistedInLatestRun(correction)) {
@@ -1308,6 +1321,25 @@ export function overlayConcurrentMessageChanges(
       }
 
       continue
+    }
+
+    // message.complete settled this stream row while REST was in flight, and
+    // the page already carries the same reply under its committed id (#70209).
+    if (current.role === 'assistant' && current.pending !== true && isLiveTailReplyId(current.id)) {
+      const text = textWithoutReferenceLines(chatMessageText(current)).trim()
+      const lastUser = overlaid.findLastIndex(message => message.role === 'user')
+
+      const committed = overlaid.some(
+        (message, index) =>
+          index > lastUser &&
+          message.role === 'assistant' &&
+          !isLiveTailRow(message) &&
+          textWithoutReferenceLines(chatMessageText(message)).trim() === text
+      )
+
+      if (text && committed) {
+        continue
+      }
     }
 
     if (activationStreamIndex >= 0 && current.role === 'assistant' && current.id.startsWith('assistant-stream-')) {

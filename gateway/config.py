@@ -837,6 +837,17 @@ def load_gateway_config() -> GatewayConfig:
             _home / "config.yaml", e,
         )
 
+    # ${VAR} / ${env:VAR} substitution is documented ("Environment Variable Substitution") and
+    # applied by the CLI loader (hermes_cli.config.load_config() → _expand_env_vars) — but this
+    # gateway path never ran it, so secrets under platforms.* (webhook secret used directly as
+    # the HMAC key, api_server key, teams extra credentials) reached adapters as the literal
+    # "${WEBHOOK_SECRET}" string and every signed request failed validation (#119733).
+    # Unresolved refs stay verbatim per _expand_env_vars's contract, so a config that references
+    # no env vars (or a fallback load that only merged gateway.json) is unchanged.
+    from hermes_cli.config import _expand_env_vars
+
+    gw_data = _expand_env_vars(gw_data)
+
     config = GatewayConfig.from_dict(gw_data)
     _apply_env_overrides(config)
     _validate_gateway_config(config)

@@ -1470,3 +1470,46 @@ class TestWebhookEnvOverride:
             config.platforms[Platform.WEBHOOK].extra.get("secret")
             == "shared-secret"
         )
+
+
+class TestLoadGatewayConfigEnvSubstitution:
+    """${VAR} substitution must apply on the gateway load path too, not just the CLI
+    loader — platforms.* secrets reached adapters as the literal "${WEBHOOK_SECRET}"
+    string and webhook HMAC validation failed on every request (#119733)."""
+
+    def test_env_var_substitution_reaches_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    port: 8089\n"
+            "    secret: ${WEBHOOK_SECRET}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("WEBHOOK_SECRET", "hmac-key-value")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WEBHOOK].extra["secret"] == "hmac-key-value"
+
+    def test_unresolved_ref_stays_verbatim(self, tmp_path, monkeypatch):
+        """A ${VAR} whose variable is unset keeps the literal placeholder (the expander's
+        documented contract) instead of silently emptying the secret."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    secret: ${WEBHOOK_SECRET}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_SECRET", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WEBHOOK].extra["secret"] == "${WEBHOOK_SECRET}"

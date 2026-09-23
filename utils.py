@@ -431,9 +431,9 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
 
 
-def _roundtrip_load(path: Path):
+def _roundtrip_load(path: Path, *, discard_existing: bool = False):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
-    indents, plus *path* loaded through it (empty map when missing/blank)."""
+    indents, plus *path* loaded through it (empty map when missing/blank or *discard_existing*)."""
     from ruamel.yaml import YAML
     from ruamel.yaml.comments import CommentedMap
 
@@ -445,7 +445,7 @@ def _roundtrip_load(path: Path):
     # PyYAML (every reader in the tree) tolerates duplicate keys (last wins); refusing them here
     # would turn a file the CLI can read into one it cannot write.
     yaml_rt.allow_duplicate_keys = True
-    data = yaml_rt.load(path.read_text(encoding="utf-8")) if path.exists() else None
+    data = yaml_rt.load(path.read_text(encoding="utf-8")) if path.exists() and not discard_existing else None
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
@@ -527,7 +527,8 @@ def _rt_value(value: Any) -> Any:
 
 
 def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
-                               extra_content_on_create: "str | None" = None) -> None:
+                               extra_content_on_create: "str | None" = None,
+                               replace_unparseable: bool = False) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
     THE writer for ``config.yaml`` (every production caller reaches it through
@@ -538,18 +539,24 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
     *new_state* are deleted ("explicit absence": ``cfg.pop(k)`` + save removes ``k`` from disk).
     ``extra_content_on_create`` (commented example blocks) is appended only when the file is
     being created — re-appending it on every rewrite is how the stock boilerplate replaced
-    users' own comments (#92554).
+    users' own comments (#92554). ``replace_unparseable``: see ``hermes_cli.config.save_config``.
     """
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
-    from hermes_cli.config import require_readable_config_before_write
+    from hermes_cli.config import UnparseableConfigError, require_readable_config_before_write
 
     path = Path(path)
     from hermes_constants import mkdir_under_hermes_home
 
     mkdir_under_hermes_home(path.parent)
-    require_readable_config_before_write(path)
+    try:
+        require_readable_config_before_write(path)
+        unparseable = False
+    except UnparseableConfigError:
+        if not replace_unparseable:
+            raise
+        unparseable = True
     creating = not path.exists() or not path.read_text(encoding="utf-8").strip()
-    yaml_rt, existing = _roundtrip_load(path)
+    yaml_rt, existing = _roundtrip_load(path, discard_existing=unparseable)
 
     def _unchanged(current: Any, value: Any) -> bool:
         # ``True == 1`` in Python; a bool↔int flip is a real change for YAML readers.

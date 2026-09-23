@@ -65,6 +65,16 @@ class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
 
 
+class ConfigWriteRefusedError(RuntimeError):
+    """A config.yaml write refused because the existing file cannot be read or parsed; the message
+    names the file and how to fix it, so surfaces show it instead of a generic failure."""
+
+
+class UnparseableConfigError(ConfigWriteRefusedError):
+    """The refusal for a readable file that is not a YAML mapping — the one case a full-document
+    replacement may overwrite, since it reads nothing back from the old file."""
+
+
 _PARSE_FAILURE_FALLBACK_MSG = {
     "last-known-good": "Hermes is running on the settings it loaded before the edit until it is fixed, so recent changes are not applied.",
     "last-known-good-backup": "Hermes is running on your last good settings until it is fixed, so recent changes are not applied.",
@@ -2042,11 +2052,12 @@ def read_raw_config_readonly() -> Dict[str, Any]:
     return _read_raw_config_impl(want_deepcopy=False)
 
 
-def _refuse_overwrite(config_path: Path, reason: str, exc: Exception, fix: str) -> RuntimeError:
+def _refuse_overwrite(
+        config_path: Path, reason: str, exc: Exception, fix: str, *, unparseable: bool = False) -> ConfigWriteRefusedError:
     """Error for a write that must not replace an existing config.yaml. Plain lead + ``Details:``."""
     where = _yaml_error_location(exc)
     at = f" ({where})" if where else ""
-    return RuntimeError(
+    return (UnparseableConfigError if unparseable else ConfigWriteRefusedError)(
         f"Your settings file ({config_path}) {reason}{at}, so this change was not saved. {fix} "
         f"Details: {_yaml_error_details(exc)}")
 
@@ -2085,7 +2096,8 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     except Exception as exc:
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
         raise _refuse_overwrite(
-            config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
+            config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display()),
+            unparseable=True) from exc
     if loaded is None:
         return {}
     if not isinstance(loaded, dict):
@@ -2093,11 +2105,12 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
         raise _refuse_overwrite(
             config_path, f"must start with settings names, but its top level is a {type(loaded).__name__}",
-            exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
+            exc, _FIX_YAML.format(backups=_backups_dir_display()), unparseable=True) from exc
     return loaded
 
 
-def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None) -> None:
+def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None,
+                        replace_unparseable: bool = False) -> None:
     """THE ``config.yaml`` writer: fail-closed (``require_readable_config_before_write``) and
     comment-preserving (ruamel round-trip merge of *data* onto the on-disk document). Every code
     path that persists a config.yaml — ``save_config``, ``config set``, migrations, plugin
@@ -2105,7 +2118,8 @@ def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_conten
     path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554)."""
     from utils import atomic_roundtrip_yaml_save
 
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    atomic_roundtrip_yaml_save(
+        config_path, data, extra_content_on_create=extra_content_on_create, replace_unparseable=replace_unparseable)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2469,12 +2483,17 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
 
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    replace_unparseable: bool = False):
     """Save configuration to ~/.hermes/config.yaml.
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
-    under *config* so partial callers cannot drop sections they omitted."""
+    under *config* so partial callers cannot drop sections they omitted. ``replace_unparseable``
+    is for a caller that sends the whole document (the dashboard's YAML editor): the fail-closed
+    guard protects callers that build *config* from a read of the file, so a file that does not
+    parse is replaced instead of refused — its bytes were already copied to backups/config/ when
+    the parse failure was recorded. A file that cannot be read at all is still refused."""
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
@@ -2489,7 +2508,12 @@ def save_config(
         # fail-closed read is the single authority here: ``read_raw_config()`` is cached and
         # swallows transient stat/open errors into ``{}``, and a ``{}`` at this point makes the
         # strip pass drop every user section whose value matches a default (#113301).
-        _raw_for_paths = require_readable_config_before_write(config_path)
+        try:
+            _raw_for_paths = require_readable_config_before_write(config_path)
+        except UnparseableConfigError:
+            if not replace_unparseable:
+                raise
+            _raw_for_paths = {}
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 
@@ -2505,7 +2529,8 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
+        atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized),
+                            replace_unparseable=replace_unparseable)
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)

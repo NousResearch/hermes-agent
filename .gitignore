@@ -225,3 +225,10 @@ native/fts5_cjk/*.so
 
 # Disposable profile created by scripts/probe_active_session_exclusivity.py
 .probe-home/
+
+# NOVA deployment skill: Terraform plan artifacts and state never go in Git
+tfplan
+tfplan.json
+tfplan.sha256
+tfplan.blocked
+*.tfstate*

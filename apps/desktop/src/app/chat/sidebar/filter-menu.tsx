@@ -234,13 +234,20 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
       <DropdownMenuTrigger asChild>
         <Button
           aria-label="Filters"
+          aria-pressed={viewCustomized}
           className={cn(
             className,
             'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100',
             // Active filters read as "this control is engaged", the same way the
             // open menu does — never as an accent, which the sidebar reserves
             // for a session that is actually doing something.
-            filtersActive && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+            filtersActive && 'bg-(--ui-control-active-background) text-foreground opacity-100',
+            // View-only customization (Inbox style, grouping, ordering, etc.)
+            // stays distinct from row-narrowing filters, but the trigger still
+            // needs to advertise that the persisted sidebar view is non-default.
+            viewCustomized &&
+              !filtersActive &&
+              'bg-(--ui-control-hover-background) text-foreground opacity-100'
           )}
           size="icon-xs"
           type="button"

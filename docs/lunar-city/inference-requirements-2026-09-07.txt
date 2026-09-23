@@ -1,9 +1,9 @@
-accelerate==1.14.0
+accelerate==1.15.0
 antlr4-python3-runtime==4.9.3
 attrs==26.1.0
 certifi==2026.7.22
 charset-normalizer==3.5.1
-diffusers==0.35.2
+diffusers==0.38.0
 einops==0.8.2
 filelock==3.32.4
 flatbuffers==25.12.19
@@ -46,10 +46,10 @@ scipy==1.17.1
 sympy==1.14.0
 tifffile==2026.3.3
 tokenizers==0.22.2
-torch==2.9.1
+torch==2.13.0
 torchvision==0.24.1
 tqdm==4.70.0
-transformers==4.57.6
+transformers==5.10.1
 trimesh==4.12.2
 typing-extensions==4.16.0
 urllib3==2.7.0

@@ -221,9 +221,10 @@ def _profile_work(f: Fleet) -> dict[str, tuple[dict[str, Any], dict[str, str]]]:
 CASES: list[Case] = [
     Case("custom_base_url_key_env", [Leg(Q, ("main",), {"main": 1}, "main")]),
     Case("custom_base_url_api_key_literal", [Leg(Q, ("main",), {"main": 1}, "main")], _main_api_key_literal),
-    # Fails fast with the no-key error: a hang to the harness kill (rc -9) is not a fail-fast.
+    # Fails fast with the no-credentials error: a hang to the harness kill (rc -9) is not a fail-fast.
     Case("bare_custom_without_base_url_fails_fast",
-         [Leg(Q, (), rc="fail", fail_text="No LLM provider configured", timeout=90)], _bare_custom),
+         [Leg(Q, (), rc="fail", fail_text="provider 'custom' resolved without credentials", timeout=90)],
+         _bare_custom),
     Case("named_providers_entry_key_env",
          [Leg(Q, ("named",), {"named": 1}, "named")], _model(provider="named-host", default="model-named")),
     Case("legacy_custom_providers_entry_api_key",
@@ -324,7 +325,7 @@ def test_cli_routing_truth_table(case: Case, cli_outcomes: dict[str, Any], reque
             assert run.rc == 0, ctx
         elif leg.rc == "fail":
             assert run.rc not in (0, None, -9), "expected a fail-fast exit, not success or the harness kill\n" + ctx
-            assert leg.fail_text in run.stdout + run.stderr, f"expected {leg.fail_text!r}\n" + ctx
+            assert leg.fail_text in " ".join((run.stdout + run.stderr).split()), f"expected {leg.fail_text!r}\n" + ctx
         if leg.answer_from:
             assert f"answer-from-{leg.answer_from}" in run.stdout, ctx
     if case.key_order:

@@ -979,14 +979,7 @@ class SessionDB(
         # mutations, not just idempotent UPSERTs.
         ioerr_begin_retried = False
         while True:
-            self._raise_if_db_corrupt()
-            if storage_state(self.db_path) == STORAGE_CORRUPT:
-                # Another handle in this process already saw structural damage on this file.
-                # Quarantine this one before it touches SQLite; the error type is the same
-                # StateDbCorruptError, so every transcript-diversion owner handles it unchanged.
-                self._halt_db_corrupt(sqlite3.DatabaseError(
-                    "database disk image is malformed (reported earlier in this process: "
-                    f"{storage_corrupt_reason(self.db_path)})"))
+            self._raise_if_db_corrupt(storage=True)
             # NOTE: the replaced/generation live probe runs INSIDE the lock below,
             # not here. close() mutates _conn and _db_sidecar_identity under that
             # same lock, ending the WAL generation (SQLite unlinks the -wal/-shm
@@ -1397,9 +1390,16 @@ class SessionDB(
             )
         return retire_without_close
 
-    def _raise_if_db_corrupt(self) -> None:
+    def _raise_if_db_corrupt(self, *, storage: bool = False) -> None:
         if self._db_corrupt:
             raise self._corrupt_error()
+        if storage and storage_state(self.db_path) == STORAGE_CORRUPT:
+            # Another handle in this process already saw structural damage on this file.
+            # Quarantine this one before it touches SQLite; the error type is the same
+            # StateDbCorruptError, so every transcript-diversion owner handles it unchanged.
+            self._halt_db_corrupt(sqlite3.DatabaseError(
+                "database disk image is malformed (reported earlier in this process: "
+                f"{storage_corrupt_reason(self.db_path)})"))
 
     def _sleep_before_write_retry(self, deadline: float, patience_s: float) -> bool:
         """Sleep one jitter interval if the budget allows; True = retry, False = deadline passed. Small

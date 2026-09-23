@@ -12,7 +12,7 @@ from typing import Sequence
 from hermes_constants import get_hermes_home
 from hermes_state_common import (FTS_CJK_STALE_KEY, FTS_STALE_KEY, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS,
     routed_sessions_setting)
-from hermes_state_errors import is_fts_scoped_corruption_error
+from hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -364,12 +364,14 @@ class SessionFtsSetupMixin:
         same corrupt index — giving up after 1 s cost that turn's canonical write."""
         if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
             return False
-        self._raise_if_db_corrupt()
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
         if deadline is None:
             deadline = time.monotonic() + patience_s
         while True:
+            # Re-checked every attempt: a sibling may quarantine the file while we wait for the
+            # lock, and nothing may be committed on a quarantined handle.
+            self._raise_if_db_corrupt(storage=True)
             try:
                 with self._lock:
                     self._raise_if_db_replaced()
@@ -401,9 +403,8 @@ class SessionFtsSetupMixin:
                         raise
                 break
             except sqlite3.Error as detach_exc:
-                msg = str(detach_exc).lower()
                 if (
-                    isinstance(detach_exc, sqlite3.OperationalError) and ("locked" in msg or "busy" in msg)
+                    isinstance(detach_exc, sqlite3.OperationalError) and is_sqlite_lock_error(detach_exc)
                     and self._sleep_before_write_retry(deadline, patience_s)
                 ):
                     continue

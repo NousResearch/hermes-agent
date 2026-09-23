@@ -11,11 +11,12 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 type State = "idle" | "busy" | "revoked" | "closed";
 type Kind = "started" | "turn_settled" | "needs_input" | "error" | "session_revoked" | "shutdown" | "observation_lost";
 type Event = {
-  version: 1; type: "event"; run_id: string; epoch: string; seq: number;
-  omp_session_id: string; kind: Kind; at_ms: number;
+  version: 2; type: "event"; run_id: string; epoch: string; seq: number;
+  app_session_id: string; kind: Kind; at_ms: number;
 };
 type Binding = {
-  version: 1; run_id: string; workspace: string; tmux_session: string;
+  mode: "tmux"; adapter: "omp";
+  version: 2; run_id: string; workspace: string; tmux_session: string;
   owner: { hermes_home: string; platform: string; session_key: string;
     session_id: string; chat_id: string; thread_id: string | null };
   created_at: number;
@@ -37,7 +38,7 @@ function readBinding(path: string): Binding {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.uid !== process.getuid!() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 16384) throw new Error("binding");
     const value = JSON.parse(readFileSync(fd, "utf8"));
-    if (value?.version !== 1 || !/^[a-f0-9]{32}$/.test(value.run_id) || basename(dirname(path)) !== value.run_id ||
+    if (value?.version !== 2 || value.mode !== "tmux" || value.adapter !== "omp" || !/^[a-f0-9]{32}$/.test(value.run_id) || basename(dirname(path)) !== value.run_id ||
         !text(value.workspace) || !realDirectory(value.workspace) ||
         !text(value.tmux_session) || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value.tmux_session) ||
         !text(value.owner?.platform) || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(value.owner.platform) ||
@@ -91,8 +92,8 @@ export default function tuiBridge(pi: ExtensionAPI): void {
     let fd: number | undefined;
     try {
       fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      writeFileSync(fd, JSON.stringify({ version: 1, run_id: binding.run_id, epoch,
-        omp_session_id: sessionId, pid: process.pid, seq: nextSeq, state: nextState, events: nextEvents }) + "\n");
+      writeFileSync(fd, JSON.stringify({ version: 2, run_id: binding.run_id, epoch,
+        app_session_id: sessionId, pid: process.pid, seq: nextSeq, state: nextState, events: nextEvents }) + "\n");
       fsyncSync(fd);
       closeSync(fd);
       fd = undefined;
@@ -114,8 +115,8 @@ export default function tuiBridge(pi: ExtensionAPI): void {
 
   function publish(kind: Kind, nextState: State = state): Event | undefined {
     if (stopped) return;
-    const event: Event = { version: 1, type: "event", run_id: binding.run_id, epoch,
-      seq: seq + 1, omp_session_id: sessionId, kind, at_ms: Date.now() };
+    const event: Event = { version: 2, type: "event", run_id: binding.run_id, epoch,
+      seq: seq + 1, app_session_id: sessionId, kind, at_ms: Date.now() };
     const nextEvents = [...events, event].slice(-128);
     try { persist(nextEvents, event.seq, nextState); }
     catch { closeObservation(); return; }
@@ -146,7 +147,7 @@ export default function tuiBridge(pi: ExtensionAPI): void {
       catch { socket.destroy(); return; }
       if (!request || typeof request !== "object" || Array.isArray(request) ||
           Object.keys(request).some(key => !["version", "type", "run_id", "after_seq", "epoch"].includes(key)) ||
-          request.version !== 1 || request.type !== "observe" || request.run_id !== binding.run_id ||
+          request.version !== 2 || request.type !== "observe" || request.run_id !== binding.run_id ||
           !Number.isSafeInteger(request.after_seq) || request.after_seq < 0 ||
           (request.epoch !== undefined && (typeof request.epoch !== "string" || !/^[a-f0-9]{32}$/.test(request.epoch)))) {
         socket.destroy(); return;
@@ -154,13 +155,13 @@ export default function tuiBridge(pi: ExtensionAPI): void {
       subscribed = true;
       input = Buffer.alloc(0);
       socket.setTimeout(0);
-      send(socket, { version: 1, type: "hello", run_id: binding.run_id, epoch,
-        omp_session_id: sessionId, pid: process.pid, seq, state });
+      send(socket, { version: 2, type: "hello", run_id: binding.run_id, epoch,
+        app_session_id: sessionId, pid: process.pid, seq, state });
       if ((request.epoch !== undefined && request.epoch !== epoch) || request.after_seq > seq ||
           (request.after_seq > 0 && request.epoch === undefined) ||
           request.after_seq < (events[0]?.seq ?? 1) - 1) {
         // A bad cursor belongs to this client, not the shared OMP event stream.
-        send(socket, { version: 1, type: "rejected", run_id: binding.run_id,
+        send(socket, { version: 2, type: "rejected", run_id: binding.run_id,
           reason: request.epoch !== undefined && request.epoch !== epoch ? "epoch_mismatch" : "invalid_cursor" });
         socket.end();
         socket.setTimeout(1000, () => socket.destroy());

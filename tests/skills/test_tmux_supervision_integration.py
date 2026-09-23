@@ -19,10 +19,10 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux-only skil
 pytest.importorskip("fcntl")
 SCRIPTS = (
     Path(__file__).resolve().parents[2]
-    / "optional-skills/autonomous-ai-agents/omp-session-supervision/scripts"
+    / "optional-skills/autonomous-ai-agents/tmux-supervision/scripts"
 )
 sys.path.insert(0, str(SCRIPTS))
-from omp_supervisor import tui  # noqa: E402
+from tmux_supervisor import supervision as tui  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -47,7 +47,7 @@ def test_extension_lifecycle_and_socket_regressions(node):
             node,
             "--experimental-strip-types",
             "--test",
-            str(Path(__file__).with_name("test_omp_session_supervision_extension.mjs")),
+            str(Path(__file__).with_name("test_tmux_supervision_omp_extension.mjs")),
         ],
         capture_output=True,
         text=True,
@@ -84,7 +84,7 @@ def test_installed_cli_observes_installed_extension(node):
         venv.EnvBuilder(with_pip=False).create(root / "python")
         command = [
             str(root / "python/bin/python"),
-            str(installed / "scripts/omp_supervise.py"),
+            str(installed / "scripts/tmux_supervise.py"),
         ]
         env = {
             "PATH": os.defpath,
@@ -99,6 +99,8 @@ def test_installed_cli_observes_installed_extension(node):
             [
                 *command,
                 "prepare",
+                "--adapter",
+                "omp",
                 "--workspace",
                 str(root),
                 "--tmux-session",
@@ -115,7 +117,7 @@ def test_installed_cli_observes_installed_extension(node):
         )
         run = Path(json.loads(prepared.stdout)["run_dir"])
         driver = Path(__file__).parent / "fixtures/omp_tui_extension_host.mjs"
-        extension = installed / "scripts/omp_supervisor/tui_extension.ts"
+        extension = installed / "scripts/tmux_supervisor/omp_extension.ts"
         with subprocess.Popen(
             [node, "--experimental-strip-types", str(driver), str(extension)],
             env={**env, "OMP_HERMES_BINDING_FILE": str(run / "binding.json")},
@@ -175,7 +177,7 @@ def test_socket_bridge_replays_rearms_and_revokes(monkeypatch, platform, node):
             "HERMES_SESSION_THREAD_ID": "101",
         }.items():
             monkeypatch.setenv(key, value)
-        prepared = tui.prepare(root, "synthetic-integration", root)
+        prepared = tui.prepare(root, "synthetic-integration", root, adapter="omp")
         run = Path(prepared["run_dir"])
         driver = Path(__file__).parent / "fixtures" / "omp_tui_extension_host.mjs"
         env = {**os.environ, "OMP_HERMES_BINDING_FILE": str(run / "binding.json")}
@@ -232,7 +234,7 @@ def test_socket_bridge_replays_rearms_and_revokes(monkeypatch, platform, node):
                 assert observed["cursor"]["terminal"] is True
                 assert observed["journal"]["state"] == "revoked"
                 assert (
-                    observed["journal"]["omp_session_id"]
+                    observed["journal"]["app_session_id"]
                     == "synthetic-cross-language-session"
                 )
                 emit("session_shutdown")

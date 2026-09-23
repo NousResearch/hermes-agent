@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const extensionUrl = process.argv[2] ? pathToFileURL(process.argv[2]) :
-  new URL("../../../optional-skills/autonomous-ai-agents/omp-session-supervision/scripts/omp_supervisor/tui_extension.ts", import.meta.url);
+  new URL("../../../optional-skills/autonomous-ai-agents/tmux-supervision/scripts/tmux_supervisor/omp_extension.ts", import.meta.url);
 const { default: extension } = await import(extensionUrl.href);
 
 const binding = JSON.parse(readFileSync(process.env.OMP_HERMES_BINDING_FILE, "utf8"));

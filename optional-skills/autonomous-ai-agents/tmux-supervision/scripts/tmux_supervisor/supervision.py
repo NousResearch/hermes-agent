@@ -1,12 +1,11 @@
-"""Session-owned, one-wake observation of an explicitly launched OMP TUI.
+"""Session-owned, one-wake observation of explicitly launched tmux applications.
 
 The cursor records readiness for Hermes' native background notification, never
-platform delivery. No operation sends input to, or terminates, an OMP process.
+platform delivery. No operation sends input to, or terminates, a worker process.
 """
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import fcntl
 import json
@@ -19,18 +18,16 @@ import socket
 import stat
 import struct
 import subprocess
-import sys
 import time
 import uuid
 from pathlib import Path
 
-EXTENSION = Path(__file__).with_name("tui_extension.ts")
-THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
 MAX_FRAME = 4096
 MAX_JSON = 65536
 MAX_RECONNECTS = 64
 KINDS = frozenset({
     "started",
+    "process_exited",
     "turn_settled",
     "needs_input",
     "error",
@@ -194,8 +191,11 @@ def current_owner():
     return owner
 
 
-def prepare(workspace, tmux_session, state_root=None, run_id=None):
+def prepare(workspace, tmux_session, state_root=None, run_id=None, adapter="command"):
     owner = current_owner()
+    _require(
+        isinstance(adapter, str) and adapter in {"command", "omp"}, "invalid_adapter"
+    )
     workspace = Path(workspace).resolve(strict=True)
     _require(workspace.is_dir(), "invalid_workspace")
     _require(
@@ -205,7 +205,7 @@ def prepare(workspace, tmux_session, state_root=None, run_id=None):
     run_id = uuid.uuid4().hex if run_id is None else run_id
     _require(isinstance(run_id, str) and HEX.fullmatch(run_id), "invalid_run_id")
     root = (
-        Path(owner["hermes_home"]) / "omp-supervisor"
+        Path(owner["hermes_home"]) / "tmux-supervision"
         if state_root is None
         else Path(state_root).absolute()
     )
@@ -219,8 +219,9 @@ def prepare(workspace, tmux_session, state_root=None, run_id=None):
     except FileExistsError as exc:
         raise TUIError("binding_already_exists") from exc
     binding = {
-        "version": 1,
-        "mode": "tui",
+        "version": 2,
+        "mode": "tmux",
+        "adapter": adapter,
         "run_id": run_id,
         "workspace": str(workspace),
         "tmux_session": tmux_session,
@@ -232,21 +233,21 @@ def prepare(workspace, tmux_session, state_root=None, run_id=None):
     return {"run_id": run_id, "run_dir": str(run), "status": "prepared"}
 
 
-def _binding(run_dir):
-    owner = current_owner()
+def _read_binding(run_dir):
     run = _directory(run_dir, private=True)
     _directory(run.parent, private=True)
     _require(HEX.fullmatch(run.name), "invalid_run_id")
     _require(len(os.fsencode(run / "bridge.sock")) <= 107, "socket_path_too_long")
     binding = _read_json(run / "binding.json")
     _require(
-        binding.get("version") == 1
+        binding.get("version") == 2
         and type(binding.get("version")) is int
-        and binding.get("mode") == "tui"
+        and binding.get("mode") == "tmux"
+        and isinstance(binding.get("adapter"), str)
+        and binding["adapter"] in {"command", "omp"}
         and binding.get("run_id") == run.name,
         "invalid_binding",
     )
-    _require(binding.get("owner") == owner, "scope_denied")
     _require(
         isinstance(binding.get("tmux_session"), str)
         and SESSION_NAME.fullmatch(binding["tmux_session"]),
@@ -260,6 +261,13 @@ def _binding(run_dir):
     _require(
         str(_directory(binding["workspace"])) == binding["workspace"], "invalid_binding"
     )
+    return run, binding
+
+
+def _binding(run_dir):
+    owner = current_owner()
+    run, binding = _read_binding(run_dir)
+    _require(binding.get("owner") == owner, "scope_denied")
     return run, binding
 
 
@@ -299,12 +307,19 @@ def _observer_active(run):
 
 
 def _validate_message(message, run_id, kind):
-    common = {"version", "type", "run_id", "epoch", "omp_session_id", "seq"}
+    common = {"version", "type", "run_id", "epoch", "app_session_id", "seq"}
     fields = common | ({"pid", "state"} if kind == "hello" else {"kind", "at_ms"})
+    if kind == "event" and message.get("kind") == "process_exited":
+        fields |= {"exit_code"}
+        _require(
+            type(message.get("exit_code")) is int
+            and -255 <= message["exit_code"] <= 255,
+            "invalid_exit_code",
+        )
     _require(set(message) == fields, "invalid_frame_fields")
     _require(
         type(message["version"]) is int
-        and message["version"] == 1
+        and message["version"] == 2
         and message["type"] == kind
         and message["run_id"] == run_id,
         "invalid_frame",
@@ -312,7 +327,7 @@ def _validate_message(message, run_id, kind):
     _require(
         isinstance(message["epoch"], str)
         and HEX.fullmatch(message["epoch"])
-        and _text(message["omp_session_id"])
+        and _text(message["app_session_id"])
         and _integer(message["seq"]),
         "invalid_frame",
     )
@@ -344,7 +359,7 @@ def _journal(run):
             "version",
             "run_id",
             "epoch",
-            "omp_session_id",
+            "app_session_id",
             "pid",
             "seq",
             "state",
@@ -362,7 +377,7 @@ def _journal(run):
         _validate_message(event, run.name, "event")
         _require(
             event["epoch"] == journal["epoch"]
-            and event["omp_session_id"] == journal["omp_session_id"]
+            and event["app_session_id"] == journal["app_session_id"]
             and event["seq"] <= journal["seq"],
             "invalid_journal",
         )
@@ -379,10 +394,10 @@ def _cursor(run):
     cursor = _read_json(run / "cursor.json", optional=True)
     if cursor is None:
         return {
-            "version": 1,
+            "version": 2,
             "run_id": run.name,
             "epoch": None,
-            "omp_session_id": None,
+            "app_session_id": None,
             "seq": 0,
             "status": "unobserved",
             "terminal": False,
@@ -394,7 +409,7 @@ def _cursor(run):
             "version",
             "run_id",
             "epoch",
-            "omp_session_id",
+            "app_session_id",
             "seq",
             "status",
             "terminal",
@@ -404,7 +419,7 @@ def _cursor(run):
     )
     _require(
         type(cursor["version"]) is int
-        and cursor["version"] == 1
+        and cursor["version"] == 2
         and cursor["run_id"] == run.name
         and _integer(cursor["seq"])
         and type(cursor["terminal"]) is bool,
@@ -418,13 +433,13 @@ def _cursor(run):
     )
     if cursor["epoch"] is None:
         _require(
-            cursor["omp_session_id"] is None and cursor["seq"] == 0, "invalid_cursor"
+            cursor["app_session_id"] is None and cursor["seq"] == 0, "invalid_cursor"
         )
     else:
         _require(
             isinstance(cursor["epoch"], str)
             and HEX.fullmatch(cursor["epoch"])
-            and _text(cursor["omp_session_id"]),
+            and _text(cursor["app_session_id"]),
             "invalid_cursor",
         )
     receipt = cursor["receipt"]
@@ -441,12 +456,13 @@ def _cursor(run):
                 "seq",
                 "at_ms",
                 "reason",
-            },
+            }
+            | ({"exit_code"} if receipt.get("kind") == "process_exited" else set()),
             "invalid_receipt",
         )
         _require(
             type(receipt["version"]) is int
-            and receipt["version"] == 1
+            and receipt["version"] == 2
             and receipt["run_id"] == run.name
             and receipt["status"] == "ready_for_native_notification"
             and isinstance(receipt["kind"], str)
@@ -476,6 +492,12 @@ def _cursor(run):
             ),
             "invalid_receipt",
         )
+    if receipt is not None and receipt["kind"] == "process_exited":
+        _require(
+            type(receipt.get("exit_code")) is int
+            and -255 <= receipt["exit_code"] <= 255,
+            "invalid_receipt",
+        )
     return cursor
 
 
@@ -483,16 +505,16 @@ def _identity(cursor, message):
     if cursor["epoch"] is not None:
         _require(cursor["epoch"] == message["epoch"], "epoch_changed")
         _require(
-            cursor["omp_session_id"] == message["omp_session_id"], "session_changed"
+            cursor["app_session_id"] == message["app_session_id"], "session_changed"
         )
     else:
         cursor["epoch"] = message["epoch"]
-        cursor["omp_session_id"] = message["omp_session_id"]
+        cursor["app_session_id"] = message["app_session_id"]
 
 
-def _receipt(run, cursor, kind, reason=None):
+def _receipt(run, cursor, kind, reason=None, exit_code=None):
     receipt = {
-        "version": 1,
+        "version": 2,
         "run_id": run.name,
         "status": "ready_for_native_notification",
         "kind": kind,
@@ -501,11 +523,13 @@ def _receipt(run, cursor, kind, reason=None):
         "at_ms": int(time.time() * 1000),
         "reason": reason,
     }
+    if kind == "process_exited":
+        receipt["exit_code"] = exit_code
     cursor.update(
         status="ready_for_native_notification",
         receipt=receipt,
         # A finite deadline does not invalidate the captured identity or sequence.
-        terminal=kind in {"session_revoked", "shutdown"}
+        terminal=kind in {"session_revoked", "shutdown", "process_exited"}
         or (kind == "observation_lost" and reason != "timeout"),
     )
     _write_json(run / "cursor.json", cursor)
@@ -519,7 +543,7 @@ def _consume(run, cursor, event):
     _require(event["seq"] == cursor["seq"] + 1, "event_gap")
     cursor["seq"] = event["seq"]
     if event["kind"] != "started":
-        return _receipt(run, cursor, event["kind"])
+        return _receipt(run, cursor, event["kind"], exit_code=event.get("exit_code"))
     _write_json(run / "cursor.json", cursor)
     return None
 
@@ -613,7 +637,7 @@ def watch(run_dir, timeout=300):
                 try:
                     with _connect(run, deadline) as client:
                         request = {
-                            "version": 1,
+                            "version": 2,
                             "type": "observe",
                             "run_id": run.name,
                             "after_seq": cursor["seq"],
@@ -663,7 +687,7 @@ def _launch_record(run):
     if record is not None:
         _require(
             set(record) == {"version", "run_id", "status", "created_at"}
-            and record["version"] == 1
+            and record["version"] == 2
             and record["run_id"] == run.name
             and record["status"] == "launch_intent_committed"
             and isinstance(record["created_at"], (int, float)),
@@ -699,76 +723,22 @@ def _executable(path):
     return str(path)
 
 
-def launch(
-    run_dir,
-    prompt_file,
-    omp_executable="omp",
-    tmux_executable="tmux",
-    canary=False,
-    *,
-    model=None,
-    thinking=None,
-    append_system_prompt=None,
-):
+def launch(run_dir, argv, tmux_executable="tmux"):
+    """Launch one already-prepared command in a new owned tmux session."""
     run, binding = _binding(run_dir)
-    prompt = Path(prompt_file).absolute()
     _require(
-        _read_bytes(prompt, private=False, limit=1024 * 1024).strip(), "empty_prompt"
+        isinstance(argv, list)
+        and bool(argv)
+        and all(isinstance(arg, str) and "\0" not in arg for arg in argv),
+        "invalid_command",
     )
-    options = []
-    if model is not None:
-        _require(_text(model) and model.strip(), "invalid_model")
-        options.append("--model=" + model)
-    if thinking is not None:
-        _require(
-            isinstance(thinking, str) and thinking in THINKING_LEVELS,
-            "invalid_thinking",
-        )
-        options.append("--thinking=" + thinking)
-    if append_system_prompt is not None:
-        _require(
-            isinstance(append_system_prompt, (str, os.PathLike)),
-            "invalid_system_prompt",
-        )
-        _require(_text(os.fspath(append_system_prompt)), "invalid_system_prompt")
-        system_prompt = Path(append_system_prompt).absolute()
-        _require(system_prompt == system_prompt.resolve(), "invalid_system_prompt")
-        _require(
-            _read_bytes(system_prompt, private=False, limit=1024 * 1024).strip(),
-            "empty_system_prompt",
-        )
-        options += ["--append-system-prompt", str(system_prompt)]
-    _require(
-        _read_bytes(EXTENSION, private=False, limit=1024 * 1024).strip(),
-        "missing_extension",
-    )
-    omp = _executable(omp_executable)
     tmux = _executable(tmux_executable)
     _require(_observer_active(run), "native_observer_required")
     _require(not _cursor(run)["terminal"], "observation_closed")
     _require(_launch_record(run) is None, "launch_already_attempted")
-    argv = [
-        "env",
-        "OMP_HERMES_BINDING_FILE=" + str(run / "binding.json"),
-        omp,
-        *options,
-        "-e",
-        str(EXTENSION),
-    ]
-    if canary:
-        argv += [
-            "--no-tools",
-            "--no-skills",
-            "--no-rules",
-            "--no-extensions",
-            "--no-title",
-            "--no-session",
-            "--no-lsp",
-        ]
-    argv.append("@" + str(prompt))
     # The durable intent survives failed probes, ambiguous tmux timeouts and crashes.
     intent = {
-        "version": 1,
+        "version": 2,
         "run_id": run.name,
         "status": "launch_intent_committed",
         "created_at": time.time(),
@@ -816,60 +786,20 @@ def launch(
             timeout=10,
             check=False,
         )
-        _require(verify.returncode == 0, "launch_ambiguous")
+        if verify.returncode != 0:
+            journal = _journal(run)
+            _require(
+                binding["adapter"] == "command"
+                and journal is not None
+                and journal["state"] == "closed"
+                and bool(journal["events"])
+                and journal["events"][-1]["kind"] == "process_exited",
+                "launch_ambiguous",
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise TUIError("launch_ambiguous") from exc
     return {
         "run_id": run.name,
-        "status": "tmux_session_present",
+        "status": "launched",
         "launch": "launch_intent_committed",
     }
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(prog="omp-supervise", description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    prepare_parser = commands.add_parser("prepare")
-    prepare_parser.add_argument("--workspace", required=True)
-    prepare_parser.add_argument("--tmux-session", required=True)
-    prepare_parser.add_argument("--state-root")
-    prepare_parser.add_argument("--run-id")
-    launch_parser = commands.add_parser("launch")
-    launch_parser.add_argument("--run-dir", required=True)
-    launch_parser.add_argument("--prompt-file", required=True)
-    launch_parser.add_argument("--omp-executable", default="omp")
-    launch_parser.add_argument("--tmux-executable", default="tmux")
-    launch_parser.add_argument("--model")
-    launch_parser.add_argument("--thinking", choices=THINKING_LEVELS)
-    launch_parser.add_argument("--append-system-prompt", metavar="FILE")
-    launch_parser.add_argument("--canary", action="store_true")
-    watch_parser = commands.add_parser("watch")
-    watch_parser.add_argument("--run-dir", required=True)
-    watch_parser.add_argument("--timeout", type=float, default=300)
-    status_parser = commands.add_parser("status")
-    status_parser.add_argument("--run-dir", required=True)
-    args = vars(parser.parse_args(argv))
-    command = args.pop("command")
-    try:
-        result = {
-            "prepare": prepare,
-            "launch": launch,
-            "watch": watch,
-            "status": status,
-        }[command](**args)
-    except (TUIError, OSError) as exc:
-        print(
-            json.dumps({
-                "error": str(exc)
-                if isinstance(exc, TUIError)
-                else "filesystem_or_process_error"
-            }),
-            file=sys.stderr,
-        )
-        return 2
-    print(json.dumps(result, separators=(",", ":")))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, chmodSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import extension from "../../optional-skills/autonomous-ai-agents/omp-session-supervision/scripts/omp_supervisor/tui_extension.ts";
+import extension from "../../optional-skills/autonomous-ai-agents/tmux-supervision/scripts/tmux_supervisor/omp_extension.ts";
 
 const runId = "a".repeat(32);
 const poison = "PRIVATE_PROMPT_TOOL_RESULT_ERROR_DO_NOT_PERSIST";
@@ -17,7 +17,7 @@ function fixture(t, options = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "t-")));
   const run = join(root, runId);
   mkdirSync(run, { mode: 0o700 });
-  const binding = { version: 1, run_id: runId, workspace: root, tmux_session: "test-omp",
+  const binding = { version: 2, mode: "tmux", adapter: "omp", run_id: runId, workspace: root, tmux_session: "test-omp",
     owner: { hermes_home: root, platform: "discord", session_key: "fixture-key",
       session_id: "fixture-hermes", chat_id: "fixture-chat", thread_id: "fixture-thread" }, created_at: 1 };
   const bindingPath = join(run, "binding.json");
@@ -38,7 +38,7 @@ function fixture(t, options = {}) {
     }
   };
   const sockets = [];
-  const connect = async (request = { version: 1, type: "observe", run_id: runId, after_seq: 0 }) => {
+  const connect = async (request = { version: 2, type: "observe", run_id: runId, after_seq: 0 }) => {
     const socket = createConnection(join(run, "bridge.sock"));
     sockets.push(socket);
     const signal = new EventEmitter();
@@ -77,7 +77,7 @@ function fixture(t, options = {}) {
 }
 
 function observe(after_seq, epoch) {
-  return { version: 1, type: "observe", run_id: runId, after_seq, ...(epoch === undefined ? {} : { epoch }) };
+  return { version: 2, type: "observe", run_id: runId, after_seq, ...(epoch === undefined ? {} : { epoch }) };
 }
 
 test("no binding is an actual no-op", () => {
@@ -107,7 +107,7 @@ for (const platform of ["slack", "telegram"]) {
     const c = await f.connect();
     await c.count(1);
     assert.deepEqual(Object.keys(c.lines[0]).sort(),
-      ["version", "type", "run_id", "epoch", "omp_session_id", "pid", "seq", "state"].sort());
+      ["version", "type", "run_id", "epoch", "app_session_id", "pid", "seq", "state"].sort());
     await f.invoke("agent_start");
     await f.invoke("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] });
     await c.count(3);
@@ -115,7 +115,7 @@ for (const platform of ["slack", "telegram"]) {
     assert.deepEqual(c.lines.slice(1).map(e => e.kind), ["started", "turn_settled"]);
     for (const event of c.lines.slice(1)) {
       assert.deepEqual(Object.keys(event).sort(),
-        ["version", "type", "run_id", "epoch", "seq", "omp_session_id", "kind", "at_ms"].sort());
+        ["version", "type", "run_id", "epoch", "seq", "app_session_id", "kind", "at_ms"].sort());
     }
     assert.equal(readFileSync(f.bindingPath, "utf8"), encoded);
   });
@@ -207,7 +207,7 @@ test("private socket, sanitized durable completion, coalescing and continued tur
   await c.count(7);
   assert.equal(f.journal().seq, 6);
   for (const event of f.journal().events) {
-    assert.deepEqual(Object.keys(event).sort(), ["version", "type", "run_id", "epoch", "seq", "omp_session_id", "kind", "at_ms"].sort());
+    assert.deepEqual(Object.keys(event).sort(), ["version", "type", "run_id", "epoch", "seq", "app_session_id", "kind", "at_ms"].sort());
   }
   assert.equal(readFileSync(join(f.run, "journal.json"), "utf8").includes(poison), false);
   assert.deepEqual(readdirSync(f.run).sort(), ["binding.json", "bridge.sock", "journal.json"]);
@@ -258,7 +258,7 @@ test("reconnect replays only unseen events with stable epoch and identity", asyn
   const second = await f.connect(observe(1, epoch));
   await second.count(2);
   assert.equal(second.lines[0].epoch, epoch);
-  assert.deepEqual(second.lines.slice(1).map(e => [e.seq, e.kind, e.omp_session_id]), [[2, "turn_settled", "fixture-omp"]]);
+  assert.deepEqual(second.lines.slice(1).map(e => [e.seq, e.kind, e.app_session_id]), [[2, "turn_settled", "fixture-omp"]]);
   await f.invoke("agent_start");
   await second.count(3);
   assert.equal(second.lines[2].seq, 3);
@@ -297,7 +297,8 @@ test("unauthorized commands, malformed, oversized and extra frames cannot steer 
     { ...observe(0), type: "cancel" }, { ...observe(0), prompt: poison },
     { ...observe(0), run_id: "b".repeat(32) }, { ...observe(0), after_seq: -1 },
     { ...observe(0), after_seq: 0.5 }, { ...observe(0), after_seq: "0" },
-    { ...observe(0), epoch: 123 }, { ...observe(0), version: 2 },
+    { ...observe(0), epoch: 123 }, { ...observe(0), version: observe(0).version + 1 },
+    { ...observe(0), version: 1 },
     "null\n", "bad-json\n", Buffer.alloc(4097, 120),
     JSON.stringify(observe(0)) + "\n" + JSON.stringify(observe(0)) + "\n",
   ]) {
@@ -328,7 +329,7 @@ test("explicit session switch revokes original identity and never rebinds", asyn
   await f.invoke("agent_end");
   const journal = f.journal();
   assert.equal(journal.state, "revoked");
-  assert.equal(journal.omp_session_id, "fixture-omp");
+  assert.equal(journal.app_session_id, "fixture-omp");
   assert.equal(journal.seq, 2);
   const reconnect = await f.connect(observe(1, journal.epoch));
   await reconnect.closed();
@@ -390,7 +391,7 @@ test("a FIFO binding is rejected without blocking the OMP process", t => {
   const f = fixture(t, { deferInstall: true });
   rmSync(f.bindingPath);
   assert.equal(spawnSync("mkfifo", ["-m", "600", f.bindingPath]).status, 0);
-  const moduleUrl = new URL("../../optional-skills/autonomous-ai-agents/omp-session-supervision/scripts/omp_supervisor/tui_extension.ts", import.meta.url).href;
+  const moduleUrl = new URL("../../optional-skills/autonomous-ai-agents/tmux-supervision/scripts/tmux_supervisor/omp_extension.ts", import.meta.url).href;
   const script = `import bridge from ${JSON.stringify(moduleUrl)}; bridge({on(){throw new Error("unexpected hooks")}});`;
   const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], {
     env: { ...process.env, OMP_HERMES_BINDING_FILE: f.bindingPath }, timeout: 1500, encoding: "utf8",
@@ -446,7 +447,7 @@ test("client count is bounded and partial requests are accepted within the size 
   const f = fixture(t);
   await f.invoke("session_start");
   const first = await f.connect(null);
-  first.socket.write('{"version":1,"type":"observe",');
+  first.socket.write('{"version":2,"type":"observe",');
   first.socket.write(`"run_id":"${runId}","after_seq":0}\n`);
   await first.count(1);
   for (let i = 0; i < 31; i++) { const c = await f.connect(); await c.count(1); }
@@ -473,4 +474,15 @@ test("a non-reading observer is disconnected without stalling OMP hooks", async 
   await f.invoke("agent_end");
   await healthy.count(2);
   assert.equal(healthy.lines[1].kind, "turn_settled");
+});
+
+
+test("OMP adapter rejects a generic command enrollment", async t => {
+  const f = fixture(t, { deferInstall: true });
+  f.binding.adapter = "command";
+  writeFileSync(f.bindingPath, JSON.stringify(f.binding), { mode: 0o600 });
+  f.install();
+  await f.invoke("session_start");
+  assert.equal(existsSync(join(f.run, "journal.json")), false);
+  assert.equal(existsSync(join(f.run, "bridge.sock")), false);
 });

@@ -20,10 +20,10 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux-only skil
 pytest.importorskip("fcntl")
 SCRIPTS = (
     Path(__file__).resolve().parents[2]
-    / "optional-skills/autonomous-ai-agents/omp-session-supervision/scripts"
+    / "optional-skills/autonomous-ai-agents/tmux-supervision/scripts"
 )
 sys.path.insert(0, str(SCRIPTS))
-from omp_supervisor import tui  # noqa: E402
+from tmux_supervisor import supervision as tui, omp, cli  # noqa: E402
 
 
 def test_skill_runs_after_isolated_installation(run):
@@ -32,9 +32,9 @@ def test_skill_runs_after_isolated_installation(run):
     installed = run.parent / "installed-skill"
     source = OptionalSkillSource()
     source._optional_dir = Path(__file__).resolve().parents[2] / "optional-skills"
-    bundle = source.fetch("official/autonomous-ai-agents/omp-session-supervision")
+    bundle = source.fetch("official/autonomous-ai-agents/tmux-supervision")
     assert bundle is not None
-    assert "scripts/omp_supervisor/tui_extension.ts" in bundle.files
+    assert "scripts/tmux_supervisor/omp_extension.ts" in bundle.files
     assert not any("__pycache__" in name for name in bundle.files)
     for name, content in bundle.files.items():
         destination = installed / name
@@ -44,7 +44,10 @@ def test_skill_runs_after_isolated_installation(run):
         )
     runtime = run.parent / "python"
     venv.EnvBuilder(with_pip=False).create(runtime)
-    command = [str(runtime / "bin/python"), str(installed / "scripts/omp_supervise.py")]
+    command = [
+        str(runtime / "bin/python"),
+        str(installed / "scripts/tmux_supervise.py"),
+    ]
     env = {
         name: value
         for name, value in os.environ.items()
@@ -115,17 +118,17 @@ def run(monkeypatch):
             "HERMES_SESSION_PROFILE": "",
         }.items():
             monkeypatch.setenv(name, value)
-        result = tui.prepare(workspace, "synthetic-test", root, "a" * 32)
+        result = tui.prepare(workspace, "synthetic-test", root, "a" * 32, adapter="omp")
         yield Path(result["run_dir"])
 
 
 def event(run, seq, kind="turn_settled", epoch="b" * 32, session="synthetic-omp"):
     return {
-        "version": 1,
+        "version": 2,
         "type": "event",
         "run_id": run.name,
         "epoch": epoch,
-        "omp_session_id": session,
+        "app_session_id": session,
         "seq": seq,
         "kind": kind,
         "at_ms": 1000,
@@ -143,7 +146,7 @@ def test_default_root_follows_the_current_real_profile_home(run, monkeypatch):
         home.mkdir(exist_ok=True)
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("HERMES_SESSION_PROFILE", "ignored-profile-label")
-        root = home / "omp-supervisor"
+        root = home / "tmux-supervision"
         expected_run = root / ("b" * 32)
         if len(os.fsencode(expected_run / "bridge.sock")) > 107:
             with pytest.raises(tui.TUIError, match="socket_path_too_long"):
@@ -179,7 +182,7 @@ def test_non_discord_owner_is_accepted_but_mismatches_are_denied(
         with pytest.raises(tui.TUIError, match="scope_denied"):
             operation(other_run)
     with pytest.raises(tui.TUIError, match="scope_denied"):
-        tui.launch(other_run, run.parent / "unused-prompt")
+        omp.launch(other_run, run.parent / "unused-prompt")
     assert not (other_run / "cursor.json").exists()
     assert not (other_run / "launch.json").exists()
 
@@ -192,7 +195,7 @@ def test_malformed_platform_denied(run, monkeypatch, platform):
 
 
 def test_default_root_rejects_unsafe_permissions(run):
-    root = Path(tui.current_owner()["hermes_home"]) / "omp-supervisor"
+    root = Path(tui.current_owner()["hermes_home"]) / "tmux-supervision"
     root.mkdir(mode=0o755)
     root.chmod(0o755)
     with pytest.raises(tui.TUIError, match="unsafe_directory"):
@@ -200,7 +203,7 @@ def test_default_root_rejects_unsafe_permissions(run):
 
 
 def test_default_root_rejects_symlinks(run):
-    root = Path(tui.current_owner()["hermes_home"]) / "omp-supervisor"
+    root = Path(tui.current_owner()["hermes_home"]) / "tmux-supervision"
     root.symlink_to(run.parent, target_is_directory=True)
     with pytest.raises(tui.TUIError, match="unsafe_directory"):
         tui.prepare(run.parent, "profile-test")
@@ -208,11 +211,11 @@ def test_default_root_rejects_symlinks(run):
 
 def hello(run, seq=0, epoch="b" * 32, session="synthetic-omp", state="idle"):
     return {
-        "version": 1,
+        "version": 2,
         "type": "hello",
         "run_id": run.name,
         "epoch": epoch,
-        "omp_session_id": session,
+        "app_session_id": session,
         "seq": seq,
         "pid": os.getpid(),
         "state": state,
@@ -298,7 +301,7 @@ def test_scope_mismatch_all_actions(run, monkeypatch, name, value):
     for action in (
         lambda: tui.status(run),
         lambda: tui.watch(run, 1),
-        lambda: tui.launch(run, "absent", "absent", "absent"),
+        lambda: omp.launch(run, "absent", "absent", "absent"),
     ):
         with pytest.raises(tui.TUIError):
             action()
@@ -316,7 +319,7 @@ def test_home_is_profile_identity(run, monkeypatch):
 def test_prepare_private_immutable_and_no_profile_dependency(run, monkeypatch):
     original = (run / "binding.json").read_bytes()
     binding = json.loads(original)
-    assert binding["mode"] == "tui"
+    assert binding["mode"] == "tmux"
     assert "profile" not in binding["owner"]
     assert stat.S_IMODE(run.stat().st_mode) == 0o700
     assert stat.S_IMODE((run / "binding.json").stat().st_mode) == 0o600
@@ -366,7 +369,7 @@ def test_symlink_binding_and_lock_denied(run):
     (run / "observation.lock").symlink_to(binding)
     with pytest.raises(OSError):
         tui.watch(run, 1)
-    assert json.loads(binding.read_bytes())["mode"] == "tui"
+    assert json.loads(binding.read_bytes())["mode"] == "tmux"
 
 
 def test_single_watcher_lock(run):
@@ -379,7 +382,7 @@ def test_single_watcher_lock(run):
 
 def test_cursor_commit_precedes_notification_and_deduplicates(run, capsys):
     journal(run, [event(run, 1, "started"), event(run, 2)])
-    assert tui.main(["watch", "--run-dir", str(run), "--timeout", "1"]) == 0
+    assert cli.main(["watch", "--run-dir", str(run), "--timeout", "1"]) == 0
     notice = json.loads(capsys.readouterr().out)
     cursor = json.loads((run / "cursor.json").read_bytes())
     assert cursor["receipt"] == notice
@@ -449,7 +452,7 @@ def test_socket_reconnect_preserves_epoch_and_cursor(run):
 
 
 @pytest.mark.parametrize(
-    "bad", [b"x" * 4097, b'{"version":1,"version":1}\n', b"[]\n", b"\xff\n"]
+    "bad", [b"x" * 4097, b'{"version":2,"version":2}\n', b"[]\n", b"\xff\n"]
 )
 def test_socket_frame_limits_and_malformed_json(run, bad):
     with server(run, [[bad]]):
@@ -520,7 +523,7 @@ def launch_inputs(run, monkeypatch):
     executable.write_text("not executed")
     executable.chmod(0o700)
 
-    monkeypatch.setattr(tui, "EXTENSION", extension)
+    monkeypatch.setattr(omp, "EXTENSION", extension)
     return dict(
         run_dir=run,
         prompt_file=prompt,
@@ -531,7 +534,7 @@ def launch_inputs(run, monkeypatch):
 
 def test_launch_requires_observer(run, launch_inputs):
     with pytest.raises(tui.TUIError, match="native_observer_required"):
-        tui.launch(**launch_inputs)
+        omp.launch(**launch_inputs)
     assert not (run / "launch.json").exists()
 
 
@@ -548,10 +551,10 @@ def test_launch_shell_quoting_canary_and_durable_at_most_once(
 
     monkeypatch.setattr(subprocess, "run", invoke)
     with tui.observation_lock(run):
-        result = tui.launch(**launch_inputs, canary=True)
+        result = omp.launch(**launch_inputs, canary=True)
         with pytest.raises(tui.TUIError, match="launch_already_attempted"):
-            tui.launch(**launch_inputs, canary=True)
-    assert result["status"] == "tmux_session_present"
+            omp.launch(**launch_inputs, canary=True)
+    assert result["status"] == "launched"
     assert [call[1] for call in calls] == ["has-session", "new-session", "has-session"]
     command = shlex.split(calls[1][-1])
     assert command[:2] == [
@@ -580,7 +583,7 @@ def test_launch_shell_quoting_canary_and_durable_at_most_once(
     assert "SYNTHETIC SECRET" not in (run / "launch.json").read_text()
 
 
-@pytest.mark.parametrize("thinking", tui.THINKING_LEVELS)
+@pytest.mark.parametrize("thinking", omp.THINKING_LEVELS)
 def test_custom_launch_options_are_quoted_and_path_defaults_work(
     run, launch_inputs, monkeypatch, capsys, thinking
 ):
@@ -599,7 +602,7 @@ def test_custom_launch_options_are_quoted_and_path_defaults_work(
     monkeypatch.setattr(subprocess, "run", invoke)
     with tui.observation_lock(run):
         args = [
-            "launch",
+            "launch-omp",
             "--run-dir",
             str(run),
             "--prompt-file",
@@ -611,7 +614,7 @@ def test_custom_launch_options_are_quoted_and_path_defaults_work(
             "--append-system-prompt",
             str(system_prompt),
         ]
-        assert tui.main(args) == 0
+        assert cli.main(args) == 0
     command = shlex.split(calls[1][-1])
     assert command[2] == str(run.parent / "omp")
     assert calls[0][0] == str(run.parent / "tmux")
@@ -651,7 +654,7 @@ def test_malformed_launch_options_fail_before_intent(
         subprocess, "run", lambda *a, **kw: pytest.fail("must not launch")
     )
     with pytest.raises(tui.TUIError, match=reason):
-        tui.launch(**launch_inputs, **options)
+        omp.launch(**launch_inputs, **options)
     assert not (run / "launch.json").exists()
 
 
@@ -674,7 +677,7 @@ def test_system_prompt_file_validation_precedes_launch(
         subprocess, "run", lambda *a, **kw: pytest.fail("must not launch")
     )
     with pytest.raises((tui.TUIError, OSError)):
-        tui.launch(**launch_inputs, append_system_prompt=path)
+        omp.launch(**launch_inputs, append_system_prompt=path)
     assert not (run / "launch.json").exists()
 
 
@@ -685,7 +688,7 @@ def test_missing_path_executable_fails_before_intent(
     monkeypatch.setenv("PATH", str(run.parent))
     launch_inputs[name] = "not-installed"
     with pytest.raises(tui.TUIError, match="invalid_executable"):
-        tui.launch(**launch_inputs)
+        omp.launch(**launch_inputs)
     assert not (run / "launch.json").exists()
 
 
@@ -706,10 +709,10 @@ def test_failed_or_ambiguous_launch_never_retries_or_kills(
     monkeypatch.setattr(subprocess, "run", invoke)
     with tui.observation_lock(run):
         with pytest.raises(tui.TUIError):
-            tui.launch(**launch_inputs)
+            omp.launch(**launch_inputs)
         count = len(calls)
         with pytest.raises(tui.TUIError, match="launch_already_attempted"):
-            tui.launch(**launch_inputs)
+            omp.launch(**launch_inputs)
     assert len(calls) == count
     assert all(call[1] in {"has-session", "new-session"} for call in calls)
 
@@ -718,7 +721,7 @@ def test_json_size_limit_and_sanitized_cli_failure(run, capsys):
     target = run / "journal.json"
     target.write_bytes(b" " * (tui.MAX_JSON + 1))
     target.chmod(0o600)
-    assert tui.main(["status", "--run-dir", str(run)]) == 2
+    assert cli.main(["status", "--run-dir", str(run)]) == 2
     output = capsys.readouterr()
     assert not output.out
     assert json.loads(output.err) == {"error": "file_too_large"}
@@ -749,3 +752,48 @@ def test_interrupted_watcher_only_closes_observation(run, monkeypatch):
     monkeypatch.setattr(os, "kill", lambda *a: pytest.fail("must never terminate OMP"))
     assert tui.watch(run, 1)["reason"] == "observer_interrupted"
     assert not tui.status(run)["observer_active"]
+
+
+@pytest.mark.parametrize("exit_code", [0, 17, -15])
+def test_process_exit_receipt_preserves_status_and_closes_run(run, exit_code):
+    completion = {**event(run, 1, "process_exited"), "exit_code": exit_code}
+    journal(run, [completion], state="closed")
+    receipt = tui.watch(run, 1)
+    assert receipt["kind"] == "process_exited"
+    assert receipt["exit_code"] == exit_code
+    assert tui.status(run)["cursor"]["receipt"] == receipt
+    assert tui.status(run)["cursor"]["terminal"] is True
+    with pytest.raises(tui.TUIError, match="observation_closed"):
+        tui.watch(run, 1)
+
+
+@pytest.mark.parametrize("exit_code", [True, None, "0", -256, 256])
+def test_malformed_process_exit_status_cannot_report_completion(run, exit_code):
+    journal(
+        run,
+        [{**event(run, 1, "process_exited"), "exit_code": exit_code}],
+        state="closed",
+    )
+    assert tui.watch(run, 1)["reason"] == "invalid_protocol"
+
+
+def test_omp_adapter_refuses_generic_enrollment(run):
+    prepared = tui.prepare(run.parent, "generic-app", run.parent)
+    with pytest.raises(tui.TUIError, match="adapter_mismatch"):
+        omp.launch(prepared["run_dir"], run.parent / "unused-prompt")
+    assert not (Path(prepared["run_dir"]) / "launch.json").exists()
+
+
+@pytest.mark.parametrize("adapter", [None, [], {}, "unknown"])
+def test_invalid_adapter_is_rejected_before_creating_state(run, adapter):
+    with pytest.raises(tui.TUIError, match="invalid_adapter"):
+        tui.prepare(run.parent, "new-app", run.parent, "c" * 32, adapter=adapter)
+    assert not (run.parent / ("c" * 32)).exists()
+
+
+def test_old_protocol_binding_is_not_silently_adopted(run):
+    binding = tui._read_json(run / "binding.json")
+    binding["version"] = 1
+    tui._write_json(run / "binding.json", binding)
+    with pytest.raises(tui.TUIError, match="invalid_binding"):
+        tui.status(run)

@@ -53,6 +53,7 @@ _SAFE_ERROR_MARKERS = (
     "are toolset names",
     "skill name cannot contain comma",
     "must be one of",
+    "has no result or summary evidence",
 )
 
 
@@ -470,12 +471,13 @@ def complete_task(
 ) -> dict[str, Any]:
     with _connection(board) as conn:
         _require_task(conn, task_id)
-        return _transition_response(
-            conn,
-            task_id,
-            kanban_db.complete_task(conn, task_id, summary=payload.summary if payload else None),
-            "completed",
-        )
+        try:
+            ok = kanban_db.complete_task(
+                conn, task_id, summary=payload.summary if payload else None
+            )
+        except ValueError as exc:
+            raise _client_error(exc, fallback="task could not be completed") from exc
+        return _transition_response(conn, task_id, ok, "completed")
 
 
 @router.post("/tasks/{task_id}/block")

@@ -300,9 +300,24 @@ def test_link_missing_task_is_404_not_400(client: TestClient) -> None:
     assert missing_unlink.status_code == 404, missing_unlink.text
 
 
+def test_complete_without_evidence_is_a_client_error(client: TestClient) -> None:
+    """The storage layer's empty-completion guard surfaces as a 400, not a 500."""
+    task_id = _create(client, idempotency_key="empty-complete")["task"]["id"]
+
+    rejected = client.post(f"/api/plugins/kanban/tasks/{task_id}/complete")
+
+    assert rejected.status_code == 400, rejected.text
+    assert "no result or summary evidence" in rejected.json()["detail"]
+    assert client.get(f"/api/plugins/kanban/tasks/{task_id}").json()["task"][
+        "status"
+    ] != "done"
+
+
 def test_patch_rejects_edits_to_completed_task(client: TestClient) -> None:
     task_id = _create(client, idempotency_key="done-edit")["task"]["id"]
-    assert client.post(f"/api/plugins/kanban/tasks/{task_id}/complete").status_code == 200
+    assert client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/complete", json={"summary": "shipped"}
+    ).status_code == 200
 
     rejected = client.patch(
         f"/api/plugins/kanban/tasks/{task_id}", json={"title": "too late"}
@@ -316,7 +331,9 @@ def test_patch_rejects_edits_to_completed_task(client: TestClient) -> None:
 
 def test_patch_rejects_edits_to_archived_task(client: TestClient) -> None:
     task_id = _create(client, idempotency_key="archived-edit")["task"]["id"]
-    assert client.post(f"/api/plugins/kanban/tasks/{task_id}/complete").status_code == 200
+    assert client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/complete", json={"summary": "shipped"}
+    ).status_code == 200
     assert client.post(f"/api/plugins/kanban/tasks/{task_id}/archive").status_code == 200
 
     rejected = client.patch(

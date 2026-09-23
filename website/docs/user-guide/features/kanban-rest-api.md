@@ -90,6 +90,10 @@ is completed (`done`) or `archived` with **HTTP 409** — the finished card text
 is a historical record. `priority` and `assignee` may still be adjusted (the
 latter subject to its own "not while running" rule).
 
+`POST /tasks/{id}/complete` needs completion evidence: send a non-empty
+`summary` (unless the task already carries a stored result), otherwise the
+request is refused with **HTTP 400** and the task stays open.
+
 Linking references two existing tasks: `POST /tasks/{parent}/links/{child}`
 returns **HTTP 404** when either the parent or the child does not exist
 (consistent with unlink), and HTTP 400 only for a genuinely invalid link

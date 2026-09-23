@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 
+import pytest
 
 from hermes_cli.logs import (
     LOG_FILES,
@@ -13,6 +14,7 @@ from hermes_cli.logs import (
     _parse_since,
     _read_last_n_lines,
     _read_tail,
+    tail_log,
 )
 
 
@@ -137,6 +139,35 @@ class TestReadTail:
         result = _read_last_n_lines(log_file, 5)
         assert len(result) == 5
         assert "line 9" in result[-1]
+
+    @pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+    @pytest.mark.parametrize("terminated", [False, True])
+    def test_tail_preserves_lines_across_file_sizes(self, tmp_path, newline, terminated):
+        suffix = newline.join([b"first", b"", b" \t", "last café".encode("utf-8")])
+        if terminated:
+            suffix += newline
+        log_file = tmp_path / "test.log"
+        for prefix in (b"", b"older entry\n" * 100_000):
+            log_file.write_bytes(prefix + suffix)
+            with log_file.open(encoding="utf-8", errors="replace") as stream:
+                expected = stream.readlines()
+            for count in (1, 3, 4, 10):
+                assert _read_last_n_lines(log_file, count) == expected[-count:]
+
+    def test_large_log_tail_keeps_blank_lines_in_cli_output(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        suffix = "\n \t\n2026-01-01 00:00:00 ERROR demo: latest café\n"
+        (log_dir / "agent.log").write_text(
+            "2026-01-01 00:00:00 INFO demo: older entry\n" * 30_000 + suffix,
+            encoding="utf-8",
+        )
+
+        tail_log(num_lines=3)
+
+        output = capsys.readouterr().out
+        assert output.split("\n", 1)[1] == suffix
 
 
 # ---------------------------------------------------------------------------

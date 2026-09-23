@@ -38,6 +38,21 @@ def _finalize(outcome="success", fleet=None):
     return ur.finalize_update_receipt(outcome, fleet=fleet)
 
 
+def test_required_socket_identity_distinguishes_absence_from_error(tmp_path, monkeypatch):
+    def failed_probe(_home, *, require_complete=False):
+        if require_complete:
+            raise TimeoutError("control socket timed out")
+        return None
+
+    monkeypatch.setattr("gateway.control_socket.identify_gateway", failed_probe)
+    assert ur._socket_identity(tmp_path) is None
+    with pytest.raises(TimeoutError, match="control socket timed out"):
+        ur._socket_identity(tmp_path, require_complete=True)
+
+    monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda _home, **_kwargs: None)
+    assert ur._socket_identity(tmp_path, require_complete=True) is None
+
+
 class TestReceiptLifecycle:
     def test_begin_record_finalize_roundtrip(self, receipt_home):
         ur.begin_update_receipt()

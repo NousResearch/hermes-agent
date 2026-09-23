@@ -1,4 +1,4 @@
-"""Hermes update pipeline: dispatchers (``_cmd_update_impl``/``_cmd_update_check``) + git plumbing.
+"""Hermes update pipeline: apply dispatchers and re-exported Git check helpers.
 
 Each concern lives in ``update_cmd_<concern>.py`` and is re-imported here so
 ``hermes_cli.update_cmd.<name>`` keeps resolving (and stays monkeypatchable). Imports are one-way:
@@ -6,13 +6,15 @@ main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at cal
 """
 
 import logging
-from contextlib import suppress
+from contextlib import redirect_stderr, redirect_stdout, suppress
+import io
 import os
 import shlex
 import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules resolve it here)
 import subprocess
 import sys
 import time as _time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,15 +93,18 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
+    _base_git_cmd, _cmd_update_check,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
-    _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
+    _has_upstream_remote, _is_fork, _is_shallow_checkout, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
+    _print_update_check_result,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
-    _sync_with_upstream_if_needed)
+    _sync_with_upstream_if_needed, _tip_shas, apply_pinned_target, TargetAdmissionError,
+    TargetRequest, current_branch, verify_pinned_post_swap)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
-    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, PreUpdateBackupOutcome,
     _clear_stale_sqlite_sidecars,
     _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
@@ -507,123 +512,6 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
         raise
     finally:
         proc.stdout.close()
-
-
-def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
-    """``hermes update --check``: fetch and report without installing. ``branch_explicit`` is
-    True iff --branch was passed (Docker installs print a notice instead of dropping the flag)."""
-    # Same marker-first admission gate as the apply path, so --check never reports git
-    # state for an install whose real update mechanism is an image pull.
-    from hermes_cli.update_contract import evaluate_update_admission, record_refusal_receipt
-
-    refusal = evaluate_update_admission(_m().PROJECT_ROOT)
-    if refusal is not None:
-        print(refusal.message)
-        record_refusal_receipt(refusal)
-        sys.exit(2)
-
-    git_dir = _m().PROJECT_ROOT / ".git"
-    if not git_dir.exists():
-        print("✗ Not a git repository — cannot check for updates.")
-        sys.exit(1)
-
-    git_cmd = _base_git_cmd()
-
-    # Interrupted fetches leave .git/*.lock behind ("File exists" forever); self-heal first.
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
-    for lock_path in clear_stale_git_locks(_m().PROJECT_ROOT):
-        print(f"  (removed stale git lock: {lock_path})")
-    # Aborted fetches also strand tmp_pack_* debris (has reached 6 GB and corrupted the
-    # pack dir); same age+process safety contract as the locks.
-    swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
-    if swept:
-        print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
-
-    # Fetch only <branch> (a bare fetch pulls thousands of auto-generated branches). Prefer
-    # upstream only for main (a fork's other branches have no upstream counterpart). Installer
-    # checkouts are shallow: a plain fetch would unshallow them and rev-list would report a
-    # bogus huge "behind" count, so fetch --depth 1 and report presence-only.
-    is_shallow = _is_shallow_checkout(git_cmd)
-    depth_args = ["--depth", "1"] if is_shallow else []
-
-    # Probe locally for an 'upstream' remote before a network fetch non-forks always fail.
-    fetch_result = None
-    if branch == "main" and _git_run(git_cmd, ["remote", "get-url", "upstream"]).returncode == 0:
-        print("→ Fetching from upstream...")
-        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["upstream", branch], network=True)
-    if fetch_result is not None and fetch_result.returncode == 0:
-        compare_branch = f"upstream/{branch}"
-    else:
-        print("→ Fetching from origin...")
-        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["origin", branch], network=True)
-        compare_branch = f"origin/{branch}"
-
-    if fetch_result.returncode != 0:
-        _print_fetch_failure(fetch_result.stderr)
-        sys.exit(1)
-
-    if is_shallow:
-        # The depth-1 fetch above leaves the previous tip behind as a ``.git/shallow`` graft
-        # (git never removes old grafts); prune the stale ones so the file stops growing and
-        # merge-base / the orphan-divergence heuristic keep working (#105951).
-        from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
-        repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
-        if repaired:
-            print(f"  (restored {repaired} broken shallow boundary(ies))")
-        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
-        if pruned:
-            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
-
-    # rev-list on a bogus ref exits 128 and (check=True) would traceback; verify first.
-    verify_result = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", compare_branch])
-    if verify_result.returncode != 0:
-        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
-        sys.exit(1)
-
-    if is_shallow:
-        # No history across the shallow boundary: compare tip SHAs, then recover the
-        # exact count via the GitHub compare API (complete graph).
-        head_sha, target_sha = _tip_shas(git_cmd, compare_branch)
-        if head_sha and target_sha and head_sha == target_sha:
-            print("✓ Already up to date.")
-            return
-        from hermes_cli.banner import _github_compare_behind
-        # counted == 0 means local-ahead, not behind; None means the API could not count.
-        _print_update_check_result(_github_compare_behind(head_sha, target_sha), compare_branch)
-        return
-
-    rev_result = _git_run(git_cmd, ["rev-list", f"HEAD..{compare_branch}", "--count"], check=True)
-    _print_update_check_result(int(rev_result.stdout.strip()), compare_branch)
-
-
-def _base_git_cmd() -> list[str]:
-    """``git`` argv; Windows adds ``-c windows.appendAtomically=false`` (git can fail "unable to
-    write loose object file: Invalid argument" on non-atomic appends)."""
-    if sys.platform == "win32":
-        return ["git", "-c", "windows.appendAtomically=false"]
-    return ["git"]
-
-
-def _is_shallow_checkout(git_cmd) -> bool:
-    return _git_run(git_cmd, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
-
-
-def _tip_shas(git_cmd, target_ref: str) -> tuple[str, str]:
-    """``(HEAD sha, <target_ref> sha)`` as printed by rev-parse ("" when unresolvable)."""
-    return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in ("HEAD", target_ref))
-
-
-def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
-    """Report ``--check``'s verdict: up to date, N commits behind, or behind by an unknown count."""
-    if behind == 0:
-        print("✓ Already up to date.")
-        return
-    if behind is not None:
-        print(f"☤ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
-    else:
-        print(f"☤ Update available (behind {compare_branch}).")
-    from hermes_cli.config import recommended_update_command
-    print(f"  Run '{recommended_update_command()}' to install.")
 
 
 def _repair_venv_on_current_checkout(
@@ -1080,15 +968,16 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         no_gateway_restart=no_gateway_restart)
 
 
-def _begin_update_receipt_and_plan(args):
+def _begin_update_receipt_and_plan(args, *, begin_receipt=True, require_complete=False):
     """Open the receipt, snapshot the fleet, refuse on Windows shim holders. Returns the
     pre-update plan (None if the probe failed); ``sys.exit(2)`` when a non-gateway hermes.exe
     holds the venv shim."""
     # Structured receipt: record what this run discovers/does/skips so silent failures are diagnosable.
-    with _best_effort('Update receipt unavailable: %s'):
-        # See #74973, #81193, #85753, #88848, #91277.
-        from hermes_cli.update_receipt import begin_update_receipt
-        begin_update_receipt()
+    if begin_receipt:
+        with _best_effort('Update receipt unavailable: %s'):
+            # See #74973, #81193, #85753, #88848, #91277.
+            from hermes_cli.update_receipt import begin_update_receipt
+            begin_update_receipt()
 
     # Plan phase: snapshot runtimes/supervisors/version (read-only; probe failure records
     # nothing). Re-read AFTER the restart phase to reconcile — the plan is the worklist.
@@ -1100,7 +989,9 @@ def _begin_update_receipt_and_plan(args):
     _pre_update_plan = None
     with _best_effort('Update plan phase failed: %s'):
         from hermes_cli.update_inventory import collect_runtime_inventory, record_plan_in_receipt
-        _pre_update_plan = collect_runtime_inventory()
+        _pre_update_plan = (
+            collect_runtime_inventory(require_complete=True)
+            if require_complete else collect_runtime_inventory())
         record_plan_in_receipt(_pre_update_plan)
         if _pre_update_plan.runtimes:
             _n = len(_pre_update_plan.runtimes)
@@ -1209,10 +1100,10 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 
 def _handle_update_called_process_error(
     e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
-    _windows_gateway_resume=None) -> None:
-    """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
+    _windows_gateway_resume=None, *, pinned: bool = False) -> None:
+    """Git/installer failure: legacy ZIP fallback, never on the pinned path."""
     stage = _format_update_failure_stage(e)
-    if _should_zip_fallback_on_update_error(e):
+    if not pinned and _should_zip_fallback_on_update_error(e):
         print(f"⚠ {stage}: {e}")
         print("→ Falling back to ZIP download...")
         print()
@@ -1237,7 +1128,12 @@ def _handle_update_called_process_error(
             print(f"✗ {stage}.")
             print(f"  Details: {e}")
             _print_called_process_error_tail(e)
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_failure
+            record_failure("pinned-" + stage if pinned else stage)
         _finalize_receipt("failed", 'Update receipt finalize failed: %s')
+        if gateway_mode:
+            _write_gateway_update_exit_code(False)
         sys.exit(1)
 
 
@@ -1351,19 +1247,32 @@ def _post_swap_argv_tail(args) -> list[str]:
     branch = getattr(args, "branch", None)
     if branch:
         tail += ["--branch", str(branch)]
+    request = getattr(args, "target_request", None)
+    if request is not None:
+        from hermes_cli.update_target import encode_reviewed_source
+        tail += [
+            "--revision", request.revision,
+            "--expected-install-id", request.install_id,
+            "--expected-current-sha", request.current_sha,
+            "--reviewed-source", encode_reviewed_source(request.source),
+        ]
     return tail
+
+
+def _pinned_intent(request, *, branch: str, correlation_id: str) -> dict[str, object]:
+    from hermes_cli.update_target import build_update_intent
+
+    return build_update_intent(request, correlation_id, branch)
 
 
 def _post_swap_payload(
     *, swap: str, branch: str, opts, gateway_mode: bool, had_desktop_app_before_update: bool,
     pre_pull_sha=None, is_fork: bool = False, pre_update_snapshot_id=None, _pre_update_plan=None,
-    _windows_gateway_resume=None) -> dict:
-    """Everything the post-swap tail needs that only the pre-swap process could observe: the
-    open receipt (detached here — the child resumes it), the pre-update fleet plan, the
-    pre-update version and active features, the Windows pause token. Flags cross as argv."""
+    _windows_gateway_resume=None, target_request=None, correlation_id: str | None = None) -> dict:
+    """Everything the post-swap tail needs, including immutable pinned intent."""
     from hermes_cli.update_receipt import detach_update_receipt
 
-    return {
+    payload = {
         "swap": swap, "branch": branch, "pre_pull_sha": pre_pull_sha, "is_fork": bool(is_fork),
         "gateway_mode": bool(gateway_mode),
         "had_desktop_app_before_update": bool(had_desktop_app_before_update),
@@ -1373,11 +1282,22 @@ def _post_swap_payload(
         "active_tool_dependencies": opts.active_tool_dependencies,
         "plan": _pre_update_plan.to_dict() if _pre_update_plan is not None else None,
         "windows_gateway_resume": _windows_gateway_resume,
-        # {profile: snapshot_id} from the pre-update backup; the post-migration safety nets for
-        # sibling profiles read it (update_cmd_config._LAST_SIBLING_SNAPSHOTS).
         "sibling_snapshots": dict(_sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS),
-        "receipt": detach_update_receipt(),
     }
+    if target_request is not None:
+        if correlation_id is None:
+            raise ValueError("pinned handoff requires correlation_id")
+        intent = _pinned_intent(target_request, branch=branch, correlation_id=correlation_id)
+        payload.update({
+            "pinned_intent": intent,
+            "target_intent": intent,
+            "requested_sha": target_request.revision,
+            "install_id": target_request.install_id,
+            "correlation_id": correlation_id,
+            "prior_sha": target_request.current_sha,
+        })
+    payload["receipt"] = detach_update_receipt()
+    return payload
 
 
 def _sibling_snapshots_module():
@@ -1385,6 +1305,121 @@ def _sibling_snapshots_module():
     # attribute at call time, never this module's import-time copy of the empty dict.
     import hermes_cli.update_cmd_config as _cfg
     return _cfg
+
+
+def _cmd_pinned_update_impl(args, gateway_mode: bool):
+    """Prepare the same safety state as an ordinary update, then apply one exact target."""
+    from hermes_cli.update_receipt import (
+        begin_update_receipt, finalize_update_receipt, record_failure, record_refusal, record_step,
+    )
+
+    request = args.target_request
+    correlation_id = uuid.uuid4().hex
+    requested_branch = getattr(args, "branch", None)
+    # Keep the reviewed ref in refusals even if the checkout branch drifted.
+    receipt_branch = request.source.resolved_ref.removeprefix("refs/remotes/origin/")
+    begin_update_receipt(intent=_pinned_intent(
+        request, branch=receipt_branch, correlation_id=correlation_id,
+    ))
+    _windows_gateway_resume = None
+    apply_started = False
+    try:
+        opts = _resolve_update_options(args, gateway_mode)
+        _pre_update_plan = _begin_update_receipt_and_plan(
+            args, begin_receipt=False, require_complete=True)
+        if _pre_update_plan is None or _pre_update_plan.expected_sha != request.current_sha:
+            raise TargetAdmissionError("pre-update-plan-unavailable")
+        _sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS = {}
+        try:
+            backup_outcome = _m()._run_pre_update_backup(args, report_full=True)
+        except Exception as exc:
+            raise TargetAdmissionError("pre-update-backup-unavailable") from exc
+        if not isinstance(backup_outcome, PreUpdateBackupOutcome):
+            raise TargetAdmissionError("pre-update-backup-outcome-unavailable")
+        pre_update_snapshot_id = backup_outcome.snapshot_id
+        _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
+        backup_mode = _resolve_pre_update_backup_mode(args)
+        if backup_mode == "full":
+            full_ok = backup_outcome.full_backup_path is not None
+            record_step("pre_update_full_backup", full_ok, "saved" if full_ok else "unavailable")
+            if not full_ok:
+                raise TargetAdmissionError("pre-update-full-backup-unavailable")
+        if backup_mode != "off":
+            if not pre_update_snapshot_id:
+                raise TargetAdmissionError("pre-update-backup-unavailable")
+            from hermes_cli.backup import _sibling_profile_homes
+            try:
+                expected = {name for name, _home in _sibling_profile_homes(
+                    get_hermes_home(), require_complete=True)}
+            except Exception as exc:
+                raise TargetAdmissionError("pre-update-sibling-inventory-unavailable") from exc
+            if expected != set(_sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS):
+                raise TargetAdmissionError("pre-update-sibling-backup-incomplete")
+        _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
+        if _windows_gateway_resume:
+            import atexit as _atexit
+            _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
+        if _m()._is_windows() and not getattr(args, "force_venv", False):
+            _clear_windows_venv_holders_or_exit(args, gateway_mode, _windows_gateway_resume)
+        had_desktop_app_before_update = _desktop_app_present(_m().PROJECT_ROOT / "apps" / "desktop")
+        apply_started = True
+        result = apply_pinned_target(
+            _m().PROJECT_ROOT, request, branch=requested_branch
+        )
+        intent = _pinned_intent(request, branch=result.branch, correlation_id=correlation_id)
+        with suppress(Exception):
+            from hermes_cli.update_receipt import _current
+            if _current is not None:
+                _current.set_intent(intent)
+        record_step("pinned_apply", True, f"post_sha={result.target_sha}")
+        _write_fleet_restart_pending_marker(
+            expected_sha=result.target_sha, runtimes=_pre_update_plan.to_dict().get("runtimes"))
+        _sweep_bytecode_after_update(result.branch)
+        _hand_off_post_swap(
+            args, swap="pinned-git", branch=result.branch, pre_pull_sha=result.prior_sha,
+            is_fork=False, opts=opts, gateway_mode=gateway_mode,
+            had_desktop_app_before_update=had_desktop_app_before_update,
+            pre_update_snapshot_id=pre_update_snapshot_id,
+            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
+            target_request=request, correlation_id=correlation_id,
+        )
+    except TargetAdmissionError as exc:
+        post_apply = exc.reason in {"pinned-apply-refused", "post-apply-head-mismatch"}
+        record_step("pinned_apply" if post_apply else "pinned_admission", False, exc.reason)
+        if post_apply:
+            record_failure(exc.reason)
+            _write_fleet_restart_pending_marker(
+                expected_sha=request.revision, runtimes=_pre_update_plan.to_dict().get("runtimes"))
+            _m()._write_update_incomplete_marker()
+        else:
+            record_refusal(exc.reason)
+        finalize_update_receipt("failed" if post_apply else "refused", stop_reason=exc.reason)
+        if gateway_mode:
+            _write_gateway_update_exit_code(False)
+        print(f"✗ Pinned update {'incomplete' if post_apply else 'refused'}: {exc}")
+        raise SystemExit(1 if post_apply else 2)
+    except SystemExit as exc:
+        if exc.code == 2:
+            record_refusal("pre-update-safety-refused")
+            finalize_update_receipt("refused", stop_reason="pre-update-safety-refused")
+            if gateway_mode:
+                _write_gateway_update_exit_code(False)
+        raise
+    except BaseException as exc:
+        if apply_started:
+            # An unexpected exit after entering Git apply cannot prove the checkout stayed put.
+            reason = f"post-apply-error:{type(exc).__name__}"
+            record_step("pinned_apply", False, reason)
+            record_failure(reason)
+            _write_fleet_restart_pending_marker(
+                expected_sha=request.revision, runtimes=_pre_update_plan.to_dict().get("runtimes"))
+            _m()._write_update_incomplete_marker()
+            finalize_update_receipt("failed", stop_reason=reason)
+            if gateway_mode:
+                _write_gateway_update_exit_code(False)
+        raise
+    finally:
+        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 
 
 def _hand_off_post_swap(args, **payload_kwargs) -> None:
@@ -1396,24 +1431,65 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
     from hermes_cli.update_receipt import resume_update_receipt
 
     payload = _post_swap_payload(**payload_kwargs)
-    code = _update_handoff.continue_update_in_fresh_interpreter(
-        payload, argv_tail=_post_swap_argv_tail(args))
-    token = payload_kwargs.get("_windows_gateway_resume")
-    if token and code is not None:
-        # The child got its own copy (serialized before this flip) and owns the resume; every
-        # parent-side hook (atexit, the ZIP path's ``finally``) reads this flag and stays out
-        # of the way. When no child ran, the parent still resumes what it paused.
-        token["resume_needed"] = False
-    if code is None:
-        # No child ran: take the receipt back so this failure is recorded, and leave the
-        # install breadcrumb so the next launch finishes the dependency sync (new code, old deps).
-        if payload["receipt"]:
+    try:
+        code = _update_handoff.continue_update_in_fresh_interpreter(
+            payload, argv_tail=_post_swap_argv_tail(args))
+    except Exception as exc:
+        if payload.get("receipt"):
             resume_update_receipt(payload["receipt"])
-        _record_update_step("post_swap_handoff", False, "child interpreter could not start")
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_failure
+            record_failure(f"post-swap-handoff-failure: {type(exc).__name__}")
         _m()._write_update_incomplete_marker()
         if payload_kwargs.get("gateway_mode"):
             _write_gateway_update_exit_code(False)
+        _finalize_receipt("failed", 'Update receipt finalize (handoff) failed: %s')
+        raise SystemExit(1) from exc
+    token = payload_kwargs.get("_windows_gateway_resume")
+    pinned = bool(payload.get("pinned_intent"))
+    detached = bool(payload.get("_handoff_detached"))
+    correlation_id = payload.get("correlation_id") or (payload.get("pinned_intent") or {}).get("correlation_id")
+    from hermes_cli.update_receipt import read_finalized_receipt, read_handoff_ack
+    expected_intent = payload.get("pinned_intent") if pinned else None
+    ack = read_handoff_ack(
+        payload.get("_handoff_ack_path"), correlation_id=correlation_id,
+        expected_intent=expected_intent,
+    )
+    finalized = None if ack else read_finalized_receipt(
+        correlation_id, expected_intent=expected_intent,
+    ) if pinned else None
+    child_outcome = (ack or finalized or {}).get("outcome")
+    child_did_not_consume = not bool(ack or finalized)
+    if token and code is not None and (not pinned or not child_did_not_consume or detached):
+        token["resume_needed"] = False
+    if code is None or (pinned and code != 0 and child_did_not_consume):
+        if payload["receipt"]:
+            resume_update_receipt(payload["receipt"])
+        _record_update_step("post_swap_handoff", False, "child interpreter could not start")
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_failure
+            record_failure("post-swap-import-failure" if code not in (None, 0) else "post-swap-start-failure")
+        _m()._write_update_incomplete_marker()
+        if payload_kwargs.get("gateway_mode"):
+            _write_gateway_update_exit_code(False)
+        if pinned:
+            _finalize_receipt("failed", 'Update receipt finalize (pinned handoff) failed: %s')
         code = 1
+    elif pinned and not detached and child_did_not_consume:
+        if payload["receipt"]:
+            resume_update_receipt(payload["receipt"])
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_failure
+            record_failure("post-swap-child-did-not-consume-handoff")
+        _finalize_receipt("failed", 'Update receipt finalize (pinned handoff) failed: %s')
+        code = 1
+    elif pinned and child_outcome in {"partial", "failed", "refused"}:
+        # The child already persisted the terminal receipt. Relay its truthful failure
+        # without re-adopting or finalizing the detached receipt a second time.
+        code = 2 if child_outcome == "refused" else 1
+    with suppress(OSError):
+        if payload.get("_handoff_ack_path"):
+            Path(payload["_handoff_ack_path"]).unlink()
     sys.exit(code)
 
 
@@ -1423,11 +1499,39 @@ def _run_post_swap_phase(args, gateway_mode: bool) -> None:
     from hermes_cli.update_receipt import resume_update_receipt
 
     payload = _update_handoff.read_handoff(args.post_swap)
+    forwarded = getattr(args, "target_request", None)
+    pinned_intent = payload.get("pinned_intent")
+    if forwarded is not None and pinned_intent is None:
+        raise ValueError("missing pinned intent for post-swap request")
+    if pinned_intent is not None and forwarded is None:
+        raise ValueError("missing pinned argv for post-swap handoff")
+    if pinned_intent is not None and (
+        forwarded.source is None or pinned_intent.get("source") != forwarded.source.to_wire()
+    ):
+        raise ValueError("post-swap reviewed source mismatch")
+    if pinned_intent is not None and forwarded is not None:
+        if {
+            "target": forwarded.revision,
+            "install_id": forwarded.install_id,
+            "prior_sha": forwarded.current_sha,
+        } != {
+            "target": pinned_intent["target"],
+            "install_id": pinned_intent["install_id"],
+            "prior_sha": pinned_intent["prior_sha"],
+        }:
+            raise ValueError("post-swap argv intent mismatch")
+    if payload.get("receipt"):
+        resume_update_receipt(
+            payload["receipt"], handoff_ack_path=payload.get("_handoff_ack_path")
+        )
+    # Keep the hand-off file until the receipt is adopted. If the child dies
+    # before adoption, the parent can safely resume the still-detached receipt.
     with suppress(OSError):
         Path(args.post_swap).unlink()
-    if payload.get("receipt"):
-        resume_update_receipt(payload["receipt"])
-    _execute_post_swap(payload, args, gateway_mode)
+    try:
+        _execute_post_swap(payload, args, gateway_mode)
+    finally:
+        _m()._resume_windows_gateways_after_update(payload.get("windows_gateway_resume"))
 
 
 def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
@@ -1452,6 +1556,26 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
         active_tool_dependencies=payload.get("active_tool_dependencies"))
     had_desktop_app_before_update = bool(payload.get("had_desktop_app_before_update"))
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
+    pinned_intent = payload.get("pinned_intent")
+    pinned = isinstance(pinned_intent, dict)
+    if pinned:
+        from hermes_cli.update_receipt import record_failure, record_pinned_post_swap
+        try:
+            pinned_request = TargetRequest(
+                pinned_intent["target"], pinned_intent["install_id"], pinned_intent["prior_sha"],
+                pinned_intent.get("source"),
+            )
+            proof = verify_pinned_post_swap(_m().PROJECT_ROOT, pinned_request)
+        except (KeyError, TargetAdmissionError) as exc:
+            record_failure("post-swap-identity-failure")
+            _finalize_receipt("failed", 'Update receipt finalize (post-swap identity) failed: %s')
+            if gateway_mode:
+                _write_gateway_update_exit_code(False)
+            print(f"✗ Pinned post-swap verification refused: {exc}")
+            raise SystemExit(1)
+        record_pinned_post_swap(
+            post_sha=proof["post_sha"], post_install_id=proof["post_install_id"], verified=True
+        )
 
     try:
         if payload.get("swap") == "zip":
@@ -1471,35 +1595,101 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
             is_fork=bool(payload.get("is_fork")), desktop_dir=desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=payload.get("pre_update_snapshot_id"),
-            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume)
+            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
+            pinned=pinned)
     except _shim_quarantine_error_type() as e:
         _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
         _handle_update_called_process_error(
             e, args, gateway_mode, had_desktop_app_before_update,
-            _windows_gateway_resume=_windows_gateway_resume)
+            _windows_gateway_resume=_windows_gateway_resume, pinned=pinned)
+    except Exception as exc:
+        if pinned:
+            from hermes_cli.update_receipt import record_failure
+            record_failure(f"post-swap-failure: {type(exc).__name__}")
+            _finalize_receipt("failed", 'Update receipt finalize (post-swap failure) failed: %s')
+            if gateway_mode:
+                _write_gateway_update_exit_code(False)
+        raise
+
+
+def _run_pinned_dependency_sync(
+    git_cmd, branch, pre_pull_sha, active_lazy_features, active_tool_dependencies,
+    _windows_gateway_resume,
+) -> None:
+    """Run dependency maintenance fail-closed for a pinned update.
+
+    The historical helper deliberately turns optional dependency failures into warnings for
+    ordinary updates. A pinned receipt cannot claim success after one of those warnings, so
+    capture only this phase's output, replay it unchanged, and make any warning terminal.
+    """
+    output = io.StringIO()
+    try:
+        with redirect_stdout(output), redirect_stderr(output):
+            _sync_python_dependencies_after_pull(
+                git_cmd, branch, pre_pull_sha,
+                active_lazy_features=active_lazy_features,
+                active_tool_dependencies=active_tool_dependencies,
+                _windows_gateway_resume=_windows_gateway_resume,
+            )
+    except BaseException:
+        print(output.getvalue(), end="")
+        raise
+    rendered = output.getvalue()
+    print(rendered, end="")
+    failure_markers = (
+        "⚠", "failed to restore", "failed to refresh", "dependencies failed",
+        "not re-applied", "migration skipped", "DISABLED:",
+    )
+    if any(marker in rendered for marker in failure_markers):
+        raise RuntimeError("pinned dependency sync reported failure")
 
 
 def _finish_pulled_update(
     git_cmd, branch, pre_pull_sha, opts, *, gateway_mode, is_fork, desktop_dir,
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume) -> None:
+    _windows_gateway_resume, pinned: bool = False) -> None:
     """Post-swap tail (git path): sync Python/Node/web/Desktop, maintenance, fleet restart."""
-    if is_fork and branch == "main":
-        _m()._sync_with_upstream_if_needed(
-            git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
+    from hermes_cli.update_receipt import record_failure
 
-    # .[all], falling back to base + extras individually so one broken extra doesn't strip
-    # the rest; the ownership preflight refuses first on foreign-owned (sudo-pip) venv files.
-    _sync_python_dependencies_after_pull(
-        git_cmd, branch, pre_pull_sha, active_lazy_features=opts.active_lazy_features,
-        active_tool_dependencies=opts.active_tool_dependencies,
-        _windows_gateway_resume=_windows_gateway_resume)
+    try:
+        if is_fork and branch == "main":
+            _m()._sync_with_upstream_if_needed(
+                git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
+
+        # .[all], falling back to base + extras individually so one broken extra doesn't strip
+        # the rest; the ownership preflight refuses first on foreign-owned (sudo-pip) venv files.
+        if pinned:
+            _run_pinned_dependency_sync(
+                git_cmd, branch, pre_pull_sha, opts.active_lazy_features,
+                opts.active_tool_dependencies, _windows_gateway_resume)
+        else:
+            _sync_python_dependencies_after_pull(
+                git_cmd, branch, pre_pull_sha, active_lazy_features=opts.active_lazy_features,
+                active_tool_dependencies=opts.active_tool_dependencies,
+                _windows_gateway_resume=_windows_gateway_resume)
+    except Exception as exc:
+        record_failure(f"dependency-failure: {type(exc).__name__}")
+        raise
+
+    # The dependency helper historically warns on a failed critical import. A pinned run must
+    # not turn that warning into a success receipt, so perform the already-defined probe as a
+    # terminal gate after the sync and before Node/UI work.
+    if pinned:
+        import_ok, failing_module, import_error = _validate_critical_modules_import(_m().PROJECT_ROOT)
+        if not import_ok:
+            detail = f"{failing_module}: {import_error}" if failing_module else "critical import probe failed"
+            record_failure(f"import-failure: {detail}")
+            raise RuntimeError(detail)
 
     node_failures = _update_node_dependencies()
+    if node_failures:
+        record_failure("dependency-failure: node dependencies")
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     desktop_build_ok = _rebuild_desktop_after_update(
         desktop_dir, had_desktop_app_before_update=had_desktop_app_before_update)
+    if not desktop_build_ok:
+        record_failure("import-failure: desktop build")
 
     print()
     print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
@@ -1510,12 +1700,15 @@ def _finish_pulled_update(
         had_desktop_app_before_update=had_desktop_app_before_update,
         node_failures=node_failures, desktop_build_ok=desktop_build_ok,
         pre_update_version=opts.pre_update_version)
+    if not update_complete:
+        record_failure("dependency-failure: post-update maintenance")
+    pinned_complete = update_complete and (not pinned or not node_failures)
 
     # Exit code *before* the restart: under --gateway this process lives in the gateway's
     # systemd cgroup and the systemctl-restart fallback SIGKILLs it (KillMode=mixed), so
     # the marker would never land and the new gateway's watcher would time out spuriously.
     if gateway_mode:
-        _write_gateway_update_exit_code(update_complete)
+        _write_gateway_update_exit_code(pinned_complete)
 
     if opts.no_gateway_restart:
         # Cron inside the gateway's own cgroup: restarting the fleet now would
@@ -1536,20 +1729,26 @@ def _finish_pulled_update(
         _resume_windows_gateways_and_merge_outcome(
             resume_outcome, _windows_gateway_resume, gateway_mode)
         _defer_fleet_restart_after_update(
-            update_complete=update_complete, resume_incomplete=resume_outcome.incomplete)
+            update_complete=pinned_complete, resume_incomplete=resume_outcome.incomplete)
         return
 
     _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)
     _resume_windows_gateways_and_merge_outcome(_restart, _windows_gateway_resume, gateway_mode)
+    if _restart.incomplete or _restart.failed_or_stale_units or _restart.phase_errors:
+        record_failure("restart-failure")
     _verify_fleet_after_update(
         _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
-        node_failures=node_failures, update_complete=update_complete)
+        node_failures=node_failures, update_complete=pinned_complete, pinned=pinned)
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
     on the OLD checkout in an exit-2 loop); it runs right before the dependency sync."""
+    # Pinned intent is a separate bounded path. It must not enter the legacy
+    # branch/stash/ZIP preparation before exact admission.
+    if getattr(args, "target_request", None) is not None and not getattr(args, "post_swap", None):
+        return _cmd_pinned_update_impl(args, gateway_mode)
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 

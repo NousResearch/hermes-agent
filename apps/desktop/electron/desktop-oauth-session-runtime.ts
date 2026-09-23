@@ -20,7 +20,6 @@ export interface DesktopOauthSessionDeps {
   headersForRemoteRequest: (url: string) => Record<string, string>
   rememberLog: (message: string) => void
   installWindowRendererLifecycle: typeof import('./window-renderer-lifecycle').installWindowRendererLifecycle
-  finalizeGatewayDownload: (res: any, statusCode: number, headers: any, ctx?: any) => Promise<any>
 }
 
 // The legacy cookie jar remains shared by the primary v1 gateway and portal.
@@ -36,8 +35,7 @@ export function createDesktopOauthSessionRuntime(deps: DesktopOauthSessionDeps) 
     installRemoteHeaderRulesOnSession,
     headersForRemoteRequest,
     rememberLog,
-    installWindowRendererLifecycle,
-    finalizeGatewayDownload
+    installWindowRendererLifecycle
   } = deps
   let oauthSession = null
 
@@ -499,96 +497,6 @@ export function createDesktopOauthSessionRuntime(deps: DesktopOauthSessionDeps) 
     })
   }
 
-  // OAuth-session download that streams the response body straight to a
-  // user-selected destination (via finalizeGatewayDownload). The connect timeout
-  // is cleared once the response headers arrive.
-  function downloadViaOauthSessionToFile(url, ctx, options: any = {}) {
-    return new Promise((resolve, reject) => {
-      const sess = getOauthSessionForUrl(url)
-
-      if (!sess) {
-        reject(new Error('OAuth session partition is unavailable.'))
-
-        return
-      }
-
-      let parsed
-
-      try {
-        parsed = new URL(url)
-      } catch (error) {
-        reject(new Error(`Invalid URL: ${error.message}`))
-
-        return
-      }
-
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-        return
-      }
-
-      const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-      const request = electronNet.request({
-        method: 'GET',
-        url,
-        session: sess,
-        useSessionCookies: true,
-        redirect: 'follow'
-      } as any)
-
-      let settled = false
-
-      const timer = setTimeout(() => {
-        if (settled) {
-          return
-        }
-
-        settled = true
-
-        try {
-          request.abort()
-        } catch {
-          // already finished
-        }
-
-        reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-      }, timeoutMs)
-
-      request.on('response', res => {
-        if (settled) {
-          return
-        }
-
-        // Response headers arrived — cancel the connect timeout so it can't abort
-        // the stream while the save dialog is open or bytes are still flowing.
-        settled = true
-        clearTimeout(timer)
-        finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
-          ...ctx,
-          abort: () => {
-            try {
-              request.abort()
-            } catch {
-              // already finished
-            }
-          }
-        }).then(resolve, reject)
-      })
-      request.on('error', error => {
-        if (settled) {
-          return
-        }
-
-        settled = true
-        clearTimeout(timer)
-        reject(error)
-      })
-      request.end()
-    })
-  }
-
   return {
     getOauthSession,
     getOauthSessionForUrl,
@@ -597,7 +505,6 @@ export function createDesktopOauthSessionRuntime(deps: DesktopOauthSessionDeps) 
     hasLiveOauthSession,
     clearOauthSession,
     openOauthLoginWindow,
-    fetchJsonViaOauthSession,
-    downloadViaOauthSessionToFile
+    fetchJsonViaOauthSession
   }
 }

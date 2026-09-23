@@ -3040,8 +3040,7 @@ const {
   hasLiveOauthSession,
   clearOauthSession,
   openOauthLoginWindow,
-  fetchJsonViaOauthSession,
-  downloadViaOauthSessionToFile
+  fetchJsonViaOauthSession
 } = createDesktopOauthSessionRuntime({
   app,
   BrowserWindow,
@@ -3052,8 +3051,7 @@ const {
   installRemoteHeaderRulesOnSession,
   headersForRemoteRequest,
   rememberLog,
-  installWindowRendererLifecycle,
-  finalizeGatewayDownload
+  installWindowRendererLifecycle
 })
 
 // ---------------------------------------------------------------------------
@@ -3164,18 +3162,6 @@ const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator({
 })
 
 const ensureNativeAccessToken = nativeAccessTokenCoordinator.ensure
-
-const { saveGatewayFile } = createGatewayFileRuntime({
-  dialog,
-  electronNet,
-  ensureBackend,
-  ensureRegistryBackend,
-  ensureNativeAccessToken,
-  fetchJsonForBackend,
-  getMainWindow: () => mainWindow,
-  getOauthSessionForUrl,
-  profileRouteOptions
-})
 
 // Mint a single-use WS ticket for a gated gateway.
 // Ticket POSTs are replay-safe; arbitrary REST mutations never use this retry loop.
@@ -6803,6 +6789,18 @@ const { ensureBackend, ensureRegistryBackend, connectRegistryBackend } = createD
   teardownFailedLocalBackend,
   teardownSshConnection,
   waitForHermes
+})
+
+const { saveGatewayFile } = createGatewayFileRuntime({
+  dialog,
+  electronNet,
+  ensureBackend,
+  ensureRegistryBackend,
+  ensureNativeAccessToken,
+  fetchJsonForBackend,
+  getMainWindow: () => mainWindow,
+  getOauthSessionForUrl,
+  profileRouteOptions
 })
 
 localBackendLifecycle.signal.addEventListener('abort', poolRetirer.dispose, { once: true })

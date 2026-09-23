@@ -64,8 +64,7 @@ function makeRuntime() {
     installRemoteHeaderRulesOnSession: vi.fn(),
     headersForRemoteRequest: () => ({ 'X-Fleet-Test': 'present' }),
     rememberLog: vi.fn(),
-    installWindowRendererLifecycle: vi.fn(),
-    finalizeGatewayDownload: vi.fn()
+    installWindowRendererLifecycle: vi.fn()
   })
 
   return { runtime, jars, fromPartition, requests, setReady: (value: boolean) => (ready = value) }

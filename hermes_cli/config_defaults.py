@@ -172,6 +172,9 @@ DEFAULT_CONFIG = {
         "environment_probe": True,
         # Bot Mode teammate-messaging protocol section (silent unless desktop Bot Mode manages it).
         "bot_mode_protocol": True,
+        # "You run on Hermes Agent" pointer to the Hermes docs/skill. False drops it, for a persona
+        # (SOUL.md) that should not present itself as Hermes.
+        "host_identity_guidance": True,
         # Embedder-supplied text appended to the system prompt's environment-hints block, so a host
         # wrapping Hermes (sandbox runner, managed platform) can describe proxy/credential/ mount
         # layout without editing SOUL.md. Env HERMES_ENVIRONMENT_HINT overrides it.
@@ -843,6 +846,9 @@ DEFAULT_CONFIG = {
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
         "final_response_markdown": "strip",  # render | strip | raw
+        # Gateway: a bare [SILENT]/NO_REPLY answering a human message is honoured as a deliberate
+        # non-reply instead of the "try again" notice. Per-platform via display.platforms.<platform>.
+        "allow_silent_replies": False,
         # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
         # emulator misbehaves with replayed scrollback.
         "persistent_output": True,

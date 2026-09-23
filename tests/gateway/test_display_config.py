@@ -346,3 +346,35 @@ class TestLiveStatusSetting:
         assert resolve_display_setting({}, "slack", "live_status") == "full"
 
 
+
+
+class TestAllowSilentReplies:
+    """display.allow_silent_replies lets a bare silence marker answer a human turn."""
+
+    def test_off_by_default_on_every_platform(self):
+        from gateway.display_config import resolve_display_setting
+
+        for platform in ("telegram", "discord", "slack", "email"):
+            assert resolve_display_setting({}, platform, "allow_silent_replies") is False
+
+    def test_global_and_per_platform_opt_in(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"allow_silent_replies": "true"}}}}
+        assert resolve_display_setting(config, "telegram", "allow_silent_replies") is True
+        assert resolve_display_setting(config, "discord", "allow_silent_replies") is False
+        assert resolve_display_setting(
+            {"display": {"allow_silent_replies": True}}, "discord", "allow_silent_replies") is True
+
+    def test_gateway_helper_reads_the_setting(self, monkeypatch):
+        import gateway.run as gateway_run
+        from gateway.config import Platform
+        from gateway.run_turn import GatewayTurnMixin
+        from types import SimpleNamespace
+
+        source = SimpleNamespace(platform=Platform.TELEGRAM)
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        assert GatewayTurnMixin._silent_replies_allowed(source) is False
+        monkeypatch.setattr(
+            gateway_run, "_load_gateway_config", lambda: {"display": {"allow_silent_replies": True}})
+        assert GatewayTurnMixin._silent_replies_allowed(source) is True

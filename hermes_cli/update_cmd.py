@@ -530,7 +530,9 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     git_cmd = _base_git_cmd()
 
     # Interrupted fetches leave .git/*.lock behind ("File exists" forever); self-heal first.
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+    from hermes_cli.gitlock import (
+        clear_stale_git_locks, clear_stale_tmp_packs, run_gc_after_tmp_pack_cleanup,
+    )
     for lock_path in clear_stale_git_locks(_m().PROJECT_ROOT):
         print(f"  (removed stale git lock: {lock_path})")
     # Aborted fetches also strand tmp_pack_* debris (has reached 6 GB and corrupted the
@@ -538,6 +540,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+        run_gc_after_tmp_pack_cleanup(_m().PROJECT_ROOT, swept)
 
     # Fetch only <branch> (a bare fetch pulls thousands of auto-generated branches). Prefer
     # upstream only for main (a fork's other branches have no upstream counterpart). Installer
@@ -1618,13 +1621,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         branch = _m()._resolve_update_branch(args)
 
         # Self-heal abandoned .git/*.lock files (crashed fetch) or the fetch fails "File exists".
-        from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+        from hermes_cli.gitlock import (
+            clear_stale_git_locks, clear_stale_tmp_packs, run_gc_after_tmp_pack_cleanup,
+        )
         cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
         if cleared:
             print("  (removed stale git lock(s): %s)" % ", ".join(cleared))
         swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+            run_gc_after_tmp_pack_cleanup(_m().PROJECT_ROOT, swept)
         # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
         # (#105951); stale grafts break merge-base and push this run into the divergence path.
         from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts

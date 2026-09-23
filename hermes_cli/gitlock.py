@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 # files live for seconds and a healthy fetch completes in minutes; 10 minutes is abandoned.
 STALE_LOCK_MIN_AGE_SECONDS = 10 * 60
 STALE_TMP_PACK_MIN_AGE_SECONDS = STALE_LOCK_MIN_AGE_SECONDS
+# ``gc --auto`` is normally a no-op, but can repack a badly interrupted checkout.  Keep its
+# maintenance work bounded just like the network fetch that created the debris.
+TMP_PACK_GC_TIMEOUT_SECONDS = 300
 # ``shallow.lock`` is the one observed in the wild; the others are the same class of failure
 # (interrupted git operation). Locks held by a live git process are protected by the process guard.
 LOCK_NAMES = ("shallow.lock", "index.lock", "HEAD.lock", "MERGE_HEAD.lock")
@@ -111,6 +114,33 @@ def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = N
         skip_msg="git process running; skipping tmp-pack sweep",
         log_removed=lambda p, size: logger.info("Removed aborted-fetch pack debris %s (%d bytes)", p, size),
     )
+
+
+def run_gc_after_tmp_pack_cleanup(repo_root: Path, removed: Iterable[str]) -> bool:
+    """Best-effort bounded ``git gc --auto`` after this process removed stale pack temps.
+
+    Do not start maintenance when the cleanup found nothing, or while another git process is
+    active.  The latter check closes the usual fetch race; git's own lock remains the final
+    guard.  A failed or timed-out gc must never prevent the update fetch from running.
+    """
+    removed = tuple(removed)
+    if not removed or _git_proc_running():
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "gc", "--auto"], cwd=str(repo_root), capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=TMP_PACK_GC_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("git gc --auto timed out after %ss; continuing update", TMP_PACK_GC_TIMEOUT_SECONDS)
+        return False
+    except OSError as exc:
+        logger.warning("Could not run git gc --auto after tmp-pack cleanup: %s", exc)
+        return False
+    if result.returncode != 0:
+        logger.warning("git gc --auto failed after tmp-pack cleanup: %s", result.stderr.strip())
+        return False
+    return True
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

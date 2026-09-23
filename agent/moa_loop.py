@@ -1054,10 +1054,10 @@ class MoAChatCompletions:
         except Exception as exc:  # pragma: no cover - display must never break the turn
             logger.debug("MoA reference_callback failed for %s: %s", event, exc)
 
-    def prepare(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def prepare(self, messages: list[dict[str, Any]], *, skip_references: bool = False) -> dict[str, Any]:
         """Run the advisor fan-out and return the exact aggregator request, which the
         loop measures before its compression gate and hands back to ``create()``."""
-        return self.create(messages=messages, _moa_prepare_only=True)
+        return self.create(messages=messages, _moa_prepare_only=True, _moa_skip_references=skip_references)
 
     def rebase_prepared_request(self, prepared: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
         """Re-attach already-generated guidance to a rebuilt (compressed) transcript."""
@@ -1336,12 +1336,13 @@ class MoAChatCompletions:
                 raise TypeError("_moa_prepared_request must be a dict")
             return self._call_prepared_aggregator(prepared_request, api_kwargs)
 
+        skip_references = bool(api_kwargs.pop("_moa_skip_references", False))
         preset, moa_raw = _resolve_preset_cached(self.preset_name)
         # Remembered on self so _call_prepared_aggregator redacts the trace consistently.
         self._privacy_mode = _moa_privacy_mode(moa_raw)
         messages = list(api_kwargs.get("messages") or [])
         # A disabled preset = "use the aggregator directly".
-        reference_models = [
+        reference_models = [] if skip_references else [
             slot for slot in (preset.get("reference_models") or []) if slot.get("enabled", True)
         ] if preset.get("enabled", True) else []
         aggregator = preset.get("aggregator") or {}

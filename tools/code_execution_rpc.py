@@ -23,6 +23,9 @@ logger = logging.getLogger("tools.code_execution_tool")
 
 # Terminal parameters that must not be used from ephemeral sandbox scripts.
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat"}
+# Terminal parameters refused outright: dropping ``target`` would silently run the command on the
+# ordinary terminal instead of the named session-owned target, which must never fall back.
+_TERMINAL_REFUSED_PARAMS = {"target"}
 
 
 def _default_dispatch(task_id):
@@ -52,6 +55,10 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
         return tool_error(f"Tool call limit reached ({max_tool_calls}). "
                           "No more tool calls allowed in this execution.")
     if tool_name == "terminal" and isinstance(tool_args, dict):
+        refused = sorted(_TERMINAL_REFUSED_PARAMS & tool_args.keys())
+        if refused:
+            return tool_error(f"terminal({', '.join(refused)}=...) is not available in execute_code; "
+                              "use the normal terminal tool call for a named target.")
         for param in _TERMINAL_BLOCKED_PARAMS:
             tool_args.pop(param, None)
     # Silence handler status prints so they don't leak into the CLI spinner.

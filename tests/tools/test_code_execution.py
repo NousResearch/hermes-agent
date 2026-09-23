@@ -388,6 +388,8 @@ class TestStubSchemaDrift(unittest.TestCase):
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
     _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat"}
+    # Refused by the sandbox RPC (named targets never fall back to the ordinary terminal)
+    _REFUSED_TERMINAL_PARAMS = {"target"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
@@ -410,7 +412,7 @@ class TestStubSchemaDrift(unittest.TestCase):
             schema_props = entry.schema.get("parameters", {}).get("properties", {})
             schema_params = set(schema_props.keys()) - self._INTERNAL_PARAMS
             if tool_name == "terminal":
-                schema_params -= self._BLOCKED_TERMINAL_PARAMS
+                schema_params -= self._BLOCKED_TERMINAL_PARAMS | self._REFUSED_TERMINAL_PARAMS
 
             # Extract parameter names from the stub signature string
             # Match word before colon: "pattern: str, target: str = ..."
@@ -460,6 +462,21 @@ class TestStubSchemaDrift(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # build_execute_code_schema
 # ---------------------------------------------------------------------------
+
+def test_sandbox_terminal_refuses_named_target_instead_of_falling_back():
+    """A sandbox ``terminal(target=...)`` must never run on the ordinary terminal."""
+    import json
+    from tools.code_execution_rpc import _handle_rpc_request
+
+    dispatched, counter, log = [], [0], []
+    result = _handle_rpc_request(
+        {"tool": "terminal", "args": {"command": "true", "target": "sample-target"}},
+        allowed_tools=frozenset({"terminal"}), tool_call_counter=counter, max_tool_calls=5,
+        dispatch=lambda name, args: dispatched.append((name, args)) or "{}",
+        tool_call_log=log, call_start=0.0, where="test")
+    assert "error" in json.loads(result)
+    assert dispatched == [] and counter == [0] and log == []
+
 
 class TestBuildExecuteCodeSchema(unittest.TestCase):
     """Tests for build_execute_code_schema — the dynamic schema generator."""

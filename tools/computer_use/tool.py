@@ -21,6 +21,7 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
+from hermes_cli.session_execution import SessionExecutionError
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
 logger = logging.getLogger(__name__)
@@ -79,10 +80,11 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
 _backend_lock = threading.Lock()
 _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-session injection hook (older tests)
-_backends: Dict[str, ComputerUseBackend] = {}
-_backend_call_locks: Dict[str, threading.RLock] = {}
-_backend_permission_modes: Dict[str, str] = {}
-_backend_displays: Dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
+_BackendKey = str | tuple[str, str, str]  # legacy caller | (home, caller, target lease)
+_backends: Dict[_BackendKey, ComputerUseBackend] = {}
+_backend_call_locks: Dict[_BackendKey, threading.RLock] = {}
+_backend_permission_modes: Dict[_BackendKey, str] = {}
+_backend_displays: Dict[_BackendKey, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
@@ -157,27 +159,42 @@ def _cua_permission_mode(session_id: str) -> str:
             return "unrestricted"
     return configured
 
-def _new_backend(permission_mode: str) -> ComputerUseBackend:
+def _new_backend(permission_mode: str, *, execution_context=None) -> ComputerUseBackend:
     backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
     if backend_name in {"cua", "cua-driver", ""}:
         from tools.computer_use.cua_backend import CuaDriverBackend
-        return CuaDriverBackend(permission_mode=permission_mode)
+        return CuaDriverBackend(permission_mode=permission_mode,
+                                **({"execution_context": execution_context} if execution_context else {}))
+    if execution_context is not None:
+        raise SessionExecutionError("session execution context requires the cua backend")
     if backend_name != "noop":
         raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
     return _NoopBackend()  # pragma: no cover
 
-def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
+def _install_backend(sid: _BackendKey, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
     global _backend
-    from tools.computer_use.cua_backend import desktop_identity
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
-    _backend_displays[sid] = desktop_identity()
+    _backend_displays[sid] = _backend_display_identity(backend)
     _backend_call_locks[sid] = threading.RLock()
     _backend = backend if sid == "" else _backend
     return backend
 
-def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
+def _backend_display_identity(backend: ComputerUseBackend) -> str:
+    """DISPLAY a spawn for ``backend`` acts on. An execution context owns its own screen (its env never
+    layers the host's Bot Desktop), so only context-free backends track the host display."""
+    if getattr(backend, "execution_context", None) is not None:
+        return ""
+    from tools.computer_use.cua_backend import desktop_identity
+    return desktop_identity()
+
+def _display_stale_locked(key: _BackendKey, backend: ComputerUseBackend) -> bool:
+    """Caller holds ``_backend_lock``."""
+    from tools.computer_use.cua_backend import backend_display_stale
+    return backend_display_stale(_backend_displays.get(key, ""), _backend_display_identity(backend))
+
+def _detach_locked(sid: _BackendKey) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
     """Remove one session's cache entries, plus the ``_backend`` injection hook when it aliases the empty session
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
     global _backend
@@ -206,56 +223,86 @@ def _scoped_sid(session_id: str) -> str:
     sid = str(session_id or "")
     return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
 
-def _get_backend(session_id: str = "") -> ComputerUseBackend:
+def _get_backend(session_id: str = "", *, task_id: Optional[str] = None, selected=None) -> ComputerUseBackend:
     bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
     while True:
+        from hermes_cli.session_execution import resolve_session_execution_context
+        from tools.computer_use.targets import UNBOUND, resolve_target_context
+        if selected is None:
+            execution = resolve_target_context(bare_sid, task_id)
+            targeted = execution is not UNBOUND
+            if not targeted:
+                execution = resolve_session_execution_context(session_id=bare_sid, task_id=task_id)
+        else:
+            execution, targeted = selected
+        key = (execution.home, sid, execution.cache_key) if targeted else sid
+        from tools.computer_use.session_context import check_access_epoch
+        check_access_epoch(execution)
         with _backend_lock:
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
-            permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
-            if sid == "" and _backend is not None and sid not in _backends:
-                _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
-            if (cached := _backends.get(sid)) is None:
-                backend = _new_backend(permission_mode)
-                backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
-                return _install_backend(sid, backend, permission_mode)
-            from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
-            if (_backend_permission_modes.get(sid, "standard") == permission_mode
-                    and not backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
+            permission_mode = _cua_permission_mode(bare_sid)
+            if key == "" and _backend is not None and key not in _backends:
+                _install_backend(key, _backend, permission_mode)  # fold the injection hook into the cache
+            if (cached := _backends.get(key)) is None:
+                backend = _new_backend(permission_mode,
+                                       **({"execution_context": execution} if execution else {}))
+                try:
+                    backend.start()  # one backend per session; failed starts never enter the cache
+                except Exception:
+                    backend.stop()
+                    raise
+                return _install_backend(key, backend, permission_mode)
+            if (_backend_permission_modes.get(key, "standard") == permission_mode
+                    and getattr(cached, "execution_context", None) is execution
+                    and not _display_stale_locked(key, cached)):
                 return cached
             # Cua's mode and DISPLAY are fixed at daemon startup: a /yolo toggle, or a Bot Desktop that started
             # (or moved) after this backend was cached, replaces only this session's backend.
-            _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
+            _, stale_lock = _detach_locked(key)  # stopped outside the cache lock; the loop re-reads the mode first
         _stop_backend(cached, stale_lock, lambda e: None)
 
+def release_computer_use_execution_context(execution_context) -> None:
+    """Retire only transports holding this revoked lease; leave approvals unchanged."""
+    with _backend_lock:
+        stale = [_detach_locked(sid) for sid, backend in list(_backends.items())
+                 if getattr(backend, "execution_context", None) is execution_context]
+    for backend, call_lock in stale:
+        if backend is not None:
+            _stop_backend(backend, call_lock, lambda e: logger.debug("Cua context teardown failed: %s", e))
+
+# Each retry follows a real display/mode change or release; far more than any legitimate race needs.
+_BACKEND_ADMISSION_ATTEMPTS = 64
+
 @contextlib.contextmanager
-def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
+def _backend_for_call(session_id: str = "", *, task_id: Optional[str] = None, selected=None) -> Iterator[ComputerUseBackend]:
     """Hold a live backend through dispatch, retrying admission but never an action.
 
     A display/mode change or release can retire a backend before lock lookup or
-    while a caller waits. Revalidate AFTER acquiring its profile-scoped call
-    lock; teardown needs that same lock. Never wait under the global cache lock.
+    while a caller waits. Revalidate AFTER acquiring its call lock; teardown
+    needs that same lock. Never wait under the global cache lock. Admission
+    retries are bounded so a backend that never settles fails loudly.
     """
-    from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
-
-    sid = _scoped_sid(session_id)
-    while True:
-        backend = _get_backend(session_id=session_id)
+    for _ in range(_BACKEND_ADMISSION_ATTEMPTS):
+        backend = _get_backend(session_id=session_id, task_id=task_id, selected=selected)
         with _backend_lock:
-            if _backends.get(sid) is not backend:
+            # Use the selected backend's lock, not a parent-only lock shared by all targets.
+            key = next((key for key, value in _backends.items() if value is backend), None)
+            if key is None:
                 continue
-            call_lock = _backend_call_locks[sid]
+            call_lock = _backend_call_locks.setdefault(key, threading.RLock())
         with call_lock:
             with _backend_lock:
-                if (_backends.get(sid) is not backend
-                        or _backend_call_locks.get(sid) is not call_lock):
+                if (_backends.get(key) is not backend
+                        or _backend_call_locks.get(key) is not call_lock):
                     continue
                 # A queued call can outlive a display/config change even when
                 # no other caller has replaced the cached backend yet.
-                if (_backend_permission_modes.get(sid) != _cua_permission_mode(str(session_id or ""))
-                        or backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
+                if (_backend_permission_modes.get(key, "standard") != _cua_permission_mode(str(session_id or ""))
+                        or _display_stale_locked(key, backend)):
                     continue
             yield backend
             return
+    raise RuntimeError("computer_use backend could not be admitted; request a fresh operation")
 
 
 def release_computer_use_session(session_id: str) -> bool:
@@ -264,13 +311,17 @@ def release_computer_use_session(session_id: str) -> bool:
     grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
     sid = _scoped_sid(session_id)
     _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
+
+    from hermes_constants import get_hermes_home
+    home = str(get_hermes_home().resolve())
     with _backend_lock:
-        backend, call_lock = _detach_locked(sid)
-    if backend is None:
-        return False
-    _stop_backend(backend, call_lock,
-                  lambda e: logger.debug("computer_use backend release failed for session %s", sid, exc_info=True))
-    return True
+        keys = {sid} | {key for key in _backends if isinstance(key, tuple) and key[:2] == (home, sid)}
+        stale = [_detach_locked(key) for key in keys]
+    for backend, call_lock in stale:
+        if backend is not None:
+            _stop_backend(backend, call_lock,
+                          lambda e: logger.debug("computer_use backend release failed for session %s", sid, exc_info=True))
+    return any(backend is not None for backend, _ in stale)
 
 @atexit.register
 def _shutdown_backend_atexit() -> None:
@@ -344,20 +395,26 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return err
     scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
         ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
-    for scope in scopes:
-        if (err := _request_approval(scope, args)) is not None:
-            return err
-    # Acquire separately so startup errors retain the install hint; the stack
-    # releases the admitted call lock on every dispatch return or exception.
-    call = contextlib.ExitStack()
-    try:
-        backend = call.enter_context(_backend_for_call(session_id))
-    except Exception as e:
-        return json.dumps({"error": f"computer_use backend unavailable: {e}",
-                           "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
-                                   "If a Python dependency is missing, the error above shows the exact install command."})
-    try:
-        with call:
+    with contextlib.ExitStack() as access:
+        try:
+            from tools.computer_use.targets import select_target_context
+            from tools.computer_use.session_context import desktop_access
+            selection, targeted = select_target_context(session_id, kwargs.get("task_id"))
+            for scope in scopes:
+                if (err := _request_approval(scope, args)) is not None:
+                    return err
+            execution = selection.realize()
+            access.enter_context(desktop_access(execution, check=selection.check))
+            # The admitted backend's call lock is held until the stack closes, after dispatch.
+            backend = access.enter_context(_backend_for_call(session_id, task_id=kwargs.get("task_id"),
+                                                             selected=(execution, targeted)))
+        except SessionExecutionError as e:
+            return _text_response(ActionResult(ok=False, action=action, message=str(e), code="policy_denied"))
+        except Exception as e:
+            return json.dumps({"error": f"computer_use backend unavailable: {e}",
+                               "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
+                                       "If a Python dependency is missing, the error above shows the exact install command."})
+        try:
             # Re-check under the dispatch lock: approval, backend start-up and lock waits above can take
             # seconds, and a human may have taken over meanwhile. A result produced after such a flip is
             # discarded too — it may picture what they typed.
@@ -374,15 +431,20 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                     raise _bd_lease.HumanHasControl(
                         "A human took over this desktop while the action ran; its result was discarded. "
                         "Tell the user what you need and re-capture once they hand back.")
-            _fence()  # input actions never receive fence=; refuse before the device op starts
-            result = _dispatch(backend, action, args, fence=_fence, session_id=session_id or None)
-            _fence()
-            return result
-    except _bd_lease.HumanHasControl as e:
-        return _refused(e)
-    except Exception as e:
-        logger.exception("computer_use %s failed", action)
-        return json.dumps({"error": f"{action} failed: {e}"})
+            from tools.computer_use.session_context import check_desktop_request, desktop_access
+            with desktop_access(getattr(backend, "execution_context", None)):
+                check_desktop_request(backend, args)
+                _fence()  # input actions never receive fence=; refuse before the device op starts
+                result = _dispatch(backend, action, args, fence=_fence, session_id=session_id or None)
+                _fence()
+                return result
+        except _bd_lease.HumanHasControl as e:
+            return _refused(e)
+        except SessionExecutionError as e:
+            return _text_response(ActionResult(ok=False, action=action, message=str(e), code="policy_denied"))
+        except Exception as e:
+            logger.exception("computer_use %s failed", action)
+            return json.dumps({"error": f"{action} failed: {e}"})
 
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     """None if approved, else a JSON error string. The decision (yolo bypass, session/permanent grants, CLI prompt,
@@ -406,7 +468,7 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     )
     if result.get("approved"):
         return None
-    return json.dumps({"error": result.get("message") or "denied by user", "action": action})
+    return json.dumps({**result, "error": result.get("message") or "denied by user", "action": action})
 
 def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     fg = " [FOREGROUND — briefly raises the window / changes focus]" if args.get("delivery_mode") == "foreground" else ""
@@ -445,7 +507,9 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
     # pid/window_id forwarded only when given so older backends keep their defaults.
-    cap = backend.capture(mode=mode, app=args.get("app"), **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
+    from tools.computer_use.session_context import capture_checked
+    cap = capture_checked(backend, mode=mode, app=args.get("app"),
+                          **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
     fence()
     return _capture_response(cap, session_id=session_id)
 
@@ -526,6 +590,10 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], fe
 def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
     """Next ladder step from semantic evidence, in precedence order. Escalation is advisory: it never overrides
     a confirmed effect nor licenses repeating input."""
+    if res.code == "policy_denied":
+        return {"decision": "deny", "retryable": False, "hint": (
+            "Session execution policy denied this action. Do not retry with coordinates, foreground delivery, "
+            "another tool, or the host desktop. Wait for the session owner to restore permission or repair the context.")}
     if res.effect == "confirmed" or res.verified is True:
         return {"decision": "done"}
     if res.effect == "unverifiable":
@@ -726,8 +794,11 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
         # Recapture the exact window when known: on Linux several unrelated windows may share an app name, so
         # app-only recapture can switch targets.
         exact = {k: (getattr(backend, "_last_target", None) or {}).get(k) for k in ("pid", "window_id")}
-        cap = backend.capture(mode=_capture_after_mode(), **(exact if None not in exact.values()
-                                                            else {"app": getattr(backend, "_last_app", None)}))
+        from tools.computer_use.session_context import capture_checked
+        cap = capture_checked(backend, mode=_capture_after_mode(), **(exact if None not in exact.values()
+                                                                     else {"app": getattr(backend, "_last_app", None)}))
+    except SessionExecutionError:
+        raise
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
@@ -891,7 +962,8 @@ def check_computer_use_requirements() -> bool:
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
     from tools.computer_use.cua_backend_driver import cua_driver_binary_available
-    return cua_driver_binary_available()
+    from tools.computer_use.targets import has_target_resolver
+    return has_target_resolver() or cua_driver_binary_available()
 
 def get_computer_use_schema() -> Dict[str, Any]:
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA

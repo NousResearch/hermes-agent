@@ -26,6 +26,12 @@ class _InputMixin:
 
     def _target_args(self, action: str, *, need_window: bool = False) -> Tuple[Optional[ActionResult], Dict[str, Any]]:
         """``(refusal, base args)`` for an input action against the sticky target."""
+        if getattr(self, "desktop_only", False):
+            self.execution_context.check()
+            if not self._desktop_target_ready:
+                return _refuse(action, "Desktop-only input requires a successful capture(app='screen') first."), {}
+            from tools.computer_use.session_context import DESKTOP_TARGET
+            return None, {"target": dict(DESKTOP_TARGET)}
         if self._active_pid is None or (need_window and self._active_window_id is None):
             return _refuse(action, _NO_TARGET_MSG), {}
         return None, {"pid": self._active_pid, **({"window_id": self._active_window_id} if need_window else {})}
@@ -36,6 +42,12 @@ class _InputMixin:
         when the target has a pid but no window_id yet. No variant -> refuse with *missing_msg* (None = bare window)."""
         for what, extra in variants:
             if extra is not None:
+                if getattr(self, "desktop_only", False):
+                    resolved = extra() if callable(extra) else extra
+                    if any(k in resolved for k in ("element_index", "from_element", "to_element")):
+                        return _refuse(tool, "desktop-only context does not expose AX elements")
+                    args.update(resolved)
+                    return None
                 if self._active_window_id is None:
                     return _refuse(tool, f"No active window_id for {what}.")
                 args.update(extra() if callable(extra) else extra, window_id=self._active_window_id)

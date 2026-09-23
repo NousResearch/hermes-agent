@@ -2022,11 +2022,16 @@ def load_config() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=True)
 
 
-def load_config_readonly() -> Dict[str, Any]:
+def load_config_readonly(*, home: Optional[Path] = None) -> Dict[str, Any]:
     """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
-    every subsequent caller** — only for code paths that never write to the result."""
-    return _load_config_impl(want_deepcopy=False)
+    every subsequent caller** — only for code paths that never write to the result.
+
+    An explicit ``home`` selects that profile without changing the process or context home.
+    This mode never initializes directories or writes corrupt-file backups; read/parse errors
+    propagate to the caller. Defaults, managed overlay and scoped env expansion still apply.
+    """
+    return _load_config_impl(want_deepcopy=False, home=home)
 
 
 def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -2241,15 +2246,16 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, 
     return None
 
 
-def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+def _load_config_impl(*, want_deepcopy: bool, home: Optional[Path] = None) -> Dict[str, Any]:
     # Lock-free fast path for cache hits — same publication contract as `_read_raw_config_impl`
     # above (whole-tuple replace, `_CONFIG_LOCK` only serializes rebuilds and writers). A hit costs
     # ~0.024ms; behind a lock held by `save_config()` the same read measured 10010ms, and on a
     # gateway that stalls every inbound message's hook path. A lost race falls through to the lock.
+    # An explicit ``home`` always takes the locked path (it must re-check recorded parse failures).
     try:
         config_path = get_config_path()
         path_key = str(config_path)
-        if path_key in _LOAD_CONFIG_CACHE:
+        if home is None and path_key in _LOAD_CONFIG_CACHE:
             _, fast_sig = _load_config_cache_sig(config_path)
             hit = _load_config_cache_hit(path_key, fast_sig)
             if hit is not None:
@@ -2260,13 +2266,18 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         pass
 
     with _CONFIG_LOCK:
-        ensure_hermes_home()
-        config_path = get_config_path()
+        if home is None:
+            ensure_hermes_home()
+            config_path = get_config_path()
+        else:
+            config_path = Path(home).expanduser().resolve() / "config.yaml"
         path_key = str(config_path)
 
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
-        hit = _load_config_cache_hit(path_key, cache_sig)
+        # An explicit home never serves a cached expansion over a file that currently fails to parse.
+        stale_failure = home is not None and _CONFIG_PARSE_FAILURES.get(path_key, ())[:4] == user_sig
+        hit = None if stale_failure else _load_config_cache_hit(path_key, cache_sig)
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
@@ -2289,9 +2300,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 # A copy of the file that just parsed is what a FRESH process falls back to when the
                 # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
-                from hermes_cli.config_backups import backup_config
-                backup_config(config_path, "good")
+                # An explicit home is a read-only view of another profile: never write into it.
+                if home is None:
+                    from hermes_cli.config_backups import backup_config
+                    backup_config(config_path, "good")
             except Exception as e:
+                if home is not None:
+                    raise
                 lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
                 if lkg_copy is not None:
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy

@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import mimetypes
 import os
 import time
 from contextlib import contextmanager
@@ -1050,11 +1051,47 @@ def _handle_create(args: dict, **kw) -> str:
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
+        _inherit_current_turn_attachments(kb, conn, new_tid, args.get("board"))
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
         return _ok(task_id=new_tid, **landed, **gate,
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
+
+
+def _inherit_current_turn_attachments(
+    kb: Any, conn: Any, task_id: str, board: Optional[str],
+) -> None:
+    """Copy inbound files onto a new task so another profile can read them."""
+    try:
+        from gateway.session_context import get_session_env
+
+        raw = get_session_env("HERMES_SESSION_MEDIA_PATHS", "") or ""
+        paths = json.loads(raw) if raw else []
+        if not isinstance(paths, list):
+            return
+        for raw_path in paths:
+            path = os.path.realpath(str(raw_path or ""))
+            if not path or not os.path.isfile(path):
+                continue
+            with open(path, "rb") as handle:
+                data = handle.read(kb.KANBAN_ATTACHMENT_MAX_BYTES + 1)
+            if len(data) > kb.KANBAN_ATTACHMENT_MAX_BYTES:
+                logger.warning("Skipping inherited attachment over Kanban cap: %s", path)
+                continue
+            filename = os.path.basename(path) or "attachment"
+            kb.store_attachment_bytes(
+                conn,
+                task_id,
+                filename,
+                data,
+                content_type=mimetypes.guess_type(filename)[0],
+                uploaded_by=os.environ.get("HERMES_PROFILE") or "gateway",
+                board=board,
+            )
+    except Exception:
+        # Attachment bookkeeping must never make task creation fail.
+        logger.warning("Failed to inherit current-turn attachments for %s", task_id, exc_info=True)
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:

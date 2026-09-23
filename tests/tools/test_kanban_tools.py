@@ -1100,6 +1100,30 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["delivery_mode"] == "notify+wake"
 
 
+def test_create_inherits_current_gateway_turn_attachments(tmp_path, worker_env):
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    inbound = tmp_path / "report.pdf"
+    inbound.write_bytes(b"%PDF-test")
+    tokens = set_session_vars(media_paths=json.dumps([str(inbound)]))
+    try:
+        result = json.loads(kt._handle_create({"title": "review report", "assignee": "peer"}))
+    finally:
+        clear_session_vars(tokens)
+
+    conn = kbc.connect()
+    try:
+        attachments = kb.list_attachments(conn, result["task_id"])
+    finally:
+        conn.close()
+    assert len(attachments) == 1
+    assert attachments[0].filename == "report.pdf"
+    assert attachments[0].content_type == "application/pdf"
+
+
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     """TUI / desktop sessions don't have a platform/chat_id (single
     local channel), but the parent process exports HERMES_SESSION_KEY.

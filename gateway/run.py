@@ -4257,7 +4257,9 @@ class GatewayRunner(
         Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(
+        self, context: SessionContext, *, media_paths: list[str] | None = None,
+    ) -> list:
         """Set session context variables (contextvars, not os.environ, so concurrent messages can't
         overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
         from gateway.session_context import set_session_vars
@@ -4280,7 +4282,9 @@ class GatewayRunner(
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
-            cron_session="")
+            cron_session="",
+            media_paths=json.dumps([str(path) for path in (media_paths or []) if path]),
+        )
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

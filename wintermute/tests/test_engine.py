@@ -544,3 +544,21 @@ def test_hand_edited_emotions_are_flagged_orange_without_alert(plugin, monkeypat
     assert sent == []
     activity = store.tail_jsonl(store.activity_path(), 10)
     assert any(a["kind"] == "flag" for a in activity) and any(a["kind"] == "tool" for a in activity)
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("cat ~/.hermes/SOUL.md 2>/dev/null", None),
+    ("diff ~/.hermes/SOUL.md /tmp/old 2>&1 | head", None),
+    ("cp ~/.hermes/SOUL.md /tmp/soul.bak", None),
+    ("tail -n 5 ~/.hermes/wintermute/events.jsonl > /tmp/e.txt", None),
+    ("sed -n 1,5p ~/.hermes/SOUL.md", None),
+    ("sed -i 's/a/b/' ~/.hermes/wintermute/drives.json", "state"),
+    ("echo x >> ~/.hermes/SOUL.md", "soul"),
+    ("cp /tmp/x ~/.hermes/SOUL.md", "soul"),
+    ("rm ~/.hermes/wintermute/events.jsonl", "records"),
+    ("cat foo | tee ~/.hermes/wintermute/usage.jsonl", "records"),
+    ("cd ~/.hermes && echo hi > SOUL.md", "soul"),
+])
+def test_reading_is_not_writing(command, expected):
+    got = integrity.classify_tool_call("terminal", {"command": command})
+    assert (got[0] if got else None) == expected

@@ -44,9 +44,14 @@ ATTRIBUTED: Dict[str, Tuple[str, str]] = {
 }
 ALL_ITEMS = {**WATCHED, **ATTRIBUTED}
 
-_WRITE_HINTS = re.compile(
-    r"(>|\bsed\s+-i|\btee\b|\bcp\b|\bmv\b|\brm\b|\btruncate\b|\bchmod\b|\bln\b|\binstall\b"
-    r"|write_text|write_bytes|open\([^)]*['\"][wa+])")
+_NOISE_REDIRECTS = re.compile(r"\d?>&\d|\d?>\s*/dev/null|&>\s*/dev/null")
+_SEGMENT_SPLIT = re.compile(r"\|\||&&|[;|\n]")
+_WRITE_ALL_ARGS = {"rm", "unlink", "truncate", "chmod", "chown", "touch", "shred"}
+_WRITE_LAST_ARG = {"cp", "mv", "install", "ln", "rsync", "dd"}
+_CODE_WRITE = re.compile(
+    r"(open\([^)]*?(?P<a>[\w./~-]+)['\"][^)]*,\s*['\"][wax+]"
+    r"|(?P<b>[\w./~-]+)['\"]\)?\s*\.write_(?:text|bytes)"
+    r"|Path\([^)]*?(?P<c>[\w./~-]+)['\"]\)\s*\.(?:write_text|write_bytes|unlink))")
 
 
 def integrity_path() -> Path:
@@ -108,26 +113,62 @@ _PATH_NAMES = ("SOUL.md", "wintermute_engine", "plugins/wintermute", "wintermute
                "events.jsonl", "usage.jsonl", "integrity.json")
 
 
-def classify_tool_call(tool: str, args: Any) -> Optional[Tuple[str, str]]:
-    """``(item, target)`` when a tool call writes a watched file, else None.
+def _shell_write_targets(command: str) -> List[str]:
+    """Paths a shell command writes to: redirect targets, and the arguments that a
+    writing command modifies. Reading a file (cat, grep, cp FROM it, 2>/dev/null) is not
+    a write. Best effort; the pulse fingerprints confirm what really changed."""
+    import shlex
+    targets: List[str] = []
+    for segment in _SEGMENT_SPLIT.split(_NOISE_REDIRECTS.sub(" ", command)):
+        # Redirections: `> file`, `>> file`, `>file`.
+        for match in re.finditer(r">>?\s*([^\s;&|]+)", segment):
+            targets.append(match.group(1))
+        segment = re.sub(r">>?\s*[^\s;&|]+", " ", segment)
+        try:
+            words = shlex.split(segment)
+        except ValueError:
+            words = segment.split()
+        while words and ("=" in words[0] and not words[0].startswith("-") or words[0] in ("sudo", "env", "nohup")):
+            words = words[1:]                             # VAR=x cmd, sudo cmd
+        if not words:
+            continue
+        cmd, args = words[0].rsplit("/", 1)[-1], [w for w in words[1:] if not w.startswith("-")]
+        if cmd == "sed" and any(w.startswith("-i") or w == "--in-place" for w in words[1:]):
+            targets += args[1:]                           # first non-option arg is the script
+        elif cmd == "tee":
+            targets += args
+        elif cmd in _WRITE_ALL_ARGS:
+            targets += args
+        elif cmd in _WRITE_LAST_ARG and len(args) >= 2:
+            targets.append(args[-1])
+    return targets
 
-    File tools are exact; terminal and code are a best guess (a watched name plus a
-    write-shaped operation), confirmed later by the fingerprints."""
+
+def classify_tool_call(tool: str, args: Any) -> Optional[Tuple[str, str]]:
+    """``(item, target)`` when a tool call WRITES a watched file, else None.
+
+    File tools are exact. Terminal commands are parsed for their write targets; code for
+    open(..., 'w'/'a') and write_text on a watched name. Reads never count."""
     if not isinstance(args, dict):
         return None
     if tool in ("write_file", "patch"):
         path = str(args.get("path") or "")
         item = classify_path(path)
         return (item, path) if item else None
-    if tool in ("terminal", "execute_code"):
-        text = str(args.get("command") or args.get("code") or "")
-        if not _WRITE_HINTS.search(text):
-            return None
-        for name in _PATH_NAMES:
-            if name in text:
-                item = classify_path(name if "/" in name else f"x/{name}")
-                if item:
-                    return item, " ".join(text.split())[:160]
+    if tool == "terminal":
+        command = str(args.get("command") or "")
+        for target in _shell_write_targets(command):
+            item = classify_path(target)
+            if item:
+                return item, " ".join(command.split())[:160]
+        return None
+    if tool == "execute_code":
+        code = str(args.get("code") or "")
+        for match in _CODE_WRITE.finditer(code):
+            path = match.group("a") or match.group("b") or match.group("c") or ""
+            item = classify_path(path)
+            if item:
+                return item, path
     return None
 
 

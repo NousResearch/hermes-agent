@@ -475,7 +475,8 @@ async function ridesPrimaryBackend(
       `Timed out resolving the backend route for "${key}"`
     )
 
-    const flags = conn && typeof conn === 'object' ? (conn as { sharedPrimary?: boolean; sharedRemote?: boolean }) : null
+    const flags =
+      conn && typeof conn === 'object' ? (conn as { sharedPrimary?: boolean; sharedRemote?: boolean }) : null
 
     return flags?.sharedRemote === true || flags?.sharedPrimary === true
   } catch {

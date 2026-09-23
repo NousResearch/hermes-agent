@@ -798,7 +798,11 @@ describe('session-owner calls for a profile on the shared local host backend (#1
     expect(secondaryGateways).toHaveLength(0)
     expect(primary.request).toHaveBeenCalledTimes(2)
     expect(primary.request).toHaveBeenNthCalledWith(1, 'session.create', { title: 'g', profile: 'work' })
-    expect(primary.request).toHaveBeenNthCalledWith(2, 'prompt.submit', { session_id: 'rt-1', text: 'hi', profile: 'work' })
+    expect(primary.request).toHaveBeenNthCalledWith(2, 'prompt.submit', {
+      session_id: 'rt-1',
+      text: 'hi',
+      profile: 'work'
+    })
   })
 
   it('still dials a secondary for a pooled local profile (isolated backend, #101416)', async () => {

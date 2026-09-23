@@ -162,6 +162,10 @@ _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal"
 
 
 def _set_fast(rid, params, key, value, session):
+    if session is None and params.get("session_id"):
+        # A runtime id this backend no longer holds (reaped / re-minted) must not reach the sessionless
+        # branch: it persists agent.service_tier for every surface. 4001 lets the client resume it.
+        return _sess_nowait(params, rid)[1]
     raw = _word(value)
     agent = session.get("agent") if session else None
     if agent is not None:
@@ -278,6 +282,10 @@ def _set_yolo(rid, params, key, value, session):
         enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
         (enable_session_yolo if enable else disable_session_yolo)(skey)
         _emit_session_info(params.get("session_id", ""), session)
+    elif params.get("session_id"):
+        # Stale runtime id: the process flag below never reaches this session's approvals, yet every
+        # child spawned afterwards (compute host, a terminal's `hermes`) inherits the flip.
+        return _sess_nowait(params, rid)[1]
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))
         if enable:

@@ -4,7 +4,15 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
-import { $previewTabs, $previewTarget, closeRightRail, type PreviewTarget } from '@/store/preview'
+import {
+  $dismissedPreviewTargets,
+  $previewTabs,
+  $previewTarget,
+  closePreviewForSource,
+  closeRightRail,
+  openPreview,
+  type PreviewTarget
+} from '@/store/preview'
 import { $activeSessionId, $currentCwd, $messages, $selectedStoredSessionId } from '@/store/session'
 
 import { usePreviewRouting } from './use-preview-routing'
@@ -62,6 +70,7 @@ describe('preview routing', () => {
     $currentCwd.set('/work')
     $messages.set([])
     closeRightRail()
+    $dismissedPreviewTargets.set([])
     window.localStorage.clear()
 
     Object.defineProperty(window, 'hermesDesktop', {
@@ -74,6 +83,7 @@ describe('preview routing', () => {
     cleanup()
     $messages.set([])
     closeRightRail()
+    $dismissedPreviewTargets.set([])
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
@@ -159,6 +169,49 @@ describe('preview routing', () => {
 
       await emitPreviewOpen('/tmp/one.html')
       await emitPreviewOpen('/tmp/one.html')
+
+      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+    })
+
+    // Replay re-delivers preview.open on every session load (refresh,
+    // restart, reconnect); a tab the user closed must not resurrect from it
+    // (#92975).
+    it('does not resurrect a tab the user closed when the open event replays', async () => {
+      render(<Harness />)
+
+      await emitPreviewOpen('/tmp/test.html')
+      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+
+      await act(async () => {
+        closePreviewForSource('/tmp/test.html')
+      })
+      expect($previewTabs.get()).toHaveLength(0)
+
+      await emitPreviewOpen('/tmp/test.html')
+
+      expect($previewTabs.get()).toHaveLength(0)
+      expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledTimes(1)
+    })
+
+    it('re-admits a dismissed target once the user opens it again by hand', async () => {
+      render(<Harness />)
+
+      await emitPreviewOpen('/tmp/test.html')
+      await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+
+      await act(async () => {
+        closePreviewForSource('/tmp/test.html')
+      })
+      expect($previewTabs.get()).toHaveLength(0)
+
+      // A hand open (status row, context menu, file browser) is a fresh
+      // verdict: it clears the marker, so a later replay re-fronts the tab
+      // instead of being swallowed forever.
+      await act(async () => {
+        openPreview(fileTarget('/tmp/test.html'), 'manual')
+      })
+
+      await emitPreviewOpen('/tmp/test.html')
 
       await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
     })

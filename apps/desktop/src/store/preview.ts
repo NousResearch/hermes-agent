@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { Codecs, persistentAtom } from '@/lib/persisted'
 import { readJson, readKey, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
@@ -283,6 +284,41 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
   }
 }
 
+/** Targets the user closed. `preview.open` replay re-runs on every session
+ * load (refresh, restart, reconnect), so without a durable marker a closed
+ * tab resurrects forever (#92975). Any later explicit open clears the marker. */
+export const $dismissedPreviewTargets = persistentAtom<string[]>(
+  'hermes.desktop.dismissedPreviewTargets.v1',
+  [],
+  Codecs.stringArray
+)
+
+/** Bound the marker list; dismissals are consulted on every replayed open. */
+const DISMISSED_MAX = 100
+
+function recordDismissedTargets(targets: PreviewTarget[]): void {
+  const keys = targets
+    .flatMap(target => [target.source, target.url])
+    .map(key => key.trim())
+    .filter(key => key !== '')
+
+  if (keys.length === 0) {
+    return
+  }
+
+  const next = [...new Set([...$dismissedPreviewTargets.get(), ...keys])]
+
+  $dismissedPreviewTargets.set(next.slice(-DISMISSED_MAX))
+}
+
+/** Replay must never beat the user: a `preview.open` for a target the user
+ * closed is skipped until they open it again by hand. */
+export function isPreviewDismissed(target: string): boolean {
+  const key = target.trim()
+
+  return key !== '' && $dismissedPreviewTargets.get().includes(key)
+}
+
 if (typeof window !== 'undefined') {
   try {
     window.localStorage.removeItem(LEGACY_SESSION_REGISTRY_KEY)
@@ -523,6 +559,14 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
  *  its target so a stale label/path can't outlive the thing it points at. The
  *  only way anything reaches a preview. */
 export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
+  // An explicit open re-admits a dismissed target — the marker only guards
+  // replayed events, never a fresh user action.
+  const dismissed = $dismissedPreviewTargets.get()
+
+  if (dismissed.includes(target.source) || dismissed.includes(target.url)) {
+    $dismissedPreviewTargets.set(dismissed.filter(key => key !== target.source && key !== target.url))
+  }
+
   const resolved = previewTargetForSource(target, source)
   const current = $previewTabs.get()
   const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
@@ -554,7 +598,8 @@ export function newBrowserTab() {
   selectRightRailTab(id)
 }
 
-export function closeRightRailTab(tabId: string) {
+/** Remove one tab from the rail, no dismissal bookkeeping. */
+function removeTab(tabId: string) {
   const current = $previewTabs.get()
   const index = current.findIndex(tab => tab.id === tabId)
 
@@ -572,6 +617,18 @@ export function closeRightRailTab(tabId: string) {
 
   if (next.length === 0) {
     selectRightRailTab(null)
+  }
+}
+
+/** Close a tab the user (or the agent on their behalf) dismissed. The target
+ * is remembered so a replayed `preview.open` cannot resurrect it. */
+export function closeRightRailTab(tabId: string) {
+  const tab = $previewTabs.get().find(item => item.id === tabId)
+
+  removeTab(tabId)
+
+  if (tab) {
+    recordDismissedTargets([tab.target])
   }
 }
 
@@ -606,17 +663,21 @@ export function closePreviewMatching(...candidates: string[]): boolean {
 }
 
 /** Artifact tabs can't outlive the registry they read from, so clearing it
- *  closes them. File and URL tabs re-read from their source and are left alone. */
+ * closes them. File and URL tabs re-read from their source and are left alone.
+ * Registry cleanup is a lifecycle event, not a user dismissal — nothing to
+ * replay against, so no marker is recorded. */
 export function closeArtifactPreviewTabs() {
   for (const tab of $previewTabs.get()) {
     if (tab.target.kind === 'artifact') {
-      closeRightRailTab(tab.id)
+      removeTab(tab.id)
     }
   }
 }
 
 /** Close every tab so the rail's panes leave the tree. */
 export function closeRightRail() {
+  recordDismissedTargets($previewTabs.get().map(tab => tab.target))
+
   $previewTabs.set([])
   selectRightRailTab(null)
 }

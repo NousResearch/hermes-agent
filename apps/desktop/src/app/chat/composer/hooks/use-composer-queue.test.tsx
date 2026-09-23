@@ -6,7 +6,9 @@ import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  HELD_DRAIN_RETRY_MS,
   isQueueParked,
+  markQueuedPromptHeld,
   MAX_AUTO_DRAIN_ATTEMPTS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
@@ -224,6 +226,27 @@ describe('useComposerQueue park integration', () => {
     expect(onSubmit.mock.calls[0]?.[0]).toBe('kept on reject')
   })
 
+  it('a rejected steer moves the entry to the FRONT so the live turn reads it next', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'older follow-up' })
+    const steered = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'read me next' })
+    const onSteer = vi.fn(async () => false)
+    const { hook, onSubmit } = renderQueueHook({ busy: true, onSteer })
+
+    await act(async () => {
+      expect(await hook.result.current.steerQueuedNow(steered!.id)).toBe(false)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual([
+      'read me next',
+      'older follow-up'
+    ])
+
+    // Nothing is lost: the promoted entry is the first thing the next turn reads.
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]?.[0]).toBe('read me next')
+  })
+
   it('steerQueuedNow refuses unsteerable entries (slash commands execute, never steer)', async () => {
     const slash = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: '/compress' })
     const onSteer = vi.fn(async () => true)
@@ -287,5 +310,47 @@ describe('useComposerQueue park integration', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+  })
+
+  it('retries a held entry on the patient schedule instead of the fast budget', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held recoverable' })!
+      markQueuedPromptHeld(SESSION_KEY, entry.id)
+      const { hook, onSubmit } = renderQueueHook({ busy: true })
+      onSubmit.mockResolvedValue(false)
+      hook.rerender({ busy: false })
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+
+      // Held entries never burn the fast budget: no 750ms retries.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000)
+      })
+
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+
+      // The patient cadence checks back once; still refused.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HELD_DRAIN_RETRY_MS)
+      })
+
+      expect(onSubmit).toHaveBeenCalledTimes(2)
+
+      // The chat frees → the next patient attempt delivers.
+      onSubmit.mockResolvedValue(true)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HELD_DRAIN_RETRY_MS)
+      })
+
+      expect(onSubmit).toHaveBeenCalledTimes(3)
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

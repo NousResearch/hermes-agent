@@ -8,6 +8,9 @@ import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  HELD_DRAIN_MAX_WAIT_MS,
+  HELD_DRAIN_RETRY_MS,
+  markQueuedPromptHeld,
   parkQueuedPrompts
 } from '@/store/composer-queue'
 import { $sessions, setSessions, setSessionsLoading } from '@/store/session'
@@ -82,7 +85,7 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })!
     clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
@@ -91,6 +94,7 @@ describe('useBackgroundQueueDrain', () => {
       expect(submitText).toHaveBeenCalledWith('continue in the background', {
         attachments: [],
         fromQueue: true,
+        queueEntryId: entry.id,
         sessionId: 'rt-session-a',
         storedSessionId: 'stored-session-a'
       })
@@ -187,7 +191,7 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
@@ -195,6 +199,7 @@ describe('useBackgroundQueueDrain', () => {
       expect(submitText).toHaveBeenCalledWith('resume then send', {
         attachments: [],
         fromQueue: true,
+        queueEntryId: entry!.id,
         sessionId: null,
         storedSessionId: 'stored-session-a'
       })
@@ -254,7 +259,7 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'send after load', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'send after load', attachments: [] })
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
@@ -267,11 +272,84 @@ describe('useBackgroundQueueDrain', () => {
       expect(submitText).toHaveBeenCalledWith('send after load', {
         attachments: [],
         fromQueue: true,
+        queueEntryId: entry!.id,
         sessionId: 'rt-session-a',
         storedSessionId: 'stored-session-a'
       })
     })
 
     await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+  })
+
+  it('retries a held entry on the patient schedule and delivers when the chat frees', async () => {
+    vi.useFakeTimers()
+
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => false)
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'held retry', attachments: [] })!
+
+    markQueuedPromptHeld('stored-session-a', entry.id)
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(submitText).toHaveBeenCalledTimes(1)
+
+    // A held entry never touches the fast budget: 5x750ms passes with no retry.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(750 * 5)
+    })
+
+    expect(submitText).toHaveBeenCalledTimes(1)
+
+    // The patient cadence checks back — still refused.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HELD_DRAIN_RETRY_MS)
+    })
+
+    expect(submitText).toHaveBeenCalledTimes(2)
+
+    // The owner frees the chat: the next patient attempt lands the message.
+    submitText.mockResolvedValue(true)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HELD_DRAIN_RETRY_MS)
+    })
+
+    expect(submitText).toHaveBeenCalledTimes(3)
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
+  })
+
+  it('gives up on a held entry past the wait cap, clears the marker and leaves it for a manual send', async () => {
+    vi.useFakeTimers()
+
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => false)
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'hopeless', attachments: [] })!
+
+    // Age the hold past the cap so the FIRST refusal already gives up.
+    $queuedPromptsBySession.set({
+      'stored-session-a': [{ ...entry, held: { reason: 'not_owned', since: Date.now() - HELD_DRAIN_MAX_WAIT_MS - 1 } }]
+    })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(submitText).toHaveBeenCalledTimes(1)
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+    // Marker dropped; the entry stays for a manual send and the fast budget is
+    // burned so the effect skips it instead of hammering.
+    expect(getQueuedPrompts('stored-session-a')[0]?.held).toBeUndefined()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HELD_DRAIN_RETRY_MS * 3)
+    })
+
+    expect(submitText).toHaveBeenCalledTimes(1)
   })
 })

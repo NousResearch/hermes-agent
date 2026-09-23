@@ -3338,6 +3338,9 @@ export const en: Translations = {
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',
     queueStuckBody: 'A queued turn kept failing to send. It is still in the queue — try sending it again.',
+    queueSteerRefusedTitle: 'Steer not taken',
+    queueSteerRefusedBody:
+      'The live turn could not take the redirect. Your message stays queued and is now first in line.',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,

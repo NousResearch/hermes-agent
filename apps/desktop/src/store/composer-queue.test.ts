@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ComposerAttachment } from './composer'
 import {
@@ -8,10 +8,13 @@ import {
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  isQueuedPromptHeld,
   isQueueParked,
+  markQueuedPromptHeld,
   migrateQueuedPrompts,
   parkQueuedPrompts,
   promoteQueuedPrompt,
+  type QueuedPromptEntry,
   removeQueuedPrompt,
   shouldAutoDrain,
   unparkQueuedPrompts,
@@ -274,5 +277,45 @@ describe('hidden entries', () => {
       { text: '[setup] links opened', displayKind: 'hidden' },
       { text: 'Start without connections.', displayKind: undefined }
     ])
+  })
+})
+
+describe('held entries (another surface owns the chat)', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('keeps the ORIGINAL hold time across re-marks and restarts', () => {
+    // The hold time is the wait cap's clock, so it must survive both halves of
+    // the restart hazard: a re-mark on every refusal (the drained entry is
+    // re-marked each time) and the app reloading mid-wait, which re-reads the
+    // entry from storage.
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'parked' })!
+    const since = 1_700_000_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(since)
+
+    try {
+      expect(markQueuedPromptHeld(SESSION_KEY, entry.id)).toBe(true)
+      now.mockReturnValue(since + 30 * 60 * 1000)
+      expect(markQueuedPromptHeld(SESSION_KEY, entry.id)).toBe(true)
+
+      const parked = getQueuedPrompts(SESSION_KEY)[0]!
+
+      expect(isQueuedPromptHeld(parked) && parked.held.since).toBe(since)
+      expect(isQueuedPromptHeld(parked) && parked.held.reason).toBe('not_owned')
+
+      // A reload re-reads the same clock from storage instead of granting a
+      // fresh cap (the store hydrates $queuedPromptsBySession from this blob).
+      const persisted = JSON.parse(
+        String(window.localStorage.getItem(QUEUE_STORAGE_KEY))
+      ) as Record<string, QueuedPromptEntry[]>
+
+      const restored = persisted[SESSION_KEY]![0]!
+
+      expect(isQueuedPromptHeld(restored) && restored.held.since).toBe(since)
+    } finally {
+      now.mockRestore()
+    }
   })
 })

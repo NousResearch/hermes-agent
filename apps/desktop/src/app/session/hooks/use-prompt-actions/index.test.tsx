@@ -5935,12 +5935,15 @@ describe('usePromptActions live-owner refusal (#106217)', () => {
     clearNotifications()
   })
 
-  it('stamps the 4090 SESSION_NOT_OWNED refusal as a non-retryable gateway error surface', async () => {
-    // Another surface (TUI) holds the lease: the gateway refuses prompt.submit
-    // with the machine reason in error.data. The inline error bubble must
-    // carry that as a structured descriptor so the card can drop Retry and
-    // offer "Start new session" without sniffing the English prose.
+  it('parks the 4090 SESSION_NOT_OWNED refusal on the composer queue instead of a dead-end error', async () => {
+    // Another surface (TUI/CLI/delivery turn) holds the lease: the gateway
+    // refuses prompt.submit with the machine reason in error.data. The refusal
+    // is deterministic and leaves the session untouched, so the send parks on
+    // the composer queue (held) and auto-drains the moment the chat frees —
+    // the user can ALWAYS write. No dead-end error card.
     let latest: Record<string, unknown> | undefined
+
+    $queuedPromptsBySession.set({})
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'prompt.submit') {
@@ -5965,12 +5968,21 @@ describe('usePromptActions live-owner refusal (#106217)', () => {
       />
     )
 
-    expect(await handle!.submitText('continue here')).toBe(false)
+    expect(await handle!.submitText('continue here')).toBe(true)
 
-    const bubble = (latest?.messages as { error?: string; errorSurface?: Record<string, unknown> }[]).at(-1)
+    const messages = (latest?.messages ?? []) as { error?: string; errorSurface?: Record<string, unknown>; text?: string }[]
 
-    expect(bubble?.error).toMatch(/already has a live owner/)
-    expect(bubble?.errorSurface).toEqual({ layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false })
+    // No dead-end error bubble, and the optimistic bubble was rolled back: the
+    // message lives in the queue, not in the transcript.
+    expect(messages.some(m => m.errorSurface)).toBe(false)
+    expect(messages.some(m => typeof m.text === 'string' && m.text.includes('continue here'))).toBe(false)
+
+    const queued = Object.values($queuedPromptsBySession.get()).flat()
+    const parked = queued.filter(entry => entry.text === 'continue here')
+
+    expect(parked).toHaveLength(1)
+    expect(parked[0]?.held?.reason).toBe('not_owned')
+
     // Not a stale-runtime symptom: no resume/re-mint attempt hides the refusal.
     expect(requestGateway.mock.calls.map(c => c[0])).toEqual(['prompt.submit'])
   })

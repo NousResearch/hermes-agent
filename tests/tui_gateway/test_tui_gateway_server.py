@@ -12450,6 +12450,99 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
     assert "interrupt_called" not in calls  # must NOT interrupt
 
 
+def test_session_redirect_degrades_to_steer_when_nothing_is_in_flight():
+    """A redirect can only cancel an in-flight model request.
+
+    Between two iterations (or past the last one) ``redirect()`` refuses, and that refusal used to be
+    the end of the road: the clients swallowed a bare ``rejected``, so a queued message looked like a
+    dead Steer button. The correction is delivered as a steer instead — status ``queued``, which both
+    clients already treat as accepted, and whose text rides the next tool result (past the last one
+    it is requeued as the next turn, so nothing is lost either way).
+    """
+    calls = {}
+
+    class _Agent:
+        _supports_active_turn_redirect = True
+
+        def redirect(self, text):
+            calls["redirect_text"] = text
+            return False  # nothing in flight to interrupt
+
+        def steer(self, text):
+            calls["steer_text"] = text
+            return True
+
+    session = _session(agent=_Agent(), running=True)
+    session["inflight_turn"] = {"user": "original request", "assistant": "partial"}
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.redirect",
+             "params": {"session_id": "sid", "text": "go"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "result" in resp, resp
+    assert resp["result"]["status"] == "queued"
+    assert resp["result"]["text"] == "go"
+    # Booked on the live turn exactly like an accepted redirect (mid-turn resume rebuilds the bubble).
+    assert session["inflight_turn"]["corrections"] == ["go"]
+    assert calls == {"redirect_text": "go", "steer_text": "go"}
+
+
+def test_session_redirect_reports_rejected_when_the_steer_also_refuses():
+    """No false success: with neither verb taking the text the client still sees ``rejected``
+    (it keeps the words queued and moves the entry to the front)."""
+
+    class _Agent:
+        _supports_active_turn_redirect = True
+
+        def redirect(self, text):
+            return False
+
+        def steer(self, text):
+            return False
+
+    server._sessions["sid"] = _session(agent=_Agent(), running=True)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.redirect",
+             "params": {"session_id": "sid", "text": "go"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "result" in resp, resp
+    assert resp["result"]["status"] == "rejected"
+
+
+def test_session_redirect_never_steers_an_idle_session():
+    """An idle session has no live turn to steer into: the refusal stays a refusal so the text
+    becomes an ordinary next turn instead of being stashed where nothing drains it."""
+
+    class _Agent:
+        _supports_active_turn_redirect = True
+
+        def redirect(self, text):
+            return False
+
+        def steer(self, text):
+            raise AssertionError("steer must not be used without a live turn")
+
+    server._sessions["sid"] = _session(agent=_Agent(), running=False)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.redirect",
+             "params": {"session_id": "sid", "text": "go"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "result" in resp, resp
+    assert resp["result"]["status"] == "rejected"
+
+
 def test_session_steer_rejects_empty_text():
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(steer=lambda t: True)

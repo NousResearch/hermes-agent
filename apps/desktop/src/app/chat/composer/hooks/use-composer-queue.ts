@@ -9,10 +9,15 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  clearQueuedPromptHeld,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  HELD_DRAIN_MAX_WAIT_MS,
+  HELD_DRAIN_RETRY_MS,
+  isQueuedPromptHeld,
   isSteerableEntry,
   MAX_AUTO_DRAIN_ATTEMPTS,
+  MAX_HELD_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
@@ -99,6 +104,7 @@ export function useComposerQueue({
   const prevQueueKeyRef = useRef(activeQueueSessionKey)
   const drainingQueueRef = useRef(false)
   const drainFailuresRef = useRef(new Map<string, number>())
+  const heldDrainFailuresRef = useRef(new Map<string, number>())
   const [drainRetryTick, setDrainRetryTick] = useState(0)
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
@@ -224,6 +230,7 @@ export function useComposerQueue({
             ...(entry.displayText ? { displayText: entry.displayText } : {}),
             ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
             fromQueue: true,
+            queueEntryId: entry.id,
             sessionId: drainRuntimeSessionId,
             storedSessionId: drainQueueSessionKey
           })
@@ -234,6 +241,7 @@ export function useComposerQueue({
         }
 
         drainFailuresRef.current.delete(entry.id)
+        heldDrainFailuresRef.current.delete(entry.id)
         removeQueuedPrompt(drainQueueSessionKey, entry.id)
         resetBrowseState(drainRuntimeSessionId)
         // A successful drain means the queue is flowing again — lift any park
@@ -282,8 +290,12 @@ export function useComposerQueue({
       }
 
       // A manual send clears the auto-drain backoff so a stuck entry the user
-      // taps gets a fresh attempt (and re-enables auto-retry on success).
+      // taps gets a fresh attempt (and re-enables auto-retry on success). A
+      // held marker is cleared too: a manual retry is fresh intent, so the next
+      // refusal starts a new wait window.
       drainFailuresRef.current.delete(id)
+      heldDrainFailuresRef.current.delete(id)
+      clearQueuedPromptHeld(activeQueueSessionKey, id)
 
       return runDrain(entries => entries.find(e => e.id === id))
     },
@@ -312,10 +324,13 @@ export function useComposerQueue({
 
       const accepted = await Promise.resolve(onSteer(entry.text))
 
-      // Rejected (turn already settling, gateway said no): leave the entry
-      // queued exactly where it was — the settle drain picks it up, so the
-      // words are never lost. Only a delivered redirect consumes the entry.
+      // Rejected (nothing in flight to cancel, an agent-side refusal, the turn
+      // settling): leave the entry queued so the settle drain reads it — and move
+      // it to the FRONT, because the click said "read this next". Only a delivered
+      // redirect consumes the entry; steerPrompt owns the notice saying why.
       if (!accepted) {
+        promoteQueuedPrompt(activeQueueSessionKey, id)
+
         return false
       }
 
@@ -350,6 +365,38 @@ export function useComposerQueue({
 
     const onFail = () => {
       if (cancelled) {
+        return
+      }
+
+      // Read the held marker live: it is set by the refusal that just failed
+      // this very attempt, after the entry copy above was captured.
+      const liveEntry = getQueuedPrompts(activeQueueSessionKey).find(candidate => candidate.id === entry.id)
+      const held = liveEntry && isQueuedPromptHeld(liveEntry) ? liveEntry.held : null
+
+      if (held) {
+        // The chat is held by another surface (a hidden delivery turn, another
+        // window): refusals are EXPECTED — retry lightly (never on the fast
+        // budget) until the wait cap, then stop with the standard toast and
+        // leave the entry queued for a manual send.
+        const heldFails = (heldDrainFailuresRef.current.get(entry.id) ?? 0) + 1
+        heldDrainFailuresRef.current.set(entry.id, heldFails)
+
+        if (Date.now() - held.since < HELD_DRAIN_MAX_WAIT_MS && heldFails < MAX_HELD_DRAIN_ATTEMPTS) {
+          retryTimer = setTimeout(() => setDrainRetryTick(tick => tick + 1), HELD_DRAIN_RETRY_MS)
+
+          return
+        }
+
+        heldDrainFailuresRef.current.delete(entry.id)
+        clearQueuedPromptHeld(activeQueueSessionKey, entry.id)
+        drainFailuresRef.current.set(entry.id, MAX_AUTO_DRAIN_ATTEMPTS)
+        notify({
+          id: 'composer-queue-stuck',
+          kind: 'error',
+          title: t.composer.queueStuckTitle,
+          message: t.composer.queueStuckBody
+        })
+
         return
       }
 

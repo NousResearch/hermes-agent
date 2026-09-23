@@ -19,6 +19,7 @@ import {
   mainComposerScope,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
+import { enqueueQueuedPrompt, markQueuedPromptHeld } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
@@ -887,6 +888,48 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // stays queued and the composer's bounded auto-drain retries when idle.
         if (options?.fromQueue && isSessionBusyError(err)) {
           return false
+        }
+
+        // The chat is held by another surface — a hidden delivery turn, another
+        // window, a CLI session (4090 / SESSION_NOT_OWNED, #106217). The refusal
+        // is deterministic and leaves the session untouched, so a dead-end error
+        // card would be pure loss: park the send on the composer queue instead —
+        // its auto-drain delivers the message the moment the chat frees. The
+        // user can ALWAYS write.
+        if (isSessionNotOwnedError(err)) {
+          if (options?.fromQueue) {
+            // Keep the entry queued; flip it to the patient retry policy so a
+            // long-running owner can't burn the fast auto-drain budget.
+            if (options.queueEntryId && options.storedSessionId) {
+              markQueuedPromptHeld(options.storedSessionId, options.queueEntryId)
+            }
+
+            return false
+          }
+
+          const heldStored =
+            targetStoredSessionId ?? (sessionId ? $sessionStates.get()[sessionId]?.storedSessionId : null) ?? null
+
+          const queueKey = resolveComposerSessionKey(heldStored, $sessions.get()) || heldStored || sessionId
+
+          const heldEntry = enqueueQueuedPrompt(queueKey, {
+            attachments,
+            displayText: bubbleText,
+            ...(options?.displayKind === 'hidden' && { displayKind: 'hidden' as const }),
+            text: rawText
+          })
+
+          if (heldEntry) {
+            markQueuedPromptHeld(queueKey, heldEntry.id)
+
+            if (usingComposerAttachments) {
+              scope.removeAttachments(attachments)
+            }
+
+            dropOptimistic(sessionId)
+
+            return true
+          }
         }
 
         const message = inlineErrorMessage(err, copy.promptFailed)

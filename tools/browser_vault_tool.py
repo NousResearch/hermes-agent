@@ -595,13 +595,13 @@ BROWSER_VAULT_LIST_SCHEMA = {
 BROWSER_VAULT_UNLOCK_SCHEMA = {
     "name": "browser_vault_unlock",
     "description": (
-        "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master "
+        "Ask the user to unlock an enabled password manager for this session. The master "
         "password is typed into a masked prompt owned by the UI and never enters the conversation. "
         "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
     ),
     "parameters": {
         "type": "object",
-        "properties": {"backend": {"type": "string", "enum": ["onepassword", "bitwarden"],
+        "properties": {"backend": {"type": "string",
                                    "description": "Backend name from browser_vault_list `locked`."}},
         "required": ["backend"],
     },

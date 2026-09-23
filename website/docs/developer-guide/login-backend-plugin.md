@@ -95,6 +95,17 @@ exceptions. `needs_unlock=False` avoids a master-password prompt for token provi
 it does not prove authentication is valid. TOTP support is optional and should be an
 explicit authority decision.
 
+For an interactive manager, set `needs_unlock=True` and implement `is_unlocked()`
+and `unlock(master_password)`. The existing masked prompt supplies the password
+privately. `browser_vault_unlock` accepts an enabled backend's name and rejects
+unknown, disabled, or non-unlockable sources before prompting. Headless sessions
+without a prompt callback retain the existing `unlock_unavailable` outcome.
+
+This registration API does not change destination matching: list every permitted
+website in `VaultItemMeta.allowed_origins`; password fills require an exact origin
+match. Providers must raise credential-free errors as well as avoid logging secrets;
+registration does not add general runtime exception sanitization.
+
 ## Verification
 
 Exercise registration through a real temporary profile, not only registry mocks.

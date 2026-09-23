@@ -51,6 +51,20 @@ sys.exit(2)
 '''
 
 
+# `op` desktop integration uses local IPC.  This fake makes that boundary
+# observable without a 1Password installation: it refuses a child that stays
+# in the long-lived Hermes process session, like the reported reset does.
+_FAKE_OP_SESSION = r'''#!/usr/bin/env python3
+import os, sys
+if os.getsid(0) == os.getsid(os.getppid()):
+    sys.stderr.write("connecting to desktop app: connection reset\n")
+    sys.exit(1)
+assert sys.argv[1:] == ["signin", "--raw"]
+assert sys.stdin.read() == "correct horse\n"
+print("OP-SESSION-TOKEN")
+'''
+
+
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="fake bw is a shebang script; the backend under test is host-agnostic")
 
 
@@ -231,3 +245,19 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+def test_onepassword_unlock_starts_op_in_its_own_session(tmp_path, monkeypatch):
+    """Desktop-integrated `op signin` must not inherit the agent process session."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP_SESSION, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    unlock_mod.lock("onepassword")
+
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    backend.unlock("correct horse")
+
+    assert unlock_mod.get_session_token("onepassword") == "OP-SESSION-TOKEN"

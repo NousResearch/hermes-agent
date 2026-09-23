@@ -466,6 +466,13 @@ class TestExtractHttpStatus:
 class TestManagedGatewayErrorTranslation:
     """4xx from the Nous managed gateway should be translated to a user-actionable message."""
 
+    @pytest.fixture(autouse=True)
+    def _fal_client_stub(self, image_tool, monkeypatch):
+        # These tests drive a mocked managed client; the module-global loader
+        # must not demand the optional fal extra (a version-pinned metadata
+        # check under lazy installs) on the way there.
+        monkeypatch.setattr(image_tool, "fal_client", object())
+
     def test_4xx_translates_to_value_error_with_remediation(self, image_tool, monkeypatch):
         """403 from managed gateway → ValueError mentioning FAL_KEY + hermes tools."""
         from unittest.mock import MagicMock
@@ -556,6 +563,42 @@ class TestManagedGatewayErrorTranslation:
         with pytest.raises(ConnectionError):
             image_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "x"})
 
+    @staticmethod
+    def _rate_limited(retry_after):
+        return _MockHttpxError(429, "Too Many Requests", payload={"error": {
+            "code": "RATE_LIMIT_EXCEEDED", "message": "Rate limit exceeded.", "retryAfter": retry_after}})
+
+    def test_short_429_is_retried_once_under_a_fresh_idempotency_key(self, image_tool, monkeypatch):
+        """A gateway 429 with a short retryAfter is waited out and resubmitted once (new key)."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: MagicMock())
+        mock_managed_client = MagicMock()
+        mock_managed_client.submit.side_effect = [self._rate_limited(1), "handle"]
+        monkeypatch.setattr(image_tool, "_get_managed_fal_client", lambda gw: mock_managed_client)
+
+        assert image_tool._submit_fal_request("fal-ai/gpt-image-2", {"prompt": "x"}) == "handle"
+
+        keys = [call.kwargs["headers"]["x-idempotency-key"] for call in mock_managed_client.submit.call_args_list]
+        assert len(keys) == 2 and keys[0] != keys[1]
+
+    def test_long_429_is_reported_as_a_rate_limit_not_a_missing_model(self, image_tool, monkeypatch):
+        """A 429 beyond the retry cap names the rate limit; agents must not be told to switch models."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: MagicMock())
+        mock_managed_client = MagicMock()
+        mock_managed_client.submit.side_effect = self._rate_limited(120)
+        monkeypatch.setattr(image_tool, "_get_managed_fal_client", lambda gw: mock_managed_client)
+
+        with pytest.raises(ValueError) as exc_info:
+            image_tool._submit_fal_request("fal-ai/gpt-image-2", {"prompt": "x"})
+
+        msg = str(exc_info.value)
+        assert "rate-limited" in msg and "retry after 120s" in msg
+        assert "may not yet be enabled" not in msg
+        assert mock_managed_client.submit.call_count == 1
+
 
 class TestKreaModelNormalization:
     """Native ``krea-2-*`` detection for managed Krea routing."""
@@ -571,14 +614,14 @@ class TestKreaModelNormalization:
 
 
 class TestManagedKreaRouting:
-    """`_maybe_route_managed_krea` only fires for Krea models in managed mode."""
+    """`_maybe_route_managed_model` only fires for Krea / Portal models in managed mode."""
 
     def test_no_route_when_model_not_krea(self, image_tool, monkeypatch):
         monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: None)
         monkeypatch.setattr(
             image_tool, "_read_configured_image_model", lambda: "fal-ai/flux-2/klein/9b"
         )
-        assert image_tool._maybe_route_managed_krea("p", "square") is None
+        assert image_tool._maybe_route_managed_model("p", "square") is None
 
 
     def test_routes_native_krea_model_to_krea_plugin_in_managed_mode(
@@ -616,13 +659,47 @@ class TestManagedKreaRouting:
             "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
         )
 
-        out = image_tool._maybe_route_managed_krea("a cat", "portrait")
+        out = image_tool._maybe_route_managed_model("a cat", "portrait")
         assert out is not None
         assert _json.loads(out)["success"] is True
         kwargs = fake_provider.generate.call_args.kwargs
         assert kwargs["model"] == "krea-2-large"
         assert kwargs["prompt"] == "a cat"
         assert kwargs["aspect_ratio"] == "portrait"
+
+
+class TestManagedPortalRouting:
+    """A Portal model under the managed selection reaches the Portal plugin — never FAL."""
+
+    def _fake_registry(self, monkeypatch, fake_provider):
+        monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: fake_provider)
+        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None)
+
+    def test_routes_portal_model_to_nous_plugin(self, image_tool, monkeypatch):
+        import json as _json
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "nous")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "openai/gpt-5.4-image-2")
+        fake_provider = MagicMock(display_name="Nous Portal")
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        self._fake_registry(monkeypatch, fake_provider)
+
+        out = image_tool._maybe_route_managed_model("a cat", "square")
+
+        assert _json.loads(out)["success"] is True
+        assert fake_provider.generate.call_args.kwargs["model"] == "openai/gpt-5.4-image-2"
+
+    def test_portal_model_without_plugin_errors_instead_of_billing_fal(self, image_tool, monkeypatch):
+        import json as _json
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "nous")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "openai/gpt-5.4-image-2")
+        self._fake_registry(monkeypatch, None)
+
+        out = image_tool._maybe_route_managed_model("a cat", "square")
+
+        assert out is not None and _json.loads(out)["success"] is False
 
 
 class TestFalKreaCatalog:

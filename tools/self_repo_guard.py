@@ -13,7 +13,7 @@ from typing import Callable
 
 from tools.approval_detection import (
     _bash_exec_payload, _deobfuscate_shell_word_for_detection, _iter_shell_command_starts,
-    _read_shell_word)
+    _is_shell_comment_start, _read_shell_word, _scan_shell)
 
 # bisect drives repeated checkouts of the running root — the exact skew hazard guarded here.
 _WORKTREE_MUTATIONS = frozenset({
@@ -45,7 +45,7 @@ _WRAPPER_OPTIONS_WITH_ARG: dict[str, frozenset[str]] = {
         "-p", "--prompt", "-R", "--chroot", "-T", "--command-timeout", "-u", "--user"}),
     "env": frozenset({"-a", "--argv0", "-C", "--chdir", "-S", "--split-string", "-u", "--unset"}),
     "command": _NO_OPTIONS, "builtin": _NO_OPTIONS, "nohup": _NO_OPTIONS, "setsid": _NO_OPTIONS,
-    "exec": frozenset({"-a"}),
+    "exec": frozenset({"-a"}), "nice": frozenset({"-n", "--adjustment"}),
     "time": frozenset({"-f", "--format", "-o", "--output"})}
 _MAX_RECURSION = 4
 # git global options that consume the next argument (-C/--work-tree/-c are acted on).
@@ -57,7 +57,7 @@ _GIT_GLOBAL_OPTIONS_WITH_ARG = frozenset(
 class _Heredoc:
     delimiter: str
     strip_tabs: bool
-    execute_as_shell: bool
+    opener: int  # offset of the ``<<`` in the masked command
     body: list[str] = field(default_factory=list)
 
 
@@ -95,12 +95,16 @@ def _executable_name(value: str) -> str:
 
 
 def _shell_words_at(command: str, start: int) -> list[str]:
-    """Deobfuscated words of the simple command at ``start`` (stops at a newline; max 64)."""
+    """Deobfuscated words of the simple command at ``start`` (stops at a newline, a redirection
+    or a trailing ``# comment``; max 64). The fd prefix of ``2>/dev/null`` / ``2>&1`` belongs to
+    the redirection, not to the command's operands."""
     words: list[str] = []
     cursor = start
     for _ in range(64):
         word_start, word_end, raw_word = _read_shell_word(command, cursor)
-        if word_start == word_end or (words and "\n" in command[cursor:word_start]):
+        if word_start == word_end or (words and "\n" in command[cursor:word_start]) or (
+                _is_shell_comment_start(command, word_start)) or (
+                raw_word.isdigit() and command[word_end : word_end + 1] in ("<", ">")):
             break
         words.append(_deobfuscate_shell_word_for_detection(raw_word))
         cursor = word_end
@@ -208,8 +212,84 @@ def _shell_script_arg(args: list[str]) -> str | None:
     return None
 
 
+def _executes_heredoc_body(words: list[str]) -> bool:
+    """A bare shell (no ``-c`` script, no script operand) executes whatever it reads on stdin."""
+    _, executable, args = _command_parts(words)
+    return bool(
+        executable and _executable_name(executable) in _SHELL_EXECUTABLES
+        and _shell_script_arg(args) is None
+        and not any(arg and not arg.startswith("-") for arg in args))
+
+
+def _group_token(masked: str, index: int) -> bool:
+    """``{`` / ``}`` at ``index`` is a brace-group delimiter (its own word), not ``${x}``/``a{b,c}``."""
+    before = masked[index - 1] if index else " "
+    after = masked[index + 1] if index + 1 < len(masked) else " "
+    return (before.isspace() or before in "(;&|") and (after.isspace() or after in ";)|&")
+
+
+def _pipeline_end(masked: str, opener: int) -> int:
+    """Offset where the pipeline carrying a heredoc ends: the first ``;``/``&&``/``||``/``&`` or
+    bare newline at top level. Newlines right after ``|`` continue the pipeline (the consumer may
+    follow the terminator line). Inside a group the walk runs on until the group closes, then a
+    pipe after the closer continues it (``(cat <<EOF; echo) | bash``) and anything else ends it."""
+    depth = 0
+    level: int | None = None  # nesting depth of the opener's command, once the scan reaches it
+    after_pipe = False
+    backtick = False
+    for kind, index, end, quote in _scan_shell(masked, comments=True):
+        if level is None and index >= opener:
+            level = depth
+        if kind == "comment":
+            continue
+        if kind != "char" or quote is not None:
+            after_pipe = False  # part of a word
+            continue
+        char = masked[index]
+        if char.isspace():
+            if char == "\n" and level == 0 and depth == 0 and not after_pipe:
+                return index
+            continue
+        if char in ";&|":
+            if char == "&" and (masked[index - 1] in "<>" or masked.startswith("&>", index)):
+                continue  # `2>&1` / `>&2` / `&>file` redirect fds: not a list operator
+            if char == "|" and not masked.startswith("||", index):
+                after_pipe = True
+            elif level == 0 and depth == 0 and masked[index - 1] != "|":  # `|&` is a pipe
+                return index
+            continue
+        after_pipe = False
+        if char == "`":
+            depth += -1 if backtick else 1
+            backtick = not backtick
+        elif char == "(" or (char == "{" and _group_token(masked, index)):
+            depth += 1
+        elif char == ")" or (char == "}" and _group_token(masked, index)):
+            depth -= 1
+            if level is not None and depth < level:
+                rest = masked[end:].lstrip(" \t")
+                if not rest.startswith("|") or rest.startswith("||"):
+                    return index
+                level = depth
+    return len(masked)
+
+
+def _shell_consumes_heredoc(
+    masked: str, starts: list[int], scopes: dict[int, tuple[int, ...]], opener: int) -> bool:
+    """Whether a bare shell reads the heredoc body: the command owning the ``<<`` or anything
+    downstream in its pipeline. Pipe-joined segments, and the groups or substitutions inside them,
+    all inherit the pipe as stdin (``| tee f | bash``, ``| (bash)``, ``| { echo; bash; }``)."""
+    scope = scopes[opener]
+    owner = max((start for start in starts if start <= opener and scopes[start] == scope),
+                default=None)
+    end = _pipeline_end(masked, opener)
+    candidates = [*([owner] if owner is not None else []),
+                  *(start for start in starts if opener < start < end)]
+    return any(_executes_heredoc_body(_shell_words_at(masked, start)) for start in candidates)
+
+
 def _heredoc_specs(line: str) -> list[_Heredoc]:
-    """Heredoc openers on one line; ``execute_as_shell`` when a bare shell consumes the body."""
+    """Heredoc openers on one command line, with their ``<<`` offsets."""
     specs: list[_Heredoc] = []
     quote: str | None = None
     index = 0
@@ -228,32 +308,50 @@ def _heredoc_specs(line: str) -> list[_Heredoc]:
         opener = _HEREDOC_OPENER_RE.match(line, index)
         if opener is None:  # unterminated quoted delimiter: give up on this line
             break
-        header, index = line[:index], opener.end()
+        start, index = index, opener.end()
         delimiter = opener.group("quoted") if opener.group("q") else opener.group("bare")
-        if not delimiter:
-            continue
-        starts = list(_iter_shell_command_starts(header))
-        _, executable, args = _command_parts(_shell_words_at(header, starts[-1]) if starts else [])
-        # A bare shell (no -c script, no script operand) executes the body itself.
-        execute_as_shell = bool(
-            executable and _executable_name(executable) in _SHELL_EXECUTABLES
-            and _shell_script_arg(args) is None
-            and not any(arg and not arg.startswith("-") for arg in args))
-        specs.append(_Heredoc(delimiter, bool(opener.group("dash")), execute_as_shell))
+        if delimiter:
+            specs.append(_Heredoc(delimiter, bool(opener.group("dash")), start))
     return specs
 
 
-def _mask_heredocs(command: str) -> tuple[str, list[str]]:
-    """Blank heredoc bodies -> (masked command, bodies a bare shell would execute). Unterminated
-    heredocs run to end of input and are still reported."""
+def _join_continued_line(lines: list[str], index: int) -> tuple[str, int]:
+    """Physical line ``index`` plus every line a trailing ``\\`` joins onto it -> (line, next).
+    The shell removes backslash-newline before it reads anything else, so the heredoc body only
+    starts after the joined line: ``cat <<EOF | \\`` + ``bash`` pipes the body into bash. The pair
+    is blanked (offsets preserved) so the joined text reads as one command line."""
+    line = lines[index]
+    index += 1
+    while index < len(lines):
+        text = line.rstrip("\r\n")
+        newline = line[len(text):]
+        if not newline or (len(text) - len(text.rstrip("\\"))) % 2 == 0:
+            break
+        line = text[:-1] + " " * (1 + len(newline)) + lines[index]
+        index += 1
+    return line, index
+
+
+def _mask_heredocs(command: str) -> tuple[str, list[_Heredoc]]:
+    """Blank heredoc bodies -> (masked command, heredocs with their bodies). Unterminated heredocs
+    run to end of input and are still reported."""
     output: list[str] = []
+    offset = 0
     pending: list[_Heredoc] = []
     finished: list[_Heredoc] = []
-    for line in command.splitlines(keepends=True):
+    lines = command.splitlines(keepends=True)
+    index = 0
+    while index < len(lines):
         if not pending:
+            line, index = _join_continued_line(lines, index)
+            for spec in _heredoc_specs(line):
+                spec.opener += offset
+                pending.append(spec)
             output.append(line)
-            pending.extend(_heredoc_specs(line))
+            offset += len(line)
             continue
+        line = lines[index]
+        index += 1
         current = pending[0]
         candidate = line.rstrip("\r\n")
         if (candidate.lstrip("\t") if current.strip_tabs else candidate) == current.delimiter:
@@ -261,8 +359,8 @@ def _mask_heredocs(command: str) -> tuple[str, list[str]]:
         else:
             current.body.append(line)
         output.append(re.sub(r"[^\r\n]", " ", line))
-    shell_scripts = ["".join(spec.body) for spec in finished + pending if spec.execute_as_shell]
-    return "".join(output), shell_scripts
+        offset += len(line)
+    return "".join(output), finished + pending
 
 
 def _record_alias(config: str, aliases: dict[str, str]) -> None:
@@ -408,12 +506,14 @@ def _find_mutation(command: str, cwd: Path, root: Path, depth: int = 0) -> str |
     """Name of the first command in ``command`` that would rewrite ``root``, else None."""
     if depth > _MAX_RECURSION:
         return None
-    masked_command, heredoc_scripts = _mask_heredocs(command)
-    for script in heredoc_scripts:
-        if operation := _find_mutation(script, cwd, root, depth + 1):
-            return operation
+    masked_command, heredocs = _mask_heredocs(command)
     starts = sorted(set(_iter_shell_command_starts(masked_command)))
-    scopes = _scope_keys(masked_command, starts)
+    scopes = _scope_keys(masked_command, [*starts, *(heredoc.opener for heredoc in heredocs)])
+    # Bodies a bare shell reads (`bash <<EOF`, `cat <<EOF | bash`) are scripts: scan them.
+    for heredoc in heredocs:
+        if _shell_consumes_heredoc(masked_command, starts, scopes, heredoc.opener) and (
+                operation := _find_mutation("".join(heredoc.body), cwd, root, depth + 1)):
+            return operation
     # cwd per subshell scope; `cd` applies to the NEXT command only via `&&`, `;`, newline.
     cwd_by_scope: dict[tuple[int, ...], Path] = {(): cwd}
     pending_cd: dict[tuple[int, ...], Path] = {}
@@ -460,8 +560,8 @@ def _block_message(operation: str, root: Path) -> str:
         f"Blocked: `{operation}` would rewrite Hermes's live source checkout "
         f"({root}) and can mix module versions in this running process. "
         f"Use a separate worktree or a shared clone on real disk, e.g. "
-        f"`git clone --shared {root} {scratch}/<task>` — avoid /tmp for "
-        "clones that install node/python deps: /tmp is usually RAM-backed tmpfs and a few "
+        f"`git clone --shared {root} {scratch}/<task>` — avoid /tmp for "  # no-tmp: ok — guidance telling the model to AVOID /tmp
+        "clones that install node/python deps: /tmp is usually RAM-backed tmpfs and a few "  # no-tmp: ok — guidance telling the model to AVOID /tmp
         "dependency installs can fill it and ENOSPC other work. Delete the clone when the branch "
         "is pushed. To change this checkout, stop Hermes, run the command externally, then restart "
         "Hermes.")

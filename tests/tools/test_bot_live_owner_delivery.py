@@ -106,3 +106,133 @@ def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id
     with pytest.raises(ValueError):
         mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author={**author, "id": "bot:other"})
     assert "author" not in mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
+
+
+@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="needs POSIX file permissions for an unreadable ticket")
+def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
+    import logging
+
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    # A real admission that later turns unreadable: its sequence must survive the skip.
+    hidden = mailbox.deliver_to_live_owner(tmp_path, owner, "hidden", delivery_id="e" * 32)
+    (root / f"{'e' * 32}.json").chmod(0)
+    corrupt = root / f"{'1' * 32}.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    (root / f"{'2' * 32}.json").write_bytes(b"\xff\xfe\x00garbage")  # invalid UTF-8, not just bad JSON
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        # Sender side: admission of a fresh id must survive the sequence sweep.
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
+        # Receiver side: every readable queued ticket must still be claimed, in order.
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
+        for _ in range(10):  # the idle poller rescans twice a second
+            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert admitted["status"] == "queued"
+    assert admitted["sequence"] > hidden["sequence"] > queued["sequence"]
+    denied = [record for record in caplog.records
+              if record.message.startswith(f"bot_live_delivery: skipping unreadable ticket {'e' * 32}.json")
+              and "Permission denied" in record.message]
+    assert len(denied) == 1, "one persistent bad ticket must warn once per process, not per scan"
+
+
+@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="needs POSIX file permissions for an unreadable ticket")
+def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    unreadable = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
+    unreadable.parent.mkdir(parents=True, exist_ok=True)
+    unreadable.write_text('{"status": "queued"}', encoding="utf-8")
+    unreadable.chmod(0)
+    # Uninspectable is not absent: an exact-id retry must fail closed instead of
+    # minting a fresh receipt that overwrites the possibly-live one (#109820).
+    with pytest.raises(PermissionError):
+        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
+    with pytest.raises(PermissionError):
+        mailbox.read_delivery_result(tmp_path, "e" * 32)
+
+
+def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp_path, caplog):
+    import logging
+
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
+    bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
+    bad.write_text('"oops"', encoding="utf-8")  # parses, but is not a record
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert sum(r.message.startswith(f"bot_live_delivery: skipping unreadable ticket {'e' * 32}.json")
+               for r in caplog.records) == 1
+    # Malformed is not absent: exact-id reads fail closed rather than overwrite the receipt.
+    with pytest.raises(ValueError):
+        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
+    with pytest.raises(ValueError):
+        mailbox.read_delivery_result(tmp_path, "e" * 32)
+    assert bad.read_text(encoding="utf-8") == '"oops"'
+
+
+def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
+    """Valid JSON that lost a field must degrade like corrupt JSON: skipped, warned once, never raised."""
+    import logging
+
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "healthy", delivery_id="d" * 32)
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    damaged = {
+        root / f"{'a' * 32}.json": "{}",
+        root / f"{'b' * 32}.json": json.dumps(dict(
+            delivery_id="b" * 32, id="b" * 32, status="queued", created_at=1,
+            sequence=1, owner=None, message="owner lost")),
+        root / f"{'c' * 32}.json": json.dumps(dict(
+            delivery_id="c" * 32, id="c" * 32, status="queued", created_at=2,
+            sequence="old", owner=owner, message="sequence lost", **owner)),
+        root / f"{'e' * 32}.json": json.dumps(dict(
+            delivery_id="../wrong", id="../wrong", status="queued", created_at=3,
+            sequence=3, owner=owner, message="id lost", **owner)),
+        root / f"{'1' * 32}.json": json.dumps(dict(
+            delivery_id="1" * 32, id="1" * 32, status=[], created_at=4,
+            sequence=4, owner=owner, message="status lost", **owner)),
+    }
+    for path, contents in damaged.items():
+        path.write_text(contents, encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "also healthy", delivery_id="f" * 32)
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
+        for _ in range(3):
+            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert admitted["sequence"] == queued["sequence"] + 1
+    assert {path: path.read_text(encoding="utf-8") for path in damaged} == damaged
+    skipped = [r.message for r in caplog.records if r.message.startswith("bot_live_delivery: skipping unreadable ticket")]
+    assert len(skipped) == len(damaged), "each damaged ticket warns once per process, not per scan"
+
+
+def test_existing_mailbox_lock_does_not_fsync_parent_dirs(tmp_path, monkeypatch):
+    """The idle poller re-enters the lock twice a second; only a freshly created mailbox links its parents."""
+    from tools import bot_live_delivery as mailbox
+
+    calls = []
+    monkeypatch.setattr(mailbox, "fsync_directory", lambda path: calls.append(path))
+    with mailbox._locked(tmp_path):
+        pass
+    assert len(calls) == 2
+    with mailbox._locked(tmp_path):
+        pass
+    assert len(calls) == 2

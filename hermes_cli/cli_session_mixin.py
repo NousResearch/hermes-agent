@@ -316,11 +316,12 @@ class CLISessionMixin:
             return []
         try:
             from hermes_cli.session_listing import query_session_listing
+            from hermes_state_sessions import INTERNAL_LISTING_SOURCES
 
             return query_session_listing(
                 self._session_db, source="cli", current_session_id=self.session_id,
                 include_all_sources=False, include_unnamed=True, limit=limit,
-                exclude_sources=["kanban", "tool"])
+                exclude_sources=list(INTERNAL_LISTING_SOURCES))
         except Exception:
             return []
 
@@ -489,8 +490,9 @@ class CLISessionMixin:
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         from cli import (
-            CLI_CONFIG, _parse_reasoning_config, _parse_service_tier_config,
+            CLI_CONFIG, _parse_service_tier_config,
             _sync_process_session_id, datetime)
+        from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
         old_session_id = self.session_id
         _boundary_snapshot = None
         if self.agent:
@@ -527,14 +529,15 @@ class CLISessionMixin:
         self._resumed = False
         # An explicit -m/--model was for the previous session only.
         self._explicit_model_override = False
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", ""))
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
         _reset_model_to_config_default(self, silent)
+        # After the model reset: the effort belongs to the model the fresh session lands on (a /reasoning
+        # session override is dropped, the default model's per-model override is kept).
+        _resolve_cli_reasoning(self)
         _sync_process_session_id(self.session_id)
 
         if self.agent:
@@ -966,7 +969,8 @@ class CLISessionMixin:
                     print(f"🗜️  Compressing {original_count} messages, focus: \"{request.focus_topic}\"...")
                 else:
                     print(f"🗜️  Compressing {original_count} messages...")
-                result = compress_now(self.agent, self.conversation_history, request)
+                result = compress_now(self.agent, self.conversation_history, request,
+                                      task_id=self.session_id or "default")
                 if result.status != "compressed":
                     for line in render_compress_result(result):
                         print(f"  {line}")
@@ -1019,8 +1023,26 @@ class CLISessionMixin:
             stream.write("\033[3J\033[2J\033[H")
             stream.flush()
         except Exception:
+            # Fallback for terminals that reject the escape sequence. Never os.system():
+            # it spawns a cmd.exe/shell window that flashes on Windows (#116904) and a
+            # minimal container without `clear` on PATH just no-ops through the shell.
             try:
-                os.system("cls" if os.name == "nt" else "clear")
+                import subprocess
+
+                from hermes_cli._subprocess_compat import windows_hide_flags
+
+                if os.name == "nt":
+                    argv = ["cmd", "/c", "cls"]  # `cls` is a cmd builtin, not an exe
+                else:
+                    clear_bin = shutil.which("clear")
+                    argv = [clear_bin] if clear_bin else []
+                if argv:
+                    subprocess.run(
+                        argv,
+                        stdin=subprocess.DEVNULL,
+                        creationflags=windows_hide_flags(),
+                        check=False,
+                    )
             except Exception:
                 pass
 

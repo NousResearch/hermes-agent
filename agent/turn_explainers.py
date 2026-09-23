@@ -39,10 +39,6 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
         "no new content was produced this turn; showing recovered "
         "prior context. Send `continue` to retry."
     ),
-    "interrupted_during_api_call": (
-        "the request was interrupted mid-call before a reply was "
-        "received. Send `continue` to retry."
-    ),
     "redirect_restart_limit_exceeded": (
         "the request was cancelled by a new correction on every attempt, "
         "so the turn stopped instead of retrying forever. Your last "
@@ -70,6 +66,11 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
 
 # Parameterised reasons (``max_iterations_reached(3/3)`` …) matched by prefix.
 _EXIT_REASON_PREFIX_EXPLANATIONS = (
+    # ``interrupted_during_api_call(<issuer>)`` names a system watchdog (#112647).
+    ("interrupted_during_api_call", (
+        "the request was interrupted mid-call before a reply was "
+        "received. Send `continue` to retry."
+    )),
     ("max_iterations_reached", (
         "the maximum tool-iteration limit was reached before a "
         "final answer. Send `continue` to keep going, or raise "
@@ -117,15 +118,19 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
     "replaced": (
         "the session database file was replaced while Hermes was running, so this "
         "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
-        "(`hermes gateway stop`), run `hermes doctor` — not `hermes doctor --fix`, which "
-        "would repair the wrong file in place — then start it again and send your message "
-        "once more. Advanced recovery steps are in the log."
+        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor` — not "
+        "`hermes {profile_arg}doctor --fix`, which would repair the wrong file in place — "
+        "then start it again and send your message once more. Advanced recovery steps are "
+        "in the log."
     ),
     "deleted_wal": (
-        "the session database was changed or replaced while Hermes was running, so this "
-        "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
-        "(`hermes gateway stop`), run `hermes doctor`, then start it again and send your "
-        "message once more. Advanced recovery steps are in the log."
+        "another Hermes process still holds an old copy of the session database's write-ahead "
+        "log, so Hermes stopped writing to keep the file safe and this message was not saved (a "
+        "copy is kept in {home}/sessions/). Nothing is lost. Quit every Hermes process on this "
+        "profile (Desktop app, `hermes {profile_arg}gateway stop`, dashboard, cron), run "
+        "`hermes {profile_arg}doctor` — it names any process still holding the log — then start "
+        "Hermes again and send your message once more. Do not run `doctor --fix` or delete "
+        "any state.db files while they run. Guide: {recovery_docs}"
     ),
     "corrupt": (
         "the turn was stopped because the state database "
@@ -163,8 +168,8 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
 _PERSISTENCE_DEFAULT_EXPLANATION = (
     "Hermes couldn't save this conversation, so it stopped rather than lose your messages. "
     "Possible causes: the drive is out of room, or another Hermes process is holding the "
-    "database. Close other Hermes windows, run `hermes doctor` to check storage, then send "
-    "your message again."
+    "database. Close other Hermes windows, run `hermes {profile_arg}doctor` to check "
+    "storage, then send your message again."
 )
 
 
@@ -251,9 +256,11 @@ class TurnExplainersMixin:
             # Hermes-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
-                for _p in landed_paths:
-                    with suppress(Exception):
-                        mgr.record_agent_write(_p)
+                from tools.file_tools_paths import container_backend_for_task
+                if container_backend_for_task(task_id or "default") is None:  # container paths carry no host ledger entry
+                    for _p in landed_paths:
+                        with suppress(Exception):
+                            mgr.record_agent_write(_p)
         if is_error and not landed:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)
@@ -366,19 +373,24 @@ class TurnExplainersMixin:
         if body is not None and "{model}" in body:
             body = body.format(model=model or "The model")
         if body is None and reason == "session_persistence_failed":
-            from hermes_constants import display_hermes_home
+            from hermes_constants import display_hermes_home, profile_cli_selector
+            from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
 
-            body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
-                persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
-            ).replace("{home}", display_hermes_home())
+            # Copy-pasteable, so pin every `hermes` command to the profile whose store failed:
+            # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT the
+            # process default, and a bare `hermes` follows active_profile (#105887).
+            body = (
+                _PERSISTENCE_CAUSE_EXPLANATIONS.get(
+                    persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
+                )
+                .replace("{home}", display_hermes_home())
+                .replace("{profile_arg}", profile_cli_selector())
+                .replace("{recovery_docs}", STORAGE_RECOVERY_DOCS_URL)
+            )
             if persistence_cause in ("corrupt", "fts_index"):
-                # Copy-pasteable, so name the store that actually failed and pin the profile:
-                # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT
-                # the process default, and a bare `hermes` follows active_profile (#105887).
-                from hermes_constants import get_default_hermes_root, profile_cli_selector
+                from hermes_constants import get_default_hermes_root
                 from hermes_state import _default_db_path
 
-                body = body.replace("{profile_arg}", profile_cli_selector())
                 body = body.replace("{db_path}", str(db_path or _default_db_path()))
                 body = body.replace(
                     "{backups_dir}", str(get_default_hermes_root() / "backups")

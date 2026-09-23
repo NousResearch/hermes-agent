@@ -52,12 +52,19 @@ describe('voice field option coverage', () => {
       'tts.openai.voice',
       'tts.openai.model',
       'tts.elevenlabs.voice_id',
+      'tts.elevenlabs.model_id',
+      'stt.openai.model',
       'tts.edge.voice',
       'tts.xai.voice_id',
       'tts.piper.voice'
     ]) {
       expect(FREE_INPUT_KEYS.has(key), key).toBe(true)
     }
+  })
+
+  it('suggests the current ElevenLabs v3 model, not just the v2 trio', () => {
+    // Mirrors tools/tts_tool_delivery.py::ELEVENLABS_MODEL_MAX_TEXT_LENGTH.
+    expect(ENUM_OPTIONS['tts.elevenlabs.model_id']).toContain('eleven_v3')
   })
 
   it('keeps closed enums (devices, providers) out of the free-input set', () => {

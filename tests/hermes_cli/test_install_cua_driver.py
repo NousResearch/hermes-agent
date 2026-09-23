@@ -1628,6 +1628,77 @@ class TestWindowsAutostartRepair:
         assert f"$exe = '{driver}'" in ps_command
         assert f"& {driver}" not in ps_command
 
+    @pytest.mark.windows_only
+    def test_repair_spawns_no_console_window_and_failure_degrades(self):
+        """``windows_only``: issue #115017 — the auto-start repair must not park a blank PowerShell
+        window on the desktop, and a failed repair must not fail the install.
+
+        This repair is reached from the shared install/refresh path, which a windowless parent
+        drives (Desktop backend, detached gateway, a logon task). A ``powershell.exe`` spawned
+        there WITHOUT ``CREATE_NO_WINDOW`` allocates its own console: a blank PowerShell window that
+        stays on screen for as long as the elevated ``-Verb RunAs -Wait`` child lives (verified live
+        on Windows 11: the window appears, and with ``CREATE_NO_WINDOW`` it never does). Without
+        ``-NonInteractive`` that shell can also sit on an interactive prompt instead of unwinding.
+        """
+        from hermes_cli import tools_config_cua as tools_config
+
+        create_no_window = 0x08000000
+        calls = []
+        driver = (
+            r"C:\Users\Ha Trung\AppData\Local\Programs\Cua"
+            r"\cua-driver\bin\cua-driver.exe"
+        )
+
+        def fake_which(name: str):
+            if name == "cua-driver":
+                return driver
+            if name == "powershell":
+                return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+            return None
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            if cmd[0] == "schtasks.exe":  # task absent -> the repair branch runs
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="denied")  # repair itself fails
+
+        with patch.object(tools_config.shutil, "which", side_effect=fake_which), \
+             patch("subprocess.run", side_effect=fake_run), \
+             patch.object(tools_config, "_post_setup_no_window_flags",
+                          side_effect=lambda **kw: create_no_window), \
+             patch.object(tools_config, "_print_warning") as warn, \
+             patch.object(tools_config, "_print_info"):
+            assert tools_config._repair_cua_driver_autostart_windows(
+                "cua-driver", verbose=False
+            ) is False
+
+            ps_cmd, ps_kwargs = next(
+                (cmd, kwargs) for cmd, kwargs in calls
+                if str(cmd[0]).lower().endswith("powershell.exe")
+            )
+            assert ps_kwargs.get("creationflags") == create_no_window, (
+                "windowless spawn is the fix: without CREATE_NO_WINDOW the child allocates its own "
+                "visible console window on the user's desktop"
+            )
+            assert "-NonInteractive" in ps_cmd, "no interactive prompt may be presented"
+            assert ps_cmd[-2:] == ["-Command", ps_cmd[-1]], "script stays the -Command argument"
+            assert ps_kwargs.get("timeout"), "the repair must stay bounded, never block the caller"
+
+            # Degrade, do not fail: the driver is installed and compatible, only its logon task is
+            # missing — install_cua_driver must not report the whole toolset as broken.
+            with patch.object(tools_config, "_resolved_cua_driver_cmd", return_value=driver), \
+                 patch.object(tools_config, "_cua_driver_contract_status",
+                              return_value={"ready": True, "version": "0.20.0", "reason": ""}), \
+                 patch.object(tools_config, "_cua_driver_version", return_value="0.20.0"), \
+                 patch.object(tools_config, "_repair_cua_driver_autostart_windows",
+                              return_value=False), \
+                 patch.object(tools_config, "_print_success"):
+                assert tools_config.install_cua_driver(
+                    upgrade=False, show_installer_progress=False
+                ) is True
+
+        assert any("auto-start" in str(call) for call in warn.call_args_list)
+
 
 class TestCuaVersionSummary:
     """`hermes computer-use status` prints one line, whatever the binary says.

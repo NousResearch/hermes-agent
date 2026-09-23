@@ -216,3 +216,28 @@ class TestContextProbeTiers:
             assert a > b, f"tiers must strictly descend, got {a} then {b}"
         # 128K is still a tier (users relying on it probe-down get there)
         assert 128_000 in CONTEXT_PROBE_TIERS
+
+
+def test_override_honored_when_caller_passes_no_custom_providers(tmp_path, monkeypatch):
+    """Step 0c must not be gated on the caller having loaded the route list: aux fallback screening,
+    CLI/TUI context estimators and gateway /status pass ``custom_providers=None`` (#69807)."""
+    from pathlib import Path
+
+    base_url, model, override = "https://cp-ctx-selfresolve.invalid/v1", "router/auto", 999_999
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "custom_providers:\n"
+        "  - name: test-route\n"
+        f"    base_url: {base_url}\n"
+        "    key_env: TEST_FAKE_CONTEXT_ENV\n"
+        f"    model: {model}\n"
+        "    api_mode: chat_completions\n"
+        "    models:\n"
+        f"      {model}:\n"
+        f"        context_length: {override}\n",
+        encoding="utf-8",
+    )
+    from agent.model_metadata import get_model_context_length
+
+    assert get_model_context_length(model, base_url=base_url, api_key="", provider="custom") == override

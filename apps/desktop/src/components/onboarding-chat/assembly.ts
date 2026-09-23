@@ -13,8 +13,11 @@ import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
 import {
   $activePresetId,
   $layoutTree,
+  $userPlacedPanes,
   adoptContributedPanes,
   dismissTreePane,
+  markActivePreset,
+  persistTree,
   resetEnforcedDocks,
   undismissTreePanes
 } from '@/components/pane-shell/tree/store'
@@ -23,10 +26,12 @@ import { DOCKED_SIDEBAR_MIN_PX } from '@/hooks/use-mobile'
 import { TRANSLATIONS } from '@/i18n/catalog'
 import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { $interfaceMode, type InterfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { setSidebarOpen } from '@/store/layout'
 import { loadMachineProfile, machineUserName } from '@/store/machine'
 import { skipGuide } from '@/store/onboarding-gate'
 import { setOnboardingSurfaceActive } from '@/store/onboarding-presence'
+import { $paneStates, type PaneStateSnapshot } from '@/store/panes'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 /** True from guide kickoff until assembly places the picked layout. Skip and a failed kickoff also clear it. */
@@ -62,7 +67,12 @@ export function pickOnboardingGreeting(): string {
 /** Applying a layout remounts the card, so its selection must outlive the component. */
 export const $chatLayoutPicked = atom(false)
 
-let previousLayout: { id: string; tree: LayoutNode | null } | null = null
+let previousLayout: {
+  id: string
+  tree: LayoutNode | null
+  panes: Record<string, PaneStateSnapshot>
+  placed: ReadonlySet<string>
+} | null = null
 
 /** The guide's shape, all at once: the solo layout and the small centred
  *  window. Called on the tick the guide is owed (film ended, or a boot that
@@ -85,7 +95,12 @@ export function startChatOnboardingSolo(): void {
     return
   }
 
-  previousLayout = { id: $activePresetId.get(), tree: $layoutTree.get() }
+  previousLayout = {
+    id: $activePresetId.get(),
+    tree: $layoutTree.get(),
+    panes: $paneStates.get(),
+    placed: $userPlacedPanes.get()
+  }
   $chatOnboardingSolo.set(true)
   $chatLayoutPicked.set(false)
   // The local machine probe finishes before the backend boots, letting the
@@ -104,7 +119,10 @@ export function startChatOnboardingSolo(): void {
 export function endChatOnboardingSolo(): void {
   $chatOnboardingSolo.set(false)
   $onboardingGreeting.set('')
+  restorePreviousLayout()
+}
 
+function restorePreviousLayout() {
   const previous = previousLayout
   previousLayout = null
 
@@ -112,8 +130,11 @@ export function endChatOnboardingSolo(): void {
     const tree = previous.tree ?? registry.getArea('layouts').find(preset => preset.id === 'default')?.data
 
     if (tree) {
-      // SAFETY: layout contributions declare LayoutNode data, like the saved tree.
-      applyLayoutPreset(previous.tree ? previous.id : 'default', tree as LayoutNode)
+      $layoutTree.set(tree as LayoutNode)
+      $paneStates.set(previous.panes)
+      $userPlacedPanes.set(previous.placed)
+      markActivePreset(previous.tree ? previous.id : 'default')
+      persistTree()
     }
   }
 }
@@ -171,8 +192,16 @@ function reconcileLayout(id: string, tree: LayoutNode): void {
 
 /** Grow only when leaving solo mode: repeating the delta would make the window larger on every re-pick.
  *  Reconcile panes on every pick. */
-export function assembleChatOnboarding(id: string, tree: LayoutNode): void {
+export function assembleChatOnboarding(id: string, tree: LayoutNode, mode?: InterfaceMode): void {
   const firstPick = $chatOnboardingSolo.get()
+
+  if (mode && mode !== $interfaceMode.get()) {
+    // The guide's temporary solo tree is not an Advanced workspace to remember.
+    restorePreviousLayout()
+    setInterfaceMode(mode)
+  }
+
+  previousLayout = null
 
   if (firstPick) {
     const growth = LAYOUT_GROWTH.get(id) ?? { left: 220 }

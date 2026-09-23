@@ -183,6 +183,26 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('@file:tsconfig.tsbuildinfo\n\nwhat is this file')
   })
 
+  it('hides a persisted Discord triggering-message note but keeps the reply pointer (#114719)', () => {
+    const note =
+      '[Triggering message id: `1550380365858865156` — use as `message_id` for reply/react/pin via the discord tools.]'
+
+    const [plain, , replied, assistant] = toChatMessages([
+      { role: 'user', content: `${note}\n\nCreate a project plan for Q4`, timestamp: 1 },
+      { role: 'assistant', content: 'ok', timestamp: 2 },
+      {
+        role: 'user',
+        content: `[Replying to: "Create a project plan for Q4"]\n\n${note}\n\nyes do that`,
+        timestamp: 3
+      },
+      { role: 'assistant', content: note, timestamp: 4 }
+    ])
+
+    expect(chatMessageText(plain)).toBe('Create a project plan for Q4')
+    expect(chatMessageText(replied)).toBe('[Replying to: "Create a project plan for Q4"]\n\nyes do that')
+    expect(chatMessageText(assistant)).toBe(note)
+  })
+
   it('renders MEDIA tags as assistant attachment links', () => {
     const [message] = toChatMessages([
       {
@@ -1429,7 +1449,10 @@ describe('sealOpenToolParts', () => {
       )
     ])
 
-    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+    const messages = [
+      ...stopped,
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage
+    ]
 
     const restored = restorePendingClarifyToolCall(
       messages,
@@ -1516,5 +1539,53 @@ describe('sealOpenToolParts', () => {
     const messages = [assistantWithParts([done])]
 
     expect(sealOpenToolParts(messages)).toBe(messages)
+  })
+})
+
+describe('toChatMessages backend-row accounting', () => {
+  it('reports the backend rows a folded turn stands for', () => {
+    // The older-page offset (transcript-tail) is counted in BACKEND rows, and
+    // this fold is what makes a message not one row: one assistant row plus its
+    // tool rows, plus a second assistant row that merges into the same bubble.
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Running the checks.',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { role: 'tool', tool_call_id: 'tc', content: 'ok', timestamp: 2 },
+      { role: 'assistant', content: 'Done.', timestamp: 3 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].serverRowSpan).toBe(3)
+
+    // A row that stands for one backend row carries no span at all.
+    const plain = toChatMessages([{ role: 'user', content: 'hi', timestamp: 1 }])
+
+    expect(plain).toHaveLength(1)
+    expect(plain[0]).not.toHaveProperty('serverRowSpan')
+  })
+
+  it('counts the current answer row when a page starts on a tool-only turn', () => {
+    // A page boundary can start mid-turn: the first row is the tool-only
+    // assistant, the second its result, and the answer arrives third with no
+    // active bubble to append to. The bubble it creates stands for all three
+    // backend rows — counting only the two pending ones would make the release
+    // rewind short and skip history the reader then cannot reach.
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { role: 'tool', tool_call_id: 'tc', content: 'ok', timestamp: 2 },
+      { role: 'assistant', content: 'Answer.', timestamp: 3 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].serverRowSpan).toBe(3)
   })
 })

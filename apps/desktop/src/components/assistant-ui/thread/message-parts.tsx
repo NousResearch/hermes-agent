@@ -3,11 +3,13 @@ import {
   type TextMessagePartProps,
   type ToolCallMessagePartProps,
   useAuiState,
-  useMessagePartReasoning
+  useMessagePartReasoning,
+  useMessagePartText
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
+import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
@@ -22,13 +24,13 @@ import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { useI18n } from '@/i18n'
-import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
+import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -120,6 +122,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     )
   }
 
+  if (props.toolName === 'manage_catalog') {
+    return <CatalogInstallTool {...props} />
+  }
+
   if (mcpTargets(props.toolName, props.args).length > 0) {
     return <McpSetupTool {...props} />
   }
@@ -128,7 +134,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ConnectorTool {...props} />
   }
 
-  if (connectorCalls(props.toolName, props.args).length > 0) {
+  if (toolLabels(props.args).length > 0) {
     return <ConnectorExecution {...props} />
   }
 
@@ -140,12 +146,22 @@ const PREVIEW_RELOCK_THRESHOLD_PX = 24
 
 type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
 
-const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
-  <>
-    <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
-    <MarkdownText />
-  </>
-)
+const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => {
+  const { text } = useMessagePartText()
+
+  // assistant-ui adds an empty continuation after a tool starts. It is not
+  // prose yet and must not create paragraph spacing above pending approvals.
+  if (!text.trim()) {
+    return null
+  }
+
+  return (
+    <>
+      <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
+      <MarkdownText />
+    </>
+  )
+}
 
 const ThinkingDisclosure: FC<{
   children: ReactNode
@@ -297,6 +313,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   endIndex,
   startIndex
 }) => {
+  const showReasoning = useStore($showReasoning)
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
   // The guide's reasoning is it reading its own runbook ("Now step 4: offer
@@ -341,7 +358,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent || guidedChat) {
+  if (!hasContent || guidedChat || !showReasoning) {
     return null
   }
 
@@ -368,6 +385,15 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   const { status, text } = useMessagePartReasoning()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+
+  // The group above already hides grouped parts; this covers a Reasoning part
+  // rendered without a ReasoningGroup wrapper (assistant-ui drops the group
+  // when a ChainOfThought component is registered).
+  const showReasoning = useStore($showReasoning)
+
+  if (!showReasoning) {
+    return null
+  }
 
   return (
     <MarkdownTextContent

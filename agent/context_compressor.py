@@ -12,11 +12,14 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from agent.image_eviction_policy import outbound_image_retire_count
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
+    _coerce_llm_message,
     _is_connection_error,
+    _message_field,
     aux_interrupt_protection,
     call_llm,
     extract_content_or_reasoning,
@@ -88,6 +91,22 @@ def take_pinned_summary_route() -> Optional[Dict[str, Any]]:
     return route
 
 
+# Pinned route that names NO summary model: compress() skips the summary LLM and inserts its deterministic
+# fallback summary instead (``abort_on_summary_failure`` still aborts). The host pins it when the summary
+# route stalls again after a stall-class backoff already burned one idle window (#112420), so a provably
+# unhealthy route degrades once instead of re-entering the same silent stream every turn.
+DETERMINISTIC_SUMMARY_ROUTE: Dict[str, Any] = {"label": "deterministic fallback summary", "deterministic": True}
+
+
+def take_deterministic_summary_pin() -> bool:
+    """Consume the pin when it is the deterministic sentinel; a real route (or no pin) is left in place."""
+    route = _SUMMARY_ROUTE_PIN.get()
+    if not (isinstance(route, dict) and route.get("deterministic") is True):
+        return False
+    _SUMMARY_ROUTE_PIN.set(None)
+    return True
+
+
 def _pinned_summary_call_kwargs() -> Dict[str, Any]:
     """Consume the pinned route as explicit ``call_llm`` keyword arguments."""
     route = take_pinned_summary_route() or {}
@@ -99,7 +118,9 @@ _SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
     "out of credit", "out of extra usage",
 )
 
-_SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = ("no api key was found", "no api key found")
+_SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "no api key was found", "no api key found", "no credentials were found",
+)
 
 _HYGIENE_PREAGENT_ONLY_COOLDOWN_MARKERS: tuple[str, ...] = (
     "session hygiene compression timed out", "hygiene compression deferred: turn-hold budget expired",
@@ -138,6 +159,56 @@ def _response_finish_reason(response: Any) -> str:
 # compaction checkpoint would silently truncate the conversation's memory and feed the cut-off text back
 # into every subsequent iterative-update prompt. (Ported from earendil-works/pi#7048 / commit 97fa14e39.)
 _TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
+
+# A provider can return a natural-language refusal with finish_reason="stop". It is
+# non-empty, so the usual response validation accepts it, but it contains none of
+# the checkpoint needed to safely replace the compacted turns. Keep this narrow:
+# a real summary may mention a refusal in a recorded turn, while a refusal as the
+# whole response begins with one of these phrases and refers to the requested
+# summary/checkpoint.
+_SUMMARY_REFUSAL_PREFIX_RE = re.compile(
+    r"^\s*(?:(?:sorry|i(?:['’]m| am)\s+sorry|i\s+apologi[sz]e|as\s+an\s+ai)"
+    r"\s*[,;:]?\s*(?:but\s+)?)?(?:i|we)\s+"
+    r"(?:can(?:\s*not|['’]t)|could\s*not|couldn['’]t|won['’]t|will\s+not|must\s+decline|"
+    r"refuse\s+to|am\s+unable\s+to|am\s+not\s+able\s+to)\b"
+    r"|^\s*(?:i['’]?m|i\s+am)\s+(?:unable|not\s+able)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_summary_refusal(content: str) -> bool:
+    """Return whether a complete response is a refusal instead of a summary."""
+    normalized = " ".join(content.split())
+    if not _SUMMARY_REFUSAL_PREFIX_RE.match(normalized):
+        return False
+    # A refusal-only body never carries the template's "## " section headings; a real summary
+    # that merely opens with a hedging preamble ("I cannot see earlier turns, but here is...") does.
+    if re.search(r"(?m)^##\s", content):
+        return False
+    # Limit the search to the opener so a structured checkpoint that records a
+    # historical refusal elsewhere is not rejected. Stems catch summary/summarize/summarise.
+    return any(term in normalized[:400].casefold() for term in ("summar", "checkpoint"))
+
+
+def _response_refusal_text(response: Any) -> str:
+    """Explicit provider ``choices[0].message.refusal`` (str, or dict with message/reason/text); ``""`` when absent.
+
+    OpenAI-style structured-output refusals put the refusal here and leave ``content`` as filler or
+    empty, so the prose detector never sees it.
+    """
+    refusal = _message_field(_coerce_llm_message(response), "refusal")
+    if isinstance(refusal, dict):
+        refusal = refusal.get("message") or refusal.get("reason") or refusal.get("text")
+    return refusal.strip() if isinstance(refusal, str) else ""
+
+
+def _is_refusal_response(response: Any, content: str) -> bool:
+    """Single refusal predicate for both summarizer paths.
+
+    An explicit provider ``message.refusal`` wins even when ``content`` looks like a
+    summary; otherwise fall back to the prose detector on the extracted content.
+    """
+    return bool(_response_refusal_text(response)) or _is_summary_refusal(content)
 
 
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
@@ -318,12 +389,63 @@ def stamp_db_persisted_markers(messages: List[Dict[str, Any]]) -> None:
             msg[_DB_PERSISTED_MARKER] = True
 
 
+def _is_checkpoint_item(item: Any) -> bool:
+    return isinstance(item, dict) and item.get("type") == "compaction"
+
+
+def _newest_checkpoint_carrier(messages: List[Dict[str, Any]], key: str) -> int:
+    """Index of the last assistant message carrying a ``type: "compaction"`` item under *key*, or -1.
+    Transcript-side mirror of ``native_compaction.prune_pre_checkpoint_items``' newest-run-wins rule:
+    the wire builder drops every checkpoint before the last one, so this is the only carrier whose
+    checkpoint can still reach a request."""
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        items = msg.get(key)
+        if isinstance(items, list) and any(_is_checkpoint_item(item) for item in items):
+            return i
+    return -1
+
+
+def _set_sidecar(msg: Dict[str, Any], key: str, kept: List[Any]) -> None:
+    """Filter items, never leave an empty sidecar behind."""
+    if kept:
+        msg[key] = kept
+    else:
+        msg.pop(key, None)
+
+
+def drop_shadowed_checkpoints(
+    messages: List[Dict[str, Any]], key: str = "codex_reasoning_items", *, before: Optional[int] = None,
+) -> List[int]:
+    """Drop ``type: "compaction"`` items from every assistant row older than the newest carrier (rows at
+    index >= *before* are left alone). A checkpoint a newer carrier shadows has no reader on any wire:
+    ``prune_pre_checkpoint_items`` rebuilds each request around the newest checkpoint run and the replay
+    gate drops checkpoints wholesale once native compaction is ineligible. Non-checkpoint items stay.
+    In place; returns the indices rewritten."""
+    newest = _newest_checkpoint_carrier(messages, key)
+    stop = newest if before is None else min(newest, before)
+    rewritten: List[int] = []
+    for i in range(max(stop, 0)):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        items = msg.get(key)
+        if not isinstance(items, list) or not any(_is_checkpoint_item(item) for item in items):
+            continue
+        _set_sidecar(msg, key, [item for item in items if not _is_checkpoint_item(item)])
+        rewritten.append(i)
+    return rewritten
+
+
 def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
     """Strip stale ``codex_reasoning_items`` from assistant turns older than the active one.
     Boundary is the last USER message (a turn spans several assistant rows): the Responses API replays a
     turn's bridging reasoning items together, so cutting at the last ASSISTANT would strip mid-chain.
-    ``type: "compaction"`` items are cumulative context carriers that must survive on every retained
-    message — filter items, never pop the key. In place; returns pruned message count."""
+    Only the NEWEST ``type: "compaction"`` checkpoint survives (``drop_shadowed_checkpoints``): a shadowed
+    one was still copied into the compacted transcript and every child session built from it (#102374).
+    Filter items, never pop the key on the carrier. In place; returns pruned message count."""
     # Active turn = everything after the last real user message; synthetic
     # continuation rows and tool results never mark a turn boundary.
     last_user_idx = _last_index_with_role(messages, "user")
@@ -331,24 +453,22 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
         # No user boundary: prune nothing (fail open toward correctness).
         return 0
 
-    pruned = 0
-    for i in range(last_user_idx):
-        msg = messages[i]
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
-            continue
-        for key in _STALE_REPLAY_PRUNE_KEYS:
+    pruned = set()
+    for key in _STALE_REPLAY_PRUNE_KEYS:
+        pruned.update(drop_shadowed_checkpoints(messages, key, before=last_user_idx))
+        for i in range(last_user_idx):
+            msg = messages[i]
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
             items = msg.get(key)
             if not isinstance(items, list) or not items:
                 continue
-            kept = [item for item in items if isinstance(item, dict) and item.get("type") == "compaction"]
+            kept = [item for item in items if _is_checkpoint_item(item)]
             if len(kept) == len(items):
                 continue  # nothing stale in this sidecar
-            if kept:
-                msg[key] = kept
-            else:
-                msg.pop(key, None)
-            pruned += 1
-    return pruned
+            _set_sidecar(msg, key, kept)
+            pruned.add(i)
+    return len(pruned)
 
 
 # Explicit end boundary: weak models otherwise read quoted headers as fresh
@@ -557,19 +677,26 @@ class _SummaryFailureKind:
     streaming_closed: bool
     empty_content: bool
     truncated: bool
+    overloaded: bool
 
     def fallback_reason(self) -> str:
         """Reason string for the one-shot main-model retry log line, most specific first."""
         reasons = (
             (self.json_decode, "returned invalid JSON"), (self.truncated, "returned a truncated summary (output token cap)"),
-            (self.empty_content, "returned empty content"), (self.model_not_found, "unavailable"),
+            (self.empty_content, "returned empty content"), (self.overloaded, "was overloaded"),
+            (self.model_not_found, "unavailable"),
             (self.streaming_closed, "closed stream prematurely"), (self.timeout, "timed out"),
         )
         return next((reason for flagged, reason in reasons if flagged), "failed")
 
 
 def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
-    """Classify a summary-call exception by status code / message shape."""
+    """Classify a summary-call exception by status code / message shape.
+
+    A "refusal content" RuntimeError (prose or provider ``refusal`` field) deliberately rides the
+    ``empty_content`` class — cooldown + main-model fallback + abort — so the "returned empty content"
+    fallback log line is expected for refusals.
+    """
     status = _exc_status_code(e)
     err = str(e).lower()
     return _SummaryFailureKind(
@@ -585,10 +712,14 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.
         empty_content=isinstance(e, RuntimeError) and any(
-            m in err for m in ("empty content", "llm returned none response", "llm returned invalid response")
+            m in err for m in (
+                "empty content", "refusal content", "llm returned none response", "llm returned invalid response",
+            )
         ),
         # Truncated summary: one main-model retry, then ABORT preserving the session.
         truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
+        overloaded=classify_api_error(e).reason is FailoverReason.overloaded
+        or any(marker in err for marker in ("overloaded", "at capacity", "over capacity")),
     )
 
 
@@ -623,16 +754,29 @@ _TERMINAL_SUMMARY_FAILURES = (
         "preserved unchanged; the session was NOT rotated. This indicates upstream provider degradation: "
         "retry with /compress once the provider recovers, or continue the conversation as-is.",
     ),
+    (
+        "_last_summary_overload_failure",
+        "summary_overload_failure",
+        "Summary generation failed because the provider is overloaded — aborting compression. %d message(s) "
+        "preserved unchanged; the session was NOT rotated. Retry with /compress once capacity recovers, "
+        "or continue the conversation as-is.",
+    ),
 )
 
-# Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer.
+# Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer. Truncated summaries
+# (finish_reason=length) walk the same rungs on their own counter: the output cap is deterministic for an
+# unchanged route and prompt, so a flat 30s cooldown let every async-completion turn re-issue the same
+# capped request after its per-turn attempt budget was refilled (#69637).
 _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
 
 
-def _next_timeout_cooldown(compressor: Any) -> int:
-    """Bump ``compressor._consecutive_timeout_failures`` and return the ladder rung for it.
-    Module-level (not a method) so callers that bind a single real method onto a stub still exercise the ladder."""
-    n = compressor._consecutive_timeout_failures = getattr(compressor, "_consecutive_timeout_failures", 0) + 1
+def _next_timeout_cooldown(compressor: Any, counter: str = "_consecutive_timeout_failures") -> int:
+    """Bump ``compressor.<counter>`` and return the ladder rung for it.
+    Module-level (not a method) so callers that bind a single real method onto a stub still exercise the ladder.
+    ``counter`` stays separate per failure class: the timeout streak also arms the deterministic stall fallback
+    (``_prior_timeout_failures``), which a truncation must not trigger."""
+    n = getattr(compressor, counter, 0) + 1
+    setattr(compressor, counter, n)
     return _TIMEOUT_COOLDOWN_LADDER[min(n, len(_TIMEOUT_COOLDOWN_LADDER)) - 1]
 
 
@@ -755,6 +899,10 @@ def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
 # 2.5% of the context window, clamped; floor keeps small models workable.
 LEAN_TAIL_FLOOR_TOKENS = 10_000
 LEAN_TAIL_CAP_TOKENS = 25_000
+# Hard share of the window the verbatim tail may occupy, applied after either formula. The lean
+# floor alone is 61% of a 16K window and 122% of an 8K one, so on a local 27B the "protected"
+# tail WAS the whole request and every compaction pass summarised six rows and reclaimed nothing.
+TAIL_MAX_CONTEXT_FRACTION = 0.20
 # Newest-first budget, straddler truncated; lives inside the single summary message.
 _LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
 _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
@@ -843,7 +991,7 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
 # identifier-preserving session log is produced by the SAME single summary request as the narrative summary
 # (one auxiliary LLM call per compaction attempt, total — #96603: the earlier per-chunk digest loop made up
 # to 28 extra aux calls and pushed compactions to 7-11 minutes on slow aux routes). Coverage over oversized
-# regions comes from even input sampling (see ``_sample_summary_input``), and exact-needle defense comes
+# regions comes from even record sampling (see ``_sample_summary_records``), and exact-needle defense comes
 # from the LLM-free anchor index below.
 _LEAN_SESSION_LOG_HEADING = "## Detailed Session Log (oldest first)"
 # Extra output-token guidance for the session-log section (single response).
@@ -982,6 +1130,8 @@ _PRESSURE_KEEP_RECENT_MESSAGES = 3
 # Native vision_analyze / computer_use screenshots that sit inside the protected tail cannot be demoted by
 # pass 2, so they ride every later request until anti-thrash disables compression (#92699).
 _MAX_KEEP_TOOL_IMAGES = 3
+# Compaction window only. The send path's same-valued OUTBOUND_IMAGE_FLOOR (agent/image_eviction_policy.py)
+# is a satisfiability floor with different semantics; do not merge the two.
 
 # Below this window the threshold is floored (raise-only): at 50% the incompressible
 # floor eats the reclaimed headroom and compaction re-fires every 1-2 turns.
@@ -995,7 +1145,12 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 # MEDIA delivery directives must not reach the summarizer — if one leaks into the summary, the downstream
 # model may re-emit it as an active directive on the next turn, triggering bogus attachment sends (#14665).
 _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
-_HISTORICAL_TASK_SECTION_RE = re.compile(rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n.*?(?=^## |\Z)")
+# Pre-#44454 alias. A summarizer that still emits it must be replaced, not prepended.
+_LEGACY_ACTIVE_TASK_HEADING = "## Active Task"
+_TASK_SNAPSHOT_HEADINGS = (HISTORICAL_TASK_HEADING, _LEGACY_ACTIVE_TASK_HEADING)
+_HISTORICAL_TASK_SECTION_RE = re.compile(
+    rf"(?ms)^(?:{'|'.join(re.escape(heading) for heading in _TASK_SNAPSHOT_HEADINGS)})\s*\n.*?(?=^## |\Z)"
+)
 
 
 def _redact_compaction_text(text: Any) -> str:
@@ -1204,10 +1359,14 @@ def _replace_image_parts(parts: Any, placeholder: str) -> Optional[List[Any]]:
     return [{"type": "text", "text": placeholder} if _is_image_part(p) else p for p in parts]
 
 
+def _tool_result_parts(content: Any) -> Any:
+    """Part list of a tool-result body, unwrapping the ``_multimodal`` envelope."""
+    return content.get("content") if isinstance(content, dict) and content.get("_multimodal") else content
+
+
 def _tool_content_has_images(content: Any) -> bool:
     """True when a tool-result body (part list or ``_multimodal`` envelope) carries images."""
-    inner = content.get("content") if isinstance(content, dict) and content.get("_multimodal") else content
-    return _content_has_images(inner)
+    return _content_has_images(_tool_result_parts(content))
 
 
 def _strip_images_from_tool_msg(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1230,7 +1389,10 @@ def _rewritten(msg: Dict[str, Any], content: Any) -> Dict[str, Any]:
 def _retire_stale_tool_result_images(result: List[Dict[str, Any]], keep_newest: int = _MAX_KEEP_TOOL_IMAGES) -> int:
     """Replace image payloads on older tool results with text placeholders.
     Keeps the newest ``keep_newest`` image-bearing tool messages; user uploads untouched. Mutates
-    ``result`` in place; returns the number of messages rewritten."""
+    ``result`` in place; returns the number of messages rewritten. Compaction only: it commits the
+    rewrite into the canonical transcript once. The send path uses
+    :func:`evict_stale_outbound_tool_images` (a per-request keep-newest window rewrites the cached
+    prefix on every new image, #113517)."""
     seen = pruned = 0
     for i in range(len(result) - 1, -1, -1):
         msg = result[i]
@@ -1246,33 +1408,119 @@ def _retire_stale_tool_result_images(result: List[Dict[str, Any]], keep_newest: 
     return pruned
 
 
-def evict_stale_outbound_tool_images(
-    api_messages: List[Dict[str, Any]],
-    keep_newest: int = _MAX_KEEP_TOOL_IMAGES,
-) -> int:
+def _image_payload(msg: Dict[str, Any]) -> Tuple[int, int]:
+    """``(blocks, bytes)`` of image payload in a message.
+
+    The provider counts BLOCKS: one ``tool_result`` carrying three screenshots is three against
+    the per-request limit. Bytes are the data-URL / base64 length — the payload is ASCII and the
+    JSON framing around it is noise against a 24 MB budget, so no per-request re-serialization.
+    """
+    parts = _tool_result_parts(msg.get("content"))
+    if not isinstance(parts, list):
+        return 0, 0
+    blocks = payload = 0
+    for p in parts:
+        if not _is_image_part(p):
+            continue
+        blocks += 1
+        image_url = p.get("image_url")
+        source = p.get("source")
+        data = (
+            (image_url.get("url") if isinstance(image_url, dict) else image_url)
+            or (source.get("data") if isinstance(source, dict) else None)
+            or ""
+        )
+        payload += len(data) if isinstance(data, str) else 0
+    return blocks, payload
+
+
+def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     """Drop stale screenshot/vision payloads from the per-call API copy.
 
-    Compression's keep-newest pass only runs when prune/compress fires, and
-    the Anthropic adapter's screenshot eviction only sees nested
-    ``tool_result`` blocks. OpenAI-style ``image_url`` tool results
-    otherwise ride every subsequent request until a 413 forces the reactive
-    strip (#89286). Call this on the cloned ``api_messages`` list after
-    sanitization so older frames never leave the box (#89296). Do not pass
-    persisted history — the rewrite is send-path only.
+    Compression's keep-newest pass only runs when prune/compress fires, and the Anthropic
+    adapter's screenshot eviction only sees nested ``tool_result`` blocks. OpenAI-style
+    ``image_url`` tool results otherwise ride every subsequent request until a 413 forces
+    the reactive strip (#89286). Call this on the cloned ``api_messages`` list after
+    sanitization (#89296). Do not pass persisted history — the rewrite is send-path only.
+
+    Eviction is driven by the provider limit, counted in image BLOCKS, with user uploads
+    reserved against the ceiling but never rewritten — policy and rationale in
+    :mod:`agent.image_eviction_policy`. Returns the number of messages rewritten.
     """
-    return _retire_stale_tool_result_images(api_messages, keep_newest=keep_newest)
+    carriers: List[Tuple[int, Tuple[int, int]]] = []
+    reserved_blocks = reserved_bytes = 0
+    for i in range(len(api_messages) - 1, -1, -1):
+        msg = api_messages[i]
+        if not isinstance(msg, dict):
+            continue
+        blocks, size = _image_payload(msg)
+        if not blocks:
+            continue
+        if msg.get("role") == "tool":
+            carriers.append((i, (blocks, size)))
+        else:
+            reserved_blocks += blocks
+            reserved_bytes += size
+    retire = outbound_image_retire_count(
+        [blocks for _, (blocks, _) in carriers],
+        reserved_blocks,
+        carrier_bytes_newest_first=[size for _, (_, size) in carriers],
+        reserved_bytes=reserved_bytes,
+    )
+    pruned = 0
+    for i, _ in carriers[len(carriers) - retire:]:
+        new_msg = _strip_images_from_tool_msg(api_messages[i])
+        if new_msg is not None:
+            api_messages[i] = new_msg
+            pruned += 1
+    return pruned
+
+
+# #83714 — this text lands inside the model's OWN replayed tool call, so it must not read like
+# something the model would write itself: the bare "...[truncated]" it replaced was imitated into
+# new calls and written to disk. Non-prose delimiters, an explicit "not original content"
+# disclaimer, and per-instance counts keep a copied marker visibly wrong; the counts also make a
+# verbatim copy stale, which is why the marker must never be re-applied (see ``_shrink``).
+_COMPRESSION_MARKER_PREFIX = "⟪HERMES-CONTEXT-COMPRESSION:"
+_COMPRESSION_MARKER_TEMPLATE = (
+    _COMPRESSION_MARKER_PREFIX
+    + " {omitted:,} of {total:,} chars omitted here by Hermes's context compressor. "
+    "This is NOT part of the original tool call and must never be reproduced in new "
+    "output — always write full, untruncated content.⟫"
+)
 
 
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
+
+    Only leaves where the replacement is a net reduction are changed (``head_chars`` plus the
+    marker, ~420 chars); the input string is returned unchanged when nothing was replaced.
+    """
     try:
         parsed = json.loads(args)
     except (ValueError, TypeError):
         return args
 
+    changed = False
+
     def _shrink(obj: Any) -> Any:
+        nonlocal changed
         if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
+            # Already marked: the compressor writes the head and the marker as the whole tail, so
+            # key on that shape. A substring/prefix test alone would exempt a leaf that merely
+            # quotes the marker — including the imitation #83714 is about — from shrinking forever.
+            marked = obj.startswith(_COMPRESSION_MARKER_PREFIX, head_chars) and obj.endswith("⟫")
+            if len(obj) <= head_chars or marked:
+                return obj
+            marker = _COMPRESSION_MARKER_TEMPLATE.format(
+                omitted=len(obj) - head_chars, total=len(obj)
+            )
+            # Only replace when it reclaims bytes: for a leaf just over the cap the marker is
+            # longer than what it replaces.
+            if head_chars + len(marker) >= len(obj):
+                return obj
+            changed = True
+            return obj[:head_chars] + marker
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -1280,8 +1528,13 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
         return obj
 
     shrunken = _shrink(parsed)
+    # Re-serialising alone would rewrite the caller's bytes (compact wire JSON gains spaces),
+    # which the callers read as "this message changed" and count as reclaimed pressure.
+    if not changed:
+        return args
     # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
-    return json.dumps(shrunken, ensure_ascii=False)
+    out = json.dumps(shrunken, ensure_ascii=False)
+    return out if len(out) < len(args) else args
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
@@ -1490,8 +1743,51 @@ def _sum_clarify(name, args, content, content_len, line_count):
     return "[clarify] asked user a question"
 
 
-def _sum_named(name, args, content, content_len, line_count):
-    return f"[{name}] name={args.get('name', '?')} ({content_len:,} chars)"
+def _sum_skill_manage(name, args, content, content_len, line_count):
+    # The advertised call shape is an operations array; the legacy flat shape
+    # (top-level action/name) is still accepted, so both must summarize to a
+    # skill name instead of `name=?` — there is no top-level `name` arg here.
+    ops = args.get("operations")
+    if isinstance(ops, list) and ops:
+        rendered = []
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            action = _str_arg(op, "action", "?")
+            op_name = _str_arg(op, "name", "?")
+            rendered.append(f"{action} {op_name}")
+        summary = f"[skill_manage] {'; '.join(rendered[:3])}"
+        if len(ops) > 3:
+            summary += f" (+{len(ops) - 3} more)"
+    else:
+        action = _str_arg(args, "action", "?")
+        op_name = _str_arg(args, "name", "?")
+        summary = f"[skill_manage] {action} {op_name}"
+    return f"{summary}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+
+
+def _sum_skills_list(name, args, content, content_len, line_count):
+    # `skills_list` takes only `category`, not a top-level `name` — the count
+    # from the payload is what identifies the call after compression.
+    category = _str_arg(args, "category")
+    scope = f" category={category}" if category else ""
+    payload = _json_dict(content)
+    count = payload.get("count")
+    listed = f" {count} skills" if isinstance(count, int) else ""
+    return f"[skills_list]{scope}{listed}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+
+
+def _skill_result_failure_suffix(content: str) -> str:
+    """`` FAILED: <error>`` for a skill-tool payload that reports failure, else ``""``.
+    The skill tools return ``{"success": false, "error": ...}``; without the outcome in the stub a
+    failed batch compresses into the same line as a success and the post-compaction agent chases the
+    stub text as the error (#112710). Bounded to one line so the stub stays a stub."""
+    payload = _json_dict(content)
+    error = payload.get("error")
+    if not error and payload.get("success") is not False:
+        return ""
+    preview = " ".join(str(error).split())[:80] if error else ""
+    return f" FAILED: {preview}" if preview else " FAILED"
 
 
 def _sum_template(template: str, **defaults):
@@ -1517,8 +1813,8 @@ _TOOL_RESULT_SUMMARIZERS = {
     "delegate_task": _sum_delegate_task,
     "execute_code": _sum_execute_code,
     "skill_view": _sum_skill_view,
-    "skills_list": _sum_named,
-    "skill_manage": _sum_named,
+    "skills_list": _sum_skills_list,
+    "skill_manage": _sum_skill_manage,
     "vision_analyze": lambda name, args, content, content_len, line_count: (
         f"[vision_analyze] '{_str_arg(args, 'question')[:50]}' ({content_len:,} chars)"
     ),
@@ -1720,6 +2016,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             "total_duration_ms": None, "aux_call_duration_ms": None, "queue_wait_ms": None, "prompt_build_ms": None,
             "time_to_first_progress_ms": None, "summary_generation_ms": None, "commit_ms": None,
             "fallback_used": False, "commit_status": "unknown", "split_status": "unknown", "failure_class": None,
+            # Lean-sampling coverage (filled by _record_summary_input_coverage; None on the legacy path).
+            "summary_input_chars": None, "summary_input_sampled_chars": None, "summary_input_omitted_chars": None,
+            "summary_input_record_count": None, "summary_input_sampled_record_count": None,
+            "summary_input_elided_record_count": None,
         }
         self._active_compression_telemetry = self._last_compression_telemetry = telemetry
         return telemetry
@@ -1824,9 +2124,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if self._tail_token_budget is None:
             if getattr(self, "tail_mode", "lean") == "lean":
                 # Lean mode: tail is a small clamped recency window; the summary carries continuity.
-                self._tail_token_budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
+                budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
             else:
-                self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+                budget = int(self.threshold_tokens * self.summary_target_ratio)
+            if self.context_length > 0:
+                budget = min(budget, int(self.context_length * TAIL_MAX_CONTEXT_FRACTION))
+            self._tail_token_budget = max(1, budget)
         return self._tail_token_budget
 
     @tail_token_budget.setter
@@ -1870,7 +2173,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
-        self._consecutive_timeout_failures = 0
+        # The model the aux lane actually resolved for the most recent summary call (an ``auto`` route
+        # may differ from ``summary_model``/``model``). Recorded so a failed auto-resolved model is
+        # named in the user-visible warning and falls back to the main model (#116472).
+        self._last_aux_resolved_model = None
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = self._last_feasibility_skip = False
@@ -1905,7 +2212,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._summary_failure_cooldown_until = 0.0
         self._cooldown_persist_failed = False
         self._last_summary_error = None
-        self._consecutive_timeout_failures = self._fallback_compression_streak = 0
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._fallback_compression_streak = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
         self._reset_proactive_prune_rearm()
@@ -2150,7 +2457,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def record_timeout_failure(self, error: str, failure_kind: str = "timeout") -> None:
         """Consecutive timeout/stall via the ladder; error persisted as ``backoff:<kind>:strategy=<tail_mode>`` for restarts."""
         stamped = f"backoff:{failure_kind or 'timeout'}:strategy={getattr(self, 'tail_mode', None) or 'unknown'}: {error}"
-        self._record_compression_failure_cooldown(float(_next_timeout_cooldown(self)), stamped)
+        seconds = float(_next_timeout_cooldown(self))
+        # The first rung (60s) is shorter than the default idle stall window (120s): the next oversized turn
+        # re-entered the same silent route ~1 min after burning the full window (#112420). A stall cooldown
+        # can never be shorter than the window that just failed to show progress.
+        with contextlib.suppress(Exception):
+            from agent.conversation_compression import resolve_context_compression_timeouts
+            idle, _ceiling = resolve_context_compression_timeouts()
+            seconds = max(seconds, float(idle))
+        self._record_compression_failure_cooldown(seconds, stamped)
 
     def _clear_compression_failure_cooldown(self) -> None:
         # Fence check BEFORE cooldown-clear: a late cancelled worker must not undo the host's timeout cooldown.
@@ -2159,7 +2474,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             logger.info("Skipping compression cooldown clear: host already cancelled this compression attempt")
             return
         self._summary_failure_cooldown_until, self._last_summary_error = 0.0, None
-        self._consecutive_timeout_failures, self._cooldown_persist_failed = 0, False
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
+        self._cooldown_persist_failed = False
         ContextCompressor._durable_write(self, "clear_compression_failure_cooldown", "compression failure cooldown clear")
 
     def _compression_cancelled(self) -> bool:
@@ -2177,6 +2493,29 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             logger.debug("compression cancellation check failed", exc_info=True)
             return False
 
+    def _derive_trigger(self, model: str, context_length: int, provider: str) -> tuple[float, float, int]:
+        """``(base_percent, effective_percent, threshold_tokens)`` for a model/window, from the raw config
+        value so a switch away from an overridden model falls back correctly. Pure: the one place the
+        trigger math lives, shared by ``update_model`` and the switch guard's preview so the number the
+        guard quotes is the number the compressor installs (#83450). Excludes the auxiliary-summariser
+        ceiling, which the feasibility probe re-derives per runtime."""
+        base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
+        effective_percent = self._effective_threshold_percent(context_length, base_percent)
+        threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
+        cap = self._effective_threshold_cap(context_length)
+        if cap is not None:
+            threshold = min(threshold, cap)
+        return base_percent, effective_percent, threshold
+
+    def _effective_threshold_cap(self, context_length: int) -> int | None:
+        """The configured ``threshold_tokens`` cap clamped to the window; None when no cap is configured."""
+        cap = self.threshold_tokens_cap
+        return min(cap, context_length) if cap is not None and cap > 0 else None
+
+    def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
+        """The trigger ``update_model`` would install, without mutating state."""
+        return self._derive_trigger(model, context_length, provider)[2]
+
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: Any = "", provider: str = "",
         api_mode: str = "", max_tokens: int | None = None,
@@ -2185,15 +2524,17 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         runtime_changed = (model, provider, base_url, api_mode) != (self.model, self.provider, self.base_url, self.api_mode)
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         self.context_length = context_length
-        # Re-resolve from the raw config value so a switch away from an overridden model falls back correctly.
-        _config_pct = getattr(self, "_config_threshold_percent", self.threshold_percent)
-        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, _config_pct, provider)
-        self.threshold_percent = self._effective_threshold_percent(context_length, self._base_threshold_percent)
         # max_tokens=None means "unspecified": keep the existing output reservation.
         # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)
         if max_tokens is not None:
             self.max_tokens = self._coerce_max_tokens(max_tokens)
-        self.threshold_tokens = self._compute_threshold_tokens(context_length, self.threshold_percent, self.max_tokens)
+        if runtime_changed:
+            # The aux ceiling was probed against the previous main runtime (an "auto" aux route follows the
+            # main model); the caller re-runs the feasibility probe. A same-runtime recompute (overflow-reported
+            # window, grown local window, tier cap) keeps it: the summariser did not change (#114707).
+            self._aux_context_ceiling = None
+        self._base_threshold_percent, self.threshold_percent, self.threshold_tokens = self._derive_trigger(
+            model, context_length, provider)
         self._apply_threshold_tokens_cap()
         # Reset to None so the property recomputes via the mode-aware path (not the legacy formula).
         self._tail_token_budget = None
@@ -2243,11 +2584,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     _coerce_threshold_tokens_cap = _coerce_max_tokens
 
     def _apply_threshold_tokens_cap(self) -> None:
-        """Clamp threshold_tokens to the configured cap (itself clamped to the context length)."""
-        if self.threshold_tokens_cap is not None and self.threshold_tokens_cap > 0:
-            _effective_cap = min(self.threshold_tokens_cap, self.context_length)
-            if _effective_cap < self.threshold_tokens:
-                self.threshold_tokens = _effective_cap
+        """Clamp threshold_tokens to the configured cap (itself clamped to the context length) and to the
+        auxiliary summariser's window when the feasibility probe installed one."""
+        cap = self._effective_threshold_cap(self.context_length)
+        if cap is not None and cap < self.threshold_tokens:
+            self.threshold_tokens = cap
+        # Durable, so every recomputation honours it rather than a one-time assignment (#114707).
+        _aux_ceiling = getattr(self, "_aux_context_ceiling", None)
+        if isinstance(_aux_ceiling, int) and 0 < _aux_ceiling < self.threshold_tokens:
+            self.threshold_tokens = _aux_ceiling
 
     @staticmethod
     def _effective_threshold_percent(context_length: int, threshold_percent: float) -> float:
@@ -2317,6 +2662,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.threshold_percent = self._base_threshold_percent
         # Effective trigger = min(ratio threshold, cap); re-applied in update_model().
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(threshold_tokens_cap)
+        # Aux summariser window installed by the feasibility probe; None until it runs.
+        self._aux_context_ceiling: int | None = None
         self.protect_first_n, self.protect_last_n = protect_first_n, protect_last_n
         # Proactive prune runs independently of the full-compression trigger. 0 = disabled.
         self.proactive_prune_tokens = int(proactive_prune_tokens or 0)
@@ -2702,6 +3049,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
         return True
 
+    def _tail_soft_ceiling(self, token_budget: int) -> int:
+        """Optional tail rows may overrun the budget by 1.5x so whole rows are kept, but never past
+        ``TAIL_MAX_CONTEXT_FRACTION`` of the window — on a small window the overrun alone was a third
+        of the request. Required anchors and atomic tool groups may still exceed it."""
+        ceiling = int(token_budget * 1.5)
+        ctx = getattr(self, "context_length", 0) or 0
+        if ctx > 0:
+            ceiling = min(ceiling, int(ctx * TAIL_MAX_CONTEXT_FRACTION))
+        return max(ceiling, token_budget)
+
     def _pressure_demote_tail(
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int,
@@ -2709,7 +3066,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
         Keeps a short recent floor verbatim; overrides the skill guard (else the dead-end recurs).
         Returns the number of tool results demoted (arg truncations are logged but not counted)."""
-        soft_ceiling = int(protect_tail_tokens * 1.5)
+        soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
 
@@ -2953,8 +3310,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"
 
-    def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
-        """Serialize turns into labeled, redacted text for the summarizer."""
+    def _serialize_records_for_summary(self, turns: List[Dict[str, Any]]) -> List[str]:
+        """Serialize turns into a list of labeled, redacted records for the summarizer."""
         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
         from agent.agent_runtime_helpers import strip_think_blocks
         parts = []
@@ -2976,7 +3333,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if role == "assistant" and msg.get("tool_calls", []):
                 content += "\n[Tool calls:\n" + "\n".join(map(self._render_tool_call_for_summary, msg["tool_calls"])) + "\n]"
             parts.append(f"[{role.upper()}]: {content}")
-        return "\n\n".join(parts)
+        return parts
+
+    def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
+        """Serialize turns into labeled, redacted text for the summarizer."""
+        return "\n\n".join(self._serialize_records_for_summary(turns))
 
     def _fallback_anchors(self, turns_to_summarize: List[Dict[str, Any]]) -> Dict[str, list[str]]:
         """Locally extractable anchors: user asks, actions, files, blockers, last dropped turns."""
@@ -3175,41 +3536,176 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
     _SAMPLED_INPUT_SLICES = 8
 
     @classmethod
-    def _sample_summary_input(cls, content: str) -> str:
-        """Cap summarizer input by EVEN SAMPLING across the whole region (lean mode).
-        The single request also produces the session log, so coverage must be uniform: head+tail
-        truncation would hide the entire middle from it."""
-        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
-            return content
-        n = max(2, cls._SAMPLED_INPUT_SLICES)
-        marker_template = "\n\n...[{elided:,} chars elided — recover via session_search]...\n\n"
-        marker_reserve = len(marker_template.format(elided=len(content))) * (n - 1)
-        budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_reserve, n)
-        slice_len = budget // n
-        stride = len(content) / n
-        parts: list[str] = []
-        prev_end = 0
-        for i in range(n):
-            start = int(i * stride)
-            if i == n - 1:
-                # Last slice anchors to the END: newest turns carry the most state.
-                start = max(start, len(content) - slice_len)
-            end = min(start + slice_len, len(content))
-            if start > prev_end:
-                parts.append(marker_template.format(elided=start - prev_end))
-            parts.append(content[start:end])
-            prev_end = end
-        return "".join(parts)
+    def _bound_oversized_record(cls, record: str, limit: int) -> str:
+        """Bound an oversized record with an explicit intra-record truncation marker."""
+        if len(record) <= limit:
+            return record
+        marker_template = "\n...[record truncated: {elided:,} chars elided — recover via session_search]...\n"
+        marker_reserve = len(marker_template.format(elided=len(record)))
+        if limit <= marker_reserve:
+            return record[:limit]
+        remaining = limit - marker_reserve
+        head_len = remaining // 2
+        tail_len = remaining - head_len
+        head = record[:head_len].rstrip("\n")
+        tail = record[-tail_len:].lstrip("\n")
+        elided = len(record) - len(head) - len(tail)
+        return head + marker_template.format(elided=elided) + tail
 
-    def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
-        """Fall back from a separate ``summary_model`` to the main model: record the aux failure, clear model + cooldown."""
+    def _record_summary_input_coverage(self, coverage: Dict[str, int]) -> None:
+        """Expose lean sampling coverage without including transcript content in telemetry."""
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            return
+        telemetry.update({
+            "summary_input_chars": coverage["input_chars"],
+            "summary_input_sampled_chars": coverage["sampled_chars"],
+            "summary_input_omitted_chars": coverage["omitted_chars"],
+            "summary_input_record_count": coverage["record_count"],
+            "summary_input_sampled_record_count": coverage["sampled_record_count"],
+            "summary_input_elided_record_count": coverage["elided_record_count"],
+        })
+
+    @classmethod
+    def _sample_summary_records(cls, records: Sequence[str]) -> Tuple[str, Dict[str, int]]:
+        """Sample complete serialized records while retaining the character bound.
+
+        Returns the bounded transcript and record-level coverage counters for compression
+        telemetry. `input_chars` counts raw serialized record content; `sampled_chars` counts the
+        *display* chars of retained records (after intra-record truncation by
+        `_bound_oversized_record`); neither includes separators or elision markers, so
+        `omitted_chars = input_chars - sampled_chars` also covers truncated-away bytes.
+        """
+        input_chars = sum(len(r) for r in records)
+
+        def _coverage(sampled_chars: int, sampled_record_count: int) -> Dict[str, int]:
+            return {
+                "input_chars": input_chars, "sampled_chars": sampled_chars,
+                "omitted_chars": input_chars - sampled_chars, "record_count": len(records),
+                "sampled_record_count": sampled_record_count,
+                "elided_record_count": len(records) - sampled_record_count,
+            }
+
+        if not records:
+            return "", _coverage(0, 0)
+
+        separator = "\n\n"
+        total_len = input_chars + len(separator) * (len(records) - 1)
+        if total_len <= cls._SUMMARY_INPUT_MAX_CHARS:
+            return separator.join(records), _coverage(input_chars, len(records))
+
+        n = max(1, min(cls._SAMPLED_INPUT_SLICES, len(records)))
+        marker_template = (
+            "\n\n...[records {first:,}-{last:,}: {elided:,} chars elided — recover via session_search]...\n\n"
+        )
+        marker_len = len(marker_template.format(first=len(records), last=len(records), elided=total_len))
+        budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_len * (n - 1), 1)
+        target = max(1, budget // n)
+
+        # Oversized records are bounded to slice target with explicit intra-record truncation markers
+        # so they cannot consume other regions' budget or evict the newest record.
+        display_records = [cls._bound_oversized_record(r, target) for r in records]
+
+        def _merged(slices: list[tuple[int, int]]) -> list[tuple[int, int]]:
+            out: list[tuple[int, int]] = []
+            for s, e in slices:
+                if out and s <= out[-1][1]:
+                    out[-1] = (out[-1][0], max(out[-1][1], e))
+                else:
+                    out.append((s, e))
+            return out
+
+        starts = [round(i * len(records) / n) for i in range(n)]
+        selected: list[tuple[int, int]] = []
+        for index, start in enumerate(starts):
+            if index == len(starts) - 1:
+                # Anchor the last slice to the newest record at the end of the history.
+                end = len(records)
+                start = end - 1
+                size = len(display_records[start])
+                while start > 0 and size + len(separator) + len(display_records[start - 1]) <= target:
+                    start -= 1
+                    size += len(separator) + len(display_records[start])
+            else:
+                end = start
+                size = 0
+                while end < len(records) and (size == 0 or size + len(display_records[end]) + len(separator) <= target):
+                    size += len(display_records[end]) + (len(separator) if end > start else 0)
+                    end += 1
+            if end > start:
+                selected.append((start, end))
+        selected = _merged(selected)
+
+        def _render(slices: list[tuple[int, int]]) -> str:
+            parts: list[str] = []
+            cursor = 0
+            for s, e in slices:
+                if s > cursor:
+                    sep_count = (s - cursor) if cursor == 0 else (s - cursor + 1)
+                    elided = sum(len(records[i]) for i in range(cursor, s)) + len(separator) * sep_count
+                    parts.append(marker_template.format(first=cursor + 1, last=s, elided=elided))
+                parts.append(separator.join(display_records[s:e]))
+                cursor = e
+            return "".join(parts)
+
+        # Budget extension: the greedy fill leaves each slice short of `target` by up to one record
+        # (5-43% of the cap unused for 8-20K records). Spend the headroom on whole neighbouring
+        # records, round-robin one record per slice per round so every region keeps an even share
+        # (the newest slice grows backward, older slices grow forward) — never past cap.
+        cap = cls._SUMMARY_INPUT_MAX_CHARS
+        rendered_len = len(_render(selected))
+        grew = True
+        while grew:
+            grew = False
+            for idx in range(len(selected) - 1, -1, -1):
+                s, e = selected[idx]
+                if idx == len(selected) - 1:
+                    nxt, grown = s - 1, (s - 1, e)
+                    if nxt < (selected[idx - 1][1] if idx else 0):
+                        continue
+                else:
+                    nxt, grown = e, (s, e + 1)
+                    if nxt >= selected[idx + 1][0]:
+                        continue
+                if rendered_len + len(separator) + len(display_records[nxt]) > cap:
+                    continue
+                selected[idx] = grown
+                new_len = len(_render(_merged(selected)))
+                # The pre-check above bounds the added record; the exact re-render catches the
+                # one thing it cannot see — a gap's first index gaining a digit or comma in the
+                # marker (e.g. 999 -> 1,000) when the render is already at cap.
+                if new_len > cap:
+                    selected[idx] = (s, e)
+                    continue
+                rendered_len = new_len
+                grew = True
+        selected = _merged(selected)
+
+        # No overflow trim is needed: every slice holds <= `target` display chars (records are
+        # pre-bounded to `target`), there are <= n-1 markers each <= `marker_len` (widths computed
+        # at their maxima), and n*target + (n-1)*marker_len <= _SUMMARY_INPUT_MAX_CHARS by
+        # construction; the extension pass above only adds a record when the result stays <= cap.
+        shown = [i for s, e in selected for i in range(s, e)]
+        return _render(selected), _coverage(sum(len(display_records[i]) for i in shown), len(shown))
+
+    def _fallback_to_main_for_compression(
+        self, e: Exception, reason: str, failed_model: Optional[str] = None
+    ) -> None:
+        """Fall back from a separate ``summary_model`` to the main model: record the aux failure, clear model + cooldown.
+
+        ``failed_model`` names the model that actually failed — an ``auto`` route resolves one per call
+        without setting ``summary_model``, so without it the user warning would have no model to name
+        (#116472)."""
+        failed = str(
+            failed_model or self.summary_model or getattr(self, "_last_aux_resolved_model", "") or ""
+        ).strip()
         self._summary_model_fallen_back = True
         logger.warning(
             "Summary model '%s' %s (%s). Falling back to main model '%s' for compression.",
-            self.summary_model, reason, e, self.model,
+            failed or "(auto)", reason, e, self.model,
         )
         self._last_aux_model_failure_error = _short_error_text(e)
-        self._last_aux_model_failure_model = self.summary_model
+        self._last_aux_model_failure_model = failed or None
         telemetry = getattr(self, "_active_compression_telemetry", None)
         if isinstance(telemetry, dict):
             telemetry["fallback_used"] = True
@@ -3244,6 +3740,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _aux_call_start = time.monotonic()
         _latency_info: Dict[str, int] = {"prompt_build_ms": max(0, int((_aux_call_start - prompt_started_at) * 1000))}
         call_kwargs["latency_info"] = _latency_info
+        # Per-attempt observable (#114594): with this line a stalled attempt is distinguishable from a slow
+        # one — silence before it is prompt build, silence after it is the summary provider.
+        logger.info(
+            "Compression summary call dispatched: model=%s prompt_chars=%s prompt_build_ms=%s",
+            self.summary_model or self.model, f"{len(prompt):,}", _latency_info["prompt_build_ms"],
+        )
         try:
             # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
             with aux_interrupt_protection():
@@ -3251,6 +3753,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         finally:
             route_known = bool(_aux_route.get("provider") and _aux_route.get("model"))
             _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
+            # Remember the resolved model for the failure path: an ``auto`` route picks one per call
+            # without setting ``summary_model``, so only this names it in the user warning (#116472).
+            self._last_aux_resolved_model = _aux_model or None
             self._record_aux_compression_call(
                 prompt_messages=call_kwargs["messages"],
                 # max_tokens is intentionally absent; .get() keeps the telemetry hook from breaking the call.
@@ -3275,6 +3780,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # error, rather than replacing real context with an empty summary.
         if not content.strip():
             raise RuntimeError(f"Context compression LLM returned empty content {where}")
+        if _is_refusal_response(response, content):
+            # Treat a refusal as unusable content. This deliberately reuses the
+            # established fallback/cooldown/abort path for an empty body, so it
+            # can never be committed as `_previous_summary`.
+            raise RuntimeError(f"Context compression LLM returned refusal content {where}")
         # A finish_reason of "length" means the summarizer hit its output token cap mid-generation: the text
         # present is PARTIAL. Persisting a partial summary as the compaction checkpoint silently truncates
         # the conversation's memory — the cut-off text replaces the real middle turns AND is fed back into
@@ -3320,8 +3830,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _collect_ghosted_skill_names(turns_to_summarize) + _extract_pruned_skill_names(self._previous_summary or "")
         ))[:_MAX_PRUNED_SKILL_MARKERS]
         # Lean mode even-samples oversized input (one bounded request, never a second).
-        bound = self._sample_summary_input if getattr(self, "tail_mode", "lean") == "lean" else self._bound_summary_input
-        content_to_summarize = bound(self._serialize_for_summary(turns_to_summarize))
+        if getattr(self, "tail_mode", "lean") == "lean":
+            records = self._serialize_records_for_summary(turns_to_summarize)
+            content_to_summarize, coverage = self._sample_summary_records(records)
+            self._record_summary_input_coverage(coverage)
+        else:
+            content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
         has_user_turn = getattr(self, "_summary_has_user_turn", None)
         if has_user_turn is None:
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
@@ -3339,6 +3853,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
             summary = self._augment_summary_lean(summary, turns_to_summarize)
             self._validate_summary_user_provenance(summary, has_user_turn)
+            # A detached stale attempt must not publish its late summary onto shared compressor state:
+            # the fallback already advanced _previous_summary and owns the cooldown/error fields. The
+            # candidate itself is discarded downstream by the working-attempt check; bail here so the
+            # attribute writes never land. Entry-generation claims (lock sit-outs) do not count; the
+            # working marker is the ownership boundary for summary state.
+            from agent.conversation_compression import _raise_if_stale_attempt
+
+            _raise_if_stale_attempt(self)
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
             self._summary_model_fallen_back = False
@@ -3383,7 +3905,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}{_memory_section}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:
@@ -3486,6 +4008,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         self, e: Exception, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str], memory_context: str,
     ) -> Optional[str]:
         """Classify a summary-call failure; retry once on the main model (returning its result) or arm a cooldown (None)."""
+        # A detached stale attempt must not arm a failure cooldown or stamp error state the fallback
+        # attempt owns; unwind as a cancellation so none of the shared-state writes below can land.
+        from agent.conversation_compression import _raise_if_stale_attempt
+
+        _raise_if_stale_attempt(self)
         # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
         # RuntimeErrors are transient and must get the main-model retry below first.
         # ``call_llm`` raises ``RuntimeError`` for two very different cases: 1. 2. An empty/invalid response
@@ -3517,17 +4044,26 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # A distinct summary model gets ONE main-model retry: a specific reason for known transient classes,
         # else a best-effort "failed" retry — losing N turns is worse than one extra summary attempt.
-        if self.summary_model and self.summary_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
-            self._fallback_to_main_for_compression(e, kind.fallback_reason())
+        # ``provider: auto`` resolves a model per call WITHOUT setting ``summary_model``; use the model the
+        # aux lane actually resolved so an auto route that keeps returning empty content (a proxy channel
+        # answering 200 with no body) is abandoned for the main model instead of retried forever (#116472).
+        _route_model = str(
+            self.summary_model or getattr(self, "_last_aux_resolved_model", "") or ""
+        ).strip()
+        if _route_model and _route_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
+            self._fallback_to_main_for_compression(e, kind.fallback_reason(), failed_model=_route_model)
             # Retry immediately on the main model.
             return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
-        # Transient errors: short cooldown for JSON-decode/streaming-closed. Timeouts escalate
-        # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung.
+        # Transient errors: short cooldown for JSON-decode/streaming-closed/empty-content. Timeouts escalate
+        # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung; truncation
+        # escalates on its own counter (see _TIMEOUT_COOLDOWN_LADDER).
         if kind.timeout:
             _transient_cooldown = _next_timeout_cooldown(self)
+        elif kind.truncated:
+            _transient_cooldown = _next_timeout_cooldown(self, "_consecutive_truncation_failures")
         else:
-            _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content or kind.truncated) else 60
+            _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content) else 60
         err_text = _short_error_text(e)
         self._record_compression_failure_cooldown(_transient_cooldown, err_text)
         self._last_summary_error = err_text
@@ -3544,6 +4080,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_truncated_failure = True
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
+        elif kind.overloaded:
+            self._last_summary_overload_failure = True
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,
@@ -3618,15 +4156,15 @@ Write only the summary body. Do not include any preamble or prefix."""
         text = _content_text_for_contains(message.get("content")).strip()
         # Recovery nudges are scaffolding, not human turns; lazy import avoids an import cycle.
         from agent.conversation_loop import (
-            _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
-            _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX, _LENGTH_CONTINUATION_NETWORK_STUB,
-            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+            _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DEGENERATE_FINAL_NUDGE,
+            _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
+            _LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         )
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
             MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,
-            _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_NETWORK_STUB,
-            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+            _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE,
+            _LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         } or text.startswith((
             _BACKGROUND_PROCESS_NOTIFICATION_PREFIX, TODO_INJECTION_HEADER + "\n", _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
         ))
@@ -3636,8 +4174,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Reject user attribution when the source transcript has no user."""
         if has_user_turn:
             return
-        match = re.search(rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n(.*?)(?=\n##\s|\Z)", summary)
-        task_snapshot = match.group(1).strip() if match else ""
+        match = _HISTORICAL_TASK_SECTION_RE.search(summary)
+        task_snapshot = match.group(0).split("\n", 1)[-1].strip() if match else ""
         # The "User asked:" scan can false-positive on quoted tool output; acceptable, since
         # the RuntimeError only costs one retry on the existing fallback path.
         if task_snapshot != _NO_USER_TASK_SENTINEL or re.search(r"\bUser\s+asked\s*:", summary, re.IGNORECASE):
@@ -3758,7 +4296,18 @@ Write only the summary body. Do not include any preamble or prefix."""
         # this regex on the next compaction (deleting every following section).
         replacement = f"{HISTORICAL_TASK_HEADING}\n{snapshot}\n\n"
         if _HISTORICAL_TASK_SECTION_RE.search(body):
-            return _HISTORICAL_TASK_SECTION_RE.sub(lambda _m: replacement, body, count=1).strip()
+            # Replace the first task section and drop every later one: a summarizer that emits both the
+            # canonical heading and the legacy alias would otherwise leave a second, undisclaimed task section.
+            seen = False
+
+            def _collapse(_m: re.Match) -> str:
+                nonlocal seen
+                if seen:
+                    return ""
+                seen = True
+                return replacement
+
+            return _HISTORICAL_TASK_SECTION_RE.sub(_collapse, body).strip()
         return f"{replacement}{body}".strip()
 
     @classmethod
@@ -3946,17 +4495,31 @@ Write only the summary body. Do not include any preamble or prefix."""
         return idx
 
     @classmethod
+    def _is_real_user_turn(cls, message: Dict[str, Any]) -> bool:
+        """Actionable user turn that is not synthetic scaffolding — the row test both index scans share.
+
+        Weaker than ``agent.conversation_compression._is_real_user_message``, which also rejects
+        metadata-flagged scaffolding this pair cannot see; use that one when the question is
+        "is this a genuine inbound user message".
+        """
+        return cls._is_actionable_user_turn(message) and not cls._is_synthetic_compression_user_turn(message)
+
+    @classmethod
     def _real_user_indices_desc(cls, messages: List[Dict[str, Any]], head_end: int) -> list[int]:
         """Newest-first indices of actionable, non-synthetic user turns at or after *head_end* (no handoffs/blank echoes)."""
         return [
             i for i in range(len(messages) - 1, head_end - 1, -1)
-            if cls._is_actionable_user_turn(messages[i])
-            and not cls._is_synthetic_compression_user_turn(messages[i])
+            if cls._is_real_user_turn(messages[i])
         ]
 
     def _find_last_user_message_idx(self, messages: List[Dict[str, Any]], head_end: int) -> int:
         """Return the latest actionable user turn at or after *head_end*, or -1."""
-        return next(iter(self._real_user_indices_desc(messages, head_end)), -1)
+        # Early-exit generator: callers want the newest hit only, and collecting every index
+        # (``_real_user_indices_desc``) costs a full backward scan per call.
+        return next(
+            (i for i in range(len(messages) - 1, head_end - 1, -1) if self._is_real_user_turn(messages[i])),
+            -1,
+        )
 
     def _find_last_assistant_message_idx(self, messages: List[Dict[str, Any]], head_end: int) -> int:
         """Last text-bearing non-summary assistant reply at/after *head_end* (else last non-summary assistant), or -1."""
@@ -4117,9 +4680,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             return compressed
 
         for msg in compressed[carrier_idx + 1:]:
-            if self._is_actionable_user_turn(
-                msg
-            ) and not self._is_synthetic_compression_user_turn(msg):
+            if self._is_real_user_turn(msg):
                 # A real request already follows the summary.
                 return compressed
 
@@ -4230,10 +4791,13 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int, token_budget: int | None = None,
+        *, allow_split_turn: bool = True,
     ) -> int:
         """Walk backward accumulating tokens until the budget; return the tail start index.
-        May exceed the budget by up to 1.5x to avoid cutting inside an oversized message; never splits a
-        tool group; keeps the last user message in the tail."""
+        Optional rows are bounded by a 1.5x soft ceiling. Required last-user/last-assistant (and
+        multi-user) anchors and their atomic tool groups may exceed it; tool groups are never split.
+        ``allow_split_turn`` is disabled by rolling micro-compaction, which consumes complete
+        exchanges only; batch/manual compaction enables it so an oversized active turn can progress."""
         if token_budget is None:
             token_budget = self.tail_token_budget
         n = len(messages)
@@ -4244,28 +4808,75 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Keep >= 2 non-head messages summarizable so a tiny middle still saves messages.
         compressible_tail_cap = max(3, available_tail - 2)
         min_tail = min(min_tail_floor, compressible_tail_cap, available_tail) if available_tail > 1 else 0
-        soft_ceiling = int(token_budget * 1.5)
-        cut_idx, accumulated = self._walk_tail_budget(messages, head_end, soft_ceiling, min_tail, cut_at_break=False)
+        soft_ceiling = self._tail_soft_ceiling(token_budget)
+        # The count floor is opportunistic: oversized optional rows must not ride it past the token
+        # ceiling (#108647), so the walk runs floorless whenever the ceiling can hold at least the wire
+        # overhead of that many empty rows. Only when it cannot does the continuity floor win — no
+        # token-respecting floor exists then. Required user/assistant anchors and atomic tool groups
+        # are applied below and may still necessarily exceed the ceiling.
+        walk_floor = 0 if soft_ceiling >= min_tail * _estimate_msg_budget_tokens({}) else min_tail
+        cut_idx, accumulated = self._walk_tail_budget(messages, head_end, soft_ceiling, walk_floor, cut_at_break=False)
         # Whole transcript fits soft_ceiling: re-cut with the raw budget so a worthwhile middle
         # exists (else #40803 loop).
         if cut_idx <= head_end and 0 < accumulated <= soft_ceiling:
             cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True)
 
         fallback_cut = n - min_tail
-        cut_idx = min(cut_idx, fallback_cut)
+        cut_idx = min(cut_idx, n - walk_floor)
         # Small conversations: force a cut after the head so compression still removes something.
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)
         cut_idx = self._align_boundary_backward(messages, cut_idx)
-        # Latest user message must stay in the tail (active task). Latest assistant reply must stay too;
-        # anchors only walk backward, so chaining is monotonic.
-        # Ensure the most recent user message is always in the tail so the active task is never lost to
-        # compression (fixes #10896).
-        cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
-        cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+        # Anchors below keep the most recent user turn (active task, #10896) and the latest visible
+        # assistant reply (#29824) in the tail; each only walks the cut backward, so chaining them is
+        # normally monotonic. One bounded exception: when a single in-progress turn alone exceeds the
+        # soft ceiling, anchoring its opening request retains the whole turn and blows the budget by
+        # design — then the clean tool-group boundary above wins and that request rides the handoff
+        # (#80449). The N-user promise (#70250) is never relaxed.
+        last_user_idx = self._find_last_user_message_idx(messages, head_end)
+        user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+        split_oversized_turn = False
+        # ``user_anchored_cut < cut_idx`` means the anchor found a real user turn strictly inside the
+        # compressible region (see ``_ensure_last_user_message_in_tail``), so ``last_user_idx`` is a
+        # valid index into that region from here on.
+        if (
+            allow_split_turn
+            and user_anchored_cut < cut_idx
+            # A single oversized user message is indivisible and must stay verbatim in the tail; this
+            # exception is only for aggregate turn growth after a normally sized opening request.
+            and _estimate_msg_budget_tokens(messages[last_user_idx]) <= soft_ceiling
+            and len(_content_text_for_contains(messages[last_user_idx].get("content")).strip())
+            <= _ACTIVE_TASK_MAX_CHARS
+            # Only split when there is real turn body to summarize: if the oversized weight is the
+            # active turn's own newest group, the pre-anchor cut retains it anyway, so taking the
+            # active request out of the tail buys no reclaim and loses the #10896 anchor.
+            and any(messages[i].get("tool_calls") for i in range(last_user_idx, cut_idx))
+            # ...and only when the anchored region really is over the ceiling: a short transcript
+            # (whole session under the budget) anchors for free, so the exception must not fire.
+            # Measured with the walk's own accounting (#84371), not a second thought-charge rule.
+            and self._walk_tail_budget(
+                messages, user_anchored_cut, soft_ceiling, 0, cut_at_break=False
+            )[0] > user_anchored_cut
+        ):
+            split_oversized_turn = True
+            if not self.quiet_mode:
+                logger.debug(
+                    "Active turn exceeds protected-tail soft ceiling; keeping tool-group-aligned "
+                    "mid-turn cut at index %d instead of anchoring user message %d (#80449)",
+                    cut_idx, last_user_idx,
+                )
+        else:
+            cut_idx = user_anchored_cut
+        # An older visible assistant reply can precede the active user turn; under the split above,
+        # pulling back to it would undo the bounded exception.
+        if not split_oversized_turn:
+            cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
 
         # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
-        # the assistant anchor could re-trigger its forward turn-pair push. getattr: __new__ doubles skip __init__.
+        # the assistant anchor could re-trigger its forward turn-pair push. Runs even under the split: the
+        # N-user promise (#70250) is a user-facing setting and must outrank the budget, so it pulls the cut
+        # back to the Nth user turn — which is why the split only ever relaxes the single-user anchor.
+        # getattr: plugin engines and __new__ doubles skip __init__.
         _min_tail_users = getattr(self, "min_tail_user_messages", 1)
         if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
             cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
@@ -4448,8 +5059,13 @@ Write only the summary body. Do not include any preamble or prefix."""
             "%d message(s) preserved unchanged. Conversation is frozen until the next /compress or /new.",
         )
         telemetry["failure_class"] = failure_class
-        # Roll back the self-heal rehydration so the aborted attempt is a true no-op (#57835).
-        self._previous_summary = previous_summary_before_scan
+        # Roll back the self-heal rehydration so the aborted attempt is a true no-op (#57835). Only the
+        # attempt still owning summary work may roll back: a detached stale attempt (reachable here via
+        # the deterministic summary pin) must not revert the fallback's _previous_summary.
+        from agent.conversation_compression import _caller_attempt_is_current
+
+        if _caller_attempt_is_current(self):
+            self._previous_summary = previous_summary_before_scan
         if not self.quiet_mode:
             logger.warning(message, n_skipped)
         return True
@@ -4642,6 +5258,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         WITHOUT clearing it (#100661). Set by provider-proven overflow recovery, which is already bounded by
         the caller's attempt budget.
         """
+        # A detached stale attempt must not even reset per-call state the fallback owns. Staleness that
+        # arises mid-compress is caught by the write-point gates below; this covers stale-at-entry.
+        from agent.conversation_compression import _raise_if_stale_attempt
+
+        _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
@@ -4695,6 +5316,12 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
 
         # Phase 3: Generate structured summary (or skip the LLM when the middle is too small to matter)
+        # Choke point for staleness that arose during phases 1-2: everything below writes shared state
+        # (feasibility counters, fallback diagnostics, finalize's cursor/rearm resets), and the inner
+        # _summarize_window/_generate_summary gates cover staleness arising during the LLM call itself.
+        from agent.conversation_compression import _raise_if_stale_attempt
+
+        _raise_if_stale_attempt(self)
         feasibility_skip = not force and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
         summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
         if not feasibility_skip:
@@ -4835,7 +5462,7 @@ def split_user_originated_turn(message: Any) -> tuple[Optional[Dict[str, Any]], 
             candidate["display_metadata"] = durable_metadata
     drop_stale_api_content(candidate)
     cls = ContextCompressor
-    if cls._is_synthetic_compression_user_turn(candidate) or not cls._is_actionable_user_turn(candidate):
+    if not cls._is_real_user_turn(candidate):
         return handoff, None
     return handoff, candidate
 
@@ -4912,10 +5539,7 @@ def reference_handoff_would_drive_next_model_call(messages: Optional[List[Dict[s
         role = message.get("role")
         if (
             role == "tool" or (role == "assistant" and message.get("tool_calls"))
-            or (
-                ContextCompressor._is_actionable_user_turn(message)
-                and not ContextCompressor._is_synthetic_compression_user_turn(message)
-            )
+            or ContextCompressor._is_real_user_turn(message)
             or (is_compaction_summary_message(message) and _handoff_carries_live_user_content(message))
         ):
             return False

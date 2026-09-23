@@ -172,6 +172,10 @@ class TestThreadStarterDedup:
 
         monkeypatch.setattr(adapter, "_auto_create_thread", fake_auto_create_thread)
 
+        async def fake_mark_async(tid):  # first yield point after thread creation
+            assert str(tid) in adapter._dedup._seen, "dedup pre-seed must precede await mark_async"
+        monkeypatch.setattr(adapter._threads, "mark_async", fake_mark_async)
+
         # 1) Original user message arrives → triggers thread creation + dispatch
         user_msg = _make_message(msg_id=42, channel=channel, content="hello bot")
         await adapter._handle_message(user_msg)

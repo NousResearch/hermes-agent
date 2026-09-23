@@ -71,6 +71,8 @@ def test_agent_construction_gates_clarify_callback_on_single_query_mode():
     )
     init_agent_src = inspect.getsource(mixin_mod.CLIAgentSetupMixin._init_agent)
     assert 'clarify_callback=' in init_agent_src
+    assert "connection_callback = None if single_query_mode" in init_agent_src
+    assert "connection_callback=connection_callback" in init_agent_src
     assert '"_single_query_mode"' in init_agent_src or "'_single_query_mode'" in init_agent_src, (
         "the clarify_callback wiring no longer consults _single_query_mode — "
         "-q turns would hang on the interactive modal again (#94943)"

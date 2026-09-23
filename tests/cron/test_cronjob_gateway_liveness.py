@@ -290,11 +290,13 @@ class TestRuntimeLockFirstLiveness:
             assert cron_cli._builtin_gateway_liveness() is True
 
     def test_running_multiplexer_counts_as_alive_for_named_profile(self):
-        """A satellite profile has no own PID; the default multiplexer ticks it."""
+        """A satellite needs its own fresh heartbeat as well as a live multiplexer."""
         from unittest.mock import patch
 
+        from cron.jobs import record_ticker_heartbeat
         import hermes_cli.cron as cron_cli
 
+        record_ticker_heartbeat(success=True)
         with (
             patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
@@ -327,7 +329,7 @@ class TestCronStatusLockFirst:
     """`hermes cron status` shares the lock-first false-alarm fix (#95947).
 
     Sibling site of `_builtin_gateway_liveness`: it previously declared
-    "Gateway is not running — cron jobs will NOT fire" from a bare
+    "No gateway is running on this host — cron jobs will NOT fire" from a bare
     `find_gateway_pids()` miss even while the runtime lock proved the
     gateway (and its ticker) alive.
     """
@@ -356,12 +358,12 @@ class TestCronStatusLockFirst:
     def test_lock_active_suppresses_not_running_false_alarm(self, hermes_env):
         text = self._run_status(pids=[], lock_active=True, lock_pid=4242)
         # The lock-first contract (#87033): an active runtime lock means the
-        # gateway process is alive, so the RED "Gateway is not running" alarm
+        # gateway process is alive, so the RED "No gateway is running" alarm
         # must never fire. Since #98790 a never-written heartbeat is no longer
         # silently green — the YELLOW first-heartbeat notice (which also says
         # "NOT fire") is expected here, so assert on the red alarm itself
         # rather than the "NOT fire" substring both messages share.
-        assert "Gateway is not running" not in text
+        assert "No gateway is running on this host" not in text
         assert "has not reported a heartbeat" in text
         assert "Gateway is running" in text or "running" in text
 

@@ -116,6 +116,102 @@ describe('routing', () => {
     expect(parsed.mentioned.size).toBe(1)
   })
 
+  it('Reply-to tags route a same-named local + Connections twin each to itself', async () => {
+    const { rounds } = await loadRoom()
+
+    const local: GroupMember = { name: 'reviewer' }
+
+    const remote: GroupMember = {
+      connectionId: 'mini',
+      handle: 'reviewer-mini',
+      name: 'reviewer',
+      remoteSource: true,
+      sourceScoped: true
+    }
+
+    const members = [local, remote]
+
+    for (const member of members) {
+      const tag = rounds.groupReplyMentionTag(member, members)
+      const parsed = rounds.parseGroupChatMentions(`@${tag} `, members)
+
+      expect([tag, [...parsed.mentioned]]).toEqual([
+        member.remoteSource ? 'reviewer-mini' : 'reviewer-local',
+        [member.remoteSource ? 'mini::reviewer' : 'reviewer']
+      ])
+    }
+
+    // Unambiguous members keep the friendly tag the autocomplete inserts.
+    expect(rounds.groupReplyMentionTag({ name: 'ops', title: 'The Ops' }, MEMBERS)).toBe('the-ops')
+  })
+
+  it('resolves a pre-rename handle to the renamed member (#110200)', async () => {
+    const { rounds } = await loadRoom()
+
+    const members: GroupMember[] = [{ name: 'niezalezny', previous_names: ['niezale-ny'] }, { name: 'builder' }]
+
+    const parsed = rounds.parseGroupChatMentions('@niezale-ny please check', members)
+
+    expect(parsed.mentioned.has('niezalezny')).toBe(true)
+    expect(parsed.mentioned.size).toBe(1)
+  })
+
+  it('prefers a live name over another member\u2019s rename history', async () => {
+    const { rounds } = await loadRoom()
+
+    // Someone later claimed the old name as their own profile: the live name
+    // wins, the alias must not steal the mention.
+    const members: GroupMember[] = [{ name: 'niezalezny', previous_names: ['niezale-ny'] }, { name: 'niezale-ny' }]
+
+    const parsed = rounds.parseGroupChatMentions('@niezale-ny take this', members)
+
+    expect(parsed.mentioned.has('niezale-ny')).toBe(true)
+    expect(parsed.mentioned.size).toBe(1)
+  })
+
+  it('a previous-name alias cannot squat on a collapsed form of a live name', async () => {
+    const { rounds } = await loadRoom()
+
+    // Live member "bob.jones": the live loop registers "bob.jones" but NOT
+    // the collapsed "bobjones" (its hand-rolled collapse only strips [\s_-],
+    // never dots). The alias loop normalizes with mentionNameForms, which
+    // DOES yield "bobjones" — the old !handles.has guard missed it and let
+    // the alias hijack the mention. Every typed normalization must reach
+    // the live member.
+    const members: GroupMember[] = [{ name: 'bob.jones' }, { name: 'renamed', previous_names: ['bobjones'] }]
+
+    for (const typed of ['@bob.jones', '@bob-jones', '@bobjones']) {
+      const parsed = rounds.parseGroupChatMentions(`${typed} take this`, members)
+
+      expect(parsed.mentioned.has('bob.jones')).toBe(true)
+      expect(parsed.mentioned.size).toBe(1)
+    }
+  })
+
+  it('a previous-name alias cannot squat on the slug form of a dotted live name', async () => {
+    const { rounds } = await loadRoom()
+
+    const members: GroupMember[] = [{ name: 'ann.lee' }, { name: 'renamed', previous_names: ['ann-lee'] }]
+
+    const parsed = rounds.parseGroupChatMentions('@ann-lee take this', members)
+
+    expect(parsed.mentioned.has('ann.lee')).toBe(true)
+    expect(parsed.mentioned.size).toBe(1)
+  })
+
+  it('dotted previous names still resolve through every normalization when uncontested', async () => {
+    const { rounds } = await loadRoom()
+
+    const members: GroupMember[] = [{ name: 'renamed', previous_names: ['ann.lee'] }, { name: 'builder' }]
+
+    for (const typed of ['@ann.lee', '@ann-lee', '@annlee']) {
+      const parsed = rounds.parseGroupChatMentions(`${typed} take this`, members)
+
+      expect(parsed.mentioned.has('renamed')).toBe(true)
+      expect(parsed.mentioned.size).toBe(1)
+    }
+  })
+
   it('rotates the lead speaker each round', async () => {
     const { rounds } = await loadRoom()
 
@@ -148,6 +244,73 @@ describe('routing', () => {
 
     expect(lines.some(line => line.startsWith('research:'))).toBe(true)
     expect(lines.some(line => line.startsWith('builder: On it'))).toBe(true)
+  })
+
+  // #94863 D3: a LOCAL member's reply must carry from.source too, or the same
+  // entry mirrored to another Desktop reads as that Desktop's own same-named bot.
+  it('stamps a local member reply with its connection label and keeps (you) for that member only', async () => {
+    const room = await loadRoom({ turn: () => 'Central here.' })
+    const { formatGroupChatLine } = await import('./group-round-prompt')
+    const local: GroupMember = { connectionId: 'central', connectionLabel: 'Central', name: 'default', title: '' }
+
+    room.rounds.sendToGroupChat('Core', [local], '@hermes status?')
+    await settle(room, 'Core')
+
+    const reply = log(room, 'Core').find(entry => entry.from.kind === 'member')
+
+    expect(reply?.from).toEqual({ kind: 'member', name: 'default', source: 'Central' })
+    expect(formatGroupChatLine(reply as GroupMessage, local)).toContain('(you)')
+    // The same entry seen by the other machine's `default` is somebody else.
+    expect(
+      formatGroupChatLine(reply as GroupMessage, {
+        connectionId: 'mbp',
+        connectionLabel: 'MBP',
+        name: 'default',
+        remoteSource: true
+      })
+    ).not.toContain('(you)')
+  })
+
+  // Two Desktops label the same gateway differently ("Central" here, "Studio"
+  // there): the reply's gateway install_id, not the label, decides `(you)`.
+  it('matches self on the gateway install_id when Desktops label the connection differently', async () => {
+    const room = await loadRoom({ turn: () => 'Central here.' })
+    const { formatGroupChatLine } = await import('./group-round-prompt')
+
+    const local: GroupMember = {
+      connectionId: 'central',
+      connectionLabel: 'Central',
+      installId: 'gw-1',
+      name: 'default',
+      title: ''
+    }
+
+    room.rounds.sendToGroupChat('Core', [local], '@hermes status?')
+    await settle(room, 'Core')
+
+    const reply = log(room, 'Core').find(entry => entry.from.kind === 'member') as GroupMessage
+
+    expect(reply.from).toEqual({ kind: 'member', name: 'default', source: 'Central', gateway: 'gw-1' })
+    // The other Desktop's view of the SAME gateway under its own label.
+    expect(
+      formatGroupChatLine(reply, {
+        connectionId: 'c9',
+        connectionLabel: 'Studio',
+        installId: 'gw-1',
+        name: 'default',
+        remoteSource: true
+      })
+    ).toContain('(you)')
+    // …and a different gateway that happens to share the label is not self.
+    expect(
+      formatGroupChatLine(reply, {
+        connectionId: 'c2',
+        connectionLabel: 'Central',
+        installId: 'gw-2',
+        name: 'default',
+        remoteSource: true
+      })
+    ).not.toContain('(you)')
   })
 })
 
@@ -231,22 +394,32 @@ describe('round lifecycle', () => {
   })
 
   it('does not retry ambiguous member admission in later rounds or continuations', async () => {
-    const room = await loadRoom({ turn: ({ profile }) => {
-      if (profile === 'builder') { throw new Error('Ambiguous admission failure') }
+    const room = await loadRoom({
+      turn: ({ profile }) => {
+        if (profile === 'builder') {
+          throw new Error('Ambiguous admission failure')
+        }
 
-      return '@builder please investigate'
-    } })
+        return '@builder please investigate'
+      }
+    })
 
     room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research start')
     await settle(room, 'Failure')
     expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(1)
-    expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(false)
+    expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(
+      false
+    )
   })
 
   it('does not retry an ambiguous submit from prequeued same-thread or cross-thread sends', async () => {
     let reject!: (error: Error) => void
-    const held = new Promise<string>((_resolve, fail) => { reject = fail })
-    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+
+    const held = new Promise<string>((_resolve, fail) => {
+      reject = fail
+    })
+
+    const room = await loadRoom({ turn: ({ n }) => (n === 1 ? held : '(pass)') })
     const members = [MEMBERS[0]]
     const thread = room.rounds.sendToGroupChat('Failure', members, 'first')!
     await drain(() => room.gateway.calls.length < 1)
@@ -266,7 +439,11 @@ describe('round lifecycle', () => {
 
   it('attributes a queued drive failure to the thread whose harvest failed', async () => {
     let finish!: (reply: string) => void
-    const held = new Promise<string>(resolve => { finish = resolve })
+
+    const held = new Promise<string>(resolve => {
+      finish = resolve
+    })
+
     const room = await loadRoom({ turn: () => held })
     const first = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research first')!
     await drain(() => room.gateway.calls.length < 1)
@@ -283,7 +460,8 @@ describe('round lifecycle', () => {
     }
 
     room.chat.updateGroupChat('Failure', state => ({
-      ...state, stranded: { builder: { before: 0, thread: first } }
+      ...state,
+      stranded: { builder: { before: 0, thread: first } }
     }))
     finish('(pass)')
     await drain(() => !room.activity.currentGroupActivity('Failure').some(event => event.kind === 'failed'))
@@ -358,13 +536,19 @@ describe('round lifecycle', () => {
 describe('per-member delta', () => {
   it('retained-log trimming cannot acknowledge messages appended during inference', async () => {
     let release!: (reply: string) => void
-    const held = new Promise<string>(resolve => { release = resolve })
-    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+
+    const held = new Promise<string>(resolve => {
+      release = resolve
+    })
+
+    const room = await loadRoom({ turn: ({ n }) => (n === 1 ? held : '(pass)') })
     const members = [MEMBERS[0]]
     const thread = room.rounds.sendToGroupChat('Trim', members, 'delivered')!
     await drain(() => room.gateway.calls.length < 1)
 
-    for (let i = 0; i < 100; i++) {
+    const retained = room.chat.GROUP_CHAT_LOG_RETAIN
+
+    for (let i = 0; i < retained; i++) {
       room.chat.appendGroupChatEntry('Trim', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
     }
 
@@ -372,7 +556,81 @@ describe('per-member delta', () => {
     await settle(room, 'Trim')
     expect(room.chat.$groupChats.get().Trim.watermarks[`${thread}::research`]).toBe(0)
     await room.rounds.runGroupChatRounds('Trim', members, thread)
-    expect(room.gateway.calls.at(-1)?.prompt).toContain('unseen-99')
+    expect(room.gateway.calls.at(-1)?.prompt).toContain(`unseen-${retained - 1}`)
+  })
+
+  // #114341 follow-up: the turn renders the newest delta lines that fit the
+  // window (GROUP_CHAT_HISTORY_LIMIT entries / GROUP_CHAT_HISTORY_CHARS
+  // characters) while the watermark advances past the whole tail, so the
+  // head is never delivered later either. The cut must be visible to the
+  // member and name EXACTLY how many entries it did not see; a delta that
+  // fits carries no marker.
+  it('names the exact omitted head of an over-budget delta and keeps the newest', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Head', members, 'seen-0')!
+    await settle(room, 'Head')
+    const total = 40
+    const body = 'x'.repeat(1000)
+
+    for (let i = 1; i <= total; i++) {
+      room.chat.appendGroupChatEntry('Head', { kind: 'user', name: 'You' }, `unseen-${i} ${body}`, thread)
+    }
+
+    expect(total * body.length).toBeGreaterThan(room.chat.GROUP_CHAT_HISTORY_CHARS)
+
+    await room.rounds.runGroupChatRounds('Head', members, thread)
+    const prompt = room.gateway.calls.at(-1)?.prompt || ''
+    const rendered = prompt.match(/unseen-\d+ /g) || []
+    const omitted = Number(prompt.match(/… (\d+) earlier room messages omitted since your last turn/)?.[1])
+
+    expect(omitted).toBeGreaterThan(0)
+    expect(omitted + rendered.length).toBe(total)
+    expect(prompt).toContain(`unseen-${total} `)
+    expect(prompt).not.toContain('unseen-1 ')
+    expect(prompt).not.toContain('[truncated]')
+  })
+
+  it('does not cut a 150-entry delta that fits the window', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Fits', members, 'seen-0')!
+    await settle(room, 'Fits')
+
+    for (let i = 1; i <= 150; i++) {
+      room.chat.appendGroupChatEntry('Fits', { kind: 'user', name: 'You' }, `unseen-${i} short room line`, thread)
+    }
+
+    await room.rounds.runGroupChatRounds('Fits', members, thread)
+    const prompt = room.gateway.calls.at(-1)?.prompt || ''
+
+    expect(prompt).toContain('unseen-1 short')
+    expect(prompt).toContain('unseen-150 short')
+    expect(prompt).not.toMatch(/omitted/)
+  })
+
+  // One giant paste is cut to the per-line budget instead of evicting the
+  // ordinary messages around it.
+  it('truncates one oversized body rather than dropping its neighbours', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Paste', members, 'seen-0')!
+    await settle(room, 'Paste')
+
+    room.chat.appendGroupChatEntry('Paste', { kind: 'user', name: 'You' }, 'before the paste', thread)
+    room.chat.appendGroupChatEntry('Paste', { kind: 'user', name: 'You' }, `PASTE-${'y'.repeat(60_000)}-END`, thread)
+    room.chat.appendGroupChatEntry('Paste', { kind: 'user', name: 'You' }, 'after the paste', thread)
+
+    await room.rounds.runGroupChatRounds('Paste', members, thread)
+    const prompt = room.gateway.calls.at(-1)?.prompt || ''
+
+    expect(prompt).toContain('before the paste')
+    expect(prompt).toContain('after the paste')
+    expect(prompt).toContain('PASTE-yyy')
+    expect(prompt).toContain('… [truncated]')
+    expect(prompt).not.toContain('-END')
+    expect(prompt).not.toMatch(/omitted/)
+    expect(prompt.length).toBeLessThan(room.chat.GROUP_CHAT_HISTORY_LINE_CHARS + 2000)
   })
 
   it('feeds a second send only the NEW messages', async () => {
@@ -557,6 +815,37 @@ describe('turn prompt', () => {
     })
 
     expect(peer).toMatch(/group chat with @hermes/)
+  })
+
+  // #89720: a renamed primary is @bobby to the roster, autocomplete and the
+  // mention resolver; introducing it to itself as @hermes made it treat
+  // `@bobby …` as someone else's message and pass.
+  it('introduces a renamed primary by the same @tag the room resolves', async () => {
+    const { rounds } = await loadRoom()
+    const { buildGroupChatTurnPrompt } = await import('./group-round-prompt')
+
+    const members: GroupMember[] = [
+      { name: 'default', title: 'Bobby' },
+      { name: 'builder', title: '' }
+    ]
+
+    const own = buildGroupChatTurnPrompt({
+      deltaLines: [],
+      groupName: 'Core',
+      members,
+      viewer: members[0]
+    })
+
+    expect(own).toMatch(/You are @bobby,/)
+
+    const peer = buildGroupChatTurnPrompt({
+      deltaLines: [],
+      groupName: 'Core',
+      members,
+      viewer: members[1]
+    })
+
+    expect(peer).toMatch(/group chat with Bobby \(@bobby\)/)
   })
 
   it('asks for full-quality results and short chatter, not short results', async () => {
@@ -837,6 +1126,105 @@ describe('member holds (#93129)', () => {
     expect([...action.release]).toEqual(['impl'])
   })
 
+  // #103893: a German room said "@impl go, das ist halt ein Test" and the
+  // filler "halt" four words away from the mention held the bot every time
+  // the text was resent. Only a stop word next to a mention is a directive.
+  it('treats a stop word far from every mention as prose, not a directive', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of [
+      '@impl go, das ist halt ein Test',
+      '@impl mach mal Pause',
+      'stop the presses, @impl what do you think?'
+    ]) {
+      const action = rounds.classifyGroupHoldDirective(text, ['conn::impl'], false)
+
+      expect([...action.hold]).toEqual([])
+      // Ambiguous, so neutral: the prose reading must not wake a held member either.
+      expect([...action.release]).toEqual([])
+    }
+
+    // Keys are roster keys, not handles: proximity must still hold on the raw @token.
+    expect([...rounds.classifyGroupHoldDirective('@impl please halt', ['conn::impl'], false).hold]).toEqual([
+      'conn::impl'
+    ])
+  })
+
+  // #117040: proximity is measured on what the user directs at the room, not
+  // on content they quote or paste. A stop word inside a fenced block, inline
+  // code span, quoted span (straight or typographic) or blockquote line is content — reporting
+  // or debugging a hold must not re-hold the addressed member.
+  it('holds nobody when the stop word sits inside quoted or pasted content', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of [
+      '```text\nstop @impl\n```',
+      'The log printed `@impl pause` here',
+      'Why did "pause @impl" hold the bot?',
+      'Why did “pause @impl” hold the bot?',
+      // A cut-short paste leaves the fence unclosed; the rest is still content.
+      'look what the docs say:\n```js\nstop @impl\n',
+      '> stop @impl'
+    ]) {
+      const action = rounds.classifyGroupHoldDirective(text, ['impl'], false)
+
+      expect([...action.hold]).toEqual([])
+      // The mention itself still reaches the member: quoting AT the bot is a
+      // direct address, which releases a held member like any other mention.
+      expect([...action.release]).toEqual(['impl'])
+    }
+  })
+
+  it('still holds on the plain directive forms once masking is active', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of ['stop @impl', '@impl stop', '@impl please halt', '@all stop']) {
+      const action = rounds.classifyGroupHoldDirective(text, ['impl'], text.startsWith('@all'))
+
+      expect([...action.hold]).toEqual(['impl'])
+    }
+
+    // A masked span collapses to one word, so a genuine directive with pasted
+    // content between the stop word and the mention keeps its proximity.
+    expect([...rounds.classifyGroupHoldDirective('stop `service` @impl', ['impl'], false).hold]).toEqual(['impl'])
+  })
+
+  // A genuine stop whose stop word sits 3+ tokens from the mention may miss the
+  // hold, but it must never RELEASE (re-dispatch) the member it tells to stop.
+  it('never releases the addressed member on a distant genuine stop', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of [
+      '@impl please just stop now',
+      'hey @impl could you stop',
+      '@impl, I need you to stop',
+      '@impl you can stop'
+    ]) {
+      const action = rounds.classifyGroupHoldDirective(text, ['c1::impl'], false)
+
+      expect([...action.release]).toEqual([])
+    }
+
+    expect(rounds.classifyGroupHoldDirective('@all please just stop now', [], true).releaseAll).toBe(false)
+  })
+
+  // #97740: a room stopped by the user went permanently silent because only
+  // the literal "@all resume" released the holds; "@all <task>" addresses
+  // every member and must re-engage them like a direct mention does.
+  it('releases every hold when the whole room is addressed without a stop word', async () => {
+    const { rounds } = await loadRoom()
+    const held = { docs: { at: 2 }, impl: { at: 1 } }
+
+    expect(
+      rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all tell me a joke each', {})
+    ).toEqual({})
+    expect(
+      rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all stop', { at: 5 }, ['impl', 'docs'])
+    ).not.toEqual({})
+    // An unaddressed message still leaves the holds alone.
+    expect(rounds.applyGroupHoldDirective(held, { everyone: false, mentioned: [] }, 'anyone there?', {})).toBe(held)
+  })
+
   it('sets a hold on stop and clears it on resume for the same member', async () => {
     const { rounds } = await loadRoom()
     const stamp = { at: 1000, byMessageId: 'm1', thread: 't1' }
@@ -921,6 +1309,37 @@ describe('member holds (#93129)', () => {
     expect(heldMemberWatermarkAdvance(9, 7)).toBeNull()
     // Unset watermark treated as 0.
     expect(heldMemberWatermarkAdvance(undefined, 2)).toBe(2)
+  })
+
+  it('replays messages consumed by a hold into the released member next turn', async () => {
+    const room = await loadRoom()
+    const member = [{ name: 'research', title: '' }]
+
+    room.rounds.sendToGroupChat('Held', member, 'stop @research — remember TRIGGER_TEXT')
+    await settle(room, 'Held')
+    expect(room.gateway.calls).toHaveLength(0)
+    expect(room.chat.$groupChats.get().Held.heldMessages?.research).toHaveLength(1)
+
+    room.rounds.sendToGroupChat('Held', member, '@research resume with the context')
+    await settle(room, 'Held')
+
+    expect(room.gateway.calls[0].prompt).toMatch(/TRIGGER_TEXT[\s\S]*resume with the context/)
+    expect(room.chat.$groupChats.get().Held.heldMessages?.research).toBeUndefined()
+  })
+
+  it('lets a room disable text hold detection without weakening the Stop action', async () => {
+    const room = await loadRoom()
+    const member = [{ name: 'research', title: '' }]
+    room.chat.updateGroupChat('No holds', state => ({ ...state, holdDetection: false }))
+
+    room.rounds.sendToGroupChat('No holds', member, 'stop @research but answer this')
+    await settle(room, 'No holds')
+
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.chat.$groupChats.get()['No holds'].holds).toEqual({})
+    await room.rounds.stopGroupThread('No holds', null, member)
+    expect(room.chat.$groupChats.get()['No holds'].holds).toEqual({})
+    expect(room.chat.$groupChats.get()['No holds'].running).toBe(false)
   })
 })
 
@@ -1068,6 +1487,29 @@ describe('stopGroupThread (#91868/#94569)', () => {
     // The poll loop exited promptly after the stop, not at the deadline.
     expect(room.gateway.rpcFor('session.resume').length).toBeLessThanOrEqual(6)
     expect(room.chat.$groupChats.get().Room.running).toBe(false)
+  })
+
+  it('cancels an in-flight completion after Stop when sticky holds are disabled', async () => {
+    let finish!: (reply: string) => void
+
+    const pendingReply = new Promise<string>(resolve => {
+      finish = resolve
+    })
+
+    const room = await loadRoom({ turn: () => pendingReply })
+    const member = [{ name: 'helper', title: '' }]
+
+    room.chat.updateGroupChat('Room', state => ({ ...state, holdDetection: false }))
+    room.rounds.sendToGroupChat('Room', member, 'long task')
+    await drain(() => room.gateway.calls.length < 1)
+
+    await room.rounds.stopGroupThread('Room', null, member)
+    finish('must not be committed')
+    await drain(() => room.gateway.refcount() > 0)
+
+    const state = room.chat.$groupChats.get().Room
+    expect(state.holds).toEqual({})
+    expect(state.log.filter(entry => entry.from.kind === 'member')).toHaveLength(0)
   })
 
   it('keeps polling through an ordinary newer-send epoch bump so late work still lands', async () => {

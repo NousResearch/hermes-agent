@@ -79,8 +79,6 @@ class TestProfileScopedConfig:
         assert _cfg(isolated_profiles["worker_beta"]).get("timezone") == "Pluto/Far"
         assert _cfg(isolated_profiles["default"]).get("timezone") != "Pluto/Far"
 
-
-
     def test_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/config", params={"profile": "ghost"})
         assert resp.status_code == 404
@@ -138,8 +136,6 @@ class TestProfileScopedMcp:
         assert "profile-bearer" not in _cfg(isolated_profiles["default"]).get(
             "mcp_servers", {}
         )
-
-
 
     def test_mcp_test_oauth_server_without_token_is_not_ok(
         self, client, isolated_profiles, monkeypatch
@@ -363,115 +359,6 @@ class TestProfileScopedModel:
         assert resp.status_code == 200 and resp.json()["model_set"] is False
         assert "Unknown provider 'nobox'" in resp.json()["model_error"]
 
-    def test_main_assignment_reports_only_target_profile_cron_impact(
-        self, client, isolated_profiles
-    ):
-        stale = {
-            "name": "Worker summary",
-            "enabled": True,
-            "no_agent": False,
-            "provider_snapshot": "openrouter",
-            "model_snapshot": "old/model",
-        }
-        _write_jobs(
-            isolated_profiles["worker_beta"], [{"id": "worker-job", **stale}]
-        )
-        _write_jobs(
-            isolated_profiles["default"],
-            [{"id": "default-job", **stale, "name": "Default summary"}],
-        )
-
-        resp = client.post(
-            "/api/model/set",
-            json={
-                "scope": "main",
-                "provider": "nous",
-                "model": "new/model",
-                "confirm_expensive_model": True,
-                "profile": "worker_beta",
-            },
-        )
-
-        assert resp.status_code == 200
-        assert resp.json()["cron_model_impact"] == {
-            "available": True,
-            "affected_count": 1,
-            "truncated": False,
-            "jobs": [
-                {
-                    "id": "worker-job",
-                    "name": "Worker summary",
-                    "drifted_axes": ["provider", "model"],
-                }
-            ],
-        }
-
-    def test_unavailable_impact_does_not_fail_persisted_assignment(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import cron.jobs
-
-        monkeypatch.setattr(cron.jobs, "load_jobs", lambda: {"malformed": True})
-
-        resp = client.post(
-            "/api/model/set",
-            json={
-                "scope": "main",
-                "provider": "nous",
-                "model": "new/model",
-                "confirm_expensive_model": True,
-                "profile": "worker_beta",
-            },
-        )
-
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        assert resp.json()["cron_model_impact"]["available"] is False
-        assert _cfg(isolated_profiles["worker_beta"])["model"]["default"] == "new/model"
-
-    def test_auxiliary_and_confirmation_responses_have_no_impact_summary(
-        self, client, isolated_profiles
-    ):
-        _write_jobs(
-            isolated_profiles["worker_beta"],
-            [
-                {
-                    "id": "worker-job",
-                    "enabled": True,
-                    "provider_snapshot": "openrouter",
-                    "model_snapshot": "old/model",
-                }
-            ],
-        )
-
-        auxiliary = client.post(
-            "/api/model/set",
-            json={
-                "scope": "auxiliary",
-                "provider": "nous",
-                "model": "new/model",
-                "profile": "worker_beta",
-            },
-        )
-        confirmation = client.post(
-            "/api/model/set",
-            json={
-                "scope": "main",
-                "provider": "openrouter",
-                "model": "openai/gpt-5.5-pro",
-                "profile": "worker_beta",
-            },
-        )
-
-        assert auxiliary.status_code == 200
-        assert "cron_model_impact" not in auxiliary.json()
-        assert confirmation.status_code == 200
-        assert confirmation.json()["confirm_required"] is True
-        assert "cron_model_impact" not in confirmation.json()
-
-
-
-
 
     def test_model_options_uses_config_only_scope_for_selected_profile(
         self, client, monkeypatch
@@ -679,6 +566,7 @@ class TestProfileScopedGateway:
         runtime = {
             "pid": 4242,
             "gateway_state": "startup_failed",
+            "desired_state": "running",
             "platforms": {
                 "telegram": {"state": "fatal", "error_code": "telegram_auth_error"},
                 "alpha:telegram": {"state": "fatal", "error_code": "credential_collision"},
@@ -709,6 +597,36 @@ class TestProfileScopedGateway:
         # Fatal entries (root and namespaced) survive; the stale non-fatal is dropped.
         assert set(data["gateway_platforms"]) == {"telegram", "alpha:telegram"}
         assert data["gateway_platforms"]["alpha:telegram"]["error_code"] == "credential_collision"
+
+    def test_status_hides_historical_startup_failure_after_operator_stop(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """A durable stop intent takes precedence over an old startup failure."""
+        import hermes_cli.web_server as web_server
+
+        runtime = {
+            "pid": 4242,
+            "gateway_state": "startup_failed",
+            "desired_state": "stopped",
+            "platforms": {"telegram": {"state": "fatal"}},
+            "exit_reason": "telegram: token rejected",
+            "updated_at": "2026-06-17T00:00:00+00:00",
+        }
+        monkeypatch.setattr(_cfg_mod, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(
+            _gw_status, "get_running_pid_cached", lambda *a, **k: None
+        )
+        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda *a, **k: runtime)
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = client.get("/api/status", params={"profile": "worker_beta"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+        assert data["gateway_state"] == "stopped"
+        assert data["gateway_exit_reason"] is None
+        assert data["gateway_platforms"] == {}
 
     def test_status_clears_platforms_on_clean_stop(
         self, client, isolated_profiles, monkeypatch
@@ -940,8 +858,6 @@ class TestProfileScopedAudio:
     profile's TTS/STT settings were silently ignored (#53441 #45506 #66012
     #64057).
     """
-
-
 
     def test_transcribe_runs_inside_target_profile_home(
         self, client, isolated_profiles, monkeypatch

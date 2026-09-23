@@ -17,7 +17,7 @@ class FakeClient:
     def __init__(self):
         self.calls = []
 
-    def list_connectors(self):
+    def list_connectors(self, **_):
         self.calls.append(("list",))
         return [
             {"connector": "gmail", "enabled": True, "connected": False},

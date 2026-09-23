@@ -262,13 +262,34 @@ class TestPreToolCallHook:
 # ---------------------------------------------------------------------------
 
 class TestPluginDiscovery:
+    def test_manifest_declares_registered_hooks(self):
+        """Manifest metadata must use the field consumed by plugin discovery."""
+        import yaml
+
+        plugin_dir = _repo_root() / "plugins" / "security-guidance"
+        manifest = yaml.safe_load(
+            (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
+        )
+        mod = _load_plugin_init()
+        registered = []
+
+        class HookContext:
+            def register_hook(self, name, _callback):
+                registered.append(name)
+
+        mod.register(HookContext())
+        assert set(manifest["provides_hooks"]) == set(registered)
+        assert "hooks" not in manifest
+
     def test_loads_via_plugin_manager(self, _isolate_env, monkeypatch):
         """End-to-end: enable in config.yaml and verify the PluginManager
         picks it up via the standard discovery path."""
         import yaml
 
         config = {"plugins": {"enabled": ["security-guidance"]}}
-        (_isolate_env / "config.yaml").write_text(yaml.safe_dump(config))
+        (_isolate_env / "config.yaml").write_text(
+            yaml.safe_dump(config), encoding="utf-8"
+        )
 
         # Wipe any cached plugin state from earlier tests in this worker.
         for k in list(sys.modules):

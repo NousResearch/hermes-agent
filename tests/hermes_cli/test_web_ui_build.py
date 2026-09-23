@@ -419,3 +419,28 @@ class TestBuildRecoversFromMissingToolchain:
         assert mock_install.call_count == 1
         assert mock_build.call_count == 1
 
+
+
+class TestBuildSkipsRedundantInstall:
+    """`hermes update` pass 1 installs the same closure; pass 2 must not `npm ci` it again. See #43837."""
+
+    @staticmethod
+    def _run(tmp_path, monkeypatch, *, lock_changed: bool) -> tuple[bool, int, int]:
+        import hermes_cli.main as main_mod
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
+        ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.update_cmd_deps._npm_lockfile_changed", return_value=lock_changed), \
+             patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok) as mock_install, \
+             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=ok) as mock_build, \
+             patch("hermes_cli.main_web_build._web_ui_build_needed", return_value=True), \
+             patch("hermes_cli.main_web_build._write_web_ui_build_stamp"):
+            return _build_web_ui(web_dir), mock_install.call_count, mock_build.call_count
+
+    def test_unchanged_manifests_build_without_reinstalling(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, lock_changed=False) == (True, 0, 1)
+
+    def test_changed_manifests_still_install_before_building(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, lock_changed=True) == (True, 1, 1)

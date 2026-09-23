@@ -94,8 +94,8 @@ class TestStaleInflightSelfHeal:
         S._running_job_ids.clear()
         S._running_since.clear()
         S._running_futures.clear()
-        S._running_job_ids.add(job_id)
-        S._running_since[job_id] = time.time() - 6 * 60 * 60
+        S._running_job_ids.add(S._inflight_key(job_id))
+        S._running_since[S._inflight_key(job_id)] = time.time() - 6 * 60 * 60
 
         # get_due_jobs is called inside tick BEFORE the sweep; we patch it to
         # return the wedged job as due so the in-cycle sweep releases the claim
@@ -124,8 +124,8 @@ class TestStaleInflightSelfHeal:
         S._running_job_ids.clear()
         S._running_since.clear()
         S._running_futures.clear()
-        S._running_job_ids.add(job_id)
-        S._running_since[job_id] = time.time() - 6 * 60 * 60
+        S._running_job_ids.add(S._inflight_key(job_id))
+        S._running_since[S._inflight_key(job_id)] = time.time() - 6 * 60 * 60
 
         job = J.get_job(job_id)
         with mock.patch("cron.jobs.load_jobs", return_value=[job]):
@@ -151,8 +151,8 @@ class TestStaleInflightSelfHeal:
         S._running_job_ids.clear()
         S._running_since.clear()
         S._running_futures.clear()
-        S._running_job_ids.add(env["job_id"])
-        S._running_since[env["job_id"]] = time.time() - 6 * 60 * 60
+        S._running_job_ids.add(S._inflight_key(env["job_id"]))
+        S._running_since[S._inflight_key(env["job_id"])] = time.time() - 6 * 60 * 60
         S.sweep_stale_inflight([J.get_job(env["job_id"])])
         stats = S.get_inflight_guard_stats()
         assert stats["forced_releases"] >= 1

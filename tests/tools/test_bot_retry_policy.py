@@ -66,6 +66,7 @@ def test_every_reason_has_a_defined_action():
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").touch()  # identity marker: bare dirs are not profiles
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -110,7 +111,7 @@ def test_deliver_retries_same_argv_on_transient_failure(home, monkeypatch):
             return _Proc(1, stderr="Error code: 429 - rate limit exceeded")
         return _Proc(0, stdout="recovered reply")
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _deliver({"profile": "ops", "message": "ping"})
     assert out["result"]["reply"] == "recovered reply"
     turns = _transport_calls(calls)
@@ -132,7 +133,7 @@ def test_deliver_retries_once_on_context_overflow(home, monkeypatch):
             return _Proc(1, stderr="This model's maximum context length is 200000 tokens")
         return _Proc(0, stdout="fits after compaction")
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _deliver({"profile": "ops", "message": "ping"})
     assert out["result"]["reply"] == "fits after compaction"
     turns = _transport_calls(calls)
@@ -150,7 +151,7 @@ def test_deliver_never_retries_auth_failure(home, monkeypatch):
             return _Proc(0)
         return _Proc(1, stderr="Error code: 401 - Your API key is invalid")
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _deliver({"profile": "ops", "message": "ping"})
     assert "error" in out
     assert len(_transport_calls(calls)) == 1, "auth failures must not auto-retry"
@@ -161,7 +162,7 @@ def test_deliver_never_retries_auth_failure(home, monkeypatch):
 def test_deliver_failure_carries_typed_reason(home, monkeypatch):
     """A still-failing retryable error surfaces its classified reason."""
     monkeypatch.setattr(
-        "subprocess.run",
+        "hermes_cli.quiet_single_query.run_reported_turn",
         lambda argv, **k: _Proc(1, stderr="502 server error - overloaded")
         if _is_hermes_cli(list(argv))
         else _Proc(0),
@@ -215,3 +216,71 @@ def test_run_delivery_no_retry_for_missing_config(monkeypatch, tmp_path):
     )
     assert rc == 1
     assert len(calls) == 1
+
+
+# ── the streams a real failed `-Q` turn writes (#111721) ─────────────────────
+
+# `hermes … -Q` prints the turn's final_response (the provider prose) on STDOUT and the session
+# bookkeeping on STDERR — on every run, so a `stderr or stdout` read never saw the provider error.
+_REAL_FAILED_STDOUT = (
+    "Custom endpoint reported it was overloaded on all 1 attempts — it looks temporarily "
+    "unavailable. Wait a minute and send /retry.\n\nProvider said: HTTP 503: Overloaded\n"
+)
+_REAL_FAILED_STDERR = "Session 20260916_095917_b1a5cd found but has no messages. Starting fresh.\n\nsession_id: 20260916_095917_b1a5cd\n"
+
+
+def test_deliver_retry_reads_the_stream_the_cli_writes_and_resumes_the_persisted_row(home, monkeypatch):
+    """A relay delivery whose first turn fails the way the CLI really fails (provider prose on
+    stdout, `session_id:` banner on stderr) gets its one re-run, and that re-run is told to resume
+    the user row the failed attempt already persisted; a still-failing turn hands the sender the
+    typed reason instead of `unknown`."""
+    from tools.bot_relay import RESUME_UNANSWERED_TURN_ENV
+
+    envs = []
+
+    def _fake_run(argv, **kwargs):
+        if not _is_hermes_cli(list(argv)):
+            return _Proc(0)
+        envs.append(kwargs.get("env") or {})
+        if len(envs) == 1:
+            return _Proc(1, stdout=_REAL_FAILED_STDOUT, stderr=_REAL_FAILED_STDERR)
+        return _Proc(0, stdout="recovered reply")
+
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
+    out = _deliver({"profile": "ops", "message": "ping"})
+    assert out["result"]["reply"] == "recovered reply"
+    assert [RESUME_UNANSWERED_TURN_ENV in env for env in envs] == [False, True]
+    assert envs[1][RESUME_UNANSWERED_TURN_ENV] == "1"
+
+    monkeypatch.setattr(
+        "hermes_cli.quiet_single_query.run_reported_turn",
+        lambda argv, **k: _Proc(1, stdout=_REAL_FAILED_STDOUT, stderr=_REAL_FAILED_STDERR)
+        if _is_hermes_cli(list(argv)) else _Proc(0),
+    )
+    out = _deliver({"profile": "ops", "message": "ping"})
+    assert out["error"]["data"]["reason"] == bfr.PROVIDER_SERVER_ERROR
+
+
+def test_run_local_turn_retry_reads_the_stream_the_cli_writes_and_resumes_the_persisted_row(monkeypatch, tmp_path, capsys):
+    """Same invariant on the same-install `message_agent` runner: the real stdout/stderr split opens
+    the retry gate once, and only the re-run carries the resume marker (the first attempt's env is
+    otherwise kept)."""
+    from tools import bot_mode_dm
+    from tools.bot_relay import RESUME_UNANSWERED_TURN_ENV
+
+    dm = tmp_path / "dm.txt"
+    dm.write_text("hello")
+    envs = []
+
+    def _fake_run(argv, **kwargs):
+        envs.append(kwargs.get("env") or {})
+        if len(envs) == 1:
+            return _Proc(1, stdout=_REAL_FAILED_STDOUT, stderr=_REAL_FAILED_STDERR)
+        return _Proc(0, stdout="the reply text")
+
+    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    rc = bot_mode_dm._run_local_turn(["hermes", "-p", "ops", "chat"], str(dm), env={"HERMES_HOME": str(tmp_path)})
+    assert rc == 0
+    assert envs[0] == {"HERMES_HOME": str(tmp_path)}
+    assert envs[1] == {"HERMES_HOME": str(tmp_path), RESUME_UNANSWERED_TURN_ENV: "1"}
+    assert "the reply text" in capsys.readouterr().out

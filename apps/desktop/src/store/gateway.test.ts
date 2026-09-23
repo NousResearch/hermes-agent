@@ -13,7 +13,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 //     the entry instead of retrying forever.
 
 const gatewayMocks = vi.hoisted(() => {
-  const instances: { close: ReturnType<typeof vi.fn>; connectionState: string }[] = []
+  const instances: {
+    close: ReturnType<typeof vi.fn>
+    connectionState: string
+    emitState: (state: string) => void
+  }[] = []
 
   return {
     connect: vi.fn(async (_wsUrl: string): Promise<void> => undefined),
@@ -28,12 +32,33 @@ vi.mock('@/hermes', () => ({
     close = vi.fn(() => {
       this.connectionState = 'closed'
     })
+    stateListener: ((state: string) => void) | null = null
+    emitState = (state: string): void => {
+      this.connectionState = state
+      this.stateListener?.(state)
+    }
+    // Mirrors json-rpc-gateway: 'connecting' → 'open' on success, → 'error' on a refused dial.
     connect = async (wsUrl: string): Promise<void> => {
-      await gatewayMocks.connect(wsUrl)
-      this.connectionState = 'open'
+      this.emitState('connecting')
+
+      try {
+        await gatewayMocks.connect(wsUrl)
+      } catch (error) {
+        this.emitState('error')
+
+        throw error
+      }
+
+      this.emitState('open')
     }
     onEvent = vi.fn(() => () => {})
-    onState = vi.fn(() => () => {})
+    onState = vi.fn((listener: (state: string) => void) => {
+      this.stateListener = listener
+
+      return () => {
+        this.stateListener = null
+      }
+    })
     constructor() {
       gatewayMocks.instances.push(this as never)
     }
@@ -49,6 +74,7 @@ const {
   activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  dispatchPrimaryServerRequest,
   ensureGatewayForProfile,
   openGatewayForAgent,
   pruneSecondaryGateways,
@@ -68,6 +94,7 @@ afterEach(() => {
   closeSecondaryGateways()
   gatewayMocks.instances.length = 0
   vi.clearAllMocks()
+  vi.restoreAllMocks()
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -354,5 +381,86 @@ describe('secondary connection timeout (#93454)', () => {
     // resolve after a single 20s timeout instead of two stacked ones.
     expect(callCount).toBe(2)
     expect(activeGateway()).toBe(gatewayMocks.instances[0])
+  })
+})
+
+describe('server→client request routing without a registry handler (#112791)', () => {
+  it('answers -32601 when the registry has no onServerRequest, and forwards with the profile when it does', () => {
+    const request = { fail: vi.fn(), id: 'srq-1', method: 'clarify', params: { session_id: 's1' }, respond: vi.fn() }
+
+    // beforeEach configured a registry with onEvent only: nobody can answer,
+    // so the handler declines (false) and the channel answers -32601 now
+    // instead of the backend waiting out its deadline.
+    expect(dispatchPrimaryServerRequest(request as never, 'default')).toBe(false)
+    expect(request.fail).not.toHaveBeenCalled()
+
+    const onServerRequest = vi.fn()
+
+    configureGatewayRegistry({ onEvent: vi.fn(), onServerRequest } as never)
+    expect(dispatchPrimaryServerRequest(request as never, 'work')).toBe(true)
+    expect(request.fail).not.toHaveBeenCalled()
+    expect(onServerRequest).toHaveBeenCalledTimes(1)
+    expect(onServerRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srq-1', method: 'clarify', profile: 'work' })
+    )
+  })
+})
+
+describe('secondary reconnect backoff (#83134)', () => {
+  const installWork = (): void =>
+    installDesktop({
+      getConnection: vi.fn(async ({ profile }: { profile: string }) => ({
+        authMode: 'token',
+        baseUrl: `https://${profile}.invalid`,
+        mode: 'local',
+        profile,
+        token: 'fake-test-token',
+        wsUrl: `wss://${profile}.invalid/ws`
+      }))
+    })
+
+  it('climbs the ladder while the backend stays down after a stable session', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0.5) // deterministic ladder: 150/300/600/…
+    installWork()
+
+    await ensureGatewayForProfile('work')
+    const socket = gatewayMocks.instances[0]
+
+    // A session that lived well past the stable-open window, then the backend dies.
+    await vi.advanceTimersByTimeAsync(6_000)
+    gatewayMocks.connect.mockRejectedValue(new Error('connection refused'))
+    socket.emitState('closed')
+
+    // Every redial is refused ('connecting' → 'error'). A refused dial never
+    // opened, so it must not look like a stable session and reset the ladder.
+    await vi.advanceTimersByTimeAsync(12_000)
+
+    // Ladder from attempt 0: ≤ ~8 dials in 12 s; a reset-per-failure loop makes ~40+.
+    // Deterministic ladder 150/300/…/4800 ms ⇒ 6–7 redials in 12 s: alive, but climbing.
+    expect(gatewayMocks.connect.mock.calls.length).toBeGreaterThanOrEqual(5)
+    expect(gatewayMocks.connect.mock.calls.length).toBeLessThanOrEqual(10)
+  })
+
+  it('treats an accept-then-close socket as a failed attempt', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    installWork()
+    gatewayMocks.connect.mockResolvedValue(undefined)
+
+    await ensureGatewayForProfile('work')
+
+    // Each redial "succeeds" and the socket dies 100 ms later, forever.
+    gatewayMocks.connect.mockImplementation(async () => {
+      const socket = gatewayMocks.instances.at(-1)!
+      setTimeout(() => socket.emitState('closed'), 100)
+    })
+    gatewayMocks.instances[0].emitState('closed')
+
+    await vi.advanceTimersByTimeAsync(12_000)
+
+    // Deterministic ladder 150/300/…/4800 ms ⇒ 6–7 redials in 12 s: alive, but climbing.
+    expect(gatewayMocks.connect.mock.calls.length).toBeGreaterThanOrEqual(5)
+    expect(gatewayMocks.connect.mock.calls.length).toBeLessThanOrEqual(10)
   })
 })

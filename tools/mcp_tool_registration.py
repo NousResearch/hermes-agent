@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
-from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field
+from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field, mcp_server_enabled
 from tools import mcp_tool_handlers as _handlers
 from tools import mcp_tool_schema as _schema
 from tools.mcp_tool_handlers import (
@@ -407,10 +407,6 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     return registered
 
 
-def _server_enabled(config: dict) -> bool:
-    return _parse_boolish(config.get("enabled", True), default=True)
-
-
 def _connection_identity(config: dict) -> tuple:
     """What makes one live connection reusable for another profile: the route fingerprint PLUS
     everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
@@ -473,7 +469,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(key)
             config = servers.get(_key_name(key))
             cross_profile = _key_scope(key) != scope
-            if (config is None or not _server_enabled(config) or server is None
+            if (config is None or not mcp_server_enabled(config) or server is None
                     or getattr(server, "session", None) is None
                     or not _same_server_route(server, config, cross_profile=cross_profile)):
                 stale.append(key)
@@ -482,7 +478,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
 
     registered_servers = 0
     for name, config in servers.items():
-        if not _server_enabled(config):
+        if not mcp_server_enabled(config):
             continue
         with _core._lock:
             if _server_key(name, scope, current=False) in _core._servers:

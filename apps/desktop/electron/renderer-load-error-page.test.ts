@@ -61,6 +61,16 @@ test('reloadUrl cannot break out of the inline script block', () => {
   assert.match(html, /\\u003cscript\\u003ealert/)
 })
 
+test('a custom title overrides the default heading', () => {
+  const html = buildRendererLoadErrorPage({
+    title: 'Hermes desktop UI was terminated',
+    errorDescription: 'The UI process was terminated unexpectedly (reason: killed).'
+  })
+
+  assert.match(html, /Hermes desktop UI was terminated/)
+  assert.doesNotMatch(html, /Hermes couldn.t start the desktop UI/)
+})
+
 test('error page renders without any details', () => {
   const html = buildRendererLoadErrorPage()
 

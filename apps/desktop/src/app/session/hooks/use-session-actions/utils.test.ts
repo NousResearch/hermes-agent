@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -726,6 +726,43 @@ describe('reconcileResumeMessages', () => {
 })
 
 describe('preserveLocalPendingTurnMessages', () => {
+  it('does not append acknowledged local history after a shifted newest page', () => {
+    const previous = [
+      msg('user-first', 'user', 'Original request', { timestamp: 1 }),
+      msg('assistant-stream-first', 'assistant', 'Working.', { pending: false, timestamp: 2 }),
+      msg('user-followup', 'user', 'Follow-up request', { timestamp: 3 }),
+      msg('assistant-stream-final', 'assistant', 'Completed.', { pending: false, rowId: 30, durableComplete: true })
+    ]
+
+    const answer = msg('stored-answer', 'assistant', 'Completed.', { rowId: 30, timestamp: 5 })
+
+    const folded = { ...answer, rowId: 20, parts: [{ ...textPart('Completed.'), sourceRowId: 30 }] }
+
+    for (const next of [[answer], [msg('stored-followup', 'user', 'Follow-up request'), answer], [folded]]) {
+      expect(preserveLocalPendingTurnMessages(next, previous)).toEqual(next)
+    }
+
+    const unacknowledged = msg('user-new', 'user', 'A new request', { timestamp: 6 })
+    expect(preserveLocalPendingTurnMessages([answer], [...previous, unacknowledged])).toEqual([answer, unacknowledged])
+  })
+
+  it('keeps a newer equal reply and its prompt until that occurrence is persisted', () => {
+    const previousAnswer = msg('stored-answer', 'assistant', 'Completed.', { rowId: 10 })
+    const prompt = msg('user-new', 'user', 'Repeat the check', { rowId: 11 })
+    const reply = msg('assistant-stream-new', 'assistant', 'Completed.', { pending: false, rowId: 12 })
+    reply.parts.push({ type: 'reasoning', text: 'Reasoning only from the new occurrence.' })
+    expect(reconcileResumeMessages([previousAnswer], [prompt, reply])).toEqual([previousAnswer])
+
+    // Neither equal prose nor missing clocks can make a different persisted
+    // occurrence acknowledge this one, even when the older row left the cache.
+    for (const previous of [
+      [previousAnswer, prompt, reply],
+      [prompt, reply]
+    ]) {
+      expect(preserveLocalPendingTurnMessages([previousAnswer], previous)).toEqual([previousAnswer, prompt, reply])
+    }
+  })
+
   it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
     const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
 
@@ -1185,6 +1222,73 @@ describe('preserveLocalPendingTurnMessages', () => {
     ])
   })
 
+  it('does not keep a settled final-answer bubble already folded into the tool-round message', () => {
+    const folded = {
+      id: '1790016993.1043298-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' },
+        { type: 'text' as const, text: 'The result is 71.' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'inspect the fixture'), folded]
+
+    const previous = [
+      msg('1-user', 'user', 'inspect the fixture'),
+      { ...folded, parts: folded.parts.slice(0, 2) },
+      msg('assistant-stream-placeholder', 'assistant', '', { pending: false }),
+      msg('assistant-stream-final', 'assistant', 'The result is 71.', { pending: false })
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    const finals = preserved.flatMap(message =>
+      message.parts.filter(part => part.type === 'text' && part.text === 'The result is 71.')
+    )
+
+    expect(finals).toHaveLength(1)
+    expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
+  })
+
+  it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {
+    const toolRound = {
+      id: 'row-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'inspect the fixture'), toolRound]
+    const previous = [...next, msg('assistant-stream-final', 'assistant', 'The result is 71.', { pending: false })]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-final'
+    )
+  })
+
+  it('keeps an equal final answer that belongs to a later turn history has not stored', () => {
+    const folded = {
+      id: 'row-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' },
+        { type: 'text' as const, text: 'The result is 71.' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'first'), folded, msg('2-user', 'user', 'again')]
+    const previous = [...next, msg('assistant-stream-later', 'assistant', 'The result is 71.', { pending: false })]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-later'
+    )
+  })
+
   // The whole point of replacing rather than appending: one reply on screen,
   // and the committed history around the live turn untouched.
   it('does not duplicate or rewrite committed history around the live turn', () => {
@@ -1264,6 +1368,46 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  // A synthetic starting prompt keeps the display typing its persisted row
+  // will get: on reconnect it renders as the same timeline event as history,
+  // never as a user bubble; a real user quoting the marker text stays a user
+  // bubble because the gateway typed nothing (#112144).
+  it('renders a typed synthetic in-flight prompt as its timeline event, not a user bubble', () => {
+    const typed = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: '[IMPORTANT: Background process finished] fixture',
+        display_kind: 'process_complete',
+        display_metadata: { display_text: 'Background Process Finished: fixture' },
+        assistant: '',
+        streaming: true
+      }
+    })
+
+    const inflightRow = (message: ChatMessage) => message.id === 'user-inflight-runtime-1'
+
+    expect(typed.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['system', 'Background Process Finished: fixture']
+    ])
+
+    const quoted = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: '[IMPORTANT: Background process finished] fixture', assistant: '', streaming: true }
+    })
+
+    expect(quoted.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['user', '[IMPORTANT: Background process finished] fixture']
+    ])
+  })
+
+  it('omits a hidden synthetic in-flight prompt but keeps its streaming reply', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: 'scaffolding the model must see', display_kind: 'hidden', assistant: 'On it.', streaming: true }
+    })
+
+    expect(restored.map(message => [message.role, chatMessageText(message)])).toEqual([['assistant', 'On it.']])
+  })
   // Corrections typed while a turn ran are their own user bubbles on the same
   // turn, ordered by ARRIVAL. Without boundary offsets (older gateway) the
   // whole dump precedes them — never the old prompt → corrections → reply

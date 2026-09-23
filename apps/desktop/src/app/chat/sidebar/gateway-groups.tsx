@@ -40,7 +40,7 @@ import { rankSessions } from './order'
 import { SIDEBAR_GROUP_PAGE } from './projects/model'
 import type { SidebarSessionGroup } from './projects/workspace-groups'
 import { WorkspaceAddButton, WorkspaceShowMoreButton } from './projects/workspace-header'
-import { ReorderableList, useSortableBindings } from './reorderable-list'
+import { ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
 
 interface GatewayProfileGroupsProps {
   groups: SidebarSessionGroup[]
@@ -192,8 +192,8 @@ function GatewayProfileGroup({
         // glyph only reveals its grabber on hover, so a press anywhere on the
         // row must start the reorder too. The ⋯/caret cluster and the handle
         // keep their own gestures; a sub-threshold press on the label is still
-        // the click that folds the group.
-        {...sortable.dragHandleProps}
+        // the click that folds the group. Pointer activator only (forwarded
+        // below); the full handle stays on the grabber (see useSortableBindings).
         actions={
           <div className="flex items-center">
             {group.profile && (
@@ -277,6 +277,12 @@ function GatewayProfileGroup({
           </SidebarRowGrab>
         }
         onPointerDown={event => {
+          // The group's ⋯ menu portals out of this row's React subtree: gate the
+          // shell on a press that actually started inside it.
+          if (!shellOwnsPress(event)) {
+            return
+          }
+
           if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
             return
           }

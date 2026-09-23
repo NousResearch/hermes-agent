@@ -8,6 +8,7 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   finalizeInterruptedMessages,
+  finalizeUserInterruptedMessages,
   planEdit,
   planReload,
   planRestore,
@@ -306,6 +307,65 @@ describe('finalizeInterruptedMessages', () => {
     expect(message.parts).toHaveLength(1)
     expect(message.parts[0].completedAt).toBe(11.25)
     expect(message.completedAt).toBe(11.25)
+  })
+})
+
+describe('finalizeUserInterruptedMessages', () => {
+  const toolTurn = (): ChatMessage => ({
+    id: 'assistant-tool',
+    role: 'assistant',
+    parts: [
+      {
+        args: {} as never,
+        argsText: '{}',
+        completedAt: 10.5,
+        result: 'listed',
+        timestamp: 10,
+        toolCallId: 'call-done',
+        toolName: 'terminal',
+        type: 'tool-call'
+      },
+      {
+        args: {} as never,
+        argsText: '{}',
+        timestamp: 10.5,
+        toolCallId: 'call-open',
+        toolName: 'terminal',
+        type: 'tool-call'
+      }
+    ],
+    pending: true,
+    timestamp: 10
+  })
+
+  it('marks only the tool calls still waiting on a result as interrupted', () => {
+    const [message] = finalizeUserInterruptedMessages([toolTurn()], 'assistant-tool', 11.25)
+    const [done, open] = message.parts
+
+    expect(done.interrupted).toBeUndefined()
+    expect(open.interrupted).toBe(true)
+    expect(open.completedAt).toBe(11.25)
+    expect(message.pending).toBe(false)
+  })
+
+  it('leaves settled turns alone', () => {
+    const settled = { ...toolTurn(), pending: false }
+    const [message] = finalizeUserInterruptedMessages([settled], null, 11.25)
+
+    expect(message.parts[1].interrupted).toBeUndefined()
+  })
+
+  it('does not mark calls sealed by the non-user settle path', () => {
+    const [message] = finalizeInterruptedMessages([toolTurn()], 'assistant-tool', 11.25)
+
+    expect(message.parts[1].interrupted).toBeUndefined()
+  })
+
+  it('marks open tool calls when a mid-turn message seals the live stream', () => {
+    const state: MidTurnState = { interimBoundaryPending: false, messages: [toolTurn()], streamId: 'assistant-tool' }
+    const next = appendMidTurnUserMessage(state, row('user-2', 'user', 'start mode 2'))
+
+    expect(next.messages[0].parts[1].interrupted).toBe(true)
   })
 })
 

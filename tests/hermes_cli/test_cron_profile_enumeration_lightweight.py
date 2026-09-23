@@ -28,7 +28,7 @@ class CronProfileEnumerationTests(unittest.TestCase):
             ):
                 result = _web_server_cron._cron_profile_dicts()
 
-        lightweight.assert_called_once_with(multiplex=True)
+        lightweight.assert_called_once_with(multiplex=True, include_standalone=True)
         self.assertEqual([item["name"] for item in result], ["default", "coder-01"])
         self.assertTrue(result[0]["is_default"])
         self.assertFalse(result[1]["is_default"])

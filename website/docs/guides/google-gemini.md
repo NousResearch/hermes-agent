@@ -109,8 +109,34 @@ appends `/v1beta` for you, so `GEMINI_BASE_URL=https://generativelanguage.google
 works the same as spelling out the `/v1beta` suffix. The same normalization
 applies to the Gemini TTS base URL (`tts.gemini.base_url`). Chat requests only
 take the native Gemini path when the base URL points at
-`generativelanguage.googleapis.com`; a proxy on another host is treated as an
-OpenAI-compatible endpoint, so configure it with its `/openai`-style URL.
+`generativelanguage.googleapis.com` or the Vertex AI express host below; a proxy on
+another host is treated as an OpenAI-compatible endpoint, so configure it with its
+`/openai`-style URL.
+
+### Vertex AI Express Mode Keys
+
+Google now issues `AQ.…`-prefixed keys for **both** Google AI Studio and Vertex AI
+express mode (the legacy `AIza…` Studio format is being phased out), so a key's
+prefix no longer identifies its surface. Hermes never reroutes by key shape: the
+configured base URL decides the surface. Set `GEMINI_API_KEY` and leave
+`GEMINI_BASE_URL` unset for the default AI Studio host; set `GEMINI_BASE_URL` to
+`https://aiplatform.googleapis.com` (with or without `/v1beta1`) for a Vertex AI
+express-mode key, and Hermes completes it to the `publishers/google` form. Each
+surface only accepts its own keys — a `403 PERMISSION_DENIED` usually means the
+key/host pairing is crossed, and Hermes appends guidance naming the other surface.
+A base URL on any other host (a proxy) is never rewritten. Express keys are
+separate from the OAuth-based
+[Vertex AI provider](./google-vertex.md), which needs no API key.
+
+:::warning Upgrade note for existing express-key users
+Earlier Hermes releases detected the `AQ.` prefix and rerouted such keys to
+`aiplatform.googleapis.com` automatically, so the documented setup was "set
+`GEMINI_API_KEY` to the express key and leave `GEMINI_BASE_URL` unset". That
+automatic reroute is gone: with `GEMINI_BASE_URL` unset, every request — chat,
+`hermes doctor`, TTS — now goes to the AI Studio host and a Vertex express key
+gets `403 PERMISSION_DENIED` there. Add `GEMINI_BASE_URL=https://aiplatform.googleapis.com`
+to `~/.hermes/.env` (or set `base_url` on the provider) once and restart.
+:::
 
 ## Available Models
 
@@ -264,7 +290,7 @@ Upgrade Hermes and rerun `hermes model`. The native Gemini adapter sanitizes too
 
 ## Related
 
-- [AI Providers](/integrations/providers)
-- [Configuration](/user-guide/configuration)
-- [Fallback Providers](/user-guide/features/fallback-providers)
-- [AWS Bedrock](/guides/aws-bedrock) — native cloud-provider integration using AWS credentials
+- [AI Providers](../integrations/providers.md)
+- [Configuration](../user-guide/configuration.md)
+- [Fallback Providers](../user-guide/features/fallback-providers.md)
+- [AWS Bedrock](./aws-bedrock.md) — native cloud-provider integration using AWS credentials

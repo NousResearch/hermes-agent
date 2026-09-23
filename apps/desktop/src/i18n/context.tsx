@@ -1,7 +1,7 @@
 import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { getHermesConfigRecord, type HermesConfigRecord, retainConfigReadOrigin, saveHermesConfig } from '@/hermes'
 
 import { TRANSLATIONS } from './catalog'
 import {
@@ -36,6 +36,9 @@ const defaultConfigClient: I18nConfigClient = {
       return Promise.resolve({ ok: true })
     }
 
+    // No explicit scope: saveHermesConfig resolves the record's captured read
+    // origin itself (resolveConfigWriteScope), and withConfigDisplayLanguage
+    // retains that origin onto the derived record.
     return saveHermesConfig(config, undefined, { preserveLanguage: true })
   }
 }
@@ -47,13 +50,16 @@ export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
 export function withConfigDisplayLanguage(config: HermesConfigRecord, locale: Locale): HermesConfigRecord {
   const display = isRecord(config.display) ? config.display : {}
 
-  return {
-    ...config,
-    display: {
-      ...display,
-      language: localeConfigValue(locale)
-    }
-  }
+  return retainConfigReadOrigin(
+    {
+      ...config,
+      display: {
+        ...display,
+        language: localeConfigValue(locale)
+      }
+    },
+    config
+  )
 }
 
 function toError(error: unknown): Error {

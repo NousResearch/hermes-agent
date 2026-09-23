@@ -118,11 +118,17 @@ vi.mock('@/store/gateway', async () => {
       params,
       profile
     })),
+    retainGatewayForAgent: vi.fn(async () => vi.fn()),
     retireLocalProfileGateways: vi.fn()
   }
 })
 
-const { BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS, DEFAULT_SESSION_HYDRATION_TIMEOUT_MS, host } = await import('./index')
+const {
+  BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS,
+  DEFAULT_SESSION_HYDRATION_TIMEOUT_MS,
+  HYDRATION_SYNC_BADGE_TIMEOUT_MS,
+  host
+} = await import('./index')
 
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile, hermesApi } = await import('@/hermes')
@@ -133,6 +139,7 @@ const {
   openGatewayForProfile,
   requestGatewayForAgent,
   requestGatewayForProfile,
+  retainGatewayForAgent,
   retireLocalProfileGateways
 } = await import('@/store/gateway')
 
@@ -532,6 +539,54 @@ describe('connection-aware plugin host APIs', () => {
       connectionId: 'source-local',
       profile: 'worker',
       targetProfile: 'backend-worker'
+    })
+  })
+
+  it('forwards { spawnPriority: "foreground" } to the route dial and keeps timeoutMs positional (#105104)', async () => {
+    // An explicit user action (Bot Chat roster click) must reach the pool as a
+    // foreground dial; the SDK passes the options object through so the
+    // registry secondary's probe + connect carry it. The numeric fourth arg is
+    // still the timeout, so a caller can set both.
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'session.list', { title: 'Bot Chat' }, 45_000, { spawnPriority: 'foreground' })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'remote-worker',
+      'session.list',
+      { title: 'Bot Chat' },
+      45_000,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
+  })
+
+  it('forwards the foreground tag on the profile-only overload without inventing a timeout', async () => {
+    await host.requestProfile('legacy-worker', 'session.list', {}, undefined, { spawnPriority: 'foreground' })
+
+    expect(requestGatewayForProfile).toHaveBeenCalledWith('legacy-worker', 'session.list', {}, undefined, undefined, {
+      spawnPriority: 'foreground'
+    })
+  })
+
+  it('forwards foreground intent when a plugin retains a profile route', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.retainProfile(route, { spawnPriority: 'foreground' })
+
+    expect(retainGatewayForAgent).toHaveBeenCalledWith('source-a', 'remote-worker', {
+      spawnPriority: 'foreground'
     })
   })
 
@@ -1154,6 +1209,34 @@ describe('profile-aware plugin session opens', () => {
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 
+  it('clears a stale overlay when a superseded wake never gets its own clear (#115844)', async () => {
+    $activeGatewayProfile.set('jimin')
+
+    const firstOutcome = host
+      .openSession('chat-a', {
+        profile: 'jimin',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 30
+      })
+      .then(
+        () => 'resolved',
+        error => String(error)
+      )
+
+    await Promise.resolve()
+    expect($gatewaySwapTarget.get()).toBe('jimin')
+
+    // A later open that never awaits hydration (a paint-first wake) bumps the
+    // generation counter but never touches $gatewaySwapTarget - it has
+    // nothing of its own to clear, so the first wake's own cleanup is the
+    // only thing standing between here and a permanently stuck overlay.
+    await host.openSession('chat-b', { profile: 'hyoseob' })
+
+    expect(await firstOutcome).toMatch(/timed out loading/i)
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
   it('keeps chrome API home on the previous profile when opening a Bot Chat', async () => {
     $activeGatewayProfile.set('default')
 
@@ -1485,5 +1568,41 @@ describe('shared-remote hydration gate (#89843)', () => {
     // Only the CURRENT wake's profile is syncing — the superseded one never
     // painted its badge over the winner.
     expect($hydrationSyncProfile.get()).toBe('zephyr')
+  })
+
+  it('bounds the syncing badge when the profile gate never fires', async () => {
+    vi.useFakeTimers()
+
+    try {
+      $activeGatewayProfile.set('default')
+      vi.mocked(ensureGatewayProfile).mockImplementationOnce(async () => undefined)
+
+      const opening = host.openSession('shared-remote-stranded', {
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 250,
+        keepAllProfilesScope: false,
+        profile: 'shadow'
+      })
+
+      await Promise.resolve()
+      setMockAtom($selectedStoredSessionId, 'shared-remote-stranded')
+      setMockAtom($activeSessionId, 'runtime-shared-remote-stranded')
+      setMockAtom($messages, [{ id: 'stored-history', parts: [], role: 'assistant' }] as never)
+
+      await opening
+      expect($hydrationSyncProfile.get()).toBe('shadow')
+
+      // $activeGatewayProfile never moves to 'shadow' on a shared-remote
+      // connection, so the change-only listener is dead on arrival. Without a
+      // ceiling the badge would spin for the life of the window.
+      await vi.advanceTimersByTimeAsync(HYDRATION_SYNC_BADGE_TIMEOUT_MS - 1)
+      expect($hydrationSyncProfile.get()).toBe('shadow')
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect($hydrationSyncProfile.get()).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

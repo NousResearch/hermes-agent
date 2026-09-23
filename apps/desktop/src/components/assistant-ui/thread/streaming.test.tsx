@@ -1,11 +1,19 @@
-import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import {
+  AssistantRuntimeProvider,
+  MessagePrimitive,
+  type ThreadMessage,
+  ThreadPrimitive,
+  useExternalStoreRuntime
+} from '@assistant-ui/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reasoningCollapsedByDefault, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
+
+import { MESSAGE_PARTS_COMPONENTS } from './message-parts'
 
 import { Thread } from '.'
 
@@ -477,6 +485,42 @@ describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
     resizeObservers.clear()
     $reasoningCollapsedByDefault.set(false)
+    setShowReasoningFromConfig(undefined)
+  })
+
+  it.each([true, false])('honors reasoning visibility %j for grouped and standalone parts', async enabled => {
+    setShowReasoningFromConfig(enabled)
+
+    const UngroupedMessage = () => (
+      <MessagePrimitive.Root>
+        <MessagePrimitive.Parts components={{ Reasoning: MESSAGE_PARTS_COMPONENTS.Reasoning }} />
+      </MessagePrimitive.Root>
+    )
+
+    const { container } = render(
+      <>
+        <RunningReasoningHarness />
+        <ThreadRuntime messages={[assistantReasoningMessage('standalone reasoning', true)]}>
+          <ThreadPrimitive.Root>
+            <ThreadPrimitive.Messages components={{ AssistantMessage: UngroupedMessage, UserMessage: () => null }} />
+          </ThreadPrimitive.Root>
+        </ThreadRuntime>
+      </>
+    )
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-slot="aui_reasoning-text"]')).toHaveLength(enabled ? 2 : 0)
+    })
+    const thinking = within(container).queryByRole('button', { name: /thinking/i })
+    const standalone = within(container).queryByText('standalone reasoning')
+
+    if (enabled) {
+      expect(thinking).not.toBeNull()
+      expect(standalone).not.toBeNull()
+    } else {
+      expect(thinking).toBeNull()
+      expect(standalone).toBeNull()
+    }
   })
 
   it('renders assistant text incrementally before completion', async () => {
@@ -691,7 +735,9 @@ describe('assistant-ui streaming renderer', () => {
     body.scrollTop = height - body.clientHeight - 0.5
     fireEvent.scroll(body)
     rerender(
-      <RunningMessageHarness message={assistantReasoningMessage('First thought. More reasoning. Latest thought.', true)} />
+      <RunningMessageHarness
+        message={assistantReasoningMessage('First thought. More reasoning. Latest thought.', true)}
+      />
     )
     height = 1200
     deliverGrowth()

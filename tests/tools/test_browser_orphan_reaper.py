@@ -371,6 +371,27 @@ class TestReaperIdentityGuard:
         )
         assert self._run(proc, socket_dir) is False
 
+    def test_recycled_pid_carrying_only_socket_dir_basename_is_refused(self):
+        """The socket-dir BASENAME anywhere in argv is not a binding (#116884).
+
+        `agent-browser-<session>` is predictable, so a recycled PID whose argv merely
+        mentions it (a grep, a shell) must not pass the binding gate; only the full
+        normalized path as an argv token (or the environ match) binds.
+        """
+        socket_dir = "/tmp/agent-browser-h_sess123456"
+        proc = self._FakeProc(
+            name="bash",
+            cmdline=["grep", "agent-browser-h_sess123456", "/var/log/syslog"],
+            environ={},
+        )
+        assert self._run(proc, socket_dir) is False
+        # Control: the full path as a `--flag=value` token still binds.
+        bound = self._FakeProc(
+            name="agent-browser",
+            cmdline=["agent-browser", "daemon", f"--socket-dir={socket_dir}/"],
+        )
+        assert self._run(bound, socket_dir) is True
+
 
     def test_planted_pid_survives_full_reaper_path(self, fake_tmpdir):
         """End-to-end through the reaper: a planted non-browser PID is spared.

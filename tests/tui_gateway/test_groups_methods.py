@@ -19,6 +19,7 @@ def home(tmp_path, monkeypatch):
     path = tmp_path / ".hermes"
     path.mkdir()
     (path / "profiles" / "ops").mkdir(parents=True)
+    (path / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: local roster
     monkeypatch.setenv("HERMES_HOME", str(path))
     monkeypatch.setattr(srv, "_run_idempotency_store", DurableRunStore(), raising=False)
     methods_groups.stop_hosted_room_service(timeout=1.0)
@@ -88,6 +89,9 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
+    # The advertised policy is the SERVED profile's own config, so the profile must exist (#116900).
+    (home / "profiles" / "reviewer").mkdir(parents=True)
+    (home / "profiles" / "reviewer" / "config.yaml").write_text("approvals:\n  mode: manual\n")
     result = _result(srv._methods["groups.capabilities"](1, {}))
     assert result["room_link"]["enabled"] is True
     assert result["room_link"]["profile"] == "reviewer"
@@ -244,6 +248,7 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
 
     reviewer_home = home / "profiles" / "reviewer"
     reviewer_home.mkdir(parents=True)
+    (reviewer_home / "config.yaml").write_text("{}\n")  # identity marker
     reviewer_key = "reviewer-api-key-1234567890"
     default_key = "default-api-key-1234567890"
     (reviewer_home / ".env").write_text(
@@ -287,6 +292,7 @@ def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
 
     reviewer_home = home / "profiles" / "reviewer"
     reviewer_home.mkdir(parents=True)
+    (reviewer_home / "config.yaml").write_text("{}\n")  # identity marker
     gateway_key = "gateway-api-key-1234567890"
     monkeypatch.setenv("API_SERVER_KEY", gateway_key)
 
@@ -323,6 +329,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
     from gateway.hosted_rooms import local_authority_gateway_id
 
     catalog = catalog_mapping(
+            target_profile="default",
         installation_id="install-peer",
         persistent_process=True,
     )
@@ -411,6 +418,7 @@ def test_register_requires_roomlink_protocol_v2(home, monkeypatch):
             "target_profile": "reviewer",
             "grant": "signed.room.grant",
             "catalog": catalog_mapping(
+            target_profile="default",
                 installation_id="install-peer",
                 protocol_versions=(1,),
                 persistent_process=True,

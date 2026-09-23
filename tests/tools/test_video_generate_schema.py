@@ -247,7 +247,7 @@ class TestDynamicParamGating(unittest.TestCase):
         props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
         self.assertEqual(
             sorted(props),
-            ["aspect_ratio", "duration", "model", "prompt", "resolution"],
+            ["aspect_ratio", "duration", "prompt", "resolution"],
         )
 
 

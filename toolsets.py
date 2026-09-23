@@ -1,5 +1,6 @@
 """Toolset helpers: get/resolve/validate named tool groups (static TOOLSETS + registry-registered)."""
 
+from pathlib import Path
 from typing import Dict, List, Any, Set, Optional, Tuple
 
 
@@ -140,6 +141,16 @@ TOOLSETS = {
         ["read_terminal", "close_terminal", "desktop_preview", "drive_preview",
          "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
          "gui_tour", "show_tip"],
+    ),
+    # Enabled per SESSION whose PROFILE carries ``role: setup`` in its backend-written
+    # profile.yaml (tui_gateway/server.py::_load_enabled_toolsets); stripped from every
+    # other profile's selection whatever the config, env pin or client asked for
+    # (model_tools._select_tool_names). Never configurable, never in `hermes tools`.
+    "setup": _ts(
+        "Onboarding-only surface for the setup profile: catalog plugin/skill install "
+        "requests through the approval card",
+        ["manage_catalog"],
+        role="setup",
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
@@ -434,6 +445,18 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
 def get_toolset_names() -> List[str]:
     """Sorted names of all toolsets (static + plugin), excluding aliases."""
     return sorted(set(TOOLSETS.keys()) | set(_plugin_display_names()))
+
+
+def profile_role_toolsets(profile_home: Optional[Path] = None) -> Tuple[Set[str], Set[str]]:
+    """``(granted, denied)`` for the profile at *profile_home* (default: the in-scope home; a session's
+    home override, when bound, IS its profile dir): toolsets reserved for the role in its backend-written
+    ``profile.yaml``, and toolsets reserved for any other role. An ordinary profile is granted none."""
+    from hermes_cli.profiles import read_profile_meta
+    from hermes_constants import get_hermes_home
+    role = read_profile_meta(Path(profile_home or get_hermes_home())).get("role")
+    granted = {name for name, spec in TOOLSETS.items() if role is not None and spec.get("role") == role}
+    denied = {name for name, spec in TOOLSETS.items() if spec.get("role") not in (None, role)}
+    return granted, denied
 
 
 def validate_toolset(name: str) -> bool:

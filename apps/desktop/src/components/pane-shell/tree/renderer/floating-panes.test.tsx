@@ -9,10 +9,13 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { registry } from '@/contrib/registry'
+import type { registry as contributionRegistry } from '@/contrib/registry'
 import { reactRoot } from '@/test/react-root'
 
-import { FloatingPanes } from './floating-panes'
+import type { FloatingPanes as FloatingPanesComponent } from './floating-panes'
+
+let registry: typeof contributionRegistry
+let FloatingPanes: typeof FloatingPanesComponent
 
 const mount = reactRoot()
 let disposers: (() => void)[] = []
@@ -54,8 +57,11 @@ function registerHud(data: Record<string, unknown>) {
 }
 
 describe('FloatingPanes (live DOM)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetModules()
     window.localStorage.clear()
+    registry = (await import('@/contrib/registry')).registry
+    FloatingPanes = (await import('./floating-panes')).FloatingPanes
     resizeWindow(1440, 900)
     // setPointerCapture / releasePointerCapture don't exist in jsdom.
     Element.prototype.setPointerCapture = vi.fn()

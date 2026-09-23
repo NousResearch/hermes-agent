@@ -26,9 +26,18 @@ def test_desktop_surface_registry_covers_every_alias_with_its_canonical_value():
     registry = desktop_surface_registry()
     for cmd in COMMAND_REGISTRY:
         for key in (cmd.name, *cmd.aliases):
-            assert registry.get(f"/{key}") == cmd.desktop, key
+            assert registry.get(f"/{key}") == (cmd.desktop or None), key
+            assert f"/{key}" in registry, key
     for key in registry:
         assert resolve_command(key) is not None, key
+
+
+def test_offered_built_ins_are_present_as_null_rows():
+    # #116159: /context (alias /ctx) has no desktop disposition — offline the desktop
+    # still needs its name to keep it out of the Skills group and on the built-in path.
+    registry = desktop_surface_registry()
+    assert "/context" in registry and registry["/context"] is None
+    assert "/ctx" in registry and registry["/ctx"] is None
 
 
 def test_dump_script_check_mode_is_green_on_the_committed_json_and_red_on_drift(tmp_path):

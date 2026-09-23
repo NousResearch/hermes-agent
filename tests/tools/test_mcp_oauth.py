@@ -12,11 +12,18 @@ import pytest
 
 import asyncio
 
+pytest.importorskip(
+    "mcp.client.auth.oauth2",
+    reason="MCP SDK 1.26.0+ required for OAuth support",
+)
+
 from tools.mcp_oauth import (
     HermesTokenStorage,
     OAuthNonInteractiveError,
     build_oauth_auth,
     remove_oauth_tokens,
+    _cached_client_info,
+    _cached_redirect,
     _can_open_browser,
     _is_interactive,
     _make_callback_handler,
@@ -308,6 +315,29 @@ class TestBuildOAuthAuth:
         assert "access-secret" not in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_failed_token_exchange_carries_a_bounded_redacted_excerpt(self, tmp_path, monkeypatch):
+        """A non-2xx body names the cause (WAF "Request blocked" vs ``invalid_grant``) without HTML,
+        beyond 200 characters or credential-shaped spans (#115329)."""
+        import httpx
+        from mcp.client.auth.oauth2 import OAuthTokenError
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        waf = ("<HTML><HEAD><TITLE>ERROR</TITLE></HEAD><BODY><H1>403 ERROR</H1>\n  Request blocked.\n"
+               "Bearer leaked-bearer-token <PRE>" + "x" * 400 + "</PRE></BODY></HTML>")
+
+        with pytest.raises(OAuthTokenError) as exc_info:
+            await provider._handle_token_response(httpx.Response(403, content=waf.encode()))
+
+        message = str(exc_info.value)
+        assert message.startswith("Token exchange failed (403): ERROR 403 ERROR Request blocked.")
+        assert "[REDACTED]" in message
+        assert "<" not in message and "leaked-bearer-token" not in message
+        assert len(message) <= len("Token exchange failed (403): ") + 200
+        assert provider.context.current_tokens is None
+
+    @pytest.mark.asyncio
     async def test_token_read_error_does_not_expose_body(self, tmp_path, monkeypatch):
         import httpx
         from mcp.client.auth.oauth2 import OAuthTokenError
@@ -413,6 +443,21 @@ class TestRedirectHandlerSshHint:
         assert "49200" in err
         assert "ssh -N -L" in err
         assert "Remote session detected" in err
+
+    def test_ssh_hint_names_the_configured_redirect_host(self, monkeypatch, capsys):
+        """A pre-registered client (Asana) registers ``http://localhost:<port>/callback`` verbatim,
+        so the remote-session hint must name the same host the provider redirects to."""
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        handler = _make_redirect_handler(27890, redirect_host="localhost")
+        self._run(handler("https://mcp.example/authorize"))
+
+        err = capsys.readouterr().err
+        assert "http://localhost:27890/callback" in err
+        assert "http://127.0.0.1:27890/callback" not in err
 
     def test_configured_redirect_uri_shows_proxy_hint_not_tunnel(self, monkeypatch, capsys):
         """With a proxy redirect_uri, the SSH hint must not push the loopback tunnel.
@@ -560,6 +605,7 @@ class TestCallbackPortReservation:
         assert cfg["_resolved_port"] == 49399
         assert 49399 not in mod._reserved_sockets
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")  # asserts the 2.0-only AuthorizationCodeResult.code
     def test_wait_for_callback_adopts_reserved_socket(self, monkeypatch):
         """E2E: reserve → _wait_for_callback binds the SAME socket and the
         callback round-trips through it."""
@@ -593,6 +639,7 @@ class TestCallbackPortReservation:
         # Reservation was consumed by adoption.
         assert port not in mod._reserved_sockets
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")  # asserts the 2.0-only AuthorizationCodeResult.code
     def test_concurrent_flows_keep_their_own_callback_ports(self, monkeypatch):
         """#34260: flow A's waiter listens on A's port even after flow B
         overwrites the legacy module-level global.
@@ -638,6 +685,77 @@ class TestCallbackPortReservation:
                 leftover.close()
         assert result.code == "flowA"
         assert result.state == "sA"
+
+    @staticmethod
+    def _seed_client_info(tmp_path, payload):
+        """Write *payload* verbatim to the real ``mcp-tokens/srv.client.json`` under a temp home."""
+        storage = HermesTokenStorage("srv", hermes_home=tmp_path)
+        path = storage._client_info_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return storage
+
+    @pytest.mark.parametrize("bad_uri", [
+        "http://127.0.0.1:abc/callback",      # .port raises: non-numeric
+        "http://127.0.0.1:99999/callback",    # .port raises: out of range
+        "http://[bad/callback",               # urlparse itself raises: bad IPv6 bracket
+    ])
+    def test_cached_redirect_skips_malformed_entries(self, tmp_path, bad_uri):
+        """DCR-supplied redirect_uris persist to client.json. urlparse() alone does not
+        validate ports — .port is lazy and raises ValueError on access — so the try/except
+        around urlparse never fires. A poisoned entry must be skipped like every other
+        malformed one, not crash the whole OAuth flow (#112568)."""
+        storage = self._seed_client_info(tmp_path, {
+            "client_id": "client-a",
+            "redirect_uris": [bad_uri, "http://127.0.0.1:1455/callback", "https://proxy.example.com/cb"]})
+        assert _cached_redirect(storage) == ("https://proxy.example.com/cb", 1455)
+
+    @pytest.mark.parametrize("payload", [
+        ["not", "a", "dict"],                    # non-dict client.json: .get would AttributeError
+        {"redirect_uris": 123},                  # non-iterable redirect_uris: for would TypeError
+        {"redirect_uris": {"a": 1}},             # dict redirect_uris: iterate keys, nothing matches
+        {"redirect_uris": None},                 # explicit null
+        {"client_id": "c"},                      # missing key entirely
+    ])
+    def test_cached_redirect_tolerates_misshaped_client_info(self, tmp_path, payload):
+        """_read_json returns whatever the file holds — the crash class isn't limited to
+        bad URIs inside a well-formed list. Any misshaped payload must degrade to
+        (None, None), not propagate AttributeError/TypeError through the OAuth flow (#112568)."""
+        storage = self._seed_client_info(tmp_path, payload)
+        assert _cached_redirect(storage) == (None, None)
+
+    @pytest.mark.parametrize("payload", [["not", "a", "dict"], "just-a-string", 123])
+    def test_non_dict_client_info_degrades_to_fresh_registration(self, tmp_path, payload):
+        """The MCP SDK calls storage.get_client_info() while building OAuthClientProvider, one
+        step after _cached_redirect. A non-object client.json must read as "no registration"
+        on both paths (fresh DCR + CIMD still eligible), not AttributeError out of auth init
+        (#112568)."""
+        storage = self._seed_client_info(tmp_path, payload)
+        assert _cached_client_info(storage) is None
+        assert asyncio.run(storage.get_client_info()) is None
+
+    @pytest.mark.parametrize("payload", [
+        {"client_id": "c", "redirect_uris": ["http://127.0.0.1:abc/callback"]},  # the issue's repro
+        ["x"],                                                                    # non-dict client.json
+    ])
+    def test_malformed_client_info_flow_reserves_fresh_ephemeral_port(self, tmp_path, payload):
+        """Flow-level: the login path calls _configure_callback_port(cfg, storage) and the SDK
+        then calls storage.get_client_info(). A poisoned client.json must fall through to a
+        freshly reserved ephemeral port and read as "no registration", so the flow re-registers
+        instead of crashing on every attempt until the file is removed by hand (#112568)."""
+        import tools.mcp_oauth as mod
+
+        storage = self._seed_client_info(tmp_path, payload)
+        cfg: dict = {"cimd": False}  # keep the fresh-port branch, as the sibling tests do
+        port = mod._configure_callback_port(cfg, storage)
+        try:
+            assert port == cfg["_resolved_port"] > 0
+            assert port in mod._reserved_sockets  # only a truly fresh pick is parked
+            assert asyncio.run(storage.get_client_info()) is None
+        finally:
+            reserved = mod._reserved_sockets.pop(port, None)
+            if reserved is not None:
+                reserved.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1152,6 +1270,32 @@ def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
     assert "54321" in msg
     assert "already in use" in msg
     assert "timed out" not in msg
+
+
+def test_cancelled_waiter_releases_pinned_port_for_retry(monkeypatch):
+    """A flow cancelled mid-wait (handshake timeout) must leave its pinned/cached port bindable: the
+    retry reuses the same port and previously died with EADDRINUSE because the listener thread parked
+    in select() kept the closed socket alive (#113771)."""
+    import socket
+    import tools.mcp_oauth as mo
+
+    monkeypatch.setattr(mo, "_is_interactive", lambda: False)
+    monkeypatch.setattr(mo, "_raise_if_non_interactive", lambda lead: None)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    waiter = mo._make_callback_waiter(port, timeout=30)
+
+    async def drive():
+        task = asyncio.create_task(waiter())
+        await asyncio.sleep(0.3)  # listener bound and parked in its poll
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with socket.socket() as again:  # what the retry's _start_callback_server does
+            again.bind(("127.0.0.1", port))
+
+    asyncio.run(drive())
 
 
 # ---------------------------------------------------------------------------

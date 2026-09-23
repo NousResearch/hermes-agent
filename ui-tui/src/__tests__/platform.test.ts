@@ -551,6 +551,17 @@ describe('isMacActionFallback', () => {
     expect(isMacActionFallback({ ctrl: true, meta: false, super: true }, 'w', 'w')).toBe(false)
   })
 
+  it('routes literal Ctrl+D (terminal EOF) on macOS, where the action modifier is Cmd (#116443)', async () => {
+    const { isAction, isMacActionFallback } = await importPlatform('darwin')
+    const ctrlD = { ctrl: true, meta: false, super: false }
+
+    // The exit binding used isAction alone: Ctrl+D never matched on macOS, and Ghostty eats Cmd+D.
+    expect(isAction(ctrlD, 'd', 'd')).toBe(false)
+    expect(isMacActionFallback(ctrlD, 'd', 'd')).toBe(true)
+    expect(isMacActionFallback({ ctrl: true, meta: true, super: false }, 'd', 'd')).toBe(false)
+    expect(isMacActionFallback({ ctrl: false, meta: false, super: true }, 'd', 'd')).toBe(false)
+  })
+
   it('is a no-op on non-macOS (Linux routes Ctrl+K/W through isActionMod directly)', async () => {
     const { isMacActionFallback } = await importPlatform('linux')
 

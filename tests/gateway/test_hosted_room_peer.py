@@ -28,7 +28,7 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 
 SECRET = b"s" * 32
-EXECUTION_POLICY = execution_policy_mapping(target_profile="reviewer")
+EXECUTION_POLICY = execution_policy_mapping(target_profile="reviewer", config={"approvals": {"mode": "manual"}})
 
 
 def test_gateway_room_grant_secret_is_private_persistent_and_not_an_api_key(
@@ -197,6 +197,7 @@ def _dispatch(**overrides):
 
 def test_catalog_digest_is_canonical_and_tamper_evident():
     value = catalog_mapping(
+            target_profile="default",
         installation_id="install-peer",
         protocol_versions=(2,),
         link_modes=("direct", "pull"),
@@ -294,7 +295,7 @@ def test_local_catalog_is_honest_for_app_managed_process(monkeypatch):
     from gateway.hosted_room_peer import local_catalog_mapping
 
     monkeypatch.setenv("HERMES_DESKTOP", "1")
-    catalog = local_catalog_mapping(installation_id="install-desktop")
+    catalog = local_catalog_mapping(target_profile="default", installation_id="install-desktop")
     assert catalog["persistent_process"] is False
     assert catalog["link_modes"] == ["direct"]
 
@@ -317,7 +318,7 @@ def test_self_advertised_endpoint_is_explicit_and_validated(
         monkeypatch.delenv("HERMES_ROOM_LINK_URL", raising=False)
     else:
         monkeypatch.setenv("HERMES_ROOM_LINK_URL", configured)
-    endpoint = local_catalog_mapping(installation_id="install-peer")["endpoint"]
+    endpoint = local_catalog_mapping(target_profile="default", installation_id="install-peer")["endpoint"]
     assert endpoint["available"] is available
     if reason is not None:
         assert endpoint == {"available": False, "reason": reason}

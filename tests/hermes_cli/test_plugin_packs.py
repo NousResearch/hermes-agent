@@ -150,6 +150,32 @@ def test_config_seed_rejects_capability_and_trust_gate_keys():
         assert "reserved" in str(exc.value)
 
 
+@pytest.mark.parametrize("seed, fragment", [
+    ({"settings": {"api_key": "LEAK"}}, "secret-shaped key 'settings.api_key'"),
+    ({"security": {"granted_capabilities": ["tools"]}}, "reserved key 'security.granted_capabilities'"),
+    ({"profiles": [{"allow_tool_override": True}]}, "reserved key 'profiles.allow_tool_override'"),
+])
+def test_config_seed_rejects_forbidden_keys_at_any_depth(seed, fragment):
+    """Nesting a secret/consent key under another mapping (or a list) is the same contract
+    violation as setting it at the top level (#85050)."""
+    with pytest.raises(PackError) as exc:
+        validate_config_seed("p", seed)
+    assert fragment in str(exc.value)
+    assert validate_config_seed("p", {"settings": {"voice": "nova", "tags": ["a"]}}) == {
+        "settings": {"voice": "nova", "tags": ["a"]}}
+
+
+def test_sanitized_entry_config_strips_forbidden_keys_at_any_depth():
+    fake_cfg = {"plugins": {"entries": {"tts": {
+        "smtp": {"host": "mail.example", "password": "hunter2"},
+        "rules": [{"name": "r1", "auth_token": "t"}],
+        "voice": "nova",
+    }}}}
+    with mock.patch("hermes_cli.config.load_config", return_value=fake_cfg):
+        assert real_sanitized_entry_config("tts") == {
+            "smtp": {"host": "mail.example"}, "rules": [{"name": "r1"}], "voice": "nova"}
+
+
 def test_parse_pack_validates_config_section():
     text = _pack_yaml(config={"tts-plugin": {"granted_capabilities": ["tools"]}})
     with pytest.raises(PackError):

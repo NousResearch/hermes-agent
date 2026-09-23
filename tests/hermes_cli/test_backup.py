@@ -244,6 +244,27 @@ class TestIterBackupFiles:
         assert str(Path("models/big.gguf")) not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
 
+    def test_prunes_browser_use_cli_profiles_at_home_roots_only(self, tmp_path):
+        """The Browser Use CLI backend writes ``HERMES_HOME/browser_profiles/`` (underscore) — a
+        live Chromium user-data dir holding Login Data / Cookies. It must never enter an archive,
+        at the root or under ``profiles/<name>/``; a skill's same-named dir is user data (#117346)."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        files = {
+            "browser_profiles/browser-use-default/Default/Login Data": False,
+            "browser_profiles/browser-use-default/Default/Network/Cookies": False,
+            "profiles/coder/browser_profiles/browser-use-default/Default/Cookies": False,
+            "skills/example/browser_profiles/notes.md": True,
+        }
+        for rel in files:
+            f = root / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("x")
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert {rel for rel in files if str(Path(rel)) in selected} == {rel for rel, keep in files.items() if keep}
+
     def test_prunes_regenerable_caches_but_keeps_durable_and_nested(self, tmp_path):
         from hermes_cli.backup import _iter_backup_files
 
@@ -736,6 +757,37 @@ class TestValidation:
 
 class TestBackupEdgeCases:
 
+    def test_incomplete_archive_is_kept_but_reported_as_failure(self, tmp_path, monkeypatch, capsys):
+        """A file that cannot be read is skipped, the zip still lands, and the CLI exits 1: a
+        cron/systemd timer must never see a partial archive as success (#101096)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        unreadable = hermes_home / "skills" / "locked.md"
+        unreadable.write_text("secret\n")
+        unreadable.chmod(0)
+        if os.access(unreadable, os.R_OK):
+            pytest.skip("running as root: chmod 0 does not make the file unreadable")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from hermes_cli.backup import _RUN_BACKUP_PREFIX, run_backup
+        from hermes_cli.main import cmd_backup
+
+        out_dir = tmp_path / "b"
+        out_dir.mkdir()
+        good_old = out_dir / f"{_RUN_BACKUP_PREFIX}old.zip"
+        good_old.write_bytes(b"PK")
+        out_zip = out_dir / f"{_RUN_BACKUP_PREFIX}new.zip"
+
+        assert run_backup(Namespace(output=str(out_zip), keep=1)) is False
+        assert out_zip.exists()
+        assert good_old.exists(), "an incomplete run must not rotate the last complete backup out"
+        assert "Backup incomplete" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cmd_backup(Namespace(output=str(tmp_path / "out2.zip"), quick=False))
+        assert exc.value.code == 1
+        unreadable.chmod(0o600)
+        assert run_backup(Namespace(output=str(tmp_path / "out4.zip"))) is True
 
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
         """Backup handles empty hermes home (no files to back up)."""

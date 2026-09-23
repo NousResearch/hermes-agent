@@ -326,6 +326,7 @@ class TestIsFreeTierModel:
                 "https://inference-api.nousresearch.com": {
                     "some/zero-priced": {"prompt": "0", "completion": "0"},
                     "some/paid": {"prompt": "0.000001", "completion": "0.000002"},
+                    "some/subscription": {"prompt": "0.000001", "completion": "0.000002", "billing_mode": "subscription"},
                 }
             },
         )
@@ -334,6 +335,7 @@ class TestIsFreeTierModel:
         base = "https://inference-api.nousresearch.com/v1"
         assert is_free_tier_model("some/zero-priced", base) is True
         assert is_free_tier_model("some/paid", base) is False
+        assert is_free_tier_model("some/subscription", base) is True  # billed elsewhere: depleted credits don't block it
         # Pre-stripped and trailing-slash variants resolve to the same key.
         assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/") is True
         assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/v1/") is True

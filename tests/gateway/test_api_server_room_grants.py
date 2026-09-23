@@ -127,6 +127,7 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
         "member_id": "member-reviewer",
         "target_install_id": hosted_rooms.local_authority_gateway_id(),
         "target_profile": "reviewer",
+        "execution_policy_digest": "d" * 64,
         "issued_at": now,
         "ttl_seconds": 3600,
     }

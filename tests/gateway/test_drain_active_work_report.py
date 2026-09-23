@@ -11,6 +11,7 @@ import cron.scheduler as sched
 from gateway.run import GatewayRunner
 from gateway.session_state import SessionState
 from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+from gateway.status import flush_runtime_status
 
 
 class _FakeAgent:
@@ -37,8 +38,9 @@ def test_draining_status_names_chat_and_cron_units_and_clears_when_running(tmp_p
     assert sched.try_register_running_job("job-a")
     try:
         with sched._running_lock:
-            sched._running_worker_pids["job-a"] = 4242
+            sched._running_worker_pids[sched._inflight_key("job-a")] = 4242
         runner._update_runtime_status("draining")
+        flush_runtime_status()
         record = json.loads((tmp_path / "gateway_state.json").read_text())
         by_kind = {unit["kind"]: unit for unit in record["active_work"]}
         assert by_kind["chat"]["session"] == "telegram:dm:1" and by_kind["chat"]["current_tool"] == "terminal"
@@ -48,6 +50,7 @@ def test_draining_status_names_chat_and_cron_units_and_clears_when_running(tmp_p
         sched.release_running_job("job-a")
     assert sched.get_running_job_details() == []
     runner._update_runtime_status("running")
+    flush_runtime_status()
     assert json.loads((tmp_path / "gateway_state.json").read_text())["active_work"] is None
 
 

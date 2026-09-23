@@ -71,6 +71,50 @@ test('PowerShell transport uses UTF-16LE encoded commands and literal escaping',
   assert.match(powerShellCommand('Write-Output ok'), /^powershell\.exe -NoProfile -NonInteractive .* -EncodedCommand /)
 })
 
+test('every emitted PowerShell script keeps try blocks attached to their catch/finally handlers', async () => {
+  // `;` between `try{...}` and `catch`/`finally` is a PowerShell parse error
+  // (MissingCatchOrFinally), so no probe may join a handler onto a separate
+  // statement. The line-oriented builders join with `;`; the pair must live
+  // in one array element.
+  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
+  const scripts: string[] = []
+
+  await probeWindowsRemote(
+    sshWith(async command => {
+      scripts.push(decode(command))
+
+      return JSON.stringify({ os: 'Windows' })
+    })
+  )
+  await assertWindowsRemoteInstallUpdateClear(
+    sshWith(async command => {
+      scripts.push(decode(command))
+
+      return 'CLEAR'
+    }),
+    'C:\\Users\\alice\\.hermes'
+  )
+  scripts.push(
+    decode(atomicWindowsSpawnCommand({ hermesHome: 'C:\\Users\\alice\\.hermes', python: 'C:\\py\\python.exe' })),
+    decode(buildWindowsInteractiveCommand('C:\\work'))
+  )
+
+  assert.equal(scripts.length, 4)
+
+  for (const script of scripts) {
+    assert.doesNotMatch(script, /}\s*;\s*(?:catch|finally)\b/)
+    // `$HOME`, `$HOST`, `$PID`, ... are read-only automatic variables: assigning
+    // one throws "Cannot overwrite variable" at run time, so the probe exits 1
+    // and the marker gate never observes CLEAR.
+    assert.doesNotMatch(script, /\$(?:home|host|pid|profile|pwd|input|args|error)\s*=/i)
+  }
+
+  assert.ok(
+    scripts.slice(0, 2).every(script => /}catch \[Management\.Automation\.ItemNotFoundException\]/.test(script))
+  )
+})
+
 test('Windows relaunch gate refuses live and uncertain markers before executing the remote runtime', async () => {
   for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
     const scripts: string[] = []

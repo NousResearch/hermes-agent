@@ -68,6 +68,12 @@ const { cache, hostMock, live } = vi.hoisted(() => {
       notify: vi.fn(),
       request: vi.fn(async () => ({})),
       requestProfile: vi.fn(async () => ({})),
+      agents: vi.fn(
+        async (): Promise<{ agents: Array<Record<string, unknown>>; sources: Array<Record<string, unknown>> }> => ({
+          agents: [],
+          sources: []
+        })
+      ),
       state: {
         connectionId: { get: () => 'local', listen: () => () => undefined },
         focusedSessionProfile: { get: () => live.focused, listen: () => () => undefined },
@@ -97,6 +103,12 @@ vi.mock('@hermes/plugin-sdk', async () => {
       [...cache.values()]
         .filter(entry => queryKey.every((part, index) => entry.key[index] === part))
         .map(entry => [entry.key, entry.value]),
+    fetchQuery: async ({ queryFn, queryKey }: { queryFn: () => Promise<unknown>; queryKey: unknown[] }) => {
+      const value = await queryFn()
+      cache.set(keyOf(queryKey), { key: queryKey, value })
+
+      return value
+    },
     getQueryData: (key: unknown[]) => cache.get(keyOf(key))?.value,
     invalidateQueries: () => undefined,
     setQueryData: (key: unknown[], value: unknown) => cache.set(keyOf(key), { key, value })
@@ -123,7 +135,7 @@ interface Fixture {
   cacheKeyConnection?: string
   /** Profile owning the chat on screen; a bot never @s itself. */
   focused?: string
-  profiles?: Array<Record<string, unknown>>
+  profiles?: Array<Record<string, unknown>> | null
 }
 
 /** Register the plugin and hand back its composer contributions. */
@@ -135,11 +147,16 @@ async function contributions({
   vi.resetModules()
   cache.clear()
   live.focused = focused
-  // Exactly where useRoster writes it: suffixed with the connection id.
-  cache.set(JSON.stringify(['hermes-bots', 'roster', cacheKeyConnection]), {
-    key: ['hermes-bots', 'roster', cacheKeyConnection],
-    value: { profiles }
-  })
+
+  // Exactly where useRoster writes it: suffixed with the connection id. A
+  // null `profiles` leaves the cache COLD, as a launch that never mounted the
+  // Bots pane does.
+  if (profiles) {
+    cache.set(JSON.stringify(['hermes-bots', 'roster', cacheKeyConnection]), {
+      key: ['hermes-bots', 'roster', cacheKeyConnection],
+      value: { profiles }
+    })
+  }
 
   const plugin = (await import('./plugin')).default
   const registered: Contribution[] = []
@@ -288,6 +305,68 @@ describe('@-mention completions', () => {
     expect(provide('default-v')[0]).toMatchObject({ insert: '@default-vera', meta: expect.stringContaining('Vera') })
     expect(provide('zzz')).toEqual([])
   })
+
+  /** Local default plus two remote defaults, each titled on its own host
+   *  (#103731). Order-flipped so a Map-last-wins slip in the resolver or the
+   *  picker would surface as a retargeted local @hermes. */
+  const REMOTE_DEFAULTS: Array<Record<string, unknown>> = [
+    {
+      connectionId: 'vps',
+      connectionLabel: 'VPS',
+      handle: 'default-vps',
+      name: 'default',
+      remoteSource: true,
+      sourceScoped: true,
+      ui_meta: { 'hermes-bots': { title: 'CoS Bot' } }
+    },
+    {
+      connectionId: 'wsl',
+      connectionLabel: 'WSL',
+      handle: 'default-wsl',
+      name: 'default',
+      remoteSource: true,
+      sourceScoped: true,
+      ui_meta: { 'hermes-bots': { title: 'CoS Bot' } }
+    }
+  ]
+
+  it.each([
+    { label: 'local first', profiles: [{ name: 'default' }, { name: 'researcher' }, ...REMOTE_DEFAULTS] },
+    {
+      label: 'remotes first',
+      profiles: [...REMOTE_DEFAULTS].reverse().concat([{ name: 'researcher' }, { name: 'default' }])
+    }
+  ])(
+    'lists titled remote defaults under their slug, qualified on collision, and keeps @hermes local ($label)',
+    async ({ profiles }) => {
+      const { handler, provide } = await contributions({ focused: 'researcher', profiles })
+      const inserts = provide('').map(item => item.insert)
+
+      // Both remote defaults tag as "CoS Bot" — the bare slug names neither, so
+      // the picker pins each to its connection; the local default stays @hermes.
+      expect(inserts).toEqual(expect.arrayContaining(['@hermes', '@cos-bot@vps', '@cos-bot@wsl']))
+      expect(inserts).not.toContain('@cos-bot')
+      expect(inserts.filter(insert => insert === '@hermes')).toHaveLength(1)
+
+      const qualified = await handler({ text: 'ask @cos-bot@wsl for the plan' })
+      expect(qualified.text).toMatch(/message_agent target: "default@wsl"/)
+      expect(qualified.text).not.toMatch(/default@vps/)
+
+      // A bare @hermes is this machine's default in either roster order.
+      const local = await handler({ text: '@hermes summarize' })
+      expect(local.text).toMatch(/@hermes = agent profile "default"/)
+      expect(local.text).not.toMatch(/message_agent target: "default@/)
+    }
+  )
+
+  it('offers a uniquely titled remote default under its title slug', async () => {
+    const { handler, provide } = await contributions({ profiles: [{ name: 'default' }, REMOTE_DEFAULTS[0]] })
+
+    expect(provide('cos').map(item => item.insert)).toEqual(['@cos-bot'])
+
+    const result = await handler({ text: '@cos-bot status?' })
+    expect(result.text).toMatch(/message_agent target: "default@vps"/)
+  })
 })
 
 describe('the mention middleware', () => {
@@ -385,6 +464,43 @@ describe('the mention middleware', () => {
     const result = await handler({ text: 'ping @research please' })
 
     expect(result.text).not.toMatch(/`hermes/)
+  })
+
+  it('resolves a cross-connection mention cold, before the Bots pane ever mounted (#94018)', async () => {
+    // Nothing in the query cache; the active gateway knows only itself, the
+    // union enumeration (host.agents) knows the remote default and its title.
+    hostMock.requestProfile.mockResolvedValueOnce({ profiles: [{ name: 'default' }] })
+    hostMock.agents.mockResolvedValueOnce({
+      agents: [
+        {
+          connectionId: 'local',
+          connectionKind: 'local',
+          connectionLabel: 'This device',
+          handle: 'default-this-device',
+          profile: 'default'
+        },
+        {
+          connectionId: 'vps',
+          connectionKind: 'remote',
+          connectionLabel: 'VPS',
+          handle: 'default-vps',
+          profile: 'default',
+          profileMetadata: { ui_meta: { 'hermes-bots': { title: 'CoS Bot' } } }
+        }
+      ],
+      sources: [
+        { connectionId: 'local', kind: 'local' },
+        { connectionId: 'vps', kind: 'remote' }
+      ]
+    })
+
+    const { handler, provide } = await contributions({ profiles: null })
+    const result = await handler({ text: '@cos-bot what is on the calendar?' })
+
+    expect(hostMock.agents).toHaveBeenCalled()
+    expect(result.text).toMatch(/message_agent target: "default@vps"/)
+    // The prime filled the cache: the picker now completes the remote title slug too.
+    expect(provide('cos').map(item => item.insert)).toEqual(['@cos-bot'])
   })
 
   it('ignores an email address', async () => {

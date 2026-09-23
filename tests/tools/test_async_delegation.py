@@ -1128,6 +1128,65 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
     assert "done: fast member" in format_process_notification(evt)
 
 
+def test_one_child_unit_keeps_its_finished_child_when_the_owner_dies(tmp_path):
+    """#116000: a detached unit with exactly ONE child had NO durable record of that child at all — only the
+    multi-child join path called ``record_unit_child`` — so an owner death (OOM-kill / orphaning) anywhere in the
+    window after the child returned (host-owned finalize, transcripts, manifest, then the durable completion write)
+    replayed a bare "outcome unknown" and threw the finished work away. Real-import E2E: a one-task background
+    ``delegate_task`` child completes, the owner is killed while blocked inside that window, and a fresh process
+    must replay the child's real result to the parent."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    marker = tmp_path / "child-returned.flag"
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo, "REPRO_MARKER": str(marker)}
+    producer = r'''
+import os, sys, time
+from unittest.mock import MagicMock
+import tools.delegate_tool as dt
+import tools.delegate_tool_dispatch as dtd
+parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
+parent._active_children = []; parent._active_children_lock = None
+def child(task_index, goal, child=None, parent_agent=None, **kw):
+    return {"task_index": task_index, "status": "completed", "summary": f"done: {goal}", "api_calls": 1,
+            "duration_seconds": 0.1, "model": "m", "exit_reason": "completed"}
+def build(**kw):
+    c = MagicMock(); c._delegate_role = "leaf"; c._subagent_id = f"s{kw['task_index']}"; return c
+creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None, "args": None}
+dt._build_child_agent = build; dt._run_single_child = child; dt._resolve_delegation_credentials = lambda *a, **k: creds
+def held_finalize(*a, **k):
+    # The child's result exists; the owner still has host-owned finalize + transcripts + manifest + the durable
+    # write to do. Block HERE so the driver kills the owner inside that window: deterministic, no race.
+    open(os.environ["REPRO_MARKER"], "w").write("child-returned")
+    time.sleep(600)
+dtd._finalize_child_results = held_finalize
+dt.delegate_task(tasks=[{"goal": "single background subagent"}], background=True, parent_agent=parent)
+time.sleep(600)
+'''
+    proc = subprocess.Popen([sys.executable, "-u", "-c", producer], cwd=repo, env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 60
+        while not marker.exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert marker.exists(), "the child never returned, so the death window was never reached"
+    finally:
+        proc.kill()
+        proc.wait(timeout=20)
+        time.sleep(0.3)  # let the OS reap the owner before recovery asks whether its pid is alive
+    consumer = r'''
+import json, queue
+from tools import async_delegation as ad
+q = queue.Queue(); ad.restore_undelivered_completions(q)
+print(json.dumps(q.get_nowait(), sort_keys=True))
+'''
+    second = subprocess.run([sys.executable, "-u", "-c", consumer], cwd=repo, env=env, text=True,
+                            capture_output=True, timeout=30, check=True)
+    evt = json.loads(second.stdout.strip().splitlines()[-1])
+    (entry,) = evt["results"]  # the finished child, not a fabricated "unknown"
+    assert entry["status"] == "completed" and entry["summary"] == "done: single background subagent"
+    assert "1/1 child results were recorded" in evt["error"]
+    assert "done: single background subagent" in format_process_notification(evt)
+
+
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
 def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
     """``_connect`` shares state.db with hermes_state.SessionDB -- a fresh

@@ -228,7 +228,9 @@ describe('preview store', () => {
   it('does not persist remote HTML without its in-memory document', () => {
     openPreview({ ...fileTarget('/remote/report.html'), dataUrl: 'data:text/html;base64,PGgxPnJlbW90ZTwvaDE+' })
 
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBe('[]')
+    // Nothing persistable, so the profile's bucket is empty and the key is
+    // removed rather than stored as an empty list (matching the tiles store).
+    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
   })
 
   it('preserves an explicit HTML source fallback', () => {
@@ -242,6 +244,8 @@ describe('preview store', () => {
 
     openPreview(target, 'tool-result')
 
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBe('[]')
+    // Nothing persistable, so the profile's bucket is empty and the key is
+    // removed rather than stored as an empty list (matching the tiles store).
+    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
   })
 })

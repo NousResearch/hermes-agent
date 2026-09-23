@@ -15,12 +15,9 @@ import { formatTimelineRange } from '../thread/timestamp'
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
 
-// A run of tool calls collapses to a one-line summary once it has settled, but
-// a run with anything still pending always renders its rows. That rule is what
-// keeps the "approval must never be buried" bug fixed: an inline ApprovalBar
-// only ever exists on a pending tool, and a pending tool's run is never behind
-// a chevron. These cover both halves — the collapse itself, and the approval
-// staying in the visual flow.
+// Tool runs retain their own disclosure behavior. Approvals belong to a
+// persistent transcript host outside those runs, so collapsing or mounting a
+// tool row cannot hide or relocate the decision.
 
 const createdAt = new Date('2026-06-03T00:00:00.000Z')
 
@@ -586,28 +583,38 @@ describe('tool run left unresolved', () => {
 })
 
 describe('flat tool list approval surfacing', () => {
-  it('renders no inline approval bar when there is no live approval', async () => {
+  it('keeps the approval host empty when there is no live approval', async () => {
     const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
 
-    // The pending terminal row mounts immediately, but its inline ApprovalBar
-    // returns null while $approvalRequest is empty.
     await waitFor(() => {
       expect(container.querySelectorAll('[data-slot="tool-block"]').length).toBeGreaterThan(0)
     })
-    expect(container.querySelector('[data-slot="tool-approval-inline"]')).toBeNull()
+    expect(container.querySelector('[data-approval-stack]')).not.toBeNull()
+    expect(container.querySelector('[data-approval-stack] [data-approval-run]')).toBeNull()
   })
 
-  it('surfaces the approval inline and never under a hidden ancestor', async () => {
+  it('keeps the approval visible in the same host when tool rows arrive', async () => {
     setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous command', sessionId: 'sess-1' })
+    const message = groupedPendingMessage()
+    assert(message.role === 'assistant')
 
-    const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
+    const { container, rerender } = render(
+      <GroupHarness message={{ ...message, content: [{ type: 'text', text: 'Waiting for approval.' }] }} />
+    )
+
+    const run = await screen.findByRole('button', { name: /Run/ })
+    const host = run.closest('[data-approval-stack]')
+    expect(host).not.toBeNull()
+    expect(host?.parentElement?.getAttribute('data-slot')).toBe('aui_thread-content')
+    expect(host?.closest('[hidden], [inert], [data-tool-row], [data-tool-group]')).toBeNull()
+
+    rerender(<GroupHarness message={message} />)
 
     await waitFor(() => {
-      const bar = container.querySelector('[data-slot="tool-approval-inline"]')
-      expect(bar).not.toBeNull()
-      // Flat rows live directly in the flow — nothing should ever wrap the bar
-      // in a `hidden` subtree.
-      expect(bar?.closest('[hidden]')).toBeNull()
+      expect(container.querySelector('[data-approval-stack]')).toBe(host)
+      expect(screen.getByRole('button', { name: /Run/ })).toBe(run)
+      expect(run.closest('[hidden], [inert]')).toBeNull()
+      expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
     })
   })
 

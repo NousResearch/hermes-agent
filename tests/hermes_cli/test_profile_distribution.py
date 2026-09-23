@@ -11,6 +11,8 @@ mocking git would just test the mock.
 from __future__ import annotations
 
 import shutil
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -26,6 +28,7 @@ from hermes_cli.profile_distribution import (
     _env_template_from_manifest,
     _looks_like_git_url,
     _parse_semver,
+    _stage_source,
     check_hermes_requires,
     describe_distribution,
     install_distribution,
@@ -210,6 +213,36 @@ class TestLooksLikeGitUrl:
     ])
     def test_accepts_git_sources(self, src):
         assert _looks_like_git_url(src)
+
+    @pytest.mark.windows_only
+    def test_git_source_removes_read_only_git_metadata(self, tmp_path, monkeypatch):
+        origin = tmp_path / "origin"
+        subprocess.run(["git", "init", "--quiet", str(origin)], check=True)
+        (origin / MANIFEST_FILENAME).write_text("name: demo\nversion: 1.0.0\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(origin), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(origin), "-c", "user.name=Test", "-c",
+            "user.email=test@example.invalid", "commit", "--quiet", "-m", "init",
+        ], check=True)
+        saw_read_only_objects = []
+
+        def clone_local(_url, dest):
+            subprocess.run(["git", "clone", "--quiet", str(origin), str(dest)], check=True)
+            objects = [path for path in (dest / ".git" / "objects").rglob("*") if path.is_file()]
+            saw_read_only_objects.append(
+                bool(objects) and any(
+                    path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY for path in objects
+                )
+            )
+
+        monkeypatch.setattr("hermes_cli.profile_distribution._git_clone", clone_local)
+
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        staged, _provenance = _stage_source("https://example.invalid/demo.git", workdir)
+
+        assert saw_read_only_objects == [True]
+        assert not (staged / ".git").exists()
 
 
 # ===========================================================================

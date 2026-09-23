@@ -260,6 +260,21 @@ describe('preprocessMarkdown', () => {
     expect(preprocessMarkdown(input)).toBe('Costs \\$5; outcome is $4\\in A$.')
   })
 
+  it('escapes prefixed currency written with a space before the amount', () => {
+    // `R$ 12.345` (BRL), `US$ 1,200`, `AU$ 40`: outside the US the symbol
+    // carries a letter prefix and a space. Two of them on one line used to
+    // pair as an inline math span and render the prose between as an equation.
+    expect(preprocessMarkdown('Saldo R$ 1.000 e diferença R$ 200.')).toBe('Saldo R\\$ 1.000 e diferença R\\$ 200.')
+    expect(preprocessMarkdown('R$800 mil, dos quais R$ 9.876,54 pagos.')).toBe(
+      'R\\$800 mil, dos quais R\\$ 9.876,54 pagos.'
+    )
+    expect(preprocessMarkdown('US$ 1,200 vs AU$ 40')).toBe('US\\$ 1,200 vs AU\\$ 40')
+  })
+
+  it('leaves spaced inline math alone — a space-then-digit is only currency after a letter', () => {
+    expect(preprocessMarkdown('valor $ 2 + 2 $ fim')).toBe('valor $ 2 + 2 $ fim')
+  })
+
   it('normalizes multiline bracket display math with delimiter-only lines', () => {
     const input = [
       'Correct.',

@@ -9,8 +9,10 @@ the user's browser main process got SIGTERMed, closing the browser at irregular
 intervals (no crash, no coredump — a clean kill of a stranger).
 
 These tests prove the identity guard: a PID is only signalled when it is still
-our bridge (kernel start time matches, or — for legacy pidfiles — its command
-line names node + this session). A recycled PID is left alone.
+our bridge (kernel start time matches). A recycled PID — or a legacy pidfile
+with no start-time fingerprint — is left alone: a ``node`` + session-path
+cmdline substring also matches log tails, editors, and greps that merely
+mention the session (#116883), so it is not accepted as kill evidence.
 """
 
 import subprocess
@@ -32,10 +34,10 @@ from plugins.platforms.whatsapp.adapter import (
 from gateway.status import get_process_start_time, _pid_exists
 
 
-def _spawn_sleeper(*extra_argv) -> subprocess.Popen:
-    """Spawn a real, short-lived process; optional extra argv shapes its cmdline."""
+def _spawn_sleeper(*extra_argv, seconds: float = 0.2) -> subprocess.Popen:
+    """Spawn a real process living ``seconds``; optional extra argv shapes its cmdline."""
     return subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(0.2)", *extra_argv]
+        [sys.executable, "-c", f"import time; time.sleep({seconds})", *extra_argv]
     )
 
 
@@ -77,18 +79,24 @@ class TestIdentityGuard:
                 proc.wait()
 
 
-    def test_legacy_pidfile_kills_matching_bridge_cmdline(self, tmp_path):
-        """Legacy pidfile: a PID whose cmdline names node + session IS reaped."""
+    def test_legacy_pidfile_refuses_cmdline_only_kill(self, tmp_path):
+        """Legacy pidfile (pid only): a node+session-looking cmdline is NOT trusted — fail closed (#116883).
+
+        The same substring evidence matches a log tail / editor / grep that merely mentions the
+        session path, so without a start-time fingerprint the guard must refuse the kill; the
+        bridge-port scan reaps the orphan instead.
+        """
         # Shape the cmdline to look like the node bridge for this session.
-        proc = _spawn_sleeper("node", str(tmp_path))
+        proc = _spawn_sleeper("node", str(tmp_path), seconds=30)
         try:
             (tmp_path / "bridge.pid").write_text(str(proc.pid))  # legacy: pid only
             _kill_stale_bridge_by_pidfile(tmp_path)
-            assert _wait_dead(proc), "a cmdline-confirmed bridge should be killed"
+            time.sleep(0.5)  # give a wrongly-delivered SIGTERM time to land and be observed
+            assert proc.poll() is None, "a cmdline-only match must not be killed (fail closed)"
+            assert not (tmp_path / "bridge.pid").exists()
         finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
+            proc.kill()
+            proc.wait()
 
 
 class TestKillPortProcess:

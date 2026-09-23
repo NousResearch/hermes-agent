@@ -106,6 +106,8 @@ class ProcessEntry(_Open):
     watch_hit: bool | None = None
     notify_on_complete: bool | None = None
     exit_code: int | None = None
+    exited_at: float | None = None
+    completion_reason: str | None = None
     detached: bool | None = None
 
 

@@ -364,6 +364,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 *self._delivered_segment_texts)
         return bool(target) and any(sent.strip() == target for sent in seen)
 
+    def has_durably_delivered_text(self, text: str) -> bool:
+        """``has_delivered_text`` restricted to deliveries that outlive the turn: commentary and
+        finalized segments always count; the visible prefix only once ``_already_sent`` (a draft frame
+        sets ``_last_sent_text`` but is ephemeral — a failed finalize send after it must still fall
+        back to the gateway's real final send, same gate as ``delivered_final_matches``)."""
+        target = self._clean_for_display(text or "").strip()
+        seen = [*self._delivered_commentary_texts, *self._delivered_segment_texts]
+        if self._already_sent:
+            seen.append(self._visible_prefix())
+        return bool(target) and any(sent.strip() == target for sent in seen)
+
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
@@ -715,9 +726,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         else:
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
-            # platform-limit check (_len_fn is for overflow).
+            # platform-limit check (_len_fn is for overflow).  It must not
+            # override an active flood backoff: while a refusal is being
+            # waited out, only the (server-requested) interval may fire an edit.
             should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or len(self._accumulated) >= self.cfg.buffer_threshold)
+                               or (len(self._accumulated) >= self.cfg.buffer_threshold
+                                   and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(

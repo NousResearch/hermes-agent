@@ -399,6 +399,18 @@ class TestNoSkillsOptOut:
         assert (profile_dir / "skills").is_dir()
         assert list((profile_dir / "skills").iterdir()) == []
 
+    def test_create_without_alias_points_next_steps_at_the_profile_flag(self, profile_env, capsys):
+        """No wrapper was written, so a bare `orchestrator setup` would be 'command not found'."""
+        from argparse import Namespace
+        from hermes_cli.profile_cmd import _profile_create
+
+        _profile_create(Namespace(profile_name="orchestrator", no_alias=True, no_skills=True))
+        out = capsys.readouterr().out
+        assert "hermes -p orchestrator setup" in out
+        assert "hermes -p orchestrator chat" in out
+        assert "Run 'hermes -p orchestrator setup' first" in out
+        assert "\n  orchestrator setup" not in out
+
 
 
 

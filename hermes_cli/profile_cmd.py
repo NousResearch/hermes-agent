@@ -242,6 +242,7 @@ def _profile_create(args):
             print(f"{len(result.get('copied', []))} bundled skills synced.")
         else:
             print(f"⚠ Skills could not be seeded. Run `{name} update` to retry.")
+    alias_created = False
     if not no_alias:
         collision = check_alias_collision(name)
         if collision:
@@ -251,6 +252,7 @@ def _profile_create(args):
         else:
             wrapper_path = create_wrapper_script(name)
             if wrapper_path:
+                alias_created = True
                 print(f"Wrapper created: {wrapper_path}")
                 if not _is_wrapper_dir_in_path():
                     print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
@@ -260,9 +262,12 @@ def _profile_create(args):
         profile_dir_display = "~/" + profile_dir.relative_to(Path.home()).as_posix()
     except ValueError:
         profile_dir_display = str(profile_dir)
+    # A bare `<name>` command exists only when the wrapper was written (not with --no-alias,
+    # an alias collision, or a failed wrapper write).
+    run = name if alias_created else f"hermes -p {name}"
     print("\nNext steps:")
-    print(f"  {name} setup              Configure API keys and model")
-    print(f"  {name} chat               Start chatting")
+    print(f"  {run} setup              Configure API keys and model")
+    print(f"  {run} chat               Start chatting")
     from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
     from hermes_cli.profiles import normalize_profile_name
     served = recorded_served_profiles() if live_default_gateway_pid() is not None else None
@@ -272,12 +277,12 @@ def _profile_create(args):
         # The multiplexer did not pick the profile up (older gateway or the signal failed): a restart serves it.
         print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
     else:
-        print(f"  {name} gateway start      Start the messaging gateway")
+        print(f"  {run} gateway start      Start the messaging gateway")
     if clone or clone_all:
         print(f"\n  Edit {profile_dir_display}/.env for different API keys")
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
     else:
-        print(f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,")
+        print(f"\n  ⚠ This profile has no API keys yet. Run '{run} setup' first,")
         print("    or it will inherit keys from your shell environment.")
         print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
     print()

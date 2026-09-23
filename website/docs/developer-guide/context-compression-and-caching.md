@@ -241,6 +241,7 @@ compression:
   codex_responses_native: false  # Opt-in server compaction: gpt-5.6 on OpenAI/Codex; Astra on Codex OAuth
   codex_responses_compact_threshold: null  # Server compaction trigger; only used when codex_responses_native: true
   in_place: true             # Compact on the same session id, no rotation (default: true)
+  prepare_ahead: false       # Opt-in: prepare the next summary in the background (default: false)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -269,6 +270,7 @@ auxiliary:
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription, and exact `gpt-6-astra` on official Codex OAuth (see below) |
 | `codex_responses_compact_threshold` | `null` | `null` or positive integer | Server-side compaction trigger, read **only when `codex_responses_native: true`** — it never changes when local compression fires; the local trigger is `threshold` (ratio) capped by `threshold_tokens`. `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
+| `prepare_ahead` | `false` | bool | Opt-in: near the trigger, write the next summary in the background and splice it at the next automatic compaction when the summarized messages are unchanged (see below) |
 
 ### In-place compaction (single stable session id)
 
@@ -582,6 +584,33 @@ new progress is added, and obsolete information is removed.
 
 The `_previous_summary` field on the compressor instance stores the last summary
 text for this purpose.
+
+### Prepared compaction (opt-in)
+
+With `compression.prepare_ahead: true` (read at agent construction, so it takes effect on the next
+session or gateway agent rebuild), `agent/prepared_compaction.py` writes the next summary before
+the trigger fires. When the last provider-reported prompt count is within 12% of the context window
+below the trigger, the turn loop starts a background pass before a tool batch runs and at turn end.
+The pass plans the same window `compress()` plans (`_plan_compaction_window`) and calls the same
+`_generate_summary` on a copy of the compressor and of the window's messages, so the live transcript,
+the system prompt and the prompt cache are untouched until compaction.
+
+At the next automatic threshold compaction `compress()` splices the completed candidate only when
+the head boundary is unchanged, the candidate boundary is no later than the fresh tail cut, and the
+transcript up to that boundary fingerprints identically (role, text, tool call ids and names, tool
+result ids; not the tool bodies or arguments the prune rewrites). The summary then covers
+`[head, candidate boundary)` and every later message is kept as tail, including messages a fresh
+plan would have summarized; tail rules such as lean-mode tool stubbing still apply to them. Summary
+placement and alternation handling are the normal Phase 4 assembly.
+
+Everything else runs inline exactly as without the flag: no candidate, a candidate that no longer
+fits, a pass still running (never waited on: the wait would count against the compression idle
+timeout), manual `/compress`, focus compaction, provider-overflow recovery, and compactions where a
+memory provider contributes summary context. A running pass overtaken by compaction or a session
+boundary cannot publish its result. A failed pass pauses further passes but never arms the live
+compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
+eviction or process restart simply means the next compaction runs inline. Plugin context engines,
+Codex app-server sessions, native Responses compaction and micro-compaction are not prepared.
 
 
 ## Before/After Example

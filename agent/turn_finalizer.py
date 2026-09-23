@@ -703,6 +703,11 @@ def finalize_turn(
                 review_skills=_should_review_skills,
             )
 
+    # Opt-in (compression.prepare_ahead): near the trigger, write the next compaction summary
+    # between turns. No-op otherwise; never raises.
+    from agent.prepared_compaction import maybe_prepare
+    maybe_prepare(agent, messages, origin="turn-end")
+
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
     if not getattr(agent, "_persist_disabled", False):

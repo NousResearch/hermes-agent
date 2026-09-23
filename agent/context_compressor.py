@@ -1975,6 +1975,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
+    # agent/prepared_compaction.PreparedCompaction when compression.prepare_ahead is on, else None.
+    prepared_compaction: Any = None
+
     @property
     def name(self) -> str:
         return "compressor"
@@ -2170,6 +2173,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def _reset_session_compaction_state(self) -> None:
         """Shared per-session reset for /new, /reset and session end."""
+        if self.prepared_compaction is not None:
+            self.prepared_compaction.discard("session boundary")
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
@@ -3861,15 +3866,19 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             from agent.conversation_compression import _raise_if_stale_attempt
 
             _raise_if_stale_attempt(self)
-            self._previous_summary = summary
-            self._clear_compression_failure_cooldown()
-            self._summary_model_fallen_back = False
-            self._last_summary_error = None
-            for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
-                setattr(self, flag, False)
+            self._record_summary_success(summary)
             return self._with_summary_prefix(summary)
         except Exception as e:
             return self._on_summary_failure(e, turns_to_summarize, focus_topic, memory_context)
+
+    def _record_summary_success(self, summary: str) -> None:
+        """A healthy summary becomes the iterative base and clears the failure state."""
+        self._previous_summary = summary
+        self._clear_compression_failure_cooldown()
+        self._summary_model_fallen_back = False
+        self._last_summary_error = None
+        for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
+            setattr(self, flag, False)
 
     def _build_summary_prompt(
         self, content_to_summarize: str, summary_budget: int, focus_topic: Optional[str],
@@ -5297,6 +5306,14 @@ Write only the summary body. Do not include any preamble or prefix."""
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
             )
             return messages
+        # Opt-in: an automatic compaction may splice a summary prepared in the background at ITS
+        # boundary; newer messages stay outside the summary, in the tail (agent/prepared_compaction.py).
+        prepared = self.prepared_compaction and self.prepared_compaction.take(
+            messages, self._session_id, compress_start, compress_end,
+            eligible=not (force or focus_topic or bypass_cooldown or memory_context.strip()),
+        )
+        if prepared:
+            compress_end = prepared.compress_end
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
@@ -5327,9 +5344,15 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
-        feasibility_skip = not force and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
+        feasibility_skip = not (force or prepared) and self._feasibility_skip(
+            telemetry, turns_to_summarize, compress_start, compress_end,
+        )
         summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
-        if not feasibility_skip:
+        if prepared:
+            # The pass ran this window through _generate_summary; adopt its result as an inline call would.
+            self._record_summary_success(prepared.body)
+            summary = prepared.summary
+        elif not feasibility_skip:
             summary = self._summarize_window(
                 messages, turns_to_summarize, scan, focus_topic, memory_context, bypass_cooldown,
             )

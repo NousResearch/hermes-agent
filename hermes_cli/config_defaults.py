@@ -671,6 +671,10 @@ DEFAULT_CONFIG = {
         # already at/below threshold × target_ratio; honors the same cooldown/ anti-thrash/lock
         # guards. Example: 1800 = 30 min.
         "idle_compact_after_seconds": 0,
+        # Opt-in: near the trigger, write the next compaction summary in the background (during
+        # tool execution and between turns). Automatic compaction splices it only when the
+        # summarized messages are unchanged; otherwise it summarizes inline as usual.
+        "prepare_ahead": False,
     },
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,

@@ -1550,6 +1550,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        prepare_ahead=is_truthy_value(cfg.get("prepare_ahead"), default=False),
     )
 
 
@@ -1986,6 +1987,9 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     ):
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
+    if cs.prepare_ahead and isinstance(_cc, ContextCompressor):
+        from agent.prepared_compaction import PreparedCompaction
+        _cc.prepared_compaction = PreparedCompaction()
     agent.compression_checkpoint_required = cs.checkpoint_required
     from agent.conversation_compression import _warn_checkpoint_required_without_capable_provider
     _warn_checkpoint_required_without_capable_provider(agent)

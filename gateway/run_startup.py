@@ -479,7 +479,8 @@ class GatewayStartupMixin:
             # Startup rows preserve the historical default-adapter route.
             adapter = self.adapters.get(platform)
         # A runtime claim whose reconnect vanished before dispatch is released without spending an
-        # attempt; startup claims keep their state (attempts cap + stale cutoff bound retries).
+        # attempt; startup claims stay 'attempting' for the next boot's marked redelivery (attempts cap +
+        # stale cutoff bound retries).
         # Only a flood row keeps its error (the platform's wait must be honoured); any other row
         # becomes reconnect-only, or the redelivery timer would claim and release it until the
         # adapter is back.

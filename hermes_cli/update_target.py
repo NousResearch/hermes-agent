@@ -2,7 +2,7 @@
 
 The ordinary updater intentionally keeps its historical branch-tip behaviour.  A
 pinned request enters this module instead: it admits one existing ``origin``
-tracking branch, proves the reviewed commit and protocol floor, and performs one
+tracking branch, proves the reviewed commit and exact protocol version, and performs one
 literal fast-forward to that commit.  No stash, ZIP, branch-tip, or divergence
 fallback belongs on this path; the one allowed movement is ``merge --ff-only``.
 """
@@ -349,8 +349,8 @@ def _protocol_from_target(root: Path, revision: str) -> int:
     if not isinstance(metadata, dict) or set(metadata) != {"protocol"}:
         raise TargetAdmissionError("incompatible-target", "protocol metadata is not exactly {protocol}")
     version = metadata.get("protocol")
-    if isinstance(version, bool) or not isinstance(version, int) or version < _PROTOCOL_VERSION:
-        raise TargetAdmissionError("incompatible-target", "unsupported protocol floor")
+    if isinstance(version, bool) or not isinstance(version, int) or version != _PROTOCOL_VERSION:
+        raise TargetAdmissionError("incompatible-target", "unsupported protocol version")
     return version
 
 

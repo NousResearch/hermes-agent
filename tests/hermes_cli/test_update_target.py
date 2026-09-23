@@ -10,10 +10,24 @@ from unittest.mock import Mock
 
 import pytest
 
+import hermes_cli.update_target as pinned_target
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.update_target import (
     TargetRequest, parse_reviewed_source, validate_target_request,
 )
+
+
+def test_pinned_target_rejects_future_protocol_before_git_mutation(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        pinned_target,
+        "_run_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=["git", "show"], returncode=0, stdout='{"protocol":2}', stderr=""
+        ),
+    )
+
+    with pytest.raises(pinned_target.TargetAdmissionError, match="incompatible-target"):
+        pinned_target._protocol_from_target(tmp_path, REVISION)
 
 
 @pytest.fixture

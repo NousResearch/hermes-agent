@@ -3598,11 +3598,22 @@ def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbat
     """
     if watermark is None:
         return None
+    from agent.context_compressor import _DB_PERSISTED_MARKER
     rows = [*messages, *(verbatim_tail or ())]
     held = [m.get("_row_id") for m in rows if isinstance(m, dict)]
     held = [rid for rid in held if isinstance(rid, int) and not isinstance(rid, bool) and rid > 0]
     newest = next((m for m in reversed(rows) if isinstance(m, dict)), None)
     if newest is None or newest.get("_row_id") not in held or max(held) >= watermark:
+        return watermark
+    # ...and, when it is a summarized row, that it still matches its durable row. A dict loaded from
+    # the DB is born carrying both the id and the persist marker; a pass that rewrote its content drops
+    # the marker and keeps the id (the user/assistant merges in `repair_message_sequence`, or a context
+    # engine that rewrites in place). Such a row absorbed later durable rows whose ids are gone from
+    # `held`, so `max(held)` no longer names what the summary covered: capped there, those rows would be
+    # cloned live beside a summary that already contains them. A `here N` tail is exempt: it is copied
+    # verbatim (without the marker), so its ids are exact and, being newest, they lift the cap above
+    # anything a merged row earlier in `messages` absorbed.
+    if not any(isinstance(m, dict) for m in (verbatim_tail or ())) and not newest.get(_DB_PERSISTED_MARKER):
         return watermark
     if agent._session_db.get_message_role(agent.session_id, max(held)) is None:
         return watermark

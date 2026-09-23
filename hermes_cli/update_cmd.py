@@ -102,7 +102,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _sync_with_upstream_if_needed, apply_pinned_target, TargetAdmissionError,
     TargetRequest, current_branch, verify_pinned_post_swap)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
-    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, PreUpdateBackupOutcome,
     _clear_stale_sqlite_sidecars,
     _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
@@ -1083,7 +1083,7 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         no_gateway_restart=no_gateway_restart)
 
 
-def _begin_update_receipt_and_plan(args, *, begin_receipt=True):
+def _begin_update_receipt_and_plan(args, *, begin_receipt=True, require_complete=False):
     """Open the receipt, snapshot the fleet, refuse on Windows shim holders. Returns the
     pre-update plan (None if the probe failed); ``sys.exit(2)`` when a non-gateway hermes.exe
     holds the venv shim."""
@@ -1104,7 +1104,7 @@ def _begin_update_receipt_and_plan(args, *, begin_receipt=True):
     _pre_update_plan = None
     with _best_effort('Update plan phase failed: %s'):
         from hermes_cli.update_inventory import collect_runtime_inventory, record_plan_in_receipt
-        _pre_update_plan = collect_runtime_inventory()
+        _pre_update_plan = collect_runtime_inventory(require_complete=require_complete)
         record_plan_in_receipt(_pre_update_plan)
         if _pre_update_plan.runtimes:
             _n = len(_pre_update_plan.runtimes)
@@ -1439,17 +1439,34 @@ def _cmd_pinned_update_impl(args, gateway_mode: bool):
     _windows_gateway_resume = None
     try:
         opts = _resolve_update_options(args, gateway_mode)
-        _pre_update_plan = _begin_update_receipt_and_plan(args, begin_receipt=False)
+        _pre_update_plan = _begin_update_receipt_and_plan(
+            args, begin_receipt=False, require_complete=True)
         if _pre_update_plan is None or _pre_update_plan.expected_sha != request.current_sha:
             raise TargetAdmissionError("pre-update-plan-unavailable")
         _sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS = {}
-        pre_update_snapshot_id = _m()._run_pre_update_backup(args)
+        try:
+            backup_outcome = _m()._run_pre_update_backup(args, report_full=True)
+        except Exception as exc:
+            raise TargetAdmissionError("pre-update-backup-unavailable") from exc
+        if not isinstance(backup_outcome, PreUpdateBackupOutcome):
+            raise TargetAdmissionError("pre-update-backup-outcome-unavailable")
+        pre_update_snapshot_id = backup_outcome.snapshot_id
         _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
-        if _resolve_pre_update_backup_mode(args) != "off":
+        backup_mode = _resolve_pre_update_backup_mode(args)
+        if backup_mode == "full":
+            full_ok = backup_outcome.full_backup_path is not None
+            record_step("pre_update_full_backup", full_ok, "saved" if full_ok else "unavailable")
+            if not full_ok:
+                raise TargetAdmissionError("pre-update-full-backup-unavailable")
+        if backup_mode != "off":
             if not pre_update_snapshot_id:
                 raise TargetAdmissionError("pre-update-backup-unavailable")
             from hermes_cli.backup import _sibling_profile_homes
-            expected = {name for name, _home in _sibling_profile_homes(get_hermes_home())}
+            try:
+                expected = {name for name, _home in _sibling_profile_homes(
+                    get_hermes_home(), require_complete=True)}
+            except Exception as exc:
+                raise TargetAdmissionError("pre-update-sibling-inventory-unavailable") from exc
             if expected != set(_sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS):
                 raise TargetAdmissionError("pre-update-sibling-backup-incomplete")
         _windows_gateway_resume = _m()._pause_windows_gateways_for_update()

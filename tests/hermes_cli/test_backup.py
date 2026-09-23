@@ -1766,6 +1766,37 @@ class TestRunPreUpdateBackup:
         assert snap_id is not None
         assert len(self._zips(hermes_home)) == 1
 
+    def test_full_mode_reports_saved_zip(self, hermes_home):
+        self._set_mode(hermes_home, "full")
+        from hermes_cli.main import _run_pre_update_backup
+
+        outcome = _run_pre_update_backup(
+            Namespace(no_backup=False, backup=False), report_full=True
+        )
+        assert outcome.snapshot_id is not None
+        assert outcome.full_backup_path in self._zips(hermes_home)
+        assert outcome.full_backup_path.stat().st_size > 0
+
+    @pytest.mark.parametrize("failure", ["skipped", "raised"])
+    def test_full_mode_reports_zip_failure_separately_from_quick_snapshot(
+        self, hermes_home, monkeypatch, failure
+    ):
+        self._set_mode(hermes_home, "full")
+        def fail_backup(**_kwargs):
+            if failure == "raised":
+                raise OSError("ZIP write failed")
+            return None
+
+        monkeypatch.setattr("hermes_cli.backup.create_pre_update_backup", fail_backup)
+        from hermes_cli.main import _run_pre_update_backup
+
+        outcome = _run_pre_update_backup(
+            Namespace(no_backup=False, backup=False), report_full=True
+        )
+        assert outcome.snapshot_id is not None
+        assert outcome.full_backup_path is None
+        assert self._snaps(hermes_home)
+
 
 
 

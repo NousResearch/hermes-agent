@@ -36,8 +36,10 @@ def fleet(monkeypatch, tmp_path):
     monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: {
         100: "hermes gateway run", 200: "hermes --profile work gateway run"}.get(pid))
     monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda all_profiles=False: {100})
+    monkeypatch.setattr("hermes_cli.gateway.find_windows_gateway_services", lambda: [])
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
-    monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda exclude_pids=None: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes",
+                        lambda exclude_pids=None, strict=False: [])
     monkeypatch.setattr(
         "hermes_cli.build_info.get_code_identity",
         lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8, "version": "1.0", "source": "git"},
@@ -50,6 +52,7 @@ def fleet(monkeypatch, tmp_path):
 class TestCollectInventory:
     def test_two_profile_fleet(self, fleet):
         plan = ui.collect_runtime_inventory()
+        assert ui.collect_runtime_inventory(require_complete=True).probe_failures == []
         assert plan.install_method == "git"
         assert plan.updatable_in_place is True
         assert plan.expected_sha == "a" * 40
@@ -129,6 +132,42 @@ class TestCollectInventory:
         assert plan.runtimes == []
         assert plan.install_method == "unknown"
 
+    def test_required_inventory_refuses_a_failed_collector(self, fleet, monkeypatch, capsys):
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("PID inventory unavailable")
+
+        monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", _boom)
+        legacy = ui.collect_runtime_inventory()
+        assert "PID-file gateway inventory" in legacy.probe_failures
+        ui.print_update_plan(legacy)
+        assert "Inventory incomplete: PID-file gateway inventory" in capsys.readouterr().out
+        with pytest.raises(ui.InventoryIncompleteError, match="PID-file gateway inventory"):
+            ui.collect_runtime_inventory(require_complete=True)
+
+    def test_required_inventory_uses_strict_pid_inspection(self, fleet, monkeypatch):
+        def pid_probe(*_args, strict=False, **_kwargs):
+            if strict:
+                raise RuntimeError("unreadable PID file")
+            return []
+
+        monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", pid_probe)
+        assert ui.collect_runtime_inventory().probe_failures == []
+        with pytest.raises(ui.InventoryIncompleteError, match="PID-file gateway inventory"):
+            ui.collect_runtime_inventory(require_complete=True)
+
+    def test_required_inventory_refuses_unreadable_profile_root(self, fleet, monkeypatch):
+        profiles_root = fleet / "home" / "profiles"
+        original_stat = Path.stat
+
+        def unreadable_root(path, *args, **kwargs):
+            if path == profiles_root:
+                raise PermissionError("profiles unavailable")
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", unreadable_root)
+        with pytest.raises(ui.InventoryIncompleteError, match="Profile enumeration"):
+            ui.collect_runtime_inventory(require_complete=True)
+
     def test_plan_serializes_for_receipt(self, fleet):
         plan = ui.collect_runtime_inventory()
         payload = plan.to_dict()
@@ -157,4 +196,3 @@ class TestReceiptIntegration:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["plan"]["install_method"] == "git"
         assert len(payload["plan"]["runtimes"]) == 2
-

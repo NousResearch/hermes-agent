@@ -388,12 +388,14 @@ def test_post_swap_refuses_source_changed_between_argv_and_handoff(tmp_path, mon
     assert called == []
 
 
+@pytest.mark.parametrize("mode", ["quick", "full"])
 def test_pinned_command_prepares_safety_before_apply_and_carries_handoff(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, mode
 ):
     from hermes_cli import update_cmd
     from hermes_cli.update_target import PinnedApplyResult
     from hermes_cli.update_inventory import UpdatePlan
+    from hermes_cli.update_cmd_maint import PreUpdateBackupOutcome
 
     request = TargetRequest(
         "a" * 40, INSTALL_ID, "b" * 40,
@@ -417,7 +419,8 @@ def test_pinned_command_prepares_safety_before_apply_and_carries_handoff(
     monkeypatch.setattr(
         update_cmd, "_m", lambda: SimpleNamespace(
             PROJECT_ROOT=tmp_path,
-            _run_pre_update_backup=lambda _args: events.append("backup") or "snapshot-before",
+            _run_pre_update_backup=lambda _args, **_kwargs: events.append("backup") or
+            PreUpdateBackupOutcome("snapshot-before", tmp_path / "backup.zip" if mode == "full" else None),
             _pause_windows_gateways_for_update=lambda: events.append("pause") or token,
             _resume_windows_gateways_after_update=lambda value: events.append("resume")
             if value and value.get("resume_needed") else None,
@@ -430,9 +433,10 @@ def test_pinned_command_prepares_safety_before_apply_and_carries_handoff(
     )
     monkeypatch.setattr(
         update_cmd, "_begin_update_receipt_and_plan",
-        lambda _args, **kwargs: events.append("plan") or plan,
+        lambda _args, **kwargs: events.append("plan") or
+        (plan if kwargs.get("require_complete") is True else None),
     )
-    monkeypatch.setattr(update_cmd, "_resolve_pre_update_backup_mode", lambda _args: "quick")
+    monkeypatch.setattr(update_cmd, "_resolve_pre_update_backup_mode", lambda _args: mode)
     monkeypatch.setattr(update_cmd, "_desktop_app_present", lambda _dir: events.append("desktop") or True)
     monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", lambda *_args: events.append("holders"))
     monkeypatch.setattr("atexit.register", lambda *_args: None)
@@ -469,18 +473,22 @@ def test_pinned_command_prepares_safety_before_apply_and_carries_handoff(
         assert captured["_windows_gateway_resume"] is token
         assert captured["had_desktop_app_before_update"] is True
         assert update_receipt._current.data["update_intent"]["branch"] == "release/1"
+        if mode == "full":
+            assert any(step["name"] == "pre_update_full_backup" and step["ok"]
+                       for step in update_receipt._current.data["steps"])
     finally:
         update_receipt._current = None
 
 
 @pytest.mark.parametrize("failure", [
-    "plan", "plan-sha", "backup", "sibling",
+    "plan", "plan-sha", "backup", "backup-outcome", "full", "sibling", "sibling-enumeration",
     pytest.param("holder", marks=pytest.mark.windows_only), "admission",
 ])
 def test_pinned_pre_swap_refusal_never_leaves_gateway_paused(tmp_path, monkeypatch, failure):
     from hermes_cli import update_cmd
     from hermes_cli import backup
     from hermes_cli.update_inventory import UpdatePlan
+    from hermes_cli.update_cmd_maint import PreUpdateBackupOutcome
 
     request = TargetRequest(
         "a" * 40, INSTALL_ID, "b" * 40,
@@ -488,6 +496,7 @@ def test_pinned_pre_swap_refusal_never_leaves_gateway_paused(tmp_path, monkeypat
                       "refs/remotes/origin/main", "a" * 40, "fixture", "d" * 64, 1),
     )
     args = SimpleNamespace(target_request=request, branch=None, force_venv=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     events = []
     token = {"resume_needed": True}
     update_receipt._current = None
@@ -500,16 +509,21 @@ def test_pinned_pre_swap_refusal_never_leaves_gateway_paused(tmp_path, monkeypat
     )
     if failure == "sibling":
         monkeypatch.setattr(backup, "_sibling_profile_homes",
-                            lambda _home: [("beta", tmp_path / "home" / "profiles" / "beta")])
-    monkeypatch.setattr(update_cmd, "_resolve_pre_update_backup_mode", lambda _args: "quick")
+                            lambda _home, **_kwargs: [("beta", tmp_path / "home" / "profiles" / "beta")])
+    if failure == "sibling-enumeration":
+        monkeypatch.setattr(backup, "_sibling_profile_homes",
+                            lambda _home, **_kwargs: (_ for _ in ()).throw(RuntimeError("enumeration failed")))
+    monkeypatch.setattr(update_cmd, "_resolve_pre_update_backup_mode",
+                        lambda _args: "full" if failure == "full" else "quick")
     monkeypatch.setattr(update_cmd, "_record_pre_update_backup_outcome", lambda *_args: None)
     monkeypatch.setattr(update_cmd, "_desktop_app_present", lambda _dir: False)
     monkeypatch.setattr("atexit.register", lambda *_args: None)
     monkeypatch.setattr(
         update_cmd, "_m", lambda: SimpleNamespace(
             PROJECT_ROOT=tmp_path,
-            _run_pre_update_backup=lambda _args: events.append("backup") or
-            (None if failure == "backup" else "snapshot-before"),
+            _run_pre_update_backup=lambda _args, **_kwargs: events.append("backup") or
+            (None if failure == "backup-outcome" else
+             PreUpdateBackupOutcome(None if failure == "backup" else "snapshot-before", None)),
             _pause_windows_gateways_for_update=lambda: events.append("pause") or token,
             _resume_windows_gateways_after_update=lambda value: (
                 events.append("resume"), value.update(resume_needed=False)
@@ -535,6 +549,12 @@ def test_pinned_pre_swap_refusal_never_leaves_gateway_paused(tmp_path, monkeypat
         assert "handoff" not in events
         assert ("apply" in events) == (failure == "admission")
         assert ("resume" in events) == (failure in {"holder", "admission"})
+        if failure == "full":
+            receipt_path = tmp_path / "home" / "logs" / "update_receipts" / "latest.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            assert receipt["outcome"] == "refused"
+            assert any(step["name"] == "pre_update_full_backup" and not step["ok"]
+                       for step in receipt["steps"])
     finally:
         update_receipt._current = None
 

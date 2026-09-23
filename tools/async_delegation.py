@@ -424,8 +424,16 @@ def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
     _event_delivery(complete_completion_delivery, evt, claim_id)
 
 
-def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    _event_delivery(release_completion_delivery, evt, claim_id)
+def release_event_delivery(evt: Dict[str, Any], claim_id: str, *, retryable: bool = False) -> None:
+    """Release a claim after a failed delivery attempt.
+
+    ``retryable=True`` means the target refused for a reason it will recover from
+    (busy with another turn, paused, restarting): the attempt counted at claim time
+    is refunded, so transient refusals never exhaust the delivery budget. The
+    default counts the attempt and may converge the row to terminal ``dropped``.
+    """
+    fn = defer_completion_delivery if retryable else release_completion_delivery
+    _event_delivery(fn, evt, claim_id)
 
 
 def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> None:

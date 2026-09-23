@@ -13,6 +13,12 @@
 # The [uvloop] optional extra is included in [all] but intentionally omitted
 # from [termux] and [termux-all].  See pyproject.toml for details.
 
+# cryptography>=50 has no pre-built wheel for Android/Termux aarch64 (bionic libc).
+# Building from source requires Rust and exhausts memory on mobile devices.
+# Termux package repository provides cryptography==48.0.1-1 which has a working wheel.
+# Pin to 48.0.1 to avoid source build hang/OOM on Termux. See issue #87663.
+cryptography==48.0.1
+
 ipython<10
 jedi>=0.18.1,<0.20
 parso>=0.8.4,<0.9

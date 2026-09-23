@@ -1843,6 +1843,39 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def lane_occupancy(conn: sqlite3.Connection) -> dict:
+    holders: dict[str, list[dict]] = {}
+    for row in conn.execute(
+        "SELECT id, title, assignee, priority, last_heartbeat_at FROM tasks "
+        "WHERE status = 'running' AND assignee IS NOT NULL "
+        "ORDER BY priority ASC, created_at ASC"
+    ):
+        holders.setdefault(row["assignee"], []).append({
+            "id": row["id"], "title": row["title"], "priority": int(row["priority"] or 0),
+            "last_heartbeat_at": row["last_heartbeat_at"],
+        })
+    busy = set(holders) | {
+        row["assignee"] for row in conn.execute(
+            "SELECT DISTINCT assignee FROM tasks "
+            "WHERE status IN ('ready', 'review') AND assignee IS NOT NULL"
+        )
+    }
+    return {"holders": holders, "idle_profiles": _idle_profiles(busy)}
+
+
+def _idle_profiles(busy: set[str]) -> list[str]:
+    try:
+        from hermes_cli.profiles import list_profile_names
+        names = list_profile_names()
+    except Exception:
+        return []
+    claimable = _profile_exists_fn()
+    return sorted(
+        name for name in names
+        if name not in busy and (claimable is None or claimable(name))
+    )
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 

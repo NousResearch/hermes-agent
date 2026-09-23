@@ -71,10 +71,11 @@ _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 # Legacy compressor builds ended long string leaves with these ambiguous tails.
 # The outgoing mutation may be shorter than the historical 200-char head after model recomposition.
 _LEGACY_CONTEXT_PRUNED_ARG_TAILS = ("...[truncated]", "…[truncated]")
+_CONTEXT_PRUNED_HOOK_REDACTION = "[context-compression artifact removed]"
 
 
-def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
-    """Paths whose values contain model-visible context-compression artifacts.
+def _scan_context_pruned_arguments(tool_name: str, args: Any, *, redact: bool = False) -> tuple[list[str], Any]:
+    """Return artifact paths and, optionally, a shape-preserving sanitized copy.
 
     The compressor's current marker carries numeric omitted/total counts. Match
     that rendered shape rather than the prefix alone so Hermes can still edit
@@ -83,7 +84,7 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
     tools may inspect or quote compressed history.
     """
     if not tool_may_have_side_effect(tool_name):
-        return []
+        return [], args
 
     # Late import keeps this helper from making the dispatch module own a second
     # copy of the compressor sentinel (and avoids a heavy import at CLI startup).
@@ -95,24 +96,51 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
     )
     found: list[str] = []
 
-    def _walk(value: Any, path: str) -> None:
+    def _walk(value: Any, path: str) -> Any:
         if isinstance(value, str):
             stripped = value.rstrip()
             if marker_re.search(value) or stripped.endswith(_LEGACY_CONTEXT_PRUNED_ARG_TAILS):
                 found.append(path)
-            return
+                return _CONTEXT_PRUNED_HOOK_REDACTION if redact else value
+            return value
         if isinstance(value, dict):
-            for key, child in value.items():
-                key_text = str(key)
-                child_path = f"{path}.{key_text}" if key_text.isidentifier() else f"{path}[{key_text!r}]"
-                _walk(child, child_path)
-            return
-        if isinstance(value, (list, tuple)):
+            if not redact:
+                for key, child in value.items():
+                    key_text = str(key)
+                    child_path = f"{path}.{key_text}" if key_text.isidentifier() else f"{path}[{key_text!r}]"
+                    _walk(child, child_path)
+                return value
+            return {
+                key: _walk(
+                    child,
+                    f"{path}.{str(key)}" if str(key).isidentifier() else f"{path}[{str(key)!r}]",
+                )
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [_walk(child, f"{path}[{index}]") for index, child in enumerate(value)] if redact else (
+                [_walk(child, f"{path}[{index}]") for index, child in enumerate(value)] and value
+            )
+        if isinstance(value, tuple):
+            if redact:
+                return tuple(_walk(child, f"{path}[{index}]") for index, child in enumerate(value))
             for index, child in enumerate(value):
                 _walk(child, f"{path}[{index}]")
+            return value
+        return value
 
-    _walk(args, "$")
-    return found
+    sanitized = _walk(args, "$")
+    return found, sanitized
+
+
+def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
+    """Paths whose values contain model-visible context-compression artifacts."""
+    return _scan_context_pruned_arguments(tool_name, args)[0]
+
+
+def _redact_context_pruned_arguments(tool_name: str, args: Any) -> Any:
+    """Copy *args* while replacing only context-compression artifact leaves."""
+    return _scan_context_pruned_arguments(tool_name, args, redact=True)[1]
 
 
 def _is_destructive_command(cmd: str) -> bool:
@@ -591,7 +619,7 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
 __all__ = [
     "_NEVER_PARALLEL_TOOLS", "_PARALLEL_SAFE_TOOLS", "_PATH_SCOPED_TOOLS", "_PATH_SCOPED_READERS",
     "_PATH_SCOPED_WRITERS", "_DESTRUCTIVE_PATTERNS", "_REDIRECT_OVERWRITE", "_context_pruned_argument_paths",
-    "_is_destructive_command",
+    "_redact_context_pruned_arguments", "_is_destructive_command",
     "_plan_tool_batch_segments", "_should_parallelize_tool_batch", "_canonical_path",
     "_extract_parallel_scope_path", "_extract_parallel_scope_paths", "_paths_overlap",
     "_is_multimodal_tool_result", "_multimodal_text_summary", "_append_subdir_hint_to_multimodal",

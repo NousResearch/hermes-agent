@@ -1,8 +1,8 @@
 name: hindsight
 repo: https://github.com/vectorize-io/hindsight
-sha: dc75038866a3966b5bf5c82ff57c7a758bb4070a
+sha: f7a153dd9050e800cb295fd278f0a3ed0af29f32
 subdir: hindsight-integrations/hermes
-version: "1.0.0"
+version: "1.0.1"
 description: Hindsight long-term memory provider — knowledge graph, entity resolution and multi-strategy
   retrieval (recall/reflect/retain tools plus automatic per-turn capture); cloud, local embedded or local
   external mode. Maintained by Vectorize; the same provider that shipped in-tree. Disclosure — in

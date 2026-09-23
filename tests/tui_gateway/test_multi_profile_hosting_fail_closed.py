@@ -28,6 +28,8 @@ A_API_KEY = "launch-api-key-0004"
 B_API_KEY = "secondary-api-key-0005"
 A_BASE_URL = "https://launch.example.invalid/v1"
 B_BASE_URL = "https://secondary.example.invalid/v1"
+A_CODEX_URL = "https://launch-codex.example.invalid/v1"
+B_CODEX_URL = "https://secondary-codex.example.invalid/v1"
 
 
 @pytest.fixture
@@ -37,10 +39,12 @@ def two_homes(tmp_path, monkeypatch):
     b = root / "profiles" / "b"
     b.mkdir(parents=True)
     (root / ".env").write_text(
-        f"A_ONLY_TOKEN={A_VAL}\nHERMES_API_KEY={A_API_KEY}\nHERMES_BASE_URL={A_BASE_URL}\n",
+        f"A_ONLY_TOKEN={A_VAL}\nHERMES_API_KEY={A_API_KEY}\nHERMES_BASE_URL={A_BASE_URL}\n"
+        f"HERMES_CODEX_BASE_URL={A_CODEX_URL}\n",
         encoding="utf-8")
     (b / ".env").write_text(
-        f"B_ONLY_TOKEN={B_VAL}\nHERMES_API_KEY={B_API_KEY}\nHERMES_BASE_URL={B_BASE_URL}\n",
+        f"B_ONLY_TOKEN={B_VAL}\nHERMES_API_KEY={B_API_KEY}\nHERMES_BASE_URL={B_BASE_URL}\n"
+        f"HERMES_CODEX_BASE_URL={B_CODEX_URL}\n",
         encoding="utf-8")
     for home in (root, b):
         (home / "config.yaml").write_text(
@@ -50,6 +54,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("A_ONLY_TOKEN", A_VAL)  # the launch process loaded its own .env
     monkeypatch.setenv("HERMES_API_KEY", A_API_KEY)
     monkeypatch.setenv("HERMES_BASE_URL", A_BASE_URL)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", A_CODEX_URL)
     monkeypatch.setenv("INJECTED_TOKEN", ENV_VAL)  # systemd / op run credential injection
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
@@ -133,6 +138,66 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     r = server._methods["model.options"]("r2", {"profile": "b"})
     assert r["result"] == {"providers": []}
     assert seen["options"] == (b, B_VAL, None)
+
+
+def test_live_review_binds_the_sessions_full_runtime_scope(two_homes, monkeypatch):
+    """Live /review must resolve the reviewer's provider credentials from its session's profile
+    (``start_review`` → ``delegate_task`` → profile-scoped ``get_secret``); unscoped it fails
+    closed with UnscopedSecretError on a multiplexed gateway (#117544).
+
+    The probe reads ``HERMES_CODEX_BASE_URL`` — the variable the real resolver path reads
+    (``hermes_cli/runtime_provider.py``, ``resolve_runtime_provider``) — so the test pins the
+    exact secret the broken dispatch leaked, not just generic scope binding."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_constants import get_hermes_home
+
+    root, b = two_homes
+    seen = []
+
+    def fake_start_review(agent, snapshot, arg):
+        seen.append((Path(get_hermes_home()), get_secret("HERMES_CODEX_BASE_URL"),
+                     get_secret("A_ONLY_TOKEN"), get_secret("B_ONLY_TOKEN")))
+        return object()
+
+    monkeypatch.setattr("agent.review_engine.start_review", fake_start_review)
+    monkeypatch.setattr("agent.review_engine.format_dispatch_note", lambda result, arg: "dispatched")
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda value: False)
+
+    def invoke(profile_home):
+        sid = f"review-{len(seen)}"
+        agent = SimpleNamespace(_cached_system_prompt="", tools=None)
+        session = {
+            "agent": agent,
+            "profile_home": str(profile_home) if profile_home else None,
+            "history": [{"role": "user", "content": "hello"}],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "running": False,
+            "session_key": sid,
+        }
+        server._sessions[sid] = session
+        try:
+            assert server._format_live_review_output(sid, session, "") == "dispatched"
+        finally:
+            server._sessions.pop(sid, None)
+
+    invoke(None)
+    _probe("b")  # activate multiplexing and freeze the launch profile's own secret scope
+    # Fail-closed precondition: with multiplexing active and no scope bound, the reviewer's
+    # resolver read raises — so the successful invokes below prove the wrap binds the scope.
+    with pytest.raises(UnscopedSecretError):
+        get_secret("HERMES_CODEX_BASE_URL")
+    invoke(b)
+    invoke(None)
+
+    assert seen == [
+        (root, A_CODEX_URL, A_VAL, None),
+        (b, B_CODEX_URL, None, B_VAL),
+        (root, A_CODEX_URL, A_VAL, None),
+    ]
+    assert os.environ["A_ONLY_TOKEN"] == A_VAL
+    assert "B_ONLY_TOKEN" not in os.environ
+    assert os.environ["HERMES_CODEX_BASE_URL"] == A_CODEX_URL  # never mutated
 
 
 @pytest.mark.parametrize("route", ["session.compress", "slash.compress"])

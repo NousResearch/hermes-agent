@@ -44,7 +44,11 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
     runtime_token = _current_runtime_session_record.set(session)
     try:
         from agent.review_engine import format_dispatch_note, start_review
-        result = start_review(agent, snapshot, arg or "")
+        # Same multiplex fail-closed class as manual /compress (#116611): the reviewer's provider
+        # credentials resolve through profile-scoped get_secret, so the session's runtime scope
+        # must be bound on this RPC-pool thread too (#117544).
+        with _session_profile_runtime_scope(session):
+            result = start_review(agent, snapshot, arg or "")
     except ValueError as exc:
         return str(exc)
     except Exception as exc:

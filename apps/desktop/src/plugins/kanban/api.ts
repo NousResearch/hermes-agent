@@ -161,10 +161,34 @@ export function bindApi(
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
   let close: (() => void) | null = null
+  let socketGeneration = 0
 
   const open = (slug: string) => {
+    const generation = ++socketGeneration
     close?.()
-    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
+    close = null
+
+    const boardPath = slug ? `/board?board=${encodeURIComponent(slug)}` : '/board'
+
+    void queryClient
+      .fetchQuery({
+        queryFn: () => r<KanbanBoard>(boardPath),
+        queryKey: boardKey(slug, false)
+      })
+      .then(board => {
+        if (generation !== socketGeneration) {
+          return
+        }
+
+        const params = new URLSearchParams({ since: String(board.latest_event_id) })
+
+        if (slug) {
+          params.set('board', slug)
+        }
+
+        close = socket(`/events?${params}`, data => onEventsFrame(slug, data))
+      })
+      .catch(() => undefined)
   }
 
   // The local connection keeps the BARE key (the bare-local rule of
@@ -202,6 +226,7 @@ export function bindApi(
   )
 
   return () => {
+    socketGeneration += 1
     unsubs.forEach(unsub => unsub())
     close?.()
     rest = null

@@ -157,10 +157,12 @@ export async function launchCoreApp(env: Record<string, string>): Promise<{ app:
   // Keep the main process's stdout/stderr (backend supervisor lines included)
   // so a boot that never becomes interactive fails with its own story.
   const lines: string[] = []
+
   const collect = (chunk: Buffer) => {
     lines.push(...chunk.toString('utf8').split('\n').filter(Boolean))
     lines.splice(0, Math.max(0, lines.length - 200))
   }
+
   app.process().stdout?.on('data', collect)
   app.process().stderr?.on('data', collect)
   APP_LOGS.set(app, lines)
@@ -228,11 +230,25 @@ export function sandboxProcesses(sandbox: CoreSandbox): ProcInfo[] {
   return out
 }
 
-/** The `hermes serve` backend(s) spawned for this sandbox. */
+/**
+ * The `hermes serve` backend(s) spawned for this sandbox.
+ *
+ * A child of the backend still shows the backend's argv and environ between
+ * fork and exec, and the backend forks ~40 probes per boot (git, ps,
+ * ldconfig/gcc, pip): a 100 ms sampler catches one in that window every few
+ * boots. Such a child is not a second backend, so a serve process whose parent
+ * is itself a serve process is excluded. A real second spawn has the
+ * supervisor (Electron main) as its parent, and a pre-exec child orphaned by a
+ * dead backend is reparented away and still counted.
+ */
 export function backendProcesses(sandbox: CoreSandbox): ProcInfo[] {
-  return sandboxProcesses(sandbox).filter(
+  const serve = sandboxProcesses(sandbox).filter(
     proc => / serve( |$)/.test(proc.cmdline) && !/electron/i.test(proc.cmdline.split(' ')[0])
   )
+
+  const pids = new Set(serve.map(proc => proc.pid))
+
+  return serve.filter(proc => !pids.has(proc.ppid))
 }
 
 // ─── WebSocket recorder ─────────────────────────────────────────────────

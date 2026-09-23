@@ -42,6 +42,7 @@ const nonce = Math.random()
   .slice(2, 8)
   .replace(/[^a-z0-9]/g, 'x')
   .padEnd(4, 'q')
+
 const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
 const TOOL_TAG = `core-orphan-${nonce}`
@@ -79,14 +80,28 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
   const ws = recordWebSockets(page)
   let closed = false
 
-  // Background census: every backend pid ever observed.
-  const seenBackends = new Set<number>()
+  // Background census: every backend pid ever observed, with its parent,
+  // command line and lifetime so an unexpected extra pid explains itself.
+  const seen = new Map<number, { ppid: number; cmdline: string; first: number; last: number; samples: number }>()
+  const t0 = Date.now()
 
   const census = setInterval(() => {
+    const now = Date.now() - t0
+
     for (const proc of backendProcesses(sandbox)) {
-      seenBackends.add(proc.pid)
+      const entry = seen.get(proc.pid)
+
+      if (entry) {
+        entry.last = now
+        entry.samples++
+      } else {
+        seen.set(proc.pid, { ppid: proc.ppid, cmdline: proc.cmdline.slice(0, 200), first: now, last: now, samples: 1 })
+      }
     }
   }, 100)
+
+  const describeSeen = () =>
+    JSON.stringify([...seen].map(([pid, e]) => ({ pid, ...e, electronPid: app.process().pid })))
 
   const finished = (marker: string, step = 0) =>
     expect
@@ -110,7 +125,7 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
       session.sessionId = await currentSessionId(page)
       session.expectUserMarkers.push(U(1))
       await assertTranscriptOracle(page, ws, provider, session, 'boot first turn')
-      expect(seenBackends.size, `backend pids seen during boot: ${[...seenBackends]}`).toBe(1)
+      expect(seen.size, `backend pids seen during boot: ${describeSeen()}`).toBe(1)
     })
 
     await test.step('kill -9 backend: exactly one supervised respawn, app serves again', async () => {
@@ -139,7 +154,7 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
       expect(alive.length, `live backends after recovery: ${JSON.stringify(alive)}`).toBe(1)
       // Initial + exactly one replacement, ever — a crash loop or a racing
       // second spawn would add pids here even if they died again.
-      expect(seenBackends.size, `backend pids ever seen: ${[...seenBackends]}`).toBe(2)
+      expect(seen.size, `backend pids ever seen: ${describeSeen()}`).toBe(2)
     })
 
     await test.step('quit mid-turn with a running tool child: zero processes remain', async () => {

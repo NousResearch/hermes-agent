@@ -15,15 +15,25 @@ import {
   skipConnectionTarget,
   updateConnectionRequest
 } from './connection-request'
-import { $gateway } from './gateway'
+import { $gateway, setPrimaryGateway, setPrimaryGatewayConnectionId } from './gateway'
+import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from './session'
 
 const WIRE = {
   deadline_at: 1_800_000_000,
   op_id: 'op-1',
+  seq: 1,
   tool_call_id: 'call-1',
   timeout_seconds: 120,
   targets: [
-    { action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const },
+    {
+      action: 'connect' as const,
+      discovery_error: 'tool discovery failed',
+      instructions: 'Authorize Gmail.',
+      kind: 'connector' as const,
+      name: 'gmail',
+      required_env: [{ default: 'primary', name: 'ACCOUNT', prompt: 'Account', required: true, secret: false }],
+      state: 'pending' as const
+    },
     { action: 'connect' as const, kind: 'connector' as const, name: 'notion', state: 'pending' as const }
   ]
 }
@@ -42,14 +52,17 @@ function request(sessionId: string | null, opId = 'op-1'): ConnectionRequest {
 type Snapshot = Parameters<typeof applyOperationStatus>[1]
 type Frame = Parameters<typeof applyConnectionUpdate>[1]
 
+/** The backend stamps every write with a rising `seq`; the fixture counts the same way so a frame
+ *  built later is newer than one built earlier unless a test says otherwise. */
+let nextSeq = WIRE.seq + 1
+
 /** Every `connection.update` frame carries the operation snapshot; `states` overrides per-target state. */
-function frame(
-  states: Record<string, Snapshot['targets'][number]['state']>,
-  extra: Partial<Frame> = {}
-): Frame {
+function frame(states: Record<string, Snapshot['targets'][number]['state']>, extra: Partial<Frame> = {}): Frame {
   return {
     deadline_at: WIRE.deadline_at,
     op_id: 'op-1',
+    owner: { session_id: 'a', type: 'session' },
+    seq: nextSeq++,
     settled: false,
     settled_by: null,
     targets: WIRE.targets.map(target => ({ ...target, state: states[target.name] ?? target.state })),
@@ -65,7 +78,15 @@ describe('connection-request store', () => {
   afterEach(() => {
     $connectionRequests.set({})
     $gateway.set(null)
+    setPrimaryGateway(null)
+    _resetSessionOwnerHintsForTests({ storage: true })
   })
+
+  function setOwnerGateway(rpc: Gateway['request']): void {
+    setSessionOwnerHint('a', { connectionId: 'local', profile: 'default' })
+    setPrimaryGateway(fakeGateway(rpc))
+    setPrimaryGatewayConnectionId('local')
+  }
 
   it('normalizes the wire payload and keeps the server-owned deadline verbatim', () => {
     const parsed = normalizeConnectionRequest(WIRE, 's1')
@@ -76,6 +97,11 @@ describe('connection-request store', () => {
       ['gmail', 'connector', 'pending'],
       ['notion', 'connector', 'pending']
     ])
+    expect(parsed?.targets[0]).toMatchObject({
+      discoveryError: 'tool discovery failed',
+      instructions: 'Authorize Gmail.',
+      requiredEnv: [{ default: 'primary', name: 'ACCOUNT', prompt: 'Account', required: true, secret: false }]
+    })
     expect(parsed?.settled).toBe(false)
   })
 
@@ -102,6 +128,7 @@ describe('connection-request store', () => {
     const overlaid = applyOperationStatus(req, {
       deadline_at: WIRE.deadline_at,
       op_id: 'op-1',
+      seq: nextSeq++,
       settled: false,
       settled_by: null,
       targets: [
@@ -114,7 +141,10 @@ describe('connection-request store', () => {
     expect(overlaid.targets[0]).toMatchObject({ connectUrl: 'https://l/gmail', state: 'initiated' })
 
     const updated = applyConnectionUpdate(overlaid, {
-      ...frame({ gmail: 'connected' }, { actor: 'backend_watcher', from: 'initiated', target: 'gmail', to: 'connected' }),
+      ...frame(
+        { gmail: 'connected' },
+        { actor: 'backend_watcher', from: 'initiated', target: 'gmail', to: 'connected' }
+      ),
       deadline_at: 42 // a frame must never move the deadline the card already holds from the request
     })
 
@@ -129,7 +159,10 @@ describe('connection-request store', () => {
 
     expect(foreign).toBe(req)
 
-    const settled = applyConnectionUpdate(req, frame({ gmail: 'not_connected', notion: 'not_connected' }, { settled: true, settled_by: 'deadline' }))
+    const settled = applyConnectionUpdate(
+      req,
+      frame({ gmail: 'not_connected', notion: 'not_connected' }, { settled: true, settled_by: 'deadline' })
+    )
 
     expect(settled.settled).toBe(true)
     expect(settled.settledBy).toBe('deadline')
@@ -167,24 +200,27 @@ describe('connection-request store', () => {
 
   it('respond keys on op_id, keeps the entry (the backend answers via connection.update), refuses once settled', async () => {
     const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: false })
-    $gateway.set(fakeGateway(rpc))
+    setOwnerGateway(rpc)
     const req = request('a')
     setConnectionRequest(req)
 
     expect(await skipConnectionTarget(req, 'notion')).toBe(true)
     expect(rpc.mock.calls[0][0]).toBe('connection.respond')
-    expect(rpc.mock.calls[0][1]).toMatchObject({ op_id: 'op-1', session_id: 'a' })
+    expect(rpc.mock.calls[0][1]).toMatchObject({ op_id: 'op-1', owner: { session_id: 'a', type: 'session' } })
     expect(rpc.mock.calls[0][1].result).toEqual({ targets: [{ name: 'notion', status: 'skipped' }] })
     expect($connectionRequests.get().a).toBeDefined()
 
-    updateConnectionRequest('a', frame({ gmail: 'connected', notion: 'skipped' }, { settled: true, settled_by: 'all_resolved' }))
+    updateConnectionRequest(
+      'a',
+      frame({ gmail: 'connected', notion: 'skipped' }, { settled: true, settled_by: 'all_resolved' })
+    )
     expect(await respondToConnectionRequest(req, { settled_by: 'continue' })).toBe(false)
     expect(hasConnectionRequest('a')).toBe(false)
   })
 
   it('typing while the card is open sends Continue, not a per-target decline', async () => {
     const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: true })
-    $gateway.set(fakeGateway(rpc))
+    setOwnerGateway(rpc)
     setConnectionRequest(request('a'))
 
     expect(await skipConnectionRequest('a')).toBe(true)
@@ -193,7 +229,7 @@ describe('connection-request store', () => {
 
   it('continue is a one-field payload', async () => {
     const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: true })
-    $gateway.set(fakeGateway(rpc))
+    setOwnerGateway(rpc)
     const req = request('a')
     setConnectionRequest(req)
 

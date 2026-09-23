@@ -29,23 +29,24 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 
 # Must precede repo-level imports: standalone invocations (e.g. module reload after
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
-    load_config, load_config_readonly, resolve_cron_model_drift_defaults)
+    load_config, load_config_readonly)
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
+from agent.turn_failure_copy import is_max_iteration_handoff
 
 logger = logging.getLogger(__name__)
 
@@ -156,14 +157,24 @@ def _detect_gateway_code_skew() -> tuple[str, str] | None:
         return None
 
 
+def _current_gateway_code_sha() -> str | None:
+    """Full revision currently on disk; kept separate from display-shortened skew labels."""
+    try:
+        from gateway.code_skew import current_code_sha
+
+        return current_code_sha()
+    except Exception:
+        return None
+
+
 class CronTickYielded(RuntimeError):
     """A stale-code ticker yielded this tick to a fresh gateway.
 
     Raised by ``tick()`` BEFORE the tick lock when boot fingerprint ≠ disk, this process does NOT
-    own the runtime lock and a fresh process holds it — the stale process must stay out of the
-    dispatch race (contention would starve the fresh ticker). Skew ``None`` never yields (fail
-    open). Raised, not returned, so ``record_ticker_error`` sees it and ``hermes cron status``
-    isn't green.
+    own the runtime lock and its live holder reports the disk revision — the stale process must
+    stay out of the dispatch race (contention would starve the fresh ticker). Skew ``None`` never
+    yields (fail open). Raised, not returned, so ``record_ticker_error`` sees it and ``hermes cron
+    status`` isn't green.
     """
 
     def __init__(self, boot_rev: str, disk_rev: str) -> None:
@@ -175,26 +186,59 @@ class CronTickYielded(RuntimeError):
         )
 
 
+_STALE_YIELD_RE = re.compile(r"stale code: booted on (\S+), disk is at (\S+)\)")
+
+
+def stale_code_yield_labels(recorded_error: str | None) -> tuple[str, str] | None:
+    """``(boot_rev, disk_rev)`` when a persisted ``ticker_last_error`` is a ``CronTickYielded``.
+
+    ``hermes cron status`` runs in another process and only sees the marker text; a yielding
+    ticker still refreshes its heartbeat, so this is the one signal that separates "stale code,
+    firing nothing" from a healthy loop (#117275).
+    """
+    if not recorded_error or not recorded_error.startswith(CronTickYielded.__name__):
+        return None
+    match = _STALE_YIELD_RE.search(recorded_error)
+    return (match.group(1), match.group(2)) if match else None
+
+
 # Log the yield at most once per episode (reset when the skew changes) to avoid per-interval spam.
 _YIELD_LOG_INTERVAL_SECONDS = 3600.0
 _last_yield_log: dict[str, object] = {}
 
 
 def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
-    """``(boot_rev, disk_rev)`` when this tick must yield to a fresher gateway, else None. Yields
-    only when ALL hold: code skew, we don't own the runtime lock, another process holds it. Every
-    probe failure returns None — yielding is a certainty claim, never a guess."""
+    """``(boot_rev, disk_rev)`` when THIS profile's tick must yield to a fresher gateway, else None.
+
+    Yields only when ALL hold: code skew, this process is not the cron owner for the profile being
+    ticked, and another live host gateway whose served set covers that profile reports a fresh
+    heartbeat on the disk revision. Every probe failure returns None — yielding is a certainty
+    claim, never a guess.
+
+    The question is asked PER PROFILE. One process multiplexes every profile, so "do I own the
+    runtime lock" (process-global, stamped at boot for the launch home) cannot answer it: a
+    stale multiplexer that holds the lock must still keep ticking the profiles nobody else ticks,
+    and must still yield the ones a fresher gateway serves.
+
+    ``gateway_state.json`` is per-HOME and last-writer-wins, not per-process: during a
+    ``--replace`` takeover both the stale and the fresh gateway stamp it, so which one this
+    predicate reads is write-order dependent. The pid equality in ``live_gateway_ticking`` is what
+    binds the record to the current lock holder; the takeover window itself fails open (no yield).
+    """
     skew = _detect_gateway_code_skew()
     if skew is None:
         return None
-    try:
-        from gateway import status as _gateway_status
-    except Exception:
+    disk_sha = _current_gateway_code_sha()
+    if disk_sha is None:
         return None
     try:
-        if _gateway_status.owns_gateway_runtime_lock():
+        from cron.scheduler_ownership import live_gateway_ticking, owns_cron_tick_for
+
+        home = _get_hermes_home()
+        if owns_cron_tick_for(home):
             return None
-        if not _gateway_status.is_gateway_runtime_lock_active():
+        holder_status = live_gateway_ticking(home)
+        if holder_status is None or holder_status.get("code_sha") != disk_sha:
             return None
     except Exception:
         return None
@@ -511,22 +555,59 @@ def _is_cron_silence_response(text: str) -> bool:
     return is_autonomous_silence_response(text)
 
 # Persistent pool for parallel cron jobs: tick() submits and returns; long jobs never block it.
-_parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
-_parallel_pool_max_workers: Optional[int] = None
+# Keyed by profile home: one host gateway multiplexes every profile, and ``max_parallel_jobs`` is a
+# per-profile config key — a single process-global pool is sized by whichever profile ticked first
+# and then imposes that limit on all the others.
+_parallel_pools: Dict[str, concurrent.futures.ThreadPoolExecutor] = {}
+_parallel_pool_max_workers: Dict[str, Optional[int]] = {}
+
+
+def _inflight_key(job_id: str, home: Optional[Union[Path, str]] = None) -> tuple:
+    """``(home key, job id)`` — the identity of one in-flight cron run.
+
+    ONE gateway process ticks every profile, so a job id alone is not unique: two profiles
+    routinely carry identically named jobs (``daily-brief``) and sharing a key made the second
+    profile's run read as a duplicate of the first and get skipped. ``home`` defaults to the
+    active cron scope's home, which the ticker binds per profile for the whole tick.
+    """
+    return (hermes_home_key(home) if home is not None else hermes_home_key(_get_hermes_home()), job_id)
+
+
+# Home key -> the real home Path that produced it. ``hermes_home_key`` normcases (it lower-cases on
+# Windows), so ``Path(key[0])`` is a case-folded path that matches nothing else on disk; bookkeeping
+# that needs the profile home reads it here instead of reconstructing it from the key.
+_inflight_home_paths: Dict[str, Path] = {}
+
+
+def _remember_inflight_home(home: Path) -> Path:
+    """Record ``home`` under its key so a claim can be mapped back to a usable path."""
+    _inflight_home_paths[hermes_home_key(home)] = home
+    return home
+
+
+def _inflight_home_path(home_key: str) -> Path:
+    """Real home Path for an in-flight key's home half (falls back to the key itself)."""
+    return _inflight_home_paths.get(home_key) or Path(home_key)
+
+
+# In-flight state below is keyed by ``_inflight_key``; the public accessors still report bare job
+# ids so host-wide consumers (shutdown drain, idle-exit, metrics) see the union across profiles.
 _running_job_ids: set = set()
-_running_fire_owners: dict[str, dict[object, tuple[Optional[str], Path]]] = {}
+_running_fire_owners: dict[tuple, dict[object, tuple[Optional[str], Path]]] = {}
 # Parent gateway threads synchronously waiting on restart-safe scope workers.
 # Shutdown must not misclassify these as ownerless in-process runs: the tool
 # process sweep cannot reach the worker's transient scope.
-_restart_safe_waiter_job_ids: set[str] = set()
-# job_id -> pid of the restart-safe external worker executing it (absent for in-process runs), so a
-# drain observer can name the process holding the gateway open.
-_running_worker_pids: dict[str, int] = {}
+_restart_safe_waiter_job_ids: set = set()
+# in-flight key -> pid of the restart-safe external worker executing it (absent for in-process
+# runs), so a drain observer can name the process holding the gateway open.
+_running_worker_pids: dict[tuple, int] = {}
 _running_lock = threading.Lock()
 
 # Per in-flight id: time.time() claim instant + the future owning its release (``_FUTURE_PENDING``
 # until pool.submit returns). Past-allowance with no live future = leak; the sweep force-releases.
 _running_since: dict = {}
+# in-flight key -> stale-inflight allowance (s), resolved once per run by get_wedged_job_ids.
+_running_allowance_s: dict = {}
 _running_futures: dict = {}
 
 # Installed in ``_running_futures`` at claim time so a sweep landing before ``pool.submit`` returns
@@ -587,7 +668,7 @@ def get_running_job_ids() -> "frozenset[str]":
     entirely outside that dict, so without this the drain is structurally blind to them (#60432).
     """
     with _running_lock:
-        return frozenset(_running_job_ids | _running_fire_owners.keys())
+        return frozenset(key[1] for key in _running_job_ids | _running_fire_owners.keys())
 
 
 def get_running_job_details() -> list[dict]:
@@ -596,10 +677,64 @@ def get_running_job_details() -> list[dict]:
     now = time.time()
     with _running_lock:
         return [
-            {"job_id": jid, "elapsed_s": round(now - _running_since[jid], 1) if jid in _running_since else None,
-             "worker_pid": _running_worker_pids.get(jid)}
-            for jid in sorted(_running_job_ids | _running_fire_owners.keys())
+            {"job_id": key[1],
+             "elapsed_s": round(now - _running_since[key], 1) if key in _running_since else None,
+             "worker_pid": _running_worker_pids.get(key)}
+            for key in sorted(_running_job_ids | _running_fire_owners.keys())
         ]
+
+
+def get_wedged_job_ids() -> "frozenset[str]":
+    """In-flight job IDs older than their stale-inflight allowance (``max(2 * interval,
+    cron.inflight_max_minutes)``) — the scheduler's own definition of a claim that can no longer be
+    making progress. ``sweep_stale_inflight`` cannot release these while the worker thread is still
+    alive (a delivery blocked on a dead transport, #115469), so the gateway restart drain reads this to
+    skip them the way it skips wedged chat turns; restart is their remedy.
+    """
+    now = time.time()
+    with _running_lock:
+        ages = {key: now - started for key, started in _running_since.items() if key in _running_job_ids}
+        allowances = {key: _running_allowance_s[key] for key in ages if key in _running_allowance_s}
+    if not ages:
+        return frozenset()
+    floor_seconds = _inflight_min_allowance_minutes() * 60.0
+    unresolved = [key for key in ages if key not in allowances]
+    if unresolved:
+        # One jobs.json parse per run, not per tick per job: the restart drain polls this every
+        # 0.1 s on the event loop for the whole wait, and get_job() re-reads the file each call.
+        # ``load_jobs`` reads the ACTIVE scope's store, so only claims from that home can have
+        # their interval resolved; a claim from another profile falls back to the floor.
+        by_id: dict = {}
+        with contextlib.suppress(Exception):
+            from cron.jobs import load_jobs
+            by_id = {j.get("id"): j for j in load_jobs()}
+        local_home = hermes_home_key(_get_hermes_home())
+        with _running_lock:
+            for key in unresolved:
+                allowance = floor_seconds
+                local_job = by_id.get(key[1]) if key[0] == local_home else None
+                interval_minutes = _job_interval_minutes(local_job or {})
+                if interval_minutes:
+                    allowance = max(allowance, 2.0 * interval_minutes * 60.0)
+                allowances[key] = allowance
+                if key in _running_job_ids:  # released meanwhile -> don't resurrect the entry
+                    _running_allowance_s[key] = allowance
+    return frozenset(
+        key[1] for key, age in ages.items() if age >= max(allowances[key], floor_seconds))
+
+
+def is_job_running(job_id: str, home: Optional[Union[Path, str]] = None) -> bool:
+    """True when THIS process has an in-flight run of ``job_id`` FOR ``home`` (default: the active
+    cron scope's home).
+
+    The bare-id accessors above report the host-wide union so the shutdown drain and metrics see
+    every profile's work. Liveness consumers must not: one process ticks every profile, so a
+    ``daily-brief`` running in profile A would otherwise report profile B's idle ``daily-brief``
+    as running and keep B's stale one-shot alive as a "possibly live run".
+    """
+    key = _inflight_key(job_id, home)
+    with _running_lock:
+        return key in _running_job_ids or key in _running_fire_owners
 
 
 def try_register_running_job(job_id: str) -> bool:
@@ -612,28 +747,38 @@ def try_register_running_job(job_id: str) -> bool:
     routinely outlived by real jobs, after which a manual ``cronjob(action='run')`` would claim successfully
     and run the same job concurrently (idea from #53395 by @izumi0uu).
     Registration also makes the run visible to ``get_running_job_ids`` (the gateway shutdown drain, #60432)
-    and ``mark_running_jobs_interrupted``.
+    and ``mark_running_jobs_interrupted``. Dedupe is per PROFILE: the key carries the active cron
+    scope's home, so one multiplexing process never treats two profiles' same-named jobs as one.
     """
     from hermes_cli.backend_retirement import retirement
 
+    key = _inflight_key(job_id, _remember_inflight_home(_get_hermes_home()))
     with retirement.work() as admitted, _running_lock:
-        if not admitted or job_id in _running_job_ids:
+        if not admitted or key in _running_job_ids:
             return False
-        _running_job_ids.add(job_id)
+        _running_job_ids.add(key)
         # Same critical section as the add: no window where an in-flight id lacks an age the sweep
         # can bound. Sentinel is replaced by the real future once ``pool.submit`` returns.
-        _running_since[job_id] = time.time()
-        _running_futures[job_id] = _FUTURE_PENDING
+        _running_since[key] = time.time()
+        _running_futures[key] = _FUTURE_PENDING
         return True
 
 
-def release_running_job(job_id: str) -> None:
-    """Remove ``job_id`` from the in-flight running set (idempotent)."""
+def release_running_job(job_id: str, home: Optional[Union[Path, str]] = None) -> None:
+    """Remove ``job_id`` from the in-flight running set (idempotent).
+
+    ``home`` MUST be passed by any caller that does not run inside the same cron scope the claim
+    was registered under. The scope is a ContextVar the ticker binds per profile: a pool worker
+    releasing in a ``finally`` outside ``ctx.run`` resolves the default (launch) home instead, so
+    the discard misses the real key and every secondary profile's claim leaks.
+    """
+    key = _inflight_key(job_id, home)
     with _running_lock:
-        _running_job_ids.discard(job_id)
-        _running_since.pop(job_id, None)
-        _running_futures.pop(job_id, None)
-        _running_worker_pids.pop(job_id, None)
+        _running_job_ids.discard(key)
+        _running_since.pop(key, None)
+        _running_allowance_s.pop(key, None)
+        _running_futures.pop(key, None)
+        _running_worker_pids.pop(key, None)
 
 
 def _inflight_min_allowance_minutes() -> float:
@@ -711,10 +856,10 @@ def get_inflight_guard_stats() -> dict:
     now = time.time()
     with _running_lock:
         return {
-            "running": sorted(_running_job_ids),
+            "running": sorted(key[1] for key in _running_job_ids),
             "running_ages_seconds": {
-                jid: round(now - started, 1)
-                for jid, started in _running_since.items()
+                key[1]: round(now - started, 1)
+                for key, started in _running_since.items()
             },
             "forced_releases": _forced_release_count,
             "recent_forced_releases": list(_forced_releases)}
@@ -743,9 +888,16 @@ def _record_forced_release(job_id: str, name: str, age_seconds: float, allowance
 def _latest_executions_for_releasable_claims() -> dict:
     """Latest durable execution per releasable-looking claim (missing/pending/done future), one
     indexed query so the healthy path pays no DB work. Snapshot under _running_lock — iterating
-    the set while try_register/release mutate it raises RuntimeError."""
+    the set while try_register/release mutate it raises RuntimeError.
+
+    Scoped to the ACTIVE profile's claims: the executions ledger it queries is that home's.
+    """
+    local_home = hermes_home_key(_get_hermes_home())
     with _running_lock:
-        claim_futures = {job_id: _running_futures.get(job_id) for job_id in _running_job_ids}
+        claim_futures = {
+            key[1]: _running_futures.get(key)
+            for key in _running_job_ids if key[0] == local_home
+        }
     candidates = [
         job_id for job_id, fut in claim_futures.items()
         if fut is None or fut is _FUTURE_PENDING or fut.done()
@@ -826,22 +978,24 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     from cron.executions import _TERMINAL_STATES as _terminal_states
 
     _latest = _latest_executions_for_releasable_claims()
+    _local_home = hermes_home_key(_get_hermes_home())
     # Compute intervals OUTSIDE _running_lock so croniter doesn't block try_register/release.
     _intervals = {jid: _job_interval_minutes(j) for jid, j in by_id.items()}
 
     with _running_lock:
-        for job_id in list(_running_job_ids):
-            started = _running_since.get(job_id)
+        for key in [k for k in _running_job_ids if k[0] == _local_home]:
+            job_id = key[1]
+            started = _running_since.get(key)
             if started is None:
                 # Claim predates this guard — adopt it; sweepable one allowance from now.
-                _running_since[job_id] = now
+                _running_since[key] = now
                 continue
             age = now - started
             interval_minutes = _intervals.get(job_id)
             allowance = floor_seconds
             if interval_minutes:
                 allowance = max(allowance, 2.0 * interval_minutes * 60.0)
-            fut = _running_futures.get(job_id)
+            fut = _running_futures.get(key)
             if fut is _FUTURE_PENDING:
                 # Submit path hung before ``pool.submit`` returned — the wedge class; release it.
                 pass
@@ -861,9 +1015,10 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 reason = "age"
             else:
                 continue
-            _running_job_ids.discard(job_id)
-            _running_since.pop(job_id, None)
-            _running_futures.pop(job_id, None)
+            _running_job_ids.discard(key)
+            _running_since.pop(key, None)
+            _running_allowance_s.pop(key, None)
+            _running_futures.pop(key, None)
             _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))
 
@@ -885,27 +1040,31 @@ def mark_running_jobs_interrupted(
     with _running_lock:
         restart_safe_waiters = set(_restart_safe_waiter_job_ids)
         active_fires = [
-            (token, job_id, owner, profile_home)
-            for job_id, executions in _running_fire_owners.items()
-            if job_id not in restart_safe_waiters
+            (token, key, owner, profile_home)
+            for key, executions in _running_fire_owners.items()
+            if key not in restart_safe_waiters
             for token, (owner, profile_home) in executions.items()
         ]
         if only_owners is not None:
-            active_fires = [fire for fire in active_fires if (fire[1], fire[2]) in only_owners]
-        registered_ids = {job_id for _t, job_id, _o, _p in active_fires}
+            active_fires = [fire for fire in active_fires if (fire[1][1], fire[2]) in only_owners]
+        registered_keys = {key for _t, key, _o, _p in active_fires}
         if only_owners is None:
+            # The key's home half IS the profile home this claim belongs to — the only record of
+            # it for a claim that never reached ``_running_fire_owners``. Read the real Path back
+            # from the key, never ``Path(key[0])``: the key is normcased.
             active_fires.extend(
-                (None, job_id, None, _get_hermes_home())
-                for job_id in (
-                    _running_job_ids - registered_ids - restart_safe_waiters
+                (None, key, None, _inflight_home_path(key[0]))
+                for key in (
+                    _running_job_ids - registered_keys - restart_safe_waiters
                 )
             )
         _interrupted_job_ids.update(
-            token if token is not None else job_id
-            for token, job_id, _owner, _profile_home in active_fires
+            token if token is not None else key
+            for token, key, _owner, _profile_home in active_fires
         )
     marked = []
-    for _token, job_id, fire_owner, profile_home in active_fires:
+    for _token, key, fire_owner, profile_home in active_fires:
+        job_id = key[1]
         if not fire_owner:
             logger.warning(
                 "Job '%s' interrupted before its durable fire owner was registered; "
@@ -930,22 +1089,24 @@ def _is_interrupted(job_id: str, token: Optional[object] = None) -> bool:
     """Non-destructive peek: has shutdown marked THIS execution interrupted? Used before deciding
     what to deliver; does not clear the flag (the authoritative pre-``last_status`` check needs it).
     ``token`` scopes to one execution so a fresh run reusing the job ID isn't poisoned."""
+    key = _inflight_key(job_id)
     with _running_lock:
         if token is not None and token in _interrupted_job_ids:
             return True
-        return job_id in _interrupted_job_ids
+        return key in _interrupted_job_ids
 
 
 def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bool:
     """Return True and clear the flag if shutdown marked THIS execution interrupted. Called right
     before ``last_status`` is written; consuming stops the flag leaking into a later run."""
+    key = _inflight_key(job_id)
     with _running_lock:
         hit = False
         if token is not None and token in _interrupted_job_ids:
             _interrupted_job_ids.discard(token)
             hit = True
-        if job_id in _interrupted_job_ids:
-            _interrupted_job_ids.discard(job_id)
+        if key in _interrupted_job_ids:
+            _interrupted_job_ids.discard(key)
             hit = True
         return hit
 
@@ -989,24 +1150,45 @@ def _cron_inactivity_seconds() -> float:
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
-    """Return (or create) the persistent parallel pool."""
-    global _parallel_pool, _parallel_pool_max_workers
-    if _parallel_pool is None or _parallel_pool_max_workers != max_workers:
-        if _parallel_pool is not None:
-            _parallel_pool.shutdown(wait=False, cancel_futures=False)
-        _parallel_pool = concurrent.futures.ThreadPoolExecutor(
+    """Return (or create) the persistent parallel pool for the ACTIVE profile.
+
+    Pools are per profile home because ``cron.max_parallel_jobs`` is a per-profile config key:
+    a single process-global pool is created by whichever profile the multiplexing gateway ticks
+    first and then silently imposes that profile's limit on every other profile.
+    """
+    home = hermes_home_key(_remember_inflight_home(_get_hermes_home()))
+    pool = _parallel_pools.get(home)
+    if pool is None or _parallel_pool_max_workers.get(home) != max_workers:
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=False)
+        pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="cron-parallel")
-        _parallel_pool_max_workers = max_workers
-    return _parallel_pool
+        _parallel_pools[home] = pool
+        _parallel_pool_max_workers[home] = max_workers
+    return pool
+
+
+def discard_parallel_pools(home_keys) -> None:
+    """Drop the parallel pools of homes this process no longer ticks.
+
+    Pools are per home and used to live until ``atexit``: a host that serves many profiles — or
+    churns them — accumulated one ThreadPoolExecutor and its live ``cron-parallel`` threads per
+    home ever ticked, and a deleted profile's pool was never reclaimed. ``wait=False`` so the
+    ticker is never blocked; queued work still drains before the executor dies.
+    """
+    for key in list(home_keys):
+        pool = _parallel_pools.pop(key, None)
+        _parallel_pool_max_workers.pop(key, None)
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=False)
 
 
 def _shutdown_parallel_pool() -> None:
-    """Shut down the persistent pool on process exit."""
-    global _parallel_pool, _parallel_pool_max_workers
-    if _parallel_pool is not None:
-        _parallel_pool.shutdown(wait=True, cancel_futures=False)
-        _parallel_pool = None
-        _parallel_pool_max_workers = None
+    """Shut down every profile's persistent pool on process exit."""
+    for pool in list(_parallel_pools.values()):
+        pool.shutdown(wait=True, cancel_futures=False)
+    _parallel_pools.clear()
+    _parallel_pool_max_workers.clear()
 
 
 atexit.register(_shutdown_parallel_pool)
@@ -1377,27 +1559,10 @@ class _CronJobConfig:
     cron_default_provider: str
 
 
-def _snapshot_pin(job: dict, axis: str, current: str, job_id: str) -> str:
-    """The creation snapshot is an unpinned axis's effective pin: return it, logging once when it
-    differs from *current* (the live global default); ``""`` for legacy jobs without one, which keep
-    following the global default. A global model/provider change must never stop a cron job; a job
-    keeps running on what it was created under until the operator pins it or sets a cron.* fleet
-    default (#44585)."""
-    snapshot = str(job.get(f"{axis}_snapshot") or "").strip()
-    if snapshot and current and snapshot.lower() != current.lower():
-        logger.info(
-            "Job '%s': running on creation-snapshot %s %r (global default is now %r); "
-            "`hermes cron resnap %s` adopts the new default (stays unpinned), "
-            "`hermes cron edit %s --%s <value>` or cron.%s in config.yaml pins it.",
-            job_id, axis, snapshot, current, job_id, job_id, axis,
-            "model" if axis == "model" else "model_provider")
-    return snapshot
-
-
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
-    """Load config.yaml and resolve the run's model: per-job override > cron.model (fleet default) >
-    creation snapshot > HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so
-    ``hermes cron edit --model`` applies next tick."""
+    """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
+    the main agent model (config ``model:``, then HERMES_MODEL). Re-read every tick (no cache) so
+    ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
@@ -1418,9 +1583,11 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                 if _cron_default_model:
                     model = _cron_default_model
                 else:
-                    _, _global_model = resolve_cron_model_drift_defaults(
-                        _cfg, environ={"HERMES_MODEL": cron_env_setting("HERMES_MODEL")})
-                    model = _snapshot_pin(job, "model", _global_model, job_id) or _global_model or model
+                    # The main agent model: ``model: <name>`` shorthand or ``model.default``.
+                    _main = _model_cfg if isinstance(_model_cfg, str) else (
+                        _model_cfg.get("default") or _model_cfg.get("model") or _model_cfg.get("name")
+                        if isinstance(_model_cfg, dict) else "")
+                    model = str(_main or "").strip() or model
     except Exception as e:
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -1530,20 +1697,14 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
 def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
     """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
     ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
-    a paid primary model). Provider precedence: per-job pin > cron.model_provider > creation
-    snapshot > persisted global config."""
+    a paid primary model). Provider precedence: per-job pin > cron.model_provider > persisted
+    global config (None lets resolve_runtime_provider read it)."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
     from hermes_cli.auth import AuthError
 
     model = jc.model
     requested = job.get("provider") or jc.cron_default_provider or None
-    if not requested:
-        global_provider = (
-            str(jc.model_cfg.get("provider") or "").strip() if isinstance(jc.model_cfg, dict) else "")
-        # None (not the config provider) keeps the legacy no-snapshot path resolving from persisted
-        # config exactly as before.
-        requested = _snapshot_pin(job, "provider", global_provider, job_id) or None
     try:
         # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
         # and resurrect stale providers for unpinned jobs.
@@ -1823,12 +1984,7 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     # Raise so the except handler below builds the proper failure tuple. (issue #17855)
     turn_exit_reason = str(result.get("turn_exit_reason") or "")
     final_response_text = (result.get("final_response") or "").strip()
-    max_iteration_summary = (
-        result.get("failed") is not True
-        and result.get("completed") is False
-        and turn_exit_reason.startswith("max_iterations_reached(")
-        and bool(final_response_text)
-    )
+    max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
     if max_iteration_summary:
@@ -2564,8 +2720,9 @@ def run_one_job(
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
     profile_home = _get_hermes_home().resolve()
+    _fire_key = _inflight_key(job["id"])
     with _running_lock:
-        _running_fire_owners.setdefault(job["id"], {})[execution_token] = (
+        _running_fire_owners.setdefault(_fire_key, {})[execution_token] = (
             fire_owner or None, profile_home)
     try:
         with self_removal_delivery_scope(job["id"]):
@@ -2582,11 +2739,11 @@ def run_one_job(
                     execution_token=execution_token))
     finally:
         with _running_lock:
-            executions = _running_fire_owners.get(job["id"])
+            executions = _running_fire_owners.get(_fire_key)
             if executions is not None:
                 executions.pop(execution_token, None)
                 if not executions:
-                    _running_fire_owners.pop(job["id"], None)
+                    _running_fire_owners.pop(_fire_key, None)
 
 
 _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."
@@ -3233,7 +3390,7 @@ def _wait_for_external_cron_worker(
     finally:
         if job_id is not None:
             with _running_lock:
-                _restart_safe_waiter_job_ids.discard(job_id)
+                _restart_safe_waiter_job_ids.discard(_inflight_key(job_id))
         # The execution is terminal or its worker is dead: nobody will read a
         # payload or acknowledgement left behind by a late/unread handoff.
         for stale in handoff_files:
@@ -3373,7 +3530,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         raise
 
     with _running_lock:
-        _restart_safe_waiter_job_ids.add(job_id)
+        _restart_safe_waiter_job_ids.add(_inflight_key(job_id))
 
     # Same window the dead-owner recovery ledger grants a pending handoff: a cold
     # worker start (imports + secret hydration) measures ~10-12s in the field, and
@@ -3420,7 +3577,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 execution_id,
             )
             with _running_lock, contextlib.suppress(TypeError, ValueError):
-                _running_worker_pids[job_id] = int(acknowledgement.get("pid") or process.pid)
+                _running_worker_pids[_inflight_key(job_id)] = int(
+                    acknowledgement.get("pid") or process.pid)
             return _wait_for_external_cron_worker(
                 process,
                 execution_id=execution_id,
@@ -3430,7 +3588,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         returncode = process.poll()
         if returncode is not None:
             with _running_lock:
-                _restart_safe_waiter_job_ids.discard(job_id)
+                _restart_safe_waiter_job_ids.discard(_inflight_key(job_id))
             payload_path.unlink(missing_ok=True)
             from cron.scheduler_diagnostics import external_worker_stderr_tail
             stderr_tail = external_worker_stderr_tail(stderr_path)
@@ -3621,11 +3779,14 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
 
 
 # Dead-owner reap is throttled (opens the executions ledger). Tests may reset
-# _last_dead_owner_reap_at to None to force a reap next tick.
+# _last_dead_owner_reap_at to {} to force a reap next tick.
 # Dead-owner claim reclaim throttle (#86721): recover_interrupted_executions opens the executions ledger, so
 # the per-tick reap is rate-limited rather than run on every idle 60s cycle.
+# The throttle is keyed by profile home: under multiplex_profiles the ticker
+# ticks every profile each cycle, and a process-global slot would let the
+# first profile starve all the others.
 _DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
-_last_dead_owner_reap_at: Optional[float] = None
+_last_dead_owner_reap_at: Dict[str, float] = {}
 
 # Worktree prune throttle: the cron tick is the only reliably periodic process on gateway boxes.
 _WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
@@ -3744,22 +3905,24 @@ def _release_tick_lock(lock_fd) -> None:
 
 
 def _maybe_reap_dead_owners() -> None:
-    """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Only
-    rows whose owner process is proved gone are touched (_owner_is_live). Throttled."""
+    """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Rows
+    whose owner process is proved gone are released (_owner_is_live), as are rows whose live owner
+    holds a claim older than the derived stale bound (the process is not killed). Throttled."""
     # Dead-owner claim reclaim (#86721): execution rows carry their owner pid + process start time, but
     # recovery previously ran only at scheduler STARTUP. A one-shot `hermes cron run` that claimed a job and
     # died mid-run (its runner thread lived in the exiting CLI process) left the row 'claimed' forever while
     # the long-lived gateway ticker kept running — blocking every future run of that job. Reap provably-dead
     # owners periodically so stale claims auto-clear without a gateway restart. Throttled so idle 60s ticks
     # don't pay a ledger connection every cycle (#33612).
-    global _last_dead_owner_reap_at
+    _reap_key = hermes_home_key(_get_hermes_home())
     _reap_now = time.monotonic()
+    _last_reap = _last_dead_owner_reap_at.get(_reap_key)
     if (
-        _last_dead_owner_reap_at is not None
-        and _reap_now - _last_dead_owner_reap_at < _DEAD_OWNER_REAP_INTERVAL_SECONDS
+        _last_reap is not None
+        and _reap_now - _last_reap < _DEAD_OWNER_REAP_INTERVAL_SECONDS
     ):
         return
-    _last_dead_owner_reap_at = _reap_now
+    _last_dead_owner_reap_at[_reap_key] = _reap_now
     try:
         from cron.executions import recover_interrupted_executions
 
@@ -3776,11 +3939,12 @@ def _maybe_reap_dead_owners() -> None:
 def _sweep_stale_inflight_for_tick(due_jobs: list) -> None:
     """Bound the in-flight set BEFORE the dedup guard so a leaked claim is force-released now
     rather than eating every later fire until restart. Skipped when nothing is in flight."""
-    if not _running_job_ids:
+    _local_home = hermes_home_key(_get_hermes_home())
+    if not any(key[0] == _local_home for key in _running_job_ids):
         return
     _sweep_jobs = due_jobs
     with contextlib.suppress(Exception):
-        _inflight_ids = set(_running_job_ids)
+        _inflight_ids = {key[1] for key in _running_job_ids if key[0] == _local_home}
         _due_ids = {j.get("id") for j in due_jobs if isinstance(j, dict)}
         if not _inflight_ids <= _due_ids:
             from cron.jobs import load_jobs as _load_all_jobs
@@ -3881,6 +4045,10 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     if not try_register_running_job(job_id):
         logger.info("Job '%s' already running — skipping", job_label)
         return None
+    # The home the claim was registered under. The pool worker's ``finally`` runs OUTSIDE
+    # ``ctx.run``, where the per-profile cron scope is not bound, so releasing without it would
+    # discard the LAUNCH home's key and leak every secondary profile's claim.
+    _claim_home = _get_hermes_home()
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
     try:
         execution = create_execution(
@@ -3889,22 +4057,22 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         _ctx = contextvars.copy_context()
     except Exception as execution_err:
         # Release the claim so the next tick retries instead of wedging "already running".
-        release_running_job(job_id)
+        release_running_job(job_id, home=_claim_home)
         _clear_run_claim_best_effort()
         logger.exception(
             "Job '%s' not dispatched: execution creation failed: %s", job_label, execution_err)
         return None
 
-    def _run_and_release(j=dispatched_job, ctx=_ctx):
+    def _run_and_release(j=dispatched_job, ctx=_ctx, home=_claim_home):
         try:
             return ctx.run(process_job, j)
         finally:
-            release_running_job(j["id"])
+            release_running_job(j["id"], home=home)
 
     try:
         fut = pool.submit(_run_and_release)
     except Exception as submit_err:
-        release_running_job(job_id)
+        release_running_job(job_id, home=_claim_home)
         _clear_run_claim_best_effort()
         finish_execution(
             execution["id"], success=False, error=f"Executor dispatch failed: {submit_err}")
@@ -3915,8 +4083,9 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         return None
 
     with _running_lock:
-        if job_id in _running_job_ids:
-            _running_futures[job_id] = fut
+        _submit_key = _inflight_key(job_id, _claim_home)
+        if _submit_key in _running_job_ids:
+            _running_futures[_submit_key] = fut
     return fut
 
 

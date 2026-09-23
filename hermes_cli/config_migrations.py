@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import copy
 import functools
+import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 #: Auto-migration support floor. Configs whose on-disk ``_config_version`` is below this are NOT
 #: auto-migrated (v12 predates ~two years of releases; carrying the sub-v12 steps and the env
@@ -603,9 +606,35 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
-    # 45 → 46: the single `stepfun` id became four, one per (region x endpoint family). The id is
+    # 45 → 46: the profile editor used to switch an MCP server off with `disabled: true`, a key no
+    # runtime reader consults, so the server kept running. Carry that choice over to `enabled:
+    # false` (the key every reader uses) and drop `disabled`, so the editor and runtime agree.
+    # `disabled: true` wins over an explicit `enabled: true`: `hermes mcp add` writes that, and the
+    # old editor only added `disabled`, so letting `enabled` win would skip nearly every server.
+    from hermes_cli.tools_config import _parse_enabled_flag
+
+    config = read_raw_config()
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return
+    legacy = {n: e for n, e in servers.items() if isinstance(e, dict) and "disabled" in e}
+    turned_off = sorted((n for n, e in legacy.items() if _parse_enabled_flag(e["disabled"], default=False)), key=str)
+    if not turned_off:
+        return  # a falsy `disabled` is inert; the runtime never read it
+    for name in turned_off:
+        del legacy[name]["disabled"]
+        legacy[name]["enabled"] = False
+    names = ", ".join(map(str, turned_off))
+    _commit(
+        config, results, quiet,
+        f"mcp_servers: disabled → enabled: false ({names})",
+        f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
+
+
+def _migrate_to_47(results: Dict[str, Any], quiet: bool) -> None:
+    # 46 → 47: the single `stepfun` id became four, one per (region x endpoint family). The id is
     # chosen by the endpoint the config ACTUALLY reached — model.base_url, else STEPFUN_BASE_URL,
-    # else the pre-46 default of international Step Plan. A China config's key also moves to
+    # else the pre-split default of international Step Plan. A China config's key also moves to
     # STEPFUN_CN_API_KEY (accounts are regional), or every request after the upgrade 401s.
     _c = _cfg()
     config = read_raw_config()
@@ -615,7 +644,7 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
 
     base_url = str(model_cfg.get("base_url") or "").strip()
     env_override = str(_c.get_env_value("STEPFUN_BASE_URL") or "").strip()
-    # The pre-46 default was international Step Plan, so an unset endpoint means exactly that.
+    # The pre-split default was international Step Plan, so an unset endpoint means exactly that.
     effective = (base_url or env_override or "https://api.stepfun.ai/step_plan/v1").lower()
     is_plan = "/step_plan/" in effective
     is_cn = "api.stepfun.com" in effective
@@ -776,8 +805,10 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
     # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
     (45, _migrate_to_45),
-    # 45 → 46: `stepfun` splits into stepfun / stepfun-cn / stepfun-plan / stepfun-plan-cn.
+    # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
     (46, _migrate_to_46),
+    # 46 → 47: `stepfun` splits into stepfun / stepfun-cn / stepfun-plan / stepfun-plan-cn (see _migrate_to_47).
+    (47, _migrate_to_47),
 )
 
 
@@ -796,5 +827,9 @@ def run_migrations(current_ver: int, results: Dict[str, Any], quiet: bool) -> No
                 # ladder (config loading itself fails otherwise). Loud, not silent.
                 warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
                 results.setdefault("warnings", []).append(warning)
+                # Quiet callers (profile creation, unattended update) discard ``results`` and
+                # migrate_config still stamps the latest version, so without a log line the
+                # skipped step vanishes for good.
+                logger.warning("%s", warning)
                 if not quiet:
                     print(f"  ⚠ {warning}")

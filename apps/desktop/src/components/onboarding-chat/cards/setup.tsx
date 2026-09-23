@@ -23,7 +23,7 @@ import type { LayoutNode } from '@/components/pane-shell/tree/model'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { SearchField } from '@/components/ui/search-field'
 import { registry } from '@/contrib/registry'
-import { connectorTitle } from '@/lib/connector-tools'
+import { connectorIconUrl, connectorTitle } from '@/lib/connector-tools'
 import { useConnectorCatalog } from '@/store/connector-catalog'
 import { $onboardingAnswers, setOnboardingAnswers } from '@/store/onboarding-answers'
 import { useTheme } from '@/themes'
@@ -46,7 +46,7 @@ export function ConnectorsCard({ locked }: CardProps) {
   const search = query.trim().toLowerCase()
 
   const shown = search
-    ? rows.filter(row => `${row.name ?? ''} ${connectorTitle(row.connector)}`.toLowerCase().includes(search))
+    ? rows.filter(row => connectorTitle(row.connector).toLowerCase().includes(search))
     : rows.slice(0, 12)
 
   const picked = rows.filter(row => answers.connectors.includes(row.connector))
@@ -102,11 +102,15 @@ export function ConnectorsCard({ locked }: CardProps) {
                 icon={
                   <ConnectorLogo
                     className="size-7 rounded-full text-sm"
-                    connector={{ name: row.connector, title: row.name || connectorTitle(row.connector) }}
+                    connector={{
+                      iconUrl: connectorIconUrl(row.connector),
+                      name: row.connector,
+                      title: connectorTitle(row.connector)
+                    }}
                   />
                 }
                 key={row.connector}
-                label={row.name || connectorTitle(row.connector)}
+                label={connectorTitle(row.connector)}
                 on={answers.connectors.includes(row.connector)}
                 onToggle={() => toggle(row.connector)}
               />
@@ -200,6 +204,10 @@ export function LayoutCard({ locked }: CardProps) {
     $chatLayoutPicked.set(true)
     setOnboardingAnswers({ layout: id })
 
+    // The pick answers "how much of the machinery do you want to see" too;
+    // Skip leaves the mode alone, so only an actual choice sets it.
+    const layout = LAYOUTS.find(candidate => candidate.id === id)
+
     const preset = registry.getArea('layouts').find(contribution => contribution.id === id)
 
     if (!preset?.data) {
@@ -211,7 +219,7 @@ export function LayoutCard({ locked }: CardProps) {
     // Swapping only the preset tree on a re-pick kept the previous layout's dismissals and dock records, and the two
     // layouts came up mixed together.
     // SAFETY: Layout presets declare data: LayoutNode (pane-shell/tree/presets.ts).
-    assembleChatOnboarding(preset.id, preset.data as LayoutNode)
+    assembleChatOnboarding(preset.id, preset.data as LayoutNode, layout?.mode)
   }
 
   return (
@@ -229,6 +237,7 @@ export function LayoutCard({ locked }: CardProps) {
         {LAYOUTS.map(layout => (
           <LayoutPreviewCard
             active={picked && answers.layout === layout.id}
+            description={layout.description}
             key={layout.id}
             name={layout.name}
             onSelect={() => pickLayout(layout.id)}

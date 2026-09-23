@@ -458,62 +458,6 @@ export interface ProjectFacts {
   verifyCommands: string[]
   contextFiles: string[]
 }
-export interface ConnectionOperationParams {
-  profile?: string | null
-  session_id: string
-  op_id: string
-}
-/** ``methods_connectors._operation_view``: the operation's full snapshot. */
-export interface ConnectionOperationStatus {
-  op_id: string
-  deadline_at: number
-  settled: boolean
-  settled_at?: number | null
-  settled_by?: ConnectionSettleReason | null
-  targets: ConnectionOperationTarget[]
-}
-/** ``tools/connectors/contract.py::SettleReason``. */
-export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt' | 'unavailable'
-/** ``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra`` keys a leg records (``tools``, ``hint``) are typed here as they appear. */
-export interface ConnectionOperationTarget {
-  name: string
-  kind: ConnectionTargetKind
-  action: ConnectionTargetAction
-  state: ConnectionTargetState
-  detail?: string | null
-  connect_url?: string | null
-  attempt?: string | null
-  tools?: string[] | null
-  hint?: string | null
-}
-export type ConnectionTargetKind = 'connector' | 'mcp'
-export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
-/** ``tools/connectors/contract.py::TargetState``. */
-export type ConnectionTargetState = 'pending' | 'initiated' | 'connected' | 'skipped' | 'failed' | 'expired' | 'unavailable' | 'not_connected'
-export interface ConnectionRespondParams {
-  profile?: string | null
-  session_id: string
-  op_id: string
-  result: ConnectionAnswer
-}
-/** The card's answer: per-target outcomes and an optional Continue (``settled_by: "continue"``). Settlement is derived from target states afterwards. */
-export interface ConnectionAnswer {
-  targets?: ConnectionAnswerTarget[]
-  settled_by?: ConnectionSettleReason | null
-}
-/** One row's answer from the card. ``status`` is what the card observed for that row (``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the older spelling of the same field and one of the two is present. */
-export interface ConnectionAnswerTarget {
-  name: string
-  status?: string | null
-  state?: string | null
-  detail?: string | null
-  tools?: string[] | null
-  [key: string]: unknown
-}
-export interface ConnectionRespondResult {
-  status: string
-  settled: boolean
-}
 /** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin. */
 export interface ConfigGetParams {
   profile?: string | null
@@ -752,41 +696,6 @@ export interface ModelPricing {
   was_input?: string | null
   was_output?: string | null
 }
-export interface ConnectorsListParams {
-  profile?: string | null
-  session_id: string
-}
-export interface ConnectorsListResult {
-  available: boolean
-  connectors: ConnectorRow[]
-}
-/** One ``manage_connections`` status entry after ``connector_ui_payload`` redaction; the connector service owns the closed key set, so unknown metadata passes through. */
-export interface ConnectorRow {
-  connector?: string
-  connected?: boolean | null
-  enabled?: boolean | null
-  connectionStatus?: string | null
-  name?: string | null
-  description?: string | null
-  [key: string]: unknown
-}
-export interface ConnectorsConnectParams {
-  profile?: string | null
-  session_id: string
-  connectors: string[]
-  reconnect?: boolean
-}
-/** The operation the connect opened (or re-minted on): ``tools/connectors/managed.py`` ``_off_desktop_result`` / ``methods_connectors._reissue``. ``status``/``note`` ride along from the tool result when the call ran through ``manage_connections``. */
-export interface ConnectorsConnectResult {
-  op_id: string
-  deadline_at: number
-  settled: boolean
-  settled_at?: number | null
-  settled_by?: ConnectionSettleReason | null
-  targets: ConnectionOperationTarget[]
-  status?: string | null
-  note?: string | null
-}
 export interface ImageGenerateParams {
   prompt?: string | null
   aspect_ratio?: string | null
@@ -940,6 +849,286 @@ export interface VerificationEvidenceRow {
   exit_code?: number | null
   output_summary?: string | null
   [key: string]: unknown
+}
+export interface ConnectionOperationParams {
+  profile?: string | null
+  owner: SessionOwner | AccountOwner
+  op_id: string
+}
+export interface SessionOwner {
+  type: 'session'
+  session_id: string
+}
+export interface AccountOwner {
+  type: 'account'
+}
+/** ``methods_connectors._operation_view``: the operation's full snapshot. */
+export interface ConnectionOperationStatus {
+  op_id: string
+  seq: number
+  deadline_at: number
+  settled: boolean
+  settled_at?: number | null
+  settled_by?: ConnectionSettleReason | null
+  targets: ConnectionOperationTarget[]
+}
+/** ``tools/connectors/contract.py::SettleReason``. */
+export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt'
+/** ``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra`` keys a leg records (``tools``, ``hint``) are typed here as they appear. */
+export interface ConnectionOperationTarget {
+  name: string
+  kind: ConnectionTargetKind
+  action: ConnectionTargetAction
+  state: ConnectionTargetState
+  detail?: string | null
+  instructions?: string | null
+  discovery_error?: string | null
+  connect_url?: string | null
+  connection_id?: string | null
+  attempt?: string | null
+  required_env?: ConnectionTargetEnvField[] | null
+  tools?: string[] | null
+  hint?: string | null
+  display?: string | null
+  description?: string | null
+  tier?: CatalogTier | null
+  platforms?: string[] | null
+  repo?: string | null
+  sha?: string | null
+  subdir?: string | null
+  scan?: CatalogScan | null
+  requirements?: string[] | null
+  has_desktop_half?: boolean | null
+  target_profile?: string | null
+  app_state?: CatalogAppState | null
+  skill?: string | null
+}
+export type ConnectionTargetKind = 'connector' | 'mcp' | 'plugin' | 'skill'
+export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
+/** ``tools/connectors/contract.py::TargetState``. */
+export type ConnectionTargetState = 'pending' | 'initiated' | 'connected' | 'skipped' | 'failed' | 'expired' | 'not_connected'
+/** One credential an MCP install still needs; the card renders a field per entry and sends the values back with the approval. */
+export interface ConnectionTargetEnvField {
+  name: string
+  required: boolean
+  secret: boolean
+  default: string
+  prompt?: string | null
+}
+export type CatalogTier = 'official' | 'community'
+/** The catalog's security scan of the pinned commit; read-only on the card. */
+export interface CatalogScan {
+  status: CatalogScanStatus
+  summary: string
+}
+export type CatalogScanStatus = 'passed' | 'warnings' | 'failed'
+/** The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration. */
+export type CatalogAppState = 'present' | 'missing_app' | 'app_not_running' | 'unknown'
+export interface ConnectionWakeResult {
+  status: 'ok'
+}
+export interface ConnectionRespondParams {
+  profile?: string | null
+  owner: SessionOwner | AccountOwner
+  op_id: string
+  result: ConnectionAnswer
+}
+/** The card's answer: per-target outcomes and an optional Continue (``settled_by: "continue"``). Settlement is derived from target states afterwards. */
+export interface ConnectionAnswer {
+  targets?: ConnectionAnswerTarget[]
+  settled_by?: ConnectionSettleReason | null
+}
+/** One row's answer from the card. ``env`` carries the credential values an install asked for through ``required_env``. */
+export interface ConnectionAnswerTarget {
+  name: string
+  status: ConnectionAnswerStatus
+  detail?: string | null
+  env?: Record<string, string> | null
+}
+/** What the card says about one row: ``tools/connectors/mcp.py::apply_answer``. */
+export type ConnectionAnswerStatus = 'approved' | 'skipped'
+export interface ConnectionRespondResult {
+  status: 'ok'
+  settled: boolean
+}
+export interface ConnectorsListParams {
+  profile?: string | null
+  owner: SessionOwner | AccountOwner
+}
+export interface ConnectorsListResult {
+  available: boolean
+  connectors: ConnectorRow[]
+}
+export interface ConnectorRow {
+  connector: string
+  enabled: boolean
+  connected: boolean
+  connection_status: 'pending' | 'active' | 'failed' | 'expired' | 'revoked' | 'inactive' | null
+  status_reason: string | null
+  gateway_disabled_tools: string[]
+}
+export interface ConnectorsConnectParams {
+  profile?: string | null
+  owner: SessionOwner | AccountOwner
+  connectors: string[]
+  reconnect?: boolean
+}
+/** ``methods_connectors._reissue`` / ``managed._off_desktop_result``: the operation the connect opened; ``status``/``note`` ride along from the tool result. */
+export interface ConnectorsConnectResult {
+  op_id: string
+  seq: number
+  deadline_at: number
+  settled: boolean
+  settled_at?: number | null
+  settled_by?: ConnectionSettleReason | null
+  targets: ConnectionOperationTarget[]
+  status?: 'initiated' | 'settled' | null
+  note?: string | null
+}
+export interface ConnectorToolsParams {
+  profile?: string | null
+  slug: string
+  refresh?: boolean
+}
+export interface ConnectorToolsResult {
+  connector: string
+  toolkit_version: string
+  etag: string
+  fetched_at: number
+  source: ConnectorToolsSource
+  stale: boolean
+  tools: ConnectorToolRow[]
+}
+export type ConnectorToolsSource = 'cache' | 'network' | 'revalidated'
+export interface ConnectorToolRow {
+  slug: string
+  name: string
+  description: string
+  facet: ConnectorToolFacet
+  hints: string[]
+  categories: string[]
+  no_auth: boolean
+  deprecated: boolean
+}
+export type ConnectorToolFacet = 'read' | 'write' | 'destructive' | 'unclassified'
+export interface ConnectorsCatalogResult {
+  connectors: ConnectorCatalogRow[]
+}
+export interface ConnectorCatalogRow {
+  slug: string
+  name: string
+  description: string
+  category: string
+  logo_url?: string | null
+}
+export interface ConnectorAccountsParams {
+  profile?: string | null
+  connector?: string | null
+}
+export interface ConnectorAccountsResult {
+  accounts: ConnectorAccountRow[]
+}
+export interface ConnectorAccountRow {
+  connection_id: string
+  connector: string
+  status: ConnectorAccountStatus
+  status_reason?: string | null
+  label: string
+  alias?: string | null
+  active: boolean
+  created_at: string
+  updated_at: string
+}
+export type ConnectorAccountStatus = 'pending' | 'active' | 'failed' | 'expired' | 'revoked' | 'inactive'
+export interface ConnectorAccountsRemoveParams {
+  profile?: string | null
+  connection_id: string
+}
+export interface ConnectorAccountsRemoveResult {
+  connection_id: string
+  connector: string
+  status: 'removed'
+}
+export interface ConnectorPolicyGetResult {
+  layers: ConnectorPolicyLayer[]
+  effective: ConnectorPolicyEffectiveUnrestricted | ConnectorPolicyEffectiveDenyAll | ConnectorPolicyEffectiveAllow | ConnectorPolicyEffectiveDeny
+}
+export interface ConnectorPolicyLayer {
+  kind: ConnectorPolicyLayerKind
+  revision: string
+  body: ConnectorPolicyUnrestrictedBody | ConnectorPolicyDenyAllBody | ConnectorPolicyAllowBody | ConnectorPolicyDenyBody
+}
+export type ConnectorPolicyLayerKind = 'org' | 'role' | 'member'
+export interface ConnectorPolicyUnrestrictedBody {
+  mode: 'unrestricted'
+}
+export interface ConnectorPolicyDenyAllBody {
+  mode: 'deny-all'
+}
+export interface ConnectorPolicyAllowBody {
+  mode: 'allow'
+  connectors: string[]
+  tools: Record<string, string[]>
+  tags?: ConnectorPolicyTags | null
+}
+export interface ConnectorPolicyTags {
+  enable?: string[] | null
+  disable?: string[] | null
+}
+export interface ConnectorPolicyDenyBody {
+  mode: 'deny'
+  disabled_connectors: string[]
+  tools: Record<string, string[]>
+  tags?: ConnectorPolicyTags | null
+}
+export interface ConnectorPolicyEffectiveUnrestricted {
+  version: 1
+  revision: string
+  issued_at_ms: number
+  mode: 'unrestricted'
+}
+export interface ConnectorPolicyEffectiveDenyAll {
+  version: 1
+  revision: string
+  issued_at_ms: number
+  mode: 'deny-all'
+}
+export interface ConnectorPolicyEffectiveAllow {
+  version: 1
+  revision: string
+  issued_at_ms: number
+  mode: 'allow'
+  connectors: string[]
+  tools: Record<string, string[]>
+  tags?: ConnectorPolicyTags | null
+}
+export interface ConnectorPolicyEffectiveDeny {
+  version: 1
+  revision: string
+  issued_at_ms: number
+  mode: 'deny'
+  disabled_connectors: string[]
+  tools: Record<string, string[]>
+  tags?: ConnectorPolicyTags | null
+}
+export interface ConnectorPolicySetParams {
+  profile?: string | null
+  change: ToolsChange | ConnectorChange
+  expected_revision: string
+}
+export interface ToolsChange {
+  type: 'tools'
+  connector: string
+  disabled_tools: string[]
+}
+export interface ConnectorChange {
+  type: 'connector'
+  connector: string
+  enabled: boolean
+}
+export interface ConnectorPolicySetResult {
+  revision: string
+  effective: ConnectorPolicyEffectiveUnrestricted | ConnectorPolicyEffectiveDenyAll | ConnectorPolicyEffectiveAllow | ConnectorPolicyEffectiveDeny
 }
 export interface GroupsCapabilitiesParams {
   profile?: string | null
@@ -1456,6 +1645,8 @@ export interface ProfileRow {
   description?: string
   display_name?: string
   skill_count?: number
+  previous_names?: string[]
+  role?: 'setup' | null
   last_session?: ProfileSessionPreview | null
   worker_session?: ProfileWorkerSession | null
   canonical_session?: ProfileCanonicalSession | null
@@ -1514,10 +1705,10 @@ export interface ProfilesCreateResult {
   model_set?: boolean
   mirrored: ProfileMirrored
 }
-/** What was copied from the launch profile. */
+/** What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``. */
 export interface ProfileMirrored {
   env?: boolean
-  auth?: boolean
+  auth?: boolean | 'shared'
   model_inherited?: boolean
   voice?: boolean
 }
@@ -1639,6 +1830,20 @@ export interface ProfilesRememberOnboardingResult {
   saved?: boolean
   profile?: string
   target?: string
+}
+/** Client→server method params / server→client request params. Unknown keys are rejected. */
+export type Params = Record<string, never>
+/** ``created`` is false when an existing setup profile was found (and returned untouched). */
+export interface OnboardingEnsureSetupProfileResult {
+  name: string
+  path: string
+  created: boolean
+  role?: 'setup'
+}
+export interface OnboardingResetSetupProfileResult {
+  name: string
+  path: string
+  reset?: boolean
 }
 export interface VaultListResult {
   items?: VaultItem[]
@@ -2147,6 +2352,7 @@ export interface PromptSubmitParams {
 export interface PromptSubmitResult {
   status?: PromptSubmitStatus | null
   voice_stopped?: boolean | null
+  user_row_id?: number | null
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
@@ -2492,9 +2698,22 @@ export interface TranscriptMessage {
   name?: string | null
   context?: string | null
   args?: Record<string, unknown> | null
+  labels?: ToolLabel[] | null
   reasoning?: string | null
   [key: string]: unknown
 }
+/** ``tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is, in words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse the tool name themselves. */
+export interface ToolLabel {
+  kind: ToolLabelKind
+  app: string
+  action: string
+  emoji: string
+  text: string
+  name: string
+  preview?: string
+}
+/** Which surface one inner call of a bridged ``tool_call`` runs on. */
+export type ToolLabelKind = 'connector' | 'mcp' | 'tool'
 /** ``session_id`` is the STORED id (or an exact title); the reply's ``session_id`` is the runtime id. */
 export interface SessionResumeParams {
   session_id: string
@@ -2555,6 +2774,7 @@ export interface OpenRequestEntry {
 /** ``ConnectionOperation.request_payload``: opens the card; also the ``pending_connection`` resume snapshot so a client that missed the event restores the card with the server's deadline. */
 export interface ConnectionRequestPayload {
   op_id: string
+  seq: number
   deadline_at: number
   timeout_seconds: number
   targets: ConnectionOperationTarget[]
@@ -3041,6 +3261,8 @@ export interface ProcessEntry {
   watch_hit?: boolean | null
   notify_on_complete?: boolean | null
   exit_code?: number | null
+  exited_at?: number | null
+  completion_reason?: string | null
   detached?: boolean | null
   [key: string]: unknown
 }
@@ -3516,6 +3738,7 @@ export interface McpCatalogResult {
 export interface McpCatalogEntry {
   name: string
   description: string
+  connector_slug?: string | null
   installed: boolean
   enabled: boolean
   requires: string[]
@@ -3536,7 +3759,10 @@ export interface McpServerSummary {
   oauth_tokens_present?: boolean | null
   enabled: boolean
   tools?: unknown | null
+  source: McpServerSource
+  plugin?: string | null
 }
+export type McpServerSource = 'config' | 'plugin'
 export interface McpServersStatusResult {
   servers: McpServerRuntimeRow[]
   checked_at: number
@@ -3549,6 +3775,8 @@ export interface McpServerRuntimeRow {
   connected: boolean
   disabled: boolean
   status: McpRuntimeStatus
+  source: McpServerSource
+  plugin?: string | null
 }
 export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'lazy' | 'configured'
 /** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
@@ -3653,7 +3881,7 @@ export interface LegacyPluginRow {
   version: string
   enabled: boolean
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name``. */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -3665,23 +3893,35 @@ export interface PluginsManageParams {
   catalog_name?: string | null
   force?: boolean | null
   ref?: string | null
+  accept_capabilities?: boolean | null
+  values?: Record<string, unknown> | null
 }
-export type PluginsAction = 'list' | 'toggle' | 'install' | 'update'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` → ``ok``/``unchanged``/``sha``. */
+export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings'
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
   bundled_count?: number | null
   ok?: boolean | null
   unchanged?: boolean | null
+  restart_required?: boolean | null
+  gateway_reloaded?: boolean | null
+  activation?: PluginActivation | null
+  cleared_memory_provider?: boolean | null
   name?: string | null
   plugin?: AgentPluginRow | null
   plugin_name?: string | null
   warnings?: string[] | null
   missing_env?: string[] | null
+  python_dependencies?: string[] | null
   after_install_path?: string | null
   enabled?: boolean | null
   sha?: string | null
+  consent_required?: boolean | null
+  delta?: Record<string, string[]> | null
+  delta_lines?: string[] | null
+  error?: string | null
+  written?: string[] | null
 }
 /** ``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance. */
 export interface AgentPluginRow {
@@ -3694,6 +3934,7 @@ export interface AgentPluginRow {
   portable: boolean
   install_dir: string
   has_desktop_half: boolean
+  servers: PluginServerRow[]
   catalog_name?: string | null
   catalog_tier?: string | null
   installed_sha?: string | null
@@ -3701,6 +3942,51 @@ export interface AgentPluginRow {
   catalog_version?: string | null
   update_available?: boolean | null
   pinned_sha?: string | null
+  settings_schema?: PluginSettingField[] | null
+}
+export interface PluginServerRow {
+  name: string
+  state: PluginServerState
+  sentence: string
+}
+export type PluginServerState = 'connected' | 'app_not_running' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
+/** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
+export interface PluginSettingField {
+  key: string
+  type: PluginSettingFieldType
+  label: string
+  description: string
+  required: boolean
+  value?: unknown | null
+  default?: unknown | null
+  choices?: string[] | null
+  env?: string | null
+  has_value?: boolean | null
+}
+export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
+/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. */
+export interface PluginActivation {
+  name: string
+  key: string
+  activated_now?: Record<string, string[]>
+  live_now?: PluginLiveNow | null
+  deferred?: Record<string, string[]>
+}
+export interface PluginLiveNow {
+  mcp_servers?: PluginLiveServer[]
+  skills?: PluginLiveSkill[]
+}
+/** One plugin MCP server connected at activation: its callable tool names, or the reason it did not connect. */
+export interface PluginLiveServer {
+  name: string
+  connected: boolean
+  tools?: string[]
+  error?: string | null
+}
+/** One plugin skill usable now through ``skill_view`` (qualified ``<plugin>:<skill>``). */
+export interface PluginLiveSkill {
+  name: string
+  description?: string
 }
 /** Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``. ``answers`` rides only on a reconnect replay (locks the server already accepted). */
 export interface ClarifyRequestParams {
@@ -3814,11 +4100,13 @@ export interface TourStep {
 /** ``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
 export interface ConnectionUpdatePayload {
   op_id: string
+  seq: number
   deadline_at: number
   settled: boolean
   settled_at?: number | null
   settled_by?: ConnectionSettleReason | null
   targets: ConnectionOperationTarget[]
+  owner: SessionOwner | AccountOwner
   target?: string | null
   from?: ConnectionTargetState | null
   to?: ConnectionTargetState | null
@@ -3826,7 +4114,7 @@ export interface ConnectionUpdatePayload {
   detail?: string | null
 }
 /** ``tools/connectors/contract.py::Actor``. */
-export type ConnectionActor = 'user' | 'renderer_flow' | 'backend_watcher' | 'clock'
+export type ConnectionActor = 'user' | 'backend_watcher' | 'clock'
 /** ``tui_gateway/entry.py`` (stdio) / ``tui_gateway/ws.py`` (WebSocket) first frame. */
 export interface GatewayReadyPayload {
   skin: SkinPayload
@@ -3896,6 +4184,7 @@ export interface MessageCompletePayload {
   recoverable?: boolean | null
   error_surface?: ErrorSurface | null
   partial?: boolean | null
+  persisted_turn?: PersistedTurn | null
 }
 /** ``prompt_turn._result_status``. */
 export type TurnStatus = 'complete' | 'error' | 'interrupted'
@@ -3918,6 +4207,13 @@ export interface ErrorSurface {
   model?: string | null
   resets_at?: number | null
   [key: string]: unknown
+}
+/** Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are unproven, never negative acknowledgements. ``complete`` permits retiring the whole local turn only when the original turn boundary, every row and final body are still accounted for; compaction, redirects and partial writes conservatively leave it false. Row ids are scoped to the owning profile's store, as in ``SessionMessage.row_id``. */
+export interface PersistedTurn {
+  row_ids: number[]
+  complete: boolean
+  user_row_id?: number | null
+  final_assistant_row_id?: number | null
 }
 /** ``server._status_update`` and the direct emitters (goal / loop / heartbeat / process). */
 export interface StatusUpdatePayload {
@@ -3949,6 +4245,7 @@ export interface ToolStartPayload {
   args?: Record<string, unknown> | null
   args_text?: string | null
   preview?: string | null
+  labels?: ToolLabel[] | null
 }
 /** ``tool_progress._on_tool_complete``; ``todos``/``revision`` merged in for the todo tools. */
 export interface ToolCompletePayload {
@@ -3962,6 +4259,7 @@ export interface ToolCompletePayload {
   inline_diff?: string | null
   todos?: unknown[] | null
   revision?: number | null
+  labels?: ToolLabel[] | null
 }
 /** ``agent_callbacks`` tool_gen_callback. */
 export interface ToolGeneratingPayload {
@@ -4189,6 +4487,7 @@ export interface RequestCancelPayload {
   method: string
   reason: string
 }
+export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY'
 
 // ── Client→server methods ──
 export interface RpcMethods {
@@ -4254,12 +4553,26 @@ export interface RpcMethods {
   'config.show': { params: ConfigShowParams; result: ConfigShowResult }
   /** Per-target outcomes from the card, and an optional Continue. */
   'connection.respond': { params: ConnectionRespondParams; result: ConnectionRespondResult }
-  /** Start (or re-initiate) authorization for named connectors on the session's connection operation. */
+  /** The scoped member's hosted connector accounts, optionally filtered by connector slug. */
+  'connectors.accounts': { params: ConnectorAccountsParams; result: ConnectorAccountsResult }
+  /** Remove one hosted connector account owned by the scoped member. */
+  'connectors.accounts.remove': { params: ConnectorAccountsRemoveParams; result: ConnectorAccountsRemoveResult }
+  /** The hosted connector catalog available to the scoped member. */
+  'connectors.catalog': { params: ProfileParams; result: ConnectorsCatalogResult }
+  /** Start or re-initiate authorization for named connectors on a session or account operation. */
   'connectors.connect': { params: ConnectorsConnectParams; result: ConnectorsConnectResult }
-  /** Connector catalog + connection state for one owned session (``available=False`` when the toolset is off). */
+  /** Connector catalog + connection state for one session or profile account owner. */
   'connectors.list': { params: ConnectorsListParams; result: ConnectorsListResult }
-  /** The current snapshot of one open operation on an owned session. */
+  /** The current snapshot of one open session or account operation. */
   'connectors.operation.status': { params: ConnectionOperationParams; result: ConnectionOperationStatus }
+  /** The browser leg came back (hermes://connections/done): read the accounts now, not at the next tick. */
+  'connectors.operation.wake': { params: ConnectionOperationParams; result: ConnectionWakeResult }
+  /** Policy layers for the scoped member, from organization to member scope. */
+  'connectors.policy.get': { params: ProfileParams; result: ConnectorPolicyGetResult }
+  /** Apply one scoped member connector or tool-list policy change. */
+  'connectors.policy.set': { params: ConnectorPolicySetParams; result: ConnectorPolicySetResult }
+  /** The scoped profile's cached or current tool list for one connector. */
+  'connectors.tools': { params: ConnectorToolsParams; result: ConnectorToolsResult }
   /** List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store. */
   'cron.manage': { params: CronManageParams; result: CronManageResult }
   /** Block/unblock NEW spawns globally (active children keep running); returns the new state. */
@@ -4372,6 +4685,10 @@ export interface RpcMethods {
   'model.options': { params: ModelOptionsParams; result: ModelOptionsResult }
   /** Save an API key for a provider and return its refreshed inventory row. */
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
+  /** Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role. */
+  'onboarding.ensure_setup_profile': { params: Params; result: OnboardingEnsureSetupProfileResult }
+  /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
+  'onboarding.reset_setup_profile': { params: Params; result: OnboardingResetSetupProfileResult }
   /** Spill a large paste to a file and hand back the inline placeholder. */
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
@@ -4410,7 +4727,7 @@ export interface RpcMethods {
   ping: { params: PingParams; result: PingResult }
   /** Loaded plugin manager entries (legacy flat view); the Plugins Hub uses plugins.manage list. */
   'plugins.list': { params: PluginsListParams; result: PluginsListResult }
-  /** Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install. */
+  /** Plugins Hub backend: list installed plugins, toggle, git-install, re-pin a catalog install, or remove a user install. */
   'plugins.manage': { params: PluginsManageParams; result: PluginsManageResult }
   /** Spawn a hidden agent that brings the desktop preview's dev server back up. */
   'preview.restart': { params: PreviewRestartParams; result: TaskIdResult }
@@ -4662,9 +4979,16 @@ export const RPC_METHODS = [
   'config.set',
   'config.show',
   'connection.respond',
+  'connectors.accounts',
+  'connectors.accounts.remove',
+  'connectors.catalog',
   'connectors.connect',
   'connectors.list',
   'connectors.operation.status',
+  'connectors.operation.wake',
+  'connectors.policy.get',
+  'connectors.policy.set',
+  'connectors.tools',
   'cron.manage',
   'delegation.pause',
   'delegation.status',
@@ -4721,6 +5045,8 @@ export const RPC_METHODS = [
   'model.disconnect',
   'model.options',
   'model.save_key',
+  'onboarding.ensure_setup_profile',
+  'onboarding.reset_setup_profile',
   'paste.collapse',
   'pdf.attach',
   'pet.cancel',

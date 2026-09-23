@@ -5900,6 +5900,18 @@ class TestUnknownBlobColumnSurvivesRead:
         assert "future_blob" not in window[0]
         json.dumps(window)
 
+    def test_schema_column_holding_bytes_keeps_its_key(self, db):
+        """The bytes pop is for columns this module does not know. A schema column such as
+        ``content`` must never vanish from the dict: every resume/compaction reader indexes
+        ``msg["content"]`` and a KeyError there is worse than the raw value it replaced."""
+        db.create_session("s1", source="cli")
+        message_id = db.append_message("s1", "user", "hello")
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET content = X'FFFE' WHERE id = ?", (message_id,)))
+        (message,) = db.get_messages("s1")
+        assert message["content"] == b"\xff\xfe"
+        assert message["role"] == "user"
+
 
 class TestGatewayRoutingPkHeal:
     """Legacy gateway_routing tables (session_key-only PK) get rebuilt on open.

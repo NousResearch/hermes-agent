@@ -1265,6 +1265,36 @@ class TestGitDestructiveOps:
             dangerous, _, _ = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
 
+    def test_branch_delete_flag_case_distinction(self):
+        """git branch -d is the safe merged-only delete (git itself refuses unmerged
+        branches); only the force spellings -D / delete+force belong behind the gate."""
+        for cmd in (
+            "git branch -d merged-feature",
+            "git branch --delete merged-feature",
+            "git branch -d merged-feature -m rename",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+            assert key is None and desc is None, cmd
+
+        for cmd in (
+            "git branch -D feature",
+            "git branch\t-D feature",
+            "Git Branch -D feature",
+            "sudo git branch -D feature",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert desc == "git branch force delete", cmd
+
+    def test_lower_preserving_flags(self):
+        """Detection input keeps flag case everywhere except dash-prefixed tokens,
+        with whitespace and separators left byte-for-byte intact."""
+        fold = approval_detection._lower_preserving_flags
+        assert fold("git branch -D x\nGIT branch -d y") == "git branch -D x\ngit branch -d y"
+        assert fold("GIT PUSH --FORCE origin") == "git push --FORCE origin"
+        assert fold("VAR=-D git branch -D x") == "var=-d git branch -D x"
+
 
 class TestChmodExecuteCombo:
     """chmod +x && ./ is the two-step social engineering pattern where a

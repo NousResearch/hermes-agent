@@ -284,6 +284,8 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert call["background"] is True
     assert call["notify_on_complete"] is True
     assert call["_host_local"] is True
+    # The completion notification IS the reply: sized like a message, not a build log's 2000-char tail.
+    assert call["_completion_output_chars"] == bot_mode_dm.REPLY_COMPLETION_CHARS == bot_mode_dm.MESSAGE_MAX_CHARS + 2000
     assert Path(call["workdir"]) == Path(bot_mode_dm.__file__).resolve().parent.parent
     command = call["command"]
     mode, dm_file, transport_argv = _runner_parts(command)

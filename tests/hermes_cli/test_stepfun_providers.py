@@ -154,7 +154,7 @@ class TestStepfunBuiltinMetadata:
 
 
 class TestStepfunMigration:
-    """v45 → v46: the single `stepfun` id becomes four, and a China key moves var."""
+    """v46 → v47: the single `stepfun` id becomes four, and a China key moves var."""
 
     def _run(self, tmp_path, monkeypatch, model_cfg, env_seed=None):
         """Run migrate_config against an isolated temp hermes home.
@@ -168,7 +168,7 @@ class TestStepfunMigration:
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text(
-            yaml.safe_dump({"_config_version": 45, "model": model_cfg}), encoding="utf-8")
+            yaml.safe_dump({"_config_version": 46, "model": model_cfg}), encoding="utf-8")
         (home / ".env").write_text(
             "\n".join(f"{k}={v}" for k, v in (env_seed or {}).items()) + "\n", encoding="utf-8")
 
@@ -192,7 +192,7 @@ class TestStepfunMigration:
         return out
 
     def test_unset_endpoint_keeps_the_pre_split_default(self, tmp_path, monkeypatch):
-        """Pre-46 bare `stepfun` WAS international Step Plan, so that is where it must land."""
+        """Pre-split bare `stepfun` WAS international Step Plan, so that is where it must land."""
         out = self._run(tmp_path, monkeypatch, {"provider": "stepfun", "default": "step-3.5-flash"})
         assert out["model"]["provider"] == "stepfun-plan"
 

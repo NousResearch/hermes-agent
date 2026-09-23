@@ -256,6 +256,25 @@ _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")] = _snap(
     cache_write_cost_per_million_above=Decimal("25.00"),
 )
 
+# GPT-6 Sol / Luna (the 5.6 Sol/Luna successors): same 272K whole-request tier as Astra
+# (2x input + cache, 1.5x output). Cache write = 1.25x input, cache read = 0.10x input.
+# Terra has no published model page yet, so it deliberately has no row.
+for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above in (
+    ("gpt-6-sol", "2.00", "10.00", "0.20", "2.50", "4.00", "15.00", "0.40", "5.00"),
+    ("gpt-6-luna", "0.10", "0.50", "0.01", "0.125", "0.20", "0.75", "0.02", "0.25"),
+):
+    _OFFICIAL_DOCS_PRICING[("openai", _slug)] = _snap(
+        _inp, _out, _read, _write,
+        url=f"https://developers.openai.com/api/docs/models/{_slug}",
+        version="openai-gpt-6-tiers-2026-09",
+        tier_threshold_tokens=272_000,
+        input_cost_per_million_above=Decimal(_inp_above),
+        output_cost_per_million_above=Decimal(_out_above),
+        cache_read_cost_per_million_above=Decimal(_read_above),
+        cache_write_cost_per_million_above=Decimal(_write_above),
+    )
+del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above
+
 # Context-tiered Gemini Pro: above 200k prompt tokens the *_above rates apply to
 # the whole request (see PricingEntry).
 _OFFICIAL_DOCS_PRICING[("google", "gemini-3.1-pro")] = _snap(
@@ -270,13 +289,15 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
 )
 del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
 
-# GPT-5.6 "-pro" high-effort variants bill at the base tier's per-token rates
-# (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
+# GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
+# rates (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
 # picker variants are the same model with the suffix stripped on the wire.
 # The direct Gemini provider emits preview IDs for two models; key the snapshot
 # by both the documented stable name and the emitted ID.
 for _provider, _alias, _canonical in (
-    *((("openai", f"{m}-{suffix}", m) for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna") for suffix in ("pro", "900k"))),
+    *((("openai", f"{m}-{suffix}", m)
+       for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna")
+       for suffix in ("pro", "900k"))),
     ("google", "gemini-3.1-pro-preview", "gemini-3.1-pro"),
     ("google", "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite"),
 ):
@@ -542,6 +563,7 @@ def normalize_usage(
     return CanonicalUsage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
+        raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
     )
 
 
@@ -553,6 +575,11 @@ def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> CostResult:
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider or '')
+    reported = profile.get_usage_cost(model_name, usage) if profile else None
+    if reported is not None:
+        return reported
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return CostResult(

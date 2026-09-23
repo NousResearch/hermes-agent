@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from utils import rmtree_readonly
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -250,7 +251,9 @@ def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
     if _looks_like_git_url(src_str):
         staged, provenance = workdir / "clone", src_str
         _git_clone(src_str, staged)
-        shutil.rmtree(staged / ".git", ignore_errors=True)
+        # Not ``ignore_errors``: a half-deleted ``.git`` (read-only objects on Windows) would
+        # otherwise be copied into the profile as distribution content (#117184).
+        rmtree_readonly(staged / ".git")
         missing = (
             f"No {MANIFEST_FILENAME} at the root of {src_str!r}. "
             "This repository is not a Hermes profile distribution."
@@ -475,6 +478,10 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
     # Make sure the manifest on disk reflects resolved name + source
     write_manifest(target, manifest)
+    # A shipped profile.yaml must not carry a backend-assigned role.
+    if any(rel_parts == ("profile.yaml",) for _, rel_parts in entries):
+        from hermes_cli.profiles import drop_profile_role
+        drop_profile_role(target)
 
 
 def _bootstrap_user_dirs(target: Path) -> None:

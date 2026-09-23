@@ -286,10 +286,34 @@ class TestNormalizeModelForProvider:
         assert cli.model == "gpt-5.5"
 
 
-def test_catalog_requests_use_ungated_client_version(monkeypatch):
-    """Both catalog request sites send the backend's ungated ``0.0.0`` sentinel: the endpoint
-    hides models whose ``minimal_client_version`` is newer than ``client_version``, so a
-    made-up version silently drops future models."""
+def _gated_codex_catalog(seen_urls):
+    """Backend shape since the GPT-6 Sol/Luna rollout (#119412): the ``0.0.0`` sentinel answers a
+    frozen legacy list, any newer client version answers the full account catalog."""
+    from urllib.parse import parse_qs, urlparse
+
+    class _FakeResp:
+        status_code = 200
+
+        def __init__(self, url):
+            self.version = parse_qs(urlparse(url).query)["client_version"][0]
+
+        def json(self):
+            models = [{"slug": "gpt-5.6-sol", "visibility": "list", "context_window": 272000}]
+            if self.version != "0.0.0":
+                models.append({"slug": "gpt-6-sol", "visibility": "list", "context_window": 272000})
+            return {"models": models}
+
+    def get(url, headers=None, timeout=None, verify=None):
+        seen_urls.append(url)
+        return _FakeResp(url)
+
+    return get
+
+
+def test_catalog_requests_ask_as_the_newest_client(monkeypatch):
+    """Both catalog request sites (picker + context probe) send a client version newer than every
+    ``minimal_client_version`` on the first try, so account-visible GPT-6 Sol/Luna are not hidden
+    behind the frozen ``0.0.0`` legacy list (#119412)."""
     import sys
     from urllib.parse import parse_qs, urlparse
 
@@ -297,34 +321,37 @@ def test_catalog_requests_use_ungated_client_version(monkeypatch):
     from hermes_cli import codex_models
 
     seen_urls = []
-
-    class _FakeResp:
-        status_code = 200
-
-        def json(self):
-            return {"models": []}
-
-    class _FakeHttpx:
-        @staticmethod
-        def get(url, headers=None, timeout=None):
-            seen_urls.append(url)
-            return _FakeResp()
-
-    class _FakeRequests:
-        @staticmethod
-        def get(url, headers=None, timeout=None, verify=None):
-            seen_urls.append(url)
-            return _FakeResp()
-
-    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
-    codex_models._fetch_models_from_api(access_token="tok")
-    monkeypatch.setattr(model_metadata, "requests", _FakeRequests)
+    get = _gated_codex_catalog(seen_urls)
+    monkeypatch.setitem(sys.modules, "httpx", type("_FakeHttpx", (), {"get": staticmethod(get)}))
+    assert "gpt-6-sol" in codex_models._fetch_models_from_api(access_token="tok")
+    monkeypatch.setattr(model_metadata, "requests", type("_FakeRequests", (), {"get": staticmethod(get)}))
     monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
     monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
-    model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
+    live, fresh = model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
+    assert fresh and "gpt-6-sol" in live
 
-    assert len(seen_urls) == 2
+    assert len(seen_urls) == 2  # one request per site: the newest-client answer was non-empty
     for url in seen_urls:
         parsed = urlparse(url)
         assert parsed.netloc == "chatgpt.com" and parsed.path == "/backend-api/codex/models"
-        assert parse_qs(parsed.query)["client_version"] == ["0.0.0"]
+        assert parse_qs(parsed.query)["client_version"] != ["0.0.0"]
+
+
+def test_catalog_falls_back_to_the_ungated_sentinel_when_newest_client_is_rejected():
+    """If the backend goes back to rejecting out-of-sequence versions (empty list or non-200), the
+    ``0.0.0`` sentinel is tried next; a sentinel that is itself empty yields no entries."""
+    from agent.model_metadata import CODEX_UNGATED_CLIENT_VERSION, fetch_codex_catalog_entries
+
+    class _Resp:
+        def __init__(self, status, models):
+            self.status_code, self._models = status, models
+
+        def json(self):
+            return {"models": self._models}
+
+    def rejecting(url):
+        return _Resp(200, [{"slug": "gpt-5.5"}]) if url.endswith(CODEX_UNGATED_CLIENT_VERSION) else _Resp(400, [])
+
+    entries, status = fetch_codex_catalog_entries(rejecting)
+    assert [e["slug"] for e in entries] == ["gpt-5.5"] and status == 200
+    assert fetch_codex_catalog_entries(lambda url: _Resp(200, [])) == ([], 200)

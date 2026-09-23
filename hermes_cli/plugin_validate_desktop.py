@@ -25,6 +25,12 @@ _FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
      re.compile(r"(?<![\w$.])eval\(|\bnew\s+Function\(")),
     ("dynamic import outside the SDK",
      re.compile(r"\bimport\(\s*(?!['\"](?:@hermes/plugin-sdk|react)(?:/[\w/-]*)?['\"]\s*\))")),
+    # A static `import 'https://…'` / `import x from 'file:…'` is the same second stage as the
+    # dynamic form above (the renderer would fetch and evaluate it); the loader refuses every
+    # URL-scheme specifier too (runtime-loader.ts::unsupportedImports) — this keeps admission and
+    # the loader in agreement instead of letting review wave through what the app rejects.
+    ("remote import outside the SDK",
+     re.compile(r"\bimport\s+(?:[^;'\"]*?\bfrom\s*)?['\"][a-zA-Z][\w+.-]*:")),
     ("script injection",
      re.compile(r"createElement\(\s*['\"]script['\"]\s*\)|<script\b")),
 )
@@ -56,19 +62,43 @@ def desktop_surface_findings(source: str) -> List[Tuple[str, int]]:
     return sorted(findings, key=lambda f: f[1])
 
 
-def check_desktop_surface(report, plugin_dir: Path) -> None:
-    """Fail the report when ``desktop/*.js`` steps outside the SDK surface; silent when there is none."""
-    desktop = Path(plugin_dir) / "desktop"
+def is_desktop_surface(rel_path: str) -> bool:
+    """Whether a file is part of the Desktop surface this lint governs: JS under ``desktop/``.
+
+    The renderer loads ``desktop/plugin.js`` (and what it imports from beside it). A Node sidecar
+    (``sidecar/*.mjs``), a build script or a ``tests/*.test.mjs`` never runs in the renderer, so a
+    lazy ``import('jszip')`` there is ordinary Node code — running the rules over every ``*.js`` /
+    ``*.mjs`` in a repository reports noise, not a surface violation. Batch tooling should scope
+    with this predicate (or call ``desktop_surface_hits``) instead of ``rglob``-ing the tree.
+    """
+    parts = Path(rel_path).parts
+    return len(parts) > 1 and parts[0] == "desktop" and Path(rel_path).suffix == ".js"
+
+
+def desktop_surface_hits(plugin_dir: Path) -> List[str]:
+    """``["<rule> (<rel>:<line>)", ...]`` over the plugin's Desktop surface files only."""
+    plugin_dir = Path(plugin_dir)
+    desktop = plugin_dir / "desktop"
     if not desktop.is_dir():
-        return
+        return []
     hits: List[str] = []
     for js in sorted(desktop.rglob("*.js")):
+        rel = js.relative_to(plugin_dir).as_posix()
+        if not is_desktop_surface(rel):
+            continue
         try:
             source = js.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        rel = js.relative_to(plugin_dir).as_posix()
         hits.extend(f"{rule} ({rel}:{line})" for rule, line in desktop_surface_findings(source))
+    return hits
+
+
+def check_desktop_surface(report, plugin_dir: Path) -> None:
+    """Fail the report when ``desktop/*.js`` steps outside the SDK surface; silent when there is none."""
+    if not (Path(plugin_dir) / "desktop").is_dir():
+        return
+    hits = desktop_surface_hits(plugin_dir)
     report.add(
         "desktop surface", not hits,
         "; ".join(hits[:8]) + (f" (+{len(hits) - 8} more)" if len(hits) > 8 else "")

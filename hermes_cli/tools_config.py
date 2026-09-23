@@ -1,6 +1,5 @@
 """Unified tool configuration for Hermes Agent."""
 
-import ast
 import json as _json
 import logging
 import os
@@ -15,6 +14,7 @@ from hermes_cli.nous_subscription import (
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
 from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
+from hermes_cli.toolset_validation import parse_platform_toolsets_value
 # Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving.
 from hermes_cli.tools_config_cua import (  # noqa: F401
     _post_setup_no_window_flags, _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
@@ -415,10 +415,12 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     """MCP servers globally enabled in config.yaml or by a plugin (shared by platform + cron resolvers). Enabled
     unless ``enabled`` is explicitly falsey; portable-plugin servers (in-memory) count — enabling the plugin is
     the opt-in."""
+    from tools.mcp_tool_common import mcp_server_enabled
+
     mcp_servers = (config or {}).get("mcp_servers") or {}
     names = {
         str(name) for name, server_cfg in mcp_servers.items()
-        if isinstance(server_cfg, dict) and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+        if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
     }
     try:
         from hermes_cli.plugins import get_portable_mcp_server_names_nowait
@@ -552,23 +554,16 @@ def _context_engine_active(config: dict) -> bool:
 def _coerce_platform_toolsets_value(value, platform: str):
     """Read a list-literal string saved for ``platform_toolsets.<platform>`` as the list it encodes.
 
-    Older ``hermes config set`` builds stored a bare ``[...]`` argument as a plain string, so an
-    explicit selection like ``'["browser", "terminal"]'`` parses as str, not list — readers then
-    treated the platform as unconfigured and substituted the platform default, and the next save
-    overwrote the user's entries (#115866). The parser is ``ast.literal_eval``, so any Python
-    list literal (JSON-style double quotes included) is accepted. Any other non-list value is
-    warned about once (naming the expected shape) and left as-is, so the default fallback below
-    is loud rather than silent.
+    The parser is shared with ``hermes doctor`` and ``hermes plugins`` (``toolset_validation``
+    ``parse_platform_toolsets_value``) so every surface agrees on the user's selection (#115866).
+    Any other non-list value is warned about once (naming the expected shape) and left as-is, so
+    the default fallback below is loud rather than silent.
     """
-    if value is None or isinstance(value, list):
-        return value
-    if isinstance(value, str) and value.strip().startswith("["):
-        try:
-            parsed = ast.literal_eval(value.strip())
-        except (ValueError, SyntaxError):
-            parsed = None
-        if isinstance(parsed, list):
-            return [str(item) for item in parsed]
+    if value is None:
+        return None
+    parsed = parse_platform_toolsets_value(value)
+    if parsed is not None:
+        return parsed
     if platform not in _warned_invalid_platform_toolsets:
         _warned_invalid_platform_toolsets.add(platform)
         logger.warning(

@@ -20,9 +20,9 @@ from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.environments.local_env_policy import (
+from tools.environments.local_env_policy import (  # noqa: F401 — _HERMES_PROVIDER_ENV_BLOCKLIST stays importable from here
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-    _is_hermes_internal_secret, _is_terminal_first_party_env,
+    _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
 from tools.environments.local_gitbash_probe import (
     _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
@@ -38,8 +38,9 @@ logger = logging.getLogger(__name__)
 # --- Terminal temp-cache pruning ---
 # get_temp_dir() defaults to HERMES_HOME/cache/terminal (real storage, not tmpfs), so
 # stale artifacts don't vanish on reboot: the gateway housekeeping loop prunes hourly
-# and a once-per-process sweep covers CLI-only installs.
-TERMINAL_TEMP_MAX_AGE_HOURS = 72
+# and a once-per-process sweep covers CLI-only installs. Retention is idle-based like
+# the scratch dir: an entry goes 24h after the last write anywhere inside it.
+TERMINAL_TEMP_MAX_IDLE_HOURS = 24
 _terminal_temp_prune_lock = threading.Lock()
 _terminal_temp_pruned_once = False
 # Background artifacts come in triplets (hermes_bg_<id>.log/.pid/.exit). A live
@@ -57,9 +58,13 @@ def _default_terminal_temp_dir() -> "Path | None":
         return None
 
 
-def cleanup_terminal_temp_cache(max_age_hours: int = TERMINAL_TEMP_MAX_AGE_HOURS) -> int:
-    """Delete session temp artifacts older than *max_age_hours*; return count.
+def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HOURS) -> int:
+    """Delete session temp artifacts idle for *max_age_hours* (no write anywhere in a
+    directory's subtree; the kwarg name is the ``cleanup_*_cache`` signature the gateway
+    housekeeping loop calls every entry with); return count.
     Only the managed default dir is pruned — never a user-pointed ``terminal.temp_dir``."""
+    from hermes_constants_scratch import subtree_touched_since
+
     root = _default_terminal_temp_dir()
     if root is None:
         return 0
@@ -82,7 +87,10 @@ def cleanup_terminal_temp_cache(max_age_hours: int = TERMINAL_TEMP_MAX_AGE_HOURS
     removed = 0
     for f, mt in mtimes.items():
         m = _BG_GROUP_RE.match(f.name)
-        if (group_newest[m.group(1)] if m else mt) >= cutoff:
+        if m:
+            if group_newest[m.group(1)] >= cutoff:
+                continue
+        elif subtree_touched_since(f, cutoff):
             continue
         try:
             shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink()
@@ -244,6 +252,7 @@ def _filter_secret_env(
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
+    plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
     for key, value in items.items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             if not unwrap_force:
@@ -252,11 +261,11 @@ def _filter_secret_env(
             if not _is_hermes_internal_secret(key):
                 out[key] = value
             continue
-        if _is_hermes_internal_secret(key) or key in plugin_strip:
+        if _is_hermes_internal_secret(key) or key.upper() in plugin_strip_folded:
             continue
         first_party = _is_terminal_first_party_env(key)
         passthrough = is_env_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
+        if _is_provider_env_blocklisted(key) and not (passthrough or first_party):
             continue
         if passthrough and not first_party:
             value = resolve_passthrough_value(key, value)
@@ -319,11 +328,13 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
 
 def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
     """Tier 1 (always) and, unless ``inherit_credentials``, Tier 2 provider/tool credentials, in place."""
-    strip = _ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()
-    if not inherit_credentials:
-        strip |= _HERMES_PROVIDER_ENV_BLOCKLIST
+    # Credential names fold to uppercase for membership: on Windows the env block
+    # itself is case-insensitive, so a lowercase-stored ``gh_token`` IS GH_TOKEN.
+    strip_folded = frozenset(k.upper() for k in (_ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()))
     for key in list(env):
-        if (key in strip or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
+        if (key.upper() in strip_folded
+                or (not inherit_credentials and _is_provider_env_blocklisted(key))
+                or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
                 or _is_hermes_internal_secret(key)):
             del env[key]
     return env
@@ -424,9 +435,16 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
         return env
     launch_home = get_process_hermes_home()
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
-    for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
-        if not _is_global_env(key) or key.startswith("TERMINAL_"):
-            env.pop(key, None)
+    # Folded strip: on Windows the env block is case-insensitive, so residue
+    # stored under a variant casing is the same variable and must go too. The
+    # selection folds the same way so a lowercase ``path`` in .env is still
+    # recognized as a global name and left alone.
+    residue_names = {
+        key.upper() for key in
+        set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values())
+        if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")}
+    for key in [k for k in env if k.upper() in residue_names]:
+        del env[key]
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).
@@ -452,7 +470,13 @@ def _windows_bash_candidates(custom: "str | None") -> list[str]:
     candidates = list(dict.fromkeys(c for c in raw if c and os.path.isfile(c)))
     found = shutil.which("bash")
     if found and found not in candidates:
-        candidates.append(found)
+        # Skip WSL/system bash.exe (C:\Windows\System32\bash.exe or
+        # WindowsApps bash.exe) — it is a stub launcher, not a usable shell.
+        norm = os.path.normpath(found).lower()
+        if "system32" in norm or "windowsapps" in norm:
+            logger.debug("Skipping WSL/system bash.exe at %s", found)
+        else:
+            candidates.append(found)
     return candidates
 
 
@@ -775,16 +799,35 @@ def _kill_process_group_posix(proc) -> None:
         descendants = psutil.Process(proc.pid).children(recursive=True)
     except Exception:
         descendants = []
-    try:
-        os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
-        if not _wait_for_group_exit(proc, pgid, 1.0):
-            os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
-            _wait_for_group_exit(proc, pgid, 2.0)
-            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-                proc.wait(timeout=0.2)
-    except ProcessLookupError:
-        pass
+    if pgid == os.getpgrp():
+        # The child shares OUR group (a spawner that skipped setsid — the Darwin gateway's
+        # posix_spawn shim, #107029): killpg would signal the caller itself. Tear down by PID.
+        _kill_known_pids(proc, descendants)
+    else:
+        try:
+            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+            if not _wait_for_group_exit(proc, pgid, 1.0):
+                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+                _wait_for_group_exit(proc, pgid, 2.0)
+                with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                    proc.wait(timeout=0.2)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # macOS answers killpg with EPERM (not ESRCH) once the group's only members are
+            # unreaped zombies — rg exiting between the caller's poll() and the TERM after the
+            # drain hit its limit (#116855). Nothing group-wide is signalable, and the error
+            # must not escape: the caller still owns the output it drained. Signal the known
+            # PIDs instead so a live child (a group we may not signal) cannot outlive us.
+            _kill_known_pids(proc, descendants)
     _sweep_escaped_descendants(descendants, pgid)
+
+
+def _kill_known_pids(proc, descendants) -> None:
+    """KILL the wrapper and its snapshotted descendants by PID (idempotent on zombies)."""
+    for target in (proc, *descendants):
+        with contextlib.suppress(Exception):
+            target.kill()
 
 
 def _kill_process_windows(proc) -> None:

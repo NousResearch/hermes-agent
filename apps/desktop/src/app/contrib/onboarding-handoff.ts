@@ -15,8 +15,7 @@ import {
   firstTaskTitle,
   guideSourceConnectionId,
   readGuideHandoffReceipt,
-  retrySetupHandoff,
-  SETUP_PROFILE
+  retrySetupHandoff
 } from '@/components/onboarding-chat/setup-profile'
 import { showHandoffTour } from '@/components/onboarding-chat/signpost'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
@@ -28,7 +27,7 @@ import { requestGatewayForAgent } from '@/store/gateway'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $onboardingAnswers } from '@/store/onboarding-answers'
 import { beginOnboardingHandoff, completeOnboardingFlow } from '@/store/onboarding-gate'
-import { $activeGatewayProfile, $newChatProfile, $newChatRoute, ensureGatewayAgent } from '@/store/profile'
+import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayAgent } from '@/store/profile'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -75,7 +74,7 @@ export function useOnboardingHandoff({
       !isOnboardingEnabled() ||
       $setupHandoff.get() ||
       !selectedStoredId ||
-      $activeGatewayProfile.get() !== SETUP_PROFILE
+      $profiles.get().find(p => p.name === $activeGatewayProfile.get())?.role !== 'setup'
     ) {
       return
     }
@@ -104,7 +103,7 @@ export function useOnboardingHandoff({
 
       $setupSession.set({
         connectionId,
-        profile: SETUP_PROFILE,
+        profile: $activeGatewayProfile.get(),
         runtimeId: $activeSessionId.get() ?? '',
         storedId: selectedStoredId
       })
@@ -182,8 +181,7 @@ export function useOnboardingHandoff({
               const seed = await buildFirstTaskSeedMessages(
                 setupHandoff.task,
                 $onboardingAnswers.get(),
-                setupHandoff.plan,
-                owner
+                setupHandoff.plan
               )
 
               const runtimeId = await runCreatePinnedTo(BUILD_PROFILE, () =>

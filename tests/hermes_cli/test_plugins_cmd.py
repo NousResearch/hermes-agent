@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -15,12 +16,42 @@ from hermes_cli.plugins_cmd import (
     PluginOperationError,
     _copy_example_files,
     _read_manifest,
+    _refuse_unavailable_portable_plugin,
     _repo_name_from_url,
     _resolve_git_executable,
     _resolve_git_url,
     _resolve_subdir_within,
     _sanitize_plugin_name,
 )
+
+
+def _write_portable_app_plugin(root: Path, app: Path) -> None:
+    from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+    from hermes_platform.host.facts import os_family
+
+    (root / "plugin.json").write_text(json.dumps({
+        "$schema": PLUGIN_SCHEMA_V1,
+        "name": "example-plugin",
+        "extensions": {"com.nousresearch.hermes": {"servers": {"worker": {
+            "app": {os_family(): {"presence": "executable", "location": str(app)}},
+            "requires": {"app": True},
+        }}}},
+    }), encoding="utf-8")
+    (root / "mcp.json").write_text(json.dumps({
+        "$schema": MCP_SCHEMA_V1,
+        "mcpServers": {"worker": {"type": "stdio", "command": "python"}},
+    }), encoding="utf-8")
+
+
+def test_portable_install_gate_accepts_present_app_and_refuses_missing(tmp_path: Path) -> None:
+    app = tmp_path / "example-app"
+    app.write_text("", encoding="utf-8")
+    _write_portable_app_plugin(tmp_path, app)
+
+    _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
+    app.unlink()
+    with pytest.raises(PluginOperationError, match="example-plugin.*worker.*missing_app"):
+        _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
 
 
 # ── _sanitize_plugin_name ─────────────────────────────────────────────────
@@ -295,6 +326,34 @@ class TestGitPullPluginDirAutostash:
         assert ok is True
         assert "Already up to date" in msg
 
+    def test_autostash_addresses_git_by_sha_never_brace_selector(self, tmp_path, monkeypatch):
+        """Native Windows: MSYS strips the braces from ``stash@{0}`` in git.exe's argv, so the
+        apply and the drop must target the autostash by its commit sha / positionally (#87542)."""
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+        self._set_line(origin, "VALUE", "VALUE = 2")
+        git(origin, "commit", "-qam", "bump value")
+        self._set_line(checkout, "OTHER", "OTHER = 'local'")
+
+        argv_log: list[tuple[str, ...]] = []
+        real_run = pc._run_plugin_git
+
+        def recording_run(git_exe, target, *args, **kwargs):
+            argv_log.append(args)
+            return real_run(git_exe, target, *args, **kwargs)
+
+        monkeypatch.setattr(pc, "_run_plugin_git", recording_run)
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+
+        assert ok is True and "re-applied" in msg
+        assert git(checkout, "stash", "list").strip() == ""
+        assert not any("{" in arg or "}" in arg for args in argv_log for arg in args), argv_log
+        applied = [args for args in argv_log if args[:2] == ("stash", "apply")]
+        assert len(applied) == 1 and len(applied[0][2]) == 40, applied  # by commit sha
+
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────
 
@@ -361,7 +420,7 @@ class TestCmdInstall:
 
     @patch("hermes_cli.plugins_cmd._display_after_install")
     @patch("hermes_cli.plugins_cmd.shutil.move")
-    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
+    @patch("hermes_cli.plugins_cmd.rmtree_readonly")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd._read_manifest")
     @patch("hermes_cli.plugins_cmd.subprocess.run")
@@ -449,11 +508,13 @@ class TestCmdRemove:
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
+    @patch("hermes_cli.plugins_cmd.rmtree_readonly")
     def test_remove_deletes_plugin(self, mock_rmtree, mock_plugins_dir, mock_sanitize):
         from hermes_cli.plugins_cmd import cmd_remove
 
         mock_plugins_dir.return_value = MagicMock()
+        # ``plugins_dir / name`` is a real directory here, not a symlink (the link case unlinks only).
+        mock_plugins_dir.return_value.__truediv__.return_value.is_symlink.return_value = False
         mock_target = MagicMock()
         mock_target.exists.return_value = True
         mock_sanitize.return_value = mock_target
@@ -478,6 +539,22 @@ class TestCmdRemove:
             cmd_remove("nonexistent-plugin")
 
         assert exc_info.value.code == 1
+
+    def test_remove_plugin_core_deletes_read_only_git_tree(self, tmp_path):
+        """Git leaves loose objects read-only: removal must clear that, not abort (#117179)."""
+        from hermes_cli.plugins_cmd import _remove_plugin_core
+
+        target = tmp_path / "plugins" / "demo"
+        obj_dir = target / ".git" / "objects" / "4b"
+        obj_dir.mkdir(parents=True)
+        obj = obj_dir / "825dc642cb6eb9a060e54bf8d69288fbee4904"
+        obj.write_text("blob", encoding="utf-8")
+        obj.chmod(0o444)
+        obj_dir.chmod(0o555)
+
+        _remove_plugin_core(target)
+
+        assert not target.exists()
 
 
 # ── cmd_list tests ─────────────────────────────────────────────────────────
@@ -760,6 +837,39 @@ class TestSubdirInstallE2E:
         with pytest.raises(PluginOperationError, match="does not exist"):
             pc._install_plugin_core(identifier, force=False)
 
+    def test_subdir_install_stays_updatable(self, tmp_path, monkeypatch):
+        """A subdir install ships no ``.git`` (it stays in the temp clone), so ``plugins update``
+        must re-install from the recorded source instead of refusing (#65314)."""
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        import subprocess as sp
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "monorepo"
+        self._make_repo_with_subdir_plugin(repo_root)
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        monkeypatch.setattr(pc, "_install_metadata_path", lambda: plugins_dir / ".install-metadata.json")
+        target, _manifest, _name = pc._install_plugin_core(f"file://{repo_root}#my-plugin", force=False)
+        assert not (target / ".git").exists()
+
+        (repo_root / "my-plugin" / "__init__.py").write_text("VERSION = 2\n", encoding="utf-8")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        sp.run(["git", "commit", "-qam", "v2"], cwd=repo_root, check=True, env=env)
+        new_sha = sp.run(["git", "rev-parse", "HEAD"], cwd=repo_root, check=True,
+                         capture_output=True, text=True).stdout.strip()
+
+        output = pc._pull_plugin_update(target, lambda rec: "pinned", lambda: "not git")
+
+        assert "VERSION = 2" in (target / "__init__.py").read_text(encoding="utf-8")
+        assert pc._read_install_metadata()["my-plugin"]["revision"] == new_sha
+        assert "Already up to date" not in output
+        # A second update with nothing new upstream reports up to date, like `git pull`.
+        assert "Already up to date" in pc._pull_plugin_update(target, lambda rec: "pinned", lambda: "not git")
+
     def test_installs_portable_root_package_disabled(self, tmp_path, monkeypatch):
         if shutil.which("git") is None:
             pytest.skip("git not available")
@@ -943,5 +1053,29 @@ def test_autostash_dirty_tree_promotes_intent_to_add_entries(tmp_path):
 
     stashed, error = _autostash_dirty_tree("git", tmp_path)
 
-    assert (stashed, error) == (True, ""), "the plugin autostash must not be blocked by i-t-a entries"
+    assert error == "", "the plugin autostash must not be blocked by i-t-a entries"
+    assert stashed == git("rev-parse", "refs/stash").stdout.strip()  # the autostash commit sha
     assert git("status", "--porcelain").stdout == ""
+
+
+def test_toggle_plugin_toolset_rewrites_a_list_literal_string_platform_entry(tmp_path, monkeypatch):
+    """``hermes plugins enable`` must reach a platform whose ``platform_toolsets`` entry is the
+    list-literal string an older ``hermes config set`` stored, and re-save it as a real list —
+    the runtime already reads that string as the user's selection (follow-up to #115866)."""
+
+    from hermes_cli import plugins_cmd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"platform_toolsets": {"cli": '["web", "terminal"]', "telegram": ["hermes-telegram"]}}),
+        encoding="utf-8")
+    monkeypatch.setattr(plugins_cmd, "_get_plugin_toolset_key", lambda name: "my-plugin")
+
+    plugins_cmd._toggle_plugin_toolset("my-plugin", enable=True)
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["platform_toolsets"]
+    assert saved["cli"] == ["web", "terminal", "my-plugin"]
+    assert saved["telegram"] == ["hermes-telegram", "my-plugin"]
+
+    plugins_cmd._toggle_plugin_toolset("my-plugin", enable=False)
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["platform_toolsets"]
+    assert saved["cli"] == ["web", "terminal"]

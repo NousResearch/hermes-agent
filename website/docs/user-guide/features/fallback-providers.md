@@ -39,6 +39,17 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
+
+```yaml
+fallback:
+  min_switch_reset_seconds: 120   # 0 (default) = always switch
+```
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
+
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini
 client, including its `generationConfig.thinkingConfig` translation. A custom

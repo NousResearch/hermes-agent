@@ -1,4 +1,6 @@
-import type { ConnectionRequestPayload } from '@hermes/shared'
+import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
+
+export type StoredToolCallLabels = Record<string, ToolLabel[]>
 
 export interface ConfigFieldSchema {
   category?: string
@@ -548,6 +550,13 @@ export interface SessionInfo {
    *  elsewhere. Undefined against a backend predating the flag; treat that as
    *  "no opinion" and leave the local pin set alone. */
   pinned?: boolean
+  /** Server-side hide flag (`sessions.hidden`). Hidden rows (canonical Bot
+   *  Chats, group-chat plumbing) never reach a sidebar page, so a row
+   *  carrying `hidden: true` only exists in the local list through an
+   *  optimistic insert or a keep-list carry — the merge must not let it
+   *  survive a refresh (#113273). Undefined against older backends; treat
+   *  as visible. */
+  hidden?: boolean
   /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
    *  see `SessionDB.session_unread`). True when the conversation was
    *  explicitly marked unread or a response arrived after it was last read.
@@ -608,6 +617,8 @@ export interface SessionMessage {
    */
   args?: unknown
   codex_reasoning_items?: unknown
+  labels?: ToolLabel[]
+  tool_call_labels?: StoredToolCallLabels
   /** Responses-API assistant message items; text parts here are the
    *  user-visible reply when `content` persisted empty (#68321). */
   codex_message_items?: unknown
@@ -1024,6 +1035,8 @@ export interface ProfileInfo {
   name: string
   path: string
   provider: null | string
+  /** Backend-assigned role from profile.yaml; `setup` marks the onboarding guide's profile. */
+  role?: 'setup' | null
   skill_count: number
 }
 
@@ -1265,6 +1278,10 @@ export interface ComputerUseStatus {
 }
 
 export interface SessionSearchResult {
+  /** Recency of the matched conversation, straight from the sessions row —
+   *  present on hits backed by a rich row (the search endpoint fills it).
+   *  Used to order unloaded hits honestly; falls back to session_started. */
+  last_active?: number | null
   /** Lineage root of the matched conversation. Stable across compression and
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null
@@ -1543,21 +1560,6 @@ export interface StaleAuxAssignment {
   model: string
 }
 
-export type CronModelDriftAxis = 'model' | 'provider'
-
-export interface CronModelImpactJob {
-  id: string
-  name: string
-  drifted_axes: CronModelDriftAxis[]
-}
-
-export interface CronModelImpact {
-  available: boolean
-  affected_count: number
-  truncated: boolean
-  jobs: CronModelImpactJob[]
-}
-
 /** One skill-hub source (official index, GitHub, skills.sh, …) as reported by
  *  `GET /api/skills/hub/sources`. */
 export interface SkillHubSource {
@@ -1657,6 +1659,7 @@ export interface McpServerTestResponse {
 export interface McpCatalogEntry {
   name: string
   description: string
+  connector_slug?: string | null
   source: string
   transport: string
   auth_type: string
@@ -1726,8 +1729,6 @@ export interface ModelAssignmentResponse {
    *  switching the main provider to Nous. Empty unless provider === 'nous'
    *  and the user is a paid subscriber with unconfigured tools. */
   gateway_tools?: string[]
-  /** Additive profile-local cron impact returned after a persisted main assignment. */
-  cron_model_impact?: CronModelImpact
   confirm_message?: string
   confirm_required?: boolean
   model?: string

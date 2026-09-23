@@ -233,6 +233,41 @@ describe('materializing the draft profile', () => {
     )
   })
 
+  it('lets a remote-target Bot start fresh instead of forcing a clone of the target default', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+
+    await renderDialog(true)
+
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+
+    // The picker stays live for a remote target and offers only what exists
+    // on THAT machine: fresh, or its own default — never a local roster name.
+    const cloneFrom = controlUnder('Clone from profile (on Studio)')
+
+    expect(cloneFrom.getAttribute('data-disabled')).toBeNull()
+    fireEvent.click(cloneFrom)
+    expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual([
+      'Fresh profile (bundled skills)',
+      'default'
+    ])
+    fireEvent.click(screen.getByRole('option', { name: /Fresh profile/ }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() =>
+      expect(mocks.requestProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'studio' }),
+        'profiles.create',
+        expect.objectContaining({ clone_from: null, name: 'inbox-triage' })
+      )
+    )
+  })
+
   it('creates it on the first MCP setup click, then adds the server to it', async () => {
     // Older builds keep the staged MCP tab, which is where the setup button
     // lives. There is no "save the agent first" gate: the button is live.

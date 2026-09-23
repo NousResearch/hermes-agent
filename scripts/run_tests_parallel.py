@@ -58,6 +58,29 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+def _sweep_killed_run_roots(root: str) -> None:
+    """Remove per-file temp roots older runs left behind. Each attempt deletes its own root
+    in ``finally``, but a runner that is SIGKILLed (a tool timeout, a stray pkill) never gets
+    there and leaks one root per in-flight worker; nothing else looks at this directory, so
+    983 of them (3.4 GB) accumulated on one host in three days. Idle for a day = dead."""
+    try:
+        from hermes_constants_scratch import prune_idle_entries
+    except ImportError:  # runner invoked from outside the repo root
+        return
+    prune_idle_entries(Path(root), 24, frozenset())
+
+
+def _rmtree_force(path: str) -> None:
+    def _chmod_retry(fn, p, _exc):
+        try:
+            os.chmod(os.path.dirname(p) if fn is os.rmdir or fn is os.listdir else p, 0o700)
+            os.chmod(p, 0o700)
+            fn(p)
+        except OSError:
+            pass
+    shutil.rmtree(path, onerror=_chmod_retry)
+
+
 def _runner_scratch_root() -> str:
     """Per-run temp roots live on DISK, never the system temp dir: a full-suite run writes
     gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on many Linux hosts. /var/tmp is
@@ -162,6 +185,29 @@ def _split_pathspec(value: str) -> List[str]:
 # this runner never executes them, by construction. The summary calls that
 # out explicitly so a local run isn't misread as covering macOS/Windows
 # behaviour, and names the CI lane where those tests actually execute.
+
+
+def _read_files_from(spec: str) -> List[str]:
+    """Read an explicit test-file list from *spec* - a path, or ``-`` for stdin.
+
+    One path per line, blank lines ignored. This is the file-backed
+    counterpart of ``--files`` for lists that exceed the kernel's
+    per-argument cap (``MAX_ARG_STRLEN``, 128 KiB on Linux): the
+    whole-suite list is already ~210 KB, so passing it as one ``--files``
+    argv element dies with ``E2BIG`` in ``execve`` before the runner's
+    first line can even run.
+    """
+    if spec == "-":
+        text = sys.stdin.read()
+    else:
+        try:
+            text = Path(spec).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"error: --files-from: cannot read {spec!r}: {exc}", file=sys.stderr)
+            sys.exit(2)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
 _OS_MARKERS = {
     "linux_only": ("linux", "the main Linux CI lane"),
     "macos_only": ("darwin", "the tests-os CI lane (macos-latest)"),
@@ -414,6 +460,10 @@ def _run_one_file(
         file, pytest_args, repo_root, file_timeout
     )
     attempt = 0
+    # A worker killed by signal (OOM, SIGKILL) or the file timeout is a runaway, not a flake:
+    # relaunching it doubles the damage while the first tree is still being reaped.
+    if rc < 0 or rc == 124:
+        retries = 0
     while rc != 0 and attempt < retries:
         attempt += 1
         first_output = output
@@ -528,8 +578,9 @@ def _run_one_file_once(
     finally:
         # Delete the temp root for this attempt. Nothing reads it after the
         # subprocess exits. More than 3000 of them fill the disk of the
-        # runner over one suite.
-        shutil.rmtree(temproot, ignore_errors=True)
+        # runner over one suite. Permission fixtures leave read-only dirs
+        # behind; make them writable and retry instead of skipping them.
+        _rmtree_force(temproot)
 
     if rc == 5:
         # No tests collected in THIS file — legitimate per-file: a
@@ -993,7 +1044,20 @@ def main() -> int:
             "Explicit colon-separated list of test files to run (on "
             "Windows, ';' also separates and drive letters are kept "
             "intact). Bypasses discovery entirely — used by CI matrix "
-            "jobs that receive their file list from the generate job."
+            "jobs that receive their file list from the generate job. "
+            "A whole-suite list (~210 KB) exceeds the kernel's "
+            "per-argument cap (MAX_ARG_STRLEN, 128 KiB) and dies with "
+            "E2BIG before this script starts — pass it via --files-from."
+        ),
+    )
+    parser.add_argument(
+        "--files-from",
+        metavar="PATH",
+        help=(
+            "Read the explicit list of test files from PATH (one per "
+            "line, blank lines ignored), or from stdin when PATH is '-'. "
+            "File-backed counterpart of --files for lists that exceed "
+            "the per-argv-element cap; mutually exclusive with --files."
         ),
     )
     parser.add_argument(
@@ -1025,6 +1089,7 @@ def main() -> int:
     OUR_FLAGS = {
         "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
+        "--files-from",
     }
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
@@ -1043,6 +1108,13 @@ def main() -> int:
         return False
 
     argv = sys.argv[1:]
+    # argparse treats a bare "-" as a positional, so "--files-from -"
+    # would die with "expected one argument" before our code ever runs.
+    # Normalize to the "="-joined form, which argparse accepts.
+    if "--files-from" in argv:
+        i = argv.index("--files-from")
+        if i + 1 < len(argv) and argv[i + 1] == "-":
+            argv[i : i + 2] = ["--files-from=-"]
     if "--" in argv:
         sep = argv.index("--")
         before, explicit_passthrough = argv[:sep], argv[sep + 1 :]
@@ -1134,9 +1206,18 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
 
-    # --files: explicit file list from the CI generate job — skip discovery.
+    # --files / --files-from: explicit file list (argv or file-backed) from
+    # the CI generate job — skip discovery.
+    if args.files and args.files_from:
+        print(
+            "error: --files and --files-from are mutually exclusive", file=sys.stderr
+        )
+        sys.exit(2)
     if args.files:
         files = [repo_root / f for f in _split_pathspec(args.files)]
+        roots = []
+    elif args.files_from:
+        files = [repo_root / f for f in _read_files_from(args.files_from)]
         roots = []
     else:
         # Resolve discovery roots: positional path args override --paths if any
@@ -1271,6 +1352,10 @@ def main() -> int:
             )
             if rc != 0:
                 _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
+
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    _sweep_killed_run_roots(_runner_scratch_root())
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         # Duration cache for the timeout scaler: known-slow files get

@@ -94,7 +94,37 @@ def test_preflight_blocker_and_single_profile_keep_the_unset_default_standalone(
     assert decision == mode.MultiplexDecision(False, "guard", mode.SINGLE_PROFILE_REASON)
 
 
-def test_explicit_flag_is_never_second_guessed(fleet, monkeypatch):
+def test_standalone_named_profile_leaves_nothing_to_multiplex(fleet):
+    """A sole named profile that opts itself out via `gateway.standalone: true` is not
+    served, so the host still has a single profile to serve: guard, not multiplex."""
+    root, _services, _pids = fleet
+    shutil.rmtree(root / "profiles/ops")  # exactly one named profile remains
+    (root / "profiles/coder/config.yaml").write_text("gateway:\n  standalone: true\n")
+    decision = mode.resolve_multiplex_mode(load_gateway_config())
+    assert decision == mode.MultiplexDecision(False, "guard", mode.SINGLE_PROFILE_REASON)
+
+
+@pytest.mark.parametrize("flag", ["", "  multiplex_profiles: true\n", "  multiplex_profiles: false\n"])
+def test_standalone_launcher_never_multiplexes_other_profiles(fleet, flag):
+    from gateway.run import _profile_runtime_scope
+
+    root, _services, _pids = fleet
+    solo = root / "profiles/coder"
+    (solo / "config.yaml").write_text("gateway:\n  standalone: true\n" + flag)
+    # Real loader + runtime scopes: A -> B -> A, without borrowing the launch home's config.
+    for home in (solo, root, solo):
+        with _profile_runtime_scope(home):
+            cfg = load_gateway_config()
+            decision = mode.resolve_multiplex_mode(cfg)
+        if home == solo:
+            assert decision.enabled is False
+            assert cfg.multiplex_profiles is False
+            assert "this profile is standalone" in decision.reason
+        else:
+            assert decision.enabled is True
+
+
+def test_explicit_true_is_never_second_guessed_and_explicit_false_is_retired(fleet, monkeypatch):
     root, _services, pids = fleet
     pids["coder"] = 4101
     (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
@@ -103,12 +133,22 @@ def test_explicit_flag_is_never_second_guessed(fleet, monkeypatch):
     assert cfg.multiplex_profiles is True
     assert mode.explicit_multiplex_flag(root) is True
 
+    # RETIRED opt-out: `false` still parses, but it can no longer pin a second gateway onto this
+    # host — with nothing blocking, the process multiplexes and says the key was ignored.
     monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "false")
     pids.clear()
     cfg = load_gateway_config()
-    assert mode.resolve_multiplex_mode(cfg) == mode.MultiplexDecision(False, "config")
-    assert cfg.multiplex_profiles is False
+    decision = mode.resolve_multiplex_mode(cfg)
+    assert decision.enabled is True and decision.source == "retired-opt-out"
+    assert cfg.multiplex_profiles is True
     assert mode.explicit_multiplex_flag(root) is False
+
+    # ...and it still cannot force a fold that would double-bind: a secondary that owns a live
+    # gateway keeps this process standalone, with the blocker named (never a silent second bind).
+    pids["coder"] = 4101
+    cfg = load_gateway_config()
+    guarded = mode.resolve_multiplex_mode(cfg)
+    assert guarded.enabled is False and guarded.source == "guard" and "coder" in guarded.reason
 
 
 def test_migration_plan_treats_the_unset_default_as_not_yet_multiplexed(fleet):

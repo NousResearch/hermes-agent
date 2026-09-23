@@ -1260,6 +1260,41 @@ class TestRenameProfile:
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
 
+    def test_rename_records_previous_name(self, profile_env):
+        create_profile("oldname", no_alias=True)
+
+        # Mock alias collision to avoid subprocess calls
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            new_dir = rename_profile("oldname", "newname")
+
+        # The rename history is recorded in the new profile's metadata ...
+        assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
+        # ... and surfaces through list_profiles (the gateway's profiles.list
+        # source), so Bot Mode group chats can re-link stale member handles.
+        info = next(p for p in list_profiles() if p.name == "newname")
+        assert info.previous_names == ["oldname"]
+
+    def test_rename_accumulates_previous_names(self, profile_env):
+        create_profile("firstname", no_alias=True)
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("firstname", "secondname")
+            rename_profile("secondname", "thirdname")
+
+        info = next(p for p in list_profiles() if p.name == "thirdname")
+        assert info.previous_names == ["firstname", "secondname"]
+
+    def test_rename_succeeds_when_previous_name_write_fails(self, profile_env):
+        create_profile("oldname", no_alias=True)
+
+        # The history write is best-effort: it must never fail the rename.
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles.write_profile_meta", side_effect=OSError("disk full")):
+            new_dir = rename_profile("oldname", "newname")
+
+        assert new_dir.is_dir()
+
+
 
 class TestExportImport:
     """Tests for export_profile() / import_profile()."""
@@ -1606,6 +1641,95 @@ class TestProfilesToServe:
         assert set(serve) == {"default", "coder", "writer"}
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
+
+    # ------------------------------------------------------------------
+    # gateway.standalone: authored opt-out of the host multiplexer
+    # ------------------------------------------------------------------
+
+    def test_standalone_profile_excluded_unless_included(self, profile_env):
+        """A named profile that sets `gateway.standalone: true` is not served by the
+        host multiplexer, but callers that enumerate INSTALLED profiles still see it."""
+        create_profile("solo", no_alias=True)
+        create_profile("member", no_alias=True)
+        (get_profile_dir("solo") / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        serve = dict(profiles_to_serve(multiplex=True))
+        assert set(serve) == {"default", "member"}
+        served_all = dict(profiles_to_serve(multiplex=True, include_standalone=True))
+        assert set(served_all) == {"default", "solo", "member"}
+
+    def test_default_profile_with_key_still_served_with_one_warning(self, profile_env, caplog):
+        """The default profile IS the host: the key is ignored (still served, never
+        standalone) with exactly one warning per process."""
+        profiles._STANDALONE_WARNED = False
+        default_home = _get_default_hermes_home()
+        (default_home / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="hermes_cli.profiles"):
+            serve = dict(profiles_to_serve(multiplex=True))
+            assert profiles.profile_is_standalone(default_home) is False
+            assert profiles.profile_is_standalone(default_home) is False
+        assert list(serve) == ["default"]
+        assert serve["default"] == default_home
+        assert len([r for r in caplog.records if "ignored on the default profile" in r.message]) == 1
+
+    @pytest.mark.parametrize("content", ["gateway: [", "[]\n", "null\n", "", "gateway: false\n"])
+    def test_standalone_malformed_config_does_not_break_roster(self, profile_env, caplog, content):
+        create_profile("solo", no_alias=True)
+        home = get_profile_dir("solo")
+        (home / "config.yaml").write_text(content)
+        for _ in range(2):
+            assert profiles.profile_is_standalone(home) is False
+            assert "solo" in dict(profiles_to_serve(True))
+        warnings = [r for r in caplog.records if "Cannot read gateway.standalone" in r.message]
+        assert len(warnings) == (1 if content == "gateway: [" else 0)
+
+    @pytest.mark.parametrize("failure_at", ["stat", "read", "decode"])
+    def test_standalone_io_failure_is_bounded_and_recovers(self, profile_env, monkeypatch, caplog, failure_at):
+        from hermes_cli import config
+
+        create_profile("solo", no_alias=True)
+        home = get_profile_dir("solo")
+        cfg = home / "config.yaml"
+        cfg.write_text("gateway:\n  standalone: true\n")
+        real_stat = Path.stat
+
+        def denied(path, *args, **kwargs):
+            if path == cfg:
+                raise PermissionError("denied")
+            return real_stat(path, *args, **kwargs)
+
+        def unreadable(*args, **kwargs):
+            if failure_at == "decode":
+                raise UnicodeError("decode failed")
+            raise PermissionError("denied")
+
+        with monkeypatch.context() as m:
+            if failure_at == "stat":
+                m.setattr(Path, "stat", denied)
+            else:
+                m.setattr(config, "read_user_config_raw", unreadable)
+            assert profiles.profile_is_standalone(home) is False
+            assert profiles.profile_is_standalone(home) is False
+        assert len([r for r in caplog.records if "Cannot read gateway.standalone" in r.message]) == 1
+        # Restoring access does not change mtime/size/inode; a read failure is not config.
+        assert profiles.profile_is_standalone(home) is True
+
+    def test_standalone_answer_is_per_home_and_memo_invalidates_on_replacement(self, profile_env):
+        """A->B->A: signatures never cross homes; atomic replacement invalidates the memo."""
+        create_profile("alpha", no_alias=True)
+        create_profile("beta", no_alias=True)
+        alpha, beta = get_profile_dir("alpha"), get_profile_dir("beta")
+        (alpha / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        assert profiles.profile_is_standalone(alpha) is True
+        assert profiles.profile_is_standalone(beta) is False
+        assert profiles.profile_is_standalone(alpha) is True  # memo hit, still True
+        cfg = alpha / "config.yaml"
+        replacement = alpha / "replacement.yaml"
+        replacement.write_text("gateway:\n  standalone: false\n")
+        replacement.replace(cfg)
+        assert profiles.profile_is_standalone(alpha) is False
+        assert profiles.profile_is_standalone(beta) is False
+        assert profiles.profile_is_standalone(alpha) is False
 
 
 # ---------------------------------------------------------------------------

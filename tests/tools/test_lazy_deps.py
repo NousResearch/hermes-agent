@@ -223,6 +223,13 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"mautrix": "0.20.0"})
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
 
+    def test_plugin_owned_sdk_newer_compatible_release_is_satisfied(self, monkeypatch):
+        """A newer release inside the plugin.yaml range must not be re-pinned downward on refresh
+        (#86992 hindsight-client 0.9.x -> 0.6.1, #98407 mem0ai 2.0.19 -> 2.0.10)."""
+        self._fake_version(monkeypatch, {"hindsight-client": "0.9.2", "mem0ai": "2.0.19"})
+        assert ld.feature_missing("memory.hindsight") == ()
+        assert ld.feature_missing("memory.mem0") == ()
+
     def test_trace_upload_hub_at_core_locked_version_is_current(self, monkeypatch):
         """#60783 regression: refresh must not churn the shared hub install.
 
@@ -426,6 +433,34 @@ class TestRefreshActiveFeatures:
 
 
 class TestInstallSpecs:
+    def test_uv_tier_runs_from_the_checkout_so_exclude_newer_applies(self, monkeypatch, tmp_path):
+        """uv reads ``[tool.uv] exclude-newer`` from the cwd project only; a plugin-dep install launched from
+        $HOME or a gateway service must still run under the checkout's quarantine, so the uv invocation
+        carries the checkout root as cwd (#L1-3 of the 2026-09 plugin audit)."""
+        import subprocess
+        from pathlib import Path
+
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append((cmd, kw))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(ld, "_run_installer", fake_run)
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **kw: None)
+        monkeypatch.chdir(tmp_path)
+        project_root = Path(ld.__file__).resolve().parent.parent
+        assert (project_root / "pyproject.toml").is_file()
+
+        result = ld._venv_pip_install(("requests==2.32.0",))
+
+        assert result.success
+        (cmd, kw), = calls
+        assert cmd[:3] == ["/fake/uv", "pip", "install"]
+        assert kw.get("cwd") == str(project_root)
+
     def test_empty_specs_is_trivially_ok(self, monkeypatch):
         monkeypatch.setattr(
             ld, "_venv_pip_install",
@@ -600,3 +635,47 @@ class TestInstallWarmsBytecode:
         cmd = uv_cmds[0]
         assert "--compile-bytecode" in cmd
         assert cmd.index("--compile-bytecode") < cmd.index("zzzfake==1.0")
+
+
+# ---------------------------------------------------------------------------
+# pip.conf index-url bridge for the uv tier (#95608)
+# ---------------------------------------------------------------------------
+
+class TestPipConfIndexBridge:
+    MIRROR = "https://user:p%40ss@mirror.example/simple"  # percent-encoded credential, the mirrored-host shape
+
+    def _run_with_fake_uv(self, monkeypatch, tmp_path, **env):
+        """Run _venv_pip_install against a stubbed uv (with *env* set) and return the env it was spawned with."""
+        conf = tmp_path / "pip.conf"
+        conf.write_text(f"[global]\nindex-url = {self.MIRROR}\n", encoding="utf-8")
+        # PIP_CONFIG_FILE is pip's highest file tier, so it wins over any host /etc file.
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        monkeypatch.setattr(ld.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(ld.sys, "prefix", str(tmp_path / "venv"))
+        for var in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX"):
+            monkeypatch.delenv(var, raising=False)
+        for var, value in env.items():
+            monkeypatch.setenv(var, value)
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            return ld.subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ld, "_run_installer", fake_run)
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
+        monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **k: None)
+        result = ld._venv_pip_install(("somepkg==1.0",))
+        assert result.success
+        return captured["env"]
+
+    def test_pip_conf_index_url_bridged_unless_uv_has_its_own_index(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
+        assert self._run_with_fake_uv(monkeypatch, tmp_path)["UV_INDEX_URL"] == self.MIRROR
+
+        env = self._run_with_fake_uv(monkeypatch, tmp_path, UV_DEFAULT_INDEX="https://custom.example/simple")
+        assert "UV_INDEX_URL" not in env
+
+    def test_pip_index_url_env_beats_pip_conf(self, monkeypatch, tmp_path):
+        env = self._run_with_fake_uv(monkeypatch, tmp_path, PIP_INDEX_URL="https://env.example/simple")
+        assert env["UV_INDEX_URL"] == "https://env.example/simple"

@@ -240,12 +240,17 @@ class _SlashWorker:
         # worker must resolve config/skills/state against the session's profile home, not the gateway's
         # launch HERMES_HOME (#40677).
         from tools.environments.local import served_profile_child_env
+        from agent.secret_scope import is_multiplex_active
 
         # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
         # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and
         # none of the launch profile's .env / TERMINAL_* residue, exactly what a standalone
-        # `hermes -p X` would load itself.
-        env = _prepend_tool_paths(served_profile_child_env(target_home=profile_home, inherit_credentials=True))
+        # `hermes -p X` would load itself. The launch profile is a profile too: once the process hosts
+        # a second home (multiplex flipped), its worker must name its own home or the fail-closed
+        # no-target/no-scope path raises UnscopedSecretError (#115427).
+        env = _prepend_tool_paths(served_profile_child_env(
+            target_home=profile_home or (_hermes_home if is_multiplex_active() else None),
+            inherit_credentials=True))
         # Internal slash workers must import the same checkout as their parent.
         module_root = str(Path(__file__).resolve().parent.parent)
         env["PYTHONPATH"] = os.pathsep.join(
@@ -732,7 +737,8 @@ def _pending_connection_request_payload(sid: str) -> dict | None:
     from tools.connectors import live
 
     session = _sessions.get(sid)
-    operation = live.current(str(session.get("session_key") or "")) if session else None
+    operation = (live.current(str(session.get("session_key") or ""), profile_home=session.get("profile_home"))
+                 if session else None)
     return operation.request_payload() if operation is not None else None
 
 
@@ -1234,11 +1240,9 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from utils import atomic_roundtrip_yaml_save
+    from hermes_cli.config import atomic_config_write
     path = _active_config_path()
-    # Comment-, ordering- and Unicode-preserving write (a plain safe_dump clobbered hand-written configs);
-    # fails closed on an unreadable existing config.yaml like atomic_config_write.
-    atomic_roundtrip_yaml_save(path, cfg)
+    atomic_config_write(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
@@ -1502,18 +1506,33 @@ def _parse_model_config(raw, *, quiet: bool = False) -> dict:
     return {}
 
 
+def _row_follows_profile(row: dict | None) -> bool:
+    """Whether a stored row is a canonical Bot Chat whose runtime follows the member profile's config.
+    Identity is the persisted ``follow_profile_config`` marker; the bare title compare stays ONLY here as
+    the legacy fallback for rows written before the marker existed."""
+    if not row:
+        return False
+    model_config = _parse_model_config(row.get("model_config"), quiet=True)
+    return bool(model_config.get("follow_profile_config") or str(row.get("title") or "").strip() == "Bot Chat")
+
+
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
     """Runtime fields persisted with a stored session (model column, ``billing_provider``, JSON ``model_config``):
     resume restores the model/provider/reasoning THAT chat used, not the global pick. Plugin-owned Bot-Mode
-    sessions are exempt and rebuild from the member profile's CURRENT config (a stale provider pin left
-    room bots "out of Nous credits" after a profile switch); signals: ``room_plumbing`` /
-    ``follow_profile_config`` markers, the legacy hidden + "Group:" title, the title exactly "Bot Chat"."""
+    sessions normally rebuild from the member profile's CURRENT config (a stale provider pin left room bots
+    "out of Nous credits" after a profile switch). A canonical Bot Chat may instead restore an explicit
+    composer pick while the profile model it diverged from remains unchanged."""
     if not row:
         return {}
     model_config = _parse_model_config(row.get("model_config"), quiet=True)
     _row_title = str(row.get("title") or "").strip()
-    if (model_config.get("room_plumbing") or (row.get("hidden") and _row_title.startswith("Group:"))
-            or model_config.get("follow_profile_config") or _row_title == "Bot Chat"):
+    room_plumbing = model_config.get("room_plumbing") or (row.get("hidden") and _row_title.startswith("Group:"))
+    composer_profile = model_config.get("composer_override_profile")
+    composer_profile_matches = isinstance(composer_profile, dict) and (
+        str(composer_profile.get("model") or "").strip(),
+        str(composer_profile.get("provider") or "").strip(),
+    ) == _config_model_target()
+    if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
     field = lambda k: str(model_config.get(k) or "").strip()
@@ -1594,6 +1613,10 @@ def _persist_live_session_runtime(session: dict | None) -> None:
     try:
         row = db.get_session(session_key) or {}
         model_config = _runtime_model_config(agent, _parse_model_config(row.get("model_config")))
+        if isinstance(composer_profile := session.get("composer_override_profile"), dict):
+            model_config["composer_override_profile"] = composer_profile
+        elif "composer_override_profile" in session:
+            model_config.pop("composer_override_profile", None)
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
@@ -1806,6 +1829,17 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     return {"project", "desktop_ui"} if platform == "desktop" else {"project"}
 
 
+def _with_session_toolsets(selection, platform: str | None) -> list[str]:
+    """*selection* plus what the session carries whatever its config says (the client surface's
+    toolsets when *platform* is given; the ones its PROFILE's role reserves, from the backend-written
+    profile.yaml under the session's home override), minus toolsets reserved for another role."""
+    from toolsets import profile_role_toolsets
+    granted, denied = profile_role_toolsets()
+    surface = _gui_surface_toolsets(platform) if platform is not None else set()
+    kept = [name for name in selection if name not in denied]
+    return [*kept, *sorted((surface | granted) - set(kept))]
+
+
 def _tui_notice(text: str) -> None:
     print(text, file=sys.stderr, flush=True)
 
@@ -1831,13 +1865,13 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
         return built_in
     try:  # (enabled, disabled) MCP server names from raw config; both empty on any failure
         from hermes_cli.config import read_raw_config
-        from hermes_cli.tools_config import _parse_enabled_flag
+        from tools.mcp_tool_common import mcp_server_enabled
         raw_cfg = read_raw_config()
         mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
         mcp_names, mcp_disabled = set(), set()
         for name, server_cfg in mcp_servers.items():
             if isinstance(server_cfg, dict):
-                on = _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+                on = mcp_server_enabled(server_cfg)
                 (mcp_names if on else mcp_disabled).add(str(name))
     except Exception:
         mcp_names, mcp_disabled = set(), set()
@@ -1864,7 +1898,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             from agent.coding_context import coding_selection
             selection = coding_selection(platform=session_platform)
             if selection is not None:
-                return sorted({*selection, *_gui_surface_toolsets(session_platform)})
+                return sorted(_with_session_toolsets(selection, session_platform))
     try:
         from toolsets import validate_toolset
     except Exception:
@@ -1872,7 +1906,8 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     if explicit and validate_toolset is not None:
         resolved = _resolve_explicit_toolsets(explicit, validate_toolset)
         if resolved is not False:
-            return resolved
+            # An operator pin replaces the surface fold-in but never strips the profile's own role toolsets.
+            return resolved if resolved is None else _with_session_toolsets(resolved, None)
         fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
     try:
         from hermes_cli.config import load_config
@@ -1886,7 +1921,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
-        return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else None
+        return sorted(_with_session_toolsets(enabled, session_platform)) if enabled else None
     except Exception:
         if fallback_notice is not None:
             _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")
@@ -2023,7 +2058,7 @@ def _current_profile_name() -> str:
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
 # backend still emits `<kind>.request` notifications the renderer no longer listens for.
-DESKTOP_BACKEND_CONTRACT = 7
+DESKTOP_BACKEND_CONTRACT = 8
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -2235,8 +2270,10 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
+                from hermes_cli.auth import primary_failure_wording
                 logging.getLogger(__name__).warning(
-                    "Primary auth failed (%s), falling back to %s model %s", primary_exc, fb_provider, fb_model)
+                    "Primary %s (%s), falling back to %s model %s",
+                    primary_failure_wording(primary_exc)[0], primary_exc, fb_provider, fb_model)
                 return _RuntimeFallbackResolution(runtime, fb_model, True)
             except Exception:
                 continue
@@ -3304,7 +3341,8 @@ from . import (  # noqa: E402
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
-    methods_connectors as _methods_connectors)
+    methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
+    methods_onboarding as _methods_onboarding)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
@@ -3314,6 +3352,7 @@ for _m in (
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
-    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors):
+    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
+    _methods_connectors_account, _methods_onboarding):
     _m.register(sys.modules[__name__])
 del _m

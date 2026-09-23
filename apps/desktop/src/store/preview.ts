@@ -25,6 +25,9 @@ export type PreviewRenderMode = 'preview' | 'source'
 
 export interface PreviewTarget {
   binary?: boolean
+  /** Isolated viewer, not a personal browser: fresh in-memory cookies/storage
+   * and no profile-import offer. Independent of tab persistence (`transient`). */
+  browserContext?: 'isolated'
   byteSize?: number
   /** Inline image bytes (a `data:` URL) when the renderer already holds them —
    * e.g. a pasted/dropped screenshot whose only on-disk copy is a transient
@@ -314,9 +317,15 @@ export const $previewTarget = computed(
  *  preview open and closed by the target they were handed. */
 export const $previewTabSources = computed($previewTabs, tabs => tabs.map(tab => tab.target.source))
 
+export interface BrowserDocument {
+  /** Live guest identity; deliberately memory-only and never persisted. */
+  isLive: () => boolean
+}
+
 export interface BrowserPage {
   title: string
   url: string
+  document?: BrowserDocument
 }
 
 /**
@@ -331,7 +340,7 @@ export const $browserPages = atom<Record<string, BrowserPage>>({})
 export function noteBrowserPage(tabId: string, page: BrowserPage) {
   const current = $browserPages.get()[tabId]
 
-  if (current?.title === page.title && current.url === page.url) {
+  if (current?.title === page.title && current.url === page.url && current.document === page.document) {
     return
   }
 
@@ -412,10 +421,18 @@ export function adoptPersistedBrowserTab(tabId: string) {
   }
 }
 
+/** The ordinary popout restores its target from storage in another renderer.
+ * Runtime-only viewers need the explicit viewer-window capability instead. */
+export function canPopOutBrowserTab(tabId: string): boolean {
+  const target = $previewTabs.get().find(tab => tab.id === tabId)?.target
+
+  return canOpenBrowserWindow() && target?.kind === 'url' && !target.transient && target.browserContext !== 'isolated'
+}
+
 /** Pop the in-app Browser into its own OS window. Shared by the address-bar
  *  glyph and the tab context menu so they cannot drift. */
 export function popOutBrowserTab(tabId: string) {
-  if (!tabId || !canOpenBrowserWindow()) {
+  if (!tabId || !canPopOutBrowserTab(tabId)) {
     return
   }
 
@@ -476,7 +493,7 @@ export function previewTabId(target: PreviewTarget): RightRailTabId {
   return `${target.kind}:${target.url}`
 }
 
-const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url'
+const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url' && tab.target.browserContext !== 'isolated'
 
 /** A Browser tab's id, minted the way a terminal's is — there is no identity to
  *  derive one from. Random rather than the lowest free slot: an id is never
@@ -539,12 +556,22 @@ export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMod
  *  only way anything reaches a preview. */
 export function openPreview(target: PreviewTarget) {
   const current = $previewTabs.get()
-  const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target)
+
+  const id =
+    target.kind !== 'url'
+      ? previewTabId(target)
+      : target.browserContext === 'isolated'
+        ? (current.find(tab => tab.target.browserContext === 'isolated' && tab.target.url === target.url)?.id ??
+          mintBrowserTabId())
+        : browserTabId(current)
+
   const index = current.findIndex(tab => tab.id === id)
   const tab: PreviewTab = { id, target: withRenderMode(target, current[index]?.target) }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)
+
+  return tab
 }
 
 const blankPage = (): PreviewTarget => ({ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' })

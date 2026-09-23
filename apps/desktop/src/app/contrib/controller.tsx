@@ -40,6 +40,8 @@ import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
+import { SESSION_AREAS } from '@/contrib/session'
+import { SessionContributions } from '@/contrib/session-contributions'
 import { LocalizedTabTitle, translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import {
@@ -501,7 +503,12 @@ const syncWorkspaceTitle = () => {
       // tiles render, so the main tab never disagrees with its sidebar row. A
       // fresh draft has no session to key by, which IS its status: the dot
       // resolves to `draft` and marks the tab rather than leaving a hole.
-      tabLead: () => <SessionStatusDot session={stored} storedSessionId={selected} />,
+      tabLead: () => (
+        <>
+          <SessionStatusDot session={stored} storedSessionId={selected} />
+          <SessionContributions area={SESSION_AREAS.tileBadge} storedSessionId={selected} />
+        </>
+      ),
       // A draft's name lives in its composer, not in any session row, so the
       // label subscribes to it directly — typing renames the tab without
       // re-registering the pane.

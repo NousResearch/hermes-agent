@@ -28,12 +28,15 @@ import {
 } from '@/lib/preview-annotate'
 import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { createPreviewWebview } from '@/lib/preview-webview'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $browserPages,
   $previewServerRestart,
+  type BrowserDocument,
+  canPopOutBrowserTab,
   commitBrowserTabLocation,
   failPreviewServerRestart,
   noteBrowserPage,
@@ -262,6 +265,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
+  const isolatedBrowser = target.browserContext === 'isolated'
   const [annotate, setAnnotate] = useState(emptyAnnotateSession)
   const [draftNote, setDraftNote] = useState('')
   const annotateRef = useRef(annotate)
@@ -1041,11 +1045,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       return
     }
 
-    const webview = document.createElement('webview') as PreviewWebview
-    webview.className = 'flex h-full w-full flex-1 bg-transparent'
-    webview.setAttribute('partition', 'persist:hermes-preview')
-    webview.setAttribute('src', target.url)
-    webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
+    const webview = createPreviewWebview(target.url, target.browserContext) as PreviewWebview
+    let liveDocument: BrowserDocument | undefined
 
     // The guest preload (main.ts installs it on this partition) forwards a
     // clicked `_blank` anchor here. Admission is our side of the contract —
@@ -1109,7 +1110,26 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         return
       }
 
-      noteBrowserPage(tabId, guestPage(webview, target.url))
+      noteBrowserPage(tabId, { ...guestPage(webview, target.url), document: liveDocument })
+    }
+
+    const dropDocument = () => {
+      liveDocument = undefined
+      notePage()
+    }
+
+    const onReady = () => {
+      const current: BrowserDocument = { isLive: () => liveDocument === current && webview.isConnected }
+      liveDocument = current
+      notePage()
+    }
+
+    const onDocumentStart = (event: Event) => {
+      const detail = event as Event & { isMainFrame?: boolean; isInPlace?: boolean }
+
+      if (detail.isMainFrame && !detail.isInPlace) {
+        dropDocument()
+      }
     }
 
     const onNavigate = (event: Event) => {
@@ -1246,6 +1266,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     webview.addEventListener('console-message', onConsole)
+    webview.addEventListener('dom-ready', onReady)
+    webview.addEventListener('did-start-navigation', onDocumentStart)
+    webview.addEventListener('render-process-gone', dropDocument)
+    webview.addEventListener('destroyed', dropDocument)
     webview.addEventListener('ipc-message', onGuestExternal)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
@@ -1263,6 +1287,11 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     return () => {
       annotateLoopRef.current += 1
+      dropDocument()
+      webview.removeEventListener('dom-ready', onReady)
+      webview.removeEventListener('did-start-navigation', onDocumentStart)
+      webview.removeEventListener('render-process-gone', dropDocument)
+      webview.removeEventListener('destroyed', dropDocument)
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('ipc-message', onGuestExternal)
       webview.removeEventListener('context-menu', onGuestContextMenu)
@@ -1277,7 +1306,17 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
+  }, [
+    appendConsoleEntry,
+    consoleState,
+    copy,
+    isRemoteHtml,
+    isWebPreview,
+    tabId,
+    target.browserContext,
+    target.kind,
+    target.url
+  ])
 
   return (
     <aside
@@ -1353,9 +1392,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             }
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
-              target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
-                ? undefined
-                : () => popOutBrowserTab(tabId)
+              isBrowserWindow() || !tabId || !canPopOutBrowserTab(tabId) ? undefined : () => popOutBrowserTab(tabId)
             }
             onReload={reloadPreview}
             onToggleAnnotate={toggleAnnotate}
@@ -1367,7 +1404,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
         {/* First-open real-profile consent offer — Browser tabs only (URL
             vessels the user browses with), never file/HTML previews. */}
-        {target.kind === 'url' && tabId && <RealProfileConsentDialog tabId={tabId} />}
+        {target.kind === 'url' && !isolatedBrowser && tabId && <RealProfileConsentDialog tabId={tabId} />}
 
         <div
           className="pointer-events-auto relative min-h-0 flex-1 overflow-hidden bg-transparent"

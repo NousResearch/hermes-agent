@@ -60,7 +60,56 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
     return existing
   }
 
-  return [...fresh, ...existing]
+  // `toChatMessages` guarantees tool resource ids are unique within one REST
+  // page, but backfill hydrates every page separately. Compacted history can
+  // preserve the same durable tool row more than once, so an older page can
+  // collide with the already-mounted tail. assistant-ui indexes tool resources
+  // globally and throws on that collision, blanking the workspace. Namespace
+  // only the colliding older parts; keep the mounted tail stable.
+  const usedToolIds = new Set(
+    existing.flatMap(message =>
+      message.parts.flatMap(part => (part.type === 'tool-call' && part.toolCallId ? [part.toolCallId] : []))
+    )
+  )
+  const uniqueFresh = fresh.map(message => {
+    let changed = false
+    const parts = message.parts.map((part, index) => {
+      if (part.type !== 'tool-call') {
+        return part
+      }
+
+      const base = part.toolCallId || `${message.id}-tool-${index}`
+
+      if (!usedToolIds.has(base)) {
+        usedToolIds.add(base)
+
+        if (part.toolCallId) {
+          return part
+        }
+
+        changed = true
+
+        return { ...part, toolCallId: base }
+      }
+
+      changed = true
+      let suffix = 0
+      let candidate = `${base}-${message.id}-${index}`
+
+      while (usedToolIds.has(candidate)) {
+        suffix += 1
+        candidate = `${base}-${message.id}-${index}-${suffix}`
+      }
+
+      usedToolIds.add(candidate)
+
+      return { ...part, toolCallId: candidate }
+    })
+
+    return changed ? { ...message, parts } : message
+  })
+
+  return [...uniqueFresh, ...existing]
 }
 
 /**

@@ -289,6 +289,22 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             await self._install_dialog_bridge(sid)
             return sid
 
+        async def _page_oopif_ids(sid: str) -> List[str]:
+            # The parent Page.getFrameTree can omit OOPIFs altogether. DOM nodes
+            # still expose the frameId of each iframe owned by THIS page; never
+            # select an iframe merely because it is attached to the browser.
+            root = (await self._cdp("DOM.getDocument", {"depth": 0}, session_id=sid,
+                                    timeout=timeout))["result"]["root"]["nodeId"]
+            nodes = (await self._cdp("DOM.querySelectorAll", {"nodeId": root, "selector": "iframe, frame"},
+                                     session_id=sid, timeout=timeout))["result"]["nodeIds"]
+            ids = []
+            for node in nodes:
+                desc = (await self._cdp("DOM.describeNode", {"nodeId": node}, session_id=sid,
+                                        timeout=timeout))["result"]["node"]
+                if desc.get("frameId"):
+                    ids.append(desc["frameId"])
+            return ids
+
         async def _focus() -> Dict[str, Any]:
             from agent.vault_store import normalize_origin
             targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
@@ -310,19 +326,25 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                                             session_id=sid, timeout=timeout)
                     if not probe.get("result", {}).get("result", {}).get("value"):
                         if frame_accept:
-                            tree = (await self._cdp("Page.getFrameTree", session_id=sid, timeout=timeout))["result"]["frameTree"]
-                            def descendants(node):
-                                for child in node.get("childFrames", []):
-                                    yield child["frame"]["id"]
-                                    yield from descendants(child)
-                            for fid in descendants(tree):
+                            for fid in await _page_oopif_ids(sid):
                                 with self._state_lock:
                                     frame = self._frames.get(fid)
                                     child_sid = frame.cdp_session_id if frame and frame.is_oopif else None
+                                # Auto-attachment to a late-focused page is asynchronous.
+                                for _ in range(10):
+                                    if child_sid:
+                                        break
+                                    await asyncio.sleep(0.05)
+                                    with self._state_lock:
+                                        frame = self._frames.get(fid)
+                                        child_sid = frame.cdp_session_id if frame and frame.is_oopif else None
                                 if not child_sid:
                                     continue
-                                check = await self._cdp("Runtime.evaluate", {"expression": frame_accept, "returnByValue": True},
-                                                        session_id=child_sid, timeout=timeout)
+                                try:
+                                    check = await self._cdp("Runtime.evaluate", {"expression": frame_accept, "returnByValue": True},
+                                                            session_id=child_sid, timeout=timeout)
+                                except RuntimeError:  # child detached during probe
+                                    continue
                                 if check.get("result", {}).get("result", {}).get("value"):
                                     frame_id = fid
                                     break

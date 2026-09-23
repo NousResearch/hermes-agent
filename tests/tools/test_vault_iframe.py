@@ -1,9 +1,53 @@
 """Regression for #120382: exact relying-party and child-frame origin checks."""
+import asyncio
 import json
 from unittest.mock import patch
 
 from agent.vault_store import VaultStore
 from tools import browser_vault_tool as vault
+from tools.browser_supervisor import CDPSupervisor
+from tools.browser_supervisor_frames import FrameInfo
+
+
+def test_focus_login_uses_owning_page_dom_for_oopif_even_without_frame_tree():
+    supervisor = CDPSupervisor("test", "ws://localhost")
+    supervisor._loop = type("Loop", (), {"is_running": lambda self: True})()
+    supervisor._frames["owned"] = FrameInfo("owned", "https://identity.test", "https://identity.test",
+                                             None, True, "child-session")
+    supervisor._frames["foreign"] = FrameInfo("foreign", "https://identity.test", "https://identity.test",
+                                               None, True, "other-session")
+    calls = []
+
+    async def cdp(method, params=None, *, session_id=None, timeout=10):
+        calls.append((method, session_id))
+        if method == "Target.getTargets":
+            return {"result": {"targetInfos": [
+                {"targetId": "blank", "type": "page", "url": "http://localhost/blank"},
+                {"targetId": "rp", "type": "page", "url": "https://site.test/login"}]}}
+        if method == "Target.attachToTarget":
+            return {"result": {"sessionId": "rp-session"}}
+        if method == "Runtime.evaluate":
+            return {"result": {"result": {"value": session_id == "child-session"}}}
+        if method == "DOM.getDocument":
+            return {"result": {"root": {"nodeId": 1}}}
+        if method == "DOM.querySelectorAll":
+            return {"result": {"nodeIds": [2]}}
+        if method == "DOM.describeNode":
+            return {"result": {"node": {"frameId": "owned"}}}
+        if method == "Page.getFrameTree":
+            return {"result": {"frameTree": {"frame": {"id": "rp"}}}}
+        return {"result": {}}
+
+    supervisor._cdp = cdp
+    async def noop(*args, **kwargs):
+        pass
+    supervisor._enable_page_domains = noop
+    supervisor._install_dialog_bridge = noop
+    with patch("tools.browser_supervisor._schedule", side_effect=lambda coro, loop, **kw: asyncio.run(coro)):
+        result = supervisor.focus_page("https://site.test", accept="password", frame_accept="password")
+    assert result["ok"] and result["frame_id"] == "owned"
+    assert ("Runtime.evaluate", "other-session") not in calls
+    assert ("Runtime.evaluate", "child-session") in calls
 
 
 def test_cross_origin_login_requires_explicit_pair_consent_and_keeps_password_blind(tmp_path):

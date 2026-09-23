@@ -3949,6 +3949,8 @@ export interface Translations {
     hideStripTab: (title: string) => string
     lastTabKeptTitle: string
     lastTabKeptBody: string
+    enforcedDockLockedTitle: string
+    enforcedDockLockedBody: string
     toggleStripTab: (title: string) => string
     minimize: string
     restore: string

@@ -10,7 +10,7 @@ import pytest
 from tui_gateway import server
 
 
-@pytest.mark.parametrize("phase", ["before_callback", "before_continuation", "before_initial_timer", "cold_resume_claim"])
+@pytest.mark.parametrize("phase", ["before_callback", "before_continuation", "before_initial_timer"])
 def test_obsolete_orphan_cannot_replace_new_detachment(monkeypatch, phase):
     timers = []
 
@@ -57,26 +57,6 @@ def test_obsolete_orphan_cannot_replace_new_detachment(monkeypatch, phase):
         return
     server._schedule_ws_orphan_reap(sid)
     old = timers[-1]
-    if phase == "cold_resume_claim":
-        # A cold resume missed the live lookup before a concurrent resume won.
-        # Its claim discovers that winner while orphan interrupt I/O is in flight.
-        session["session_key"] = sid
-        monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 0)
-        replies = []
-
-        def resume_during_interrupt(*a, **kw):
-            ctx = server._Resume(1, {}, sid)
-            replies.append(ctx.claim("unused", {}))
-
-        monkeypatch.setattr(server, "_interrupt_session_turn", resume_during_interrupt)
-        old.callback()
-        assert replies[0]["error"]["code"] == 4009
-        assert session["transport"] is server._detached_ws_transport
-        assert session["_client_gone_interrupt_requested"]
-        assert len(timers) == 2
-        assert server._pending_ws_reaps[sid] is timers[-1]
-        return
-
     def redetach():
         server._cancel_ws_orphan_reap(sid)
         session["transport"] = server._detached_ws_transport
@@ -86,14 +66,14 @@ def test_obsolete_orphan_cannot_replace_new_detachment(monkeypatch, phase):
     if phase == "before_callback":
         newest = redetach()
     else:
-        # Interrupt I/O runs outside the resume lock. A reconnect/redetach
-        # can win before the old callback registers its next poll.
-        monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 0)
-        def interrupt(*a, **kw):
-            nonlocal newest
-            session.pop("_client_gone_interrupt_requested", None)
-            newest = redetach()
-        monkeypatch.setattr(server, "_interrupt_session_turn", interrupt)
+        # A reconnect/redetach wins after the claim lock is released but
+        # before the previous callback registers its next poll.
+        class ResumeLock:
+            def __enter__(self): pass
+            def __exit__(self, *args):
+                nonlocal newest
+                newest = redetach()
+        monkeypatch.setattr(server, "_session_resume_lock", ResumeLock())
         newest = None
     old.callback()
     assert server._pending_ws_reaps[sid] is newest
@@ -127,19 +107,20 @@ def test_orphan_interrupt_claim_clears_when_session_leaves_detached_state(monkey
 
     server._schedule_ws_orphan_reap(sid)
     timers[0].callback()
-    assert session["_client_gone_interrupt_requested"]
+    assert not session.get("_client_gone_interrupt_requested")
+    # A legacy claim may still be present on an already-live record.
+    session["_client_gone_interrupt_requested"] = True
 
     session["transport"] = object()
     if transition == "redetach":
         # The bypass writer disconnects before the old settlement can retire.
         assert server._close_sessions_for_transport(session["transport"]) == (0, 1)
         timers[2].callback()
-        assert session["_client_gone_interrupt_requested"]
-        assert session["_client_gone_interrupt_polls"] == 1
+        assert not session.get("_client_gone_interrupt_requested")
         replacement = server._pending_ws_reaps[sid]
         timers[1].callback()
         assert server._pending_ws_reaps[sid] is replacement
-        assert session["_client_gone_interrupt_requested"]
+        assert not session.get("_client_gone_interrupt_requested")
         return
     timers[1].callback()
 

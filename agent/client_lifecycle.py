@@ -107,14 +107,23 @@ class ClientLifecycleMixin:
 
         def kill_processes() -> None:
             from tools.process_registry import process_registry
+            from hermes_constants import get_hermes_home
             # A session can run several task IDs; delegated IDs also differ from session_id.
             # Never match the environment key (e.g. "default"), shared by parent and siblings.
             owners = getattr(self, "_process_owner_task_ids", ())
+            home = str(get_hermes_home().resolve())
             for process in process_registry.list_sessions():
-                if process["owner_task_id"] in owners and process["status"] == "running":
+                if (process["owner_task_id"] not in owners
+                        or (process.get("profile_home") and process["profile_home"] != home)):
+                    continue
+                if process["status"] == "running":
                     process_registry.kill_process(
                         process["session_id"], source="agent_close", consume_output=True,
                     )
+                else:
+                    # Explicit session/backend close abandons pending delivery,
+                    # just as killing a still-running child consumes its result.
+                    process_registry.acknowledge_completion(process["session_id"])
 
         def release_computer_use() -> None:
             from tools.computer_use.tool import release_computer_use_session

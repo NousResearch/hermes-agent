@@ -780,26 +780,11 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
   await removeLockfile(ssh, ownershipId)
 }
 
-// Normal disconnect (quit, connection switch): reuse cleanupStale so we
-// kill only a provably-owned serve --isolated and drop our lockfile.
-// Closing the SSH transport first is not enough — spawn detaches with
-// setsid/nohup, so the backend reparents to pid 1 and keeps state.db
-// open (#91668).
-async function disconnect(ssh, ownershipId) {
-  if (!ssh || !ownershipId) {
-    return
-  }
-
-  const lock = await readLockfile(ssh, ownershipId)
-
-  if (!lock || isLockfileSkew(lock)) {
-    // Skew (#95532): fail closed — this is not our record, so there is
-    // nothing we may safely reap or remove here.
-    return
-  }
-
-  const pidAlive = await remotePidAlive(ssh, lock.pid)
-  await cleanupStale(ssh, ownershipId, lock, pidAlive)
+// Client departure is not backend shutdown. The server's SSH idle watchdog
+// retires this detached backend after its work settles. Keep the lock/token
+// ownership record so reconnect reuses the same backend and event history.
+async function disconnect(_ssh, _ownershipId) {
+  // Transport/forward teardown is owned by teardownSshState.
 }
 
 function buildOwnedStaleTerminationCommand(lock, ownershipId) {
@@ -1563,10 +1548,9 @@ async function connect(deps) {
         }
 
         if (reuseClassification === 'authenticated-stale') {
-          assertBootstrapNotSuperseded(signal)
-          await cancelForwardSafe(deps, localPort, lock.port)
-          await assertRemoteInstallUpdateClear(ssh, hermesHome)
-          await cleanupStale(ssh, ownershipId, lock)
+          const error: any = new Error('The existing SSH backend cannot be reused. It has been preserved so its work can finish; reconnect with its original connection settings or explicitly stop it on the server.')
+          error.kind = 'remote-backend-in-use'
+          throw error
         } else if (reuseClassification === 'authenticated-ok') {
           const token = await adoptOwnedServedToken(
             adoptServedToken,
@@ -1608,6 +1592,11 @@ async function connect(deps) {
         throw error
       }
     } else {
+      if (owned) {
+        const error: any = new Error('The existing SSH backend has different connection settings or credentials. It has been preserved so its work can finish; restore the original settings or explicitly stop it on the server.')
+        error.kind = 'remote-backend-in-use'
+        throw error
+      }
       assertBootstrapNotSuperseded(signal)
       await assertRemoteInstallUpdateClear(ssh, hermesHome)
       await cleanupStale(ssh, ownershipId, lock, pidAlive)

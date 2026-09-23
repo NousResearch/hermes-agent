@@ -10355,11 +10355,8 @@ async function teardownSshConnection(profile) {
 
   terminalIpc.disposeTerminalSessionsForSshScope(scope)
 
-  // Kill the owned remote serve --isolated *before* closing the SSH
-  // transport. Spawn detaches with setsid/nohup, so closing the tunnel
-  // alone leaves the backend at pid 1 holding state.db (#91668).
-  // Windows remotes use a different lifecycle (connectWindowsRemote) and
-  // are left to a follow-up; POSIX is the leak that OOM'd gateways.
+  // Close local SSH resources. The remote idle watchdog retains active work
+  // and retires the backend once it is quiescent; its lock permits reconnect.
   await sshTeardowns.track(state.ssh, () =>
     teardownSshState(
       {

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 MUTATOR_ROUTE_TABLE: dict[str, str] = {
     "prompt.submit": "turn-path", "session.interrupt": "turn-path", "reload.mcp": "run-concurrent",
-    "session.save": "run-concurrent", "session.compress": "idle-gated",
+    "session.save": "run-concurrent", "session.close": "run-concurrent", "session.compress": "idle-gated",
     "prompt.submit.truncate": "idle-gated", "slash.model": "idle-gated",
     "slash.personality": "idle-gated", "slash.prompt": "idle-gated", "slash.compress": "idle-gated",
     "session.reset": "idle-gated", "session.history.reload": "idle-gated",
@@ -148,12 +148,19 @@ class HostSupervisor:
         self._stopped_respawning = False
         self._restart_times: list[float] = []
         self._pending_turns: dict[str, tuple[str, Callable[[dict], None] | None]] = {}
-        self._pending_controls: dict[str, queue.Queue[dict]] = {}
+        self._pending_turn_hosts: dict[str, subprocess.Popen[str]] = {}
+        # Outlives foreground callbacks: a child can still own terminal work.
+        self._session_work_tokens: dict[subprocess.Popen[str], dict[str, str]] = {}
+        self._pending_controls: dict[
+            str, tuple[subprocess.Popen[str], queue.Queue[dict]]
+        ] = {}
         # request_id -> (registered_at, handler) for control waiters that timed out while their
         # host work still runs, so the eventual control.ack is not silently dropped.
         # The host emits its control.ack whenever it finishes; without this the ack matched no queue and was
         # silently dropped. See #97948.
-        self._late_control_handlers: dict[str, tuple[float, Callable[[dict], None]]] = {}
+        self._late_control_handlers: dict[
+            str, tuple[float, subprocess.Popen[str], Callable[[dict], None]]
+        ] = {}
         self._stderr_tail: list[str] = []
         self._last_progress_counter = 0
         if autostart:
@@ -220,17 +227,26 @@ class HostSupervisor:
         request_id = str(frame.get("request_id") or uuid.uuid4().hex)
         sid = str(frame.get("sid") or "")
         payload = {**frame, "type": "turn.start", "request_id": request_id}
+        send_error: Exception | None = None
         with self._lock:
+            proc = self._proc
+            if proc is None:
+                raise RuntimeError("compute host is not running")
             self._pending_turns[request_id] = (sid, on_complete)
-        try:
-            self._send_frame(payload)
-        except Exception as exc:
-            with self._lock:
+            self._pending_turn_hosts[request_id] = proc
+            if frame.get("turn_id"):
+                self._session_work_tokens.setdefault(proc, {})[sid] = str(frame["turn_id"])
+            try:
+                self._send_frame(payload)
+            except Exception as exc:
                 self._pending_turns.pop(request_id, None)
+                self._pending_turn_hosts.pop(request_id, None)
+                send_error = exc
+        if send_error is not None:
             if on_complete is not None:
                 on_complete({"type": "turn.error", "sid": sid, "request_id": request_id,
-                             "reason": "send_failed", "message": str(exc)})
-            raise
+                             "reason": "send_failed", "message": str(send_error)})
+            raise send_error
         return request_id
 
     def interrupt(self, sid: str, *, request_id: str | None = None) -> None:
@@ -238,14 +254,38 @@ class HostSupervisor:
         self._send_frame(
             {"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
 
-    def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
+    def _await_reply(
+        self, frame: dict[str, Any], request_id: str, timeout: float,
+        on_late_ack: Callable[[dict], None] | None = None,
+    ) -> dict:
         """Send ``frame`` and block for the host reply carrying ``request_id``."""
         q: queue.Queue[dict] = queue.Queue(maxsize=1)
         with self._lock:
-            self._pending_controls[request_id] = q
+            proc = self._proc
+            if proc is None:
+                raise RuntimeError("compute host is not running")
+            self._pending_controls[request_id] = (proc, q)
+            try:
+                self._send_frame(frame)
+            except Exception:
+                self._pending_controls.pop(request_id, None)
+                raise
         try:
-            self._send_frame(frame)
             return q.get(timeout=timeout)
+        except queue.Empty:
+            reply = None
+            if on_late_ack is not None:
+                with self._lock:
+                    pending = self._pending_controls.pop(request_id, None)
+                    if pending is not None:
+                        try:
+                            reply = pending[1].get_nowait()
+                        except queue.Empty:
+                            self._register_late_control_handler(
+                                request_id, on_late_ack, host=pending[0])
+            if reply is not None:
+                return reply
+            raise
         finally:
             with self._lock:
                 self._pending_controls.pop(request_id, None)
@@ -279,32 +319,43 @@ class HostSupervisor:
         if not wait:
             self._send_frame(frame)
             return {"status": "sent", "request_id": request_id}
-        try:
-            return self._await_reply(frame, request_id, timeout)
-        except queue.Empty:
-            if on_late_ack is not None:
-                self._register_late_control_handler(request_id, on_late_ack)
-            raise
+        return self._await_reply(frame, request_id, timeout, on_late_ack)
 
-    def _register_late_control_handler(self, request_id: str, handler: Callable[[dict], None]) -> None:
+    def _register_late_control_handler(
+        self, request_id: str, handler: Callable[[dict], None],
+        *, host: subprocess.Popen[str] | None = None,
+    ) -> None:
         now = time.monotonic()
         with self._lock:
+            owner = host or self._proc
+            if owner is None:
+                raise RuntimeError("compute host is not running")
             handlers = self._late_control_handlers
-            for rid in [r for r, (at, _cb) in handlers.items() if now - at > _LATE_CONTROL_TTL_SECS]:
+            for rid in [r for r, (at, _host, _cb) in handlers.items()
+                        if now - at > _LATE_CONTROL_TTL_SECS]:
                 handlers.pop(rid, None)
             while len(handlers) >= _LATE_CONTROL_MAX:
                 handlers.pop(min(handlers, key=lambda rid: handlers[rid][0]), None)
-            handlers[request_id] = (now, handler)
+            handlers[request_id] = (now, owner, handler)
 
-    def _deliver_control_frame(self, request_id: str, frame: dict[str, Any]) -> None:
+    def _deliver_control_frame(
+        self, request_id: str, frame: dict[str, Any],
+        *, host: subprocess.Popen[str] | None = None,
+    ) -> None:
         with self._lock:
-            q = self._pending_controls.get(request_id)
-            late = None if q is not None else self._late_control_handlers.pop(request_id, None)
-        if q is not None:
-            with contextlib.suppress(queue.Full):
-                q.put_nowait(frame)
-        elif late is not None:
-            _call_logged(late[1], frame, f"compute host late control ack handler failed (request_id={request_id})")
+            pending = self._pending_controls.get(request_id)
+            if pending is not None and host is not None and pending[0] is not host:
+                pending = None
+            late = None
+            if pending is None:
+                candidate = self._late_control_handlers.get(request_id)
+                if candidate is not None and (host is None or candidate[1] is host):
+                    late = self._late_control_handlers.pop(request_id)
+            if pending is not None:
+                with contextlib.suppress(queue.Full):
+                    pending[1].put_nowait(frame)
+        if pending is None and late is not None:
+            _call_logged(late[2], frame, f"compute host late control ack handler failed (request_id={request_id})")
 
     def _spawn_locked(self, *, reason: str) -> None:
         if self._stopped_respawning:
@@ -379,7 +430,7 @@ class HostSupervisor:
                 logger.warning("compute host emitted invalid json: %r", raw[:200])
                 continue
             if isinstance(frame, dict):
-                self._handle_host_frame(frame)
+                self._handle_host_frame(frame, host=proc)
 
     def _drain_stderr(self, proc: subprocess.Popen[str]) -> None:
         assert proc.stderr is not None
@@ -388,11 +439,13 @@ class HostSupervisor:
                 self._stderr_tail = (self._stderr_tail + [text])[-80:]
                 logger.warning("compute host stderr: %s", text)
 
-    def _handle_host_frame(self, frame: dict[str, Any]) -> None:
+    def _handle_host_frame(
+        self, frame: dict[str, Any], *, host: subprocess.Popen[str] | None = None,
+    ) -> None:
         ftype = str(frame.get("type") or "")
         request_id = str(frame.get("request_id") or "")
         if ftype in _CONTROL_REPLY_TYPES or (ftype == "error" and request_id):
-            self._deliver_control_frame(request_id, frame)
+            self._deliver_control_frame(request_id, frame, host=host)
         elif ftype == "hello":
             self._hello = dict(frame)
             self._hello_event.set()
@@ -405,6 +458,7 @@ class HostSupervisor:
         elif ftype in ("turn.end", "turn.error"):
             with self._lock:
                 pending = self._pending_turns.pop(request_id, None)
+                self._pending_turn_hosts.pop(request_id, None)
             if pending is not None and pending[1] is not None:
                 _call_logged(pending[1], frame, "compute host turn completion callback failed")
 
@@ -413,17 +467,50 @@ class HostSupervisor:
         if self._closing:
             return
         with self._lock:
-            if self._proc is not proc:
-                return
-            self._proc = None
-        self._remove_registry()
-        self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}")
-        self._maybe_respawn_after_crash()
+            is_current = self._proc is proc
+            if is_current:
+                self._proc = None
+                # Retire only the registry whose ownership was proven while
+                # replacement is excluded. Settlement callbacks may start a
+                # new host synchronously and persist its registry.
+                self._remove_registry()
+            work_tokens = self._session_work_tokens.pop(proc, {})
+        self._fail_pending_turns(
+            reason="crash", message=f"compute host exited with code {code}", host=proc)
+        for sid, token in work_tokens.items():
+            self.rpc_sink({"jsonrpc": "2.0", "method": "compute_host.lost", "params": {
+                "session_id": sid, "work_token": token, "reason": "crash",
+                "message": f"compute host exited with code {code}; background completion is unavailable"}})
+        if is_current:
+            with self._lock:
+                # A settlement callback may already have installed a healthy
+                # replacement. The old generation must consume neither its
+                # registry nor its restart budget.
+                if self._proc is None:
+                    self._maybe_respawn_after_crash()
 
-    def _fail_pending_turns(self, *, reason: str, message: str) -> None:
+    def _fail_pending_turns(
+        self, *, reason: str, message: str, host: subprocess.Popen[str] | None = None,
+    ) -> None:
         with self._lock:
-            pending = self._pending_turns
-            self._pending_turns = {}
+            request_ids = [
+                request_id for request_id in self._pending_turns
+                if host is None or self._pending_turn_hosts.get(request_id) is host]
+            pending = {request_id: self._pending_turns.pop(request_id) for request_id in request_ids}
+            for request_id in request_ids:
+                self._pending_turn_hosts.pop(request_id, None)
+            control_ids = [
+                request_id for request_id, (owner, _q) in self._pending_controls.items()
+                if host is None or owner is host]
+            controls = {
+                request_id: self._pending_controls.pop(request_id)[1]
+                for request_id in control_ids}
+            late_ids = [
+                request_id for request_id, (_at, owner, _cb) in self._late_control_handlers.items()
+                if host is None or owner is host]
+            late = {
+                request_id: self._late_control_handlers.pop(request_id)
+                for request_id in late_ids}
         failure = {"reason": reason, "message": message}
         for request_id, (sid, cb) in pending.items():
             self.rpc_sink({"jsonrpc": "2.0", "method": "event",
@@ -431,12 +518,12 @@ class HostSupervisor:
             if cb is not None:
                 frame = {"type": "turn.error", "sid": sid, "request_id": request_id, **failure}
                 _call_logged(cb, frame, "compute host error callback failed")
+        for request_id, q in controls.items():
+            with contextlib.suppress(queue.Full):
+                q.put_nowait({"type": "control.error", "request_id": request_id, **failure})
         # A crashed host never emits the late acks timed-out control waiters still expect; fail
-        # them too so the client's "still running" notice can't hang.
-        with self._lock:
-            late = self._late_control_handlers
-            self._late_control_handlers = {}
-        for request_id, (_registered_at, handler) in late.items():
+        # its handlers too so the client's "still running" notice can't hang.
+        for request_id, (_registered_at, _owner, handler) in late.items():
             frame = {"type": "control.error", "request_id": request_id, **failure}
             _call_logged(handler, frame, "compute host late control error handler failed")
 

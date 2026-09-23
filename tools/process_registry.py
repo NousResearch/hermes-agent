@@ -511,6 +511,8 @@ class ProcessSession:
     owner_task_id: str = ""                     # RAW spawning task id ("sa-..."); ownership
                                                 # checks must use this, not task_id
     session_key: str = ""                       # Gateway session key (reset protection)
+    origin_ui_session_id: str = ""              # Live UI owner; retain pending delivery across transport loss
+    profile_home: str = ""                      # Task IDs are unique only inside their owning profile
     pid: Optional[int] = None
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
     env_ref: Any = None                         # Environment object (sandbox spawns)
@@ -1093,11 +1095,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
     @staticmethod
     def _new_session(command, task_id, owner_task_id, session_key, cwd, **extra) -> ProcessSession:
         from gateway.session_context import get_session_env
+        from hermes_constants import get_hermes_home
 
         return ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id or task_id, session_key=session_key, cwd=cwd,
             parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
+            origin_ui_session_id=get_session_env("HERMES_UI_SESSION_ID", ""),
+            profile_home=str(get_hermes_home().resolve()),
             started_at=time.time(), **extra)
 
     @staticmethod
@@ -1597,6 +1602,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
+                "origin_ui_session_id": session.origin_ui_session_id,
+                "profile_home": session.profile_home,
                 "task_id": session.task_id,
                 "owner_task_id": session.owner_task_id or session.task_id,
                 "command": session.command,
@@ -1648,6 +1655,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def is_completion_consumed(self, session_id: str) -> bool:
         """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
+
+    def acknowledge_completion(self, session_id: str) -> None:
+        """The owning notifier admitted the result into its parent conversation."""
+        with self._lock:
+            self._completion_consumed.add(session_id)
 
     def is_session_waiting(self, session_id: str) -> bool:
         """Whether a goal loop (``hermes_cli.goals`` wait barrier) should stay parked on
@@ -2292,6 +2304,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "cwd": s.cwd,
                 "pid": s.pid,
                 "owner_task_id": s.owner_task_id or s.task_id,
+                "profile_home": s.profile_home,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
@@ -2335,6 +2348,17 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Running processes whose RAW spawning owner is ``owner_task_id``."""
         with self._lock:
             return [s for s in self._running.values() if s.owner_task_id == owner_task_id and not s.exited]
+
+    def has_pending_owned_work(self, owner_task_ids, profile_home: str) -> bool:
+        """A lifecycle probe must cover exit-to-delivery, without reconciling foreign PIDs.
+
+        This is a snapshot only: reapers may hold the UI session lock and have no
+        profile scope. list_sessions() can reconcile exits and persist receipts.
+        """
+        with self._lock:
+            return any(s.profile_home == profile_home and (s.owner_task_id or s.task_id) in owner_task_ids and (
+                not s.exited or (s.notify_on_complete and s.id not in self._completion_consumed))
+                for store in (self._running, self._finished) for s in store.values())
 
     def unread_completions_owned_by(self, owner_task_id: str) -> List[ProcessSession]:
         """Exited ``notify_on_complete`` processes of ``owner_task_id`` whose result nobody read (no wait/log/poll).
@@ -2406,11 +2430,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def _prune_if_needed(self):
         """Drop expired finished sessions, then the oldest survivor while over
-        MAX_PROCESSES. Must hold _lock."""
+        MAX_PROCESSES. Pending UI notifications are work, not cached receipts.
+        Must hold _lock."""
         now = time.time()
-        expired = [sid for sid, s in self._finished.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
+        reclaimable = {sid: s for sid, s in self._finished.items()
+                       if not (s.origin_ui_session_id and s.notify_on_complete)
+                       or sid in self._completion_consumed}
+        expired = [sid for sid, s in reclaimable.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
         over_cap = len(self._running) + len(self._finished) - len(expired) >= MAX_PROCESSES
-        if over_cap and (survivors := [sid for sid in self._finished if sid not in expired]):
+        if over_cap and (survivors := [sid for sid in reclaimable if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
         for sid in expired:
             # Belt-and-suspenders handle release: sessions normally arrive in

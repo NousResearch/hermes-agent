@@ -463,6 +463,14 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     slash-worker is closed in ``_finalize_session`` (the single chokepoint), NOT here. Idempotent via ``_finalized``."""
     if not session:
         return
+    if session.get("_compute_host_active"):
+        try:
+            supervisor = _get_compute_host_supervisor()
+            if supervisor.is_running():
+                supervisor.control(str(session.get("_sid") or ""), route_name="session.close",
+                                   payload={"end_reason": end_reason}, timeout=10.0)
+        except Exception:
+            logger.warning("Could not close compute-host session", exc_info=True)
     _finalize_session(session, end_reason=end_reason)
     _announce_session_reclaimed(session, end_reason)
     with contextlib.suppress(Exception):
@@ -641,6 +649,30 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
     return use_compute_host
 
 
+def _session_has_background_processes(session: dict) -> bool:
+    """Keep the exact spawning agent until its children AND their delivery settle.
+
+    Raw task ownership survives compression and does not confuse a shared terminal
+    environment or an identical durable key in another profile with this agent.
+    Finished registry entries cover the enqueue/dequeue gap before a notifier can
+    claim ``running``; queue emptiness alone is not a completion acknowledgement.
+    """
+    if session.get("_compute_host_pending_work"):
+        return True
+    if any(thread.is_alive() for key in ("_run_thread", "_agent_build_thread")
+           if (thread := session.get(key)) is not None):
+        return True
+    owners = getattr(session.get("agent"), "_process_owner_task_ids", ())
+    if not owners:
+        return False
+    try:
+        from tools.process_registry import process_registry
+        return process_registry.has_pending_owned_work(owners, str(_session_home(session).resolve()))
+    except Exception:
+        logger.warning("Cannot establish background process quiescence", exc_info=True)
+        return True
+
+
 def _session_has_active_delegations(sid: str, session: dict | None = None) -> bool:
     """True when UI session ``sid`` still owns live background work — by live UI sid AND, when the TUI owns the durable
     lifecycle (never for gateway-viewer tabs), by session_key so a delegation from an earlier tab keeps it alive.
@@ -750,7 +782,7 @@ def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
 def _schedule_ws_orphan_reap(
     sid: str, *, delay_s: float | None = None, _expected_timer: threading.Timer | None = None,
 ) -> None:
-    """After a grace window, reap session ``sid`` iff it's still orphaned. Called from the WS-disconnect path; a
+    """After a grace window, reap session ``sid`` iff detached and quiescent. Called from the WS-disconnect path; a
     reconnect or ``session.resume`` cancels the reap by re-binding a live transport. Disabled when grace is 0."""
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
@@ -758,9 +790,9 @@ def _schedule_ws_orphan_reap(
     def _reap() -> None:
         # Serialize the re-check against session.resume (rebinds under _session_resume_lock). Claim teardown by popping
         # under both locks, then release the resume lock before slow finalization. Order: resume_lock -> sessions_lock.
-        reschedule_delay = interrupt_session = session = None
+        reschedule_delay = session = None
         with _session_resume_lock, _sessions_lock:
-            # Keep ownership through interrupt I/O and continuation registration. A cancelled
+            # Keep ownership through continuation registration. A cancelled
             # callback may already be dispatched, but cannot act on a later detachment.
             if _pending_ws_reaps.get(sid) is not timer:
                 return
@@ -777,48 +809,20 @@ def _schedule_ws_orphan_reap(
                 current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
-            if _session_has_active_delegations(sid, current):
-                reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
-            elif not current.get("running"):
-                session = _pop_session_by_id(sid)
-            elif not current.get("_client_gone_interrupt_requested") and _ws_orphan_turn_activity_is_fresh(current):
-                # Client-absent but producing: keep running detached (the sentinel buffers emits), re-check each grace.
-                logger.debug("client_gone sid=%s action=defer (turn activity fresh; stale threshold %.0fs)",
-                             sid, _WS_ORPHAN_ACTIVITY_STALE_S)
+            if (current.get("running") or current.get("queued_prompt") or current.get("queued_prompts")
+                    or current.get("_auto_continue_scheduled")
+                    or _session_has_background_processes(current)
+                    or _session_has_active_delegations(sid, current)):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             else:
-                # Mid-turn detached sessions must never drop the single Timer: interrupt once after grace, then poll
-                # until turn-finalization settles.
-                polls = current["_client_gone_interrupt_polls"] = int(current.get("_client_gone_interrupt_polls") or 0) + 1
-                # See #85578.
-                if polls > _WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS:
-                    # Never settled inside the budget — force-reap rather than park forever.
-                    logger.error(
-                        "client_gone sid=%s: turn did not settle after %d interrupt polls (%.0fs) — force-reaping detached session",
-                        sid, polls - 1, (polls - 1) * _WS_ORPHAN_INTERRUPT_REAP_POLL_S)
-                    session = _pop_session_by_id(sid)
-                else:
-                    if not current.get("_client_gone_interrupt_requested"):
-                        current["_client_gone_interrupt_requested"] = True
-                        interrupt_session = current
-                    reschedule_delay = _WS_ORPHAN_INTERRUPT_REAP_POLL_S
+                # Transport loss conveys no cancellation intent, even during a
+                # quiet provider/tool wait. Explicit Stop/close owns cancellation.
+                session = _pop_session_by_id(sid)
             if reschedule_delay is None:
                 _pending_ws_reaps.pop(sid, None)
-        if interrupt_session is not None:
-            try:
-                isolated = _interrupt_session_turn(sid, interrupt_session, request_id=f"client-gone-{sid}")
-                logger.info("client_gone sid=%s action=interrupt turn_isolation=%s", sid, isolated)
-            except Exception:
-                logger.exception("client_gone interrupt failed sid=%s", sid)
-                with _sessions_lock:
-                    if (_sessions.get(sid) is interrupt_session
-                            and _pending_ws_reaps.get(sid) is timer):
-                        interrupt_session.pop("_client_gone_interrupt_requested", None)
         if reschedule_delay is not None:
             _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay, _expected_timer=timer)
             return
-        if session is not None and session.get("_client_gone_interrupt_requested"):
-            logger.info("client_gone sid=%s action=reap", sid)
         _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
     with _sessions_lock:

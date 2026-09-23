@@ -7,6 +7,7 @@ import type { OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
+  confirmOnboardingModel,
   type DesktopOnboardingState,
   type OnboardingContext,
   refreshOnboarding,
@@ -1056,5 +1057,27 @@ describe('setOnboardingModel', () => {
       expect(flow.label).toBe('OpenAI OAuth (ChatGPT)')
       expect(flow.saving).toBe(false)
     }
+  })
+})
+
+describe('confirmOnboardingModel', () => {
+  it('does not complete onboarding after its owner becomes stale', () => {
+    const onCompleted = vi.fn()
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          status: 'confirming_model',
+          currentModel: 'fixture/model',
+          label: 'Fixture',
+          providerSlug: 'fixture',
+          saving: false
+        }
+      })
+    )
+
+    confirmOnboardingModel({ isCurrent: () => false, onCompleted, requestGateway: async () => undefined as never })
+
+    expect($desktopOnboarding.get().flow.status).toBe('confirming_model')
+    expect(onCompleted).not.toHaveBeenCalled()
   })
 })

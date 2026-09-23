@@ -273,6 +273,16 @@ export function DesktopOnboardingOverlay({
   // behind), THEN finalize so the unmount lands after the fade — mirrors the
   // connecting overlay's exit choreography instead of cutting instantly.
   const [leaving, setLeaving] = useState(false)
+  const completionTimer = useRef<number | null>(null)
+
+  useEffect(
+    () => () => {
+      if (completionTimer.current !== null) {
+        window.clearTimeout(completionTimer.current)
+      }
+    },
+    []
+  )
 
   const finalizeOnboarding = () => {
     if (leaving) {
@@ -288,7 +298,10 @@ export function DesktopOnboardingOverlay({
     }
 
     setLeaving(true)
-    window.setTimeout(() => confirmOnboardingModel(ctx), ONBOARDING_EXIT_MS)
+    completionTimer.current = window.setTimeout(() => {
+      completionTimer.current = null
+      confirmOnboardingModel(ctx)
+    }, ONBOARDING_EXIT_MS)
   }
 
   // The free-tier intro's three doors share one exit: consume the notice, play

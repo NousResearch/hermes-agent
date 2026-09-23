@@ -1257,7 +1257,8 @@ export async function setOnboardingModel(model: string, providerSlug: string, la
         provider: providerSlug,
         model
       },
-      flowScope ?? $desktopOnboarding.get().targetScope ?? $desktopOnboarding.get().targetProfile
+      flowScope ?? $desktopOnboarding.get().targetScope ?? $desktopOnboarding.get().targetProfile,
+      { isCurrent: () => generation === flowGeneration }
     )
 
     if (generation !== flowGeneration) {
@@ -1290,7 +1291,7 @@ export async function setOnboardingModel(model: string, providerSlug: string, la
 export function confirmOnboardingModel(ctx: OnboardingContext) {
   const { flow } = $desktopOnboarding.get()
 
-  if (flow.status !== 'confirming_model') {
+  if (flow.status !== 'confirming_model' || ctx.isCurrent?.() === false) {
     return
   }
 

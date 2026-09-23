@@ -698,7 +698,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
           provider: selectedProvider,
           ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
         },
-        scopeProfile
+        scopeProfile,
+        { isCurrent: () => profileEpoch.current === epoch }
       )
 
       if (profileEpoch.current !== epoch) {
@@ -718,9 +719,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
       await refresh()
     } catch (err) {
-      setCaughtError(err, m.loadFailed)
+      if (profileEpoch.current === epoch) {
+        setCaughtError(err, m.loadFailed)
+      }
     } finally {
-      setApplying(false)
+      if (profileEpoch.current === epoch) {
+        setApplying(false)
+      }
     }
   }, [
     m.loadFailed,

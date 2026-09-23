@@ -420,7 +420,7 @@ it.each([
   }
 })
 
-it('model confirmation keeps its originating HTTP owner after switching hosts', async () => {
+it('model confirmation cancels before resending after switching hosts', async () => {
   setup()
   vi.useRealTimers()
   $notifications.set([])
@@ -510,12 +510,10 @@ it('model confirmation keeps its originating HTTP owner after switching hosts', 
     await act(async () => {
       approve.onClick()
     })
-    await waitFor(() => expect(received).toHaveLength(2))
+    await waitFor(() => expect(received).toHaveLength(1))
     expect(received.map(({ owner, profile }) => ({ owner, profile }))).toEqual([
-      { owner: 'local', profile: 'other' },
       { owner: 'local', profile: 'other' }
     ])
-    expect(received[1].body).toMatchObject({ scope: 'main', confirm_expensive_model: true })
     expect(queryClient.getQueryData(hermesConfigKey($settingsOwner.get()!))).toEqual({})
   } finally {
     cleanup()

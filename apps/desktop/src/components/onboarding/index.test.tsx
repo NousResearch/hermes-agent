@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -66,6 +66,7 @@ afterEach(() => {
     freeTierReady: false
   })
   $connection.set(null)
+  vi.useRealTimers()
   vi.clearAllMocks()
 })
 
@@ -197,6 +198,49 @@ describe('onboarding model confirmation owner routing', () => {
 })
 
 describe('DesktopOnboardingOverlay owner routing', () => {
+  it('does not complete after the Settings owner changes during the exit delay', async () => {
+    vi.useFakeTimers()
+    $connection.set({ connectionId: 'owner-a', mode: 'remote', baseUrl: 'https://owner-a.invalid' } as never)
+    const scope = $settingsOwner.get()
+    const onCompleted = vi.fn()
+
+    expect(scope).toBeTruthy()
+    $desktopOnboarding.set({
+      ...$desktopOnboarding.get(),
+      configured: true,
+      flow: {
+        status: 'confirming_model',
+        currentModel: 'fixture/model',
+        label: 'Fixture',
+        providerSlug: 'fixture',
+        saving: false
+      },
+      manual: true,
+      targetProfile: 'default',
+      targetScope: scope ?? undefined
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <DesktopOnboardingOverlay
+          enabled={false}
+          onCompleted={onCompleted}
+          profile="default"
+          requestGateway={ctx.requestGateway}
+        />
+      </QueryClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '[Begin]' }))
+    $connection.set({ connectionId: 'owner-b', mode: 'remote', baseUrl: 'https://owner-b.invalid' } as never)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_200)
+    })
+
+    expect(onCompleted).not.toHaveBeenCalled()
+    expect($desktopOnboarding.get()).toMatchObject({ flow: { status: 'idle' }, manual: false })
+  })
+
   it.each(['openai-codex', 'custom:lab', 'retired-provider'])(
     'keeps the named Settings profile through the real %s onboarding handoff',
     async slug => {

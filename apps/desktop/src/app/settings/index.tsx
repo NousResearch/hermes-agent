@@ -78,6 +78,16 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
+export function notifySettingsOwnerError(
+  owner: NonNullable<ReturnType<typeof $settingsOwner.get>>,
+  error: unknown,
+  fallback: string
+) {
+  if ($settingsOwner.get() === owner) {
+    notifyError(error, fallback)
+  }
+}
+
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
@@ -224,7 +234,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       URL.revokeObjectURL(url)
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, t.settings.exportFailed)
+      notifySettingsOwnerError(owner, err, t.settings.exportFailed)
     }
   }
 
@@ -262,7 +272,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onConfigSaved?.()
       }
     } catch (err) {
-      notifyError(err, t.settings.resetFailed)
+      notifySettingsOwnerError(owner, err, t.settings.resetFailed)
     }
   }
 

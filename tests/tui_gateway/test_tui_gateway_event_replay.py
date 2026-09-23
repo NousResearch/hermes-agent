@@ -217,3 +217,19 @@ def test_truncation_detection_semantics():
     assert event_replay.is_truncated("s1", 5)
     # Unknown session: nothing evicted, nothing truncated.
     assert not event_replay.is_truncated("nope", 0)
+
+
+def test_watermark_ahead_of_ring_is_truncated():
+    """A client's last_seen past the ring's newest seq cannot be trusted as "nothing missed".
+
+    Reproduced by a 2-hour voice soak: the client dropped mid-turn, the turn completed, the
+    detached session was reaped after the grace window, and ``session.resume`` rebuilt it under
+    a new runtime id with a fresh ring. ``events.since(new_sid, 25)`` returned no events and
+    ``truncated: False``, so the client waited forever for a reply that sat in history.
+    """
+    for _ in range(3):
+        event_replay._stamp_event(_frame("fresh"))
+    assert not event_replay.is_truncated("fresh", 3)  # caught up: trust the (empty) replay
+    assert event_replay.is_truncated("fresh", 25)  # watermark from an older ring: refetch
+    assert event_replay.is_truncated("never-seen", 7)  # unknown sid, nonzero watermark: refetch
+    assert not event_replay.is_truncated("never-seen", 0)

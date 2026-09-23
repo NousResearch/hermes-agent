@@ -1,6 +1,13 @@
 ---
 name: kicad-pcb
-description: 'Headless KiCad PCB automation using pcbnew Python, kicad-cli and optional Freerouting DSN/SES on Linux, Windows and macOS. Use for an existing, electrically reviewed KiCad design when scripting board placement/routing, running ERC/DRC, importing EasyEDA PCB geometry or exporting manufacturing files after the project release gate. This skill does not select circuits, certify electrical safety or replace RF, mechanical and fab review.'
+description: Design KiCad PCBs headless: pcbnew Python + kicad-cli.
+version: 1.0.0
+author: pantojinho
+license: MIT
+platforms: [linux, windows, macos]
+metadata:
+  hermes:
+    tags: [kicad, pcb, easyeda, hardware, electronics, freerouting, jlcpcb, lcsc]
 ---
 
 # KiCad PCB automation (headless, cross-platform)

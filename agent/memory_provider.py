@@ -107,6 +107,14 @@ class MemoryProvider(ABC):
         ``~/.hermes``) and ``platform``; may include ``agent_context`` ("primary" |
         "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
         ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``, ``user_id_alt``.
+
+        ``agent_workspace`` is the session's resolved workspace identity: the slug of
+        the declared Hermes project owning the session's working directory when one
+        exists, else the git repository root's name, else the working directory's
+        basename; ``""`` when the session has no real workspace (e.g. a gateway/API
+        session with no associated directory). Providers can scope storage per
+        workspace from it — e.g. a per-project memory bank via a ``{workspace}``
+        ``bank_id_template`` placeholder.
         """
 
     def unavailable_reason(self) -> str:

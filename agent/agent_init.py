@@ -1218,6 +1218,41 @@ def _apply_display_config(agent, _agent_cfg, platform):
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
 
+def _resolve_agent_workspace(agent) -> str:
+    """Session workspace identity for memory-provider scoping (``agent_workspace``).
+
+    Sources, in order: the durable session row's recorded ``cwd``/``git_repo_root``
+    (Desktop/TUI sessions, CLI resumptions); the session-scoped runtime cwd (cron
+    workdir, Desktop agent builds); and — only when no session context is installed
+    at all (a local CLI build) — the ambient surface cwd. A session explicitly bound
+    to no cwd (gateway/API turns) stays "" — the ambient TERMINAL_CWD (a configured
+    default) is never promoted to a workspace there. Never raises.
+    """
+    row: Dict[str, Any] = {}
+    with suppress(Exception):
+        if agent._session_db is not None:
+            row = agent._session_db.get_session(agent.session_id) or {}
+    try:
+        from agent.runtime_cwd import resolve_workspace_identity, session_cwd_override, scope_terminal_cwd
+        cwd = str(row.get("cwd") or "").strip()
+        if not cwd:
+            scoped = session_cwd_override()
+            if scoped is None:
+                # No session context on this task (local CLI build): the ambient
+                # surface cwd is the user's real working directory. A refusal scope
+                # raises — degrade instead of killing memory-provider init.
+                with suppress(Exception):
+                    cwd = scope_terminal_cwd().strip()
+                with suppress(Exception):
+                    cwd = cwd or os.getcwd()
+            else:
+                cwd = scoped
+        return resolve_workspace_identity(cwd, repo_root=str(row.get("git_repo_root") or ""))
+    except Exception:
+        logger.debug("Agent workspace resolution failed", exc_info=True)
+        return ""
+
+
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
@@ -1252,7 +1287,10 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name
         kwargs["agent_identity"] = get_active_profile_name()
-        kwargs["agent_workspace"] = "hermes"
+    # Workspace identity (declared project → git repo → cwd basename; "" when the
+    # session has none) so workspace-scoped providers can partition storage.
+    with suppress(Exception):
+        kwargs["agent_workspace"] = _resolve_agent_workspace(agent)
     return kwargs
 
 

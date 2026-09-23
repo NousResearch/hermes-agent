@@ -12,10 +12,79 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
-from agent.turn_empty_response import recover_empty_response
+from agent.turn_empty_response import EMPTY_RESPONSE_SENTINEL, recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
 
 logger = logging.getLogger("agent.conversation_loop")
+
+# Content part types that are NOT visible assistant prose.
+# ``flatten_message_text`` deliberately keeps reasoning parts (callers use it to
+# recover text from any shape) and its key list includes the generic ``content``
+# key, so a block like {"type": "thinking", "content": "..."} flattens into the
+# visible string. For deciding whether the VISIBLE answer leaked a sentinel that
+# is wrong: it judges a turn by its scratchpad instead of its answer.
+_NON_VISIBLE_CONTENT_PART_TYPES = frozenset({
+    "thinking",
+    "reasoning",
+    "redacted_thinking",
+    "reasoning_content",
+})
+
+
+def _visible_text_for_sentinel_check(content: Any) -> str:
+    """Return only the visible assistant prose from any assistant-content shape.
+
+    Type-tolerant by design: assistant ``content`` may be a str, a list of
+    blocks (Anthropic via OpenRouter returns
+    ``[{"type":"text"},{"type":"thinking"}]``), or a single mapping. Reasoning
+    blocks are dropped so a scratchpad note is never mistaken for the visible
+    answer. Never raises — a bad shape yields ``""`` and the caller's guard
+    simply does not fire, which is the safe direction (terminate as before
+    rather than crash the turn).
+    """
+    from agent.message_content import flatten_message_text
+
+    def _is_non_visible(part: Any) -> bool:
+        if not isinstance(part, dict):
+            return False
+        part_type = str(part.get("type") or "").strip().lower()
+        return part_type in _NON_VISIBLE_CONTENT_PART_TYPES
+
+    try:
+        if isinstance(content, list):
+            return flatten_message_text(
+                [part for part in content if not _is_non_visible(part)]
+            )
+        if _is_non_visible(content):
+            return ""
+        return flatten_message_text(content)
+    except Exception:
+        logger.debug("visible-text extraction for sentinel check failed", exc_info=True)
+        return ""
+
+
+def leaked_empty_sentinel(assistant_message: Any, final_response: str) -> bool:
+    """True when the VISIBLE answer starts with the injected ``(empty)`` sentinel.
+
+    A garbage-but-present final answer is worse than an empty one, because empty
+    recovers and garbage does not. The sentinel is injected by the empty-response
+    ladder itself, so a model echoing it back leaked a scratchpad note rather
+    than answering (observed: ``"(empty) again risk. Need progress + tool."``).
+
+    Prefix match, not substring: an answer that merely discusses ``(empty)`` is
+    unaffected. Measured against 3,804 real non-trivial stop-messages in a live
+    session DB: exactly one matches, the leak itself. So this cannot swallow a
+    legitimate short answer such as ``"Done."`` or ``"PASS"``.
+
+    Judged on the VISIBLE text only. Reasoning blocks are excluded, because a
+    scratchpad that says ``(empty)`` while the answer is real must not recover.
+    """
+    visible = _visible_text_for_sentinel_check(
+        getattr(assistant_message, "content", None) if assistant_message is not None else None
+    )
+    if not visible:
+        visible = final_response or ""
+    return visible.lstrip().startswith(EMPTY_RESPONSE_SENTINEL)
 
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
@@ -107,7 +176,16 @@ def finish_text_response(
     agent._mute_post_response = False
 
     # Think-block-only / empty content: recovery path.
-    if not agent._has_content_after_think_block(final_response):
+    #
+    # Also treat a response whose VISIBLE text STARTS WITH the injected
+    # ``(empty)`` sentinel as contentless. The empty-response ladder injects that
+    # sentinel, so a model echoing it back leaked scratchpad shorthand into its
+    # final answer instead of answering. Such a turn must recover, not terminate
+    # with the leak as its answer.
+    if (
+        not agent._has_content_after_think_block(final_response)
+        or leaked_empty_sentinel(assistant_message, final_response)
+    ):
         _ev = recover_empty_response(
             agent, assistant_message, response, finish_reason, final_response=final_response,
             messages=messages, api_messages=api_messages, conversation_history=conversation_history,

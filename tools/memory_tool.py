@@ -150,13 +150,16 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
         isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS for op in (operations or []))
     if not hit:
         return None
+    # Respect the user's write_approval toggle — if it's off, let the write through
+    from tools import write_approval as wa
+    if not wa.write_approval_enabled(wa.MEMORY):
+        return None
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
                {"action": action, "target": target, "content": content, "old_text": old_text})
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
     try:
-        from tools import write_approval as wa
         record = wa.stage_write(
             wa.MEMORY, payload,
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "

@@ -18,9 +18,17 @@ import { CONTROL_TEXT } from './constants'
 export const withActive = (models: readonly string[], active: string): readonly string[] =>
   active && !models.includes(active) ? [active, ...models] : models
 
-// Radix <Select> items cannot be typed into; this sentinel row swaps the
-// control for a text field. Never a real model id.
-const CUSTOM_ITEM = '__custom__'
+// Radix <Select> items cannot be typed into; an action row swaps the control
+// for a text field. Model ids live under their own prefix so no slug — this
+// feature admits any whitespace-free string — can alias the action's value.
+const CUSTOM_ITEM = 'custom'
+const MODEL_PREFIX = 'model:'
+
+export const toItemValue = (model: string): string => (model ? MODEL_PREFIX + model : '')
+
+/** The model id behind a Radix item value; `null` for the custom action row. */
+export const fromItemValue = (item: string): string | null =>
+  item.startsWith(MODEL_PREFIX) ? item.slice(MODEL_PREFIX.length) : null
 
 interface ModelSelectProps {
   'aria-label'?: string
@@ -122,20 +130,22 @@ export function ModelSelect({
   return (
     <Select
       onValueChange={next => {
-        if (next === CUSTOM_ITEM) {
+        const model = fromItemValue(next)
+
+        if (model === null) {
           setTyping(true)
         } else {
-          onValueChange(next)
+          onValueChange(model)
         }
       }}
-      value={value}
+      value={toItemValue(value)}
     >
       <SelectTrigger aria-label={ariaLabel} className={cn(className, CONTROL_TEXT)}>
         <SelectValue placeholder={m.model} />
       </SelectTrigger>
       <SelectContent>
         {withActive(models, value).map(model => (
-          <SelectItem key={model} value={model}>
+          <SelectItem key={model} value={toItemValue(model)}>
             {model}
           </SelectItem>
         ))}

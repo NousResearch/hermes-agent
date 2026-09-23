@@ -3032,6 +3032,69 @@ def _realign_tool_result_names(messages: List[Dict[str, Any]]) -> List[Dict[str,
     return aligned
 
 
+def _uniquify_cross_turn_tool_call_ids(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensure all tool_call_ids across all turns are globally distinct (Gemini/Antigravity/OpenAI
+    reject duplicate tool_call_ids across conversation history with HTTP 400).
+    Reused IDs (e.g. from local servers or model collisions) are renamed deterministically
+    with a '_d<n>' suffix, and matching tool results in that turn are updated to match."""
+    seen_ids: set[str] = set()
+    current_turn_remap: dict[str, str] = {}
+    modified = False
+    result: List[Dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            current_turn_remap = {}
+            tcs = msg.get("tool_calls")
+            new_tcs = []
+            tc_modified = False
+            for tc in tcs:
+                if not isinstance(tc, dict):
+                    new_tcs.append(tc)
+                    continue
+                cid = tc.get("id") or tc.get("call_id") or ""
+                if cid and isinstance(cid, str):
+                    base_id = cid.split("|", 1)[0]
+                    if base_id in seen_ids:
+                        n = 2
+                        while f"{base_id}_d{n}" in seen_ids:
+                            n += 1
+                        new_base = f"{base_id}_d{n}"
+                        new_cid = f"{new_base}|{cid.split('|', 1)[1]}" if "|" in cid else new_base
+                        current_turn_remap[cid] = new_cid
+                        current_turn_remap[base_id] = new_base
+                        if tc.get("id"):
+                            current_turn_remap[tc["id"]] = new_cid
+                        if tc.get("call_id"):
+                            current_turn_remap[tc["call_id"]] = new_cid
+                        seen_ids.add(new_base)
+                        tc = {**tc, "id": new_cid}
+                        if "call_id" in tc:
+                            tc["call_id"] = new_cid
+                        tc_modified = True
+                    else:
+                        seen_ids.add(base_id)
+                new_tcs.append(tc)
+            if tc_modified:
+                msg = {**msg, "tool_calls": new_tcs}
+                modified = True
+            result.append(msg)
+        elif role == "tool":
+            tcid = msg.get("tool_call_id")
+            if tcid and isinstance(tcid, str) and tcid in current_turn_remap:
+                msg = {**msg, "tool_call_id": current_turn_remap[tcid]}
+                modified = True
+            result.append(msg)
+        else:
+            result.append(msg)
+
+    if not modified:
+        return messages
+    _ra().logger.debug("Pre-call sanitizer: uniquified cross-turn duplicate tool_call_id(s)")
+    return result
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call; runs unconditionally (not
     gated on the compressor). Order matters: empty non-final messages are healed first so the
@@ -3043,6 +3106,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     messages = _drop_results_without_ids(messages)
     messages = _pair_tool_calls_positionally(messages)
     messages = _dedupe_tool_call_ids(messages)
+    messages = _uniquify_cross_turn_tool_call_ids(messages)
     return _realign_tool_result_names(messages)
 
 

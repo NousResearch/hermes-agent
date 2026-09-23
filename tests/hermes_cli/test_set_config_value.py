@@ -161,6 +161,24 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
 
+    def test_reasoning_effort_is_recognized_by_set_and_get(
+        self, _isolated_hermes_home, capsys
+    ):
+        set_config_value("agent.reasoning_effort", "high")
+        set_output = capsys.readouterr()
+        assert "not a recognized config key" not in set_output.out
+
+        args = argparse.Namespace(
+            config_command="get", key="agent.reasoning_effort", json=False
+        )
+        config_command(args)
+
+        get_output = capsys.readouterr()
+        assert get_output.out.strip() == "high"
+        assert "not a recognized config key" not in get_output.err
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["reasoning_effort"] == "high"
+
     def test_tool_search_defer_is_recognized(self, _isolated_hermes_home, capsys):
         """tools.tool_search.defer is read by ToolSearchConfig.from_raw, so it must be a
         registered config key (not flagged as unrecognized) and coerce to a real list."""

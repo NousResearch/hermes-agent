@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "policy_id": "documentation-only",
+  "revision": 1,
+  "approval_ref": "example-only-not-production-approval",
+  "routes": [
+    {
+      "route_id": "example-builder",
+      "route_revision": 1,
+      "provider": "custom",
+      "model": "example-model",
+      "endpoint": "https://example.invalid/v1",
+      "maker": "example-maker",
+      "model_family": "example-family",
+      "status": "approved",
+      "allowed_roles": ["builder"],
+      "capabilities": [],
+      "verified_input_budget": 200000,
+      "allowed_reasoning": ["high"],
+      "qualifications": ["deep"],
+      "assessment": "Fictional fixture for read-only explanation; not remote qualification",
+      "evidence": ["documentation-example-only"]
+    }
+  ],
+  "rankings": {"builder": {"deep": ["example-builder"]}}
+}

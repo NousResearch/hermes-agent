@@ -78,6 +78,16 @@ def handle_api_error(
     if agent.thinking_callback:
         agent.thinking_callback("")
 
+    from agent.model_selection_types import RoutingBlocked
+
+    if isinstance(api_error, RoutingBlocked):
+        return _verdict("return", {
+            "final_response": f"Managed routing blocked: {api_error.reason}",
+            "messages": messages, "api_calls": api_call_count,
+            "completed": False, "failed": True, "error": api_error.reason,
+            "failure_reason": api_error.reason, "failure_retryable": False,
+        })
+
     _recovered, active_system_prompt = recover_before_classification(
         agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
         active_system_prompt=active_system_prompt,

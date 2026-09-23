@@ -22,6 +22,7 @@ class _FakeNativeClient:
 
 def _make_agent(provider="moa"):
     agent = MagicMock()
+    agent._managed_routing_receipt_id = None
     agent.provider = provider
     agent.client = _FakeNativeClient()
     agent.api_mode = "chat_completions"

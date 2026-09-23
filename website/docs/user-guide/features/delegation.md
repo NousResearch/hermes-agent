@@ -263,7 +263,7 @@ A process that finishes while the child is still running needs no handoff: the c
 
 ## Model Override
 
-You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
+For unmanaged delegation (including observational shadow mode), you can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models. [Enforced guided routing](#guided-model-routing-opt-in-per-task) instead selects each child's qualified route independently, without using price to lower quality.
 
 ```yaml
 # In ~/.hermes/config.yaml
@@ -272,7 +272,7 @@ delegation:
   provider: "openrouter"              # Optional: route subagents to a different provider
 ```
 
-If omitted, subagents use the same model as the parent.
+If omitted, unmanaged subagents use the same model as the parent.
 
 ### Cost strategy: frontier planner, inexpensive workers
 
@@ -283,13 +283,13 @@ Decomposing a problem into well-specified subtasks takes frontier-level judgment
 model:
   default: "your-frontier-model"     # parent (planner) stays on the frontier model
 delegation:
-  model: "your-inexpensive-model"    # all delegate_task children run on this
+  model: "your-inexpensive-model"    # unmanaged children use this pin
   provider: "openrouter"             # optional: route children to a different provider
 ```
 
-Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
+Unmanaged resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
-Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+This pin is global for unmanaged and shadow children. The model-facing `delegate_task` schema has no raw per-task model/provider override; managed tasks instead supply bounded `routing_requirements`, and the approved policy selects a qualified route for each member. For quality-sensitive subtasks, use [guided routing](#guided-model-routing-opt-in-per-task), leave the unmanaged pin unset to inherit the parent, or hand the task to the [kanban board](kanban.md#per-task-model-override). A global cost-oriented pin is not a quality qualification.
 
 ## The `/review` Command
 

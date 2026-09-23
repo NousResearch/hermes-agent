@@ -1,0 +1,28 @@
+{
+  "default_preset": "guided-example",
+  "presets": {
+    "guided-example": {
+      "enabled": true,
+      "reference_models": [
+        {
+          "provider": "custom",
+          "model": "fictional-reference-a",
+          "routing_role": "moareference",
+          "routing_requirements": {"task_class": "cross-component", "input_tokens": 1000, "reserve_tokens": 8192}
+        },
+        {
+          "provider": "custom",
+          "model": "fictional-reference-b",
+          "routing_role": "moareference",
+          "routing_requirements": {"task_class": "cross-component", "input_tokens": 1000, "reserve_tokens": 8192}
+        }
+      ],
+      "aggregator": {
+        "provider": "custom",
+        "model": "fictional-aggregator",
+        "routing_role": "moaaggregator",
+        "routing_requirements": {"task_class": "cross-component", "input_tokens": 1000, "reserve_tokens": 8192}
+      }
+    }
+  }
+}

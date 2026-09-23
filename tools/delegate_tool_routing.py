@@ -176,7 +176,15 @@ def resolve_delegation_route(
             task, task_requirements, role=role, task_index=task_index, attempt_id=attempt_id,
         )
         if parent_decision is not None:
+            parent_requirements = parent_decision["requirements"]
             requirements["allowed_route_ids"] = [parent_decision["selected"]["route_id"], *parent_decision["alternates"]]
+            requirements["inherited_quality"] = parent_requirements["quality"]
+            classification = parent_requirements.get("classification") or {}
+            requirements["inherited_risk_flags"] = sorted(
+                set(parent_requirements.get("risk_flags", []))
+                | set(parent_requirements.get("inherited_risk_flags", []))
+                | set(classification.get("risk_flags", []))
+            )
         decision_kwargs = resolve_route(
             hermes_home, policy_id, requirements, now=int(time.time()),
             policy_revision=parent_decision["policy_revision"] if parent_decision else None,
@@ -223,6 +231,7 @@ def _build_requirements(
         "attempt_id": attempt_id,
         "slot_id": "",
         "task_class": intake.get("task_class", ""),
+        "risk_flags": list(intake.get("risk_flags", [])),
         "required_capabilities": list(intake.get("required_capabilities", [])),
         "input_tokens": int(intake.get("input_tokens", 0)),
         "reserve_tokens": int(intake.get("reserve_tokens", 0)),

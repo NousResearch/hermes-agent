@@ -3516,30 +3516,50 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["stream"] is True
         assert response.choices[0].message.content == "summary"
 
-    def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
+    def test_enforces_total_timeout_while_stream_keeps_emitting_events(self, monkeypatch):
+        import threading
+        import agent.auxiliary_client as aux
+
+        # Advance the guard's clock on stream events, not scheduler-dependent sleeps.
+        # Leave the consumer and the request owner's cleanup path real.
+        now = [time.monotonic()]
+        monkeypatch.setattr(aux, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        emitted = []
+        stream_closed = []
+        client_closed = []
+        owner = threading.get_ident()
+
         class _SlowAliveCreateStream:
             def __iter__(self):
                 for _ in range(5):
-                    time.sleep(0.03)
+                    now[0] += 10
+                    emitted.append(now[0])
                     yield SimpleNamespace(type="response.in_progress")
 
-            def close(self): pass
+            def close(self):
+                stream_closed.append(threading.get_ident())
 
         class FakeResponses:
             def create(self, **kwargs):
                 return _SlowAliveCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        fake_client = SimpleNamespace(
+            responses=FakeResponses(),
+            close=lambda: client_closed.append(threading.get_ident()),
+        )
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         started = time.monotonic()
-        with pytest.raises(TimeoutError):
+        with pytest.raises(TimeoutError, match="no-progress timeout"):
             adapter.create(
                 messages=[{"role": "user", "content": "summarize this"}],
-                timeout=0.05,
+                timeout=30,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert len(emitted) == 3
+        assert stream_closed and set(stream_closed) == {owner}
+        assert client_closed and set(client_closed) == {owner}
+        assert time.monotonic() - started < 5
 
 
 class TestCodexAuxiliaryAdapterCacheScope:

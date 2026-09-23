@@ -1488,6 +1488,8 @@ class _CodexCompletionsAdapter:
             from agent.codex_runtime import _bypass_sdk_request_transform, _consume_codex_event_stream
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
             stream_kwargs = _bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            from agent.managed_route_aux_wire import enforce_aux_native_wire
+            enforce_aux_native_wire(self._client, stream_kwargs, "codex_responses")
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -1695,6 +1697,7 @@ class _AnthropicCompletionsAdapter:
                 if not isinstance(existing, dict):
                     existing = {}
                 anthropic_kwargs["extra_body"] = {**existing, **passthrough}
+        from agent.managed_route_aux_wire import enforce_aux_native_wire
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
@@ -1702,6 +1705,7 @@ class _AnthropicCompletionsAdapter:
             # substantive payloads so keepalives can't hold a stalled summary open. None keeps
             # the fast get_final_message path.
             on_stream_event=(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
+            before_send=lambda payload: enforce_aux_native_wire(self._client, payload, "anthropic_messages"),
         )
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
         usage = None
@@ -1748,6 +1752,8 @@ class _BedrockCompletionsAdapter:
         self._model = model
 
     def create(self, **kwargs) -> Any:
+        from agent.managed_route_aux_wire import enforce_aux_native_wire
+        enforce_aux_native_wire(self, kwargs, "bedrock_converse")
         from agent.bedrock_adapter import call_converse
         model = kwargs.get("model", self._model)
         max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
@@ -2536,12 +2542,18 @@ def _relay_sync_stream(
 
     kwargs = prepare_chat_messages(client, kwargs)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+
+    def send(request):
+        from agent.managed_route_aux_wire import enforce_aux_chat_wire
+        enforce_aux_chat_wire(client, request)
+        return client.chat.completions.create(**request)
+
     if route is None:
-        return client.chat.completions.create(**kwargs)
+        return send(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, lambda request: client.chat.completions.create(**request), name=provider_name,
+        kwargs, send, name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
@@ -6480,12 +6492,15 @@ def _create_with_progress_once(
     """
     _notify_aux_dispatch()
     _notify_aux_progress()  # Preserve the watchdog's historical dispatch tick.
+    from agent.managed_route_aux_wire import enforce_aux_chat_wire
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
+        enforce_aux_chat_wire(client, kwargs)
         response = client.chat.completions.create(**kwargs)
         if not _client_streams_internally(client):
             _notify_aux_provider_response()
         return response
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
+    enforce_aux_chat_wire(client, stream_kwargs)
     try:
         chunks = client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
@@ -6499,6 +6514,7 @@ def _create_with_progress_once(
         logger.debug("Auxiliary %s: streamed request failed (%s); retrying non-streaming",
                      task or "call", exc)
         _notify_aux_dispatch()
+        enforce_aux_chat_wire(client, kwargs)
         response = client.chat.completions.create(**kwargs)
         _notify_aux_provider_response()
         return response

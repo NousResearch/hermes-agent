@@ -42,7 +42,10 @@ def resolve_route(hermes_home, policy_id: str, requirements: dict, *, now: int,
     requirements = dict(requirements)
     requirements.setdefault("target_profile", str(get_hermes_home().resolve()))
     availability = load_availability(hermes_home, policy_id, requirements["target_profile"])
-    decision = select(requirements, policy, availability, now)
+    from agent.model_selection_classification import get_classification
+
+    decision = select(requirements, policy, availability, now,
+                      classification=get_classification(hermes_home, requirements))
     receipt_id = persist_receipt(hermes_home, decision)
     append_outcome(hermes_home, receipt_id, "routing_selected", {
         "execution_kind": requirements["execution_kind"], "execution_id": requirements["execution_id"],
@@ -104,6 +107,12 @@ def enforce_worker_route(
     retained = get_policy_revision(hermes_home, decision["policy_id"], decision["policy_revision"])
     if retained is None or content_hash(retained) != decision.get("policy_hash"):
         raise RoutingBlocked("stale_or_revoked_decision", "receipt policy revision missing or mismatched")
+    classification = decision["requirements"].get("classification")
+    if classification is not None:
+        from agent.model_selection_classification import get_classification
+
+        if get_classification(hermes_home, decision["requirements"], version=classification["version"]) != classification:
+            raise RoutingBlocked("stale_or_revoked_decision", "retained classification missing or mismatched")
     if get_active_policy(hermes_home, decision["policy_id"]) is None:
         raise RoutingBlocked(
             "stale_or_revoked_decision",

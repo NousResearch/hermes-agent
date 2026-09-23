@@ -171,12 +171,10 @@ def test_create_task_rejects_malformed_requirements_at_creation_not_claim(kanban
 
 # --- requirements affect task-specific route eligibility ---
 
-def test_requirements_task_class_established_pattern_selects_shallow_route(
+def test_requirements_task_class_alone_cannot_attest_shallow_scope(
     kanban_home, all_assignees_spawnable,
 ):
-    """An operator-declared established-pattern task must NOT be forced onto
-    the deep-only route; genuine per-task intake, not a fixed cross-component
-    placeholder, drives the quality floor and therefore route eligibility."""
+    """Model-facing intake is a proposal, not a persisted authority record."""
     _activate(kanban_home)
     captured = {}
 
@@ -193,8 +191,10 @@ def test_requirements_task_class_established_pattern_selects_shallow_route(
         task = kb.get_task(conn, tid)
 
     decision = get_receipt(kanban_home, task.routing_receipt_id)
-    assert decision["requirements"]["quality"] == "shallow"
-    assert decision["selected"]["route_id"] == "openai-shallow"
+    assert decision["requirements"]["task_class"] == "established-pattern"
+    assert decision["requirements"]["classification"] is None
+    assert decision["requirements"]["quality"] == "deep"
+    assert decision["selected"]["route_id"] == "openai-deep"
 
 
 def test_requirements_unclassified_task_class_defaults_deep(kanban_home, all_assignees_spawnable):

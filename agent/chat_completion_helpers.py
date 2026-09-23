@@ -686,6 +686,8 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     so callers can register it with their abort/close machinery; bedrock / MoA
     manage their own clients. Interrupt/abort/close semantics stay in callers.
     """
+    from agent.managed_route_wire import enforce_supported_wire
+    enforce_supported_wire(agent)
     if agent.api_mode == "codex_responses":
         return agent._run_codex_stream(api_kwargs, client=make_client("codex_stream_request"),
             on_first_delta=getattr(agent, "_codex_on_first_delta", None))
@@ -706,7 +708,11 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
         return agent.client.chat.completions.create(**api_kwargs)
-    return make_client("chat_completion_request").chat.completions.create(**api_kwargs)
+    request_client = make_client("chat_completion_request")
+    from agent.managed_route_wire import enforce_chat_wire
+
+    enforce_chat_wire(agent, request_client, api_kwargs)
+    return request_client.chat.completions.create(**api_kwargs)
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -2679,6 +2685,9 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("waiting for provider response (streaming)")
+        from agent.managed_route_wire import enforce_chat_wire
+
+        enforce_chat_wire(self.agent, request_client, stream_kwargs)
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
@@ -3001,6 +3010,9 @@ class _StreamingCall(StreamingWaitMonitor):
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
             final_kwargs = dict(next_api_kwargs)
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
+            from agent.managed_route_wire import enforce_anthropic_wire
+
+            enforce_anthropic_wire(self.agent, request_client, final_kwargs)
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager
             return manager.__enter__()
@@ -3425,6 +3437,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     text token (tool-call turns suppress them) and returns a SimpleNamespace in
     the non-streaming response shape. codex_responses delegates to the already-
     streaming codex runner; cron turns and delegated children run inline."""
+    from agent.managed_route_wire import enforce_supported_wire
+    enforce_supported_wire(agent)
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
     if agent.api_mode == "codex_responses":

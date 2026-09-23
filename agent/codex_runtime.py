@@ -940,7 +940,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
-        return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))
+        final_kwargs = _bypass_sdk_request_transform(stream_kwargs)
+        from agent.managed_route_wire import enforce_responses_wire
+        enforce_responses_wire(agent, active_client, final_kwargs)
+        return active_client.responses.create(**final_kwargs)
 
     def _log_failure(exc: BaseException) -> None:
         request_body_bytes, exception_chain = _codex_request_failure_details(exc)

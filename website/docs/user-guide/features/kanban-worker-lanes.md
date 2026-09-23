@@ -151,15 +151,56 @@ qualified route can still be temporarily unavailable (auth, quota, outage). The
 selector checks all three independently before choosing a route; none of them implies
 the others.
 
+### Try a read-only decision
+
+Download the complete [example policy](/examples/guided-routing/policy.json) and
+[example requirements](/examples/guided-routing/requirements.json) as `policy.json`
+and `requirements.json`, then run:
+
+```bash
+hermes kanban routing validate policy.json --json
+hermes kanban routing explain policy.json requirements.json --json
+```
+
+Both commands are read-only: they do not publish, activate, dispatch, or contact a
+provider. The example uses a deliberately unreachable `example.invalid` endpoint
+and fictional qualification evidence. It demonstrates the schema, not an approved
+production roster or a real token estimate. The explanation selects the deep tier
+even though the proposed `task_class` is `established-pattern`: that proposal alone
+does not authorize shallow work. Replace every fictional identity, assessment,
+capacity, budget and provenance field with verified evidence before considering
+publication. These exact files are exercised through the CLI in the test suite.
+
+The policy's `rankings` map role and qualification (`deep` or `shallow`) to an
+ordered list of approved route IDs. Each route separately declares allowed roles,
+capabilities, input capacity, supported reasoning, maker and qualification evidence;
+a ranking cannot bypass those filters. `approval_ref` records actual approval
+provenance, never a claim manufactured from successfully running the CLI.
+
+Kanban resolves the policy named **`kanban-default`** in the origin profile's
+`model_routing.db`. Publishing or activating another name does not bind it to
+Kanban. Run the commands in that origin profile; worker profiles resolve their own
+credentials and do not inherit the origin profile's secrets.
+
+Card/delegation/slot intake uses the smaller [intake example](/examples/guided-routing/intake.json),
+not the full diagnostic requirements file. Its fields are `task_class`,
+`required_capabilities`, positive `input_tokens`/`reserve_tokens`, `risk_flags`,
+and review `provenance`; `required` may only be `true`. The host adds execution,
+attempt, slot and role identity. Independent-review provenance must include the
+real frozen SHA, verifier, completeness and contributor makers. The example's
+fictional budgets demonstrate parsing only, not safe capacity for a real task.
+
+### Operator commands
+
 ```bash
 # Opt a task into a routing role. Requirements must be genuine, not fabricated —
-# see `hermes kanban create --help` for the exact JSON shape.
-hermes kanban create --title "..." --assignee <profile> \
+# the read-only example above is a full selector request, not card intake JSON.
+hermes kanban create "..." --assignee <profile> \
   --routing-role reviewarchitecture \
   --routing-requirements '<reviewed requirements JSON>'
 
 # Observe what the policy would recommend without changing the legacy launch:
-hermes kanban create --title "..." --assignee <profile> \
+hermes kanban create "..." --assignee <profile> \
   --routing-role builder --routing-mode shadow \
   --routing-requirements '<requirements JSON>'
 
@@ -175,7 +216,39 @@ hermes kanban routing receipt-for-task <task_id>   # the decision receipted for 
 hermes kanban routing revoke <policy_id> [--route-id ID] --reason "..." --approval-ref "..."
 hermes kanban routing readmit <policy_id> [--route-id ID] --reason "..." --approval-ref "..."
 hermes kanban routing reconcile <receipt_id> --reason "..." --approval-ref "..."
+hermes kanban routing attest <classification.json> --expected-version 0 --approval-ref "..."
 ```
+
+### Classification authority
+
+`task_class` and `risk_flags` in task/tool intake are model proposals, not trusted
+classification. Missing or incomplete attestation selects deep. Auth, migration,
+concurrency, persistence, production, novel or ambiguous work also retains a deep
+floor; a model can raise risk but cannot remove inherited risk or lower a managed
+parent's quality floor.
+
+Host-side classification records are immutable and versioned in the origin
+profile's routing store. Each is bound to `execution_kind`, `execution_id`,
+`attempt_id`, `slot_id` and `role`, plus a hash of the reviewed task class,
+capabilities, budgets, reasoning and provenance. Reusing the record for a different
+attempt, or changing that reviewed scope, does not authorize shallow work. A scope
+change requires a new attestation version. Receipts retain their exact version;
+missing or corrupted retained evidence blocks startup.
+
+`routing attest` is an operator path, not a model-tool field. Its JSON object has
+exactly four keys: `requirements` (the complete request for the exact execution),
+`complete` (boolean), `risk_flags` (list) and `evidence` (nonempty bounded reference
+list). `--expected-version 0` creates the first version; later writes must supply
+the current version, otherwise compare-and-swap rejects them. Do not copy the
+diagnostic example's execution identity into a real task's attestation.
+
+Trusted host integrations can instead call
+`agent.model_selection_classification.attest_classification` with `authority="parent"`
+and an `attester` containing the parent `task_id`, `run_id` and `role`. Parent
+updates preserve earlier risks and cannot supersede operator authority. This is
+same-user governance with recorded provenance, not human-presence authentication
+or protection from someone who can rewrite the profile's files. Supplying an
+authority label in ordinary model/tool requirements is rejected.
 
 Key properties, so operators know what this does and doesn't do:
 
@@ -232,6 +305,15 @@ Key properties, so operators know what this does and doesn't do:
   `receipt-for-task` places the immutable decision under `decision` beside
   `receipt_id` and `outcomes`. A recorded startup identity is not proof of a
   successful provider response: inspect subsequent health events separately.
+  `routing_wire_validated` events separately record the final SDK payload's model,
+  emitted reasoning, protocol and endpoint hash, after middleware and protocol
+  conversion. They contain no prompts or credentials and mean validation before
+  send, not provider acceptance or task completion. Chat Completions, Anthropic
+  Messages and Responses send paths recheck the actual payload; an omitted or
+  changed required reasoning effort blocks rather than silently downgrading it.
+  Bedrock Converse and a receipted virtual `moa` route are unsupported and fail
+  before sending. Managed MoA uses individually receipted concrete slots instead;
+  ordinary fixed presets and unmanaged Bedrock behavior are unchanged.
   Neither command rewrites the selected route to match observations. Receipts
   never contain prompts, credentials, or task text.
 - **Failure is closed, not silently unmanaged.** A missing/invalid receipt, a stale

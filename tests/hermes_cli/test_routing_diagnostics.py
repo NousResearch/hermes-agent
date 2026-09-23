@@ -177,3 +177,29 @@ def test_receipt_cli_distinguishes_selection_from_observed_outcomes(tmp_path, mo
         assert "selected-model" in text
         assert "observed: custom/observed-model" in text
     assert get_receipt(home, receipt_id) == original
+
+
+def test_classification_cli_records_distinct_operator_authority(tmp_path):
+    from agent.model_selection_classification import get_classification
+
+    home = tmp_path / "home"
+    home.mkdir()
+    req = dict(schema_version=1, role="builder", execution_kind="delegation",
+               execution_id="child", attempt_id="1", task_class="established-pattern",
+               required_capabilities=[], input_tokens=1000, reserve_tokens=8192, reasoning="high",
+               provenance=dict(frozen_sha="", verified_by="parent", complete=True, contributors=[]))
+    source = tmp_path / "scope.json"
+    source.write_text(json.dumps({"requirements": req, "complete": True,
+                                 "risk_flags": [], "evidence": ["scope:reviewed"]}))
+    env = dict(os.environ, HOME=str(tmp_path), HERMES_HOME=str(home))
+    command = [sys.executable, "-m", "hermes_cli.main", "kanban", "routing", "attest",
+               str(source), "--expected-version", "0", "--approval-ref", "operator:reviewed", "--json"]
+    proc = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    record = json.loads(proc.stdout)
+    assert record == get_classification(home, req)
+    assert record["authority"] == "operator"
+    assert record["attester"] == {"approval_ref": "operator:reviewed"}
+    stale = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+    assert stale.returncode != 0
+    assert get_classification(home, req) == record

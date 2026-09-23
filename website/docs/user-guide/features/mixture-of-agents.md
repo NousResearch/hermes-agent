@@ -242,7 +242,7 @@ So MoA does not sacrifice prompt caching on either call type. Its only real cost
 - MoA is no longer listed under `hermes tools`; there is no `moa` toolset to enable.
 - Setting `enabled: false` on a preset disables the reference fan-out for that preset: the aggregator acts alone, exactly as if you selected it as a plain model. This is the per-preset off switch surfaced in the dashboard and desktop settings.
 - A preset's aggregator cannot be another MoA preset. Recursive MoA trees are intentionally blocked.
-- Credential failures on one reference model do not abort the turn. Hermes includes the failure in the reference context and continues with whatever models returned.
+- For ordinary fixed presets, credential failures on one reference model do not abort the turn. Hermes includes the failure in the reference context and continues with whatever models returned. Enforced managed slots are required gates: their denial or failure aborts the cohort instead of silently dropping the reference.
 - MoA increases model-call count. A single model iteration can involve multiple reference calls plus the aggregator call.
 
 ## Guided model routing for MoA slots (opt-in, per preset)
@@ -253,6 +253,15 @@ and policy store the Kanban and delegation adapters use, instead of a fixed
 `provider`/`model` pin. A slot without `routing_role` is entirely unaffected — this
 does not change any existing fixed preset.
 
+The [complete fictional preset example](/examples/guided-routing/moa.json) shows
+the `moa` configuration object with two references and an aggregator. Even managed
+slots must retain nonempty static `provider` and `model` fields: the normalizer
+requires them, and shadow uses them. Enforced selection replaces those static
+identities; they are never a fallback after denial. The example is tested through
+normalization, not activated or qualified for inference. It requires a separately
+approved policy with `moareference`/`moaaggregator` rankings and two eligible
+reference makers; the builder-only diagnostic policy is not that policy.
+
 Set `routing_mode: shadow` beside `routing_role` to record the route the policy would
 recommend while continuing to call the preset's fixed provider/model. Shadow slots are
 never required cohort gates, and a missing policy or rejected recommendation is logged
@@ -262,10 +271,12 @@ without blocking the legacy MoA call.
   run resolve together and the resulting routes are bound to that run's client; a
   config edit to the named preset mid-run cannot change an already-pinned cohort,
   and restarting a failed cohort is a new attempt, not a resume.
-- **A managed preset can require cohort diversity.** A design-review-style preset can
-  require reference slots from different approved makers plus a required aggregator;
-  a denied or missing required slot fails that attempt's gate — there is no silent
-  aggregator-only fallback when a required reference can't resolve.
+- **Every enforced managed slot is required.** Managed reference selection excludes
+  earlier managed reference makers, so two managed references require different
+  approved makers. The aggregator may share a reference maker unless its own
+  independent-review requirements exclude it. A denied or missing required slot
+  fails the attempt — there is no optional managed mode or silent aggregator-only
+  fallback when a required reference cannot resolve.
 - **The virtual maker `moa` cannot satisfy an independence requirement** — cohort
   diversity is checked against each slot's actual resolved maker, never the
   aggregation mechanism itself.
@@ -276,6 +287,10 @@ without blocking the legacy MoA call.
 - **Input estimates must be explicit.** Missing or zero input/reserve estimates
   block before dispatch. Managed references and aggregators check assembled text
   against verified route capacity rather than silently trimming it to fit.
+- **Model-proposed scope cannot lower quality.** Missing host-side classification
+  authority retains the deep tier, even for `task_class: established-pattern`.
+  See [classification authority](./kanban-worker-lanes.md#classification-authority)
+  for exact-execution attestations and operator precedence.
 - **Failure is a denied slot, not silent unmanaged.** A managed slot whose route is
   denied or mismatched at the call boundary raises before that call is made, rather
   than falling back to whatever the preset's static config would otherwise pick.

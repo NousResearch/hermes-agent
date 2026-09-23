@@ -28,6 +28,24 @@ def _publish(args, home):
                    f"(hash {record['content_hash'][:12]}…)")
 
 
+def _attest(args, home):
+    from agent.model_selection import _validate_requirements
+    from agent.model_selection_classification import attest_classification
+
+    with open(args.classification_json, encoding="utf-8") as stream:
+        scope = json.load(stream)
+    if not isinstance(scope, dict) or set(scope) != {"requirements", "complete", "risk_flags", "evidence"}:
+        raise RoutingBlocked("schema_invalid", "classification needs requirements, complete, risk_flags, evidence")
+    _validate_requirements(scope["requirements"])
+    record = attest_classification(
+        home, scope["requirements"], authority="operator",
+        attester={"approval_ref": args.approval_ref}, complete=scope["complete"],
+        risk_flags=scope["risk_flags"], evidence=scope["evidence"],
+        expected_version=args.expected_version,
+    )
+    return _render(args, record, f"attested classification version {record['version']}")
+
+
 def _activate(args, home):
     store.activate_policy(home, args.policy_id, args.revision)
     print(f"activated {args.policy_id} revision {args.revision}")
@@ -130,6 +148,7 @@ def _diagnostic(args, home):
 
 
 _HANDLERS = {
+    "attest": _attest,
     "validate": _diagnostic, "explain": _diagnostic,
     "publish": _publish, "activate": _activate,
     "revoke": _admission, "readmit": _admission, "reconcile": _reconcile,

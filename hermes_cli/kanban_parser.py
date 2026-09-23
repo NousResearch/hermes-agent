@@ -83,6 +83,12 @@ _STEP_HANDOFF = (
 )
 
 _ROUTING_SPECS = [
+    _cmd("attest", [
+        _arg("classification_json", help="Execution requirements and reviewed scope classification JSON"),
+        _arg("--expected-version", type=int, required=True),
+        _arg("--approval-ref", required=True, help="Operator approval provenance (not model intake)"),
+        _json_flag(),
+    ], help="Append an operator classification attestation for one exact execution"),
     _cmd("validate", [_arg("policy_json"), _json_flag()],
          help="Validate a policy JSON file without publishing or activating it"),
     _cmd("explain", [_arg("policy_json"), _arg("requirements_json"), _json_flag()],

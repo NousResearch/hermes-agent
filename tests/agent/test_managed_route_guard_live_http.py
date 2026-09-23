@@ -221,6 +221,7 @@ def managed_agent_env():
         quiet_mode=True, skip_context_files=True, skip_memory=True,
         save_trajectories=False, platform="cli",
         reasoning_config={"enabled": True, "effort": "high"},
+        request_overrides={"reasoning_effort": "high"},
     )
     agent.valid_tool_names = {"terminal", "read_file", "write_file", "execute_code", "session_search"}
     # Exactly what cli.py's _enforce_kanban_routing_receipt sets on success,
@@ -229,6 +230,7 @@ def managed_agent_env():
     agent._managed_routing_receipt_id = receipt_id
     agent._managed_routing_home = hermes_home
     agent.requested_provider = "openai-compat"
+
 
     try:
         yield {
@@ -558,3 +560,40 @@ def _tool_results(handler) -> list[str]:
             if m.get("role") == "tool":
                 out.append(m.get("content", ""))
     return out
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("mutation", ["model", "reasoning", "omitted_reasoning", "reserve", "messages", "extra_model"])
+def test_final_execution_middleware_cannot_change_managed_wire(managed_agent_env, monkeypatch, streaming, mutation):
+    from hermes_cli import middleware
+
+    env = managed_agent_env
+    agent = env["agent"]
+    agent._disable_streaming = not streaming
+    original = middleware.run_llm_execution_middleware
+    reached = []
+
+    def mutate(request, send, **context):
+        def altered(payload):
+            payload = dict(payload)
+            if mutation == "model":
+                payload["model"] = "unapproved-model"
+            elif mutation == "reasoning":
+                payload["reasoning_effort"] = "low"
+            elif mutation == "omitted_reasoning":
+                payload.pop("reasoning_effort", None)
+            elif mutation == "extra_model":
+                payload["extra_body"] = {"model": "unapproved-model"}
+            elif mutation == "reserve":
+                payload["max_tokens"] = 300000
+            else:
+                payload["messages"] = [{"role": "user", "content": "x" * 300000}]
+            reached.append(True)
+            return send(payload)
+        return original(request, altered, **context)
+
+    monkeypatch.setattr(middleware, "run_llm_execution_middleware", mutate)
+    agent.run_conversation("bounded managed request", conversation_history=[], task_id="t")
+    assert reached == [True], "a policy denial must not enter transport retry/recovery"
+    assert env["approved"].requests == []
+    assert env["unapproved"].requests == []

@@ -23,10 +23,11 @@ __all__ = ["select", "RoutingBlocked"]
 
 _OPTIONAL_REQUIREMENT_FIELDS = frozenset({
     "allowed_route_ids", "cohort_excluded_makers", "input_empty", "slot_id", "target_profile",
+    "risk_flags", "inherited_quality", "inherited_risk_flags",
 })
 
 
-def _quality_floor(task_class: str) -> str:
+def _quality_floor(task_class: str, classification: dict | None = None) -> str:
     """Deterministic quality floor: deep for cross-component/high-consequence.
 
     Unknown/unclassified scope also defaults to deep per design §3.B
@@ -34,9 +35,11 @@ def _quality_floor(task_class: str) -> str:
     """
     if task_class in DEEP_QUALITY_TASK_CLASSES:
         return "deep"
-    if task_class == "established-pattern":
+    if (task_class == "established-pattern" and classification
+            and classification["complete"] and not classification["risk_flags"]):
         return "shallow"
-    # investigative and any unrecognized/incomplete class: conservative deep default
+    # A model-proposed class alone does not attest that the scope is complete
+    # or free of mandatory risk. Missing independent classification is deep.
     return "deep"
 
 
@@ -55,6 +58,14 @@ def _validate_requirements(requirements: dict) -> None:
         if not isinstance(requirements[field], str):
             raise RoutingBlocked("schema_invalid", f"{field} must be text")
     _string_list(requirements["required_capabilities"], "required_capabilities")
+    from agent.model_selection_classification import RISK_FLAGS
+
+    for field in ("risk_flags", "inherited_risk_flags"):
+        _string_list(requirements.get(field, []), field)
+        if set(requirements.get(field, [])) - RISK_FLAGS:
+            raise RoutingBlocked("schema_invalid", "unknown risk flags")
+    if requirements.get("inherited_quality") not in (None, "shallow", "deep"):
+        raise RoutingBlocked("schema_invalid", "invalid inherited quality")
     if "allowed_route_ids" in requirements:
         _string_list(requirements["allowed_route_ids"], "allowed_route_ids")
     _string_list(requirements.get("cohort_excluded_makers", []), "cohort_excluded_makers")
@@ -188,7 +199,8 @@ def _route_rejection(route: dict, requirements: dict, quality: str, excluded_mak
     return None
 
 
-def select(requirements: dict, policy: dict, availability: dict, now: int) -> dict:
+def select(requirements: dict, policy: dict, availability: dict, now: int, *,
+           classification: dict | None = None) -> dict:
     """Deterministically select a route for `requirements` under `policy`.
 
     Returns an immutable-shaped decision dict (never mutated by callers).
@@ -203,7 +215,15 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
 
     health = availability_snapshot(requirements, policy["routes"], availability, now)
 
-    quality = _quality_floor(requirements["task_class"])
+    if classification is not None:
+        from agent.model_selection_classification import execution_identity
+
+        if classification["execution"] != execution_identity(requirements):
+            raise RoutingBlocked("stale_or_revoked_decision", "classification execution mismatch")
+    quality = _quality_floor(requirements["task_class"], classification)
+    if (requirements.get("risk_flags") or requirements.get("inherited_risk_flags")
+            or requirements.get("inherited_quality") == "deep"):
+        quality = "deep"
     excluded_makers = _contributing_makers(requirements)
     excluded_makers.update(requirements.get("cohort_excluded_makers", []))
 
@@ -274,6 +294,10 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
             "provenance": requirements["provenance"],
             "cohort_excluded_makers": requirements.get("cohort_excluded_makers", []),
             "target_profile": requirements.get("target_profile"),
+            "classification": classification,
+            "risk_flags": requirements.get("risk_flags", []),
+            "inherited_quality": requirements.get("inherited_quality"),
+            "inherited_risk_flags": requirements.get("inherited_risk_flags", []),
         },
         "selected": {
             "route_id": selected["route_id"],

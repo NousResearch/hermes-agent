@@ -379,6 +379,7 @@ def _build_requirements(
         "attempt_id": attempt_id,
         "slot_id": slot_id,
         "task_class": intake.get("task_class", ""),
+        "risk_flags": list(intake.get("risk_flags", [])),
         "required_capabilities": list(intake.get("required_capabilities", [])),
         "input_tokens": int(intake.get("input_tokens", 0)),
         "reserve_tokens": int(intake.get("reserve_tokens", 0)),

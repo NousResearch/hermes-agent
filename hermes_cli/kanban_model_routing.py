@@ -140,6 +140,7 @@ def validate_routing_requirements(value: Optional[dict]) -> Optional[dict]:
         _fail("routing_requirements must be a JSON object")
     known_fields = {
         "task_class", "required_capabilities", "input_tokens", "reserve_tokens", "provenance",
+        "risk_flags",
         # An explicit assertion of the required-cohort contract, never an opt-out.
         "required",
     }
@@ -156,6 +157,13 @@ def validate_routing_requirements(value: Optional[dict]) -> Optional[dict]:
         _fail("managed slots are required; required may only be true")
 
     out: dict = {}
+    if "risk_flags" in value:
+        from agent.model_selection_classification import RISK_FLAGS
+
+        flags = value["risk_flags"]
+        if not isinstance(flags, list) or any(not isinstance(flag, str) or flag not in RISK_FLAGS for flag in flags):
+            _fail("risk_flags must contain only supported risk names")
+        out["risk_flags"] = sorted(set(flags))
     if task_class is not None:
         out["task_class"] = task_class
     caps = _validate_capabilities(value.get("required_capabilities"))
@@ -232,6 +240,7 @@ def _build_requirements(task, *, frozen_sha: str, verified_by: str) -> dict:
         # already treats anything outside DEEP_QUALITY_TASK_CLASSES /
         # "established-pattern" as the conservative deep default.
         "task_class": stored.get("task_class", ""),
+        "risk_flags": list(stored.get("risk_flags", [])),
         "required_capabilities": list(stored.get("required_capabilities", [])),
         "input_tokens": int(stored.get("input_tokens", 0)),
         "reserve_tokens": int(stored.get("reserve_tokens", 0)),
@@ -299,7 +308,10 @@ def resolve_task_route(
 
     requirements["target_profile"] = task.assignee
     availability = load_availability(hermes_home, _POLICY_ID, task.assignee)
-    decision = select(requirements, policy, availability, now)
+    from agent.model_selection_classification import get_classification
+
+    decision = select(requirements, policy, availability, now,
+                      classification=get_classification(hermes_home, requirements))
     receipt_id = persist_receipt(hermes_home, decision)
 
     from hermes_cli.kanban_db import set_routing_receipt
@@ -354,8 +366,11 @@ def observe_task_route(
     requirements["target_profile"] = task.assignee
     from agent.managed_route_health import load_availability
 
+    from agent.model_selection_classification import get_classification
+
     decision = select(
         requirements, policy, load_availability(hermes_home, _POLICY_ID, task.assignee), now,
+        classification=get_classification(hermes_home, requirements),
     )
     receipt_id = persist_receipt(hermes_home, decision)
     from hermes_cli.kanban_db import set_routing_shadow_receipt

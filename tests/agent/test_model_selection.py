@@ -131,3 +131,22 @@ def test_selection_rejects_unknown_requirement_fields_and_ranking_ids():
     rankings["builder"]["deep"].append("missing-route")
     with pytest.raises(RoutingBlocked, match="unknown route ids"):
         select(req, malformed_policy, {}, now=100)
+
+
+def test_model_proposed_established_pattern_without_attestation_keeps_deep_floor():
+    from agent.model_selection import select
+
+    p: dict[str, Any] = policy()
+    p["routes"].append(route("shallow", "openai", classes=("shallow",)))
+    p["rankings"]["builder"]["shallow"] = ["shallow"]
+    req = dict(schema_version=1, role="builder", execution_kind="delegate",
+               execution_id="child", attempt_id="1", task_class="established-pattern",
+               required_capabilities=["tool_use"], input_tokens=1000, reserve_tokens=2000,
+               reasoning="high", provenance={"frozen_sha": "", "verified_by": "parent",
+               "complete": True, "contributors": []})
+
+    decision = select(req, p, {}, now=100)
+
+    assert decision["requirements"]["quality"] == "deep"
+    assert decision["selected"]["route_id"] == "a"
+    assert decision["rejections"]["shallow"] == ["qualification_unmet"]

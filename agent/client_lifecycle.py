@@ -987,11 +987,15 @@ class ClientLifecycleMixin:
             self._try_refresh_anthropic_client_credentials()
         # Strips Responses-only kwargs that leak in under an api_mode-flip race.
         from agent.anthropic_adapter import create_anthropic_message
+        from agent.managed_route_wire import enforce_anthropic_wire
+
+        active_client = client or self._anthropic_client
         # on_response: rate-limit + credits state live in response headers, which the parsed Message drops.
         return create_anthropic_message(
-            client or self._anthropic_client, api_kwargs, log_prefix=getattr(self, "log_prefix", ""),
+            active_client, api_kwargs, log_prefix=getattr(self, "log_prefix", ""),
             prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
             on_response=self._capture_anthropic_response_headers,
+            before_send=lambda payload: enforce_anthropic_wire(self, active_client, payload),
         )
 
     def _rebuild_anthropic_client(self) -> None:

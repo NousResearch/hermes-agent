@@ -334,6 +334,9 @@ def test_real_worker_tool_round_inherits_managed_authority(tmp_path, surface, ov
         home = tmp_path / "home"
         _write_profile_home(home, url, "fake-model", "custom-fake")
         config = yaml.safe_load((home / "config.yaml").read_text())
+        # The nested fixture explicitly supports medium on the wire, including
+        # lifecycle children whose default routing requirement is medium.
+        config["custom_providers"][0]["extra_body"] = {"reasoning": {"effort": "medium"}}
         config.update({"toolsets": ["delegation"], "delegation": {
             "provider": "custom-forbidden", "model": "forbidden-model", "max_iterations": 2,
         }, "agent": {"max_iterations": 3}})
@@ -344,13 +347,13 @@ def test_real_worker_tool_round_inherits_managed_authority(tmp_path, surface, ov
         config["moa"] = {"default_preset": "nested", "presets": {"nested": {
             "enabled": False, "reference_models": [], "aggregator": {
                 "provider": "custom-fake", "model": "fake-model", "routing_role": "builder",
-                "reasoning_effort": "high", "routing_requirements": {
+                "reasoning_effort": "medium", "routing_requirements": {
                     "input_tokens": 1000, "reserve_tokens": 8192,
                 },
             },
         }}}
         (home / "config.yaml").write_text(yaml.safe_dump(config))
-        receipt = _persist_receipt(home, provider="custom-fake", model="fake-model", endpoint=url)
+        receipt = _persist_receipt(home, provider="custom-fake", model="fake-model", endpoint=url, reasoning="medium")
         if "refresh_policy" in overrides and surface.startswith("kanban"):
             policy = get_active_policy(home, "kanban-default")
             assert policy is not None
@@ -391,7 +394,7 @@ runpy.run_module("hermes_cli.main", run_name="__main__")
         proc = _run_worker(profile_home=home, provider="moa" if is_moa else "custom-fake",
                            model="nested" if is_moa else "fake-model",
                            receipt_id=receipt if surface.startswith("kanban") else "", query="PARENT_TASK",
-                           bootstrap=bootstrap)
+                           bootstrap=bootstrap, reasoning="medium")
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert any(m.get("role") == "tool" for r in handler.requests for m in r.get("messages", [])), proc.stdout + proc.stderr
         if surface == "unmanaged" and "routing_role" not in overrides:
@@ -399,7 +402,10 @@ runpy.run_module("hermes_cli.main", run_name="__main__")
         else:
             assert not forbidden_handler.requests, "managed authority escaped to the configured forbidden target"
         if surface != "unmanaged" and (not overrides or "refresh_policy" in overrides):
-            assert any(m.get("content") == "NESTED_TASK" for r in handler.requests for m in r.get("messages", [])), "must construct and run an authorized child, not merely block every launch"
+            assert any(m.get("content") == "NESTED_TASK" for r in handler.requests for m in r.get("messages", [])), (
+                "must construct and run an authorized child, not merely block every launch",
+                [m.get("content") for r in handler.requests for m in r.get("messages", []) if m.get("role") == "tool"],
+            )
         if bootstrap is not None:
             assert not any(r.get("model") == "forbidden-model" for r in handler.requests), "model-only lifecycle calls must be constrained preferences, not raw overrides"
     finally:

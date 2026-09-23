@@ -677,7 +677,7 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
 
 def create_anthropic_message(
     client: Any, api_kwargs: dict, *, log_prefix: str = "", prefer_stream: bool = True,
-    on_stream_event=None, on_response=None,
+    on_stream_event=None, on_response=None, before_send=None,
 ) -> Any:
     """Create an Anthropic message, aggregating via stream when available. Some Anthropic-compatible
     gateways are SSE-only and answer ``create()`` with ``text/event-stream``, which the SDK surfaces
@@ -688,6 +688,8 @@ def create_anthropic_message(
     ``on_response(httpx_response)`` exposes headers the parsed Message drops (Nous Portal's
     ``x-nous-credits-*`` balance family)."""
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
+    if before_send is not None:
+        before_send(api_kwargs)
     messages_api = getattr(client, "messages", None)
     stream_fn = getattr(messages_api, "stream", None)
     if prefer_stream and callable(stream_fn):

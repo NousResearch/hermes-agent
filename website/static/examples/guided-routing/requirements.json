@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "execution_kind": "diagnostic",
+  "execution_id": "documentation-example",
+  "attempt_id": "1",
+  "slot_id": "",
+  "role": "builder",
+  "task_class": "established-pattern",
+  "required_capabilities": [],
+  "input_tokens": 1000,
+  "reserve_tokens": 8192,
+  "reasoning": "high",
+  "provenance": {
+    "frozen_sha": "",
+    "verified_by": "documentation-example-only",
+    "complete": true,
+    "contributors": []
+  }
+}

@@ -45,6 +45,16 @@ class _CapturingHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
         type(self).requests.append(req)
+        if req.get("stream"):
+            chunk = {"id": "stream-fixture", "choices": [{"index": 0,
+                     "delta": {"content": "slot done"}, "finish_reason": "stop"}]}
+            body = ("data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._send_json({
             "id": "m",
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "slot done"},
@@ -333,3 +343,49 @@ def test_emergency_revocation_mid_run_blocks_next_request(routed_home, monkeypat
         "an explicit emergency revocation must never let the in-flight run reach the "
         "endpoint again under a silently substituted route"
     )
+
+
+@pytest.mark.parametrize("mutation", [None, "model", "reasoning", "reserve", "messages"])
+def test_streaming_aggregator_validates_after_auxiliary_transform(routed_home, monkeypatch, mutation):
+    import importlib
+    from agent.model_selection_types import RoutingBlocked
+
+    auxiliary = importlib.import_module("agent.auxiliary_client")
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    _write_moa_config(home, _managed_preset())
+    client, agent = _make_client("stream-wire")
+    original = auxiliary._relay_sync_stream
+    reached = []
+
+    def altered(sdk_client, kwargs, **options):
+        reached.append(True)
+        kwargs = dict(kwargs)
+        if mutation == "model":
+            kwargs["model"] = "unapproved-model"
+        elif mutation == "reasoning":
+            kwargs["extra_body"] = {"reasoning": {"effort": "low"}}
+            kwargs["reasoning_effort"] = "low"
+        elif mutation == "reserve":
+            kwargs["max_tokens"] = 200001
+        elif mutation == "messages":
+            kwargs["messages"] = [{"role": "user", "content": "x" * 300000}]
+        return original(sdk_client, kwargs, **options)
+
+    monkeypatch.setattr(auxiliary, "_relay_sync_stream", altered)
+
+    def execute():
+        return list(client.chat.completions.create(
+            messages=[{"role": "user", "content": "Stream a bounded answer"}], stream=True,
+        ))
+
+    if mutation is None:
+        assert execute()
+        assert len(handler.requests) == 2
+        assert handler.requests[-1]["stream"] is True
+    else:
+        with pytest.raises(RoutingBlocked):
+            execute()
+        assert len(handler.requests) == 1, "only the unmodified reference may reach the endpoint"
+    assert reached, "the real streaming auxiliary sender must be exercised"

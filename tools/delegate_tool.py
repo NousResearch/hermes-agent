@@ -445,6 +445,7 @@ def _build_children(
                 continue
             _task_overrides["override_api_key"] = _managed_runtime_creds["api_key"]
             _task_overrides["override_api_mode"] = _managed_runtime_creds["api_mode"]
+            _task_overrides["override_request_overrides"] = _managed_runtime_creds.get("request_overrides")
             _task_overrides["override_acp_command"] = _managed_runtime_creds.get("command")
             _task_overrides["override_acp_args"] = _managed_runtime_creds.get("args")
             if _routing_resolution.get("endpoint") is None:

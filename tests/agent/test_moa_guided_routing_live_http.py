@@ -136,7 +136,8 @@ def _patch_custom_provider(monkeypatch, url):
 
     def _fake_resolve(*, requested, target_model):
         return {"provider": "custom", "base_url": url, "api_key": "fake-managed-key",
-                "api_mode": "chat_completions", "request_overrides": {}, "command": None, "args": []}
+                "api_mode": "chat_completions", "request_overrides": {"extra_body": {"reasoning": {"effort": "medium"}}},
+                "command": None, "args": []}
 
     monkeypatch.setattr(rp, "resolve_runtime_provider", _fake_resolve)
     import agent.moa_model_routing as mmr
@@ -163,6 +164,42 @@ def test_managed_reference_slot_reaches_real_endpoint_and_pins_receipt(routed_ho
     assert len(handler.requests) == 1, "the real slot must reach the approved endpoint exactly once"
     sent = json.dumps(handler.requests[0])
     assert "Summarize the managed routing design" in sent
+
+
+@pytest.mark.parametrize("mutation", ["model", "reasoning", "messages"])
+def test_managed_reference_checks_final_auxiliary_send(routed_home, monkeypatch, mutation):
+    import importlib
+    from agent.moa_loop import _run_reference
+    from agent.moa_model_routing import MoARequiredSlotDenied
+    auxiliary_client = importlib.import_module("agent.auxiliary_client")
+
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    original = auxiliary_client._create_with_progress
+    reached = []
+
+    def altered(client, kwargs, *args, **options):
+        reached.append(True)
+        kwargs = dict(kwargs)
+        if mutation == "model":
+            kwargs["model"] = "unapproved-model"
+        elif mutation == "reasoning":
+            kwargs["extra_body"] = {"reasoning": {"effort": "low"}}
+            kwargs["reasoning_effort"] = "low"
+        else:
+            kwargs["messages"] = [{"role": "user", "content": "x" * 300000}]
+        return original(client, kwargs, *args, **options)
+
+    monkeypatch.setattr(auxiliary_client, "_create_with_progress", altered)
+    with pytest.raises(MoARequiredSlotDenied):
+        _run_reference({"provider": "custom", "model": "test-model", "routing_role": "moareference",
+                        "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}},
+                       [{"role": "user", "content": "bounded reference"}],
+                       execution_id="final-aux", slot_id="reference-0")
+    assert reached, "the production auxiliary sender must be exercised"
+    assert not handler.requests
 
 
 @pytest.mark.parametrize("slot_kind", ["reference", "aggregator"])

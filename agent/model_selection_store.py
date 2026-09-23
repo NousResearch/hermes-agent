@@ -24,6 +24,13 @@ from agent.model_selection_types import RoutingBlocked
 from agent.model_selection_integrity import canonical_json, content_hash
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS routing_classifications (
+    execution_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content_json TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY(execution_key, version)
+);
 CREATE TABLE IF NOT EXISTS policy_revisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     policy_id TEXT NOT NULL,

@@ -470,9 +470,9 @@ def _run_reference(
         # user's current turn, so mirror the main agent's x-initiator header.
         from agent.auxiliary_client import _normalize_aux_provider
         is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
-        from agent.managed_route_health import observe_request
+        from agent.managed_route_aux_wire import observe_moa_request
         health_route = managed_resolution or {}
-        with observe_request(health_route.get("routing_home"), health_route.get("receipt_id")):
+        with observe_moa_request(health_route.get("routing_home"), health_route.get("receipt_id")):
             response = call_llm(
                 task="moa_reference", messages=trimmed, temperature=temperature,
                 max_tokens=max_tokens,
@@ -981,9 +981,9 @@ def aggregate_moa_context(
             from agent.managed_route_budget import enforce_input_budget
 
             enforce_input_budget(agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"], agg_messages)
-        from agent.managed_route_health import observe_request
+        from agent.managed_route_aux_wire import observe_moa_request
         health_route = agg_managed_resolution or {}
-        with observe_request(health_route.get("routing_home"), health_route.get("receipt_id")):
+        with observe_moa_request(health_route.get("routing_home"), health_route.get("receipt_id")):
             synthesis = _extract_text(call_llm(
                 task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
                 reasoning_config=agg_reasoning_config, **agg_runtime,
@@ -1302,7 +1302,11 @@ class MoAChatCompletions:
             # construction-time exception immediately, otherwise keep the
             # observation open around iteration below.
             try:
-                agg_response = _call_aggregator()
+                from agent.managed_route_aux_wire import managed_aux_wire_scope
+                with managed_aux_wire_scope(
+                    agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"],
+                ):
+                    agg_response = _call_aggregator()
             except Exception:
                 from agent.managed_route_health import observe_request
 
@@ -1311,9 +1315,9 @@ class MoAChatCompletions:
                 ):
                     raise
         else:
-            from agent.managed_route_health import observe_request
+            from agent.managed_route_aux_wire import observe_moa_request
 
-            with observe_request(
+            with observe_moa_request(
                 agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"],
             ):
                 agg_response = _call_aggregator()
@@ -1330,9 +1334,9 @@ class MoAChatCompletions:
             # when streaming was requested; hand the loop a one-chunk iterator.
             agg_response = iter((_completed_response_as_stream_chunk(agg_response),))
         if stream and agg_managed_resolution is not None:
-            from agent.managed_route_health import observe_stream
+            from agent.managed_route_aux_wire import observe_moa_stream
 
-            return observe_stream(
+            return observe_moa_stream(
                 agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"], agg_response,
             )
         return agg_response

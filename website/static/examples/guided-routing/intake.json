@@ -1,0 +1,5 @@
+{
+  "task_class": "cross-component",
+  "input_tokens": 1000,
+  "reserve_tokens": 8192
+}

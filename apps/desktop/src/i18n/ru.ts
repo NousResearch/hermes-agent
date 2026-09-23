@@ -629,6 +629,8 @@ export const ru = defineLocale({
         `Масштабирует текст и элементы управления во всём приложении. Также работает Cmd/Ctrl с +, − и 0. Сейчас: ${percent}%.`,
       sessionDensityTitle: 'Плотность списка сеансов',
       sessionDensityDesc: 'Выберите, сколько контекста показывать под заголовками сеансов в боковой панели.',
+      sidebarNavigationTitle: 'Навигация боковой панели',
+      sidebarNavigationDesc: 'Выберите строки навигации для боковой панели. Режим интерфейса всё ещё может скрывать строки.',
       sessionDensityCompact: 'Компактно',
       sessionDensityComfortable: 'Комфортно',
       sessionDensityDetailed: 'Подробно',

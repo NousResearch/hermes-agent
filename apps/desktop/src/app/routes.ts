@@ -134,8 +134,20 @@ export interface SidebarNavContribution {
   label: string
   /** Route to navigate to (usually a contributed page's path). */
   path: string
+  /** Durable preference key. Falls back to the contribution's source and id. */
+  navId?: string
   /** `'advanced'` keeps the row out of Simple mode; unset shows it everywhere. */
   tier?: InterfaceTier
+}
+
+/** A plugin may rename its display label without losing its user's preference. */
+export function sidebarNavContributionId(
+  contribution: Pick<Contribution, 'id' | 'source'>,
+  data: Pick<SidebarNavContribution, 'navId'>
+): string {
+  const localId = data.navId?.trim() || contribution.id
+
+  return `${contribution.source ?? 'core'}:${localId}`
 }
 
 // Views that render as a full-screen modal card (OverlayView) over the shell.

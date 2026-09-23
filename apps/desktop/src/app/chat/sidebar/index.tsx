@@ -133,6 +133,7 @@ import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } fr
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
+import { $sidebarNavHiddenIds } from '@/store/sidebar-nav-visibility'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
 import {
@@ -142,7 +143,8 @@ import {
   CRON_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
-  type SidebarNavContribution
+  type SidebarNavContribution,
+  sidebarNavContributionId
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session-drag'
@@ -415,7 +417,7 @@ export function ChatSidebar({
 
         return [
           {
-            id: c.id,
+            id: sidebarNavContributionId(c, data),
             label: data.label,
             icon: (props: { className?: string }) => <Codicon name={codicon} {...props} />,
             route: data.path,
@@ -428,10 +430,12 @@ export function ChatSidebar({
 
   const interfaceMode = useStore($interfaceMode)
   const showsAdvancedChrome = useStore($showsAdvancedChrome)
+  const hiddenNavIds = useStore($sidebarNavHiddenIds)
 
   const navItems = useMemo(
-    () => [...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)),
-    [contributedNav, interfaceMode]
+    () =>
+      [...SIDEBAR_NAV, ...contributedNav].filter(item => shownInMode(interfaceMode)(item) && !hiddenNavIds.includes(item.id)),
+    [contributedNav, hiddenNavIds, interfaceMode]
   )
 
   const panesFlipped = useStore($panesFlipped)
@@ -1591,6 +1595,7 @@ export function ChatSidebar({
                     )}
                     // A tip anchored to the label points at the end of the
                     // word; the row is what it's actually about.
+                    data-nav-id={item.id}
                     data-tip-region=""
                     onClick={() => {
                       // A plain new session lands in whatever profile the live

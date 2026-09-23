@@ -752,6 +752,8 @@ export const zh = defineLocale({
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
       sessionDensityTitle: '会话列表密度',
       sessionDensityDesc: '选择侧边栏会话标题下方显示的信息量。',
+      sidebarNavigationTitle: '侧边栏导航',
+      sidebarNavigationDesc: '选择要在侧边栏显示的导航行。界面模式仍可能隐藏行。',
       sessionDensityCompact: '紧凑',
       sessionDensityComfortable: '舒适',
       sessionDensityDetailed: '详细',

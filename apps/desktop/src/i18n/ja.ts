@@ -559,6 +559,8 @@ export const ja = defineLocale({
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
       sessionDensityTitle: 'セッションリストの密度',
       sessionDensityDesc: 'サイドバーのセッションタイトルの下に表示する情報量を選びます。',
+      sidebarNavigationTitle: 'サイドバーナビゲーション',
+      sidebarNavigationDesc: 'サイドバーに表示するナビゲーション行を選びます。インターフェースモードで行が非表示になる場合があります。',
       sessionDensityCompact: 'コンパクト',
       sessionDensityComfortable: '標準',
       sessionDensityDetailed: '詳細',

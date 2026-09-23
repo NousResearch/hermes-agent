@@ -8,14 +8,14 @@ import hermes_state
 from hermes_state import SessionDB
 
 
-_STATE = {"failures_left": 0, "attempts": 0}  # module-level: the tracking factory subclasses _FlakyReads
+_STATE = {"failures_left": 0, "attempts": 0, "fail_prefix": "SELECT"}  # module-level: the tracking factory subclasses _FlakyReads
 
 
 class _FlakyReads(sqlite3.Connection):
     """Real SQLite connection whose first N SELECTs fail the way a mid-checkpoint mode=ro reader does."""
 
     def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-        if str(sql).lstrip().upper().startswith("SELECT"):
+        if str(sql).lstrip().upper().startswith(_STATE["fail_prefix"]):
             _STATE["attempts"] += 1
             if _STATE["failures_left"] > 0:
                 _STATE["failures_left"] -= 1
@@ -41,7 +41,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_state, "_connect_tracked_db", flaky_connect)
     while db._evict_one_idle_read_conn():  # the next read opens through the flaky factory
         pass
-    _STATE.update(failures_left=0, attempts=0)
+    _STATE.update(failures_left=0, attempts=0, fail_prefix="SELECT")
     yield db
     db.close()
 
@@ -60,3 +60,14 @@ def test_persistent_ioerr_propagates_after_the_budget(db):
         db.get_session("s")
     assert _STATE["attempts"] == hermes_state._READ_ONLY_IOERR_RETRY_ATTEMPTS + 1
     assert db._db_corrupt is False  # busy/EIO is not corruption: no quarantine
+
+
+@pytest.mark.parametrize("include_compacted, fail_prefix", [(False, "SELECT"), (True, "WITH")])
+def test_transient_ioerr_on_get_messages_is_retried(db, include_compacted, fail_prefix):
+    """Both message read paths -- live rows and the deduped display-history CTE -- replay a transient IOERR."""
+    db.append_message("s", "user", "hi")
+    _STATE.update(failures_left=1, attempts=0, fail_prefix=fail_prefix)  # WITH: only the display CTE can fail
+    rows = db.get_messages("s", include_compacted=include_compacted)
+    assert [r["content"] for r in rows] == ["hi"]
+    assert _STATE["failures_left"] == 0 and _STATE["attempts"] == 2  # one failure, one replay
+    assert db._db_corrupt is False and db._db_wal_generation_lost is False

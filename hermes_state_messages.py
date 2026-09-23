@@ -1057,9 +1057,10 @@ class SessionMessagesMixin:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
         if include_compacted and not include_inactive and self._ensure_display_order(session_id):
-            with self._read_ctx() as conn:
-                rows = self._display_rows_from_conn(
-                    conn, session_id, limit=limit, offset=offset, latest=latest)
+            # Route through the IOERR-retrying reader (#100871), never a bare _read_ctx.
+            rows = self._read_retrying_ioerr(
+                lambda conn: self._display_rows_from_conn(
+                    conn, session_id, limit=limit, offset=offset, latest=latest))
         elif include_compacted:
             # Read-only legacy stores cannot persist display identities; keep only fixed-width
             # identities and representative ids while scanning, then fetch the selected payloads.

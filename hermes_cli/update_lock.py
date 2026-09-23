@@ -166,6 +166,13 @@ class UpdateLock:
         """
         existing = read_live_update(path=self.path)
         if existing is not None:
+            if existing.pid == os.getpid():
+                # No other live process has our pid, so this claim is ours: a desktop pre-write, or
+                # the marker of a killed update whose pid this retry inherited (containers restart
+                # pid numbering). Adopt it verbatim like UpdateMarkerGuard::acquire in update.rs —
+                # rewriting started_at would let retries keep a wedged update under the age ceiling.
+                self.acquired = True
+                return True
             if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
                 return True
             self.holder = existing

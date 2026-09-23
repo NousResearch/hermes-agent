@@ -14,6 +14,7 @@ export interface ArtifactRecord {
   label: string
   sessionId: string
   profile?: string
+  connectionId?: string
   sessionTitle: string
   timestamp: number
 }
@@ -427,6 +428,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         label: artifactLabel(value),
         sessionId: session.id,
         profile: session.profile,
+        connectionId: session.connection_id,
         sessionTitle: title,
         timestamp: artifactTimestamp(message, session)
       })

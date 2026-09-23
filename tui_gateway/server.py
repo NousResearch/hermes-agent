@@ -792,8 +792,10 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
                                            request_id=request_id or None)
 
     settle = server_requests.send_async("approval", sid, payload, on_result)
-    if request_id:
-        _approval.register_gateway_settle(session_key, request_id, settle)
+    # The wait can end between the frame going out and the hook attaching (the client answered by RPC, another
+    # surface resolved it): withdraw now, or the request stays in ``open_requests`` for every later resume.
+    if request_id and not _approval.register_gateway_settle(session_key, request_id, settle):
+        settle("resolved")
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):

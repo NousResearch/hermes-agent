@@ -1,30 +1,30 @@
-# Unreal MCP — Tool Surface Reference
+# Unreal MCP, Tool Surface Reference
 
 How Epic's editor-embedded MCP server organizes, advertises, and executes
 tools, and how to extend the surface when the shipped tools run out.
 Everything here is against UE 5.8's experimental plugin (id
-`ModelContextProtocol`); expect drift between engine versions — the live
+`ModelContextProtocol`); expect drift between engine versions, the live
 `describe_toolset` schema always outranks this file.
 
 ## Architecture in one paragraph
 
 The **Unreal MCP** plugin hosts the HTTP server inside the editor process
 (default `http://127.0.0.1:8000/mcp`, loopback-only, no auth, HTTP + SSE
-only — no stdio/WebSocket). It implements the protocol but ships no tools of
-its own. Tools come from **Toolsets** — classes deriving from
-`UToolsetDefinition` (C++) or `unreal.ToolsetDefinition` (Python) — collected
+only, no stdio/WebSocket). It implements the protocol but ships no tools of
+its own. Tools come from **Toolsets**: classes deriving from
+`UToolsetDefinition` (C++) or `unreal.ToolsetDefinition` (Python), collected
 at startup by the **Toolset Registry** subsystem (sibling plugin,
 auto-enabled; the registry itself ships no toolsets either). The shipped
 tools live in per-domain plugins under `Engine/Plugins/Experimental/
-Toolsets/` — the workhorse is **EditorToolset** (core editor toolsets,
-Python + C++) — and **AllToolsets** is a one-checkbox aggregator plugin
+Toolsets/`, the workhorse is **EditorToolset** (core editor toolsets,
+Python + C++), and **AllToolsets** is a one-checkbox aggregator plugin
 that depends on ~21 of them (verified from `AllToolsets.uplugin`, 5.8):
 AIModule, AnimationAssistant, AutomationTest, ConfigSettings, Conversation,
 DataRegistry, DataflowAgent, Editor, GameFeatures, GameplayTags, GAS,
 MCPClient, Niagara, PCG, Physics, Plugin, SemanticSearch, SlateInspector,
 StateTree, UMG, WorldConditions. Project plugins and Game Feature Plugins
 can contribute more. Unreal MCP wraps every registered tool call as an MCP
-Tool. Execution is **serialized onto the game thread** — one tool call at a
+Tool. Execution is **serialized onto the game thread**: one tool call at a
 time, editor UI blocked while each runs.
 
 ## Tool-search mode (the default contract)
@@ -43,18 +43,18 @@ Discipline:
 - `list_toolsets` once per session; re-run only after `RefreshTools`, plugin
   changes, or reconnect.
 - `describe_toolset` before first use of any toolset. Parameter names, types,
-  and required fields come from the schema — never from memory or this file.
+  and required fields come from the schema, never from memory or this file.
 - Results: primitive results arrive wrapped as `{"result": ...}` (CVar
   `ModelContextProtocol.WrapPODToolResultsInObject`, default true).
   Structured results serialize with field-level schema.
-- Errors come back as tool-call errors with the engine-side message — read
+- Errors come back as tool-call errors with the engine-side message, read
   them; they usually name the offending parameter or missing asset.
 
 Eager mode (`Enable Tool Search` off) advertises every tool individually.
 Under Hermes that means each tool becomes `mcp_unreal_engine_<tool_name>` at
 session start, and `hermes mcp configure unreal-engine` can prune the list.
 Schema payload grows with every registered toolset, and tool authors are told
-NOT to rely on eager advertising — stay in tool-search mode unless a very
+NOT to rely on eager advertising, stay in tool-search mode unless a very
 small fixed surface is wanted.
 
 ## call_tool dispatch semantics (live-verified, 5.8)
@@ -62,7 +62,7 @@ small fixed surface is wanted.
 Verified against a running 5.8 server; these details are where naive
 clients die:
 
-- `list_toolsets` returns **fully-qualified** toolset names — Python:
+- `list_toolsets` returns **fully-qualified** toolset names, Python:
   `editor_toolset.toolsets.scene.SceneTools`; C++:
   `EditorToolset.EditorAppToolset`. Epic's prose says "SceneTools"; the
   registry speaks qualified names. Use them verbatim in `describe_toolset`
@@ -73,24 +73,24 @@ clients die:
 - `call_tool` args: `{"toolset_name": ..., "tool_name": ..., "arguments":
   {...}}`; result returns on the same turn (the HTTP response blocks until
   the game thread finishes the call).
-- **`TOptional` parameters must be passed explicitly as `null`** — omitting
+- **`TOptional` parameters must be passed explicitly as `null`**: omitting
   them errors with `input param "X" needs a default value`. E.g.
   `CaptureViewport` minimal call is `{"captureTransform": null,
   "annotations": null, "bShowUI": false}`.
 - **Schema `required` is literal.** `find_actors` marks `name`, `tag`,
-  `collision_channels` required even though they're semantically optional —
+  `collision_channels` required even though they're semantically optional,
   pass `""` / `[]` to mean "any".
 - **Property names are camelCase with UE's `b` prefix intact** at this
   reflection layer: `bUseTemperature`, `bAtmosphereSunLight`, `fogDensity`,
   `bRealTimeCapture`, `mobility`. Writing `useTemperature` does NOT error
-  the whole call — the response names each property that could not be set
+  the whole call, the response names each property that could not be set
   (schema-in-error style; READ error text, it lists the exact failures and
   often the full input schema).
 - **Object references travel as `{"refPath": "<soft object path>"}`**
   everywhere (actors, classes, components). Class refs use
   `/Script/Module.Class` (e.g. `/Script/Engine.PointLight`); actor refs are
   the full path (`/Temp/Untitled_1.Untitled_1:PersistentLevel.DirectionalLight_UAID_...`).
-  Spawn/find tools RETURN refPaths — capture and reuse them.
+  Spawn/find tools RETURN refPaths, capture and reuse them.
 - **`ObjectTools.set_properties` takes `values` as a JSON *string***, not
   an object: `{"instance": {"refPath": ...}, "values":
   "{\"intensity\": 10.0}"}`. `get_properties` likewise returns a JSON
@@ -122,15 +122,15 @@ qualified prefix `editor_toolset.toolsets.<module>.<Class>`):
 |---|---|
 | `scene.SceneTools` | `load_level`, `get_current_level`, `find_actors` (by name/type/tag/bounds), `add_to_scene_from_class`, `add_to_scene_from_asset`, `remove_from_scene`, `save_actor`, `create_level_instance`, folders |
 | `actor.ActorTools` | `get_label`/`set_label`, tags, `get_actor_transform`/`set_actor_transform` (`xform` fields optional = "don't change"), parenting, components |
-| `primitive.PrimitiveTools` | `add_cube` (dimensions), `add_sphere` (radius), `add_cylinder`/`add_cone` (radius+height) — adds StaticMeshComponents with `local_transform` to a host actor: spawn `/Script/Engine.Actor`, then compose. The fastest blocking path, zero asset dependencies |
-| `object.ObjectTools` | `list_properties` (returns full JSON schema of every property), `get_properties`/`set_properties` (JSON-string `values`), `reset_properties` (restore defaults — also your rollback), `get_class`, `search_subclasses` |
+| `primitive.PrimitiveTools` | `add_cube` (dimensions), `add_sphere` (radius), `add_cylinder`/`add_cone` (radius+height), adds StaticMeshComponents with `local_transform` to a host actor: spawn `/Script/Engine.Actor`: then compose. The fastest blocking path, zero asset dependencies|
+| `object.ObjectTools` | `list_properties` (returns full JSON schema of every property), `get_properties`/`set_properties` (JSON-string `values`), `reset_properties` (restore defaults, also your rollback), `get_class`, `search_subclasses`|
 | `material_instance.MaterialInstanceTools` | `create`, `list_parameters`, `get/set_scalar_parameter`, `get/set_vector_parameter` |
 | `asset.AssetTools` | `find_assets`, `load_asset`, `exists`, `save_assets`, `is_dirty`, `get_dependencies`/`get_referencers` (check before delete!), `delete`, `move`, `duplicate`, folders, `read_file`/`write_file` (project-scoped) |
 | `blueprint.BlueprintTools` (+ dsl/layout/node) | Blueprint authoring |
 | `material.MaterialTools`, `static_mesh.StaticMeshTools`, `texture.TextureTools`, `data_table.DataTableTools`, … | per-asset-type operations |
-| `programmatic.ProgrammaticToolset` | **the batching escape hatch** — see below |
+| `programmatic.ProgrammaticToolset` | **the batching escape hatch**: see below|
 
-**`EditorToolset.EditorAppToolset` (C++, same plugin) — the agent's eyes
+**`EditorToolset.EditorAppToolset` (C++, same plugin), the agent's eyes
 (full live list):** `CaptureViewport`, `CaptureEditorImage`,
 `CaptureAssetImage`, `GetCameraTransform`/`SetCameraTransform`,
 `GetSelectedActors`/`SelectActors`/`FocusOnActors`/`GetVisibleActors`,
@@ -143,26 +143,26 @@ qualified prefix `editor_toolset.toolsets.<module>.<Class>`):
 <transform-or-null>, "annotations": <config-or-null>, "bShowUI": false}`.
 Returns base64 PNG (decode + save it yourself) plus camera
 location/rotation/FOV. `captureTransform` captures from any pose WITHOUT
-moving the user's viewport — use it as a virtual camera. Annotation config
+moving the user's viewport, use it as a virtual camera. Annotation config
 `{"gridSpacingCm": 500, "gridExtentCm": 3000, "gridHeight": <ground Z>,
 "labelActors": true}` overlays a projected ground grid and actor callouts;
 **grid coordinate labels are in METERS** (world cm ÷ 100). Use annotated
 captures for placement work, clean ones for beauty checks.
 
 Also confirmed live: `ToolsetRegistry.AgentSkillToolset`,
-`EditorToolset.LogsToolset` (read Output Log + set verbosity — useful for
+`EditorToolset.LogsToolset` (read Output Log + set verbosity, useful for
 self-debugging), `SemanticSearchToolset` (hybrid vector+BM25 asset search),
 five `NiagaraToolsets.NiagaraToolset_*` groups, `PCGToolset` (+Spatial),
 `UMGToolSet`, three `GASToolsets.*`, `AutomationTestToolset`,
 `ConfigSettingsToolset` (read/write Project Settings & Editor Preferences
-sections by schema — the remote path to exposure defaults, rendering
+sections by schema, the remote path to exposure defaults, rendering
 settings, etc.), `SlateInspectorToolset`, `PluginToolset`,
 `animation_toolset.toolsets.sequencer.SequencerTools` + keyframing/
 controlrig/outliner siblings, `aimodule_toolset` BehaviorTreeTools,
-`state_tree_toolset` StateTreeTools, and more — 67 toolsets on a blank
+`state_tree_toolset` StateTreeTools, and more, 67 toolsets on a blank
 project with AllToolsets enabled.
 
-Known gap: no mesh-modelling tools — spawn/place/instance existing meshes,
+Known gap: no mesh-modelling tools, spawn/place/instance existing meshes,
 yes; author new geometry, no. The supported route to parametric geometry is
 a custom Python toolset wrapping **Geometry Script** (`UDynamicMesh`:
 append box/cylinder/sphere, booleans, then `Create New Static Mesh Asset
@@ -172,23 +172,23 @@ Blender and import.
 First-session move: `list_toolsets`, then `describe_toolset` each group you
 plan to use, and keep those schemas in working memory for the session.
 
-## ProgrammaticToolset — sanctioned batching
+## ProgrammaticToolset: sanctioned batching
 
 The serial-call rule makes N-step edits slow over the wire. The shipped
 answer is `ProgrammaticToolset` (verified in `programmatic.py`):
 
-1. `get_execution_environment` — **mandatory first call** (the tool's own
+1. `get_execution_environment`, **mandatory first call** (the tool's own
    docstring requires it); returns the allowed modules, script constraints,
    and usage instructions.
-2. `execute_tool_script(script)` — runs a **sandboxed** Python script that
+2. `execute_tool_script(script)`: runs a **sandboxed** Python script that
    defines `run() -> dict`. Inside, you call other registered tools
-   programmatically and glue them with logic — one MCP round-trip for a
+   programmatically and glue them with logic, one MCP round-trip for a
    whole loop (e.g. spawn 20 actors with computed transforms).
 
 Sandbox facts (from source): allowed imports are `json`, `math`,
 `datetime`, `copy`, `re`, `time` only; `open()` is restricted to
 project-contained paths; scripts run inside an editor **transaction scope**
-(undo-friendly); it is tool orchestration, NOT general Python — arbitrary
+(undo-friendly); it is tool orchestration, NOT general Python, arbitrary
 `unreal.*` calls are not the contract. Data returns via `run()`'s dict.
 
 Use it whenever a recipe loop exceeds ~5 homogeneous calls; keep one-off
@@ -196,7 +196,7 @@ edits as plain `call_tool`.
 
 ## Project Agent Skills (AgentSkillToolset)
 
-Projects and plugins can register **Agent Skills** — named instruction
+Projects and plugins can register **Agent Skills**: named instruction
 bundles for project-specific conventions and workflows (naming schemes,
 folder layout, canonical multi-step sequences). They are NOT listed by
 `list_toolsets`; reach them through `call_tool`:
@@ -204,7 +204,7 @@ folder layout, canonical multi-step sequences). They are NOT listed by
 1. `AgentSkillToolset.ListSkills` → names + descriptions of registered
    skills.
 2. If one matches the task, `AgentSkillToolset.GetSkills` on it → full
-   instructions, then FOLLOW THEM — a project skill exists precisely
+   instructions, then FOLLOW THEM, a project skill exists precisely
    because the project's way differs from the obvious way, and it takes
    precedence over this skill's generic defaults.
 
@@ -214,7 +214,7 @@ Check at the start of unfamiliar work in any project, not just once ever.
 
 An agent that can't see the viewport is flying blind. In order of preference:
 
-1. **`EditorAppToolset.CaptureViewport`** (confirmed shipped) — returns the
+1. **`EditorAppToolset.CaptureViewport`** (confirmed shipped), returns the
    image through MCP as base64 PNG with camera metadata; supports capturing
    from an arbitrary transform without disturbing the user's viewport, and
    an optional annotation overlay (world-space meter grid + actor callouts)
@@ -246,8 +246,8 @@ Console commands (editor console, backtick):
 |---|---|
 | `ModelContextProtocol.StartServer [port]` | Start server (optional port override) |
 | `ModelContextProtocol.StopServer` | Stop server, close all sessions |
-| `ModelContextProtocol.RefreshTools` | Re-poll toolset providers — run after authoring/hot-reload/Game-Feature activation |
-| `ModelContextProtocol.GenerateClientConfig <Client\|All>` | Write client config files (ClaudeCode/Cursor/VSCode/Gemini/Codex) — NOT used for Hermes |
+| `ModelContextProtocol.RefreshTools` | Re-poll toolset providers, run after authoring/hot-reload/Game-Feature activation|
+| `ModelContextProtocol.GenerateClientConfig <Client\|All>` | Write client config files (ClaudeCode/Cursor/VSCode/Gemini/Codex), NOT used for Hermes|
 
 Command-line flags for launching the editor pre-configured:
 `-ModelContextProtocolStartServer` (force start regardless of preference),
@@ -265,14 +265,14 @@ Console variables:
 
 ## Debugging the connection
 
-- **Output Log** at editor startup logs bind address/port/path — first stop
+- **Output Log** at editor startup logs bind address/port/path, first stop
   when the server seems absent. Port-in-use and missing-dependency failures
   surface here.
 - **Log verbosity:** `Log LogModelContextProtocol Verbose` in the editor
   console.
 - **MCP Inspector** (`npx @modelcontextprotocol/inspector`, point at
   `http://127.0.0.1:8000/mcp`, transport "Streamable HTTP") lists every
-  advertised tool with schemas and offers form-based invocation — isolates
+  advertised tool with schemas and offers form-based invocation, isolates
   "server broken" from "agent calling it wrong".
 - **After Live Coding / authoring:** connected clients can hold stale
   schemas. `ModelContextProtocol.RefreshTools`, then reconnect (new Hermes
@@ -281,7 +281,7 @@ Console variables:
 ## Extending the surface: custom toolsets
 
 When shipped tools don't cover an operation, the supported path is authoring
-a project toolset — NOT trying to smuggle arbitrary code through unrelated
+a project toolset, NOT trying to smuggle arbitrary code through unrelated
 tools. Python toolsets are first-class and hot-loadable, so prefer them.
 
 ### Python toolset (recommended)
@@ -324,7 +324,7 @@ Conventions that matter (they generate the schema the agent sees):
   the JSON Schema; Google-style docstrings (`Args:`/`Returns:`) become the
   parameter descriptions. Write them with API-surface care.
 - Small, single-responsibility tools with structured return types beat
-  mega-tools returning prose. Data leaves the tool via its RETURN VALUE —
+  mega-tools returning prose. Data leaves the tool via its RETURN VALUE,
   `print()`/stdout go to the UE log, not back over MCP.
 
 After authoring: `ModelContextProtocol.RefreshTools` in the editor console,
@@ -349,7 +349,7 @@ runtime-shaped tools; caller owns deregistration.
 The server is editor-hosted by default but not editor-only: runtime modules
 can host it in cooked builds via `IModelContextProtocolModule::StartServer()`.
 The Toolset Registry adapter (and the three tool-search meta-tools) are
-editor-only, though — cooked-build tools must be registered explicitly
+editor-only, though, cooked-build tools must be registered explicitly
 through `AddTool()` and are advertised eagerly. MCP Resources and Prompts are
 not advertised by any shipping toolset.
 

@@ -1,4 +1,4 @@
-# Senate LD — Lobbying Disclosure (LD-1 / LD-2)
+# Senate LD, Lobbying Disclosure (LD-1 / LD-2)
 
 ## 1. Summary
 
@@ -11,7 +11,7 @@ activity report.
 
 - **API:** `https://lda.senate.gov/api/v1/` (no auth required for read-only)
 - **Bulk download:** `https://lda.senate.gov/api/v1/filings/?format=csv` (paginated)
-- **Auth:** Token required for >120 req/hour — register at https://lda.senate.gov/api/auth/register/
+- **Auth:** Token required for >120 req/hour, register at https://lda.senate.gov/api/auth/register/
 - **Rate limit:** 120 req/hour unauthenticated, 1,200 req/hour authenticated
 
 ## 3. Data Schema
@@ -55,7 +55,7 @@ when joining Senate-internal records.
 ## 6. Data Quality
 
 - Many lobbyist names appear in multiple registrants over time (job changes)
-- `issues` and `government_entities` are free-text — Inconsistent capitalization
+- `issues` and `government_entities` are free-text, Inconsistent capitalization
 - Foreign agents register under FARA (Department of Justice), NOT here
 - Income/expenses are reported in $10,000 brackets in some older filings
 
@@ -80,7 +80,7 @@ Defaults to anonymous (120 req/hour).
 
 - Public record under 2 U.S.C. § 1604 (LDA)
 - No commercial use restrictions
-- Reuse is unconditional — see Senate Public Records Office disclaimer
+- Reuse is unconditional, see Senate Public Records Office disclaimer
 
 ## 9. References
 

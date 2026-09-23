@@ -4,11 +4,11 @@ A two-section flowchart tracing the full user journey for a web application pass
 
 ## Key Patterns Used
 
-- **Three-column layout**: Left column (error/terminal branches at cx=115), center column (main happy path at cx=340), right column (expired-token branch at cx=552) — allows side branches to live at the same y-level as center nodes without overlap
+- **Three-column layout**: Left column (error/terminal branches at cx=115), center column (main happy path at cx=340), right column (expired-token branch at cx=552), allows side branches to live at the same y-level as center nodes without overlap
 - **Decision diamonds with `<polygon>`**: Each decision uses a `<g class="decision">` wrapper containing a `<polygon>` and centered `<text>`; the diamond points are computed as `cx±hw, cy±hh` (hw=100, hh=28)
 - **Pill-shaped terminals**: Start and end nodes use `rx=22` on their `<rect>` to signal entry/exit points; all mid-flow process nodes use `rx=8`
 - **Three-branch decision paths**: Each diamond has a "Yes" branch (down, short `<line>`) and a "No" branch (`<path>` going horizontal then vertical to a side column)
-- **Loop-back path**: Mismatch error node loops back to the password-entry node via a routing corridor at x=215 — a 5-px gap between the left column (right edge x=210) and center column (left edge x=220); the path exits the bottom of the error node, drops below it, travels right to x=215, then goes up to the target node's center y, then right 5 px into the node's left edge
+- **Loop-back path**: Mismatch error node loops back to the password-entry node via a routing corridor at x=215, a 5-px gap between the left column (right edge x=210) and center column (left edge x=220); the path exits the bottom of the error node, drops below it, travels right to x=215, then goes up to the target node's center y, then right 5 px into the node's left edge
 - **Section separator**: A dashed horizontal `<line>` at y=452 splits the two phases; the connecting arrow crosses it with a faded label ("user receives email") to preserve flow continuity
 - **Italic annotation**: The exact UX copy for the generic message ("If that email exists…") is shown as a faded italic `ts` text block below the left-branch terminal node
 - **Legend row**: Five inline swatches (gray, purple, teal, red, amber diamond) at the bottom explain the color-to-role mapping
@@ -256,21 +256,21 @@ Add these classes to the hosting page `<style>` block (in addition to the standa
 |---------|-------|--------|
 | Start / end terminals | `c-gray` | Neutral entry and exit points |
 | User actions (enter email, click link, enter password) | `c-gray` | User-facing steps with no system processing |
-| Generic message + request-handled terminal | `c-gray` | Intentionally neutral — the security message must not reveal data |
+| Generic message + request-handled terminal | `c-gray` | Intentionally neutral, the security message must not reveal data|
 | Generate & store token | `c-purple` | Backend system operations |
 | Send reset email | `c-teal` | Positive external action (outbound communication) |
 | Token expired error | `c-red` | Failure / blocking error state |
 | Password mismatch error | `c-red` | Validation failure |
 | Reset password + success | `c-teal` / `c-green` | Positive outcome: teal for the action, green pill for the terminal |
-| Decision diamonds | `c-amber` (custom `.decision`) | Warning / branch point — matches amber semantic meaning |
+| Decision diamonds | `c-amber` (custom `.decision`) | Warning / branch point, matches amber semantic meaning|
 
 ## Layout Notes
 
-- **ViewBox**: 680×960 — tall flowchart with two phases
-- **Three-column structure**: Left (cx=115), center (cx=340), right (cx=552) — each branch stays within its column; only `<path>` arrows cross column boundaries
+- **ViewBox**: 680×960, tall flowchart with two phases
+- **Three-column structure**: Left (cx=115), center (cx=340), right (cx=552), each branch stays within its column; only `<path>` arrows cross column boundaries
 - **Diamond formula**: `<polygon points="cx,cy-hh cx+hw,cy cx,cy+hh cx-hw,cy"/>` with hw=100, hh=28 gives a 200×56px diamond that sits flush with the center column (x=220–460)
-- **Branch routing pattern**: "No" paths use `<path d="M left_point,cy L side_cx,cy L side_cx,node_top">` — one horizontal segment + one vertical segment, no curves needed
+- **Branch routing pattern**: "No" paths use `<path d="M left_point,cy L side_cx,cy L side_cx,node_top">`: one horizontal segment + one vertical segment, no curves needed
 - **Loop corridor**: The 5-px gap at x=210–220 between left and center columns provides a clean vertical channel for the loop-back path without any node overlap; the path exits node bottom, drops 20px, goes right to x=215, climbs to target y, enters from left
 - **Section separator**: A dashed `<line>` at y=452 with `stroke-dasharray="8 5"` provides a visual phase break; the single connecting arrow crosses it at center, with a faded label on the arrow
-- **Pill terminals**: `rx=22` (half the 44px node height) produces a perfect capsule/pill shape — use this consistently for all start/end terminals
+- **Pill terminals**: `rx=22` (half the 44px node height) produces a perfect capsule/pill shape, use this consistently for all start/end terminals
 - **Error annotation**: The exact UX copy is rendered as faded (`opacity=".45"`) italic `ts` text below the relevant node, keeping it informative without cluttering the flow

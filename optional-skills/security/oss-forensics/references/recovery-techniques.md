@@ -6,7 +6,7 @@ Force-pushed commits are removed from the branch history but REMAIN on GitHub's 
 
 ---
 
-## Method 1: Direct GitHub URL (Fastest — No Auth Required)
+## Method 1: Direct GitHub URL (Fastest, No Auth Required)
 
 If you have a commit SHA, access it directly even if it was force-pushed off a branch:
 
@@ -45,7 +45,7 @@ curl -s "https://api.github.com/repos/OWNER/REPO/contents/PATH?ref=SHA" | jq .co
 
 ---
 
-## Method 3: Git Fetch by SHA (Local — Requires Clone)
+## Method 3: Git Fetch by SHA (Local, Requires Clone)
 
 ```bash
 # Fetch an orphaned commit directly by SHA into local repo
@@ -97,7 +97,7 @@ curl -s "https://web.archive.org/web/TIMESTAMP/https://github.com/OWNER/REPO/iss
 curl -s "https://web.archive.org/cdx/search/cdx?url=github.com/OWNER/REPO*&output=json&from=20240101&to=20240201&limit=200&fl=timestamp,urlkey,statuscode" | python3 -m json.tool
 ```
 
-### Via GitHub API (Limited — Only Non-Deleted Content)
+### Via GitHub API (Limited, Only Non-Deleted Content)
 
 ```bash
 # Closed issues (not deleted) are retrievable
@@ -106,7 +106,7 @@ curl -s "https://api.github.com/repos/OWNER/REPO/issues?state=closed&per_page=10
 # Note: DELETED issues/PRs do NOT appear in the API. Use Wayback Machine or GH Archive for those.
 ```
 
-### Via GitHub Archive (For Event History — Not Content)
+### Via GitHub Archive (For Event History, Not Content)
 
 ```sql
 -- Find all IssueEvents for a repo in a date range

@@ -1,4 +1,4 @@
-# sgconfig.yml — project configuration
+# sgconfig.yml: project configuration
 
 `sgconfig.yml` lives at your project root (the same place as `package.json`, `Cargo.toml`, `pyproject.toml`, etc.) and tells `sg scan`/`sg test` where to find rules and tests.
 
@@ -100,7 +100,7 @@ languageInjections:
 
 ### `ruleDirs` (required)
 
-`Array<string>` — directories containing rule YAML files. Resolved relative to `sgconfig.yml`.
+`Array<string>`: directories containing rule YAML files. Resolved relative to `sgconfig.yml`.
 
 Each `.yml`/`.yaml` file in these directories is loaded as a rule. One file can contain multiple rules separated by `---`.
 
@@ -125,11 +125,11 @@ invalid:
 
 ### `utilDirs`
 
-`Array<string>` — directories with global utility rules. Each util file must have `id` and `language`. Utils become referenceable via `matches: <id>` from any rule in the project.
+`Array<string>`: directories with global utility rules. Each util file must have `id` and `language`. Utils become referenceable via `matches: <id>` from any rule in the project.
 
 ### `languageGlobs`
 
-`HashMap<string, Array<string>>` — override which extensions map to which language. Takes precedence over the built-in defaults.
+`HashMap<string, Array<string>>`: override which extensions map to which language. Takes precedence over the built-in defaults.
 
 Useful for:
 
@@ -146,7 +146,7 @@ Register a tree-sitter parser that ast-grep doesn't ship with. Requires:
 - `languageSymbol`: the C symbol exported by the grammar (typically `tree_sitter_<name>`).
 - `expandoChar` (optional): character to substitute for `$` in patterns when the host language uses `$` syntactically (PHP, jQuery, etc.).
 
-This is **rarely needed** — ast-grep already supports 25 languages out of the box.
+This is **rarely needed**: ast-grep already supports 25 languages out of the box.
 
 ### `languageInjections` (experimental)
 
@@ -243,6 +243,6 @@ rule:
 
 ## See also
 
-- `references/yaml-rules.md` — rule schema (atomic / relational / composite / transform / fix).
-- `references/cli.md` — `sg scan`, `sg test`, `sg new project`.
+- `references/yaml-rules.md`: rule schema (atomic / relational / composite / transform / fix).
+- `references/cli.md`, `sg scan`, `sg test`, `sg new project`.
 - Official: <https://ast-grep.github.io/reference/sgconfig.html>, <https://ast-grep.github.io/guide/project/project-config.html>

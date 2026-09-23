@@ -4,7 +4,7 @@ HTML structure, data attributes, timeline contract, and non-negotiable rules.
 
 ## Root Structure
 
-Standalone `index.html` — the top-level composition. **Does NOT use `<template>`**. Put the `data-composition-id` div directly in `<body>`.
+Standalone `index.html`: the top-level composition. **Does NOT use `<template>`**. Put the `data-composition-id` div directly in `<body>`.
 
 ```html
 <!doctype html>
@@ -60,7 +60,7 @@ Load from the root: `<div id="el-1" data-composition-id="my-comp" data-compositi
 | `data-media-start` | No                                | Trim offset into source (seconds)                      |
 | `data-volume`      | No                                | 0–1 (default 1)                                        |
 
-`data-track-index` controls timeline layout only — **not** visual layering. Use CSS `z-index` for layering.
+`data-track-index` controls timeline layout only, **not** visual layering. Use CSS `z-index` for layering.
 
 ### Composition clips
 
@@ -74,10 +74,10 @@ Load from the root: `<div id="el-1" data-composition-id="my-comp" data-compositi
 
 ## Timeline Contract
 
-- Every timeline starts `{ paused: true }` — the player controls playback.
+- Every timeline starts `{ paused: true }`: the player controls playback.
 - Register every timeline: `window.__timelines["<composition-id>"] = tl`.
 - Duration comes from `data-duration`, not from the GSAP timeline length.
-- Framework auto-nests sub-timelines — do NOT manually add them.
+- Framework auto-nests sub-timelines, do NOT manually add them.
 - Never create empty tweens just to set duration.
 
 ## Non-Negotiable Rules
@@ -86,9 +86,9 @@ Load from the root: `<div id="el-1" data-composition-id="my-comp" data-compositi
 2. **GSAP only on visual properties.** `opacity`, `x`, `y`, `scale`, `rotation`, `color`, `backgroundColor`, `borderRadius`, transforms. Never animate `visibility`, `display`, or call `video.play()`/`audio.play()`.
 3. **No property conflicts across timelines.** Never animate the same property on the same element from multiple timelines simultaneously.
 4. **No `repeat: -1`.** Infinite-repeat tweens break the capture engine. Compute `repeat: Math.ceil(duration / cycleDuration) - 1`.
-5. **Synchronous timeline construction.** Never build timelines inside `async`/`await`, `setTimeout`, or Promises. The capture engine reads `window.__timelines` synchronously after page load. Fonts are embedded by the compiler — no need to wait for load.
+5. **Synchronous timeline construction.** Never build timelines inside `async`/`await`, `setTimeout`, or Promises. The capture engine reads `window.__timelines` synchronously after page load. Fonts are embedded by the compiler, no need to wait for load.
 6. **Root composition has no `<template>` wrapper.** Only sub-compositions use `<template>`.
-7. **Video is always `muted playsinline`.** Audio is always a separate `<audio>` element — even if it's the same source file.
+7. **Video is always `muted playsinline`.** Audio is always a separate `<audio>` element, even if it's the same source file.
 8. **Content containers use padding, not absolute positioning.** `.scene-content { width: 100%; height: 100%; padding: Npx; display: flex; flex-direction: column; gap: Npx; box-sizing: border-box }`. Absolute-positioned content containers overflow. Reserve `position: absolute` for decoratives only.
 
 ## Scene Transitions
@@ -102,28 +102,28 @@ Multi-scene compositions MUST follow all of these:
 
 ## Typography and Assets
 
-- **Fonts:** write the `font-family` you want in CSS — the compiler embeds supported fonts automatically. Unsupported fonts produce a compiler warning.
+- **Fonts:** write the `font-family` you want in CSS, the compiler embeds supported fonts automatically. Unsupported fonts produce a compiler warning.
 - Add `crossorigin="anonymous"` to external media.
 - For dynamic text sizing, use `window.__hyperframes.fitTextFontSize(text, { maxWidth, fontFamily, fontWeight })`.
 - All project files live at the project root alongside `index.html`. Sub-compositions reference assets with `../`.
-- For rendered video: 60px+ headlines, 20px+ body, 16px+ data labels. `font-variant-numeric: tabular-nums` on number columns. Avoid full-screen linear gradients on dark backgrounds (H.264 banding — use radial or solid + localized glow).
+- For rendered video: 60px+ headlines, 20px+ body, 16px+ data labels. `font-variant-numeric: tabular-nums` on number columns. Avoid full-screen linear gradients on dark backgrounds (H.264 banding, use radial or solid + localized glow).
 
 ## Animation Guardrails
 
 - Offset the first animation 0.1–0.3s (not `t=0`).
-- Vary eases across entrance tweens — at least 3 different eases per scene.
+- Vary eases across entrance tweens, at least 3 different eases per scene.
 - Don't repeat an entrance pattern within a scene.
 
 ## Never Do
 
 1. Forget `window.__timelines` registration.
-2. Use video for audio — always muted video + separate `<audio>`.
-3. Nest video inside a timed div — use a non-timed wrapper.
+2. Use video for audio, always muted video + separate `<audio>`.
+3. Nest video inside a timed div, use a non-timed wrapper.
 4. Use `data-layer` (use `data-track-index`) or `data-end` (use `data-duration`).
-5. Animate video element dimensions — animate a wrapper div instead.
-6. Call `play`/`pause`/`seek` on media — framework owns playback.
+5. Animate video element dimensions, animate a wrapper div instead.
+6. Call `play`/`pause`/`seek` on media, framework owns playback.
 7. Create a top-level container without `data-composition-id`.
 8. Use `repeat: -1` on any timeline or tween.
 9. Build timelines asynchronously.
-10. Use `gsap.set()` on elements from later scenes — they don't exist in the DOM at page load. Use `tl.set(selector, vars, timePosition)` inside the timeline at or after the clip's `data-start`.
-11. Use `<br>` in content text — causes unwanted extra breaks when the text wraps naturally. Use `max-width` instead. Exception: short display titles (e.g., "THE\nIMMORTAL\nGAME") where each word is deliberately on its own line.
+10. Use `gsap.set()` on elements from later scenes, they don't exist in the DOM at page load. Use `tl.set(selector, vars, timePosition)` inside the timeline at or after the clip's `data-start`.
+11. Use `<br>` in content text, causes unwanted extra breaks when the text wraps naturally. Use `max-width` instead. Exception: short display titles (e.g., "THE\nIMMORTAL\nGAME") where each word is deliberately on its own line.

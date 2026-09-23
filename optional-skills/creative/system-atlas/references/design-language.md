@@ -1,16 +1,16 @@
 # Atlas design language
 
-When to load: before filling `data.mjs` or touching `template.html` — layout, palette, isometric grammar, shapes by role, labels, copy rules, and the chapter recipe live here.
+When to load: before filling `data.mjs` or touching `template.html`: layout, palette, isometric grammar, shapes by role, labels, copy rules, and the chapter recipe live here.
 
 The reference was a "codebase as interactive isometric diagram" screenshot: khaki paper, black hatched isometric structures, a left index of components, a right panel with *What it does / How it's built / Condition*, moving dots that are data packets you can inspect, hover to read, go inside a structure to see its steps, pan/zoom. Keep that grammar.
 
 ## Layout
 
-- **Top strip** — stats (system, model roles, chapter n/N, structures shown n/N, questions open·routed·resolved) + controls: `◂ Back`, `Next ▸` (primary), `‖ Pause / ▸ Play`, `Trace one step`, `Refit`.
-- **Left index** — grouped buttons (code · name · count). Unrevealed structures dimmed with `ch N` (click → jump to that chapter). New-in-this-chapter gets a dashed outline. Ghost (not built) = dashed border.
-- **Canvas** — isometric SVG, pan by drag, wheel zoom, `+/−`. Chapter rail top-left (numbered squares + title). Flow picker bottom-left on the last chapter only.
-- **Right panel** — tabs *What it does / How it's built / Open questions*. Nothing selected → the chapter story (title, lede, 2–3 sentences, "New in this chapter" chips, Back/Next). Structure selected → eyebrow (code · pinned/hovering · new), name, status chip, one-sentence `one`, then `Read more` and `Steps in execution` as `<details>`. Packet selected → route + representative JSON payload.
-- **Hint bar** — keys: `enter / ] next chapter · [ back · hover to read · click to pin · → go inside · ← come out · click a dot to inspect`.
+- **Top strip**: stats (system, model roles, chapter n/N, structures shown n/N, questions open·routed·resolved) + controls: `◂ Back`, `Next ▸` (primary), `‖ Pause / ▸ Play`, `Trace one step`, `Refit`.
+- **Left index**: grouped buttons (code · name · count). Unrevealed structures dimmed with `ch N` (click → jump to that chapter). New-in-this-chapter gets a dashed outline. Ghost (not built) = dashed border.
+- **Canvas**: isometric SVG, pan by drag, wheel zoom, `+/−`. Chapter rail top-left (numbered squares + title). Flow picker bottom-left on the last chapter only.
+- **Right panel**: tabs *What it does / How it's built / Open questions*. Nothing selected → the chapter story (title, lede, 2–3 sentences, "New in this chapter" chips, Back/Next). Structure selected → eyebrow (code · pinned/hovering · new), name, status chip, one-sentence `one`: then `Read more` and `Steps in execution` as `<details>`. Packet selected → route + representative JSON payload.
+- **Hint bar**: keys: `enter / ] next chapter · [ back · hover to read · click to pin · → go inside · ← come out · click a dot to inspect`.
 
 ## Palette and type
 

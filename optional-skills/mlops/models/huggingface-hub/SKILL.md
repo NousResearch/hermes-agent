@@ -26,7 +26,7 @@ The `hf` command is the modern command-line interface for interacting with the H
 ### General Operations
 *   `hf download REPO_ID`: Download files from the Hub.
 *   `hf upload REPO_ID`: Upload files/folders (recommended for single-commit; also handles resumable uploads of large directories).
-*   `hf upload-large-folder REPO_ID LOCAL_PATH`: **[Deprecated]** — use `hf upload` instead.
+*   `hf upload-large-folder REPO_ID LOCAL_PATH`: **[Deprecated]**: use `hf upload` instead.
 *   `hf sync`: Sync files between a local directory and a bucket.
 *   `hf env` / `hf version`: View environment and version details.
 
@@ -48,9 +48,9 @@ The `hf` command is the modern command-line interface for interacting with the H
 
 ### Datasets & Models
 *   **Datasets:** `hf datasets list`, `info`, and `parquet` (list parquet URLs).
-*   **SQL Queries:** `hf datasets sql SQL` — Execute raw SQL via DuckDB against dataset parquet URLs.
+*   **SQL Queries:** `hf datasets sql SQL`, Execute raw SQL via DuckDB against dataset parquet URLs.
 *   **Models:** `hf models list` and `info`.
-*   **Papers:** `hf papers ls` — View daily papers.
+*   **Papers:** `hf papers ls`, View daily papers.
 
 ### Discussions & Pull Requests (`hf discussions`)
 *   Manage the lifecycle of Hub contributions: `list`, `create`, `info`, `comment`, `close`, `reopen`, and `rename`.

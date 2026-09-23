@@ -46,17 +46,17 @@ applied to a whole page, recognisable at a glance. Four spine rules:
 ## Step 0: The interview
 
 **Always ask the user in chat before building anything.** Real questions, asked
-and answered in the conversation, written down — not a brief inferred from the
+and answered in the conversation, written down, not a brief inferred from the
 brand name. Eight questions in one pass:
 
 1. **Vibe in three to five words**, plus up to three references from any medium
-   (film, album cover, shop, magazine, game — not "sites you like").
+   (film, album cover, shop, magazine, game, not "sites you like").
 2. **The scroll journey, section by section, in their words.**
-3. **The energy curve** — where calm, where intense.
+3. **The energy curve**: where calm, where intense.
 4. **How should someone feel while scrolling, stage by stage, and what is the
    ONE moment they should remember?** Becomes the feeling curve and the peak.
    See [references/feel.md](references/feel.md).
-5. **One thing this site should do that no site they have seen does** — the
+5. **One thing this site should do that no site they have seen does**: the
    seed of the signature move.
 6. **How far from premium-minimal?** Offer the range in
    [references/uniqueness.md](references/uniqueness.md) §5: brutalist,
@@ -88,7 +88,7 @@ Workspace resolution order: `SCROLLCRAFT_HOME` env var; nearest
 `.scrollcraft.json` (`{ "workspace": "..." }`) walking up from cwd;
 `<project root>/scrollcraft`. Builds live at `<workspace>/builds/<name>/`, the
 fingerprint registry at `<workspace>/FINGERPRINTS.md` (seeded from
-[templates/FINGERPRINTS.md](templates/FINGERPRINTS.md), starts empty — the gate
+[templates/FINGERPRINTS.md](templates/FINGERPRINTS.md), starts empty, the gate
 stops you repeating *yourself*).
 
 Copy `engine/scrollcraft.js` and `engine/scrollcraft.css` into the build
@@ -104,7 +104,7 @@ next action (one label, used everywhere); what they already have; art
 direction from [references/worlds.md](references/worlds.md). Then write the
 **journey**: four to seven beats, each a shift in what the visitor knows or
 feels. Beats are the spine; a section serving no beat is cut. Confirm the
-journey with the user before generating assets — assets are the expensive part.
+journey with the user before generating assets, assets are the expensive part.
 
 ## Step 2: Grammar, gate, then score
 
@@ -134,13 +134,13 @@ Full pipeline, prompt scaffolds and model notes: [references/assets.md](referenc
 
 **Hermes-native paths first:**
 
-- **User-supplied footage and photos** — no key, no spend, a first-class route.
+- **User-supplied footage and photos**: no key, no spend, a first-class route.
   Grade and encode them.
 - **The `image_generate` tool** for stills: one style preamble reused verbatim
   in every prompt is what makes six images look like one shoot. Inspect every
   asset (vision_analyze) before use; rerolling beats shipping a bad frame.
 
-**Optional upstream path — kie.ai** (vendored verbatim as
+**Optional upstream path, kie.ai** (vendored verbatim as
 [scripts/kie.mjs](scripts/kie.mjs)): photoreal stills and camera-move clips.
 Requires the `KIE_AI_API_KEY` environment variable (export it in your shell;
 there is no bundled env file in this port). Check balance with
@@ -159,11 +159,11 @@ It also strips audio.
 
 ## Step 4: Build the page
 
-Write real HTML — real `<h1>`, real `<p>`, real reading order. The engine reads
+Write real HTML, real `<h1>`: real `<p>`: real reading order. The engine reads
 `data-sc-*` attributes off your markup and drives it; it never generates DOM.
 Start from [references/template.html](references/template.html). Device
 patterns: [references/devices.md](references/devices.md). Spacing, type, depth,
-colour: [references/taste.md](references/taste.md) — read it before writing
+colour: [references/taste.md](references/taste.md), read it before writing
 markup. Theme by overriding tokens, six values and two fonts:
 
 ```css
@@ -192,7 +192,7 @@ node <skill>/scripts/shoot.mjs --url http://localhost:4500 --out lab/reduced --r
 The harness walks each act at six positions, waits for scrub video to settle,
 reports dead scroll, cues that never reach full opacity, and composited
 contrast; it writes a contact sheet. Then read `sheet.png` yourself
-(vision_analyze) — the harness proves a clip advances, not that the page means
+(vision_analyze), the harness proves a clip advances, not that the page means
 anything. Run the feel check ([references/feel.md](references/feel.md) §6):
 scroll cold, one word per act, diff against BRIEF.md. Where they disagree the
 page is wrong, not the brief.
@@ -233,10 +233,10 @@ build's row to `<workspace>/FINGERPRINTS.md`.
 - `scripts/kie.mjs` needs `KIE_AI_API_KEY` and paid credit; prefer
   `image_generate` or user assets when the budget is unclear.
 - `encode.sh` and `doctor.mjs` expect a full ffmpeg build; distro-stripped
-  ffmpeg reports missing filters as command syntax errors — run
+  ffmpeg reports missing filters as command syntax errors, run
   `scripts/doctor.mjs` first.
 - Upstream script invocations above are copied from upstream docs and
-  unverified by this port beyond `node --check` syntax validation — trust
+  unverified by this port beyond `node --check` syntax validation, trust
   `--help`/source if drifted.
 - The upstream repo ships worked examples and a change log that are not
   vendored in this port; see the upstream repository if you want them.

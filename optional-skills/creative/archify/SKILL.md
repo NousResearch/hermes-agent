@@ -22,7 +22,7 @@ metadata:
 > self-contained skill directory (`archify/`) with the Node CLI, schemas,
 > renderers, examples and references. `hermes skills install
 > official/creative/archify` pulls the current tree live from that repo
-> (quarantined and scanned like any hub install) — this directory holds only
+> (quarantined and scanned like any hub install); this directory holds only
 > the catalog metadata, so the vendored copy can never go stale.
 
 Archify turns a small typed JSON spec into a self-contained, explorable HTML
@@ -41,7 +41,7 @@ receipt, so the output is verifiable rather than eyeballed.
 - Installs pull ~200 files (~8 MB, mostly upstream tests and examples) from
   GitHub; the fetch is pinned to one tree SHA, recorded in the bundle metadata.
 - Upstream's "Update awareness" step runs `scripts/check-update.mjs`, which
-  reads a release manifest from GitHub and only prints a notice — it never
+  reads a release manifest from GitHub and only prints a notice. It never
   downloads or installs anything. Skip it if outbound calls are unwanted.
 
 After install, the bundled `architecture-diagram` skill remains the

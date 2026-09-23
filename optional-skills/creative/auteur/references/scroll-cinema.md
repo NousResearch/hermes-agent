@@ -1,6 +1,6 @@
-# scroll-cinema — Cinematic Scroll Recipes
+# scroll-cinema, Cinematic Scroll Recipes
 
-Stack default 2026: **GSAP 3.13 + ScrollTrigger 3.13 (free), Lenis 1.3, Three.js r170+, CSS scroll-driven animations (Chrome 115+ / Safari 26) with `@supports` fallback on GSAP. View Transitions API — 88.64% global support.**
+Stack default 2026: **GSAP 3.13 + ScrollTrigger 3.13 (free), Lenis 1.3, Three.js r170+, CSS scroll-driven animations (Chrome 115+ / Safari 26) with `@supports` fallback on GSAP. View Transitions API, 88.64% global support.**
 
 ---
 
@@ -8,11 +8,11 @@ Stack default 2026: **GSAP 3.13 + ScrollTrigger 3.13 (free), Lenis 1.3, Three.js
 
 | Narrative need | Technique |
 |---|---|
-| Product in motion — user scrubs through a scene | Scroll-scrubbed video |
+| Product in motion, user scrubs through a scene| Scroll-scrubbed video |
 | Mood/state shift between two AI-generated keyframes | WebGL displacement shader transition |
 | Atmosphere with available video asset | Scroll-scrubbed video |
-| Text as hero — no assets | Kinetic typography (SplitType stagger) |
-| Simple section reveals — minimal JS | CSS scroll-driven animations with GSAP fallback |
+| Text as hero, no assets| Kinetic typography (SplitType stagger) |
+| Simple section reveals, minimal JS| CSS scroll-driven animations with GSAP fallback |
 | Page-to-page continuity, shared-element morphs | View Transitions API |
 | Pixel-accurate product animation, any frame swappable | Canvas image sequence |
 | 3D object or abstract CGI scene | Three.js + ScrollTrigger |
@@ -22,9 +22,9 @@ Stack default 2026: **GSAP 3.13 + ScrollTrigger 3.13 (free), Lenis 1.3, Three.js
 
 ## Scroll-scrubbed video
 
-Viewer scrolls — a pre-generated video scrubs forward/backward in sync with scroll progress. First frame = one composition, last frame = another (product revealed, camera moved). This is the primary wow technique: igloo.website, Runway, Veo launch pages, Apple AirPods.
+Viewer scrolls, a pre-generated video scrubs forward/backward in sync with scroll progress. First frame = one composition, last frame = another (product revealed, camera moved). This is the primary wow technique: igloo.website, Runway, Veo launch pages, Apple AirPods.
 
-> The GSAP recipe below is the minimal single-clip scrubber. For a **photoreal, multi-scene "fly through the world"** — mobile/iOS-hardened, blob-loaded, seek-coalesced, with crossfade or seamless seams — use the drop-in engine in `templates/scroll-flight-engine.js` and the full recipe in **`references/scroll-flight.md`** (it also carries the critical `-g 8` encode and the SSIM seam gate). Reach for that when the hero is footage/AI-video rather than a single generated clip.
+> The GSAP recipe below is the minimal single-clip scrubber. For a **photoreal, multi-scene "fly through the world"**: mobile/iOS-hardened, blob-loaded, seek-coalesced, with crossfade or seamless seams, use the drop-in engine in `templates/scroll-flight-engine.js` and the full recipe in **`references/scroll-flight.md`** (it also carries the critical `-g 8` encode and the SSIM seam gate). Reach for that when the hero is footage/AI-video rather than a single generated clip.
 
 **Video prep:**
 ```bash
@@ -41,7 +41,7 @@ ffmpeg -i source.mp4 -t 2 -c:v libx264 -profile:v baseline -level 3.1 -crf 28 te
 <video id="hero" src="/hero.webm" muted playsinline preload="metadata"></video>
 ```
 
-Scrubbing needs a scroll-progress engine. A raw `window.addEventListener('scroll')` loop is banned by this skill's own rules (and slopscan) — ScrollTrigger is the sanctioned driver:
+Scrubbing needs a scroll-progress engine. A raw `window.addEventListener('scroll')` loop is banned by this skill's own rules (and slopscan), ScrollTrigger is the sanctioned driver:
 
 **GSAP ScrollTrigger + Lenis (idiomatic Awwwards stack):**
 ```js
@@ -76,10 +76,10 @@ ScrollTrigger.create({
 | Video > 2 MB | Compress to ≤ 2 MB; loop 5–8 s; serve teaser as first paint |
 | `currentTime` resets after full load | Wait for `loadedmetadata`, then set; `preload="metadata"` is required |
 | Seek jitter on scrub | Move `currentTime` only while scrolling; never touch it on pause |
-| iOS Safari autoplay | `muted playsinline` attributes are mandatory — video won't play without them |
+| iOS Safari autoplay | `muted playsinline` attributes are mandatory, video won't play without them|
 | `prefers-reduced-motion` | Show static poster + `autoplay muted loop` video, no scrub |
 | Mobile > 1080p lag | Serve `hero-mobile.mp4` at 720p via media query |
-| `content-visibility: auto` on parent | Breaks ScrollTrigger — never use on pinned ancestors |
+| `content-visibility: auto` on parent | Breaks ScrollTrigger, never use on pinned ancestors|
 
 **Use when:** hero section, 3–6 s sell-the-product moment, user = director concept.  
 **Avoid when:** long-form content pages, information-first UX, full-page application.
@@ -165,7 +165,7 @@ preloadAll().then(() => {
 
 ## GSAP ScrollTrigger + Lenis foundation
 
-The load-bearing skeleton. Wire this first — every other scroll effect depends on it being present and correct.
+The load-bearing skeleton. Wire this first, every other scroll effect depends on it being present and correct.
 
 ```bash
 npm i gsap lenis
@@ -220,8 +220,8 @@ ScrollTrigger.create({
 | Lenis and ScrollTrigger drift apart | Mandatory: `lenis.on('scroll', ScrollTrigger.update)` + `lagSmoothing(0)` |
 | ScrollTrigger misses dynamically added DOM | Call `ScrollTrigger.refresh()` or `ScrollTrigger.sort()` after dynamic inserts |
 | Firefox anchor jumps fight smooth scroll | `lenis.scrollTo(target, { lock: true, duration: 1.2 })` |
-| `content-visibility: auto` on pinned parent | Never use — breaks ScrollTrigger |
-| GSAP SplitText is Club (paid) | Use **SplitType** (`npm i split-type`) instead — MIT, same API shape |
+| `content-visibility: auto` on pinned parent | Never use, breaks ScrollTrigger|
+| GSAP SplitText is Club (paid) | Use **SplitType** (`npm i split-type`) instead, MIT, same API shape|
 
 **Use when:** any site with more than one scroll effect, pin/parallax/horizontal scroll needed.  
 **Avoid when:** pure CSS page with no animations, or JS-budget-critical JAMStack.
@@ -230,7 +230,7 @@ ScrollTrigger.create({
 
 ## CSS scroll-driven animations
 
-Native `animation-timeline` API — scroll-linked animations with zero JS. Chrome 115+ / Edge 115+ / Safari 26 stable. Firefox 132+ behind flag. ~75–80% global coverage; use `@supports` + dynamic GSAP import as fallback.
+Native `animation-timeline` API, scroll-linked animations with zero JS. Chrome 115+ / Edge 115+ / Safari 26 stable. Firefox 132+ behind flag. ~75–80% global coverage; use `@supports` + dynamic GSAP import as fallback.
 
 ```css
 /* Fade-up as element enters viewport */
@@ -290,7 +290,7 @@ if (!CSS.supports('animation-timeline', 'scroll()')) {
 | `view()` fails inside a scroll container | Read MDN `view-timeline-scope` |
 
 **Use when:** simple pages, no GSAP budget, maximum GPU-composited performance.  
-**Avoid when:** you need pin sections, snapping, complex timelines — that's GSAP territory.
+**Avoid when:** you need pin sections, snapping, complex timelines, that's GSAP territory.
 
 ---
 
@@ -298,7 +298,7 @@ if (!CSS.supports('animation-timeline', 'scroll()')) {
 
 Text appears line-by-line, word-by-word, or character-by-character from behind a mask. Controls reading pace and creates cinematic rhythm.
 
-**Option A — SplitType (free, MIT):**
+**Option A, SplitType (free, MIT):**
 ```js
 import SplitType from 'split-type'
 
@@ -316,9 +316,9 @@ gsap.from(text.chars, {
 // Recompute on resize (only needed for absolute-position mode)
 window.addEventListener('resize', () => text.split())
 ```
-Add `font-kerning: none` on the target element — prevents 1–2 px character jumps after split.
+Add `font-kerning: none` on the target element, prevents 1–2 px character jumps after split.
 
-**Option B — GSAP SplitText (Club GSAP, paid):**
+**Option B, GSAP SplitText (Club GSAP, paid):**
 ```js
 import SplitText from 'gsap/SplitText'
 gsap.registerPlugin(SplitText)
@@ -333,7 +333,7 @@ const split = SplitText.create('.hero h1', {
 })
 ```
 
-**Option C — pure CSS (zero dependencies):**
+**Option C, pure CSS (zero dependencies):**
 ```css
 .reveal-text > span {
   display: inline-block;
@@ -359,16 +359,16 @@ document.querySelectorAll('.reveal-text').forEach(el => io.observe(el))
 | `<a>` inside split text loses semantics | `aria: 'none'` (SplitText) + hidden duplicate text for screen readers |
 | Lines reflow on resize | `autoSplit: true` (SplitText) or `ResizeObserver` → `text.split()` |
 | Layout shift after split | Reserve height with `min-height`; or use mask variant so no element leaves flow |
-| `prefers-reduced-motion` | Skip transition entirely — show final state immediately |
+| `prefers-reduced-motion` | Skip transition entirely, show final state immediately|
 
 **Use when:** hero headings, key subheads, manifesto lines, pull quotes.  
-**Avoid when:** body-text articles, documentation, every other paragraph — it desensitizes.
+**Avoid when:** body-text articles, documentation, every other paragraph, it desensitizes.
 
 ---
 
 ## Three.js displacement shader transition
 
-Two AI-generated keyframe images (frame A → frame B, produced per assets.md: B is an *edit* of A) morphed by a displacement map, scrubbed by scroll. The skill's signature move: a living, filmic transition between two stills — no video needed. One full-viewport quad, one ShaderMaterial; simpler and richer-looking than scene compositing. Copy-pasteable — all pieces are here.
+Two AI-generated keyframe images (frame A → frame B, produced per assets.md: B is an *edit* of A) morphed by a displacement map, scrubbed by scroll. The skill's signature move: a living, filmic transition between two stills, no video needed. One full-viewport quad, one ShaderMaterial; simpler and richer-looking than scene compositing. Copy-pasteable, all pieces are here.
 
 ```bash
 npm i three
@@ -465,9 +465,9 @@ renderer.setSize(canvas.clientWidth, canvas.clientHeight, false)
 renderer.render(scene, camera)
 ```
 
-Displacement direction variants: use `vec2(0.0, d * intensity)` for vertical flow; `(uv - 0.5) * d * intensity` for radial bloom; rotate the vector by scene's camera motion for directed morphs. Small A/B drift from the CLI edit hides inside the mid-morph distortion — that's why this rung of the ladder tolerates imperfect keyframe pairs.
+Displacement direction variants: use `vec2(0.0, d * intensity)` for vertical flow; `(uv - 0.5) * d * intensity` for radial bloom; rotate the vector by scene's camera motion for directed morphs. Small A/B drift from the CLI edit hides inside the mid-morph distortion, that's why this rung of the ladder tolerates imperfect keyframe pairs.
 
-**For full 3D scene→scene transitions** (two live THREE scenes, not stills): render both via `EffectComposer` with two `RenderPass`es and blend in a final `ShaderPass` with the same progress uniform — same scrub wiring, heavier GPU bill; reach for it only when both scenes genuinely need live geometry.
+**For full 3D scene→scene transitions** (two live THREE scenes, not stills): render both via `EffectComposer` with two `RenderPass`es and blend in a final `ShaderPass` with the same progress uniform, same scrub wiring, heavier GPU bill; reach for it only when both scenes genuinely need live geometry.
 
 ---
 
@@ -476,7 +476,7 @@ Displacement direction variants: use `vec2(0.0, d * intensity)` for vertical flo
 Three compact recipes for when a scene needs live 3D. All share the morph section's hygiene: DPR cap at 2, render-on-demand where possible, dispose on teardown, `<picture>` fallback for no-WebGL/low-end (`navigator.hardwareConcurrency < 4`), reduced-motion → static render.
 
 ### GLB product model scrubbed by scroll
-The product rotates/travels as the user scrolls — the "turn it in your hands" scene. Needs a .glb (from the client, a 3D artist, or an AI mesh generator — check quality eyes-on; auto-generated topology is often mush up close).
+The product rotates/travels as the user scrolls, the "turn it in your hands" scene. Needs a .glb (from the client, a 3D artist, or an AI mesh generator, check quality eyes-on; auto-generated topology is often mush up close).
 ```js
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
@@ -507,7 +507,7 @@ ScrollTrigger.create({
 | Materials look flat | environment map (above) beats adding lights; `ACESFilmicToneMapping` |
 
 ### Particle field (depth without a model)
-2–5k points drifting with scroll-linked parallax — atmosphere for a hero when there's no asset at all.
+2–5k points drifting with scroll-linked parallax, atmosphere for a hero when there's no asset at all.
 ```js
 const N = 3000
 const pos = new Float32Array(N * 3)
@@ -523,10 +523,10 @@ ScrollTrigger.create({
   onUpdate: (s) => { pts.rotation.y = s.progress * 0.6; pts.position.y = s.progress * -1.5; renderer.render(scene, camera) },
 })
 ```
-Cap N by device: `navigator.hardwareConcurrency < 6 ? 1200 : 3000`. Points must never carry meaning — they're weather, not content.
+Cap N by device: `navigator.hardwareConcurrency < 6 ? 1200 : 3000`. Points must never carry meaning, they're weather, not content.
 
 ### Animated shader background (one quad, no geometry)
-Same screen-space quad rig as the displacement morph, but the fragment shader generates the visual: flowing noise, grain-drenched gradient in the brand hue, contour lines. Swap the morph's fragmentShader for a noise-driven one and feed `uTime` from GSAP's ticker only while the section is on screen (IntersectionObserver gate). This is the cheapest "expensive-looking" background that isn't a stock video — and it recolors with the token palette for free. Keep chroma/hue inside the commit-sheet palette; a shader background in an off-brand hue is just animated slop.
+Same screen-space quad rig as the displacement morph, but the fragment shader generates the visual: flowing noise, grain-drenched gradient in the brand hue, contour lines. Swap the morph's fragmentShader for a noise-driven one and feed `uTime` from GSAP's ticker only while the section is on screen (IntersectionObserver gate). This is the cheapest "expensive-looking" background that isn't a stock video, and it recolors with the token palette for free. Keep chroma/hue inside the commit-sheet palette; a shader background in an off-brand hue is just animated slop.
 
 **Other shader variants (swap the `fragmentShader` body):**
 - Cross-fade: `gl_FragColor = mix(c1, c2, progress);`
@@ -540,7 +540,7 @@ Same screen-space quad rig as the displacement morph, but the fragment shader ge
 | Backgrounded tab keeps rendering | `cancelAnimationFrame` on `visibilitychange: hidden` |
 | Texture color shift | `renderer.outputColorSpace = THREE.SRGBColorSpace` + `texture.colorSpace = THREE.SRGBColorSpace` per texture |
 | GPU memory leak on teardown | `scene.traverse(o => { o.geometry?.dispose(); o.material?.dispose() })` |
-| Long `if` blocks in shader | Replace all branching with `step()` / `smoothstep()` — branch divergence kills GPU perf |
+| Long `if` blocks in shader | Replace all branching with `step()` / `smoothstep()`: branch divergence kills GPU perf|
 | iOS Safari WebGL 2 | Available on A12+ (2018+); add `WebGL1Renderer` fallback for older |
 
 **Use when:** two AI keyframes, brand identity moment, abstract state transition.  
@@ -604,19 +604,19 @@ document.querySelectorAll('a[data-spa]').forEach(a => {
 
 | Pitfall | Fix |
 |---|---|
-| Safari < 18, Firefox < 144 | Wrap in `if (document.startViewTransition)` — falls back to instant swap |
+| Safari < 18, Firefox < 144 | Wrap in `if (document.startViewTransition)`: falls back to instant swap|
 | Duplicate `view-transition-name` on same page | Each name must be unique per frame; use data-attribute selectors |
 | Glitchy positioned/transformed elements | View Transitions capture layout boxes; rebuild manually for complex absolute layouts |
 | `prefers-reduced-motion` | `@media (prefers-reduced-motion: reduce) { ::view-transition-* { animation-duration: 0.01ms !important; } }` |
 
 **Use when:** e-commerce card → detail, portfolio thumbnail → case study, SPA navigation.  
-**Avoid when:** you want GLSL noise/glitch — use a persistent WebGL scene instead.
+**Avoid when:** you want GLSL noise/glitch, use a persistent WebGL scene instead.
 
 ---
 
 ## Ambient audio + mute toggle
 
-Background ambient sound (hum, rain, synth) launched on first user gesture, with a persistent mute toggle. Default off for first-time visitors — 90% of users dislike auto-sound.
+Background ambient sound (hum, rain, synth) launched on first user gesture, with a persistent mute toggle. Default off for first-time visitors, 90% of users dislike auto-sound.
 
 ```html
 <button id="mute" aria-label="Toggle sound" class="fixed bottom-4 right-4">
@@ -679,10 +679,10 @@ ffmpeg -i source.wav -c:a libopus -b:a 64k ambient.opus
 | Pitfall | Fix |
 |---|---|
 | Browser blocks autoplay | Only call `audio.play()` inside a click/touch handler |
-| Tab hidden — audio continues | `audio.volume = 0` on `visibilitychange: hidden` |
+| Tab hidden, audio continues| `audio.volume = 0` on `visibilitychange: hidden` |
 | `prefers-reduced-motion` | Default muted; do not auto-start |
 | iOS Safari `<audio loop>` glitch | Use WebAudio `BufferSource` with `loop = true`; or crossfade two instances |
-| Mobile data cost | 64 kbps Opus loop ≈ 30 KB/30 s — acceptable; VP9 video costs more |
+| Mobile data cost | 64 kbps Opus loop ≈ 30 KB/30 s, acceptable; VP9 video costs more|
 
 **Use when:** product demo, generative art, film/game promo, atmospheric brand.  
 **Avoid when:** corporate, documentation, news, e-commerce (unless explicitly cinematic brand).
@@ -800,9 +800,9 @@ document.querySelectorAll('[data-parallax-container]').forEach(container => {
 })
 ```
 
-### Cursor parallax (pointer-driven depth — "flat photo feels 3D under the mouse")
+### Cursor parallax (pointer-driven depth, "flat photo feels 3D under the mouse")
 
-The Depth parallax above shifts layers by *scroll*; this shifts them by the *cursor*, so a still composite gains dimension as the mouse moves. Perfect for a white-on-white hero where a subject generated on the page's own background (assets.md §0 "match the background") should feel dimensional, not pasted. Reuse the same 2–4 layers (subject cut from background — assets.md ladder rung 4).
+The Depth parallax above shifts layers by *scroll*; this shifts them by the *cursor*, so a still composite gains dimension as the mouse moves. Perfect for a white-on-white hero where a subject generated on the page's own background (assets.md §0 "match the background") should feel dimensional, not pasted. Reuse the same 2–4 layers (subject cut from background, assets.md ladder rung 4).
 
 ```html
 <section class="tilt-scene" data-pointer-parallax>
@@ -840,14 +840,14 @@ document.querySelectorAll('[data-pointer-parallax]').forEach(scene => {
 .tilt-scene .layer { transition: transform 120ms ease-out; will-change: transform; }
 ```
 
-Rules: rAF-throttle (one transform write per frame, never per event); clamp so the *farthest* layer travels ≤ ~12–16px — big travel reads as a cheap gimmick, subtle depth reads as craft; animate only `transform`; disabled on touch (`hover: none`) and under `prefers-reduced-motion`; the `120ms ease-out` gives a soft settle instead of rubber-banding. **Fancier (peak only):** one image + a generated depth map in a WebGL shader (parallax-occlusion) for a true "3D photo" — reach for it only when this hero is THE wow peak, and generate the depth pass as its own asset.
+Rules: rAF-throttle (one transform write per frame, never per event); clamp so the *farthest* layer travels ≤ ~12–16px, big travel reads as a cheap gimmick, subtle depth reads as craft; animate only `transform`; disabled on touch (`hover: none`) and under `prefers-reduced-motion`; the `120ms ease-out` gives a soft settle instead of rubber-banding. **Fancier (peak only):** one image + a generated depth map in a WebGL shader (parallax-occlusion) for a true "3D photo", reach for it only when this hero is THE wow peak, and generate the depth pass as its own asset.
 
 ---
 
-## State-machine cinema — A→B→C morph + audio-reactive (Tier-1 engine)
+## State-machine cinema, A→B→C morph + audio-reactive (Tier-1 engine)
 
 The signature 2026 move: ONE world that transforms through a chain of scene-consistent frames
-(assets.md §2 — the edit-chain A→B→C…N), scrubbed by scroll AND driven by an audio track, both feeding
+(assets.md §2, the edit-chain A→B→C…N), scrubbed by scroll AND driven by an audio track, both feeding
 the SAME `uMix`/`uEnergy` uniforms so picture and sound move as one. Extends the two-frame displacement
 to N frames. One persistent WebGL context; swap textures, never remount.
 
@@ -908,11 +908,11 @@ function raf(t){
 requestAnimationFrame(raf)
 ```
 
-### 2. Audio-reactive — the same uniforms, on the beat
+### 2. Audio-reactive: the same uniforms, on the beat
 
 MiniMax score (assets.md §8) → Web Audio `AnalyserNode` → low-band energy → `uEnergy`, so the morph
 pulses with the music. Start on the mute-toggle gesture (see Ambient audio); default OFF, and NEVER gate
-the visual on audio — with sound off the scroll scrub is the whole show.
+the visual on audio, with sound off the scroll scrub is the whole show.
 
 ```js
 let analyser, freq
@@ -947,25 +947,25 @@ float coc = abs(d - uFocus);                     // rack focus: distance from th
 // feed coc to a cheap multi-tap blur (or a separate DOF pass) for depth-of-field on scroll
 gl_FragColor = vec4(col, 1.);
 ```
-Pointer → `uPointer` (rAF-throttled, travel ≤ ~0.04 — Cursor-parallax rules); scroll can drift `uFocus`
+Pointer → `uPointer` (rAF-throttled, travel ≤ ~0.04, Cursor-parallax rules); scroll can drift `uFocus`
 for a rack-focus reveal as the section enters.
 
 ### Rules (or it's slop)
 - ONE persistent WebGL context; swap textures, never remount per scene (memory climb + stutter = the #1 reported pitfall).
-- Write uniforms / `element.style` in rAF ONLY — never React `setState` per scroll/audio frame (that's a 120Hz slideshow).
+- Write uniforms / `element.style` in rAF ONLY, never React `setState` per scroll/audio frame (that's a 120Hz slideshow).
 - Clamp: displacement & parallax travel small; `uEnergy` capped so the beat *breathes* the frame, not seizures it.
 - `prefers-reduced-motion` → freeze on the nearest frame + a static end-state, no audio drive; content readable with JS off.
 - Audio OFF by default, user-gesture to start; the scroll story must stand alone in silence.
-- LOD: fewer / lower-res frames + drop the depth pass under `(max-width:768px)` or low-power — verify.md checks the tiers.
-- Preload the frame chain and decode to `ImageBitmap` before first paint — mid-scroll texture decode is visible jank.
-- **One function owns each shared quantity, and everything else calls it.** Scroll progress, camera path, the height of a terrain, the position of the peak: the moment two subsystems compute the same value separately they drift, and the drift looks like a rendering bug rather than a duplicated formula. A terrain whose height function lives inside the mesh component gets fog that lies flat and slices through the hills, and a cursor that dents the snow somewhere other than where it points — three readers, one truth, or three different worlds.
-- **Every number that shapes the scene lives in one config module, with a comment saying why it is that number and what breaks otherwise.** Constants scattered across components make tuning a search problem, and a bare `0.36` teaches the next session nothing — `bevel: 0.36 // never 0: the highlight needs a chamfer to run along, a sharp edge reads as plastic` survives being "cleaned up".
+- LOD: fewer / lower-res frames + drop the depth pass under `(max-width:768px)` or low-power, verify.md checks the tiers.
+- Preload the frame chain and decode to `ImageBitmap` before first paint, mid-scroll texture decode is visible jank.
+- **One function owns each shared quantity, and everything else calls it.** Scroll progress, camera path, the height of a terrain, the position of the peak: the moment two subsystems compute the same value separately they drift, and the drift looks like a rendering bug rather than a duplicated formula. A terrain whose height function lives inside the mesh component gets fog that lies flat and slices through the hills, and a cursor that dents the snow somewhere other than where it points, three readers, one truth, or three different worlds.
+- **Every number that shapes the scene lives in one config module, with a comment saying why it is that number and what breaks otherwise.** Constants scattered across components make tuning a search problem, and a bare `0.36` teaches the next session nothing, `bevel: 0.36 // never 0: the highlight needs a chamfer to run along, a sharp edge reads as plastic` survives being "cleaned up".
 
 ---
 
 ## Tier-2 scene recipes
 
-### 3D scroll-camera dolly — Blender path → glTF → Three.js
+### 3D scroll-camera dolly, Blender path → glTF → Three.js
 
 Author the move once in Blender (assets.md §9), then scrub the exported camera action. `quickTo` retargets six reusable values; no tween is created per frame.
 
@@ -1119,7 +1119,7 @@ If the Tier-1 engine already owns `renderer`, pass that renderer/scene into `ini
 
 **Rules (or it's slop):** one persistent renderer; `ScrollTrigger` owns progress; all pose/render/style writes happen in GSAP's rAF ticker; `quickTo` is created once; reduced motion renders one authored camera frame; keep the poster for no-WebGL and dispose on route teardown.
 
-### Signature post-FX pass — photochemical misregistration
+### Signature post-FX pass: photochemical misregistration
 
 Commit to one look: restrained channel misregistration plus 2% moving grain. No bloom stack; highlights and color stay authored in the scene, while scroll and Tier-1 `uEnergy` only make the print breathe.
 
@@ -1226,7 +1226,7 @@ if (turbulence && !reduceMotion) {
 
 **Rules (or it's slop):** one custom pass, no effect buffet; aberration ≤0.0015 UV and grain ≈2%; update uniforms/SVG attributes in rAF only; reuse Tier-1 `uEnergy`; reduced motion removes both GPU and SVG passes.
 
-### Physics pointer-trail — alpha cut-outs with gravity
+### Physics pointer-trail: alpha cut-outs with gravity
 
 Transparent PNG cut-outs inherit pointer velocity, then fall through a tiny Verlet step. Pointer events only record state; spawn, physics, draw, fade, and cull happen in rAF.
 
@@ -1366,7 +1366,7 @@ if (canTrail) {
 
 **Rules (or it's slop):** cap at 28 sprites; gravity ≈0.28px/frame²; one spawn maximum per rAF; cull by lifetime and viewport; no DOM sprite churn; disable on touch and reduced motion.
 
-### Living type — variable axes + gooey nav
+### Living type: variable axes + gooey nav
 
 Flex one display/nav face, not the reading layer. Scroll sets the phrase's posture; Web Audio adds a small pulse through the same rAF-owned CSS variables.
 
@@ -1498,9 +1498,9 @@ The SVG filter merges adjacent nav pills; `feComposite` restores crisp labels af
 
 ## Assembly order
 
-Build in this sequence — each step depends on the previous.
+Build in this sequence, each step depends on the previous.
 
-1. **Smooth scroll foundation first.** Wire Lenis + GSAP integration (`lenis.on('scroll', ScrollTrigger.update)` + `lagSmoothing(0)`). Do not skip — all scroll effects jitter without it.
+1. **Smooth scroll foundation first.** Wire Lenis + GSAP integration (`lenis.on('scroll', ScrollTrigger.update)` + `lagSmoothing(0)`). Do not skip, all scroll effects jitter without it.
 2. **Hero section.** Scrub video or Three.js displacement. This sets the site's tone and reveals performance constraints early.
 3. **Sections top-to-bottom.** After each section's ScrollTrigger is initialized, call `ScrollTrigger.refresh()` so positions are recalculated with the full DOM height.
 4. **Text reveals last.** SplitType/SplitText on headings ties the sections together and is cheapest to adjust.
@@ -1529,4 +1529,4 @@ if (!reduceMotion) {
 }
 ```
 
-**easing calibration:** scrub speed 0.3–0.8 (never 1.0 — too rigid). Entrance easing: `expo.out`, `power3.out`, or `cubic-bezier(0.16, 1, 0.3, 1)`. Nothing linear except scrub progress mapping itself.
+**easing calibration:** scrub speed 0.3–0.8 (never 1.0, too rigid). Entrance easing: `expo.out`, `power3.out`, or `cubic-bezier(0.16, 1, 0.3, 1)`. Nothing linear except scrub progress mapping itself.

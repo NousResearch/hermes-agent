@@ -60,6 +60,6 @@ because the space it occupies is still occupied.
 
 The skill's author kept a registry of twelve builds across eight page grammars.
 If you want to see what a filled-in table looks like, and which shapes tend to
-collide, read `EXAMPLES.md` in the upstream scroll-craft repository *(upstream repo — not vendored in this port)*. Treat it as
+collide, read `EXAMPLES.md` in the upstream scroll-craft repository *(upstream repo, not vendored in this port)*. Treat it as
 illustration only: those rows are somebody else's builds and they do **not**
 constrain yours.

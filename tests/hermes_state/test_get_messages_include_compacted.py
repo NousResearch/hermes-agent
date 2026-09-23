@@ -161,9 +161,9 @@ class TestDisplayDedupe:
                 f"""
                 INSERT INTO messages
                     (session_id, role, content, tool_call_id, tool_calls,
-                     tool_name, timestamp, active, compacted)
+                     tool_name, timestamp, display_identity, active, compacted)
                 SELECT session_id, role, content, tool_call_id, tool_calls,
-                       tool_name, timestamp, 0, 1
+                       tool_name, timestamp, display_identity, 0, 1
                 FROM messages
                 WHERE session_id = ? AND id IN ({placeholders})
                 """,
@@ -595,6 +595,76 @@ class TestDisplayDedupe:
         page = db.get_messages(sid, include_compacted=True, limit=2, offset=2)
         assert [m["id"] for m in page] == all_ids[2:]
         assert len(page) == 2
+
+    def test_null_display_order_group_survives_paging(self, db, monkeypatch):
+        """A partially backfilled group still joins its representative.
+
+        The duplicate group keeps its normal display identity, but its order
+        is NULL while a concurrent backfill is incomplete.  It must retain
+        the usual live-row preference and remain reachable from both paging
+        directions.
+        """
+        sid = "null-display-order"
+        db.create_session(sid, source="cli")
+        db.append_messages_batch(sid, [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+        ])
+        original_ids = _row_ids(db, sid)
+        self._copy_tail_as_new_generation(db, sid, [original_ids[0]])
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL WHERE session_id = ? AND content IN (?, ?)",
+            (sid, "q1", "q2"),
+        ))
+        monkeypatch.setattr(db, "_ensure_display_order", lambda _sid: True)
+
+        assert _row_ids(db, sid, include_compacted=True) == original_ids
+        assert _row_ids(db, sid, include_compacted=True, limit=2, offset=0) == original_ids[:2]
+        assert _row_ids(db, sid, include_compacted=True, latest=True, limit=2, offset=2) == original_ids[:2]
+
+    def test_user_content_rewrite_nulls_distinct_identities_without_collapsing_pages(self, db, monkeypatch):
+        """The real user-content trigger clears both display columns.
+
+        Two independent rewritten user messages must not share the SQL NULL
+        group.  A compacted copy of the first message also verifies that the
+        dynamic fallback retains generation dedupe and prefers its active row.
+        """
+        sid = "rewritten-null-identities"
+        db.create_session(sid, source="cli")
+        db.append_messages_batch(sid, [
+            {"role": "user", "content": "raw q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "raw q2"},
+            {"role": "assistant", "content": "a2"},
+        ])
+        q1, a1, q2, a2 = _row_ids(db, sid)
+        ensure = db._ensure_display_order
+        rewritten = False
+
+        def rewrite_after_backfill(session_id):
+            nonlocal rewritten
+            if not rewritten:
+                assert ensure(session_id)
+                rewritten = True
+                assert db.set_user_message_content(sid, q1, "rewritten q1") == 1
+                assert db.set_user_message_content(sid, q2, "rewritten q2") == 1
+                self._copy_tail_as_new_generation(db, sid, [q1])
+            return True
+
+        monkeypatch.setattr(db, "_ensure_display_order", rewrite_after_backfill)
+        expected = [q1, a1, q2, a2]
+        assert _row_ids(db, sid, include_compacted=True) == expected
+        null_rows = db._read_all(
+            "SELECT id, display_identity, display_order FROM messages WHERE id IN (?, ?) ORDER BY id",
+            (q1, q2))
+        assert [(row["display_identity"], row["display_order"]) for row in null_rows] == [(None, None)] * 2
+        display = db.get_messages(sid, include_compacted=True)
+        assert [(row["id"], row["active"]) for row in display] == [
+            (q1, 1), (a1, 1), (q2, 1), (a2, 1)]
+        assert _row_ids(db, sid, include_compacted=True, limit=2, offset=0) == expected[:2]
+        assert _row_ids(db, sid, include_compacted=True, latest=True, limit=2, offset=2) == expected[:2]
 
     def test_distinct_tool_calls_with_same_content_are_not_merged(self, db):
         """Two real tool messages that happen to share role/content/timestamp

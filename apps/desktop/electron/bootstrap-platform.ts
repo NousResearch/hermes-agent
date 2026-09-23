@@ -44,6 +44,52 @@ function bundledRuntimeImportCheck(platform = process.platform) {
   return platform === 'win32' ? 'import fastapi, uvicorn, winpty' : 'import fastapi, uvicorn, ptyprocess'
 }
 
+/**
+ * Detect a locally-numbered $DISPLAY (":N", no host part) with no backing X11
+ * socket. When this happens, Electron's Ozone/X11 backend fails deep in
+ * native code with a cryptic "Missing X server or $DISPLAY" crash and no
+ * actionable message — this lets the caller print something useful and exit
+ * cleanly instead. The common cause is a terminal multiplexer (tmux/screen)
+ * pane that outlives the X session that set $DISPLAY (e.g. an Xwayland
+ * restart, or an SSH X11 forward from a connection that's since closed) —
+ * new panes pick up the current display, but panes already open keep the
+ * stale value.
+ *
+ * Forwarded displays ("host:N", e.g. SSH X11 forwarding over TCP) aren't
+ * covered here since verifying those needs a network round trip; those are
+ * left to Electron's own (unfriendly) failure.
+ *
+ * Returns a description of the problem, or null if the display looks fine
+ * (or isn't ours to check — Wayland, non-Linux, forwarded, or unset).
+ *
+ * Pure + dependency-free so it can be unit-tested and called before app ready.
+ */
+function detectDeadLocalDisplay(
+  options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; existsSync?: (path: string) => boolean } = {}
+) {
+  const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
+  const existsSync = options.existsSync ?? fs.existsSync
+
+  if (platform !== 'linux' || env.WAYLAND_DISPLAY) {
+    return null
+  }
+
+  const match = /^:(\d+)(?:\.\d+)?$/.exec(String(env.DISPLAY || ''))
+
+  if (!match) {
+    return null
+  }
+
+  const socketPath = `/tmp/.X11-unix/X${match[1]}`
+
+  if (existsSync(socketPath)) {
+    return null
+  }
+
+  return `DISPLAY=${env.DISPLAY} set, but ${socketPath} doesn't exist`
+}
+
 const GPU_OVERRIDE_ON = new Set(['1', 'true', 'yes', 'on'])
 const GPU_OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 
@@ -143,6 +189,7 @@ function resolveLinuxPasswordStore(options: { env?: NodeJS.ProcessEnv; platform?
 
 export {
   bundledRuntimeImportCheck,
+  detectDeadLocalDisplay,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,

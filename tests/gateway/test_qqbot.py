@@ -1,7 +1,9 @@
 """Tests for the QQ Bot platform adapter."""
 
 import asyncio
+import json
 import os
+import time
 from types import SimpleNamespace
 from unittest import mock
 
@@ -299,7 +301,7 @@ class TestResolveSTTConfig:
                 posted.append(kwargs)
                 return httpx.Response(200, json={"text": "hi"}, request=httpx.Request("POST", url))
 
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch.dict(os.environ, {"HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
             for stt, expected in (({"apiKey": "k", "provider": "zai"}, 60.0),
                                   ({"apiKey": "k", "provider": "zai", "timeout": "95"}, 95.0)):
                 adapter = self._make_adapter(app_id="a", client_secret="b", stt=stt)
@@ -376,6 +378,51 @@ class TestReadyHandling:
             "d": {"session_id": "sess_abc123"},
         })
         assert adapter._session_id == "sess_abc123"
+
+
+# ---------------------------------------------------------------------------
+# Persistent inbound message deduplication
+# ---------------------------------------------------------------------------
+
+class TestPersistentInboundDeduplication:
+    @pytest.mark.asyncio
+    async def test_replayed_message_is_dropped_after_adapter_restart(self, tmp_path, monkeypatch):
+        from gateway.platforms.qqbot import QQAdapter
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        payload = {"id": "msg-replayed", "content": "hello", "author": {"user_openid": "user-1"}}
+
+        first = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        first._handle_c2c_message = mock.AsyncMock()
+        await first._on_message("C2C_MESSAGE_CREATE", payload)
+        first._handle_c2c_message.assert_awaited_once()
+
+        restarted = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        restarted._handle_c2c_message = mock.AsyncMock()
+        await restarted._on_message("C2C_MESSAGE_CREATE", payload)
+        await restarted._on_message("C2C_MESSAGE_CREATE", {**payload, "id": "msg-distinct"})
+
+        restarted._handle_c2c_message.assert_awaited_once()
+        assert restarted._handle_c2c_message.await_args.args[1] == "msg-distinct"
+
+    def test_reload_discards_expired_entries_and_enforces_bound(self, tmp_path, monkeypatch):
+        from gateway.platforms.qqbot import QQAdapter
+        from gateway.platforms.qqbot.constants import DEDUP_MAX_SIZE, DEDUP_WINDOW_SECONDS
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        now = time.time()
+        entries = {f"msg-{index}": now + index / 1000 for index in range(DEDUP_MAX_SIZE + 1)}
+        entries["expired"] = now - DEDUP_WINDOW_SECONDS - 1
+        (tmp_path / "qqbot_seen_message_ids.json").write_text(
+            json.dumps({"message_ids": entries}), encoding="utf-8")
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        restored = adapter._dedup.snapshot()
+
+        assert len(restored) == DEDUP_MAX_SIZE
+        assert "msg-0" not in restored
+        assert "msg-1000" in restored
+        assert "expired" not in restored
 
 
 # ---------------------------------------------------------------------------

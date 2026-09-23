@@ -41,6 +41,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +80,10 @@ class _HomeLayer:
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
 _HOME_LAYERS_LOCK = threading.Lock()
+# Stamp-check throttle state, keyed like _HOME_LAYERS. See _plugin_dir_stamps.
+_STAMP_CHECK_TTL_SECONDS = 2.0
+_STAMP_CHECKS: dict[str, tuple[float, tuple]] = {}
+_STAMP_CHECKS_LOCK = threading.Lock()
 # The layer a ``$HERMES_HOME`` plugin import registers into. A ContextVar, not a module global:
 # two turn threads scanning two profile homes at once must not cross-register. Never a lock held
 # across the import itself — a thread mid-``import hermes_cli.auth`` (whose import calls
@@ -228,20 +233,40 @@ def _home_layer() -> _HomeLayer:
             layer = _HOME_LAYERS[key] = _HomeLayer()
     # Stamps are read before the scan: a plugin that lands mid-scan changes them and the next lookup
     # picks it up. Two threads scanning the same home at once only re-import idempotently.
-    if home is not None and (stamps := _plugin_dir_stamps(home)) != layer.stamps:
+    if home is not None and (stamps := _plugin_dir_stamps(home, key=key)) != layer.stamps:
         _scan_home_layer(layer, key)
         layer.stamps = stamps
     return layer
 
 
-def _plugin_dir_stamps(home: Path) -> tuple:
-    """mtimes of ``plugins/`` and ``plugins/model-providers/``: they change when a child is added."""
+def _plugin_dir_stamps(home: Path, *, key: str = "") -> tuple:
+    """mtimes of ``plugins/`` and ``plugins/model-providers/``: they change when a child is added.
+
+    Called under every provider lookup, so the two ``os.stat`` calls are throttled to one
+    round per home per ``_STAMP_CHECK_TTL_SECONDS``. A missing directory is never throttled:
+    the first plugin install creates ``plugins/`` and must be visible to the very next lookup
+    (#88143), and a cache entry for ``(None, None)`` could never expire its way out of
+    hiding a freshly created directory. Missing-dir stats are also the cheap case on a
+    server (single failed lookup per path component), so the exception costs little.
+    """
     def stamp(path: Path):
         try:
             return os.stat(path).st_mtime_ns
         except OSError:
             return None
-    return (stamp(home / "plugins"), stamp(home / "plugins" / "model-providers"))
+    cache_key = key or str(home)
+    now = time.monotonic()
+    with _STAMP_CHECKS_LOCK:
+        cached = _STAMP_CHECKS.get(cache_key)
+    if cached is not None:
+        checked_at, cached_stamps = cached
+        if cached_stamps != (None, None) and now - checked_at < _STAMP_CHECK_TTL_SECONDS:
+            return cached_stamps
+    stamps = (stamp(home / "plugins"), stamp(home / "plugins" / "model-providers"))
+    if stamps != (None, None):
+        with _STAMP_CHECKS_LOCK:
+            _STAMP_CHECKS[cache_key] = (now, stamps)
+    return stamps
 
 
 def _user_plugins_dir() -> Path | None:

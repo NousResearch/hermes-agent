@@ -50,7 +50,6 @@ import {
   waitForBackendExit as waitForBackendExitImpl
 } from './backend-child'
 import {
-  backendMakingProgress,
   type BackendOutputTail,
   claimDecision,
   createBackendOutputTail,
@@ -226,7 +225,7 @@ import {
   writeBufferToFile
 } from './gateway-file-download'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
-import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import {
   describeGitHubCredentialSource,
@@ -2474,16 +2473,6 @@ const UPDATE_WAIT_POLL_MS = 1000
 // couple of seconds lets the message land and bridges the gap until the
 // updater's own progress window appears. (#50419)
 const UPDATE_HANDOFF_DWELL_MS = 2500
-
-// Boot-time WS probe budget (#96177). The base connect budget stays short —
-// a healthy local backend upgrades in well under a second — but the probe
-// keeps waiting past it while the backend child is alive and still emitting
-// output (Windows cold start: the GIL is held 12-28s while gateway platform
-// modules byte-compile, leaving the WS upgrade unanswered). The hard cap
-// mirrors the port-announcement cold-start budget (90s, backend-ready.ts) so
-// a genuinely hung backend still fails the boot instead of hanging forever.
-const WS_PROBE_CONNECT_TIMEOUT_MS = 10_000
-const WS_PROBE_MAX_WAIT_MS = 90_000
 
 // Gate deps shared by the primary-window boot path and the pool-backend
 // spawn path. Consulting the on-disk marker, the in-process updateInFlight
@@ -12813,8 +12802,10 @@ async function runPoolBackendStart(
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
   ready = true
 
+  const childAlive = () => child.exitCode === null && !child.killed
+
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
-    childAlive: () => child.exitCode === null && !child.killed,
+    childAlive,
     label: `Hermes backend for profile "${profile}"`,
     rememberLog
   })
@@ -12827,17 +12818,12 @@ async function runPoolBackendStart(
   // HTTP /api/status can pass while WS auth fails (separate transport, separate guards).
   const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
 
+  // Our own child: a cold start can stall its loop past the base budget (#96177).
   const wsProbe = await probeGatewayWebSocket(wsUrl, {
     WebSocketImpl: globalThis.WebSocket,
-    // #96177: a cold-start backend can hold the GIL for 12-28s importing
-    // gateway platform modules with the socket open but the event loop
-    // stalled, leaving the upgrade unanswered past a fixed 10s budget. Keep
-    // waiting while the child is alive and still emitting output; the hard
-    // cap mirrors the port-announcement cold-start budget.
-    connectTimeoutMs: WS_PROBE_CONNECT_TIMEOUT_MS,
-    maxConnectWaitMs: WS_PROBE_MAX_WAIT_MS,
-    keepWaitingWhile: () => backendMakingProgress(child, outputTail)
+    ...spawnedBackendProbeOptions(childAlive)
   })
+
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
 
   if (!wsProbe.ok) {
@@ -13667,8 +13653,10 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     primaryExitRecovery.reset()
     backendStartFailure = null
 
+    const childAlive = () => hermesProcess.exitCode === null && !hermesProcess.killed
+
     const authToken = await adoptServedDashboardToken(baseUrl, token, {
-      childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
+      childAlive,
       rememberLog
     })
 
@@ -13677,16 +13665,12 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // Verify the WebSocket session token before declaring backend ready.
     const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
 
+    // Same policy as the pool path: our own child may still be cold-starting (#96177).
     const wsProbe = await probeGatewayWebSocket(wsUrl, {
       WebSocketImpl: globalThis.WebSocket,
-      // #96177: same progress-aware budget as the pool-backend path — a
-      // Windows cold start can stall the backend event loop for 12-28s
-      // (GIL held during gateway platform imports), so wait while the
-      // child is alive and emitting output instead of failing at 10s.
-      connectTimeoutMs: WS_PROBE_CONNECT_TIMEOUT_MS,
-      maxConnectWaitMs: WS_PROBE_MAX_WAIT_MS,
-      keepWaitingWhile: () => backendMakingProgress(hermesProcess, primaryOutputTail)
+      ...spawnedBackendProbeOptions(childAlive)
     })
+
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     if (!wsProbe.ok) {

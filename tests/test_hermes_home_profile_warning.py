@@ -135,3 +135,152 @@ class TestBootReadersBeforeProfileOverride:
         assert scratch.is_dir()
         assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
+
+class TestScratchTmpEnvGitBash:
+    """Regression for https://github.com/NousResearch/hermes-agent/issues/120323.
+
+    Git Bash on Windows pre-sets ``TMPDIR``/``TMP``/``TEMP`` to ``/tmp`` (the MSYS
+    virtual path) before Hermes starts, which made ``apply_scratch_tmp_env`` return
+    False and leave the scratch dir unexported — ``$TMPDIR`` in a ``terminal`` call
+    pointed at the MSYS temp, the system prompt's "Scratch directory: ... TMPDIR
+    points here" line was wrong, and ``HERMES_SCRATCH_DIR`` stayed unset. The fix
+    recognises the MSYS pseudo temp under ``MSYSTEM`` as not a user choice; every
+    other case (genuine Linux ``/tmp``, real Windows ``%TEMP%``, ``/var/folders/...``)
+    is still respected.
+    """
+
+    def test_msystem_with_pseudo_tmp_exports_scratch(
+        self, fresh_constants, tmp_path
+    ):
+        """Git Bash on Windows: MSYSTEM=MINGW64 + TMPDIR=/tmp + TMP=/tmp + TEMP=/tmp
+        must re-export the scratch dir into all three and set HERMES_SCRATCH_DIR."""
+        hermes_dir = tmp_path / ".hermes"
+        (hermes_dir / "profiles" / "coder").mkdir(parents=True)
+        (hermes_dir / "active_profile").write_text("coder\n")
+
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "MSYSTEM": "MINGW64",
+            "TMPDIR": "/tmp",
+            "TMP": "/tmp",
+            "TEMP": "/tmp",
+        }
+        assert fresh_constants.apply_scratch_tmp_env(env) is True
+
+        expected = str(hermes_dir / "cache" / "scratch")
+        assert env["TMPDIR"] == expected
+        assert env["TMP"] == expected
+        assert env["TEMP"] == expected
+        assert env["HERMES_SCRATCH_DIR"] == expected
+
+    def test_linux_tmp_without_msystem_is_respected(
+        self, fresh_constants, tmp_path
+    ):
+        """Real Linux shell: user-set TMPDIR=/tmp with no MSYSTEM stays a user
+        choice. ``apply_scratch_tmp_env`` must NOT overwrite it, and the marker
+        env var must remain unset so the model still reads the genuine value."""
+        hermes_dir = tmp_path / ".hermes"
+        (hermes_dir / "profiles" / "coder").mkdir(parents=True)
+        (hermes_dir / "active_profile").write_text("coder\n")
+
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": "/tmp",
+            "TMP": "/tmp",
+            "TEMP": "/tmp",
+        }
+        assert fresh_constants.apply_scratch_tmp_env(env) is False
+
+        assert env["TMPDIR"] == "/tmp"
+        assert env["TMP"] == "/tmp"
+        assert env["TEMP"] == "/tmp"
+        assert "HERMES_SCRATCH_DIR" not in env
+
+    def test_real_windows_temp_under_msystem_is_respected(
+        self, fresh_constants, tmp_path
+    ):
+        """Real Windows %TEMP% (C:\\Users\\<u>\\AppData\\Local\\Temp) under MSYSTEM
+        is a deliberate override, not the pseudo default — leave it alone."""
+        hermes_dir = tmp_path / ".hermes"
+        (hermes_dir / "profiles" / "coder").mkdir(parents=True)
+        (hermes_dir / "active_profile").write_text("coder\n")
+
+        real_temp = "C:\\Users\\alice\\AppData\\Local\\Temp"
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "MSYSTEM": "MINGW64",
+            "TMPDIR": real_temp,
+            "TMP": real_temp,
+            "TEMP": real_temp,
+        }
+        assert fresh_constants.apply_scratch_tmp_env(env) is False
+
+        assert env["TMPDIR"] == real_temp
+        assert env["TMP"] == real_temp
+        assert env["TEMP"] == real_temp
+        assert "HERMES_SCRATCH_DIR" not in env
+
+    def test_msystem_pseudo_with_stale_marker_re_derives(
+        self, fresh_constants, tmp_path
+    ):
+        """Even with HERMES_SCRATCH_DIR already set to an old scratch path, a
+        pseudo ``/tmp`` under MSYSTEM must still trigger the re-export, because
+        the marker check only short-circuits the user-value guard, not the
+        pseudo-value guard."""
+        hermes_dir = tmp_path / ".hermes"
+        (hermes_dir / "profiles" / "coder").mkdir(parents=True)
+        (hermes_dir / "active_profile").write_text("coder\n")
+        stale_marker = str(hermes_dir / "profiles" / "old" / "cache" / "scratch")
+
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "MSYSTEM": "MINGW64",
+            "TMPDIR": "/tmp",
+            "TMP": "/tmp",
+            "TEMP": "/tmp",
+            "HERMES_SCRATCH_DIR": stale_marker,
+        }
+        assert fresh_constants.apply_scratch_tmp_env(env) is True
+
+        expected = str(hermes_dir / "cache" / "scratch")
+        assert env["TMPDIR"] == expected
+        assert env["HERMES_SCRATCH_DIR"] == expected
+        assert env["HERMES_SCRATCH_DIR"] != stale_marker
+
+    def test_msystem_pseudo_with_trailing_slash_still_exports(
+        self, fresh_constants, tmp_path
+    ):
+        """A MSYS-style ``/tmp/`` (trailing slash) is still the pseudo default —
+        the helper normalises trailing slashes before comparing."""
+        hermes_dir = tmp_path / ".hermes"
+        (hermes_dir / "profiles" / "coder").mkdir(parents=True)
+        (hermes_dir / "active_profile").write_text("coder\n")
+
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "MSYSTEM": "MINGW64",
+            "TMPDIR": "/tmp/",
+            "TMP": "/tmp/",
+            "TEMP": "/tmp/",
+        }
+        assert fresh_constants.apply_scratch_tmp_env(env) is True
+
+        expected = str(hermes_dir / "cache" / "scratch")
+        assert env["TMPDIR"] == expected
+        assert env["HERMES_SCRATCH_DIR"] == expected
+
+    def test_ostype_msys_without_msystem_still_exports(self, fresh_constants, tmp_path):
+        """Defensive OSTYPE signal: a standalone MSYS2 shell may set OSTYPE=msys
+        but not MSYSTEM — the helper should still recognise ``/tmp`` as pseudo."""
+        hermes_dir = tmp_path / ".hermes"
+        (hermes_dir / "profiles" / "coder").mkdir(parents=True)
+        (hermes_dir / "active_profile").write_text("coder\n")
+
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "OSTYPE": "msys",
+            "TMPDIR": "/tmp",
+        }
+        assert fresh_constants.apply_scratch_tmp_env(env) is True
+        assert env["TMPDIR"] == str(hermes_dir / "cache" / "scratch")
+

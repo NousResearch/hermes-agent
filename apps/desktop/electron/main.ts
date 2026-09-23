@@ -74,8 +74,6 @@ import {
   connectionScopeKey,
   gatewayWsUrlIpcResult,
   normalizeSshConfig,
-  profileRemoteOverride,
-  profileSshOverride,
   resolveRemoteSshDashboardProfile
 } from './connection-config'
 import {
@@ -101,8 +99,10 @@ import { createDesktopConnectionAuthRuntime } from './desktop-connection-auth-ru
 import { createDesktopConnectionDescriptorRuntime } from './desktop-connection-descriptor-runtime'
 import { registerDesktopConnectionDialIpc } from './desktop-connection-dial-ipc'
 import { registerDesktopConnectionFleetIpc } from './desktop-connection-fleet-runtime'
+import { createDesktopConnectionNotifications } from './desktop-connection-notifications'
 import { createDesktopConnectionProbeRuntime } from './desktop-connection-probe-runtime'
 import { registerDesktopConnectionRegistryIpc } from './desktop-connection-registry-ipc'
+import { createDesktopConnectionRestRuntime } from './desktop-connection-rest-runtime'
 import { createDesktopConnectionStorageRuntime } from './desktop-connection-storage-runtime'
 import { createDesktopExternalOpenRuntime } from './desktop-external-open-runtime'
 import { registerDesktopFileIpc } from './desktop-file-ipc'
@@ -112,6 +112,7 @@ import { createDesktopInstallHomeRuntime } from './desktop-install-home-runtime'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { createDesktopLocalRuntime } from './desktop-local-runtime'
 import { createDesktopLogRuntime, rotateLogIfNeededSync } from './desktop-log-runtime'
+import { createManagedPrimaryRoutingGuard } from './desktop-managed-primary-routing-guard'
 import { createDesktopNativeChromeRuntime } from './desktop-native-chrome-runtime'
 import { createDesktopNativePreferencesRuntime, registerDesktopF12PreferenceIpc } from './desktop-native-preferences-runtime'
 import { createDesktopNativeWindowServicesRuntime } from './desktop-native-window-services-runtime'
@@ -119,16 +120,19 @@ import { createDesktopOauthSessionRuntime } from './desktop-oauth-session-runtim
 import { registerDesktopPageInteractionIpc } from './desktop-page-interaction-ipc'
 import { createDesktopPetOverlayRuntime } from './desktop-pet-overlay-runtime'
 import { createDesktopPluginCompatNoticeRuntime } from './desktop-plugin-compat-notice-runtime'
+import { registerDesktopPluginProfileRoutesIpc } from './desktop-plugin-profile-routes-ipc'
 import { createDesktopPoolBackendRuntime } from './desktop-pool-backend-runtime'
 import { createDesktopPoolPolicyRuntime } from './desktop-pool-policy-runtime'
 import { createDesktopPowerRuntime } from './desktop-power-runtime'
 import { createDesktopPrimaryBackendRuntime } from './desktop-primary-backend-runtime'
 import { createDesktopPrimaryWindowRuntime } from './desktop-primary-window-runtime'
 import {
-  createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
   type DesktopProfileRoute
 } from './desktop-profile'
+import { createDesktopProfileMutationRuntime } from './desktop-profile-mutation-runtime'
+import { registerDesktopProfileRoutingIpc } from './desktop-profile-routing-ipc'
+import { createDesktopProfileRoutingRuntime } from './desktop-profile-routing-runtime'
 import { registerDesktopQuickEntryIpc } from './desktop-quick-entry-ipc'
 import { registerDesktopQuitRuntime } from './desktop-quit-runtime'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
@@ -208,12 +212,6 @@ import {
   pendingNotice as pendingPluginCompatNotice,
   recordDismissed as recordPluginCompatDismissed
 } from './plugin-compat-notice'
-import {
-  buildRegistryProfileRoutes,
-  isLocalEnumerationFailure,
-  localRouteFallbackProfiles,
-  undialedSshRouteSeeds
-} from './plugin-profile-routes'
 import { createPoolRetirer } from './pool-retire'
 import { createPoolRetirementClient } from './pool-retire-http'
 import {
@@ -234,13 +232,9 @@ import {
 import { PrimaryProfilePin } from './primary-profile-pin'
 import {
   assertLocalProfileCanStart,
-  decideProfileDeleteAction,
   localProfilePoolKeys,
-  ProfileDeletionGate,
-  profileNameFromDeleteRequest
+  ProfileDeletionGate
 } from './profile-delete-routing'
-import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
-import { prepareProfileRenameLifecycle } from './profile-rename-routing'
 import { sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
@@ -1643,6 +1637,17 @@ const {
   rememberLog
 })
 
+const { postJsonForBackend, getJsonForBackend, fetchJsonForBackend } = createDesktopConnectionRestRuntime({
+  ensureNativeAccessToken,
+  fetchJson,
+  fetchJsonViaOauthSession
+})
+
+const { sendConnectionApplied, broadcastConnectionsChanged } = createDesktopConnectionNotifications({
+  BrowserWindow,
+  getMainWindow: () => mainWindow
+})
+
 // ---------------------------------------------------------------------------
 // Opt-in keychain encryption (secret-storage-policy.ts owns the decision).
 // Default OFF: no safeStorage call is ever made, so a broken/locked macOS
@@ -1703,97 +1708,26 @@ function readDesktopConnectionsRegistry() {
   return readDesktopConnectionsRegistryImpl()
 }
 
-// Last-used profile and explicit app-wide default share the existing desktop
-// preference file, but only the explicit action changes the default route.
-const desktopProfilePreferences = createDesktopProfilePreferences(DESKTOP_PROFILE_CONFIG_PATH, {
-  validateRoute: validateDesktopProfileRoute,
-  onDefaultChanged: route => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.webContents.isDestroyed()) {
-        win.webContents.send('hermes:profile:default:changed', route)
-      }
-    }
-  }
+const {
+  desktopProfilePreferences,
+  validateDesktopProfileRoute,
+  readActiveDesktopProfile,
+  writeActiveDesktopProfile,
+  migrateActiveProfileIfMissing,
+  profileRouteOptions
+} = createDesktopProfileRoutingRuntime({
+  configPath: DESKTOP_PROFILE_CONFIG_PATH,
+  hermesHome: HERMES_HOME,
+  profileNameRe: PROFILE_NAME_RE,
+  BrowserWindow,
+  readDesktopConnectionConfig,
+  readDesktopConnectionsRegistry,
+  primaryProfileKey,
+  globalRemoteActive,
+  primaryBackendIsRemote: () => primaryBackendIsRemote(),
+  getIsolatedBackend: () => ISOLATED_BACKEND,
+  writeFileAtomic
 })
-
-function validateDesktopProfileRoute(route: DesktopProfileRoute) {
-  if (
-    route.connectionId &&
-    !readDesktopConnectionsRegistry().connections.some((source: { id: string }) => source.id === route.connectionId)
-  ) {
-    throw new Error(`No connection with id "${route.connectionId}".`)
-  }
-}
-
-function readActiveDesktopProfile() {
-  return desktopProfilePreferences.readActive()
-}
-
-function writeActiveDesktopProfile(name) {
-  return desktopProfilePreferences.remember(name)
-}
-
-// True when the given pid belongs to a running process whose command line
-// contains "hermes", avoiding false positives from stale gateway.pid files
-// whose PID was recycled by the OS to an unrelated process.
-function isHermesProcess(pid) {
-  try {
-    process.kill(pid, 0) // signal 0 = existence check, no signal sent
-  } catch {
-    return false
-  }
-
-  // On macOS / Linux, check the command line to avoid PID recycling false positives.
-  try {
-    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
-
-    return cmdline.includes('hermes')
-  } catch {
-    // /proc not available (macOS) — fall back to ps. Use -o args= to inspect
-    // the full command line, not just the process name.  -o comm= would return
-    // "python3" for any Python process, creating false positives.
-    try {
-      const { execSync } = require('child_process')
-      const out = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 2000 })
-
-      return out.includes('hermes')
-    } catch {
-      return false
-    }
-  }
-}
-
-// Seed active-profile.json from the best available signal when the file does
-// not yet exist.  Runs exactly once (no-op once the file exists).  Priority:
-//   1. Legacy ~/.hermes/active_profile (explicit CLI choice via hermes profile use)
-//   2. Running gateway (gateway.pid with verified liveness + hermes identity)
-//   3. state.db heuristics (hybrid recency×size score picks the primary workspace)
-// The stored JSON includes _migrated:true so the renderer can optionally surface
-// a one-time notification that the profile was auto-detected.
-//
-// Decision logic lives in profile-migration.ts (pure + unit-tested). This wrapper
-// just wires Electron/Node fs into a MigrationDeps bag and delegates.
-function migrateActiveProfileIfMissing() {
-  migrateActiveProfileIfMissingPure(DESKTOP_PROFILE_CONFIG_PATH, {
-    legacyActivePath: path.join(HERMES_HOME, 'active_profile'),
-    hermesHome: HERMES_HOME,
-    profilesRoot: path.join(HERMES_HOME, 'profiles'),
-    existsSync: p => fs.existsSync(p),
-    readFileSync: (p, enc) => fs.readFileSync(p, enc),
-    statSync: p => fs.statSync(p),
-    readdirSync: (p, opts) => fs.readdirSync(p, opts as { withFileTypes: true }),
-    isHermesProcess,
-    now: () => Date.now(),
-    writeJson: (target, decision) => {
-      // Mirror writeActiveDesktopProfile's atomic-write + parent-dir-create
-      // semantics so the migration produces a file indistinguishable from a
-      // user-driven profile switch.
-      fs.mkdirSync(path.dirname(target), { recursive: true })
-      writeFileAtomic(target, JSON.stringify(decision, null, 2))
-    },
-    isValidProfileName: p => PROFILE_NAME_RE.test(p)
-  })
-}
 
 const { sanitizeDesktopConnectionConfig, coerceDesktopConnectionConfig, buildRemoteConnection } =
   createDesktopConnectionDescriptorRuntime({
@@ -1831,25 +1765,12 @@ const managedPrimaryRestoreOwners = new Map<string, { correlationId: string; pro
 let managedUpdateQuitWait: Promise<void> | null = null
 let managedUpdateQuitWaitDone = false
 
-function assertCanMutateManagedPrimaryRouting() {
-  const durableIds = readManagedSshRecoveryRecords().map(record => record.connectionId)
-
-  const ids = new Set([
-    ...managedConnectionUpdates.keys(),
-    ...managedConnectionRecoveries.keys(),
-    ...managedPrimaryRestoreOwners.keys(),
-    ...durableIds
-  ])
-
-  if (ids.size > 0) {
-    const error: any = new Error(
-      `Primary connection routing cannot change while managed SSH update recovery is pending for ${[...ids].join(', ')}.`
-    )
-
-    error.code = 'managed-update-in-progress'
-    throw error
-  }
-}
+const assertCanMutateManagedPrimaryRouting = createManagedPrimaryRoutingGuard({
+  managedConnectionUpdates,
+  managedConnectionRecoveries,
+  managedPrimaryRestoreOwners,
+  readManagedSshRecoveryRecords: () => readManagedSshRecoveryRecords()
+})
 
 const {
   readManagedSshRecoveryRecords,
@@ -2025,35 +1946,6 @@ async function teardownPrimaryBackendAndWait({ soft = false } = {}) {
   }
 }
 
-function sendConnectionApplied() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:connection:applied')
-}
-
-// Registry lifecycle push: a connection was removed or materially edited, so
-// every window must tear down (and, for edits, re-dial) its secondary sockets
-// scoped to that connection. Without this, a removed remote/cloud source keeps
-// its renderer WebSocket open and streaming as a ghost, and an edited one
-// keeps talking to the OLD endpoint until idle-reap.
-function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) {
-  for (const win of BrowserWindow.getAllWindows()) {
-    const { webContents } = win
-
-    if (webContents && !webContents.isDestroyed()) {
-      webContents.send('hermes:connections:changed', payload)
-    }
-  }
-}
-
 const backendExitWaits = new Map<any, Promise<void>>()
 
 function waitForBackendExit(child, timeoutMs = 5000) {
@@ -2080,32 +1972,6 @@ const primaryProfilePin = new PrimaryProfilePin()
 
 function primaryProfileKey() {
   return primaryProfilePin.resolve(readActiveDesktopProfile)
-}
-
-// Options describing the current connection setup for `resolveProfileBackendRoute`.
-function profileRouteOptions(profile, request?) {
-  const config = readDesktopConnectionConfig()
-  const sshOverride = profileSshOverride(config, profile)
-  const key = connectionScopeKey(profile) || primaryProfileKey()
-
-  return {
-    // A desktop profile can be only a client-side routing alias. Keep backend
-    // endpoint filters in the SSH target's namespace (e.g. mara → default).
-    backendProfile: sshOverride?.remoteProfile,
-    globalRemote: globalRemoteActive(),
-    primaryProfile: primaryProfileKey(),
-    profileRemoteOverride: Boolean(profileRemoteOverride(config, profile) || sshOverride),
-    // The primary profile's own backend resolves to a remote host (its
-    // per-profile override, env, or global). Unknown sub-profiles on that
-    // gateway must route THROUGH it, not spawn local backends (#88296).
-    primaryRemoteActive: primaryBackendIsRemote(),
-    // A stored per-profile entry (local or remote) — pins this profile to
-    // its own backend; absent entries inherit the primary's remote.
-    ownEntry: Boolean((config.profiles || {})[key]),
-    isolatedBackend: ISOLATED_BACKEND,
-    requestMethod: request?.method,
-    requestPath: request?.path
-  }
 }
 
 // Managed SSH restore borrows the same gate, pools, and coordinator that startup
@@ -2350,57 +2216,15 @@ async function exitAfterBackendShutdown(code) {
   app.exit(code)
 }
 
-// Returns the profile name whose backend was torn down, or null when the
-// request is not a profile-delete.  The caller uses this to skip ensureBackend
-// for the just-torn-down profile — otherwise ensureBackend respawns a pool
-// backend whose ensure_hermes_home() recreates the deleted profile directory.
-//
-// The routing *decision* (which branch fires, what profile name gets
-// returned) lives in the pure decideProfileDeleteAction() in
-// profile-delete-routing.ts; this function only performs the side effects
-// that decision calls for.
-async function prepareProfileDeleteRequest(request) {
-  const profile = profileNameFromDeleteRequest(request)
-
-  const decision = decideProfileDeleteAction(profile, {
-    isDefaultProfile: p => p === 'default',
-    isValidProfileName: p => PROFILE_NAME_RE.test(p),
-    primaryProfileKey
-  })
-
-  if (decision.action === 'noop') {
-    return null
-  }
-
-  if (decision.action === 'teardown-primary') {
-    writeActiveDesktopProfile('default')
-    await Promise.all([teardownPrimaryBackendAndWait(), teardownPoolBackendAndWait(decision.profile)])
-
-    return decision.profile
-  }
-
-  await teardownPoolBackendAndWait(decision.profile)
-
-  return decision.profile
-}
-
-async function prepareProfileRenameRequest(request) {
-  return prepareProfileRenameLifecycle(request, {
-    isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
-    primaryProfileKey,
-    reloadPrimaryWindow: () => {
-      mainWindow?.reload()
-    },
-    restartPrimaryBackend: async () => {
-      await startHermes()
-    },
-    teardownPoolBackendAndWait,
-    teardownPrimaryBackendAndWait,
-    writeActiveDesktopProfile: profile => {
-      writeActiveDesktopProfile(profile)
-    }
-  })
-}
+const { prepareProfileDeleteRequest, prepareProfileRenameRequest } = createDesktopProfileMutationRuntime({
+  profileNameRe: PROFILE_NAME_RE,
+  primaryProfileKey,
+  writeActiveDesktopProfile,
+  teardownPrimaryBackendAndWait,
+  teardownPoolBackendAndWait,
+  getMainWindow: () => mainWindow,
+  startHermes
+})
 
 // ── Attach-first: one backend per HOST (multiplex-only) ───────────────────
 // Escape hatch: a dedicated, private backend for this app instead of the host's.
@@ -2974,76 +2798,13 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 })
 ipcMain.handle('hermes:boot-progress:get', async () => firstRunBoot.getBootProgressState())
 ipcMain.handle('hermes:bootstrap:get', async () => firstRunBoot.getBootstrapState())
-ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
-  sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
-)
-ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) => {
-  const fallbackProfileNames = Array.isArray(rawProfileNames)
-    ? rawProfileNames
-        .filter(name => typeof name === 'string')
-        .map(name => name.trim())
-        .filter(Boolean)
-        .slice(0, 256)
-    : []
-
-  const registry = readDesktopConnectionsRegistry()
-  const enumerations = await enumerateRegistryAgentSources(registry)
-  let agents = buildAgentRoster(enumerations, { primaryConnectionId: registry.primary })
-
-  // Roster enumeration deliberately does not dial connect-on-demand SSH
-  // sources. Publish one credential-free seed route so a plugin can be the
-  // first caller that opens the tunnel.
-  const sshSeeds = undialedSshRouteSeeds(agents, registry.connections)
-
-  if (sshSeeds.length > 0) {
-    agents = [
-      ...agents,
-      ...sshSeeds.map(seed => {
-        const source = registry.connections.find(connection => connection.id === seed.connectionId)!
-
-        return {
-          connectionId: source.id,
-          connectionKind: source.kind,
-          connectionLabel: source.label,
-          handle: seed.profile,
-          profile: seed.profile
-        }
-      })
-    ]
-  }
-
-  // A local enumeration can fail while remote/cloud sources succeed. Preserve
-  // cached v1 profile names as explicitly-local rows so those valid routes do
-  // not disappear and duplicate names remain source-qualified.
-  const localSource = registry.connections.find(source => source.kind === 'local')
-
-  const localEnumeration = localSource
-    ? enumerations.find(({ connection }) => connection.id === localSource.id)
-    : undefined
-
-  const localFallbackProfiles = localSource
-    ? localRouteFallbackProfiles(
-        agents,
-        localSource.id,
-        fallbackProfileNames,
-        isLocalEnumerationFailure(localEnumeration?.error)
-      )
-    : []
-
-  if (localSource && localFallbackProfiles.length > 0) {
-    agents = [
-      ...agents,
-      ...localFallbackProfiles.map(profile => ({
-        connectionId: localSource.id,
-        connectionKind: localSource.kind,
-        connectionLabel: localSource.label,
-        handle: profile,
-        profile
-      }))
-    ]
-  }
-
-  return buildRegistryProfileRoutes({ agents, sources: registry.connections })
+registerDesktopPluginProfileRoutesIpc({
+  ipcMain,
+  readDesktopConnectionConfig,
+  sanitizeDesktopConnectionConfig,
+  readDesktopConnectionsRegistry,
+  enumerateRegistryAgentSources: registry => enumerateRegistryAgentSources(registry),
+  buildAgentRoster
 })
 registerDesktopConnectionRegistryIpc({
   ipcMain,
@@ -3121,59 +2882,6 @@ const { rememberConnectionInstallId, probeSshProfileInventory, enumerateRegistry
     updateManagedSshConnection
   })
 
-// Convenience wrappers around the bearer-aware descriptor request path.
-// Native OAuth sessions are cookieless, so these must not bypass
-// fetchJsonForBackend and fall straight through to the cookie partition.
-async function postJsonForBackend(descriptor, path, body, opts: any = {}) {
-  return fetchJsonForBackend(descriptor, path, { ...opts, body: body ?? {}, method: 'POST' })
-}
-
-// GET twin of postJsonForBackend.
-async function getJsonForBackend(descriptor, path, opts: any = {}) {
-  return fetchJsonForBackend(descriptor, path, opts)
-}
-
-// Any-method REST call against a resolved backend descriptor — the descriptor
-// analogue of the hermes:api handler's own auth split: OAuth backends prefer a
-// native bearer (cookieless RFC 8252 flow) and fall back to the OAuth cookie
-// partition; token/local descriptors use the static session-token header.
-async function fetchJsonForBackend(
-  descriptor,
-  path,
-  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number } = {}
-) {
-  const url = `${descriptor.baseUrl}${path}`
-
-  if (descriptor.authMode === 'oauth') {
-    // The OAuth cookie path rides electron.net with JSON headers; multipart
-    // isn't wired there. Fail loudly rather than corrupting the upload.
-    if (opts.upload) {
-      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-    }
-
-    const options = {
-      method: opts.method,
-      body: opts.body,
-      timeoutMs: opts.timeoutMs,
-      headers: descriptor.headers
-    }
-
-    return requestWithOauthFallback(descriptor.baseUrl, {
-      ensureNativeAccessToken,
-      requestWithBearer: bearer => fetchJson(url, null, { ...options, bearer }),
-      requestWithCookie: () => fetchJsonViaOauthSession(url, options)
-    })
-  }
-
-  return fetchJson(url, descriptor.token, {
-    method: opts.method,
-    body: opts.body,
-    upload: opts.upload,
-    timeoutMs: opts.timeoutMs,
-    headers: descriptor.headers
-  })
-}
-
 registerDesktopConnectionAuthIpc({
   ipcMain,
   probeRemoteAuthMode,
@@ -3215,26 +2923,14 @@ registerDesktopConnectionAuthIpc({
   },
   shell
 })
-ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
-ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
-ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
-// Persistence-only sibling of hermes:profile:set: records the profile the
-// Desktop last used WITHOUT tearing down the backend or reloading the window.
-// An explicit default route wins at launch and is never replaced here.
-ipcMain.handle('hermes:profile:remember', async (_event, name) => ({
-  profile: writeActiveDesktopProfile(name)
-}))
-ipcMain.handle('hermes:profile:set', async (_event, name) => {
-  assertCanMutateManagedPrimaryRouting()
-  const next = writeActiveDesktopProfile(name)
-
-  // Switching profiles is a backend re-home: relaunch the dashboard under the
-  // new HERMES_HOME. Pool backends keep their own homes, so only the primary
-  // is torn down.
-  await teardownPrimaryBackendAndWait()
-  mainWindow?.reload()
-
-  return { profile: next }
+registerDesktopProfileRoutingIpc({
+  ipcMain,
+  desktopProfilePreferences,
+  readActiveDesktopProfile,
+  writeActiveDesktopProfile,
+  assertCanMutateManagedPrimaryRouting,
+  teardownPrimaryBackendAndWait,
+  getMainWindow: () => mainWindow
 })
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {

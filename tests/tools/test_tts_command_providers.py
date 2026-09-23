@@ -139,6 +139,23 @@ class TestCommandTtsEnv:
         assert env["MY_SAFE_TTS_VAR"] == "keep"
 
 
+    def test_env_passthrough_forwards_the_served_profiles_value(self, monkeypatch):
+        """Under the multiplexer os.environ holds the launch profile's .env; a served profile's
+        command provider must get its own declared key, never the launch profile's."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("MY_TTS_TOKEN", "tok-launch")
+        command = _shell_command(sys.executable, "-c", "import os; print(os.environ.get('MY_TTS_TOKEN'))")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"MY_TTS_TOKEN": "tok-work"})
+        try:
+            result = _run_command_tts(command, timeout=30, env_passthrough=["MY_TTS_TOKEN"])
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert result.stdout.strip() == "tok-work"
+
 class TestGetNamedProviderConfig:
     def test_providers_block_wins(self):
         cfg = {"providers": {"voxcpm": {"command": "new"}},

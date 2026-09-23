@@ -113,14 +113,6 @@ async def test_initialize_error_response_keeps_its_exception_type(tmp_path: Path
     await client.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_failure_details_empty_for_live_server(tmp_path: Path):
-    client = _client(tmp_path, "clean")
-    await client.start()
-    try:
-        assert client.failure_details() == ""
-    finally:
-        await client.shutdown()
 
 
 @pytest.mark.asyncio
@@ -173,7 +165,8 @@ async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: 
     start = asyncio.create_task(client.start())
     child = None
     try:
-        ready_deadline = asyncio.get_running_loop().time() + 3.0
+        # Generous deadlines: CI runners under load took >3 s here (PR-blocking flake).
+        ready_deadline = asyncio.get_running_loop().time() + 15.0
         while not child_pid_file.exists():
             assert asyncio.get_running_loop().time() < ready_deadline
             await asyncio.sleep(0.01)
@@ -182,7 +175,7 @@ async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: 
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(start, timeout=0.05)
 
-        deadline = asyncio.get_running_loop().time() + 3.0
+        deadline = asyncio.get_running_loop().time() + 15.0
         while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
             assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(0.01)

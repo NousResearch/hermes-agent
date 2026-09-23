@@ -187,6 +187,8 @@ interface GroupSessionSnapshot {
   running?: boolean
   session_id?: string
   session_key?: string
+  /** Start time of the live or retained turn; the `inflight` snapshot omits it. */
+  turn_started_at?: null | number
 }
 
 /** Group turns are explicit user work. A member may be cold or retired when
@@ -218,6 +220,26 @@ export function retainedGroupTurnError(state: GroupSessionSnapshot | null | unde
   }
 
   return null
+}
+
+/** Identity of the retained failed turn, else null. The `inflight` snapshot
+ *  carries no start time, so two identical consecutive failures differ only
+ *  by `turn_started_at`. */
+function retainedGroupTurnKey(state: GroupSessionSnapshot | null | undefined): null | string {
+  return retainedGroupTurnError(state) === null ? null : JSON.stringify([state?.turn_started_at ?? null, state?.inflight])
+}
+
+/** Does a user row follow the stranded turn's own prompt? Then a later turn
+ *  ran in the session, and a retained error belongs to that turn, not this one. */
+function laterTurnAfterStranded(messages: GroupTurnTranscriptMessage[], before: number): boolean {
+  const anchor = messages.findIndex(
+    (msg, i) =>
+      i >= before && msg?.role === 'user' && groupTranscriptRowText(msg).startsWith(GROUP_PROMPT_HEADER_PREFIX)
+  )
+
+  return messages.some(
+    (msg, i) => i > (anchor === -1 ? before - 1 : anchor) && msg?.role === 'user' && !syntheticGroupUserRow(msg)
+  )
 }
 
 /** Is the member's session still doing work this turn should wait for?
@@ -1067,10 +1089,10 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     // the transcript, so the tombstone — not the message count — is the only
     // evidence; a tombstone identical to the pre-submit one is an older turn's.
     const failure = retainedGroupTurnError(state)
-    // Turn start replaces the snapshot (with a fresh `started_at`), so a
-    // retained error unlike the pre-submit one is THIS turn's: the member did
-    // not finish, and text it wrote before a tool call is not its reply.
-    const failedThisTurn = failure !== null && JSON.stringify(state?.inflight) !== context.leftover
+    // Turn start replaces the snapshot and `turn_started_at`, so a retained
+    // error unlike the pre-submit one is THIS turn's: the member did not
+    // finish, and text it wrote before a tool call is not its reply.
+    const failedThisTurn = failure !== null && retainedGroupTurnKey(state) !== context.leftover
     const died = failedThisTurn || (failure !== null && messages.length > before)
 
     if ((messages.length > before || died) && done) {
@@ -1153,7 +1175,7 @@ async function prepareGroupTurnBaseline(
 
     snapshot = pre
     before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
-    leftover = retainedGroupTurnError(pre) === null ? null : JSON.stringify(pre.inflight)
+    leftover = retainedGroupTurnKey(pre)
 
     if (pre?.session_id) {
       runtimeIds.add(pre.session_id)
@@ -1350,9 +1372,10 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const messages = Array.isArray(state?.messages) ? state.messages : []
     // A transcript that never grew is not proof of nothing: a turn that dies
     // before its prompt is committed leaves only the retained error behind.
-    // The retained error is the stranded turn's own (the next turn start would
-    // have replaced it): text written before a failed tool step is no reply.
-    const retained = retainedGroupTurnError(state)
+    // The retained error is the stranded turn's own unless a later turn ran
+    // after it; then it is that turn's error and the late reply still posts.
+    // Text written before a failed tool step is no reply.
+    const retained = laterTurnAfterStranded(messages, strandedBefore) ? null : retainedGroupTurnError(state)
 
     const pick =
       retained === null && messages.length > strandedBefore ? pickStrandedGroupTurnReply(messages, strandedBefore) : null

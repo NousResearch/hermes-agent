@@ -50,6 +50,7 @@ import {
   useKanbanScope
 } from './api'
 import { ModelOverrideField, overridePatch } from './model-override'
+import { PrLink } from './pr-link'
 import {
   type Diagnostic,
   type DiagnosticAction,
@@ -769,6 +770,11 @@ export function TaskDrawer({
                   onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
                 />
               </MetaRow>
+              {task.pr_url && (
+                <MetaRow label={k.metaPr}>
+                  <PrLink url={task.pr_url} />
+                </MetaRow>
+              )}
               {typeof task.priority === 'number' && <MetaRow label={k.metaPriority}>{task.priority}</MetaRow>}
               {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
               {task.workspace_path && (

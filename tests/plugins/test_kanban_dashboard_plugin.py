@@ -212,6 +212,101 @@ def test_task_detail_includes_links_and_events(client):
 
 
 # ---------------------------------------------------------------------------
+# The card's PR link
+# ---------------------------------------------------------------------------
+
+
+_PR = "https://github.com/acme/widgets/pull/123"
+
+
+def _publish_pr(client, task_id: str, url: str) -> None:
+    """A worker's handoff: ``metadata.published_pr`` on the run it just closed."""
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "review", "assignee": "reviewer", "summary": "PR is up",
+              "metadata": {"published_pr": url}},
+    )
+    assert response.status_code == 200, response.text
+
+
+def _card(client, task_id: str) -> dict:
+    board = client.get("/api/plugins/kanban/board").json()
+    cards = [t for column in board["columns"] for t in column["tasks"] if t["id"] == task_id]
+    assert len(cards) == 1
+    return cards[0]
+
+
+def test_published_pr_reaches_the_card_and_the_drawer(client):
+    """The PR a worker published is card metadata, not something an operator has
+    to dig out of the run-history JSON blob."""
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "ship it", "assignee": "builder"},
+    ).json()["task"]
+    assert _card(client, task["id"])["pr_url"] is None
+
+    _publish_pr(client, task["id"], _PR)
+
+    assert _card(client, task["id"])["pr_url"] == _PR
+    assert client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]["pr_url"] == _PR
+
+
+def test_newest_published_pr_wins_and_the_accepted_contract_wins_over_both(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "reworked", "assignee": "builder"},
+    ).json()["task"]
+    _publish_pr(client, task["id"], _PR)
+    client.patch(f"/api/plugins/kanban/tasks/{task['id']}", json={"status": "ready"})
+    newer = "https://github.com/acme/widgets/pull/456"
+    _publish_pr(client, task["id"], newer)
+    assert _card(client, task["id"])["pr_url"] == newer
+
+    # PR acceptance rewrites completion_contract from ``owner/repo`` to the
+    # accepted PR URL; that is the authoritative one once it exists.
+    accepted = "https://github.com/acme/widgets/pull/789"
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET completion_contract = ? WHERE id = ?", (accepted, task["id"]))
+        conn.commit()
+    assert _card(client, task["id"])["pr_url"] == accepted
+    assert client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]["pr_url"] == accepted
+
+
+def test_runs_without_a_pr_leave_pr_url_null(client):
+    """Unresolved must LOOK unresolved: no PR published, no link, no guess from
+    an unrelated metadata field or a bare ``owner/repo`` contract."""
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "no pr here", "assignee": "builder"},
+    ).json()["task"]
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "review", "assignee": "reviewer", "summary": "done",
+              "metadata": {"notes": "see github.com/acme/widgets"}},
+    )
+    assert response.status_code == 200, response.text
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET completion_contract = ? WHERE id = ?", ("acme/widgets", task["id"]))
+        conn.commit()
+
+    assert _card(client, task["id"])["pr_url"] is None
+    assert client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]["pr_url"] is None
+
+
+def test_dashboard_bundle_renders_the_pr_link_on_card_and_drawer():
+    """The bundle is the dashboard's UI source. Pin both render sites so a PR
+    that the backend resolved cannot silently stop being shown."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    assert "function PrLink(props)" in js
+    # Drawer meta table — beside Status and Assignee, which is where an operator
+    # looks for a card's facts.
+    assert 'h(MetaRow, { label: tx(i18n, "pullRequest", "PR"), value: h(PrLink, { url: t.pr_url }) })' in js
+    # Board card — visible without opening the card.
+    assert 't.pr_url ? h(PrLink, { url: t.pr_url, className: "hermes-kanban-count" }) : null,' in js
+    # A click on the chip opens the PR, not the drawer behind it.
+    assert 'onClick: function (e) { e.stopPropagation(); },' in js
+
+
+# ---------------------------------------------------------------------------
 # PATCH /tasks/:id — status transitions
 # ---------------------------------------------------------------------------
 

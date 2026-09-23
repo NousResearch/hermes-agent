@@ -85,6 +85,7 @@ import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
+import { PrLink } from './pr-link'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
@@ -224,6 +225,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
             {task.progress.done}/{task.progress.total}
           </Meta>
         )}
+        {task.pr_url && <PrLink url={task.pr_url} />}
         {Boolean(task.comment_count) && <Meta icon="comment">{task.comment_count}</Meta>}
         {links > 0 && <Meta icon="references">{links}</Meta>}
         {task.warnings && task.warnings.count > 0 && (

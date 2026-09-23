@@ -1803,6 +1803,13 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
+/** THE way a plugin renders a link out of the app. A bare `<a>` navigates the
+ *  renderer itself — there is no global click handler to catch it — so every
+ *  http(s) URL a plugin shows goes through this: in-app browser pane by
+ *  default, OS browser on ⌘/Ctrl-click or middle-click, and the app's link
+ *  context menu on right-click. `openExternalLink` is the imperative form for
+ *  a menu item or a button that isn't an anchor. */
+export { ExternalLink, openExternalLink } from '@/lib/external-link'
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface

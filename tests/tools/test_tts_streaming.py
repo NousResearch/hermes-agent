@@ -45,6 +45,81 @@ class TestSentenceChunker:
         ]
 
 
+# ── Plugin TTS providers on the streaming path ────────────────────────────
+
+
+class _FakePluginProvider:
+    """Minimal stand-in for a registered plugin TTSProvider that opted into PCM streaming."""
+
+    def __init__(self, name="fake-piper", rate=22050, streams_pcm=True):
+        self.name = name
+        self.streams_pcm = streams_pcm
+        self._rate = rate
+        self.calls = []
+
+    @property
+    def stream_sample_rate(self):
+        return self._rate
+
+    def stream(self, text, *, voice=None, model=None, format="opus", **extra):
+        self.calls.append({"text": text, "voice": voice, "model": model, "format": format})
+        yield b"\x01\x02" * 4
+
+    def synthesize(self, text, output_path, **kwargs):  # pragma: no cover — not exercised
+        raise AssertionError("streaming path must not fall back to synthesize()")
+
+
+class TestPluginProviderStreaming:
+    def _patch_lookup(self, monkeypatch, provider):
+        import hermes_cli.plugins as plugins_mod
+        import agent.tts_registry as registry_mod
+        monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(registry_mod, "get_provider", lambda key: provider if key == provider.name else None)
+
+    def test_plugin_provider_declaring_pcm_is_adapted(self, monkeypatch):
+        provider = _FakePluginProvider()
+        self._patch_lookup(monkeypatch, provider)
+        streamer = ts.resolve_streaming_provider({"provider": "fake-piper", "fake-piper": {"voice": "v1"}})
+        assert isinstance(streamer, ts._PluginProviderStreamer)
+        assert streamer.sample_rate == 22050
+        assert list(streamer.stream("你好。")) == [b"\x01\x02" * 4]
+        assert provider.calls == [{"text": "你好。", "voice": "v1", "model": None, "format": "pcm"}]
+
+
+    def test_plugin_without_pcm_optin_is_not_adapted(self, monkeypatch):
+        provider = _FakePluginProvider(name="fake-sync", streams_pcm=False)
+        self._patch_lookup(monkeypatch, provider)
+        assert ts.resolve_streaming_provider({"provider": "fake-sync"}) is None
+
+
+    def test_plugin_without_usable_rate_is_refused(self, monkeypatch):
+        provider = _FakePluginProvider(name="fake-norate", rate=0)
+        self._patch_lookup(monkeypatch, provider)
+        assert ts.resolve_streaming_provider({"provider": "fake-norate"}) is None
+
+
+    def test_unusable_pinned_builtin_returns_none(self, monkeypatch):
+        """A pinned built-in that can't run must return None, never another provider's voice."""
+        self._patch_lookup(monkeypatch, _FakePluginProvider(name="fake-other"))
+        monkeypatch.setattr(ts, "_try_instantiate", lambda name, cfg: None)
+        assert ts.resolve_streaming_provider({"streaming": {"provider": "elevenlabs"}}) is None
+
+
+    def test_pinned_plugin_name_resolves(self, monkeypatch):
+        provider = _FakePluginProvider(name="fake-piper")
+        self._patch_lookup(monkeypatch, provider)
+        streamer = ts.resolve_streaming_provider({"streaming": {"provider": "fake-piper"}})
+        assert isinstance(streamer, ts._PluginProviderStreamer)
+
+
+    def test_auto_falls_back_to_configured_plugin(self, monkeypatch):
+        provider = _FakePluginProvider(name="fake-piper")
+        self._patch_lookup(monkeypatch, provider)
+        monkeypatch.setattr(ts, "_try_instantiate", lambda name, cfg: None)
+        streamer = ts.resolve_streaming_provider({"provider": "fake-piper", "streaming": {"provider": "auto"}})
+        assert isinstance(streamer, ts._PluginProviderStreamer)
+
+
 # ── Interruption latch ───────────────────────────────────────────────────
 
 

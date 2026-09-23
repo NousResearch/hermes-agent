@@ -862,6 +862,9 @@ def _handle_comment(args: dict, **kw) -> str:
     _check(tid, "task_id is required (use the current task id if that's what "
                 "you mean — pulls from env but kept explicit here)")
     body = _redact(_require_text(args, "body"))
+    # Run-scoped only when this worker IS the scoped task (#99283): a zombie
+    # whose run was reclaimed must not poison the successor's context thread.
+    own_run = _worker_run_id(tid)
     # Author comes from the worker's runtime identity, never caller args: comments are
     # injected into future workers' system prompts, so an args["author"] override could
     # forge a directive from ``hermes-system``. Cross-task commenting stays unrestricted —
@@ -872,7 +875,11 @@ def _handle_comment(args: dict, **kw) -> str:
     # with what reads as a system directive. See #19713.
     author = os.environ.get("HERMES_PROFILE") or "worker"
     with _board(args.get("board")) as (kb, conn):
-        cid = kb.add_comment(conn, tid, author=author, body=str(body))
+        try:
+            cid = kb.add_comment(
+                conn, tid, author=author, body=str(body), expected_run_id=own_run)
+        except RuntimeError as exc:
+            raise _Reject(f"comment rejected for {tid}: {exc}") from exc
         return _ok(task_id=tid, comment_id=cid)
 
 

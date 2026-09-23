@@ -1760,7 +1760,10 @@ def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:
 
 # --- Comments & events ---
 
-def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) -> int:
+def add_comment(
+    conn: sqlite3.Connection, task_id: str, author: str, body: str,
+    expected_run_id: Optional[int] = None,
+) -> int:
     if not body or not body.strip():
         raise ValueError("comment body is required")
     if not author or not author.strip():
@@ -1770,12 +1773,36 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
     # compose comment writes under one outer commit.
     with write_txn(conn, allow_nested=True):
         _require_task(conn, task_id)
+        _reject_stale_run_comment(conn, task_id, expected_run_id)
         cur = conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)", (task_id, author.strip(), body.strip(), now),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
         return int(cur.lastrowid or 0)
+
+
+def _reject_stale_run_comment(
+    conn: sqlite3.Connection, task_id: str, expected_run_id: Optional[int],
+) -> None:
+    """Fence run-scoped comments (#99283): a worker whose run was reclaimed
+    must not comment on a task a successor now owns — ``build_worker_context``
+    injects the thread into the next worker's system prompt, so a late zombie
+    comment is context poisoning. A named run that is not the live
+    ``current_run_id`` is by definition dead: ``current_run_id`` is set only
+    when a run opens and cleared when it ends (reclaim/complete), so a
+    non-current run was closed or never existed. Callers without a run id
+    (humans, operators, cross-task handoffs) are unaffected."""
+    if expected_run_id is None:
+        return
+    row = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or row["current_run_id"] != int(expected_run_id):
+        raise RuntimeError(
+            f"run {expected_run_id} no longer owns {task_id} "
+            f"(reclaimed or completed); comment rejected"
+        )
 
 
 def _require_task(conn: sqlite3.Connection, task_id: str) -> None:

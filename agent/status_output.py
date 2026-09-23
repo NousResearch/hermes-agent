@@ -30,11 +30,23 @@ class StatusOutputMixin:
 
     def _vprint(self, *args, force: bool = False, diagnostic: bool = False, **kwargs):
         """Verbose print — suppressed while tokens are streaming (allowed during tool execution) and after
-        the main response; ``force=True`` bypasses both. ``suppress_status_output`` (``hermes chat -q``) wins."""
+        the main response; ``force=True`` bypasses both. ``suppress_status_output`` (``hermes chat -q``) wins.
+
+        Known lifecycle/warning lines are localised here (``agent.status_i18n``); the match is an exact
+        full-string match against English originals, so ordinary output is untouched, and it is idempotent
+        (already-translated lines have no English rule to match).
+        """
         if getattr(self, "suppress_status_output", False):
             return
         if diagnostic and not self._warning_presentation_enabled():
             return
+        # Localise a known status line here, the single funnel every one of them passes.
+        if args and isinstance(args[0], str):
+            try:
+                from agent.status_i18n import translate_status
+                args = (translate_status(args[0]), *args[1:])
+            except Exception:
+                pass
         if force or not (getattr(self, "_mute_post_response", False) or (self._has_stream_consumers() and not self._executing_tools)):
             self._safe_print(*args, **kwargs)
 
@@ -71,14 +83,27 @@ class StatusOutputMixin:
                 logger.debug("%s error in %s", name, origin, exc_info=True)
 
     def _emit_status_kind(self, kind: str, message: str, *, origin: str) -> None:
-        """Print to the CLI (``_vprint(force=True)``) and forward to ``status_callback(kind, message)``. Never raises."""
+        """Print to the CLI (``_vprint(force=True)``) and forward to ``status_callback(kind, message)``. Never raises.
+
+        Localisation happens here, the one funnel every lifecycle/warning line passes
+        (``agent.status_i18n``). The English constants stay as they are, so the gateway's noise
+        filters and ``is_compaction_progress_status`` keep matching English; an English user sees
+        byte-identical output because ``translate_status`` short-circuits for ``en`` and for lines
+        it does not recognise.
+        """
         from gateway.warning_notifications import is_warning_status
         try:
+            from agent.status_i18n import translate_status
+            display = translate_status(message)
+        except Exception:
+            logger.debug("status i18n unavailable for %r", origin, exc_info=True)
+            display = message
+        try:
             if not is_warning_status(kind, message) or self._warning_presentation_enabled():
-                self._vprint(f"{self.log_prefix}{message}", force=True)
+                self._vprint(f"{self.log_prefix}{display}", force=True)
         except Exception:
             pass
-        self._call_callback("status_callback", kind, message, origin=origin)
+        self._call_callback("status_callback", kind, display, origin=origin)
 
     def _warning_presentation_enabled(self) -> bool:
         from gateway.warning_notifications import warning_notifications_enabled
@@ -153,6 +178,11 @@ class StatusOutputMixin:
     def _emit_wait_notice(self, text: str) -> None:
         """Rewrite the live status line (CLI spinner, TUI ``thinking.delta``, gateway activity)
         so long provider waits are not an anonymous spinner."""
+        try:
+            from agent.status_i18n import translate_status
+            text = translate_status(text)
+        except Exception:
+            pass
         self._touch_activity(text)
         self._call_callback("thinking_callback", text, origin="_emit_wait_notice")
 

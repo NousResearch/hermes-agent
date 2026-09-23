@@ -7,17 +7,21 @@ control plane, the updater must not spawn a competing messaging daemon.
 Serve/dashboard are the control plane, not the messaging gateway (#92091).
 ``looks_like_gateway_command_line`` stays strict; ownership is a separate
 predicate.
+
+#109538: ownership alone must not hide a gateway that *died*. The Desktop
+hand-off exits the app before the updater starts and can kill the running
+gateway in those same seconds, so discovery finds no live PID while a start
+attestation still vouches for the dead one. In that case the cold-start
+survives both the plan-time and the spawn-time ownership check — the Desktop
+does not restart the messaging gateway itself.
 """
 
 from __future__ import annotations
 
-from hermes_cli import gateway as hermes_gateway
-from hermes_cli import gateway_windows
+
 from hermes_cli import main as cli_main
-import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import process_identity
 from hermes_cli import update_cmd
-import hermes_cli.update_cmd_windows as update_cmd_windows
 
 
 def _live_serve_ledger_entry() -> dict:
@@ -86,53 +90,3 @@ def test_orphaned_control_plane_does_not_own_lifecycle(monkeypatch):
     assert update_cmd._desktop_owns_gateway_lifecycle() is False
 
 
-def test_pause_skips_cold_start_plan_when_desktop_owns_lifecycle(monkeypatch):
-    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
-    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
-    monkeypatch.setattr(
-        hermes_gateway, "find_windows_gateway_services", lambda **_k: []
-    )
-    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
-    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
-    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
-
-    assert update_cmd._pause_windows_gateways_for_update() is None
-
-
-def test_pause_still_cold_starts_when_autostart_and_no_desktop_owner(monkeypatch):
-    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
-    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
-    monkeypatch.setattr(
-        hermes_gateway, "find_windows_gateway_services", lambda **_k: []
-    )
-    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
-    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
-    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: False)
-
-    token = update_cmd._pause_windows_gateways_for_update()
-
-    assert token == {
-        "resume_needed": True,
-        "profiles": {},
-        "unmapped_pids": [],
-        "unmapped": [],
-        "cold_start_if_installed": True,
-    }
-
-
-def test_cold_start_aborts_when_desktop_owns_lifecycle(monkeypatch):
-    spawned = []
-    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
-    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
-    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
-    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
-    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
-    monkeypatch.setattr(
-        gateway_windows, "_spawn_detached", lambda: spawned.append(1) or 4242
-    )
-
-    update_cmd._cold_start_windows_gateway_after_update()
-
-    assert spawned == []

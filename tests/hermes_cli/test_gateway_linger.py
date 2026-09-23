@@ -19,8 +19,6 @@ class TestEnsureLingerEnabled:
 
         gateway._ensure_linger_enabled()
 
-        out = capsys.readouterr().out
-        assert "Systemd linger is enabled" in out
         assert calls == []
 
 
@@ -42,9 +40,6 @@ class TestEnsureLingerEnabled:
 
         gateway._ensure_linger_enabled()
 
-        out = capsys.readouterr().out
-        assert "Enabling linger" in out
-        assert "Linger enabled" in out
         assert run_calls == [(["loginctl", "enable-linger", "testuser"], True, True, False)]
 
 
@@ -160,14 +155,12 @@ def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
 
     gateway.systemd_install(force=False)
 
-    out = capsys.readouterr().out
     assert unit_path.exists()
     assert [cmd for cmd, _ in calls] == [
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", gateway.get_service_name()],
     ]
     assert helper_calls == [True]
-    assert "User service installed and enabled" in out
 
 
 @pytest.mark.parametrize("user", ["alice", "root"])

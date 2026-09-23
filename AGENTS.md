@@ -64,7 +64,8 @@ grow: expansive at the edges, conservative at the waist.
   freeze a current value (see Testing).
 - **E2E validation, not just green unit mocks.** Anything touching resolution chains, config
   propagation, security boundaries, remote backends, or file/network I/O must exercise the
-  real path with real imports against a temp `HERMES_HOME`. Mocks hide integration bugs.
+  real path with real imports against a temp `HERMES_HOME` — two of them (A→B→A) when the
+  change touches profile scope. Mocks hide integration bugs.
 - **Cache-, alternation-, and invariant-safe.** Preserve prompt caching, strict role
   alternation (never two same-role messages in a row; never a synthetic user message injected
   mid-loop), and a system prompt byte-stable for the life of a conversation.
@@ -252,7 +253,7 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   (`_SLASH_DISPATCH` in `cli.py`, `_command_handler_table` in the gateway are the shape).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
   are not API; external compat is handled ONCE by the compat layer, not per PR.
-- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`, `docs/`,
+- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`,
   `skills/`, and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
   after the refactor). `evals/codebase_navigability/static_metrics.py <tree> <label>` measures
   file/function/CC/elif distributions before/after a large PR in ~2 min.
@@ -269,10 +270,32 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   display. Details: `hermes_cli/AGENTS.md`.
 - **Never hardcode `~/.hermes`.** `get_hermes_home()` for code paths, `display_hermes_home()`
   for user-facing text (both from `hermes_constants`). Hardcoding breaks profiles (5 bugs in
-  PR #3575). Module-level constants are fine — they cache after `_apply_profile_override()`
-  sets `HERMES_HOME`. Profile operations themselves are HOME-anchored
+  PR #3575). Profile operations themselves are HOME-anchored
   (`_get_profiles_root()` = `Path.home()/.hermes/profiles`) so `hermes -p x profile list`
   sees all profiles — intentional, not a bug.
+- **One process may serve many profiles; code that runs outside a turn binds the owning
+  profile scope explicitly.** A profile = home + secret scope + terminal scope, bound by
+  `gateway/run.py::_profile_runtime_scope` (turn), `tui_gateway/server.py::@_profile_scoped` +
+  `model_switch.py::_session_profile_runtime_scope` (RPC, teardown), `cron/scheduler_provider.py::
+  _profile_cron_scope` (ticker), `gateway/run_agent_cache.py::_run_release_in_profile_scope`
+  (eviction). `os.environ`, module globals and import-time values hold the *launch* profile's, so
+  an unbound read is a silent default-profile leak, never an error: home/config/`.env`-derived
+  module constants are a bug class — key slots by `hermes_home_key()` or resolve at call time.
+  Needs a binding: boot probes (`check_fn`, MCP discovery, hooks), session end/eviction, tickers,
+  deferred callbacks, RPC methods, config readers, thread hops (`spawn_context_thread`), child
+  spawns (`served_profile_child_env`, never `os.environ.copy()`). Fail-closed reads exist only after
+  `set_multiplex_active(True)`. Prove live with two homes (A→B→A) under multiplex, not one temp
+  `HERMES_HOME`. Advisory lint: `scripts/check_profile_scope_patterns.py`.
+- **Machine facts and resource lookup go through `hermes_platform`.** `hermes_platform.host` is the
+  one answer for OS family, native architecture (`IsWow64Process2` → `platform.machine()`; never
+  `PROCESSOR_ARCHITECTURE` alone, it reads AMD64 under x64-on-ARM64 emulation), CPU identity, and
+  WSL/container/Termux. Facts are cached per process and take **no environment-variable input**, so
+  a hardware recognizer (`host/products.py`) cannot be set from a shell. Distinguish the control
+  host (where this Python runs) from the terminal execution target (SSH/container) and the Desktop
+  client (another machine): `host.*` answers only the first. A new bare `shutil.which` or a
+  hand-written known-path table outside `hermes_platform/` fails
+  `tests/test_managed_runtime_resolution.py` unless allowlisted with a reason; resolvers land in
+  `hermes_platform/resolver/`. Lookup never installs, downloads, or starts anything.
 - **Argparse alias dispatch:** `add_parser("list", aliases=["ls"])` sets `dest` to the literal
   the user typed (`"ls"`). Dispatch must accept both (caught PTY-testing `hermes webhook ls`).
 - **Don't wire in dead code without E2E validation.** Unshipped code was dead for a reason;
@@ -327,10 +350,16 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
 ```
 
 - **Flake policy:** a failing FILE is retried once in a fresh subprocess (`--file-retries`;
-  `HERMES_TEST_FILE_RETRIES=0` disables). Pass-on-retry is green but printed under `⚠ FLAKY`
+  `HERMES_TEST_FILE_RETRIES=0` disables); a worker killed by signal or the file timeout is never
+  retried (relaunching a runaway doubles the damage). Pass-on-retry is green but printed under `⚠ FLAKY`
   with both outputs — a bug to fix, not noise. Timing tests must not assume a quiet runner:
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races.
-- **Placement:** `scripts/ci/classify_changes.py` picks jobs by changed files. A Python test
+- **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
+  `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
+  under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,
+  `utils`, `hermes_constants`, packaging) sit directly in `tests/`. No issue numbers in filenames —
+  cite the issue in the module docstring (`test_89315_x.py` → `test_x.py`, "Regression for #89315").
+- **Placement (CI lanes):** `scripts/ci/classify_changes.py` picks jobs by changed files. A Python test
   asserting about `package.json`, `package-lock.json`, `tsconfig.json`, or `.ts/.tsx/.js/
   .mjs/.cjs` sources will not run on a JS-only PR (green on PR, red on `main` where the
   classifier fails open). Such tests belong in the vitest suite, not `tests/*.py`.
@@ -420,6 +449,7 @@ extract, not to regex around it.
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | Frontmatter, HARDLINE authoring standards, curator |
 | `cron/`, kanban (`hermes_cli/kanban*.py`, `tools/kanban_tools.py`, `plugins/kanban/`) | `cron/AGENTS.md` | Scheduler invariants, job fields, kanban board/dispatcher |
 | `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | Step-by-step adapter guide |
+| profiles / multiplex / secret scope (any area) | `gateway/AGENTS.md` § Profile scope, `website/docs/user-guide/multi-profile-gateways.md` § What is isolated per profile | which execution points bind scope, what is isolated per profile |
 
 Long-form background lives in `website/docs/developer-guide/` (agent-loop, prompt-assembly,
 context-compression-and-caching, gateway-internals, tools-runtime, plugins/, cron-internals,

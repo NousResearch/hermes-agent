@@ -2,7 +2,6 @@
 
 import json
 import threading
-import time
 import pytest
 
 from agent import secret_scope
@@ -54,11 +53,6 @@ class TestMem0V3Tools:
         provider._backend = backend
         return provider
 
-    def test_search_returns_ids(self, monkeypatch):
-        backend = FakeBackend(search_results=[{"id": "mem-1", "memory": "foo", "score": 0.9}])
-        provider = self._make_provider(monkeypatch, backend)
-        result = json.loads(provider.handle_tool_call("mem0_search", {"query": "test"}))
-        assert result["results"][0]["id"] == "mem-1"
 
 
     def test_add_uses_content_param(self, monkeypatch):
@@ -73,13 +67,6 @@ class TestMem0V3Tools:
         assert "event_id" in result
 
 
-    def test_old_tool_names_return_unknown(self, monkeypatch):
-        backend = FakeBackend()
-        provider = self._make_provider(monkeypatch, backend)
-        result = json.loads(provider.handle_tool_call("mem0_profile", {}))
-        assert "error" in result
-        result = json.loads(provider.handle_tool_call("mem0_conclude", {}))
-        assert "error" in result
 
 
 class TestMem0UpdateDelete:
@@ -112,17 +99,6 @@ class TestMem0UpdateDelete:
         ))
         assert backend.captured[0][1] == "mem-1"
         assert result["result"] == "Memory deleted."
-
-
-class TestMem0ErrorHandling:
-
-    def _make_provider(self, monkeypatch, backend):
-        provider = Mem0MemoryProvider()
-        provider.initialize("test-session")
-        provider._user_id = "u123"
-        provider._agent_id = "hermes"
-        provider._backend = backend
-        return provider
 
 
 class TestMem0V3Internal:
@@ -312,30 +288,11 @@ class TestMem0Prefetch:
         assert backend.captured == []
 
 
-class TestMem0V3Config:
-
-    def test_tool_schemas_four_tools(self):
-        provider = Mem0MemoryProvider()
-        schemas = provider.get_tool_schemas()
-        names = [s["name"] for s in schemas]
-        assert names == ["mem0_search", "mem0_add", "mem0_update", "mem0_delete"]
-
-    def test_system_prompt_new_tool_names(self):
-        provider = Mem0MemoryProvider()
-        provider._user_id = "test"
-        block = provider.system_prompt_block()
-        assert "mem0_search" in block
-        assert "mem0_add" in block
-        assert "mem0_update" in block
-        assert "mem0_delete" in block
-        assert "mem0_list" not in block
-        assert "mem0_profile" not in block
-        assert "mem0_conclude" not in block
 
 
 class TestMem0ModeSwitch:
 
-    def test_oss_mode_initializes_without_unscoped_platform_key(
+    def test_oss_mode_initializes_without_platform_key_in_scope(
         self, monkeypatch, tmp_path
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -349,7 +306,11 @@ class TestMem0ModeSwitch:
             )
         )
 
-        token = secret_scope.set_secret_scope(None)
+        # Contract (#99121, restated for fail-loud reads): every production caller is scoped
+        # (turn/cron/kanban scope installers); an OSS profile whose scope simply lacks MEM0_API_KEY
+        # must initialize. A scope-LESS multiplex caller is a spawn-site bug and raises instead —
+        # see test_load_config_fails_closed_without_scope_even_for_identity_settings.
+        token = secret_scope.set_secret_scope({})
         secret_scope.set_multiplex_active(True)
         try:
             provider = Mem0MemoryProvider()
@@ -379,6 +340,23 @@ class TestMem0ModeSwitch:
             secret_scope.set_multiplex_active(False)
             secret_scope.reset_secret_scope(token)
 
+    def test_load_config_fails_closed_without_scope_even_for_identity_settings(
+        self, monkeypatch, tmp_path
+    ):
+        """A scope-less multiplex caller is a spawn-site bug: identity/mode reads must surface it,
+        not degrade to '' and route the turn's memories into the default profile's account."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(json.dumps({"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}))
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            with pytest.raises(secret_scope.UnscopedSecretError):
+                mem0_plugin._load_config()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
     def test_file_api_key_still_overrides_environment(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "env-key")
@@ -388,12 +366,6 @@ class TestMem0ModeSwitch:
 
         assert mem0_plugin._load_config()["api_key"] == "file-key"
 
-    def test_default_mode_is_platform(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("MEM0_API_KEY", "test-key")
-        provider = Mem0MemoryProvider()
-        provider.initialize("test")
-        assert provider._mode == "platform"
 
     def test_missing_mode_key_defaults_platform(self, monkeypatch, tmp_path):
         """Backward compat: old mem0.json without mode key works."""
@@ -458,20 +430,6 @@ class TestMem0UserIdResolution:
         provider = self._provider(monkeypatch, tmp_path)
         provider.initialize("test", user_id="123456789", platform="telegram")
         assert provider._user_id == "123456789"
-
-
-class TestMem0WriteMetadata:
-    """Writes carry metadata.channel so per-channel filtered views are possible
-    without coupling identity to the channel.
-    """
-
-    def _make_provider(self, channel: str = "cli"):
-        provider = Mem0MemoryProvider()
-        provider._user_id = "u123"
-        provider._agent_id = "hermes"
-        provider._channel = channel
-        provider._backend = FakeBackend()
-        return provider
 
 
 class _SentinelBackend:

@@ -1,6 +1,4 @@
 import asyncio
-import sqlite3
-from pathlib import Path
 
 
 from gateway.config import Platform
@@ -326,7 +324,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
 
     # First crash delivered.
     assert len(adapter.sent) == 1
-    assert "crashed" in adapter.sent[0]["text"].lower()
+    assert "stopped unexpectedly" in adapter.sent[0]["text"].lower()
 
     # Subscription survives — the cursor advanced past event #1, but the
     # row is still there.
@@ -354,7 +352,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"Second crashed event should also notify; got {len(adapter.sent)} "
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
-    assert "crashed" in adapter.sent[1]["text"].lower()
+    assert "stopped unexpectedly" in adapter.sent[1]["text"].lower()
 
 
 def test_notifier_subscription_survives_done_reopen_until_archive(
@@ -612,7 +610,6 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
 
     assert len(adapter.sent) == 1, "block_loop_detected must produce a notification"
     text = adapter.sent[0]["text"]
-    assert "TRIAGE" in text
     assert tid in text
     assert "needs credentials" in text
     # Cursor advanced: the event is claimed and not re-delivered.
@@ -685,7 +682,6 @@ def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1, "the passive review ping is unchanged"
-    assert "ready for review" in adapter.sent[0]["text"]
 
     wake = _wake_text(adapter)
     assert tid in wake

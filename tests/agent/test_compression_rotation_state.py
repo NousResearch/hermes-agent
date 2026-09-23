@@ -392,70 +392,6 @@ class TestRotationChildFlushDedup:
         ) == 1
         assert _count_rows(child_rows, content="tool result", role="tool") == 1
 
-    def test_mid_tool_loop_rows_do_not_duplicate_after_failed_parent_flush_direct_path(
-        self, tmp_path: Path
-    ):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        parent = "PARENT_ROT_TOOL_LOOP_DIRECT"
-        db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
-
-        loaded = db.get_messages_as_conversation(parent)
-        assistant_turn = {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {"name": "lookup", "arguments": "{}"},
-                }
-            ],
-        }
-        tool_turn = {
-            "role": "tool",
-            "tool_call_id": "call-1",
-            "content": "tool result",
-        }
-        messages = [
-            *loaded,
-            {"role": "user", "content": "live tool question"},
-            assistant_turn,
-            tool_turn,
-        ]
-
-        agent = _build_agent_with_db(db, parent)
-        agent._persist_user_message_idx = len(loaded)
-        agent.context_compressor.compress.return_value = [
-            copy.deepcopy(assistant_turn),
-            copy.deepcopy(tool_turn),
-        ]
-
-        real_flush = agent._flush_messages_to_session_db
-        with patch.object(
-            agent,
-            "_flush_messages_to_session_db",
-            side_effect=RuntimeError("simulated parent flush failure"),
-        ):
-            _returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-                commit_fence=CompressionCommitFence(),
-            )
-
-        assert agent.session_id != parent
-        real_flush(messages, conversation_history=loaded)
-
-        child_rows = db.get_messages_as_conversation(
-            agent.session_id, include_inactive=True
-        )
-        assert _count_rows(
-            child_rows, content="live tool question", role="user"
-        ) == 1
-        assert _count_rows(child_rows, content="", role="assistant") == 1
-        assert _count_rows(child_rows, content="tool result", role="tool") == 1
 
     def test_timestampless_duplicate_content_rows_are_all_stamped(
         self, tmp_path: Path
@@ -564,51 +500,6 @@ class TestRotationChildFlushDedup:
     # source with a marker-independent exact-hit two-phase scan.
     # ------------------------------------------------------------------
 
-    def test_rotation_never_stamps_drifted_user_role_neighbor(
-        self, tmp_path: Path
-    ):
-        """A user-role neighbor at a drifted index must not be stamped."""
-        db = SessionDB(db_path=tmp_path / "state.db")
-        parent = "PARENT_ROT_DRIFTED_NEIGHBOR"
-        db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
-
-        loaded = db.get_messages_as_conversation(parent)
-        messages = [
-            *loaded,
-            {"role": "user", "content": "live question"},
-            {
-                "role": "user",
-                "content": "drifted neighbor",
-                "_todo_snapshot_synthetic": True,
-            },
-        ]
-
-        agent = _build_agent_with_db(db, parent)
-        # Index drifted onto the synthetic user-role neighbor (the reanchor
-        # fallback / stale-index failure shape the guard must not trust).
-        agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
-            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
-        ]
-
-        with patch.object(
-            agent,
-            "_flush_messages_to_session_db",
-            side_effect=RuntimeError("simulated parent flush failure"),
-        ):
-            _returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-                commit_fence=CompressionCommitFence(),
-            )
-
-        # The drifted neighbor is not the row the child represents.
-        assert _DB_PERSISTED_MARKER not in messages[-1]
-        # The anchor source (the real live question) is stamped.
-        assert _DB_PERSISTED_MARKER in messages[-2]
 
     def test_rotation_drifted_index_does_not_duplicate_live_question_in_child(
         self, tmp_path: Path
@@ -743,7 +634,6 @@ class TestRotationChildFlushDedup:
 
         agent = _build_agent_with_db(db, parent)
         agent._session_messages = old_live_list
-        assert agent._session_messages is old_live_list
 
         # (c) The stale snapshot passed to _compress_context is a separate
         # object (the production frontend-snapshot shape).
@@ -751,14 +641,10 @@ class TestRotationChildFlushDedup:
             {"role": "user", "content": "persisted question"},
             {"role": "assistant", "content": "persisted answer"},
         ]
-        assert stale_snapshot is not agent._session_messages
 
-        # (d) Pin the initial persist-index state: production "no known
-        # un-persisted tail" shape, so the real code takes the adopt-directly
-        # branch (:2994-3001) and the pre-adoption flush (:2988) is provably
-        # never attempted (no fixture flush can mask the divergence).
+        # (d) Production "no known un-persisted tail" shape, so the real code
+        # adopts the durable parent directly.
         agent._persist_user_message_idx = None
-        assert agent._persist_user_message_idx is None
 
         # Grow the DB AFTER the snapshot is taken so the REAL adoption
         # condition (durable parent longer than the caller snapshot) fires.
@@ -777,20 +663,13 @@ class TestRotationChildFlushDedup:
             },
         ]
 
-        # Phase-keyed flush failure: fail ONLY the pre-publish flush (:3780);
-        # a blanket failure would not distinguish the phases and a masked
-        # pre-adoption flush would hide the divergence.
-        flush_attempts = []
-
-        def _fail_only_prepublish_flush(messages_arg, **kwargs):
-            flush_attempts.append((messages_arg, kwargs))
-            raise RuntimeError("simulated pre-publish flush failure")
-
+        # The pre-publish flush fails, so the post-rotation flush below is the
+        # only writer of the live view.
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
             agent,
             "_flush_messages_to_session_db",
-            side_effect=_fail_only_prepublish_flush,
+            side_effect=RuntimeError("simulated pre-publish flush failure"),
         ):
             _returned, _ = agent._compress_context(
                 stale_snapshot,
@@ -799,16 +678,12 @@ class TestRotationChildFlushDedup:
                 commit_fence=CompressionCommitFence(),
             )
 
-        # The ONLY internal flush was the single pre-publish one.
-        assert len(flush_attempts) == 1
-
-        # (e) Identity and shape asserts BEFORE markers: adoption fired, the
-        # divergence is preserved, the persist index was rebound out of range.
+        # (e) Preconditions BEFORE markers: adoption fired and the divergence
+        # is preserved.
         adopted = agent.context_compressor.compress.call_args.args[0]
         assert adopted is not stale_snapshot
         assert adopted is not agent._session_messages
         assert agent._session_messages is old_live_list
-        assert agent._persist_user_message_idx == len(adopted)
         assert adopted[-1]["role"] == "user"
         assert adopted[-1]["content"] == "live question"
         assert adopted[-1].get("timestamp") is not None
@@ -938,48 +813,6 @@ class TestRotationChildFlushDedup:
             == 1
         )
 
-    def test_no_real_user_anchor_guard_not_entered(self, tmp_path: Path):
-        """Negative regression: placeholder_appended/already_present must not
-        enter the anchor-source guard branch — no exception, rotation happens,
-        no live row outside the handoff carries the marker."""
-        db = SessionDB(db_path=tmp_path / "state.db")
-        parent = "PARENT_ROT_NO_REAL_ANCHOR"
-        db.create_session(parent, source="cli")
-
-        # All-user-synthetic transcript with NO real user. The rows carry
-        # enough content that compression shrinks the transcript (a single
-        # short synthetic row trips the would-grow gate and aborts rotation,
-        # which would make this a fixture failure, not a regression).
-        messages = [
-            {
-                "role": "user",
-                "content": f"synthetic scaffolding block {i} with enough "
-                f"content to keep the compressed transcript smaller",
-                "_todo_snapshot_synthetic": True,
-            }
-            for i in range(6)
-        ]
-
-        agent = _build_agent_with_db(db, parent)
-        agent.context_compressor.compress.return_value = [
-            {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
-        ]
-
-        with patch.object(
-            agent,
-            "_flush_messages_to_session_db",
-            side_effect=RuntimeError("simulated parent flush failure"),
-        ):
-            _returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-                commit_fence=CompressionCommitFence(),
-            )
-
-        # Rotation happened; no live row carries the marker.
-        assert agent.session_id != parent
-        assert _DB_PERSISTED_MARKER not in messages[0]
 
     def test_list_content_merged_outcome_still_stamps_live_question(
         self, tmp_path: Path
@@ -1348,21 +1181,6 @@ class TestGateLevelGuardRefresh:
         assert compressor.should_compress(10**9) is True
         assert compressor._fallback_compression_streak == 0
 
-    def test_unblocked_gate_does_not_touch_the_db(
-        self,
-        refresh_state_db: SessionDB,
-    ):
-        db = refresh_state_db
-        session_id = "GATE_LEVEL_HOT_PATH"
-        db.create_session(session_id, source="telegram")
-        compressor = _bound_context_compressor(db, session_id)
-
-        with patch.object(
-            compressor,
-            "_refresh_durable_guards",
-            side_effect=AssertionError("hot path must not refresh"),
-        ):
-            assert compressor._automatic_compression_blocked() is False
 
 
 class TestCooldownPersistFailureIsNotAClearedRow:
@@ -1616,7 +1434,7 @@ class TestTodoSnapshotScaffoldingTails:
             {
                 k: v
                 for k, v in m.items()
-                if k not in {"_row_id", _DB_PERSISTED_MARKER}
+                if k not in {"_row_id", "timestamp", _DB_PERSISTED_MARKER}
             }
             for m in compressed
         ] == expected

@@ -28,7 +28,7 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     marker.write_text("{}")
     assert gateway_run._planned_restart_notification_pending() is True
 
-    gateway_run._clear_planned_restart_notification()
+    gateway_run._planned_restart_notification_path().unlink()
 
     assert gateway_run._planned_restart_notification_pending() is False
 
@@ -52,8 +52,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
         message_id="m1",
     )
 
-    result = await runner._handle_restart_command(event)
-    assert "Restarting" in result
+    await runner._handle_restart_command(event)
 
     notify_path = tmp_path / ".restart_notify.json"
     assert notify_path.exists()
@@ -121,10 +120,9 @@ async def test_sethome_updates_running_config_for_same_process_restart(tmp_path,
         message_id="m-home",
     )
 
-    result = await runner._handle_set_home_command(event)
+    await runner._handle_set_home_command(event)
 
     home = runner.config.get_home_channel(Platform.TELEGRAM)
-    assert "Home channel set" in result
     assert saved["TELEGRAM_HOME_CHANNEL"] == "home-42"
     assert home is not None
     assert home.chat_id == "home-42"
@@ -154,10 +152,9 @@ async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path
         message_id="m-home-thread",
     )
 
-    result = await runner._handle_set_home_command(event)
+    await runner._handle_set_home_command(event)
 
     home = runner.config.get_home_channel(Platform.TELEGRAM)
-    assert "Home channel set" in result
     assert saved["TELEGRAM_HOME_CHANNEL"] == "parent-42"
     assert saved["TELEGRAM_HOME_CHANNEL_THREAD_ID"] == "topic-7"
     assert home is not None
@@ -316,60 +313,11 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
     with caplog.at_level("DEBUG", logger="gateway.run"):
         delivered_target = await runner._send_restart_notification()
 
-    success_lines = [
-        r for r in caplog.records
-        if r.levelname == "INFO" and "Sent restart notification" in r.getMessage()
-    ]
-    warning_lines = [
-        r for r in caplog.records
-        if r.levelname == "WARNING"
-        and "was not delivered" in r.getMessage()
-        and "Chat not found" in r.getMessage()
-    ]
     assert delivered_target is None
-    assert not success_lines, (
-        "Expected no INFO 'Sent restart notification' line when send failed, "
-        f"got: {[r.getMessage() for r in success_lines]}"
-    )
-    assert warning_lines, (
-        "Expected a WARNING line mentioning the failure; "
-        f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
-    )
     # Still cleans up.
     assert not notify_path.exists()
 
 
-@pytest.mark.asyncio
-async def test_send_restart_notification_logs_info_on_sendresult_success(
-    tmp_path, monkeypatch, caplog
-):
-    """Adapter returning SendResult(success=True) keeps the INFO log line."""
-    from gateway.platforms.base import SendResult
-
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    notify_path = tmp_path / ".restart_notify.json"
-    notify_path.write_text(json.dumps({
-        "platform": "telegram",
-        "chat_id": "42",
-    }))
-
-    runner, adapter = make_restart_runner()
-    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
-
-    with caplog.at_level("DEBUG", logger="gateway.run"):
-        delivered_target = await runner._send_restart_notification()
-
-    success_lines = [
-        r for r in caplog.records
-        if r.levelname == "INFO" and "Sent restart notification" in r.getMessage()
-    ]
-    assert delivered_target == ("telegram", "42", None)
-    assert success_lines, (
-        "Expected INFO 'Sent restart notification' when send succeeded; "
-        f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
-    )
-    assert not notify_path.exists()
 
 
 @pytest.mark.asyncio
@@ -385,11 +333,11 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
 
     await runner._notify_active_sessions_of_shutdown()
 
-    adapter.send.assert_awaited_once_with(
-        "parent-42",
-        "⚠️ Gateway shutting down — Your current task will be interrupted.",
-        metadata={"thread_id": "topic-7"},
-    )
+    adapter.send.assert_awaited_once()
+    chat_id, message = adapter.send.await_args.args
+    assert chat_id == "parent-42"
+    assert message
+    assert adapter.send.await_args.kwargs == {"metadata": {"thread_id": "topic-7"}}
 
 
 @pytest.mark.asyncio

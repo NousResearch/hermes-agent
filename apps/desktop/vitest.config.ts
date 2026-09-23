@@ -6,6 +6,8 @@ const reactUi: TestProjectConfiguration = {
   test: {
     name: 'ui',
     environment: 'jsdom',
+    // Keep padding regressions observable instead of mocking the stylesheet away.
+    css: { include: [/status-stack\.css$/] },
     setupFiles: ['./vitest.setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
     globals: true,
@@ -23,9 +25,7 @@ const electronNative: TestProjectConfiguration = {
     // `e2e/**/*.unit.test.ts` is the e2e HELPERS, not the specs: plain node
     // modules that should be provable without booting Electron. Playwright
     // ignores the same pattern so they run in exactly one runner.
-    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts'],
-    // These use node:test and have dedicated npm scripts, not Vitest suites.
-    exclude: ['scripts/run-short-session-hang-repro.test.mjs', 'scripts/tasks-scroll.test.mjs']
+    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts']
   }
 }
 

@@ -9,9 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from agent.retry_utils import parse_retry_after_seconds
+from tools.skills_hub import _guarded_http_stream
 from tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json,
-    _validate_bundle_rel_path,
+    _validate_bundle_rel_path, hub,
 )
 
 logger = logging.getLogger("tools.skills_hub")
@@ -65,6 +67,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
     # Wall-clock budget for a full catalog walk: 50k+ skills, sequential
     # (~250 requests each under timeout=30), so unbounded it blocks for minutes.
     CATALOG_WALK_BUDGET_SECONDS = 12
+    ZIP_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
+    ZIP_DOWNLOAD_CHUNK_BYTES = 64 * 1024
     _SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*$")
 
     _query_terms = staticmethod(_query_terms)
@@ -294,8 +298,12 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         gathered (browse's cold-start fallback renders one page); ``0`` walks
         to exhaustion (offline index builder). Only a COMPLETE walk (cursor
         exhausted or page cap) is written to the shared ``clawhub_catalog_v1``
-        cache — a walk cut by ``max_items`` or the wall-clock budget would
-        poison it with a partial slice.
+        cache — a walk cut by ``max_items``, the wall-clock budget, or a
+        failed page fetch would poison it with a partial slice.
+
+        ``_get_json`` returns ``None`` on timeout/non-200. That is a hole in the
+        walk, not catalog exhaustion: the same cursor is retried a few times
+        before the walk gives up (partial, uncached).
         """
         cache_key = "clawhub_catalog_v1"
         cached = _cached_metas(cache_key)
@@ -310,12 +318,22 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         # (max_items=0) must walk everything or it trips the deploy health floor.
         deadline = time.monotonic() + self.CATALOG_WALK_BUDGET_SECONDS if max_items > 0 else None
         partial = False
+        fetch_failures = 0
         for _ in range(750):
             if deadline is not None and time.monotonic() > deadline:
                 partial = True
                 break
             params: Dict[str, Any] = {"limit": 200, "cursor": cursor} if cursor else {"limit": 200}
             data = self._get_json(f"{self.BASE_URL}/skills", timeout=30, params=params)
+            if data is None:
+                fetch_failures += 1
+                if fetch_failures >= self.CATALOG_PAGE_RETRIES:
+                    partial = True
+                    break
+                # Interactive browse stays inside its 12 s budget; the index builder backs off.
+                time.sleep(0.5 if deadline is not None else min(2 ** fetch_failures, 8))
+                continue
+            fetch_failures = 0
             items = data.get("items", []) if isinstance(data, dict) else []
             if not isinstance(items, list) or not items:
                 break
@@ -363,7 +381,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         for attempt in range(max_attempts):
             delay = 2.0 * (2 ** attempt)
             try:
-                resp = httpx.get(url, timeout=20)
+                resp = hub()._skills_hub_http_get(url, timeout=20)
             except (httpx.HTTPError, OSError):
                 reason = "transport error"
             else:
@@ -374,10 +392,9 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                         return None
                     return self._owner_from_payload(self._coerce_skill_payload(raw))
                 if resp.status_code == 429:
-                    try:
-                        delay = float(resp.headers.get("Retry-After") or delay)
-                    except (TypeError, ValueError):
-                        pass
+                    retry_after = parse_retry_after_seconds(resp.headers)
+                    if retry_after is not None:
+                        delay = retry_after
                     reason = "HTTP 429"
                 elif 500 <= resp.status_code < 600:
                     reason = f"HTTP {resp.status_code}"
@@ -468,7 +485,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         return files
 
     def _download_zip(self, slug: str, version: str, owner: Optional[str] = None) -> Dict[str, str]:
-        """Download the skill ZIP from /download and extract its text files."""
+        """Download the skill ZIP from /download (bounded, streamed) and extract its text files."""
         import io
         import zipfile
 
@@ -478,22 +495,62 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             params["owner"] = owner
         max_retries = 3
         for attempt in range(max_retries):
+            retry_after_delay: Optional[int] = None
             try:
-                resp = httpx.get(f"{self.BASE_URL}/download", params=params,
-                                 timeout=30, follow_redirects=True)
-                if resp.status_code == 429:
-                    try:
-                        retry_after = min(int(resp.headers.get("retry-after", "5")), 15)  # Cap wait time
-                    except (ValueError, TypeError):
-                        retry_after = 5
-                    logger.debug("ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
-                                 slug, retry_after, attempt + 1, max_retries)
-                    time.sleep(retry_after)
+                with _guarded_http_stream(
+                    f"{self.BASE_URL}/download",
+                    params=params,
+                    timeout=30,
+                ) as resp:
+                    if resp is None:
+                        return files
+                    if resp.status_code == 429:
+                        parsed = parse_retry_after_seconds(resp.headers)
+                        retry_after = min(int(5 if parsed is None else parsed), 15)  # Cap wait time
+                        logger.debug(
+                            "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
+                            slug, retry_after, attempt + 1, max_retries,
+                        )
+                        retry_after_delay = retry_after
+                    else:
+                        if resp.status_code != 200:
+                            logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
+                            return files
+
+                        content_length = resp.headers.get("content-length")
+                        if content_length:
+                            try:
+                                declared_size = int(content_length)
+                            except (ValueError, TypeError):
+                                declared_size = 0
+                            if declared_size > self.ZIP_DOWNLOAD_MAX_BYTES:
+                                logger.debug(
+                                    "Skipping oversized ClawHub ZIP for %s v%s: %d bytes",
+                                    slug, version, declared_size,
+                                )
+                                return files
+
+                        archive = io.BytesIO()
+                        total = 0
+                        for chunk in resp.iter_bytes(chunk_size=self.ZIP_DOWNLOAD_CHUNK_BYTES):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > self.ZIP_DOWNLOAD_MAX_BYTES:
+                                logger.debug(
+                                    "Skipping oversized ClawHub ZIP for %s v%s: exceeded %d bytes",
+                                    slug, version, self.ZIP_DOWNLOAD_MAX_BYTES,
+                                )
+                                return files
+                            archive.write(chunk)
+                        archive.seek(0)
+
+                if retry_after_delay is not None:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_after_delay)
                     continue
-                if resp.status_code != 200:
-                    logger.debug("ClawHub ZIP download for %s v%s returned %s", slug, version, resp.status_code)
-                    return files
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+
+                with zipfile.ZipFile(archive) as zf:
                     for info in zf.infolist():
                         if info.is_dir():
                             continue

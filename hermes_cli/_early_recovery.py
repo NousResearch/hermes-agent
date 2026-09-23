@@ -96,8 +96,17 @@ _UPDATE_RETRY_RECOVERED = False
 
 
 def _should_skip_external_secret_sources() -> bool:
-    """Whether this updater already completed its deferred native install."""
-    return _UPDATE_RETRY_RECOVERED
+    """True inside any ``hermes update`` process (and its import probes).
+
+    Every dotenv load in the process — ``hermes_cli.main``, ``run_agent``, ``cli`` — consults
+    this, so the updater never resolves external secret sources: on Windows they map
+    ``cryptography._rust.pyd`` into the process replacing that venv, and everywhere a slow
+    ``op``/``bws``/command helper (up to 120s per source) would run inside the updater's
+    120s critical-module import probe and be reported as an import-health timeout.
+    Profile flags are stripped before ``hermes_cli.main`` loads dotenv, so ``argv[1]`` is
+    the authoritative subcommand.
+    """
+    return _UPDATE_RETRY_RECOVERED or sys.argv[1:2] == ["update"]
 
 
 def _project_root() -> Path:

@@ -2,7 +2,7 @@
 
 Under ``gateway.multiplex_profiles`` ``os.environ`` is the DEFAULT profile's ``.env``. When a secondary
 profile's scope does not define MEM0_USER_ID / SUPERMEMORY_CONTAINER_TAG / RETAINDB_PROJECT /
-OPENVIKING_* / HINDSIGHT_BANK_ID / HERMES_HONCHO_HOST, the provider must fall back to its own default
+OPENVIKING_* / HERMES_HONCHO_HOST, the provider must fall back to its own default
 (per-profile partition), NOT write the secondary's memories into the default profile's account.
 """
 from __future__ import annotations
@@ -18,7 +18,6 @@ _DEFAULT_ENV = {
     "RETAINDB_PROJECT": "proj-default", "RETAINDB_BASE_URL": "https://rdb.default",
     "OPENVIKING_API_KEY": "ov-default", "OPENVIKING_ACCOUNT": "acct-default", "OPENVIKING_USER": "user-default",
     "OPENVIKING_AGENT": "agent-default", "OPENVIKING_ENDPOINT": "http://ov.default",
-    "HINDSIGHT_BANK_ID": "bank-default", "HINDSIGHT_MODE": "local_external", "HINDSIGHT_API_URL": "http://hs.default",
     "HERMES_HONCHO_HOST": "host-default", "HONCHO_BASE_URL": "https://honcho.default",
     "OPENAI_API_KEY": "sk-default", "OPENAI_BASE_URL": "https://openai.default/v1",
 }
@@ -46,7 +45,6 @@ def secondary_profile(monkeypatch, tmp_path):
 
 
 def test_secondary_profile_memory_identity_never_inherits_default_environ(secondary_profile):
-    import plugins.memory.hindsight as hindsight
     import plugins.memory.mem0 as mem0
     import plugins.memory.openviking as openviking
     import plugins.memory.retaindb as retaindb
@@ -70,9 +68,6 @@ def test_secondary_profile_memory_identity_never_inherits_default_environ(second
     assert "default" not in settings["endpoint"]
     client = openviking._VikingClient("http://x", "k")
     assert (client._account, client._user) == ("default", "default")  # the built-in tenant, not acct-default
-
-    hcfg = hindsight._load_config()
-    assert (hcfg["banks"]["hermes"]["bankId"], hcfg["mode"]) == ("hermes", "cloud")
 
     assert honcho_client.resolve_active_host() != "host-default"
     assert honcho_client._env_base_url() is None

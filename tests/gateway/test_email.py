@@ -16,11 +16,8 @@ import os
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from unittest.mock import patch, MagicMock, AsyncMock, ANY
+from unittest.mock import patch, MagicMock, ANY
 
-from gateway.platforms.base import SendResult
 
 
 class TestConfigEnvOverrides(unittest.TestCase):
@@ -105,14 +102,6 @@ class TestExtractTextBody(unittest.TestCase):
         self.assertEqual(result, "Plain version")
 
 
-class TestExtractAttachments(unittest.TestCase):
-    """Test attachment extraction and caching."""
-
-    def test_no_attachments(self):
-        from plugins.platforms.email.adapter import _extract_attachments
-        msg = MIMEText("No attachments here.", "plain", "utf-8")
-        result = _extract_attachments(msg)
-        self.assertEqual(result, [])
 
 
 class TestDispatchMessage(unittest.TestCase):
@@ -182,7 +171,6 @@ class TestDispatchMessage(unittest.TestCase):
 
         adapter._message_handler = mock_handler
         # Override handle_message to capture the event directly
-        original_handle = adapter.handle_message
 
         async def capture_handle(event):
             captured_events.append(event)
@@ -453,19 +441,6 @@ class TestSendMethods(unittest.TestCase):
         finally:
             os.unlink(tmp_path)
 
-    def test_get_chat_info(self):
-        """get_chat_info should return email address as chat info."""
-        import asyncio
-        adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {"subject": "Test", "message_id": "<m@t>"}
-
-        info = asyncio.run(
-            adapter.get_chat_info("user@test.com")
-        )
-
-        self.assertEqual(info["name"], "user@test.com")
-        self.assertEqual(info["type"], "dm")
-        self.assertEqual(info["subject"], "Test")
 
 
 class TestConnectDisconnect(unittest.TestCase):

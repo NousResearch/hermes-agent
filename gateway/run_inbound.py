@@ -21,8 +21,13 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
+from gateway.run_inbound_unauthorized import (
+    PAIRING_RATE_LIMITED_REPLY, UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg,
+    unauthorized_owner_hint,
+)
 from gateway.session import (
-    SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
+    SessionSource, build_session_context, is_shared_multi_user_session,
+    neutralize_untrusted_inline_text,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,18 +40,39 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def discord_triggering_note(message_id: Any) -> str:
+    """Model-facing routing note for a Discord turn (rides the API-bound user message only)."""
+    return (
+        f"[Triggering message id: `{message_id}` — use as `message_id` for reply/react/pin "
+        f"via the discord tools.]"
+    )
+
+
+def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
+    """Authored text for the durable user row: peel off exactly the note
+    ``_prepend_inbound_reply_context`` added for THIS event, if present. The note is a
+    model instruction, not something the user wrote — persisted as ``content`` it renders
+    verbatim in every transcript surface and pollutes FTS/memory (#71304, #114719). It
+    keeps riding ``message_text`` (and the replay-only ``api_content`` sidecar)."""
+    message_id = getattr(event, "message_id", None)
+    if not message_id or not isinstance(message_text, str):
+        return message_text
+    prefix = f"{discord_triggering_note(message_id)}\n\n"
+    return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
+
+
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
-    def _hm_pre_gateway_dispatch_hook(
+    async def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource
     ) -> Optional["MessageEvent"]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
         ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
         try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _hook_results = _invoke_hook(
+            from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
+            _hook_results = await _ainvoke_hook(
                 "pre_gateway_dispatch", event=event, gateway=self,
                 # getattr: bare-runner tests build GatewayRunner via object.__new__ without __init__.
                 session_store=getattr(self, "session_store", None),
@@ -86,28 +112,51 @@ class GatewayInboundMixin:
         if pairing_store._is_rate_limited(platform_name, source.user_id):
             return
         code = pairing_store.generate_code(platform_name, source.user_id, source.user_name or "")
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if code:
-            store_profile = getattr(pairing_store, "profile", None)
-            profile_arg = (
-                f"-p {store_profile} "
-                if isinstance(store_profile, str) and store_profile and store_profile != "default"
-                else ""
-            )
-            reply = (
-                f"Hi~ I don't recognize you yet!\n\n"
-                f"Here's your pairing code: `{code}`\n\n"
-                f"Ask the bot owner to run:\n"
-                f"`hermes {profile_arg}pairing approve "
-                f"{platform_name} {code}`"
-            )
+            reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store))
         else:
-            reply = "Too many pairing requests right now~ Please try again later!"
+            reply = PAIRING_RATE_LIMITED_REPLY
         if adapter:
             await adapter.send(source.chat_id, reply)
         if not code:
             # Record rate limit so subsequent messages are silently ignored
             pairing_store._record_rate_limit(platform_name, source.user_id)
+
+    async def _hm_send_unauthorized_decline(self, source: SessionSource) -> None:
+        """``decline`` behavior: one short refusal per sender per DECLINE_DEDUPE_SECONDS, then silence
+        (#88028). The stamp is written BEFORE the send so a delivery
+        hiccup cannot become a decline storm; without a store there is no dedupe state → stay silent."""
+        from gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
+        platform_name = source.platform.value if source.platform else "unknown"
+        pairing_store = self._pairing_store_for(source)
+        if pairing_store is None or pairing_store.has_recent_decline(platform_name, source.user_id):
+            return
+        pairing_store.record_decline(platform_name, source.user_id)
+        adapter = self._delivery_adapter_for(source)
+        if not adapter:
+            return
+        config = getattr(self, "config", None)
+        text = str(getattr(config, "unauthorized_dm_decline_message", "") or "").strip()
+        try:
+            await adapter.send(source.chat_id, text or DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE)
+        except Exception:
+            logger.warning("Failed to deliver unauthorized-DM decline on %s", platform_name, exc_info=True)
+
+    async def _hm_report_ignored_dm(self, source: SessionSource) -> None:
+        """Unauthorized DM under behaviour ``ignore``: nothing goes to the sender. The owner gets the
+        sender's ID and the allowlist fix in the WARNING log and, once per sender, in the home channel."""
+        from hermes_constants import display_hermes_home
+        platform_name = source.platform.value if source.platform else "unknown"
+        hint = unauthorized_owner_hint(
+            platform_name, source.user_id, source.user_name or "", hermes_home=display_hermes_home(),
+        )
+        logger.warning("Unauthorized user (ignored): %s", hint)
+        notifier = getattr(self, "_unauthorized_owner_notifier", None)
+        if notifier is None:
+            notifier = self._unauthorized_owner_notifier = UnauthorizedOwnerNotifier()
+        if notifier.first_time(platform_name, source.user_id) and getattr(self, "config", None) is not None:
+            await notifier.notify(self, source, hint)
 
     async def _hm_admit_event(
         self, event: "MessageEvent"
@@ -128,21 +177,12 @@ class GatewayInboundMixin:
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
 
-        # Most adapters resolve profile routes in build_source(); internal/voice paths construct
-        # SessionSource directly, so resolve those here as the shared fail-closed ingress gate.
-        # Strict boolean marker: require the literal True so duck-typed test/internal sources with
-        # dynamic attributes are not mistaken for a rejection.
-        if (
-            getattr(_config, "multiplex_profiles", False)
-            and not getattr(source, "profile", None)
-            and getattr(source, "profile_route_rejected", False) is not True
-        ):
-            from gateway.profile_routing import ProfileRouteRejected
-
-            try:
-                source.profile = self._profile_name_for_source(source)
-            except ProfileRouteRejected:
-                source.profile_route_rejected = True
+        # Identity FIRST. Most adapters canonicalize at their own ingress; internal/voice paths
+        # construct SessionSource directly, so this is the shared fail-closed gate. Strict boolean
+        # marker: require the literal True so duck-typed test/internal sources with dynamic
+        # attributes are not mistaken for a rejection.
+        if getattr(_config, "multiplex_profiles", False):
+            self._canonicalize(source)
         if getattr(source, "profile_route_rejected", False) is True:
             logger.warning(
                 "Dropping inbound message because its explicit profile route "
@@ -159,7 +199,7 @@ class GatewayInboundMixin:
             # The routed adapter's extra carries a secondary profile's own list; ``_config`` is the default's.
             _slack_adapter = None
             with suppress(Exception):
-                _slack_adapter = self._adapter_for_source(source)
+                _slack_adapter = self._intake_adapter_for(source)
         if (
             # See #51899.
             not is_internal
@@ -183,7 +223,7 @@ class GatewayInboundMixin:
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
         self._scale_to_zero_note_real_inbound()
-        event = self._hm_pre_gateway_dispatch_hook(event, source)
+        event = await self._hm_pre_gateway_dispatch_hook(event, source)
         if event is None:
             return None
         source = event.source
@@ -194,14 +234,20 @@ class GatewayInboundMixin:
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
-            logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # DMs get a pairing code, groups are ignored. A bot cannot pair, and answering one mid-cooldown is outbound traffic.
-            if (
-                source.chat_type == "dm"
-                and not getattr(source, "is_bot", False)
-                and self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) == "pair"
-            ):
+            # DMs get a pairing code or a one-time decline, groups are ignored. A bot cannot pair, and
+            # answering one mid-cooldown is outbound traffic.
+            pairable_dm = source.chat_type == "dm" and not getattr(source, "is_bot", False)
+            behavior = self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) if pairable_dm else None
+            if behavior == "pair":
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
                 await self._hm_offer_pairing_code(source)
+            elif behavior == "decline":
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+                await self._hm_send_unauthorized_decline(source)
+            elif pairable_dm:
+                await self._hm_report_ignored_dm(source)
+            else:
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
         if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
@@ -352,12 +398,21 @@ class GatewayInboundMixin:
             )
             # The clarify callback pauses the platform typing/status indicator while waiting so
             # Slack users can type; the active agent resumes now, so re-enable its indicator.
-            _clarify_adapter = self._adapter_for_source(source)
+            _clarify_adapter = self._delivery_adapter_for(source)
             if _clarify_adapter:
                 try:
                     _clarify_adapter.resume_typing_for_chat(source.chat_id)
                 except Exception:
                     logger.debug("Failed to resume typing after clarify response", exc_info=True)
+                # A typed answer to a native card (numeric pick, or text after "Other") never
+                # reaches the click handler, so the card would keep its buttons forever.
+                if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                    try:
+                        await _clarify_adapter.retire_clarify_card(
+                            _pending_clarify.clarify_id,
+                            f"✅ answered: {_pending_clarify.response or _raw_clarify_reply}")
+                    except Exception:
+                        logger.debug("Failed to retire clarify card after typed answer", exc_info=True)
             return ""
         if _text_outcome == _clarify_mod.TEXT_REJECTED_SELECTION:
             # Selection-shaped but invalid (out-of-range number, bad comma-list): keep the clarify
@@ -367,7 +422,20 @@ class GatewayInboundMixin:
             # Native-choice prompts reject unmatched prose so it continues through normal busy
             # routing. Release this clarify first: redirect() degrades to steer() while tools
             # execute, and that steer cannot drain until the clarify tool returns.
-            _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, "")
+            if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, ""):
+                # Adapters with a persistent native card (Slack Block Kit) retire it now, before the
+                # prose is routed, so its buttons stop advertising a dead answer path. The pop inside
+                # retire_clarify_card runs before its first await, so the agent thread's own expiry
+                # notice (scheduled once the wait unblocks) finds nothing and stays a no-op.
+                _clarify_adapter = self._delivery_adapter_for(source)
+                # Class lookup: a MagicMock adapter must not fabricate the method.
+                if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                    try:
+                        await _clarify_adapter.retire_clarify_card(
+                            _pending_clarify.clarify_id,
+                            "↩️ Clarification cancelled — your message will be handled as a follow-up.")
+                    except Exception:
+                        logger.debug("Failed to retire clarify card after prose cancellation", exc_info=True)
         return None
 
     # Reply → choice for a pending slash-confirm prompt; the command spelling wins over the
@@ -489,9 +557,10 @@ class GatewayInboundMixin:
             logger.debug("reaped-session staleness check failed", exc_info=True)
 
     def _hm_evict_running_agent(self, _quick_key: str, reason: str) -> None:
-        from gateway.run import _INTERRUPT_REASON_EVICTED
+        from gateway.run import _INTERRUPT_REASON_EVICTED, _INTERRUPT_TOOL_REASON_EVICTED
         _generation_at_interrupt = self._interrupt_running_turn(
-            _quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason)
+            _quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason,
+            tool_reason=_INTERRUPT_TOOL_REASON_EVICTED)
         self._drop_turn_slot(_quick_key, run_generation=_generation_at_interrupt)
 
     def _hm_merge_pending_for_source(
@@ -499,7 +568,7 @@ class GatewayInboundMixin:
     ) -> None:
         """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
         from gateway.platforms.base import merge_pending_message_event
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if adapter:
             merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
 
@@ -554,7 +623,7 @@ class GatewayInboundMixin:
         if effective_busy_input_mode != "queue":
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
         else:
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             if adapter:
                 self._enqueue_fifo(_quick_key, event, adapter)
         return True
@@ -569,7 +638,7 @@ class GatewayInboundMixin:
         steered = False
         if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
             try:
-                steered = bool(running_agent.steer(self._steer_text_with_origin(steer_text, event)))
+                steered = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
             except Exception as exc:
                 logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
         if steered:
@@ -587,19 +656,14 @@ class GatewayInboundMixin:
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
         if self._hm_text_only(event) and _can_redirect and hasattr(running_agent, "redirect"):
-            try:
-                if running_agent.redirect(
-                    self._steer_text_with_origin((event.text or "").strip(), event)
-                ):
-                    logger.debug("PRIORITY redirect for session %s", _quick_key)
-                    return
-            except Exception as exc:
-                logger.warning("PRIORITY redirect failed for session %s: %s", _quick_key, exc)
+            if self._redirect_active_turn(running_agent, (event.text or "").strip(), _quick_key, event):
+                logger.debug("PRIORITY redirect for session %s", _quick_key)
+                return
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
         _interrupt_text = event.text
         if self._pending_event_audio_paths(event):
             _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                event, self._adapter_for_source(source), source, event.text or "",
+                event, self._delivery_adapter_for(source), source, event.text or "",
                 log_context="Voice-priority-interrupt",
             )
         elif not _interrupt_text and getattr(event, "media_urls", None):
@@ -995,9 +1059,22 @@ class GatewayInboundMixin:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
-                        result = await result
+                    # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
+                    # sits before it, so a handler reading get_session_env() would see an empty or a
+                    # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
+                    # so session_key is derived from source. Sync handlers run on the gateway pool
+                    # (contextvars carried), never the loop thread: blocking I/O there starves the
+                    # liveness watchdog and the process exits 75 mid-handler (#105279).
+                    _plugin_context = build_session_context(source, self.config)
+                    _plugin_context.session_key = self._session_key_for_source(source)
+                    user_args = event.get_command_args().strip()
+                    with self._session_env_scope(_plugin_context):
+                        if asyncio.iscoroutinefunction(plugin_handler):
+                            result = await plugin_handler(user_args)
+                        else:
+                            result = await self._run_in_executor_with_context(plugin_handler, user_args)
+                            if asyncio.iscoroutine(result):
+                                result = await result
                     return True, str(result) if result else None, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
@@ -1038,6 +1115,9 @@ class GatewayInboundMixin:
         """Reply for a /command that is not built-in/plugin/skill; None when it is known."""
         from gateway.run import _check_unavailable_skill
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        # Known commands never need an unavailable-skill hint (which can require a cold scan).
+        if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
+            return None
         # Known-but-disabled or uninstalled skill → actionable guidance.
         _unavail_msg = _check_unavailable_skill(command)
         if _unavail_msg:
@@ -1045,8 +1125,6 @@ class GatewayInboundMixin:
         # Genuinely unrecognized: warn instead of forwarding to the LLM as free text (it invents
         # tool calls). Normalize to hyphenated form first: the quick-command block may have set an
         # alias target, so the resolved def can be stale.
-        if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
-            return None
         logger.warning(
             "Unrecognized slash command /%s from %s — replying with unknown-command notice",
             command, source.platform.value if source.platform else "?",
@@ -1150,7 +1228,12 @@ class GatewayInboundMixin:
         if not _handled:
             _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
         if not _handled:
-            _result = self._hm_skill_slash_rewrite(event, source, _quick_key, command)
+            # Skill-slash resolution is disk-bound (cold skill scan, skill file loads, the
+            # unavailable-skill rglob over every skills dir) and uncached on a first hit; on a
+            # large install it held the loop past the liveness watchdog (#111091). The executor
+            # hop carries the profile contextvars the scan is scoped to.
+            _result = await self._run_in_executor_with_context(
+                self._hm_skill_slash_rewrite, event, source, _quick_key, command)
             _handled = _result is not None
         return _handled, _result
 
@@ -1169,7 +1252,7 @@ class GatewayInboundMixin:
             # turn for this session NOW: re-stage the orphans in FIFO order and enqueue the incoming event
             # behind them, so arrival order (#28503) holds: oldest orphan runs as this turn, the rest drain
             # in order, the new message last.
-            _orphan_adapter = self._adapter_for_source(source)
+            _orphan_adapter = self._delivery_adapter_for(source)
             if _orphan_adapter is None or getattr(event, "internal", False) or event.get_command():
                 return event, source, is_internal
             _rescued = self._rescue_orphaned_overflow(_quick_key, _orphan_adapter)
@@ -1257,6 +1340,7 @@ class GatewayInboundMixin:
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
+        _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
@@ -1421,7 +1505,7 @@ class GatewayInboundMixin:
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
         # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
         if _successful_transcripts and self._should_echo_stt_transcripts():
-            _echo_adapter = self._adapter_for_source(source)
+            _echo_adapter = self._delivery_adapter_for(source)
             if _echo_adapter:
                 _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                 await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
@@ -1491,22 +1575,7 @@ class GatewayInboundMixin:
 
     @staticmethod
     def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Prepend the Discord triggering-message id and the reply-to pointer."""
-        # Discord: the triggering message id goes on the per-turn user message, never the cached
-        # system prompt — it changes every turn and would bust the agent-cache signature.
-        if (
-            source is not None
-            and getattr(source, "platform", None) == Platform.DISCORD
-            and getattr(event, "message_id", None)
-        ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
-            if _disc_tools_loaded():
-                message_text = (
-                    f"[Triggering message id: `{event.message_id}` — use as "
-                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
-                    f"{message_text}"
-                )
-
+        """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
@@ -1515,6 +1584,19 @@ class GatewayInboundMixin:
             reply_text = event.reply_to_text
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+
+        # Discord: the triggering message id goes on the per-turn user message, never the cached
+        # system prompt — it changes every turn and would bust the agent-cache signature. It is
+        # the OUTERMOST prefix so strip_discord_triggering_note can peel exactly it off the
+        # persisted transcript row without touching the reply pointer.
+        if (
+            source is not None
+            and getattr(source, "platform", None) == Platform.DISCORD
+            and getattr(event, "message_id", None)
+        ):
+            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
+            if _disc_tools_loaded():
+                message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:
@@ -1593,7 +1675,7 @@ class GatewayInboundMixin:
                 message_text, cwd=_msg_cwd, context_length=_msg_ctx_len, allowed_root=_msg_cwd
             )
             if _ctx_result.blocked:
-                _adapter = self._adapter_for_source(source)
+                _adapter = self._delivery_adapter_for(source)
                 if _adapter:
                     await _adapter.send(
                         source.chat_id,
@@ -1785,7 +1867,8 @@ class GatewayInboundMixin:
         if entry is None or entry.origin is None or not _accepting():
             return False
 
-        source = dataclasses.replace(entry.origin)
+        from gateway.session_identity import replace_source
+        source = replace_source(self._restored_source(entry))
         try:
             authorized = self._is_user_authorized_for_source(source, allow_adapter_delegation=False)
         except Exception:
@@ -1801,7 +1884,7 @@ class GatewayInboundMixin:
             )
             return False
 
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if adapter is None:
             return False
 

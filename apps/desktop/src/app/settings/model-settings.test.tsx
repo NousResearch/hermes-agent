@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ConfigApi from '@/api/config'
+
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
 // them to let the dropdown open in tests.
@@ -27,7 +29,10 @@ const startManualOnboarding = vi.fn()
 const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
-vi.mock('@/hermes', () => ({
+// Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
+// config hook reaches them through the barrel, and a bare mock would throw.
+vi.mock('@/hermes', async () => ({
+  ...(await vi.importActual<typeof ConfigApi>('@/api/config')),
   getGlobalModelInfo: (profile?: null | string) => getGlobalModelInfo(profile),
   getGlobalModelOptions: (opts?: unknown, profile?: null | string) => getGlobalModelOptions(opts, profile),
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
@@ -126,21 +131,6 @@ describe('ModelSettings profile scope', () => {
 })
 
 describe('ModelSettings', () => {
-  it('loads the current main model and lists configured providers only', async () => {
-    await renderModelSettings()
-
-    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
-    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
-
-    // Open the provider Select — only configured providers should be listed.
-    const triggers = await screen.findAllByRole('combobox')
-    fireEvent.click(triggers[0])
-
-    // "Nous" shows in both the trigger and the open list.
-    expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
-    expect(screen.queryByText(/DeepSeek/)).toBeNull()
-  })
-
   it.each(['custom', 'local', 'custom:lab'])(
     'opens local endpoint setup when %s has no inventory row',
     async provider => {
@@ -286,18 +276,21 @@ describe('ModelSettings', () => {
     )
   })
 
-  it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
+  it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {
+    // The cached record is a default-expanded snapshot; a CLI pin made after it
+    // loaded is not in it. Echoing the whole record back would reset that
+    // auxiliary slot to auto/'' (#95460) — only the edited key may be sent.
+    getHermesConfigRecord.mockResolvedValue({
+      agent: { reasoning_effort: 'medium', service_tier: 'normal' },
+      auxiliary: { curator: { provider: 'auto', model: '', reasoning_effort: 'high' } }
+    })
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
     const fastSwitch = await screen.findByRole('switch')
     fireEvent.click(fastSwitch)
 
-    await waitFor(() =>
-      expect(saveHermesConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: expect.objectContaining({ service_tier: 'fast' }) })
-      )
-    )
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { service_tier: 'fast' } }))
   })
 
   it('hides the reasoning/speed defaults when the main model reports no capabilities', async () => {
@@ -319,11 +312,33 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('switch')).toBeNull()
   })
 
-  it('renders the auxiliary task rows', async () => {
+  it('edits auxiliary reasoning effort and applies it with the assignment', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'nous', model: 'hermes-4', base_url: '', reasoning_effort: null }]
+    })
+
     await renderModelSettings()
 
-    expect(await screen.findByText('Vision')).toBeTruthy()
-    expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('combobox', { name: 'Vision reasoning effort' })).toBeNull()
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Change' }))[0])
+
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Vision reasoning effort' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'High' }))
+
+    const applyButtons = await screen.findAllByRole('button', { name: 'Apply' })
+    fireEvent.click(applyButtons.at(-1)!)
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'hermes-4',
+        provider: 'nous',
+        scope: 'auxiliary',
+        task: 'vision',
+        reasoning_effort: 'high'
+      })
+    )
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {
@@ -408,6 +423,20 @@ describe('ModelSettings', () => {
 
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
+  })
+
+  it('does not warn when an aux slot uses the main alias', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'main', model: 'kimi-k3', base_url: '' }]
+    })
+
+    await renderModelSettings()
+    await screen.findAllByRole('button', { name: 'Set to main' })
+
+    // 'main' is a backend-supported alias that tracks the active main provider
+    // (auxiliary_client._normalize_aux_provider) — it can never be a stale pin. #97310
+    expect(screen.queryByText(/still run on/)).toBeNull()
   })
 
   it('does not flag an aux slot pinned to a local/LAN endpoint and shows its base_url', async () => {
@@ -552,25 +581,6 @@ describe('ModelSettings MoA preset editor', () => {
         provider: 'openrouter',
         model: 'anthropic/claude-opus-4.8'
       })
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('does not clear the model or save when the same provider is re-selected', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-
-    try {
-      await openReferenceEditor()
-
-      fireEvent.click(slotSelects().ref1Provider)
-      fireEvent.click(await screen.findByRole('option', { name: 'Nous' }))
-      await vi.advanceTimersByTimeAsync(700)
-
-      // Radix treats re-picking the current value as a no-op (no
-      // onValueChange), so nothing changes: no save, model still shown.
-      expect(saveMoaModels).not.toHaveBeenCalled()
-      expect(screen.getByText('nous · hermes-4')).toBeTruthy()
     } finally {
       vi.useRealTimers()
     }

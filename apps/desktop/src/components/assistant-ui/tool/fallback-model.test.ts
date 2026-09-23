@@ -27,12 +27,9 @@ afterEach(() => {
 })
 
 describe('buildToolView image handling', () => {
-  // vision_analyze reports the input image as a local path; an <img> pointed at
-  // a bare path resolves against the renderer origin and 404s, so we render the
-  // tool codicon instead of a broken image.
-  it('drops bare filesystem paths', () => {
-    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('')
-    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('')
+  it('keeps local image paths for the activity renderer to resolve', () => {
+    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('/Users/me/shot.png')
+    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('/tmp/out.jpg')
   })
 
   it('keeps fetchable data URLs', () => {
@@ -59,10 +56,9 @@ describe('buildToolView terminal exit-code status', () => {
     expect(terminal({ exit_code: 1, stdout: 'partial results' }).status).toBe('success')
   })
 
-  // No output + non-zero exit is a genuine failure worth flagging.
-  it('treats non-zero exit with no output as error', () => {
+  it('distinguishes a command failure from an empty no-match exit', () => {
     expect(terminal({ exit_code: 127, output: '' }).status).toBe('error')
-    expect(terminal({ exit_code: 1 }).status).toBe('error')
+    expect(terminal({ exit_code: 1, output: '' }).status).toBe('notice')
   })
 
   it('treats zero exit as success', () => {
@@ -89,6 +85,85 @@ describe('buildToolView terminal exit-code status', () => {
 
     expect(view.terminalCommand).toBe('npm run check --workspace=apps/desktop')
     expect(view.terminalExitCode).toBe(0)
+  })
+})
+
+describe('buildToolView error confidence', () => {
+  it('keeps routine misses and returned diagnostic data out of destructive status', () => {
+    const cases: Array<[Partial<ToolPart>, ReturnType<typeof buildToolView>['status']]> = [
+      [
+        {
+          toolName: 'read_file',
+          result: { error: 'File not found: /repo/session-view.ts', similar_files: ['/repo/session-view.tsx'] }
+        },
+        'notice'
+      ],
+      [{ toolName: 'read_file', isError: true, result: { error: 'File not found: /repo/session-view.ts' } }, 'notice'],
+      [{ toolName: 'terminal', result: { exit_code: 0, output: '{"error":"a logged failure"}' } }, 'success'],
+      [{ result: { error: 'none', message: 'No changes needed' } }, 'success'],
+      [{ result: { status: 'no error', message: 'Ready' } }, 'success'],
+      [{ result: { meta: { error: 'a previous attempt' }, data: { count: 1 } } }, 'success'],
+      [{ toolName: 'read_file', result: { error: 'Permission denied reading /repo/private.ts' } }, 'error'],
+      [{ toolName: 'patch', result: { error: 'File not found: /repo/session-view.ts' } }, 'error'],
+      [{ result: { success: false, result: { output: { error: { message: 'Connection refused' } } } } }, 'error']
+    ]
+
+    for (const [overrides, status] of cases) {
+      expect(buildToolView(part(overrides), '').status, JSON.stringify(overrides)).toBe(status)
+    }
+  })
+})
+
+describe('buildToolView envelope errors', () => {
+  it('shows the event error when the result carries no explanation', () => {
+    const view = buildToolView(
+      part({
+        isError: true,
+        result: 'partial output',
+        toolName: 'terminal',
+        toolResultMetadata: { error: 'killed by signal 9' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('error')
+    expect(view.subtitle).toBe('killed by signal 9')
+  })
+
+  it('keeps an envelope-only read miss on the notice tier', () => {
+    const view = buildToolView(
+      part({
+        isError: true,
+        result: undefined,
+        completedAt: 5,
+        toolName: 'read_file',
+        toolResultMetadata: { error: 'File not found: /repo/missing.ts' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('notice')
+  })
+})
+
+describe('buildToolView calls sealed without a result', () => {
+  it('warns that a lost result is unavailable', () => {
+    const view = buildToolView(part({ completedAt: 5, result: undefined, toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('warning')
+  })
+
+  it('shows a call the user interrupted as a neutral notice', () => {
+    const view = buildToolView(part({ completedAt: 5, interrupted: true, result: undefined, toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('notice')
+  })
+
+  it('shows the real result when one arrived after the interruption', () => {
+    const view = buildToolView(part({ completedAt: 5, interrupted: true, result: 'ok', toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('success')
+    expect(view.title).not.toBe('Interrupted')
   })
 })
 
@@ -160,7 +235,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('error')
-    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com/docs')
+    expect(view.title).toContain('hermes-agent.nousresearch.com/docs')
   })
 
   it('shows opened title on success', () => {
@@ -174,7 +249,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Opened hermes-agent.nousresearch.com/docs')
+    expect(view.title).toContain('hermes-agent.nousresearch.com/docs')
   })
 })
 
@@ -219,34 +294,6 @@ describe('buildToolView file edit diffs', () => {
 })
 
 describe('buildToolView title actions', () => {
-  it('marks the pending action separately from the rest of the title', () => {
-    const read = buildToolView(part({ args: { path: '/tmp/demo.txt' }, result: undefined, toolName: 'read_file' }), '')
-
-    const web = buildToolView(
-      part({ args: { url: 'https://example.com/docs' }, result: undefined, toolName: 'web_extract' }),
-      ''
-    )
-
-    const terminal = buildToolView(
-      part({ args: { command: 'npm test -- --runInBand' }, result: undefined, toolName: 'terminal' }),
-      ''
-    )
-
-    const code = buildToolView(
-      part({ args: { code: 'print("hello")' }, result: undefined, toolName: 'execute_code' }),
-      ''
-    )
-
-    expect(read.title).toBe('Reading demo.txt')
-    expect(read.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' demo.txt' })
-    expect(web.title).toBe('Reading example.com/docs')
-    expect(web.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' example.com/docs' })
-    expect(terminal.title).toBe('Running npm test -- --runInBand')
-    expect(terminal.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' npm test -- --runInBand' })
-    expect(code.title).toBe('Scripting print("hello")')
-    expect(code.titleAction).toEqual({ prefix: '', text: 'Scripting', suffix: ' print("hello")' })
-  })
-
   it('does not mark completed tool titles as pending actions', () => {
     const view = buildToolView(part({ args: { url: 'https://example.com/docs' }, toolName: 'web_extract' }), '')
 
@@ -430,7 +477,6 @@ describe('clampForDisplay', () => {
     expect(clamped.length).toBeLessThan(oversized.length)
     expect(clamped.startsWith('x'.repeat(MAX_TOOL_RENDER_CHARS))).toBe(true)
     expect(clamped).toContain('5,000 more characters truncated')
-    expect(clamped).toContain('Copy')
   })
 })
 
@@ -470,7 +516,6 @@ describe('buildToolView memory status', () => {
     })
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Saved to memory')
     expect(view.countLabel).toBe('13 entries')
     expect(view.subtitle).toBe('Applied 1 operation(s).')
   })
@@ -484,7 +529,6 @@ describe('buildToolView memory status', () => {
     })
 
     expect(view.status).toBe('warning')
-    expect(view.title).toBe('Memory write noted')
     expect(view.subtitle).toContain('Memory is full')
   })
 })

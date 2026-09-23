@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +87,16 @@ def resolve_copilot_token() -> tuple[str, str]:
 
 
 def _gh_cli_candidates() -> list[str]:
-    """Candidate ``gh`` binary paths, including common Homebrew installs."""
-    candidates: list[str] = [c for c in (shutil.which("gh"),) if c]
-    candidates += [
-        c for c in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", str(Path.home() / ".local/bin/gh"))
-        if c not in candidates and os.path.isfile(c) and os.access(c, os.X_OK)]
-    return candidates
+    """Every present ``gh`` in probe order: PATH first, then Homebrew and ``~/.local/bin``."""
+    from hermes_platform.resolver import locate_command
+    from hermes_platform.resolver.known_dirs import homebrew_dirs, user_local_bin
+
+    res = locate_command("gh", known_dirs=(*homebrew_dirs(), *user_local_bin()))
+    seen: list[str] = []
+    for cand in res.present:
+        if cand.value not in seen:
+            seen.append(cand.value)
+    return seen
 
 
 # ``gh auth token`` cache (misses too). With no credential store the probe blocks its full 5s on
@@ -270,15 +275,6 @@ def _read_jwt_store(path: Path) -> Optional[dict]:
         return None
 
 
-def _write_jwt_store(path: Path, store: dict) -> None:
-    """Atomically write the JWT store (tmp + os.replace), best-effort 0o600."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(store), encoding="utf-8")
-    with contextlib.suppress(Exception):
-        os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-
-
 def _jwt_disk_path() -> Optional[Path]:
     """Path to the on-disk exchanged-JWT cache (profile-aware), or None."""
     try:
@@ -313,7 +309,7 @@ def evict_cached_exchanged_token(raw_token: str) -> None:
     def _evict(path, store):
         if store is not None and fp in store:
             del store[fp]
-            _write_jwt_store(path, store)
+            atomic_json_write(path, store, indent=None, mode=0o600)
 
     _with_jwt_store("evict cached", _evict)
 
@@ -339,7 +335,7 @@ def _save_jwt_to_disk(fp: str, api_token: str, expires_at: float, base_url: Opti
             k: v for k, v in (store or {}).items()
             if isinstance(v, dict) and float(v.get("expires_at", 0) or 0) > now}
         kept[fp] = {"api_token": api_token, "expires_at": expires_at, "base_url": base_url}
-        _write_jwt_store(path, kept)
+        atomic_json_write(path, kept, indent=None, mode=0o600)
 
     _with_jwt_store("persist", _save)
 

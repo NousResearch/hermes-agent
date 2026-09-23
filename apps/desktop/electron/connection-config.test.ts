@@ -17,14 +17,11 @@ import { test } from 'vitest'
 import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
-  AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
-  cookiesHavePrivyAccessToken,
-  cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
@@ -47,7 +44,7 @@ import {
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
-  RT_COOKIE_VARIANTS,
+  sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
   translateSelfProfileQuery,
@@ -98,6 +95,25 @@ test('normalizeRemoteHeaders keeps safe proxy headers and drops transport/auth h
       'CF-Access-Client-Secret': { encoding: 'plain', value: 'secret' }
     }
   )
+})
+
+test('sanitizeRemoteHeaderValue strips CR/LF so a pasted token cannot split a request', () => {
+  // Clipboard pastes of access-proxy service tokens routinely carry a trailing
+  // newline; a bare CR/LF inside the value is a request-splitting vector once
+  // it reaches setHeader / loadURL extraHeaders.
+  assert.equal(sanitizeRemoteHeaderValue('client-secret\r\n'), 'client-secret')
+  assert.equal(sanitizeRemoteHeaderValue('  client-secret\r  '), 'client-secret')
+  assert.equal(sanitizeRemoteHeaderValue('a\r\nX-Injected: evil'), 'aX-Injected: evil')
+  assert.equal(sanitizeRemoteHeaderValue(undefined), '')
+})
+
+test('normalizeRemoteHeaders sanitizes plaintext values at ingest', () => {
+  // A trailing newline was already handled by trim(); the gap this pins is an
+  // EMBEDDED CR/LF, which trim() leaves intact and which would otherwise reach
+  // the request as an injected second header.
+  assert.deepEqual(normalizeRemoteHeaders({ 'CF-Access-Client-Secret': 'secret\r\nX-Injected: evil' }), {
+    'CF-Access-Client-Secret': { encoding: 'plain', value: 'secretX-Injected: evil' }
+  })
 })
 
 test('remoteRequestMatchesBaseUrl treats HTTPS and WSS as the same gateway origin', () => {
@@ -334,6 +350,21 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
   },
   {
+    // #118431/#118432: the host backend this app attached to may have been
+    // launched under another profile's home, so the primary's own scopable
+    // REST calls must still say which profile they mean.
+    name: 'the primary profile names itself on a scopable local REST request',
+    profile: 'nash',
+    opts: { primaryProfile: 'nash', globalRemote: false, requestMethod: 'POST', requestPath: '/api/model/set' },
+    expected: { backend: 'primary', descriptorProfile: 'nash', scopePath: true }
+  },
+  {
+    name: 'the primary profile stays unscoped on a route the server cannot scope',
+    profile: 'nash',
+    opts: { primaryProfile: 'nash', globalRemote: false, requestMethod: 'POST', requestPath: '/api/files/upload' },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
     name: 'a renamed primary profile on a global remote is still scoped on the wire',
     profile: ' coder ',
     opts: { primaryProfile: 'coder', globalRemote: true },
@@ -358,7 +389,39 @@ const ROUTES = [
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'an unscoped local profile request keeps its pooled backend',
+    // THE INVARIANT this collapse must not eat: a route the server cannot
+    // profile-scope has only the backend PROCESS's HERMES_HOME left as a
+    // scope, so it keeps a pooled backend. /api/files/upload acts on host
+    // paths and takes no `profile` even after #118275.
+    name: 'a mutating local request the server cannot scope keeps its pooled backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/files/upload'
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    // Same unscopable route, safe method: a read cannot corrupt the wrong
+    // home, and holding reads back would spawn a backend per profile again.
+    name: 'a read on an unscopable route still shares the host backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/files/upload'
+    },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
+    // #118275 taught this handler `?profile=`, so the server CAN vouch for the
+    // scope and the same destructive call rides the shared host backend.
+    name: 'a destructive local request the server can scope shares the host backend',
     profile: 'coder',
     opts: {
       primaryProfile: 'default',
@@ -367,7 +430,7 @@ const ROUTES = [
       requestMethod: 'POST',
       requestPath: '/api/memory/reset'
     },
-    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
     name: 'a remote sub-profile without a local entry routes through the primary remote gateway',
@@ -418,7 +481,10 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
-    name: 'a local session write keeps its pooled backend',
+    // Scoped by `body.profile` (rename_session_endpoint -> `_with_db`), not by
+    // the query: shares the host backend with its path left alone. Appending
+    // `?profile=` here would advertise a scope the handler ignores.
+    name: 'a local session write shares the host backend, scoped by its body',
     profile: 'coder',
     opts: {
       primaryProfile: 'default',
@@ -427,7 +493,7 @@ const ROUTES = [
       requestMethod: 'PATCH',
       requestPath: '/api/sessions/session-1'
     },
-    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
   },
   {
     name: 'a profile-management request uses the primary without a query scope',
@@ -452,6 +518,17 @@ const ROUTES = [
       ownEntry: true,
       requestMethod: 'GET',
       requestPath: '/api/config'
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'HERMES_DESKTOP_ISOLATED_BACKEND keeps a local profile on its own pooled backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      isolatedBackend: true
     },
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   }
@@ -581,13 +658,15 @@ test('pathWithGlobalRemoteProfile does not replace an explicit profile query', (
   )
 })
 
-test('pathWithGlobalRemoteProfile skips local and per-profile remote override paths', () => {
+test('pathWithGlobalRemoteProfile scopes a shared-host local path and skips per-profile remote overrides', () => {
+  // Multiplex-only: the local profile now shares the host backend, so its
+  // path must name the profile or the request reads the launch home.
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', 'iris', {
       globalRemote: false,
       profileRemoteOverride: false
     }),
-    '/api/model/info'
+    '/api/model/info?profile=iris'
   )
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', 'iris', {
@@ -666,7 +745,7 @@ test('translateSelfProfileQuery no-ops when alias and backend profile agree or a
   assert.equal(translateSelfProfileQuery('/api/cron/jobs?profile=mara', '', 'default'), '/api/cron/jobs?profile=mara')
 })
 
-test('pathWithGlobalRemoteProfile appends local-primary profile scope only for eligible routes', () => {
+test('pathWithGlobalRemoteProfile appends the profile scope on the shared host backend', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/config', 'iris', {
       globalRemote: false,
@@ -683,7 +762,28 @@ test('pathWithGlobalRemoteProfile appends local-primary profile scope only for e
       requestMethod: 'POST',
       requestPath: '/api/memory/reset'
     }),
-    '/api/memory/reset'
+    '/api/memory/reset?profile=iris'
+  )
+  // Still ineligible: the managed-files routes act on host paths, not a profile home.
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/files/upload', 'iris', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/files/upload'
+    }),
+    '/api/files/upload'
+  )
+  // The profile-management family names its target in the path and must not
+  // be self-scoped.
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/profiles/worker', 'iris', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'DELETE',
+      requestPath: '/api/profiles/worker'
+    }),
+    '/api/profiles/worker'
   )
 })
 
@@ -734,12 +834,19 @@ test('resolveProfileApiRequest scopes read-only session probes without spawning 
   )
 })
 
-test('resolveProfileApiRequest keeps unscoped destructive routes on the profile backend', () => {
+test('resolveProfileApiRequest scopes destructive profile-owned routes to the shared backend', () => {
+  // These handlers used to read the process home directly, so they had to ride a
+  // per-profile backend. No per-profile backend exists any more, and they now take
+  // `?profile=` and refuse an unnamed profile while several are served, so the
+  // query param is what reaches the right home.
   for (const [method, path] of [
     ['POST', '/api/memory/reset'],
     ['POST', '/api/curator/run'],
     ['PUT', '/api/curator/paused'],
-    ['POST', '/api/webhooks']
+    ['POST', '/api/webhooks'],
+    ['DELETE', '/api/webhooks/alerts'],
+    ['DELETE', '/api/ops/hooks'],
+    ['POST', '/api/ops/checkpoints/prune']
   ]) {
     assert.deepEqual(
       resolveProfileApiRequest('iris', path, {
@@ -747,9 +854,60 @@ test('resolveProfileApiRequest keeps unscoped destructive routes on the profile 
         profileRemoteOverride: false,
         requestMethod: method
       }),
-      { backendProfile: 'iris', requestPath: path }
+      { backendProfile: null, requestPath: `${path}?profile=iris` }
     )
   }
+})
+
+test('resolveProfileApiRequest keeps an unscopable mutating route on a process-scoped backend', () => {
+  // The load-bearing half of the collapse: a route the server cannot scope has
+  // nothing left but the backend process's own HERMES_HOME, so it must NOT fall
+  // through to the shared primary. Live proof of the failure mode this pins:
+  // `POST /api/memory/reset?profile=beta` on an unfixed server deleted ALPHA's
+  // MEMORY.md and returned ok:true.
+  for (const [method, path] of [
+    ['POST', '/api/files/upload'],
+    ['DELETE', '/api/files/managed'],
+    // A hypothetical future route: the gate is derived from
+    // localPrimaryRequestScope(), not from a hardcoded list, so an endpoint
+    // nobody has taught `profile` is held back the day it is added.
+    ['POST', '/api/not-a-real-route/destroy']
+  ]) {
+    assert.deepEqual(
+      resolveProfileApiRequest('iris', path, {
+        globalRemote: false,
+        profileRemoteOverride: false,
+        requestMethod: method
+      }),
+      { backendProfile: 'iris', requestPath: path },
+      `${method} ${path} must keep its own backend`
+    )
+  }
+
+  // ...and the gate is about SCOPE, not about the word "destructive": the same
+  // unscopable paths read fine on the shared backend.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/files/managed', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET'
+    }),
+    { backendProfile: null, requestPath: '/api/files/managed?profile=iris' }
+  )
+})
+
+test('resolveProfileApiRequest leaves a body-scoped session write unqueried on the shared backend', () => {
+  // PATCH /api/sessions/{id} reads its target DB from `body.profile`; the query
+  // is ignored. apps/desktop/src/api/sessions.ts always names the owner in the
+  // body (sessionWriteProfile), so this rides the shared host backend.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/sessions/session-1', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'PATCH'
+    }),
+    { backendProfile: null, requestPath: '/api/sessions/session-1' }
+  )
 })
 
 test('resolveProfileApiRequest uses exact method and path eligibility for mixed families', () => {
@@ -759,6 +917,8 @@ test('resolveProfileApiRequest uses exact method and path eligibility for mixed 
     }),
     { backendProfile: null, requestPath: '/api/skills?profile=iris' }
   )
+  // Only `GET /api/skills` is eligible: the exact method matters, and an
+  // unlisted mutating method keeps its own process-scoped backend.
   assert.deepEqual(
     resolveProfileApiRequest('iris', '/api/skills', {
       requestMethod: 'POST'
@@ -769,15 +929,15 @@ test('resolveProfileApiRequest uses exact method and path eligibility for mixed 
     resolveProfileApiRequest('iris', '/api/config/defaults', {
       requestMethod: 'GET'
     }),
-    { backendProfile: 'iris', requestPath: '/api/config/defaults' }
+    { backendProfile: null, requestPath: '/api/config/defaults?profile=iris' }
   )
   assert.deepEqual(
     resolveProfileApiRequest('iris', '/api/model/recommended-default?provider=nous', {
       requestMethod: 'GET'
     }),
     {
-      backendProfile: 'iris',
-      requestPath: '/api/model/recommended-default?provider=nous'
+      backendProfile: null,
+      requestPath: '/api/model/recommended-default?provider=nous&profile=iris'
     }
   )
 })
@@ -1026,14 +1186,6 @@ test('cookiesHaveSession handles non-arrays', () => {
   assert.equal(cookiesHaveSession([]), false)
 })
 
-test('AT_COOKIE_VARIANTS covers all three deploy shapes', () => {
-  assert.deepEqual(AT_COOKIE_VARIANTS, ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at'])
-})
-
-test('RT_COOKIE_VARIANTS covers all three deploy shapes', () => {
-  assert.deepEqual(RT_COOKIE_VARIANTS, ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt'])
-})
-
 // --- cookiesHaveLiveSession (AT or RT — the connectivity check) ---
 
 test('cookiesHaveLiveSession is true for a live access-token cookie', () => {
@@ -1078,71 +1230,6 @@ test('cookiesHaveLiveSession is false for unrelated cookies and non-arrays', () 
   assert.equal(cookiesHaveLiveSession(null), false)
   assert.equal(cookiesHaveLiveSession(undefined), false)
   assert.equal(cookiesHaveLiveSession([]), false)
-})
-
-// --- cookiesHavePrivySession (Nous portal / Privy auth, NOT gateway cookies) ---
-
-test('cookiesHavePrivySession detects the privy-token access cookie', () => {
-  assert.equal(cookiesHavePrivySession([{ name: 'privy-token', value: 'jwt' }]), true)
-})
-
-test('cookiesHavePrivySession detects __Host-/__Secure- prefixes and the legacy privy-session name', () => {
-  assert.equal(cookiesHavePrivySession([{ name: '__Host-privy-token', value: 'x' }]), true)
-  assert.equal(cookiesHavePrivySession([{ name: '__Secure-privy-token', value: 'x' }]), true)
-  assert.equal(cookiesHavePrivySession([{ name: 'privy-session', value: 'x' }]), true)
-})
-
-test('cookiesHavePrivySession is false for an empty value', () => {
-  assert.equal(cookiesHavePrivySession([{ name: 'privy-token', value: '' }]), false)
-})
-
-test('cookiesHavePrivySession does NOT treat hermes gateway cookies as a portal session', () => {
-  // The whole point of Q7: a gateway session cookie is NOT a portal sign-in.
-  assert.equal(cookiesHavePrivySession([{ name: 'hermes_session_at', value: 'x' }]), false)
-  assert.equal(cookiesHavePrivySession([{ name: '__Host-hermes_session_rt', value: 'x' }]), false)
-})
-
-test('cookiesHavePrivySession is false for unrelated cookies and non-arrays', () => {
-  assert.equal(cookiesHavePrivySession([{ name: 'other', value: 'x' }]), false)
-  assert.equal(cookiesHavePrivySession(null), false)
-  assert.equal(cookiesHavePrivySession(undefined), false)
-  assert.equal(cookiesHavePrivySession([]), false)
-})
-
-test('cookiesHavePrivySession treats refresh-token material as a (renewable) session', () => {
-  // #73495: after a restart the ~1h `privy-token` is often gone while the
-  // 30-day renewal cookies survive. That jar is still SIGNED IN (renewable),
-  // so the session check must accept it — the access check below is what
-  // distinguishes "can discovery succeed right now".
-  assert.equal(cookiesHavePrivySession([{ name: 'privy-refresh-token', value: 'x' }]), true)
-})
-
-// --- cookiesHavePrivyAccessToken (short-lived access state for /api/agents) ---
-
-test('cookiesHavePrivyAccessToken detects privy-token and its secured prefixes', () => {
-  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: 'jwt' }]), true)
-  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Host-privy-token', value: 'x' }]), true)
-  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Secure-privy-token', value: 'x' }]), true)
-})
-
-test('cookiesHavePrivyAccessToken rejects renewal-only jars (the #73495 cold-start state)', () => {
-  // Session/refresh material present, access token absent: signed in but
-  // discovery would 401 → the silent-renewal path must trigger, not re-login.
-  const renewalOnly = [
-    { name: 'privy-session', value: 'x' },
-    { name: 'privy-refresh-token', value: 'x' }
-  ]
-
-  assert.equal(cookiesHavePrivySession(renewalOnly), true)
-  assert.equal(cookiesHavePrivyAccessToken(renewalOnly), false)
-})
-
-test('cookiesHavePrivyAccessToken is false for empty values, gateway cookies, and non-arrays', () => {
-  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: '' }]), false)
-  assert.equal(cookiesHavePrivyAccessToken([{ name: 'hermes_session_at', value: 'x' }]), false)
-  assert.equal(cookiesHavePrivyAccessToken(null), false)
-  assert.equal(cookiesHavePrivyAccessToken(undefined), false)
-  assert.equal(cookiesHavePrivyAccessToken([]), false)
 })
 
 // --- tokenPreview ---
@@ -1333,20 +1420,6 @@ test('gatewayTicketFailure preserves a structured 503 statusCode as a transport 
   assert.equal((wrapped as any).cause, source)
 })
 
-test('gatewayTicketFailure keeps 401 and 403 as reauth with needsOauthLogin', () => {
-  for (const code of [401, 403]) {
-    const source = new Error(`HTTP ${code}`) as any
-    source.statusCode = code
-
-    const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
-
-    assert.equal(wrapped.message, 'auth message')
-    assert.equal((wrapped as any).needsOauthLogin, true)
-    assert.equal((wrapped as any).statusCode, code)
-    assert.equal((wrapped as any).cause, source)
-  }
-})
-
 test('gatewayTicketFailure only copies an integer statusCode, not a message prefix', () => {
   // A legacy "503: ..." message carries no structured statusCode; the Cloud
   // classifier (makeNousCloudBackendDownError) handles the prefix at the mint
@@ -1376,7 +1449,6 @@ test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', (
   if (cloudError !== null) {
     assert.equal((cloudError as any).isCloudBackendDown, true)
     assert.equal((cloudError as any).statusCode, 503)
-    assert.ok(cloudError.message.includes('Nous Cloud agent ares-3009.agents.nousresearch.com is down'))
 
     return
   }

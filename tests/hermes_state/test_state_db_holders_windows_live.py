@@ -23,10 +23,10 @@ def test_restart_manager_finds_real_foreign_state_db_holder(tmp_path):
             sys.executable,
             "-c",
             (
-                "import sqlite3,sys; "
+                "import os,sqlite3,sys; "
                 "c=sqlite3.connect(sys.argv[1]); "
                 "c.execute('SELECT count(*) FROM t').fetchone(); "
-                "print('held', flush=True); sys.stdin.readline()"
+                "print(f'held:{os.getpid()}', flush=True); sys.stdin.readline()"
             ),
             str(db),
         ],
@@ -35,11 +35,14 @@ def test_restart_manager_finds_real_foreign_state_db_holder(tmp_path):
         text=True,
     )
     try:
-        assert holder.stdout.readline().strip() == "held"
+        marker, pid_text = holder.stdout.readline().strip().split(":", 1)
+        assert marker == "held"
+        sqlite_pid = int(pid_text)
+
         holders = foreign_state_db_holders(db)
-        assert any(pid == holder.pid for pid, _ in holders), holders
+        assert any(pid == sqlite_pid for pid, _ in holders), holders
         refusal = held_store_refusal(db, command="optimize-storage")
-        assert refusal is not None and f"PID {holder.pid}" in refusal
+        assert refusal is not None and f"PID {sqlite_pid}" in refusal
     finally:
         holder.stdin.write("\n")
         holder.stdin.flush()

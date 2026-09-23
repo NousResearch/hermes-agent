@@ -510,7 +510,8 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
 def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
     """Whether a worktree has staged/unstaged/untracked changes. Fails SAFE toward True."""
     try:
-        status = _git_out(["status", "--porcelain"], worktree_path, timeout=timeout)
+        # A user's status.showUntrackedFiles=no would otherwise make untracked-only work read clean.
+        status = _git_out(["status", "--porcelain", "--untracked-files=all"], worktree_path, timeout=timeout)
         return status is None or bool(status)
     except Exception:
         return True

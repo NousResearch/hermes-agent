@@ -147,9 +147,11 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
         return mark_worktree_payload_unproven(
             payload, "no base_commit recorded — commit count unmeasurable", unmeasured="commits")
     failed, unmeasured = [], []
+    # --untracked-files=all: status.showUntrackedFiles=no would read a child's uncommitted new
+    # files as a clean tree and the prune below would destroy them.
     probes = (("commits", "rev-list", ["rev-list", "--count", f"{base_commit}..HEAD"],
                lambda s: int(s or 0)),
-              ("dirty", "status", ["status", "--porcelain"], bool))
+              ("dirty", "status", ["status", "--porcelain", "--untracked-files=all"], bool))
     try:
         for field, label, args, parse in probes:
             res = _run_git(args, cwd=path)

@@ -7469,6 +7469,106 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             raise
 
+    async def _execute_becky_one_shot(
+        self,
+        *,
+        title: str,
+        text: str,
+        idempotency_key,
+        note_default: str,
+        policy_version: str,
+    ):
+        """Run the reviewed Shortcut action policy without creating a topic.
+
+        Shortcut requests use the normal Hermes tool execution path so the
+        mutation observer remains the single source of truth.  The prompt is
+        deliberately restrictive and the result is accepted only when the
+        machine turn record proves exactly one reviewed Calendar, Todoist, or
+        note-create call occurred.  Anything else is handed back to the
+        dashboard as ``needs_loop``; assistant prose is never treated as a
+        receipt.
+        """
+        from agent.action_mutations import get_action_journal, reviewed_mutation_spec
+        from gateway.becky_actions import OneShotResult
+
+        del title, policy_version
+        normalized = " ".join(
+            str(text).replace("\r\n", "\n").replace("\r", "\n").split()
+        )
+        boilerplate = (
+            "Convert this request into JSON with exactly two keys: "
+            "title: a short topic name, 1–6 words "
+            "message: the complete plain-text request"
+        )
+        if normalized == boilerplate:
+            return OneShotResult(schema_version="1", disposition="ignored", event=None)
+
+        config = getattr(self, "_becky_loops_config", None)
+        chat_id = str(getattr(config, "chat_id", "") or "")
+        if not chat_id:
+            return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type="dm",
+            user_id="becky-shortcut",
+            user_name="Becky Shortcut",
+        )
+        policy = (
+            "This is a private Becky Shortcut one-shot. Execute immediately only "
+            "when the request is exactly one unambiguous creation of one Google "
+            "Calendar event, one Todoist task, or one note in the requested note "
+            "destination. Use exactly one reviewed create tool call and no other "
+            "state-changing call. Do not use terminal, shell, search, research, "
+            "planning, tool search, or arbitrary commands. If the request is "
+            "ambiguous, conversational, asks for more than one action, or is not "
+            "one of those three creates, do not call any tool. Return a short "
+            "explanation instead. Never claim success in prose. The profile's "
+            f"default note destination is {note_default}."
+        )
+        try:
+            result = await self._run_agent(
+                message=str(text),
+                context_prompt=policy,
+                history=[],
+                source=source,
+                session_id=f"becky-one-shot-{idempotency_key}",
+                session_key=f"becky-one-shot:{idempotency_key}",
+                message_type="text",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Becky one-shot agent execution failed", exc_info=True)
+            return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+
+        events = result.get("turn_tool_events") if isinstance(result, dict) else None
+        if not isinstance(events, list) or len(events) != 1:
+            return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+        event = events[0]
+        if not isinstance(event, dict):
+            return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+        requested_name = event.get("requested_name")
+        tool_name = event.get("name")
+        if (
+            not isinstance(requested_name, str)
+            or requested_name != tool_name
+            or event.get("via_tool_search") is True
+        ):
+            return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+        spec = reviewed_mutation_spec(tool_name)
+        if spec is None or not spec.one_shot:
+            return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+        journal = get_action_journal()
+        mutation = journal.get(idempotency_key)
+        if mutation is None:
+            return OneShotResult(schema_version="1", disposition="needs_loop", event=None)
+        return OneShotResult(
+            schema_version="1",
+            disposition=mutation.status.value,
+            event=mutation,
+        )
     def _register_becky_auto_close_after_delivery(
         self,
         *,
@@ -7798,6 +7898,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_store=getattr(self, "session_store", None),
                 topic_sender=topic_sender,
                 topic_controller=topic_controller,
+                one_shot_executor=self._execute_becky_one_shot,
                 agent_dispatcher=(
                     self._dispatch_becky_agent_reply
                     if topic_sender is not None

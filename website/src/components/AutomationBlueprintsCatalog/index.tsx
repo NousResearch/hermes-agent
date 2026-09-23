@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { type JSX, useEffect, useState } from "react";
 import styles from "./styles.module.css";
 
 interface BlueprintField {

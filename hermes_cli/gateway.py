@@ -4906,11 +4906,106 @@ def _restart_all(system: bool) -> None:
         _service_call(kind, "start", system)
 
 
+def _restart_runtime_ids() -> list[str]:
+    """Identity of the runtime a CLI restart touches — the idempotency-key input (G8)."""
+    profile = ""
+    with contextlib.suppress(Exception):
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile = str(get_active_profile_name() or "")
+    return [f"gateway:{profile or 'default'}"]
+
+
+def _print_restart_already_in_progress(lease) -> None:
+    """One line naming who owns the restart this actor declined to join (G1/G9).
+
+    The wording is load-bearing: ``scripts/gateway_watchdog.sh`` classifies a CLI restart whose
+    output matches ``GW_CLI_REFUSAL_MATCH`` (``…|refus|…``) as a NO-OP RECOVERY — "the recovery
+    action did nothing" — which is exactly what a deferral is. Its alerting is driven by the
+    post-recovery probe either way, but the log line must not claim a restart happened.
+    """
+    holder = (getattr(lease, "holder", None) or {}).get("requestor") or {}
+    who = f"{holder.get('trigger') or '?'} pid={holder.get('pid')}" if holder else "another actor"
+    if getattr(lease, "state", "") == "stale-request":
+        print(
+            "→ Gateway restart refused: already-in-progress — a newer `hermes update` owns this "
+            "host's fleet; not restarting onto an older revision."
+        )
+        return
+    print(
+        f"→ Gateway restart refused: already-in-progress — {who} owns this host's restart "
+        f"(waited {getattr(lease, 'waited_s', 0.0):.0f}s); signalling nothing."
+    )
+
+
+def _open_restart_drain_for_lease(lease, *, trigger: str) -> None:
+    """Record the drain this restart is about to open, on the lease, BEFORE it signals (S3, G1).
+
+    The CLI's SIGUSR1 lands deep inside ``launchd_restart``/``systemd_restart``, so the deadline is
+    published here first: a second actor's SIGTERM or SIGKILL inside it is then refused by
+    ``restart_signal_gate`` and named in one structured line, instead of amputating this drain the
+    way the 19:28:46 SIGTERM did to the update's (``gateway.log:4545-4555``).
+
+    The deadline is the *derived* drain budget (``min(configured, live ExitTimeOut − 5)``), not the
+    CLI's 1815 s patience: under launchd the supervisor SIGKILLs at ``ExitTimeOut``, so a longer
+    deadline would defend a drain the host cannot honour (G6).
+    """
+    from gateway.status import get_running_pid
+    from hermes_cli import update_restart_orchestrator as restart_orch
+
+    try:
+        pid = get_running_pid()
+    except Exception:  # defensive: an unreadable pidfile must not abort a restart
+        return
+    if not pid:
+        return
+    budgets = restart_orch.restart_budgets(configured_drain_s=_get_restart_exit_wait_budget())
+    label = ""
+    with contextlib.suppress(Exception):
+        label = get_launchd_label()
+    restart_orch.mark_drain_started(
+        int(pid),
+        deadline_ts=time.time() + budgets.drain_s,
+        actor=restart_orch.current_requestor(trigger=trigger).describe(),
+        label=label,
+        key=getattr(lease, "key", None),
+    )
+
+
 def _cmd_restart(args):
+    """``hermes gateway restart`` — the CLI restart actor, under the host restart lease (G1).
+
+    Until ``t_559d31fb`` this actor restarted the one host gateway with no lease, no arbitration and
+    no record: on 2026-09-23 it (or a sibling actor) SIGTERMed pid 66115 seven seconds before the
+    update's own drain signal landed and the earliest signal won the semantics, amputating an
+    in-flight cron job. The lease makes this actor wait ≤``LEASE_WAIT_S`` for a live holder and then
+    stand down — rc=0, ``already-in-progress``, nothing signalled.
+
+    The dashboard/Desktop "Restart gateway" action spawns exactly this command
+    (``hermes_cli.web_server._spawn_gateway_restart``), so it inherits this lease rather than taking
+    one of its own — a lease in the dashboard process would be held while its own child waited out
+    the 120 s window and then deferred, restarting nothing.
+    """
     _refuse_from_inside_gateway("restart", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
     if profile_lifecycle("restart", args):
         return
+    from hermes_cli import update_restart_orchestrator as restart_orch
+
+    restart_all = getattr(args, "all", False)
+    trigger = "hermes gateway restart --all" if restart_all else "hermes gateway restart"
+    with restart_orch.restart_actor_lease(
+        trigger=trigger, runtime_ids=_restart_runtime_ids()
+    ) as lease:
+        if lease.must_defer:
+            _print_restart_already_in_progress(lease)
+            return
+        _open_restart_drain_for_lease(lease, trigger=trigger)
+        _restart_gateway_now(args)
+
+
+def _restart_gateway_now(args):
+    """The CLI restart itself: service dispatch, supervisor handback, or detached relaunch."""
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)

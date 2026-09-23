@@ -32,6 +32,13 @@ self-firing entry point, but nothing yet calls it on a timer: whether the livene
 answered an armed obligation is still consumed by the next ``hermes update`` through the existing
 ``update_cmd_fleet._apply_pending_fleet_restart_catchup``.
 
+**Every restart actor is now accounted for (``t_559d31fb``).** G1 named four actors and only two
+were governed; :data:`RESTART_ACTORS` is the census of all six entry points that can restart the
+host gateway, each either ``leased``, ``arbitrated``, ``inherits-lease`` or ``exempt`` with the
+reason written down. :func:`restart_actor_lease` is the context manager a non-update actor uses to
+hold the lease for its whole action, and the CLI restart (``hermes_cli.gateway._cmd_restart``) is
+its first caller.
+
 Premise correction against live evidence: §3.1 of the design cited ``host-gateway.json.code_sha``
 as the served generation. That record publishes role/home/pid/profiles only — no ``code_sha``
 (verified live 2026-09-23). The served generation is stamped into the launching home's
@@ -49,10 +56,10 @@ import re
 import signal
 import sys
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 logger = logging.getLogger("hermes_cli.update_cmd")
 
@@ -86,6 +93,102 @@ FLEET_FAILING_STATES = ("stale", "down")
 FLEET_OK_STATES = ("current", "restart_pending")
 
 _INT_RE = re.compile(r"<key>\s*([A-Za-z]+)\s*</key>\s*<integer>\s*(-?\d+)\s*</integer>")
+
+#: Env marker the update's abort-recovery children carry
+#: (``hermes_cli.update_restart_recovery._RECOVERY_ENV``). Such a child is the lease *holder's*
+#: continuation — the updater that spawned it is blocked waiting for it — not a second actor.
+RECOVERY_ENV = "HERMES_UPDATE_RESTART_RECOVERY"
+
+
+# --------------------------------------------------------------------------- #
+# Actor census (G1)
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class RestartActor:
+    """One actor that can restart the host gateway, and how the lease governs it.
+
+    G1 named four actors and found only two governed. This registry is the census the design's §3.1
+    table is generated from, and the fixture suite asserts every disposition — so "it is covered"
+    is a claim a reader can check rather than a sentence in a docstring.
+
+    ``disposition``:
+      * ``leased`` — takes ``host-restart-lease.json`` for the whole action (S0).
+      * ``arbitrated`` — runs inside another actor's lease; its destructive signal is gated by
+        :func:`restart_signal_gate`.
+      * ``inherits-lease`` — its own code takes no lease because the command it spawns does.
+      * ``exempt`` — cannot or must not take the lease, for the recorded ``reason``.
+    """
+
+    name: str
+    entry_point: str
+    disposition: str
+    reason: str
+
+
+RESTART_ACTORS: tuple[RestartActor, ...] = (
+    RestartActor(
+        name="update-run",
+        entry_point="hermes_cli.update_cmd_fleet._restart_gateway_fleet_after_update",
+        disposition="leased",
+        reason="acquires the lease before its first destructive step and defers to a live holder",
+    ),
+    RestartActor(
+        name="manual-gateway-drain",
+        entry_point="hermes_cli.update_cmd_fleet._drain_or_signal_gateway_for_update",
+        disposition="arbitrated",
+        reason="runs under the update's lease; a SIGTERM inside an open drain deadline is refused and named",
+    ),
+    RestartActor(
+        name="cli-gateway-restart",
+        entry_point="hermes_cli.gateway._cmd_restart",
+        disposition="leased",
+        reason=(
+            "takes the lease for the whole CLI restart, so both its SIGUSR1 and its launchctl "
+            "kickstart fallback run under it; a live holder makes it defer with rc=0 and no signal"
+        ),
+    ),
+    RestartActor(
+        name="dashboard-desktop-relaunch",
+        entry_point="hermes_cli.web_server._spawn_gateway_restart",
+        disposition="inherits-lease",
+        reason=(
+            "spawns `hermes gateway restart` (the leased CLI actor) as a child; a lease taken here "
+            "would be held by the dashboard process while its own child waited out the 120 s window "
+            "and then deferred — restarting nothing"
+        ),
+    ),
+    RestartActor(
+        name="launchctl-kickstart-raw",
+        entry_point="launchctl kickstart -k gui/<uid>/<label> (operator shell)",
+        disposition="exempt",
+        reason=(
+            "no Hermes code runs in an operator's shell command, so it cannot be leased or "
+            "arbitrated; the armed obligation and its bounded catch-up are what recover the host, "
+            "and every in-code kickstart is the lease holder's"
+        ),
+    ),
+    RestartActor(
+        name="update-abort-recovery",
+        entry_point="hermes_cli.update_restart_recovery._run_profile_restart",
+        disposition="exempt",
+        reason=(
+            f"child of the lease holder, marked {RECOVERY_ENV}=1; the holder is blocked waiting for "
+            "it, so making it queue on the same lease would deadlock the recovery"
+        ),
+    ),
+)
+
+
+def actor_dispositions() -> dict[str, str]:
+    """``{actor name: disposition}`` — the machine-readable form of the §3.1 table."""
+    return {actor.name: actor.disposition for actor in RESTART_ACTORS}
+
+
+def in_update_restart_recovery(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True inside an update abort-recovery child — the lease holder's own continuation (exempt)."""
+    source: Mapping[str, str] = os.environ if env is None else env
+    return str(source.get(RECOVERY_ENV) or "").strip() == "1"
 
 
 # --------------------------------------------------------------------------- #
@@ -359,10 +462,12 @@ def lease_request_is_stale(sha: str, *, checkout_sha: Optional[str] = None) -> b
 
 @dataclass(frozen=True)
 class LeaseOutcome:
-    """Result of :func:`acquire_restart_lease`.
+    """Result of :func:`acquire_restart_lease` (and of :func:`restart_actor_lease`).
 
     ``state``: ``acquired`` · ``takeover`` · ``held`` (another live actor owns it; caller must
-    defer, exit 0) · ``stale-request`` (§3.3 #2) · ``unavailable`` (no writable host state dir).
+    defer, exit 0) · ``stale-request`` (§3.3 #2) · ``unavailable`` (no writable host state dir) ·
+    ``exempt`` (a recovery child acting on the holder's behalf) — the last two are non-leased but
+    may act, which is why :attr:`must_defer` exists rather than a truthiness test on ``acquired``.
     """
 
     state: str
@@ -371,6 +476,11 @@ class LeaseOutcome:
     waited_s: float = 0.0
     holder: Optional[dict] = None
     path: Optional[str] = None
+
+    @property
+    def must_defer(self) -> bool:
+        """True when this actor must stand down: another live actor owns the restart (G1)."""
+        return self.state in ("held", "stale-request")
 
     def describe(self) -> str:
         holder = (self.holder or {}).get("requestor") or {}
@@ -495,6 +605,60 @@ def amend_restart_lease(**fields: Any) -> Optional[dict]:
     if not _write_lease(path, payload):
         return None
     return payload
+
+
+def checkout_restart_sha() -> str:
+    """The sha a *non-update* actor is restarting onto: this checkout's HEAD, or ``""``.
+
+    A manual ``hermes gateway restart`` pulls nothing, so the code it will serve is the checkout as
+    it stands. An unresolvable identity (zip/pip/Docker install) is ``""`` — never a guess: §3.3 #2
+    only refuses a request whose sha is *provably* an ancestor, and an empty sha proves nothing.
+    """
+    with suppress(Exception):
+        from hermes_cli.update_cmd_fleet import _current_checkout_sha
+
+        return str(_current_checkout_sha() or "")
+    return ""
+
+
+@contextmanager
+def restart_actor_lease(
+    *,
+    trigger: str,
+    runtime_ids: Sequence[str] = (),
+    sha: Optional[str] = None,
+    wait_s: Optional[float] = None,
+) -> Iterator[LeaseOutcome]:
+    """Hold the host restart lease for one non-update actor's restart (G1, §3.1 S0).
+
+    The contract is the update path's, so every actor defers identically: on a live holder the
+    caller waits ≤``LEASE_WAIT_S`` (inside :func:`acquire_restart_lease`) and then gets an outcome
+    whose :attr:`LeaseOutcome.must_defer` is true — it must exit rc=0 ``already-in-progress``
+    without signalling, judging nothing. The lease is released only when this call acquired it;
+    a deferral (and an ``exempt`` recovery child) never touches the holder's lease.
+
+    ``unavailable`` (no resolvable host state dir) is deliberately **not** a deferral: refusing to
+    restart a gateway because a lease file could not be written would turn a missing state
+    directory into a gateway that cannot be restarted at all. The design's fail-closed rule is
+    about *signals inside an open drain*, and that gate is unchanged.
+    """
+    if in_update_restart_recovery():
+        logger.info(
+            "restart_lease state=exempt actor=[%s] reason=update-abort-recovery(%s)",
+            trigger, RECOVERY_ENV,
+        )
+        yield LeaseOutcome(state="exempt", acquired=True, key=restart_action_key("", runtime_ids))
+        return
+    resolved_sha = checkout_restart_sha() if sha is None else str(sha or "")
+    outcome = acquire_restart_lease(
+        sha=resolved_sha, runtime_ids=runtime_ids, trigger=trigger,
+        checkout_sha=resolved_sha, wait_s=wait_s,
+    )
+    try:
+        yield outcome
+    finally:
+        if outcome.acquired and outcome.state in ("acquired", "takeover"):
+            release_restart_lease(key=outcome.key)
 
 
 # --------------------------------------------------------------------------- #

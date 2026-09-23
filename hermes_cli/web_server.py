@@ -865,6 +865,13 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     same profile coalesce onto the last spawn too (#89034). Orphaned gateways
     are reaped first so the fresh one doesn't stack a duplicate (#77276).
     Returns ``(proc, reused)``.
+
+    Host restart lease (G1, ``t_559d31fb``): this is the dashboard/Desktop relaunch actor, and it
+    is classified ``inherits-lease`` — the child below IS the leased actor
+    (``hermes_cli.gateway._cmd_restart`` takes ``host-restart-lease.json`` for its whole action, so
+    a live holder makes it defer with rc=0 and no signal). Deliberately no lease is taken HERE: a
+    lease owned by this dashboard process would be alive while its own child queued on it, so the
+    child would wait out the 120 s window and then stand down — a "restart" that restarts nothing.
     """
     try:
         from hermes_cli.gateway import _reap_unsupervised_gateway_orphans

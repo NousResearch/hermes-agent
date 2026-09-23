@@ -118,3 +118,55 @@ def test_bulk_priority_fires_task_updated_per_task(client, captured_updates):
     fired = {kw["task_id"]: kw for kw in captured_updates}
     assert set(fired) == {tid1, tid2}
     assert all(kw["changed_fields"] == ["priority"] for kw in fired.values())
+
+
+def test_goal_patch_commits_before_ready_transition_can_be_claimed(client, monkeypatch):
+    """A combined ready+goal PATCH cannot expose the task to dispatch first.
+
+    The fake dispatcher claims synchronously as soon as unblock_task makes the
+    card ready. If update_task applies status first (the #119320 ordering), the
+    subsequent goal edit sees that new task_run and fails. Goal-first ordering
+    succeeds and the spawned run inherits the already-persisted contract.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="atomic goal", assignee="alice", initial_status="blocked",
+        )
+
+    real_unblock = kb.unblock_task
+
+    def unblock_then_claim(conn, task_id, *args, **kwargs):
+        ok = real_unblock(conn, task_id, *args, **kwargs)
+        if ok:
+            assert kb.claim_task(conn, task_id, claimer="race-worker") is not None
+        return ok
+
+    monkeypatch.setattr(kb, "unblock_task", unblock_then_claim)
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "ready", "goal_mode": True, "goal_max_turns": 7},
+    )
+    assert response.status_code == 200, response.text
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        run = conn.execute(
+            "SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,)
+        ).fetchone()
+    assert run is not None
+    assert task is not None
+    assert task.goal_mode is True
+    assert task.goal_max_turns == 7
+
+
+def test_goal_patch_returns_conflict_after_execution_started(client):
+    tid = _make_task("locked goal")
+    with kbc.connect() as conn:
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}", json={"goal_mode": True},
+    )
+    assert response.status_code == 409
+    assert "cannot be changed after execution has started" in response.json()["detail"]

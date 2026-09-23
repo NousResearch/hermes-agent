@@ -512,6 +512,9 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Goal launch contract: explicit null goal_max_turns resets to engine default.
+    goal_mode: Optional[bool] = None
+    goal_max_turns: Optional[int] = None
 
 
 class BulkTaskBody(BaseModel):
@@ -656,6 +659,21 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
+
+        # Apply launch-contract edits before any status transition. In particular,
+        # a combined {status: ready, goal_mode: ...} PATCH must commit the goal
+        # settings before the task becomes dispatchable; otherwise another
+        # connection can claim it between two per-operation transactions.
+        goal_fields = payload.model_fields_set
+        if payload.goal_mode is not None or "goal_max_turns" in goal_fields:
+            goal_kwargs = {}
+            if payload.goal_mode is not None:
+                goal_kwargs["goal_mode"] = payload.goal_mode
+            if "goal_max_turns" in goal_fields:
+                goal_kwargs["goal_max_turns"] = payload.goal_max_turns
+            with _map_errors(409, RuntimeError), _map_errors(400, ValueError):
+                _require_ok(kanban_db.edit_task(conn, task_id, board=board, **goal_kwargs))
+
         # For a combined assignee+review patch, request_review must capture the
         # current implementer before the task is routed to the reviewer.
         review_assignee_deferred = payload.status == "review" and payload.assignee is not None

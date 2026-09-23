@@ -90,6 +90,32 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
     assert task.goal_max_turns is None
 
 
+def test_goal_settings_editable_only_before_first_claim(kanban_home):
+    """The first durable run permanently freezes the worker launch contract."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="configure goal", assignee="alice")
+
+        assert kb.edit_task(conn, task_id, goal_mode=True, goal_max_turns=40)
+        configured = kb.get_task(conn, task_id)
+        assert configured is not None
+        assert configured.goal_mode is True
+        assert configured.goal_max_turns == 40
+
+        # Explicit None means "inherit the engine default", not "argument omitted".
+        assert kb.edit_task(conn, task_id, goal_max_turns=None)
+        assert kb.get_task(conn, task_id).goal_max_turns is None
+        assert kb.edit_task(conn, task_id, goal_max_turns=40)
+
+        assert kb.claim_task(conn, task_id, claimer="worker") is not None
+        with pytest.raises(RuntimeError, match="cannot be changed after execution has started"):
+            kb.edit_task(conn, task_id, goal_mode=False, goal_max_turns=None)
+
+        locked = kb.get_task(conn, task_id)
+        assert locked is not None
+        assert locked.goal_mode is True
+        assert locked.goal_max_turns == 40
+
+
 # ---------------------------------------------------------------------------
 # Spawn env
 # ---------------------------------------------------------------------------

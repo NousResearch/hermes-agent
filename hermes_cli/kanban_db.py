@@ -30,6 +30,9 @@ from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
 
+# Distinguish an omitted goal budget from an explicit None (reset to engine default).
+_GOAL_BUDGET_UNSET: Any = object()
+
 
 # --- Shared micro-helpers (row access, JSON, env, git) ---
 
@@ -3133,28 +3136,62 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    goal_mode: Optional[bool] = None, goal_max_turns: Any = _GOAL_BUDGET_UNSET,
 ) -> bool:
-    """Edit task fields, optionally backfilling a completed task's result."""
+    """Edit task fields, optionally backfilling a completed task's result.
+
+    Goal settings form the worker launch contract. They are editable only before
+    the first durable run. The history check and update execute under the same
+    BEGIN IMMEDIATE transaction, so a dispatcher claim cannot slip between them.
+    Passing goal_max_turns=None explicitly clears the per-task budget.
+    """
+    changing_goal = goal_mode is not None or goal_max_turns is not _GOAL_BUDGET_UNSET
+    if goal_max_turns is not _GOAL_BUDGET_UNSET and goal_max_turns is not None:
+        try:
+            parsed_goal_max_turns = int(goal_max_turns)
+        except (TypeError, ValueError):
+            raise ValueError("goal_max_turns must be a positive integer")
+        if parsed_goal_max_turns <= 0:
+            raise ValueError("goal_max_turns must be greater than zero")
+        goal_max_turns = parsed_goal_max_turns
+
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
     ]
+    if goal_mode is not None:
+        changed_fields.append("goal_mode")
+    if goal_max_turns is not _GOAL_BUDGET_UNSET:
+        changed_fields.append("goal_max_turns")
+
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
             return False
+        if changing_goal and conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_id = ? LIMIT 1", (task_id,)
+        ).fetchone():
+            raise RuntimeError("goal configuration cannot be changed after execution has started")
+
         assignments = []
         params = []
         for field, value in (("title", title), ("body", body), ("priority", priority)):
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
+        if goal_mode is not None:
+            assignments.append("goal_mode = ?")
+            params.append(1 if goal_mode else 0)
+        if goal_max_turns is not _GOAL_BUDGET_UNSET:
+            assignments.append("goal_max_turns = ?")
+            params.append(goal_max_turns)
         if result is not None:
             assignments.append("result = ?")
             params.append(result)
             changed_fields.append("result")
         if not assignments:
             return False
+
         conn.execute(
             f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
             (*params, task_id),
@@ -3171,15 +3208,15 @@ def edit_task(
             if metadata is not None:
                 changed_fields.append("metadata")
             run = conn.execute(
-            """
-            SELECT id FROM task_runs
-             WHERE task_id = ?
-               AND outcome = 'completed'
-             ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
-             LIMIT 1
-            """,
-            (task_id,),
-        ).fetchone()
+                """
+                SELECT id FROM task_runs
+                 WHERE task_id = ?
+                   AND outcome = 'completed'
+                 ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+                 LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
             if run is None:
                 run_id = _synthesize_ended_run(
                     conn, task_id, outcome="completed", summary=handoff_summary, metadata=metadata,
@@ -3203,7 +3240,6 @@ def edit_task(
             )
     notify_task_updated(conn, task_id, changed_fields, board=board)
     return True
-
 
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,

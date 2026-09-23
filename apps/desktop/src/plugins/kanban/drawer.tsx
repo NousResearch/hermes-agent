@@ -21,6 +21,8 @@ import {
   isSubmitEnter,
   Loader,
   LogView,
+  Input,
+  Switch,
   Textarea,
   Tip,
   useMutation,
@@ -568,6 +570,7 @@ export function TaskDrawer({
 
   const task = detail?.task
   const running = task?.status === 'running'
+  const goalSettingsLocked = Boolean(detail?.runs.length)
   const defaultAssignee = useDefaultAssignee()
 
   const { data: log } = useQuery({
@@ -786,6 +789,47 @@ export function TaskDrawer({
                     provider: task.provider_override ?? ''
                   }}
                 />
+              </MetaRow>
+              <MetaRow label={k.goalMode}>
+                <div
+                  className="flex items-center gap-2"
+                  title={goalSettingsLocked ? 'Goal settings are locked after the first worker run.' : undefined}
+                >
+                  <Switch
+                    aria-label={k.goalMode}
+                    checked={Boolean(task.goal_mode)}
+                    disabled={goalSettingsLocked}
+                    onCheckedChange={next => void mutate(() => patchTask(task.id, { goal_mode: next }))()}
+                    size="xs"
+                  />
+                  <Input
+                    aria-label="Goal turn budget"
+                    className="h-6 w-16 text-[0.7rem]"
+                    defaultValue={task.goal_max_turns ?? ''}
+                    disabled={goalSettingsLocked}
+                    key={`${task.id}:${task.goal_max_turns ?? 'default'}`}
+                    min="1"
+                    onBlur={event => {
+                      const raw = event.currentTarget.value.trim()
+                      if (!raw) {
+                        if (task.goal_max_turns != null) {
+                          void mutate(() => patchTask(task.id, { goal_max_turns: null }))()
+                        }
+                        return
+                      }
+                      const next = Number(raw)
+                      if (!Number.isInteger(next) || next < 1) {
+                        event.currentTarget.value = task.goal_max_turns == null ? '' : String(task.goal_max_turns)
+                        return
+                      }
+                      if (next !== task.goal_max_turns) {
+                        void mutate(() => patchTask(task.id, { goal_max_turns: next }))()
+                      }
+                    }}
+                    placeholder="default"
+                    type="number"
+                  />
+                </div>
               </MetaRow>
               {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
               {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}

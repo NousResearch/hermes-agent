@@ -59,13 +59,16 @@ _live_foreground: dict[int, tuple["BaseEnvironment", "ProcessHandle"]] = {}
 _live_foreground_lock = threading.Lock()
 
 
-def kill_live_foreground_processes() -> int:
-    """Kill every in-flight foreground command's process tree; returns how many were signalled."""
+def kill_live_foreground_processes(*, now: bool = False) -> int:
+    """Kill every in-flight foreground command's process tree; returns how many were signalled.
+
+    ``now=True`` is for a caller about to ``os._exit``: the graceful kill TERMs, waits and only then
+    KILLs, so a SIGTERM-ignoring command outlives a hard exit that lands inside that window."""
     with _live_foreground_lock:
         live = list(_live_foreground.values())
     for env, proc in live:
         try:
-            env._kill_process(proc)
+            (env._force_kill_process if now else env._kill_process)(proc)
         except Exception:
             logger.debug("exit-time kill of a foreground command failed", exc_info=True)
     return len(live)
@@ -467,6 +470,10 @@ class BaseEnvironment(ABC):
             proc.kill()
         except (ProcessLookupError, PermissionError, OSError):
             pass
+
+    def _force_kill_process(self, proc: ProcessHandle):
+        """Kill without waiting, for a host that hard-exits next. Subclasses kill the whole tree."""
+        self._kill_process(proc)
 
     # --- CWD extraction ---
     def _update_cwd(self, result: dict):

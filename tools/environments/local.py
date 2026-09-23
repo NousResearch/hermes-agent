@@ -963,6 +963,17 @@ class LocalEnvironment(BaseEnvironment):
             with contextlib.suppress(Exception):
                 proc.kill()
 
+    def _force_kill_process(self, proc):
+        """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""
+        if _IS_WINDOWS:  # already a forced tree kill
+            return self._kill_process(proc)
+        with contextlib.suppress(OSError):
+            pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
+            if pgid != os.getpgrp():  # never our own group (see _kill_process_group_posix)
+                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
+        with contextlib.suppress(OSError):
+            proc.kill()
+
     def _extract_cwd_from_output(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —
         normalize to native and require the dir to exist, else ``_run_bash`` would

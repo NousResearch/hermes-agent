@@ -119,8 +119,10 @@ _EXIT_TURN_SETTLE_S = 0.5
 
 def _stop_turns_before_exit(budget_s: float | None = None) -> None:
     """Interrupt every in-flight turn and give it ``budget_s`` to settle, so a running tool call ends
-    with a result the teardown's final persist records, then kill any foreground command still alive:
-    it runs in its own process group and would otherwise outlive the gateway, reparented to init."""
+    with a result the teardown's final persist records. A foreground command runs in its own process
+    group and would outlive the gateway, reparented to init. One still alive halfway through the budget
+    ignored the interrupt's SIGTERM: SIGKILL it then, early enough for its result to land as well (the
+    interrupt's own TERM, 1s, KILL outlasts the SIGTERM path's ~1s grace)."""
     with _sessions_lock:
         running = [(sid, s) for sid, s in _sessions.items() if s.get("running")]
     threads = []
@@ -129,11 +131,17 @@ def _stop_turns_before_exit(budget_s: float | None = None) -> None:
             _interrupt_session_turn(sid, session)
         if (t := session.get("_run_thread")) is not None and t is not threading.current_thread():
             threads.append(t)
-    deadline = time.monotonic() + (_EXIT_TURN_SETTLE_S if budget_s is None else max(0.0, budget_s))
-    for t in threads:
-        t.join(max(0.0, deadline - time.monotonic()))
+    budget = _EXIT_TURN_SETTLE_S if budget_s is None else max(0.0, budget_s)
+    deadline = time.monotonic() + budget
+
+    def _join(until: float) -> None:
+        for t in threads:
+            t.join(max(0.0, until - time.monotonic()))
+
+    _join(deadline - budget / 2)
     from tools.environments.base import kill_live_foreground_processes
-    kill_live_foreground_processes()
+    kill_live_foreground_processes(now=True)
+    _join(deadline)
 
 
 _exit_flush_prev_handlers: dict[int, Any] = {}

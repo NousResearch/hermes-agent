@@ -197,6 +197,9 @@ def test_shutdown_mid_tool_kills_the_command_and_keeps_its_result(monkeypatch):
     monkeypatch.setattr(server, "_release_gateway_wake_owner", lambda: None, raising=False)
     monkeypatch.setattr(server, "_flush_sessions_before_exit", lambda budget_s=None: 0)
     monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: at_teardown.append(list(messages)))
+    # The join returns as soon as the turn ends; 0.5s is too tight for the kill + bookkeeping under -n 40.
+    from tui_gateway import session_reaper
+    monkeypatch.setattr(session_reaper, "_EXIT_TURN_SETTLE_S", 10.0)
     session = {"agent": _Agent(), "session_key": "sess-mid-tool", "running": True,
                "_run_thread": run_thread, "history_lock": threading.RLock()}
     with server._sessions_lock:
@@ -213,6 +216,45 @@ def test_shutdown_mid_tool_kills_the_command_and_keeps_its_result(monkeypatch):
         if sleeper.is_running():
             sleeper.kill()
         set_interrupt(False, thread_id=run_thread.ident)
+        env.cleanup()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups + trap")
+def test_sigterm_grace_hard_exit_kills_a_sigterm_ignoring_command(monkeypatch):
+    """The SIGTERM path os._exit()s after a ~1s grace, while the graceful foreground kill runs after a
+    flush of up to 5s and then waits 1s between TERM and KILL. The grace timer's exit must SIGKILL the
+    tree itself, at once, or a command that ignores SIGTERM survives, reparented to init."""
+    import threading
+
+    import psutil
+
+    from tools.environments.local import LocalEnvironment
+    from tui_gateway import entry
+
+    env = LocalEnvironment(cwd=os.getcwd())
+    run_thread = threading.Thread(
+        target=lambda: env.execute("trap '' TERM; sleep 3522", timeout=600), daemon=True)
+    run_thread.start()
+    deadline = time.monotonic() + 20.0
+    sleeper = None
+    while sleeper is None and time.monotonic() < deadline:
+        sleeper = next((p for p in psutil.Process().children(recursive=True)
+                        if p.name() == "sleep" and "3522" in " ".join(p.cmdline())), None)
+        time.sleep(0.05)
+    assert sleeper is not None, "test setup: foreground sleep never started"
+    exits: list = []
+    monkeypatch.setattr(entry.os, "_exit", exits.append)
+    try:
+        t0 = time.monotonic()
+        entry._hard_exit()
+        elapsed = time.monotonic() - t0
+        _gone, alive = psutil.wait_procs([sleeper], timeout=5.0)
+        assert not alive, "SIGTERM-ignoring foreground command survived the hard exit"
+        assert exits == [0] and elapsed < 0.9, f"hard exit waited {elapsed:.2f}s (a TERM grace) first"
+    finally:
+        if sleeper.is_running():
+            sleeper.kill()
+        run_thread.join(5.0)
         env.cleanup()
 
 

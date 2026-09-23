@@ -399,6 +399,10 @@ def _install_single_query_signal_handlers(cli):
                 # store here or the worker's turn (and its usage deltas) never become durable (#88583 /
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
+            # The worker's command runs in its own process group: SIGKILL it or it outlives os._exit.
+            with suppress(Exception):
+                from tools.environments.base import kill_live_foreground_processes
+                kill_live_foreground_processes(now=True)
             _flush_logging_and_stdio()
             os._exit(0)
         raise KeyboardInterrupt()

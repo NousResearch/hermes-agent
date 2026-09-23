@@ -170,11 +170,14 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         if name == "default" and len(served) > 1:
             multiplex = True
         plats = (runtime or {}).get("platforms")
+        owned: dict = {}
         if isinstance(plats, dict) and plats:
             owned = _owned_profile_platforms(_profile_gateway_writer_identity(home, runtime), plats)
             if owned:
                 profile_platforms[name] = owned
-        entry: Dict[str, Any] = {"profile": name, "ports": _profile_platform_ports(home, runtime)}
+        # Ports from the OWNED entries too: a platform entry a previous process left "connected"
+        # reported a port the live gateway does not bind.
+        entry: Dict[str, Any] = {"profile": name, "ports": _profile_platform_ports(home, {"platforms": owned})}
         if served:
             entry["served_profiles"] = served
         gateways.append(entry)

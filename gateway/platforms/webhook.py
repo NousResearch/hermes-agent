@@ -174,11 +174,26 @@ class WebhookAdapter(BasePlatformAdapter):
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
         self._v1_signature_warned: set[str] = set()  # routes already warned about legacy V1 (once per route)
-        # Keyed by session chat_id; read by EVERY send() (interim status messages AND the final
-        # response) so never pop on send(). TTL-pruned on each POST.
+
+        # Delivery info keyed by session chat_id.
+        #
+        # Read by every send() invocation for the chat_id.  For
+        # rose_callback deliveries, send() stores the latest content in
+        # _pending_callback instead of firing immediately — the actual
+        # callback is fired once from the _process_message_background
+        # override's finally block.  This ensures interim messages
+        # (fallback notifications, context-pressure warnings) don't each
+        # produce a callback — only the terminal message does.
+        #
+        # Cleaned up via TTL on each POST — see _prune_delivery_info().
         self._delivery_info: Dict[str, dict] = {}
         self._delivery_info_created: Dict[str, float] = {}
         self._delivery_info_order: Deque[tuple[float, str]] = deque()
+
+        # Deferred rose_callback content: chat_id -> (content, metadata).
+        # Populated by send(), consumed by _fire_pending_callback().
+        self._pending_callback: Dict[str, tuple] = {}
+
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
         # Idempotency: TTL cache of recently processed delivery IDs.
         self._seen_deliveries: Dict[str, float] = {}
@@ -271,6 +286,20 @@ class WebhookAdapter(BasePlatformAdapter):
             return SendResult(success=True)
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
+
+        # Rose Command Centre callback — deferred to task completion.
+        # Store the latest content so _fire_pending_callback() (called
+        # from _process_message_background override's finally block)
+        # sends exactly one callback per job with the terminal content.
+        if deliver_type == "rose_callback":
+            self._pending_callback[chat_id] = (content, metadata)
+            logger.debug(
+                "[webhook] rose_callback content stored for %s (%d chars, deferred)",
+                chat_id,
+                len(content or ""),
+            )
+            return SendResult(success=True)
+
         if self.gateway_runner and _is_known_platform(deliver_type):
             return await self._deliver_cross_platform(deliver_type, content, delivery)
         logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
@@ -287,6 +316,8 @@ class WebhookAdapter(BasePlatformAdapter):
         while order and order[0][0] < cutoff:
             created_at, key = order.popleft()
             if created.get(key) == created_at:
+                if key in self._pending_callback:
+                    continue
                 self._delivery_info.pop(key, None)
                 created.pop(key, None)
 
@@ -646,11 +677,34 @@ class WebhookAdapter(BasePlatformAdapter):
         """Record delivery info and fire the agent run (shared by the immediate and coalesced paths)."""
         # delivery_id in the session key → concurrent webhooks on one route get independent runs.
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
-        # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
-        # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
-        self._delivery_info[session_chat_id] = {
-            "deliver": route_config.get("deliver", "log"), "profile": profile,
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+
+        # Store delivery info for send().  Read by every send() invocation
+        # for this chat_id (interim status messages and the final response),
+        # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
+        # ``profile`` rides along so the reply leg egresses through THIS
+        # profile's adapter, home channel and secrets.
+        deliver_config = {
+            "deliver": route_config.get("deliver", "log"),
+            "profile": profile,
+            "deliver_extra": self._render_delivery_extra(
+                route_config.get("deliver_extra", {}), payload
+            ),
+            "payload": payload,
+            # ── rose_callback support (Rose Command Centre integration) ──
+            # When deliver == "rose_callback" the agent's response is POSTed
+            # back to Rose's callback endpoint with the same HMAC secret used
+            # for inbound dispatch.
+            "secret": secret,
+            "rose_request_id": request.headers.get("X-Rose-Request-Id", ""),
+            "delivery_id": delivery_id,
+            "started_at": now,
+            "callback_url": (
+                payload.get("payload", {}).get("callback_url", "")
+                if isinstance(payload, dict)
+                else ""
+            ),
+        }
+        self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
@@ -673,6 +727,47 @@ class WebhookAdapter(BasePlatformAdapter):
         first-reason-wins."""
         await self._end_webhook_session(event, event.source.chat_id)
 
+    # ------------------------------------------------------------------
+    # Rose callback: override background processing to fire callback
+    # after the terminal send, not after handle_message() returns.
+    # handle_message() spawns _process_message_background() as a
+    # fire-and-forget task and returns immediately, so a done_callback
+    # on handle_message()'s task would fire before the terminal send.
+    # ------------------------------------------------------------------
+
+    async def _process_message_background(self, event, session_key: str) -> None:
+        chat_id = event.source.chat_id
+        delivery = self._delivery_info.get(chat_id, {})
+        is_rose_callback = delivery.get("deliver") == "rose_callback"
+
+        if not is_rose_callback:
+            return await super()._process_message_background(event, session_key)
+
+        task_error = None
+        try:
+            await super()._process_message_background(event, session_key)
+        except asyncio.CancelledError:
+            task_error = "Agent task was cancelled"
+            raise
+        except Exception as exc:
+            task_error = str(exc) or repr(exc)
+            raise
+        finally:
+            try:
+                await self._fire_pending_callback(chat_id, task_error=task_error)
+            except asyncio.CancelledError:
+                logger.warning(
+                    "[webhook] Callback delivery interrupted by cancellation for %s; "
+                    "pending content retained for TTL cleanup",
+                    chat_id,
+                )
+                raise
+            except Exception:
+                logger.exception(
+                    "[webhook] Failed to fire deferred callback in finally for %s",
+                    chat_id,
+                )
+
     async def _end_webhook_session(self, event: "MessageEvent", session_chat_id: str) -> None:
         """Mark the per-delivery session ended via ``SessionDB.end_session`` (never a hand-written UPDATE),
         resolving session_id from the SAME source the run was keyed on."""
@@ -687,7 +782,6 @@ class WebhookAdapter(BasePlatformAdapter):
             if not session_id:
                 logger.debug("[webhook] No session_id to close for %s (key=%s)", session_chat_id, session_key)
                 return
-            # AsyncSessionDB forwards end_session via to_thread; plain SessionDB is sync.
             result = session_db.end_session(session_id, "webhook_complete")
             if asyncio.iscoroutine(result):
                 await result
@@ -789,6 +883,316 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
         return await self._deliver_cross_platform(deliver_type, content, delivery)
+
+    async def _fire_pending_callback(
+        self, chat_id: str, *, task_error: Optional[str] = None
+    ) -> None:
+        """Fire the deferred rose_callback after the agent task completes.
+
+        Called from the ``_process_message_background`` override's
+        ``finally`` block, so it runs after the terminal send completes
+        (not after ``handle_message()`` returns).
+
+        ``task_error`` is set when the processing coroutine raised or
+        was cancelled.  If no ``send()`` was ever called and there is
+        no error, sends ``status: "failed"`` so Rose doesn't wait.
+        """
+        delivery = self._delivery_info.get(chat_id, {})
+        if not delivery or delivery.get("deliver") != "rose_callback":
+            self._pending_callback.pop(chat_id, None)
+            return
+
+        if task_error:
+            content = task_error
+            metadata = {"agent_status": "failed", "error": task_error}
+        else:
+            pending = self._pending_callback.get(chat_id)
+            if pending:
+                content, metadata = pending
+            else:
+                content = "Agent produced no response"
+                metadata = {
+                    "agent_status": "failed",
+                    "error": "No response from agent",
+                }
+
+        self._pending_callback[chat_id] = (content, metadata)
+
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            result = None
+            try:
+                result = await self._deliver_rose_callback(
+                    content, delivery, metadata
+                )
+            except Exception:
+                logger.exception(
+                    "[webhook] Callback delivery attempt %d/%d failed for %s",
+                    attempt + 1,
+                    max_attempts,
+                    chat_id,
+                )
+            if result and result.success:
+                self._pending_callback.pop(chat_id, None)
+                return
+            if attempt < max_attempts - 1:
+                try:
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "[webhook] Retry backoff cancelled for %s; "
+                        "attempting final delivery before propagating",
+                        chat_id,
+                    )
+                    try:
+                        delivery_task = asyncio.create_task(
+                            self._deliver_rose_callback(
+                                content, delivery, metadata
+                            )
+                        )
+                        self._background_tasks.add(delivery_task)
+
+                        def _on_delivery_done(
+                            t: asyncio.Task, _cid: str = chat_id
+                        ) -> None:
+                            self._background_tasks.discard(t)
+                            if not t.cancelled() and not t.exception():
+                                r = t.result()
+                                if r and r.success:
+                                    self._pending_callback.pop(_cid, None)
+
+                        delivery_task.add_done_callback(_on_delivery_done)
+
+                        result = await asyncio.shield(delivery_task)
+                        if result and result.success:
+                            self._pending_callback.pop(chat_id, None)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.exception(
+                            "[webhook] Final delivery attempt after cancellation failed for %s",
+                            chat_id,
+                        )
+                    raise
+
+        self._pending_callback.pop(chat_id, None)
+        logger.warning(
+            "[webhook] Callback delivery exhausted %d attempts for %s",
+            max_attempts,
+            chat_id,
+        )
+
+    async def _deliver_rose_callback(
+        self,
+        content: str,
+        delivery: dict,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """POST agent response back to Rose's /api/hermes-callback endpoint.
+
+        Used by Rose Command Centre dispatches (``deliver: rose_callback``).
+        Signs the body with HMAC-SHA256 using the same per-route secret that
+        verified the inbound dispatch, and includes the Rose-side request ID
+        so Rose's callback handler can match the result to its hermes_jobs
+        row.
+
+        Body format matches Rose's HermesCallbackPayload type
+        (server/hermesClient.ts):
+            {
+              "job_id": str,
+              "rose_request_id": str,
+              "status": "completed" | "failed",
+              "summary": str,
+              "artifacts": list[{type, path?, value?, url?}],
+              "duration_ms": int,
+              "token_cost_usd": float | null,
+              "error": str | null
+            }
+
+        Headers:
+            X-Hermes-Signature: t=<unix>,sha256=<HMAC of timestamp.body>
+            Content-Type:        application/json
+
+        Status detection — the load-bearing change in this method:
+            Rose's polling loop in subTaskExecutor.executeHermesTask treats
+            ``status == "completed"`` as terminal-success and feeds ``summary``
+            straight into packageAssembler.  Reporting ``completed`` for a
+            failed agent run causes Rose to surface Hermes errors as if they
+            were research output (the "⏳ Retrying in 2.6s..." regression on
+            30 Apr 2026).  We must split success vs failure correctly here.
+
+            Detection order, most-trusted first:
+              1. metadata["agent_status"] == "failed" or metadata["error"] set
+                 → failure (explicit signal from agent runtime, when available)
+              2. content head matches a known Hermes failure marker
+                 → failure (heuristic, bounded to first 1000 chars so a
+                  legitimate research summary that mentions "error" deep
+                  inside isn't misclassified)
+              3. otherwise → success
+        """
+        # Direct field reads — populated at receive time in _handle_webhook.
+        callback_url = delivery.get("callback_url", "") or delivery.get(
+            "deliver_extra", {}
+        ).get("callback_url", "")
+        secret = delivery.get("secret", "")
+        rose_request_id = delivery.get("rose_request_id", "")
+        delivery_id = delivery.get("delivery_id", "")
+        started_at = delivery.get("started_at")
+
+        if not callback_url:
+            logger.error(
+                "[webhook] rose_callback delivery missing callback_url"
+            )
+            return SendResult(
+                success=False, error="Missing callback_url"
+            )
+        if not secret:
+            logger.error("[webhook] rose_callback delivery missing secret")
+            return SendResult(success=False, error="Missing secret")
+        if not rose_request_id:
+            logger.error(
+                "[webhook] rose_callback delivery missing X-Rose-Request-Id"
+            )
+            return SendResult(
+                success=False, error="Missing rose_request_id"
+            )
+
+        # ── Detect agent success vs failure ──
+        metadata = metadata or {}
+        agent_status = str(metadata.get("agent_status") or "").lower()
+        metadata_error = metadata.get("error")
+
+        is_failure = False
+        error_message: Optional[str] = None
+
+        if agent_status == "failed" or metadata_error:
+            is_failure = True
+            error_message = (
+                str(metadata_error)
+                if metadata_error
+                else "Agent reported failure via metadata"
+            )
+        else:
+            # Heuristic content sniff. Bound to first 1000 chars so a
+            # legitimate research summary that happens to mention "error"
+            # later isn't misclassified.
+            content_head = (content or "")[:1000]
+            FAILURE_MARKERS = (
+                "API call failed",
+                "Final error:",
+                "Max retries (3) exhausted",
+                "Max retries exhausted",
+                "⏳ Retrying in",
+                "Retrying in ",  # without emoji prefix, defensive
+                "❌",
+                "☠",
+                "Traceback (most recent call last):",
+                # HTTP error codes from provider SDK formatting
+                "Error code: 4",  # 4xx client errors
+                "Error code: 5",  # 5xx server errors
+                "⚠️ Error code:",  # with emoji prefix
+                # Anthropic/OpenAI-style error type dicts
+                "'type': 'error'",
+            )
+            matched_marker: Optional[str] = None
+            for marker in FAILURE_MARKERS:
+                if marker in content_head:
+                    matched_marker = marker
+                    break
+            if matched_marker:
+                is_failure = True
+                # Pull the most informative line for the error field —
+                # prefer the "Final error:" line if present, else the line
+                # containing the matched marker, else the marker itself.
+                lines = [
+                    ln.strip()
+                    for ln in (content or "").splitlines()
+                    if ln.strip()
+                ]
+                error_message = next(
+                    (ln for ln in lines if "Final error:" in ln),
+                    next(
+                        (ln for ln in lines if matched_marker in ln),
+                        matched_marker,
+                    ),
+                )[:500]
+
+        duration_ms = (
+            int((time.time() - started_at) * 1000) if started_at else None
+        )
+
+        if is_failure:
+            body_obj = {
+                "job_id": delivery_id or rose_request_id,
+                "rose_request_id": rose_request_id,
+                "status": "failed",
+                # Keep a truncated summary for debugging visibility — Rose
+                # logs this when surfacing the failed sub-task to the user.
+                "summary": (content or "")[:2000],
+                "artifacts": [],
+                "duration_ms": duration_ms,
+                "token_cost_usd": None,
+                "error": error_message
+                or "Agent failed without an error message",
+            }
+            logger.warning(
+                "[webhook] rose_callback marking job %s FAILED: %s",
+                rose_request_id,
+                (error_message or "no detail")[:200],
+            )
+        else:
+            body_obj = {
+                "job_id": delivery_id or rose_request_id,
+                "rose_request_id": rose_request_id,
+                "status": "completed",
+                "summary": content,
+                "artifacts": [],
+                "duration_ms": duration_ms,
+                "token_cost_usd": None,
+                "error": None,
+            }
+
+        body_bytes = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
+        timestamp = str(int(time.time()))
+        signature_input = f"{timestamp}.".encode("utf-8") + body_bytes
+        sig_hex = hmac.new(
+            secret.encode(), signature_input, hashlib.sha256
+        ).hexdigest()
+        signature = f"t={timestamp},sha256={sig_hex}"
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Hermes-Signature": signature,
+        }
+
+        try:
+            import aiohttp as _aiohttp  # local import to keep top of file clean
+            timeout = _aiohttp.ClientTimeout(total=30)
+            async with _aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    callback_url, data=body_bytes, headers=headers
+                ) as resp:
+                    response_text = await resp.text()
+                    if resp.status >= 400:
+                        logger.warning(
+                            "[webhook] rose_callback target returned HTTP %d: %s",
+                            resp.status,
+                            response_text[:200],
+                        )
+                        return SendResult(
+                            success=False,
+                            error=f"HTTP {resp.status}: {response_text[:200]}",
+                        )
+                    logger.info(
+                        "[webhook] rose_callback delivered to %s (HTTP %d, status=%s)",
+                        callback_url,
+                        resp.status,
+                        body_obj["status"],
+                    )
+                    return SendResult(success=True)
+        except Exception as e:
+            logger.exception("[webhook] rose_callback delivery failed")
+            return SendResult(success=False, error=str(e))
 
     async def _deliver_github_comment(self, content: str, delivery: dict) -> SendResult:
         """Post agent response as a GitHub PR/issue comment via ``gh`` CLI."""

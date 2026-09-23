@@ -44,7 +44,7 @@ from hermes_cli.web_upload_limit import CHAT_IMAGE_MAX_BYTES
 from hermes_cli.web_server_surface import route_on
 from hermes_cli.web_server_files import (
     SANDBOX_NOT_FOUND, _agent_fs_path, _agent_path_scope, _file_url_path, _fs_path, _hosted_fs_read_guard,
-    _is_unmapped_container_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _is_link, _is_unmapped_container_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
     _session_workspace,
 )
 from hermes_cli.web_models import (
@@ -1013,6 +1013,10 @@ def upload_managed_file(payload: ManagedFileUpload, request: Request):
     with _io_errors("File is not writable", "Could not write file"):
         target.parent.mkdir(parents=True, exist_ok=True)
         owner = target.stat() if os.name == "posix" and target.exists() else None
+        if _is_link(target):
+            # Replace the link itself, as upload-stream's os.replace() does;
+            # a write through it would land in the referent.
+            target.unlink()
         atomic_write_bytes(target, data)
         if owner is not None:  # os.replace swaps in our uid; keep an overwritten file's owner/group
             with contextlib.suppress(OSError):
@@ -1099,17 +1103,22 @@ def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
 
 @router.delete("/api/files")
 def delete_managed_file(payload: ManagedFileDelete, request: Request):
-    policy, target, display_path = _resolve_managed_path(payload.path, request)
+    policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
     _refuse_sensitive_write(target, payload.path, policy.locked_root)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
-    if not target.exists():
+    # exists() follows the link, so a dangling link must still count as present.
+    is_link = _is_link(target)
+    if not (is_link or target.exists()):
         raise HTTPException(status_code=404, detail="Path not found")
 
+    # A link is unlinked AS the link: is_dir() would chase a link to a directory
+    # and rmtree() would take the referent's whole tree with it.
+    is_dir = not is_link and target.is_dir()
     try:
-        if target.is_dir():
+        if is_dir:
             if payload.recursive:
                 shutil.rmtree(target)
             else:
@@ -1117,7 +1126,7 @@ def delete_managed_file(payload: ManagedFileDelete, request: Request):
         else:
             target.unlink()
     except OSError as exc:
-        status_code = 409 if target.is_dir() and not payload.recursive else 500
+        status_code = 409 if is_dir and not payload.recursive else 500
         raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}")
     return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
 

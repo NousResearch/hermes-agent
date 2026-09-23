@@ -419,3 +419,135 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+def _assert_hidden_and_denied(client, p):
+    """Pin that one secret path is invisible and unreadable via the Files API."""
+    assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, str(p)
+    assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, str(p)
+    assert client.get("/api/files/stream", params={"path": str(p)}).status_code == 403, str(p)
+
+
+def test_standard_credential_dir_trees_blocked(forced_files_client):
+    """Regression for #95311: the standard home-directory credential trees
+    (.ssh/, .aws/, .gnupg/, .kube/, .docker/, .azure/ and the XDG stores
+    .config/gcloud, .config/gh, .config/tailscale) must be denied as whole
+    trees. Their leaves have innocuous basenames (id_ed25519, config,
+    config.json, hosts.yml, credentials.db) that a basename-only guard can
+    never catch, so the directory component must fire."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    secrets = [
+        # SSH: private key with its real name plus a custom-named key.
+        root / ".ssh" / "id_ed25519",
+        root / ".ssh" / "my_deploy_key",
+        # AWS: 'config' is a legal basename outside .aws/ — only the dir
+        # component makes this sensitive. SSO cache proves nested descent.
+        root / ".aws" / "config",
+        root / ".aws" / "sso" / "cache" / "session.json",
+        # GnuPG: keyring material two levels deep.
+        root / ".gnupg" / "private-keys-v1.d" / "A1B2C3.key",
+        # Kubernetes cluster-admin kubeconfig.
+        root / ".kube" / "config",
+        # Docker registry auths.
+        root / ".docker" / "config.json",
+        # Azure CLI MSAL token cache.
+        root / ".azure" / "msal_token_cache.json",
+        # Legacy ~/.gcloud layout (credentials.db / access_tokens.db).
+        root / ".gcloud" / "credentials.db",
+        # XDG cloud-CLI stores under the shared (non-sensitive) .config parent.
+        root / ".config" / "gcloud" / "credentials.db",
+        root / ".config" / "gh" / "hosts.yml",
+        root / ".config" / "tailscale" / "tailcaled.state",
+    ]
+    for p in secrets:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("SECRET-MATERIAL\n")
+        _assert_hidden_and_denied(client, p)
+
+    # The sensitive dirs themselves must not appear in listings: the home-root
+    # listing hides every top-level store...
+    root_names = [e["name"] for e in client.get(
+        "/api/files", params={"path": str(root)}).json()["entries"]]
+    for d in (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".gcloud"):
+        assert d not in root_names, d
+    # ...and the shared .config parent stays browsable while its
+    # credential children are filtered out of its listing.
+    config_names = [e["name"] for e in client.get(
+        "/api/files", params={"path": str(root / ".config")}).json()["entries"]]
+    for d in ("gcloud", "gh", "tailscale"):
+        assert d not in config_names, d
+
+    # Over-blocking sanity check: an ordinary file next to the stores must
+    # remain fully usable (listable AND readable).
+    regular = root / "notes.txt"
+    regular.write_text("safe content")
+    assert "notes.txt" in [e["name"] for e in client.get(
+        "/api/files", params={"path": str(root)}).json()["entries"]]
+    assert client.get("/api/files/read", params={"path": str(regular)}).status_code == 200
+
+
+def test_standard_credential_basenames_blocked(forced_files_client):
+    """Regression for #95311: single-file credential stores that live directly
+    in the browsed directory — netrc (both spellings), npmrc, git's
+    credential-store cache, plus the rest of the canonical home-credential
+    list (.pgpass for PostgreSQL, .pypirc for PyPI tokens) — must never be
+    listed/read/downloaded/streamed."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    for name in (".netrc", "_netrc", ".npmrc", ".git-credentials", ".pgpass", ".pypirc"):
+        p = root / name
+        p.write_text("SECRET=abc123")
+        _assert_hidden_and_denied(client, p)
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert [e["name"] for e in listing.json()["entries"]] == []
+
+
+def test_sensitive_guard_unit_pins(forced_files_client):
+    """Unit pins for #95311 guard semantics: case-insensitivity on
+    case-insensitive filesystems, exact-component matching (no prefix
+    over-matching), and non-credential lookalikes staying browsable."""
+    from pathlib import Path
+
+    # Case-insensitive: '.SSH', '.Aws', '.NETRC' must match like their
+    # lowercase spellings (macOS/Windows mounts).
+    assert _rt_files._is_sensitive_path(Path("/home/u/.SSH/id_ed25519"))
+    assert _rt_files._is_sensitive_path(Path("/home/u/.Aws/config"))
+    assert _rt_files._is_sensitive_path(Path("/home/u/.config/GCloud/credentials.db"))
+    assert _rt_files._is_sensitive_filename(".NETRC")
+    assert _rt_files._is_sensitive_filename("_Netrc")
+    assert _rt_files._is_sensitive_filename(".NPMRC")
+
+    # Exact-component match only: near-miss names are NOT credential stores.
+    assert not _rt_files._is_sensitive_path(Path("/home/u/.sshx/config"))
+    assert not _rt_files._is_sensitive_path(Path("/home/u/.config/gcloud-sdk/bin/tool"))
+    assert not _rt_files._is_sensitive_path(Path("/home/u/.aws-backup/notes.txt"))
+    assert not _rt_files._is_sensitive_path(Path("/home/u/.kubex/config"))
+    assert not _rt_files._is_sensitive_path(Path("/home/u/.gnupg-old/trustdb.gpg"))
+    assert not _rt_files._is_sensitive_path(Path("/home/u/.dockerx/config.json"))
+
+    # ...but any depth BELOW a credential home is denied, including a path
+    # that merely contains the credential dir as one component.
+    assert _rt_files._is_sensitive_path(Path("/home/u/.ssh/config"))
+    assert _rt_files._is_sensitive_path(Path("/home/u/.gnupg/private-keys-v1.d/A1B2C3.key"))
+    assert _rt_files._is_sensitive_path(Path("/home/u/.aws/sso/cache/session.json"))
+    assert _rt_files._is_sensitive_path(Path("/home/u/proj/.aws/credentials"))
+
+    # Legacy ~/.gcloud layout (credentials.db / access_tokens) is covered too.
+    assert _rt_files._is_sensitive_path(Path("/home/u/.gcloud/credentials.db"))
+    assert _rt_files._is_sensitive_path(Path("/home/u/.gcloud/access_tokens.db"))
+
+    # A LEAF named exactly like a credential dir is conservatively denied —
+    # pre-existing semantics, identical to how a file named 'pairing' is
+    # treated by the mcp-tokens/pairing entries.
+    assert _rt_files._is_sensitive_path(Path("/home/u/tools/bin/gcloud"))
+
+    # Shared parents and lookalike files stay browsable.
+    assert not _rt_files._is_sensitive_path(Path("/home/u/.config/settings.json"))
+    assert not _rt_files._is_sensitive_filename("hosts.yml")
+    assert not _rt_files._is_sensitive_filename("netrc.txt")
+    assert not _rt_files._is_sensitive_filename("config.json")
+    assert not _rt_files._is_sensitive_path(Path("/home/u/project/notes.txt"))
+
+

@@ -68,21 +68,65 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "google_token.json", "google_oauth_pending.json", "google_oauth.json",
     "webhook_subscriptions.json", "bws_cache.json", "bws_cache.enc.json",
     ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
+    # Standard single-file credential stores outside HERMES_HOME (#95311):
+    # curl/wget/FTP/SMTP machine credentials ('_netrc' is the spelling curl
+    # falls back to on Windows) and npm registry auth tokens (_authToken),
+    # present at both user (~) and project level.
+    # '.pgpass' (PostgreSQL) and '.pypirc' (PyPI upload tokens/passwords) are
+    # the remaining basenames from the same canonical home-credential list
+    # (agent.file_safety.build_write_denied_paths: .netrc/.pgpass/.npmrc/
+    # .pypirc/.git-credentials) — carried over together so the mirror is
+    # complete, not partial.
+    ".netrc",
+    "_netrc",
+    ".npmrc",
+    ".pgpass",
+    ".pypirc",
 })
 
-# Directory names whose whole subtree is credential material (the canonical
-# guards deny these as trees: _ROOT_CREDENTIAL_DIRS and the mcp-tokens/ prefix
-# match). The browser can descend into subdirs, so a basename-only guard would
-# still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
-# trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
-_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+# Directory names whose entire subtree is credential material. The first two
+# mirror the canonical Hermes guards as directory trees:
+#   * gateway.platforms.base._ROOT_CREDENTIAL_DIRS = {"pairing", "mcp-tokens"}
+#   * agent.file_safety.get_read_block_error (mcp-tokens/ prefix match)
+# The rest (#95311) are the standard OS/tool credential homes, where every
+# file is secret material: SSH private keys (any name — ``id_ed25519``,
+# custom), the whole AWS/GnuPG/kube/docker/azure state trees, and the XDG
+# stores gcloud/gh/tailscale. They are matched on ANY path component like
+# mcp-tokens/pairing, so these trees are blocked wherever they appear under
+# the browsable root without needing to resolve them relative to HERMES_HOME
+# or HOME. Exact-component match keeps shared parents browsable: the guard
+# fires on the ``gcloud``/``gh``/``tailscale`` component inside ``~/.config``
+# while the rest of ``.config`` stays listable.
+#
+# Leaf-name blocking is deliberate over-blocking: a *file* named ``gcloud``
+# (e.g. ``tools/bin/gcloud``) is denied even though it holds no secret. This
+# is the pre-existing ``pairing``/``mcp-tokens`` semantics, kept because the
+# alternative (resolve the real home and compare prefixes) is what the guard
+# deliberately avoids — see _is_sensitive_path.
+_SENSITIVE_MANAGED_DIR_NAMES = frozenset({
+    "mcp-tokens",
+    "pairing",
+    ".ssh",       # private keys, agent sockets, known_hosts
+    ".aws",       # credentials, config, SSO/token cache
+    ".gnupg",     # keyrings, private-keys-v1.d, trustdb
+    ".kube",      # cluster admin credentials (config, cache tokens)
+    ".docker",    # registry auth (config.json auths section)
+    ".azure",     # MSAL token cache, service-principal creds
+    ".gcloud",    # legacy ~/.gcloud layout (credentials.db, access_tokens)
+    "gcloud",     # ~/.config/gcloud — SA keys, credentials.db
+    "gh",         # ~/.config/gh — hosts.yml OAuth tokens
+    "tailscale",  # ~/.config/tailscale — tailcaled.state node keys
+})
 
 
 def _is_sensitive_filename(name: str) -> bool:
     """Basename denylist: ``.env`` / ``.env.<suffix>`` / ``.envrc`` plus the
-    credential-store basenames. Case-insensitive so ``.ENV`` / ``Auth.JSON``
-    on case-insensitive mounts can't slip past. Basename-only — call sites use
-    :func:`_is_sensitive_path`, which adds the credential-directory check."""
+    credential-store basenames (``mcp-tokens``/``pairing`` plus the standard
+    OS/tool credential homes in ``_SENSITIVE_MANAGED_DIR_NAMES`` are matched
+    as path components, not basenames). Case-insensitive so ``.ENV`` /
+    ``Auth.JSON`` on case-insensitive mounts can't slip past. Basename-only —
+    call sites use :func:`_is_sensitive_path`, which adds the
+    credential-directory check."""
     lowered = name.lower()
     if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
         return True
@@ -91,8 +135,17 @@ def _is_sensitive_filename(name: str) -> bool:
 
 def _is_sensitive_path(path: Path) -> bool:
     """True when the basename is sensitive OR any path component (case-
-    insensitive) is a credential directory. Read-side guard (list/read/
+    insensitive) is a credential directory (the Hermes-internal trees plus
+    the standard OS/tool credential homes — see
+    ``_SENSITIVE_MANAGED_DIR_NAMES``). Read-side guard (list/read/
     download); the write endpoints are a separate threat class.
+
+    Matching is per-component and exact (never prefix), so ``.ssh-backup``
+    and ``.config/gcloud-sdk`` stay browsable while ``.ssh/config`` and any
+    depth below a credential home are denied. Components are compared
+    lower-cased, so ``.SSH`` cannot slip past on case-insensitive mounts.
+    No HERMES_HOME/HOME resolution is needed, so the guard also fires for
+    credential trees that merely *sit under* the browsable root.
 
     Read-side only: this guards list/read/download (the #57505 exfil surface). The write endpoints
     (upload/mkdir/delete) are a separate threat class handled by the write-path checks; extending this guard

@@ -96,7 +96,7 @@ def _origin_from_env(
         logger.debug(
             "Cron origin captured thread_id=%s for %s:%s",
             thread_id, origin_platform, origin_chat_id)
-    return {
+    origin = {
         "platform": origin_platform, "chat_id": origin_chat_id,
         "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None, "thread_id": thread_id,
         # Lets a delivery mirror resolve the participant's session in per-user-isolated groups.
@@ -105,6 +105,17 @@ def _origin_from_env(
         # so a continuable cron seed built without it would never resolve a scoped reply.
         "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,
     }
+    # Both are written only when known, so a job created before they were captured keeps the
+    # exact shape it has today and ``cron.delivery_fallback`` reads the absence as "unknown".
+    # parent_chat_id: the channel a thread origin hangs under (Discord/Matrix, where chat_id IS
+    # the thread) — the first redirect hop when that thread is deleted.
+    if parent_chat_id := get_session_env("HERMES_SESSION_PARENT_CHAT_ID") or None:
+        origin["parent_chat_id"] = parent_chat_id
+    # chat_type: the home-channel hop escalates only from a POSITIVELY shared chat, so a 1:1 DM
+    # that dies (user blocked the bot) is never republished into a shared group.
+    if chat_type := get_session_env("HERMES_SESSION_CHAT_TYPE") or None:
+        origin["chat_type"] = chat_type
+    return origin
 
 
 def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:

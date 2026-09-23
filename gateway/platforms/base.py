@@ -1640,7 +1640,12 @@ SEND_ERROR_KINDS = frozenset(
 _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = ("chat not found",)
 _SUBCHAT_NOT_FOUND_SUBSTRINGS = (
     "message to edit not found", "message to reply not found", "thread not found", "topic_deleted",
-    "message_id_invalid")
+    "topic_closed", "message_id_invalid",
+    # Discord 10003 Unknown Channel and Slack channel_not_found / is_archived name a stale
+    # container that cron.delivery_fallback redirects out of (parent -> home). Sub-chat, so
+    # recognizing them here does not also start marking targets permanently dead: what is a
+    # whole-chat death stays gateway.dead_targets' call via is_chat_level_not_found.
+    "unknown channel", "error code: 10003", "channel_not_found", "is_archived")
 
 
 def _error_blob(exc: Optional[BaseException] = None, error_text: str = "") -> str:
@@ -1663,10 +1668,22 @@ _SEND_ERROR_CLASSIFIERS: Tuple[Tuple[str, Callable[[str], bool]], ...] = (
         _any_in(b, "can't parse entities", "cant parse entities", "can't find end", "unsupported start tag")
         or ("entity" in b and "parse" in b)
         or ("bad request" in b and "entit" in b))),
+    # Discord 50001/50013 and Slack not_in_channel/missing_scope/restricted_action are the
+    # same fact in another vocabulary: the bot cannot post there.
     ("forbidden", lambda b: _any_in(
         b, "forbidden", "bot was blocked", "blocked by the user", "user is deactivated",
-        "not enough rights", "have no rights", "not a member")),
-    ("not_found", lambda b: _any_in(b, *_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS, *_SUBCHAT_NOT_FOUND_SUBSTRINGS)),
+        "not enough rights", "have no rights", "not a member", "missing access",
+        "missing permissions", "error code: 50001", "error code: 50013", "not_in_channel",
+        "missing_scope", "restricted_action")),
+    # The compound shapes stay inline rather than in the tuples above: they are scoped to a
+    # container noun so an unrelated "not found" (a missing media file, an unknown user) is not
+    # misread as a stale target, and is_chat_level_not_found — which reads only the tuples —
+    # correctly leaves the parent chat alive.
+    ("not_found", lambda b: (
+        _any_in(b, *_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS, *_SUBCHAT_NOT_FOUND_SUBSTRINGS)
+        or ("not found" in b and _any_in(b, "channel", "thread", "conversation", "room"))
+        or ("archiv" in b and _any_in(b, "thread", "channel"))
+        or ("thread" in b and "locked" in b))),
     ("rate_limited", lambda b: _any_in(b, "flood", "too many requests", "retry after", "rate limit")),
     ("transient", lambda b: _any_in(b, *_RETRYABLE_ERROR_PATTERNS, "connecttimeout")))
 

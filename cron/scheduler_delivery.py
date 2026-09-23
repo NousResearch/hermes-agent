@@ -1742,6 +1742,7 @@ def _standalone_send(
 
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
+    fallback_sent_keys: set,
 ) -> None:
     """Standalone fallback for a target the live lane did not deliver."""
     job = t.job
@@ -1757,6 +1758,16 @@ def _deliver_standalone(
         err = f"delivery error: {result['error']} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], err)
     if err is not None:
+        # Last lane for this target: a definitively dead thread/channel redirects to the parent
+        # channel and then the home channel instead of the run ending with nothing delivered.
+        # ``err`` wraps the underlying reason verbatim, which is what the classifier matches on.
+        handled, fb_err = _fallback.attempt_delivery_fallback(
+            t, content, media_files, err, fallback_sent_keys)
+        if handled:
+            if fb_err:
+                target_errors.append(fb_err)
+                delivery_errors.extend(target_errors)
+            return
         target_errors.append(err)
         delivery_errors.extend(target_errors)
         return
@@ -2008,6 +2019,9 @@ def _deliver_result(
         return msg
 
     delivery_errors = []
+    # Channels a stale-target fallback already delivered this run's content to, shared across
+    # targets so several dead targets redirecting to the same channel do not duplicate it there.
+    fallback_sent_keys: set = set()
     suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
     for target in targets:
         # A failure notice for a platform that hides warning notifications is a suppressed
@@ -2044,7 +2058,8 @@ def _deliver_result(
         )
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, cleaned_delivery_content, media_files, target_errors, delivery_errors,
+                fallback_sent_keys)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.
@@ -2058,6 +2073,7 @@ def _deliver_result(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
+from cron import delivery_fallback as _fallback  # noqa: E402
 from cron import scheduler as _sched  # noqa: E402
 from cron import scheduler_preflight as _preflight  # noqa: E402
 from cron import scheduler_script as _script  # noqa: E402

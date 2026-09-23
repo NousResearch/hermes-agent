@@ -545,11 +545,14 @@ def test_profile_rollover_keeps_shared_group_access_across_uids(tmp_path):
     path.touch()
     os.chown(path, 2000, 4)
     os.chmod(path, 0o660)
+    os.chown(tmp_path, -1, 4)
+    os.chmod(tmp_path, 0o770)
     directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         rotator = """
 import logging, os, sys
 from unittest.mock import patch
+import hermes_cli.config
 from hermes_logging import _ManagedRotatingFileHandler
 directory_fd = int(sys.argv[1])
 os.setgroups([4])

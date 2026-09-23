@@ -773,13 +773,13 @@ class TestListProfiles:
         profiles._SKILL_COUNT_NEXT_CHECK.clear()
 
         walks: list[str] = []
-        real_walk = profiles._walk_skill_count
+        real_count = profiles._count_skills
 
-        def spy(skills_dir):
+        def spy(profile_dir):
             walks.append(threading.current_thread().name)
-            return real_walk(skills_dir)
+            return real_count(profile_dir)
 
-        monkeypatch.setattr(profiles, "_walk_skill_count", spy)
+        monkeypatch.setattr(profiles, "_count_skills", spy)
 
         def _rpc():
             return srv._methods["profiles.list"](1, {"include_sessions": False})["result"]["profiles"]
@@ -858,6 +858,136 @@ class TestListProfiles:
         monkeypatch.setattr(os, "scandir", vanishing_scandir)
         assert profiles._count_skills(profile_env / ".hermes") == 3
         assert [p.name for p in list_profiles()] == ["default"]
+
+    def test_skill_count_includes_external_dirs(self, profile_env, monkeypatch):
+        """``_count_skills`` must count skills from ``skills.external_dirs`` in the
+        profile's own ``config.yaml``, not just the profile-local ``skills/`` dir.
+        Regression for the dashboard showing a misleading low count when
+        ``external_dirs`` is configured (see #68403, #75798)."""
+        import yaml
+
+        hermes_home = profile_env / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+
+        # Profile-local skills: 2 skills
+        local = hermes_home / "skills" / "cat"
+        for i in range(2):
+            (local / f"s{i}").mkdir(parents=True)
+            (local / f"s{i}" / "SKILL.md").write_text(
+                "---\nname: local-s{i}\n---\n# s\n".replace("{i}", str(i)),
+                encoding="utf-8")
+
+        # External skills dir: 3 skills
+        ext = profile_env / "shared-skills"
+        ext_cat = ext / "cat"
+        for i in range(3):
+            (ext_cat / f"s{i}").mkdir(parents=True)
+            (ext_cat / f"s{i}" / "SKILL.md").write_text(
+                "---\nname: ext-s{i}\n---\n# s\n".replace("{i}", str(i)),
+                encoding="utf-8")
+
+        # Write config.yaml with external_dirs pointing to the shared dir
+        config = {"skills": {"external_dirs": [str(ext)]}}
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(config), encoding="utf-8")
+
+        profiles._SKILL_COUNT_CACHE.clear()
+        count = profiles._count_skills(hermes_home)
+        assert count == 5  # 2 local + 3 external
+
+    def test_skill_count_dedup_across_dirs(self, profile_env, monkeypatch):
+        """A skill that appears in both the profile-local dir and an external dir
+        must be counted once (dedup by frontmatter name), matching runtime
+        discovery in ``scan_skill_commands``."""
+        import yaml
+
+        hermes_home = profile_env / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+
+        # Same skill name in both local and external
+        for d in [hermes_home / "skills" / "cat" / "dup",
+                  profile_env / "ext" / "cat" / "dup"]:
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                "---\nname: dup-skill\n---\n# s\n", encoding="utf-8")
+
+        config = {"skills": {"external_dirs": [str(profile_env / "ext")]}}
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(config), encoding="utf-8")
+
+        profiles._SKILL_COUNT_CACHE.clear()
+        count = profiles._count_skills(hermes_home)
+        assert count == 1  # deduped, not 2
+
+    def test_skill_count_external_dirs_from_profile_config(self, profile_env, monkeypatch):
+        """Each profile's ``external_dirs`` must be read from ITS OWN config.yaml,
+        not the process-active config. Two profiles with different external_dirs
+        must show different counts (regression for #75798 review by @teknium1)."""
+        import yaml
+
+        root = profile_env / ".hermes" / "profiles"
+        # Two named profiles with different external_dirs
+        for pname, n_ext in [("alpha", 2), ("beta", 4)]:
+            pdir = root / pname
+            pdir.mkdir(parents=True)
+            # profile-local: 1 skill
+            (pdir / "skills" / "cat" / "s0").mkdir(parents=True)
+            (pdir / "skills" / "cat" / "s0" / "SKILL.md").write_text(
+                "---\nname: local\n---\n# s\n", encoding="utf-8")
+            # external dir with n_ext skills
+            ext = profile_env / f"ext-{pname}"
+            for i in range(n_ext):
+                (ext / "cat" / f"s{i}").mkdir(parents=True)
+                (ext / "cat" / f"s{i}" / "SKILL.md").write_text(
+                    "---\nname: ext-{i}\n---\n# s\n".replace("{i}", str(i)),
+                    encoding="utf-8")
+            config = {"skills": {"external_dirs": [str(ext)]}}
+            (pdir / "config.yaml").write_text(
+                yaml.safe_dump(config), encoding="utf-8")
+
+        profiles._SKILL_COUNT_CACHE.clear()
+        alpha_count = profiles._count_skills(root / "alpha")
+        beta_count = profiles._count_skills(root / "beta")
+        assert alpha_count == 3   # 1 local + 2 external
+        assert beta_count == 5    # 1 local + 4 external
+        assert alpha_count != beta_count  # per-profile, not process-scoped
+
+    def test_skill_count_relative_external_dirs(self, profile_env, monkeypatch):
+        """Relative ``external_dirs`` entries must resolve against the profile's
+        own Hermes home (``profile_dir.parent.parent``), not the process-active
+        ``get_hermes_home()``. Without this, counting a named profile from
+        ``list_profiles`` / the dashboard (no profile scope bound) resolves
+        relative entries against the wrong home — the same class of misleading
+        count this PR fixes (AI review finding #3)."""
+        import yaml
+
+        root = profile_env / ".hermes" / "profiles"
+        pdir = root / "alpha"
+        pdir.mkdir(parents=True)
+
+        # Profile-local: 1 skill
+        (pdir / "skills" / "cat" / "s0").mkdir(parents=True)
+        (pdir / "skills" / "cat" / "s0" / "SKILL.md").write_text(
+            "---\nname: local\n---\n# s\n", encoding="utf-8")
+
+        # External skills dir placed under the profile's hermes_home
+        # (profile_dir.parent.parent = .hermes/)
+        hermes_home = pdir.parent.parent  # profile_env / ".hermes"
+        ext = hermes_home / "shared-skills"
+        (ext / "cat" / "s0").mkdir(parents=True)
+        (ext / "cat" / "s0" / "SKILL.md").write_text(
+            "---\nname: ext-0\n---\n# s\n", encoding="utf-8")
+
+        # Use a RELATIVE path in external_dirs — must resolve against
+        # the profile's hermes_home, not the process-active one.
+        config = {"skills": {"external_dirs": ["shared-skills"]}}
+        (pdir / "config.yaml").write_text(
+            yaml.safe_dump(config), encoding="utf-8")
+
+        profiles._SKILL_COUNT_CACHE.clear()
+        profiles._PROFILE_CONFIG_CACHE.clear()
+        count = profiles._count_skills(pdir)
+        assert count == 2  # 1 local + 1 external (relative path resolved correctly)
 
 
 # ===================================================================

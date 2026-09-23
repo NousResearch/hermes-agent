@@ -702,13 +702,15 @@ def _served_by_running_multiplexer(profile_name: str) -> bool:
 
 
 # In-process skill-count cache. Counting walks every skill's sub-tree (~4 fs calls per
-# skill); ``list_profiles`` counts EVERY profile, and its two remaining Desktop callers
-# (``GET /api/profiles``, ``profiles.list``) are POLLED every few seconds. Keyed by skills
-# dir; a walk is repeated only when the tree signature changes (skill add/remove) or after
-# the TTL (deep edits). Polled callers never walk: ``lazy_skill_count`` serves the last known
-# value and refreshes stale entries on a background thread, at most once per recheck window
-# per profile — the TTL is decoupled from the poll rate (#114041).
-_SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
+# skill) and, per profile, re-reads that profile's ``config.yaml`` to resolve
+# ``external_dirs``; ``list_profiles`` counts EVERY profile, and its two remaining Desktop
+# callers (``GET /api/profiles``, ``profiles.list``) are POLLED every few seconds. Keyed by
+# the profile's skills-dir path; a walk is repeated only when the tree signature changes
+# (skill add/remove) or after the TTL (deep edits). Polled callers never walk:
+# ``lazy_skill_count`` serves the last known value and refreshes stale entries on a
+# background thread, at most once per recheck window per profile — the TTL is decoupled
+# from the poll rate (#114041).
+_SKILL_COUNT_CACHE: dict[str, tuple[tuple[float, ...], float, int]] = {}
 _SKILL_COUNT_TTL_SECONDS = 600.0
 _SKILL_COUNT_RECHECK_SECONDS = 60.0
 _SKILL_COUNT_NEXT_CHECK: dict[str, float] = {}
@@ -735,30 +737,130 @@ def _skills_dir_signature(skills_dir: Path) -> float:
     return sig
 
 
-def _walk_skill_count(skills_dir: Path) -> int:
-    """One ``os.walk`` over the skills tree (prunes ``.git``/``node_modules``/support dirs
-    instead of statting them). Best-effort: a subtree that vanishes mid-walk (a concurrent
-    skill install/update) is skipped, never raised — ``os.walk`` (``onerror=None``) swallows
-    scandir errors itself, so one profile's churn cannot abort the whole enumeration."""
-    from agent.skill_utils import iter_skill_index_files
-    return sum(1 for _ in iter_skill_index_files(skills_dir, "SKILL.md"))
+# Per-profile config cache for _collect_skills_dirs — avoids re-parsing the same
+# config.yaml on every polled profile-list refresh. Keyed by file signature
+# (path + stat identity), same pattern as _EXTERNAL_DIRS_CACHE in skill_utils.
+_PROFILE_CONFIG_CACHE: dict[tuple, dict] = {}
+
+
+def _load_profile_config(profile_dir: Path) -> Optional[dict]:
+    """Cached read of a profile's ``config.yaml`` for external_dirs resolution.
+    Uses file_signature for invalidation — a config edit is detected on the
+    next call without a TTL."""
+    from utils import file_signature
+    cfg_path = profile_dir / "config.yaml"
+    try:
+        sig = (str(cfg_path), *file_signature(cfg_path.stat()))
+    except OSError:
+        return None
+    cached = _PROFILE_CONFIG_CACHE.get(sig)
+    if cached is not None:
+        return cached
+    cfg = _load_yaml_dict(cfg_path)
+    _PROFILE_CONFIG_CACHE[sig] = cfg or {}
+    # Evict stale entries to bound memory (keep last 32 profiles' configs).
+    if len(_PROFILE_CONFIG_CACHE) > 32:
+        # Evict oldest entries — dict preserves insertion order.
+        stale_keys = list(_PROFILE_CONFIG_CACHE.keys())[: len(_PROFILE_CONFIG_CACHE) - 32]
+        for k in stale_keys:
+            _PROFILE_CONFIG_CACHE.pop(k, None)
+    return cfg
+
+
+def _collect_skills_dirs(profile_dir: Path) -> List[Path]:
+    """Return all skill directories visible to *profile_dir* in runtime
+    discovery order: profile-local ``skills/`` first, then each entry in
+    ``skills.external_dirs`` from the profile's OWN ``config.yaml``.
+
+    Unlike ``get_external_skills_dirs()`` (which reads the process-active
+    config), this resolves ``external_dirs`` from the target profile's own
+    config so that a profile list applies the correct dirs per card.
+
+    Relative entries are anchored at the profile's Hermes home
+    (``profile_dir.parent.parent`` = ``<hermes-home>/profiles/<name>`` →
+    ``<hermes-home>``), matching how ``get_external_skills_dirs`` resolves
+    them at runtime when the profile is active.
+    """
+    dirs: List[Path] = []
+
+    profile_skills = profile_dir / "skills"
+    if profile_skills.is_dir():
+        dirs.append(profile_skills)
+
+    # Read external_dirs from THIS profile's config.yaml — not the
+    # process-active one (see #75798 review by @teknium1).
+    cfg = _load_profile_config(profile_dir)
+    if cfg:
+        skills_cfg = cfg.get("skills", {})
+        if isinstance(skills_cfg, dict):
+            from agent.skill_utils import _config_str_list, _expand_path
+
+            # Resolve relative entries against the profile's own Hermes home,
+            # not the process-active get_hermes_home() — otherwise counting
+            # a named profile from list_profiles/dashboard (no profile scope
+            # bound) resolves relative entries against the wrong home.
+            profile_home = profile_dir.parent.parent  # <hermes-home>/profiles/<name> → <hermes-home>
+            local_skills = profile_skills.resolve()
+            for entry in _config_str_list(skills_cfg.get("external_dirs")):
+                p = _expand_path(entry)
+                if not p.is_absolute():
+                    p = profile_home / p
+                p = p.resolve()
+                if p == local_skills or p in dirs:
+                    continue
+                if p.is_dir():
+                    dirs.append(p)
+
+    return dirs
+
+
+def _skills_dirs_signature(dirs: List[Path]) -> tuple[float, ...]:
+    """Combined change-signature for multiple skill directories."""
+    return tuple(_skills_dir_signature(d) for d in dirs)
 
 
 def _count_skills(profile_dir: Path) -> int:
-    """Count installed skills in a profile (cached by skills-dir signature + TTL). Walks
-    synchronously when stale — detail surfaces (``hermes profile info``, ``profiles.describe``)
-    want the fresh number; polled lists go through :func:`_cached_skill_count`."""
-    skills_dir = profile_dir / "skills"
-    if not skills_dir.is_dir():
+    """Count total skills available to *profile_dir* (profile-local +
+    external_dirs from the profile's own config), cached by combined dir
+    signature + TTL. Walks synchronously when stale — detail surfaces
+    (``hermes profile info``, ``profiles.describe``) want the fresh number;
+    polled lists go through :func:`_cached_skill_count`.
+
+    Deduplicates by skill name (from YAML frontmatter) across directories so
+    a skill that appears in both the profile's own dir and an external dir is
+    counted once — matching how ``scan_skill_commands`` loads skills.
+    """
+    dirs = _collect_skills_dirs(profile_dir)
+    if not dirs:
         return 0
-    key = str(skills_dir)
-    signature = _skills_dir_signature(skills_dir)
+
+    # Cache key is the profile's skills dir path — same key
+    # _cached_skill_count uses for O(1) lookup. The combined signature
+    # of all dirs (stored as the value's first element) handles invalidation
+    # when any dir in the set changes.
+    key = str(profile_dir / "skills")
+    signatures = _skills_dirs_signature(dirs)
     now = time.time()
     cached = _SKILL_COUNT_CACHE.get(key)
-    if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+    if cached is not None and cached[0] == signatures and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
         return cached[2]
-    count = _walk_skill_count(skills_dir)
-    _SKILL_COUNT_CACHE[key] = (signature, now, count)
+
+    from agent.skill_utils import iter_skill_index_files, parse_frontmatter
+
+    count = 0
+    seen_names: set = set()
+    for sdir in dirs:
+        for md in iter_skill_index_files(sdir, "SKILL.md"):
+            try:
+                frontmatter, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
+                name = frontmatter.get("name", md.parent.name)
+            except Exception:
+                name = md.parent.name
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            count += 1
+    _SKILL_COUNT_CACHE[key] = (signatures, now, count)
     return count
 
 

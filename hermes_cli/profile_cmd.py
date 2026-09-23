@@ -99,7 +99,7 @@ def _profile_status(args):
         if p.model:
             print(f"Model:          {p.model}" + (f" ({p.provider})" if p.provider else ""))
         print(f"Gateway:        {'running' if p.gateway_running else 'stopped'}")
-        print(f"Skills:         {p.skill_count} installed")
+        print(f"Skills:         {p.skill_count} available")
         if p.alias_path:
             print(f"Alias:          {p.alias_name or p.name} → hermes -p {p.name}")
     print()

@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from nova.policy.decide import POLICY_SCHEMA_VERSION
 from nova.policy.model import PolicySpec
@@ -48,12 +48,23 @@ class CompiledPolicy:
         return dict(self.document)
 
 
-def compile_policy(spec: AgentSpec, policy: PolicySpec) -> CompiledPolicy:
+def compile_policy(
+    spec: AgentSpec,
+    policy: PolicySpec,
+    *,
+    toolset_tools: Optional[Mapping[str, Sequence[str]]] = None,
+) -> CompiledPolicy:
     """Compile ``spec`` against ``policy``.
 
     An agent that declares neither permissions nor an allow-list runs without an
     allow-list, so Phase 1 bundles keep working unchanged: adding governance must not
     silently restrict agents that predate it.
+
+    ``toolset_tools`` maps each toolset the agent declares to the tools it contains, as the
+    runtime resolves them (:meth:`AgentRuntime.compile_policy` supplies it). A declared
+    toolset is a grant of its tools: without this, ``toolsets: [web, file]`` under
+    ``unlisted_tool: deny`` let the runtime pin the worker to those tools while the policy
+    hook refused every one of them.
     """
     warnings: list[str] = []
 
@@ -62,6 +73,23 @@ def compile_policy(spec: AgentSpec, policy: PolicySpec) -> CompiledPolicy:
 
     # Tools this agent is granted, from its permissions and its explicit allow list.
     granted = policy.tools_for_permissions(spec.permissions) | set(spec.tools.allow)
+
+    if spec.tools.toolsets:
+        if toolset_tools is None:
+            if policy.unlisted_tool == "deny":
+                warnings.append(
+                    f"toolset(s) {', '.join(spec.tools.toolsets)} could not be resolved to "
+                    "tools here, so under unlisted_tool: deny their tools are not granted"
+                )
+        else:
+            unknown_toolsets = [name for name in spec.tools.toolsets if name not in toolset_tools]
+            if unknown_toolsets:
+                warnings.append(
+                    f"toolset(s) {', '.join(sorted(unknown_toolsets))} are not defined by the "
+                    "runtime, so they grant nothing"
+                )
+            for name in spec.tools.toolsets:
+                granted.update(toolset_tools.get(name, ()))
 
     # Declaring knowledge sources IS the authorization to search them. Requiring a second,
     # separate tool permission would mean a tenant grants an agent a corpus, NOVA installs

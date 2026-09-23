@@ -585,6 +585,26 @@ class HermesRuntime(AgentRuntime):
 
         return _observe.write_credentials(self.paths.profile_dir(agent_id), values)
 
+    def toolset_tools(self, names: Sequence[str]) -> Optional[dict[str, tuple[str, ...]]]:
+        """Each named toolset's tools, from the runtime's own resolver (includes expanded).
+
+        Static membership only (``include_registry=False``): tools a plugin registers into a
+        toolset at import time vary by which plugins loaded, and a grant that moved with
+        them would move the agent's digest with them.
+        """
+        if not names:
+            return {}
+        try:
+            import toolsets as _toolsets
+        except Exception:  # pragma: no cover — runtime not importable
+            return None
+        known = set(_toolsets.get_toolset_names())
+        return {
+            name: tuple(_toolsets.resolve_toolset(name, include_registry=False))
+            for name in names
+            if name in known
+        }
+
     def toolsets(self) -> tuple[dict, ...]:
         """The runtime's own toolset registry, as ``{id, description, tools}``.
 
@@ -632,6 +652,59 @@ class HermesRuntime(AgentRuntime):
         return _usage.read_usage(self.paths.profile_dir(agent_id), agent_id)
 
     # -- identity -------------------------------------------------------------
+
+    def apply_runtime_defaults(
+        self,
+        deployment: DeploymentSpec,
+        *,
+        audit: AuditLog,
+        correlation_id: str,
+        dry_run: bool = False,
+    ) -> Optional[MaterializeResult]:
+        """Write the tenant provider into the home-root ``config.yaml`` (the default profile).
+
+        A merge of the keys NOVA owns, like the channel section: the root file is operator
+        territory, so every other key is left as it is, and nothing is written when the
+        model section already says what the bundle says.
+        """
+        keys = _provider.build_root_model_config(deployment.provider)
+        if not keys:
+            return None
+        target = self.paths.home / "config.yaml"
+        existing: dict[str, Any] = {}
+        if target.is_file():
+            try:
+                loaded = yaml.safe_load(target.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError) as exc:
+                raise RuntimeAdapterError(
+                    f"{target} could not be read as YAML, so NOVA will not overwrite it: {exc}"
+                ) from exc
+            if loaded is not None and not isinstance(loaded, Mapping):
+                raise RuntimeAdapterError(f"{target} is not a YAML mapping; refusing to overwrite it")
+            existing = dict(loaded or {})
+        changed = any(existing.get(key) != value for key, value in keys.items())
+        tenant = self.tenant_id or "nova"
+        result = MaterializeResult(
+            agent_id=tenant,
+            created=not target.is_file(),
+            changed=changed and target.is_file(),
+            digest="",
+            paths_written=(target,) if changed else (),
+            location=target,
+        )
+        if dry_run or not changed:
+            return result
+        with audit.model_visible_change(
+            "runtime.defaults_applied",
+            correlation_id=correlation_id,
+            subject=tenant,
+            detail={"runtime": self.name, "keys": sorted(keys), "model": keys.get("model", {})},
+        ) as outcome:
+            _materialize.atomic_write(
+                target, yaml.safe_dump({**existing, **keys}, sort_keys=False, allow_unicode=True)
+            )
+            outcome.update({"path": str(target)})
+        return result
 
     def apply_identity(
         self,

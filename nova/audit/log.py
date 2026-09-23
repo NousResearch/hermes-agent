@@ -39,6 +39,7 @@ MODEL_VISIBLE_KINDS: frozenset[str] = frozenset(
         "agent.materialized",
         "agent.removed",
         "identity.applied",
+        "runtime.defaults_applied",
         # Indexing a corpus changes what an agent can retrieve and quote, and granting one
         # changes which corpora it can reach at all. Both are squarely model-visible: the
         # question "why did the agent say that?" is unanswerable without them.

@@ -21,7 +21,7 @@ from typing import Any, Optional, Sequence
 
 from nova.audit import AuditLog
 from nova.errors import RuntimeAdapterError
-from nova.policy import CompiledPolicy, agent_digest
+from nova.policy import CompiledPolicy, agent_digest, compile_policy
 from nova.knowledge.sources import KnowledgeCatalog
 from nova.spec import AgentSpec, IdentitySpec
 from nova.spec.deployment import DeploymentSpec
@@ -791,6 +791,36 @@ class AgentRuntime(ABC):
         Must refuse to remove an agent NOVA did not create, and must never delete
         customer data such as credentials or conversation history.
         """
+
+    def toolset_tools(self, names: Sequence[str]) -> Optional[dict[str, tuple[str, ...]]]:
+        """The tools in each named toolset, as this runtime resolves them. None: cannot say.
+
+        Unknown names are left out of the mapping, so the compiler can report them.
+        """
+        return None
+
+    def compile_policy(self, spec: AgentSpec, policy: Any) -> CompiledPolicy:
+        """:func:`nova.policy.compile_policy` with this runtime's toolset membership.
+
+        One definition for every caller that has a runtime in hand — the materializer, the
+        drift check and the Control API's explanation of a decision — so the policy that is
+        enforced and the policy that is explained cannot differ in which toolsets they grant.
+        """
+        return compile_policy(spec, policy, toolset_tools=self.toolset_tools(spec.tools.toolsets))
+
+    def apply_runtime_defaults(
+        self,
+        deployment: DeploymentSpec,
+        *,
+        audit: AuditLog,
+        correlation_id: str,
+        dry_run: bool = False,
+    ) -> Optional[MaterializeResult]:
+        """Give the runtime's own default context the tenant's provider. None: nothing to do.
+
+        A runtime whose agents are its only model callers has nothing here, hence a default.
+        """
+        return None
 
     @abstractmethod
     def apply_identity(

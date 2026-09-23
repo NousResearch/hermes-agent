@@ -403,14 +403,28 @@ def build_config(
     if spec.tools.deny:
         config["approvals"] = {"deny": [f"{name}*" for name in spec.tools.deny]}
 
-    # Positive tool scoping (toolsets / allow) is deliberately NOT compiled yet.
+    # Positive tool scoping. The runtime resolves an agent's tools from
+    # ``platform_toolsets[<surface>]``; the kanban dispatcher reads the ``cli`` entry and pins
+    # every worker to it with ``--toolsets`` (hermes_cli/kanban_db_dispatch.py::
+    # _resolve_worker_cli_toolsets). A worker still gets its lifecycle tools, because
+    # model_tools appends the ``kanban`` toolset to any dispatcher-owned worker whatever the
+    # profile narrows (model_tools.py, "Dispatcher-spawned kanban workers always get the
+    # lifecycle handoff tools") — the reason this used to be withheld no longer holds.
+    # ``clarify`` and ``todo`` carry the rest of the policy baseline, so they ride along.
+    # Plugin toolsets (the knowledge tool) are not named here and stay on by default.
     #
-    # The runtime resolves an agent's toolset from ``platform_toolsets[<surface>]``,
-    # not from a top-level key. Writing a narrowed list there would strip the kanban
-    # tools a dispatched worker needs to report completion, leaving tasks that run and
-    # then never close. A restriction that silently breaks task reporting is worse than
-    # one that is honestly reported as not yet enforced, so the declaration is preserved
-    # under ``nova:`` and the materializer warns. See ``warnings_for`` below.
+    # Pinned on every messaging surface too, not only ``cli``: a conversation on Telegram
+    # resolves ``platform_toolsets.telegram``, and unset that is the platform's wide default
+    # composite. The runtime re-adds each platform's own native toolsets to an explicit list
+    # (tools_config.py::_recover_platform_native_toolsets), so pinning costs a channel
+    # nothing it needs. Every surface, not just the ones a channel names today, so the pin
+    # depends on the spec alone and connecting a channel never widens an agent.
+    if spec.tools.toolsets:
+        from nova.runtime.hermes.channels import PLATFORM_NAMES
+
+        pinned = list(dict.fromkeys([*spec.tools.toolsets, *BASELINE_TOOLSETS]))
+        surfaces = ["cli", *sorted(set(PLATFORM_NAMES.values()))]
+        config["platform_toolsets"] = {surface: list(pinned) for surface in surfaces}
 
     kanban: dict[str, Any] = {}
     if spec.limits.max_concurrent_tasks is not None:
@@ -447,17 +461,24 @@ def build_config(
     return config
 
 
+#: The runtime toolsets holding the policy baseline's non-kanban tools (``clarify``,
+#: ``todo_list``). Named rather than derived: they are runtime vocabulary, and this module
+#: is where that vocabulary lives.
+BASELINE_TOOLSETS: tuple[str, ...] = ("clarify", "todo")
+
+
 def warnings_for(spec: AgentSpec) -> list[str]:
     """Honest reporting of what this adapter records but does not yet enforce."""
     notes: list[str] = []
-    if spec.tools.toolsets or spec.tools.allow:
-        notes.append(
-            "positive tool scoping (toolsets/allow) is recorded but not yet enforced by the "
-            "hermes adapter; tool denials in tools.deny ARE enforced"
-        )
     if not spec.enabled:
         notes.append(
             "agent is disabled in its spec; its profile is written but nothing should dispatch to it"
+        )
+    soft, hard = spec.limits.soft_wrapup_after_seconds, spec.limits.max_task_runtime_seconds
+    if soft is not None and hard is not None and soft >= hard:
+        notes.append(
+            f"soft_wrapup_after_seconds ({soft}) is not below max_task_runtime_seconds ({hard}): "
+            "submitted work is stopped before the agent is ever asked to wrap up"
         )
     if spec.extensions.mcp:
         servers, _, problems = extension_sections(spec)
@@ -757,6 +778,11 @@ def materialize(
     warnings.extend(warnings_for(spec))
     if policy is not None:
         warnings.extend(policy.warnings)
+    elif spec.tools.allow:
+        warnings.append(
+            "tools.allow is enforced by the tenant policy hook, and this tenant declares no "
+            "policy.yaml — the allow-list is recorded and grants or restricts nothing"
+        )
 
     if dry_run:
         return MaterializeResult(

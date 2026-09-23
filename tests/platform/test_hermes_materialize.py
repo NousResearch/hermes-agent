@@ -76,13 +76,19 @@ def test_never_emits_a_config_key_the_runtime_does_not_read():
     assert "enabled_toolsets" not in config
 
 
-def test_positive_tool_scoping_is_recorded_and_warned_about(home, audit, runtime):
-    """Not enforcing it is acceptable; pretending to enforce it is not."""
+def test_positive_tool_scoping_is_pinned_on_every_surface(home, audit, runtime):
+    """Enforcing it is the point; overstating where it applies is not acceptable."""
     result = runtime.materialize_agent(
         _spec(tools={"toolsets": ["web"]}), audit=audit, correlation_id=new_correlation_id()
     )
-    assert any("not yet enforced" in w for w in result.warnings)
+    assert not any("not yet enforced" in w for w in result.warnings)
     config = M.build_config(_spec(tools={"toolsets": ["web"]}))
+    # Dispatched work and every messaging surface see the same narrowed set.
+    from nova.runtime.hermes.channels import PLATFORM_NAMES
+
+    for surface in ("cli", *PLATFORM_NAMES.values()):
+        assert "web" in config["platform_toolsets"][surface]
+        assert set(M.BASELINE_TOOLSETS) <= set(config["platform_toolsets"][surface])
     assert config["nova"]["toolsets"] == ["web"]
 
 
@@ -258,3 +264,11 @@ def test_dry_run_is_not_recorded_as_model_visible(home, audit, runtime):
         _spec(), audit=audit, correlation_id=new_correlation_id(), dry_run=True
     )
     assert all(not e.model_visible for e in audit.read())
+
+
+def test_a_wrapup_after_the_hard_stop_is_reported(home, audit, runtime):
+    """The nudge is only useful if it can arrive before the dispatcher stops the task."""
+    late = _spec(limits={"soft_wrapup_after_seconds": 1500, "max_task_runtime_seconds": 900})
+    early = _spec(limits={"soft_wrapup_after_seconds": 600, "max_task_runtime_seconds": 900})
+    assert any("wrap up" in w for w in M.warnings_for(late))
+    assert not any("wrap up" in w for w in M.warnings_for(early))

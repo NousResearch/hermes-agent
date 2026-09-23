@@ -7,7 +7,6 @@ import shutil
 import yaml
 
 from nova.apply import apply_bundle
-from nova.policy import compile_policy
 from nova.runtime.hermes.paths import HermesPaths
 from nova.spec import load_bundle
 
@@ -331,8 +330,64 @@ def test_drift_check_agrees_with_apply_when_a_deployment_is_declared(
                 continue
             expected = runtime.expected_digest(
                 spec,
-                policy=compile_policy(spec, bundle.policy) if bundle.policy else None,
+                policy=runtime.compile_policy(spec, bundle.policy) if bundle.policy else None,
                 knowledge=bundle.knowledge,
                 deployment=bundle.deployment,
             )
             assert (live[spec.id] == expected) is in_sync, spec.id
+
+
+# The gateway runs as the runtime's default profile. Left with the image's shipped model
+# and no provider, it fell through to OpenRouter and Nous on the first live host.
+def test_the_default_profile_runs_on_the_tenant_provider(tmp_path, runtime, audit, home):
+    root = home / "config.yaml"
+    root.write_text(
+        yaml.safe_dump({"model": {"default": "shipped/model"}, "display": {"skin": "keep-me"}}),
+        encoding="utf-8",
+    )
+    bundle = _bundle_with_model(tmp_path, "tenant-model")
+    report = apply_bundle(bundle, runtime, audit=audit)
+
+    config = yaml.safe_load(root.read_text(encoding="utf-8"))
+    declared = bundle.deployment.provider
+    assert config["model"]["default"] == declared.model
+    assert config["model"]["provider"] == declared.provider
+    assert config["display"] == {"skin": "keep-me"}
+    assert report.runtime_defaults is not None and report.runtime_defaults.changed
+
+    again = apply_bundle(bundle, runtime, audit=audit)
+    assert again.runtime_defaults is not None and again.runtime_defaults.unchanged
+
+
+# `toolsets: [web, file]` under `unlisted_tool: deny` compiled to a policy that refused
+# every web and file tool, while nothing narrowed what the worker was offered.
+def test_a_declared_toolset_is_both_pinned_and_granted(bundle, runtime, audit, home):
+    from nova.policy import decide
+
+    apply_bundle(bundle, runtime, audit=audit)
+    spec = bundle.agent("operations")
+    assert spec.tools.toolsets and bundle.policy.unlisted_tool == "deny"
+
+    config = yaml.safe_load(HermesPaths(home=home).config_path(spec.id).read_text())
+    pinned = config["platform_toolsets"]["cli"]
+    assert set(spec.tools.toolsets) <= set(pinned)
+
+    resolved = runtime.toolset_tools(spec.tools.toolsets)
+    assert resolved is not None and set(resolved) == set(spec.tools.toolsets)
+    compiled = runtime.compile_policy(spec, bundle.policy)
+    for tool in {t for tools in resolved.values() for t in tools} - set(spec.tools.deny):
+        assert decide(compiled.document, tool).allowed, tool
+
+
+def test_the_pin_keeps_every_baseline_tool_reachable(bundle, runtime, audit, home):
+    apply_bundle(bundle, runtime, audit=audit)
+    spec = bundle.agent("operations")
+    config = yaml.safe_load(HermesPaths(home=home).config_path(spec.id).read_text())
+    offered = {
+        tool
+        for tools in runtime.toolset_tools(config["platform_toolsets"]["cli"]).values()
+        for tool in tools
+    }
+    # kanban_* arrive through the runtime's own worker handoff, not through the pin.
+    non_kanban = {t for t in bundle.policy.baseline_tools if not t.startswith("kanban_")}
+    assert non_kanban <= offered

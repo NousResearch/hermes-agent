@@ -244,6 +244,26 @@ def _from_manifest(row: dict) -> Provider:
     which the dashboard already knows how to render.
     """
     note = ANNOTATIONS_BY_ID.get(row["id"])
+    # Read from the adapter's own source by the runtime's discovery, then overlaid by an
+    # annotation only where the annotation actually knows the answer: an annotation's
+    # UNKNOWN must not erase what the source shows.
+    capabilities = dict(_caps())
+    for key, raw in (row.get("capabilities") or {}).items():
+        capabilities[key] = Capability(
+            supported=raw.get("supported"),
+            verification=Verification.SOURCE_READ,
+            note=str(raw.get("note") or ""),
+        )
+    if note:
+        capabilities.update(
+            {key: cap for key, cap in note.capabilities.items() if cap.supported is not None}
+        )
+    if "attachments" in capabilities and capabilities["attachments"].supported is None:
+        outbound = [capabilities.get(k) for k in ("documents", "images")]
+        if any(c is not None and c.supported for c in outbound):
+            capabilities["attachments"] = Capability(
+                supported=True, note="outbound: native documents/images (see those rows)"
+            )
     required = tuple(entry["name"] for entry in row.get("required_env", ()))
     optional = tuple(entry["name"] for entry in row.get("optional_env", ()))
     return Provider(
@@ -252,7 +272,7 @@ def _from_manifest(row: dict) -> Provider:
         transport=note.transport if note else Transport.UNKNOWN,
         required_env=required or (note.required_env if note else ()),
         optional_env=optional or (note.optional_env if note else ()),
-        capabilities=note.capabilities if note else _caps(),
+        capabilities=capabilities,
         verification=note.verification if note else Verification.DECLARED,
         implementation=row.get("implementation", "") or (note.implementation if note else ""),
         caveat=note.caveat if note else "",

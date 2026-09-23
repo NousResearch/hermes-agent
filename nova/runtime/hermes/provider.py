@@ -117,6 +117,31 @@ def build_provider_config(provider: ProviderSpec) -> tuple[dict[str, Any], list[
     return config, warnings
 
 
+def build_root_model_config(provider: ProviderSpec) -> dict[str, Any]:
+    """The home-root ``config.yaml`` keys that give the runtime's own default profile a model.
+
+    The gateway runs as the default profile, and so does anything that reaches its local API
+    without a profile route. Left alone it keeps whatever the image shipped — a model with
+    no provider, which falls through to OpenRouter and Nous and fails on credentials the
+    tenant never meant to use. The tenant already declared where its models live, so the
+    default profile gets the same answer as every agent.
+
+    The runtime reads the model name from ``model.default``; ``model.model`` is only an alias
+    used when ``default`` is empty (``hermes_cli/runtime_provider.py::_get_model_config``), so
+    writing ``model`` next to a shipped ``default`` would change nothing.
+    """
+    fragment, _ = build_provider_config(provider)
+    section = dict(fragment.get("model") or {})
+    if "model" in section:
+        section["default"] = section.pop("model")
+    out: dict[str, Any] = {}
+    if section:
+        out["model"] = section
+    if "custom_providers" in fragment:
+        out["custom_providers"] = fragment["custom_providers"]
+    return out
+
+
 def required_env(provider: ProviderSpec, runtime_config: Optional[dict[str, Any]] = None) -> tuple[str, ...]:
     """Variables that must exist in the worker's environment for this agent to run.
 

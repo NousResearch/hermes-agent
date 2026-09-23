@@ -125,6 +125,131 @@ def _is_platform(manifest_file: Path, plugin_dir: Path) -> bool:
     return parsed is not None and getattr(parsed, "kind", "") == "platform"
 
 
+#: Capability -> the adapter methods that implement it natively, and what the runtime's base
+#: adapter does when none is overridden (``gateway/platforms/base.py::BasePlatformAdapter``).
+#: Read from the adapter's source rather than imported: the platform client libraries are
+#: not installed everywhere NOVA runs, and what the runtime ships is the source.
+NATIVE_METHODS: dict[str, tuple[tuple[str, ...], str]] = {
+    "images": (
+        ("send_image", "send_image_file", "send_multiple_images"),
+        "sends the image URL as text",
+    ),
+    "documents": (("send_document",), "sends a notice that the file could not be delivered"),
+    "voice": (("send_voice",), "sends a notice instead of audio"),
+    "video": (("send_video",), "sends a notice instead of video"),
+    "message_edits": (("edit_message",), "every update is a new message; no streamed edits"),
+    "message_delete": (("delete_message",), "stale previews are left in place"),
+    "typing_indicator": (("send_typing",), "no typing indicator"),
+    "draft_streaming": (("supports_draft_streaming", "send_draft"), "no native draft stream"),
+    "approval_buttons": (
+        ("_send_exec_approval_prompt",),
+        "approvals arrive as a plain-text /approve prompt",
+    ),
+}
+
+#: Capabilities the base adapter declares as class attributes, false by default.
+NATIVE_FLAGS: dict[str, str] = {"code_blocks": "supports_code_blocks"}
+
+BASE_ADAPTER = "BasePlatformAdapter"
+
+
+def adapter_capabilities(plugin_dir: Path) -> dict[str, dict[str, Any]]:
+    """What a platform adapter implements natively, read from its source. Empty: unreadable.
+
+    ``supported`` is True only where the adapter class itself overrides the method (or sets
+    the flag); otherwise False with the base adapter's fallback named, which is what a
+    customer on that channel actually gets.
+    """
+    import re
+
+    # Every top-level class in the plugin package, so capabilities a mixin contributes
+    # (Discord and WeCom keep their media methods in one) count for the adapter that
+    # inherits them. A line scan, not an ``ast`` parse: parsing ~70k lines of adapters
+    # took seconds, and the runtime's source is formatted, so class headers, methods and
+    # flags sit at fixed indents.
+    header = re.compile(r"^class\s+(\w+)\s*(?:\((.*?)\))?\s*:")
+    method = re.compile(r"^    (?:async\s+)?def\s+(\w+)\s*\(")
+    flag = re.compile(r"^    (\w+)\s*(?::[^=]*)?=\s*True\b")
+    classes: dict[str, tuple[set[str], set[str], set[str]]] = {}
+    for source in sorted(plugin_dir.rglob("*.py")):
+        try:
+            lines = source.read_text(encoding="utf-8").splitlines()
+        except (OSError, ValueError):
+            continue
+        current: Optional[str] = None
+        pending = ""
+        for line in lines:
+            if pending:
+                pending += " " + line.strip()
+                if not pending.rstrip().endswith(":"):
+                    continue
+                line, pending = pending, ""
+            elif line.startswith("class ") and not line.rstrip().endswith(":"):
+                pending = line.strip()
+                continue
+            match = header.match(line)
+            if match:
+                current = match.group(1)
+                bases = {
+                    part.strip().split(".")[-1]
+                    for part in (match.group(2) or "").split(",")
+                    if part.strip() and "=" not in part
+                }
+                classes[current] = (bases, set(), set())
+                continue
+            if line and not line[0].isspace() and not line.startswith(("#", "@", ")")):
+                current = None
+                continue
+            if current is None:
+                continue
+            found_method = method.match(line)
+            if found_method:
+                classes[current][1].add(found_method.group(1))
+                continue
+            found_flag = flag.match(line)
+            if found_flag:
+                classes[current][2].add(found_flag.group(1))
+
+    def collect(name: str, seen: set[str]) -> tuple[set[str], set[str]]:
+        if name in seen or name not in classes:
+            return set(), set()
+        seen.add(name)
+        bases, own_methods, own_flags = classes[name]
+        methods, flags = set(own_methods), set(own_flags)
+        for base in bases - {BASE_ADAPTER}:
+            more_methods, more_flags = collect(base, seen)
+            methods |= more_methods
+            flags |= more_flags
+        return methods, flags
+
+    methods: set[str] = set()
+    flags: set[str] = set()
+    adapters = [name for name, (bases, _, _) in classes.items() if BASE_ADAPTER in bases]
+    if not adapters:
+        return {}
+    for name in adapters:
+        adapter_methods, adapter_flags = collect(name, set())
+        methods |= adapter_methods
+        flags |= adapter_flags
+
+    implementation = f"plugins/platforms/{plugin_dir.name}/"
+    out: dict[str, dict[str, Any]] = {}
+    for capability, (names, fallback) in NATIVE_METHODS.items():
+        native = sorted(set(names) & methods)
+        out[capability] = (
+            {"supported": True, "note": f"native: {', '.join(native)} in {implementation}"}
+            if native
+            else {"supported": False, "note": f"not native; the runtime {fallback}"}
+        )
+    for capability, flag in NATIVE_FLAGS.items():
+        out[capability] = (
+            {"supported": True, "note": f"{flag} = True in {implementation}"}
+            if flag in flags
+            else {"supported": False, "note": f"{flag} is not set; rendered as plain text"}
+        )
+    return out
+
+
 def discover() -> tuple[dict[str, Any], ...]:
     """Every bundled platform plugin, as plain dictionaries.
 
@@ -167,6 +292,20 @@ def discover() -> tuple[dict[str, Any], ...]:
         )
     found.sort(key=lambda entry: entry["label"].lower())
     return tuple(found)
+
+
+def discover_with_capabilities() -> tuple[dict[str, Any], ...]:
+    """:func:`discover`, with each platform's native capabilities read from its adapter.
+
+    Separate from :func:`discover` so validation paths that only need ids never read
+    adapter source; the channel catalogue that shows capabilities caches the result.
+    """
+    root = platforms_dir()
+    rows = []
+    for row in discover():
+        caps = adapter_capabilities(root / row["id"]) if root is not None else {}
+        rows.append({**row, "capabilities": caps})
+    return tuple(rows)
 
 
 def discover_ids() -> tuple[str, ...]:

@@ -105,7 +105,6 @@ def test_agents_reports_unmaterialized(api):
 
 def test_agents_reports_in_sync_after_apply(api, bundle, runtime, audit):
     from nova.apply import apply_bundle
-    from nova.policy import compile_policy
 
     apply_bundle(bundle, runtime, audit=audit)
     rows = {a["id"]: a for a in api.handle("/platform/v1/agents").body["agents"]}
@@ -118,7 +117,7 @@ def test_agents_reports_in_sync_after_apply(api, bundle, runtime, audit):
     spec = bundle.agent("customer-support")
     expected = runtime.expected_digest(
         spec,
-        policy=compile_policy(spec, bundle.policy),
+        policy=runtime.compile_policy(spec, bundle.policy),
         knowledge=bundle.knowledge,
         deployment=bundle.deployment,
     )

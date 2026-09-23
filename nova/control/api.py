@@ -279,7 +279,7 @@ class ControlAPI:
         """The compiled policy for one agent, or None when no policy is declared."""
         if self.bundle.policy is None:
             return None
-        return compile_policy(self.bundle.agent(agent_id), self.bundle.policy)
+        return self.runtime.compile_policy(self.bundle.agent(agent_id), self.bundle.policy)
 
     # -- routing --------------------------------------------------------------
 
@@ -2131,7 +2131,7 @@ class ControlAPI:
         enforced = self.runtime.capabilities.policy_enforcement
         agents = []
         for spec in self.bundle.agents:
-            compiled = compile_policy(spec, self.bundle.policy)
+            compiled = self.runtime.compile_policy(spec, self.bundle.policy)
             agents.append(
                 {
                     "id": spec.id,

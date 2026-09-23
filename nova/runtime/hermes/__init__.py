@@ -28,7 +28,7 @@ def _register_channel_discovery() -> None:
     from nova.channels import providers as _providers
     from nova.runtime.hermes import catalogue as _catalogue
 
-    _providers.set_discovery(_catalogue.discover)
+    _providers.set_discovery(_catalogue.discover_with_capabilities)
 
 
 _register_channel_discovery()

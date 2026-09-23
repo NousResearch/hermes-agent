@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
 from nova.audit import AuditEvent, AuditLog
-from nova.policy import agent_digest, compile_policy
+from nova.policy import agent_digest
 from nova.runtime.base import AgentRuntime
 from nova.spec import TenantBundle
 
@@ -194,7 +194,7 @@ def _diagnose_agent(
             detail="the bundle no longer declares this agent; remove it explicitly if that was intended",
         )
 
-    policy = compile_policy(spec, bundle.policy) if bundle.policy is not None else None
+    policy = runtime.compile_policy(spec, bundle.policy) if bundle.policy is not None else None
     expected = runtime.expected_digest(
         spec, policy=policy, knowledge=bundle.knowledge, deployment=bundle.deployment
     )

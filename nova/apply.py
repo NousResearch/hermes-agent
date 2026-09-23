@@ -17,7 +17,7 @@ from typing import Optional
 from nova.audit import AuditLog, new_correlation_id
 from nova.errors import RuntimeAdapterError
 from nova.observability import operation, set_correlation_id
-from nova.policy import compile_policy
+
 from nova.runtime.base import AgentRuntime, MaterializeResult
 from nova.spec import TenantBundle
 
@@ -32,6 +32,8 @@ class ApplyReport:
     bundle_digest: str
     dry_run: bool
     identity: Optional[MaterializeResult] = None
+    #: The runtime's own default context (the gateway's profile), given the tenant provider.
+    runtime_defaults: Optional[MaterializeResult] = None
     agents: tuple[MaterializeResult, ...] = ()
     skipped: tuple[str, ...] = ()
     #: NOVA-managed agents that were in the runtime, absent from the bundle, and
@@ -189,6 +191,9 @@ def _apply_bundle(
     identity_result = runtime.apply_identity(
         bundle.identity, audit=audit, correlation_id=correlation_id, dry_run=dry_run
     )
+    defaults_result = runtime.apply_runtime_defaults(
+        bundle.deployment, audit=audit, correlation_id=correlation_id, dry_run=dry_run
+    )
 
     results: list[MaterializeResult] = []
     skipped: list[str] = []
@@ -215,7 +220,7 @@ def _apply_bundle(
         if spec not in selected:
             skipped.append(spec.id)
             continue
-        compiled = compile_policy(spec, bundle.policy) if bundle.policy is not None else None
+        compiled = runtime.compile_policy(spec, bundle.policy) if bundle.policy is not None else None
         if compiled is not None:
             warnings.extend(f"{spec.id}: {note}" for note in compiled.warnings)
             # Runtime-specific fields the portable compiler cannot know: where to record a
@@ -319,6 +324,7 @@ def _apply_bundle(
         bundle_digest=bundle.digest(),
         dry_run=dry_run,
         identity=identity_result,
+        runtime_defaults=defaults_result,
         agents=tuple(results),
         skipped=tuple(skipped),
         pruned=tuple(pruned),

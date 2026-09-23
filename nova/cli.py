@@ -334,6 +334,9 @@ def _report(report, *, verb: str) -> None:
             print(f"  {label:9} {agent_id}")
     for agent_id in report.skipped:
         print(f"  {'skipped':9} {agent_id} (disabled in its spec)")
+    defaults = getattr(report, "runtime_defaults", None)
+    if defaults is not None and not defaults.unchanged:
+        print(f"  {'changed':9} runtime default model ({defaults.location})")
     prune_label = "would remove" if report.dry_run else "removed"
     for agent_id in getattr(report, "pruned", ()):  # noqa: B009 — tolerant of older reports
         print(f"  {prune_label:9} {agent_id} (no longer in the bundle)")

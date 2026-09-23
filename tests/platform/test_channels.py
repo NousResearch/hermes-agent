@@ -183,10 +183,18 @@ def test_a_provider_with_no_annotation_is_unknown_rather_than_guessed():
     invented transports or capabilities on the way through."""
     from nova.channels.providers import Transport, get_provider
 
+    from nova.channels.providers import Verification
+
     irc = get_provider("irc")
     assert irc.label == "IRC"
     assert irc.transport is Transport.UNKNOWN
-    assert all(cap.supported is None for cap in irc.capabilities.values())
+    # What only a write-up can say stays unknown; what the adapter source shows is carried
+    # with its evidence, never as a bare tick.
+    assert irc.capabilities["groups"].supported is None
+    assert irc.capabilities["threads"].supported is None
+    for cap in irc.capabilities.values():
+        if cap.supported is not None:
+            assert cap.verification is Verification.SOURCE_READ and cap.note
 
 
 def test_a_webhook_provider_declares_that_it_needs_a_public_endpoint():
@@ -403,3 +411,64 @@ def test_readiness_reports_names_never_values(tmp_path):
     rows = readiness(parse_channels(declaration()), home=tmp_path)
     assert rows[0]["missing_by_agent"]["customer-support"] == []
     assert "super-secret-value" not in repr(rows), "a credential value reached a report"
+
+
+# -- capabilities read from the runtime's adapter source --------------------
+
+
+def _plugin(tmp_path, files):
+    root = tmp_path / "plugins" / "platforms" / "demo"
+    root.mkdir(parents=True)
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    for name, text in files.items():
+        (root / name).write_text(text, encoding="utf-8")
+    return root
+
+
+def test_a_capability_is_native_only_where_the_adapter_overrides_it(tmp_path):
+    from nova.runtime.hermes.catalogue import NATIVE_METHODS, adapter_capabilities
+
+    root = _plugin(tmp_path, {"adapter.py": (
+        "class DemoAdapter(BasePlatformAdapter):\n"
+        "    supports_code_blocks = True\n"
+        "    async def send_document(self, *a): ...\n"
+    )})
+    caps = adapter_capabilities(root)
+    assert caps["documents"]["supported"] is True
+    assert caps["code_blocks"]["supported"] is True
+    others = set(NATIVE_METHODS) - {"documents"}
+    assert all(caps[name]["supported"] is False for name in others)
+    # The fallback is named, because it is what a customer on that channel gets.
+    assert all(caps[name]["note"] for name in others)
+
+
+def test_a_mixin_inside_the_plugin_counts_for_the_adapter(tmp_path):
+    from nova.runtime.hermes.catalogue import adapter_capabilities
+
+    root = _plugin(tmp_path, {
+        "media.py": "class DemoMediaMixin:\n    async def send_voice(self, *a): ...\n",
+        "adapter.py": "class DemoAdapter(DemoMediaMixin, BasePlatformAdapter):\n    pass\n",
+    })
+    assert adapter_capabilities(root)["voice"]["supported"] is True
+
+
+def test_no_adapter_class_means_no_claim(tmp_path):
+    from nova.runtime.hermes.catalogue import adapter_capabilities
+
+    root = _plugin(tmp_path, {"adapter.py": "class Unrelated:\n    async def send_voice(self): ...\n"})
+    assert adapter_capabilities(root) == {}
+
+
+def test_an_annotation_unknown_never_erases_what_the_source_shows():
+    from nova.channels.providers import ANNOTATIONS_BY_ID, _from_manifest
+
+    assert ANNOTATIONS_BY_ID["telegram"].capabilities["attachments"].supported is None
+    row = {
+        "id": "telegram",
+        "capabilities": {"documents": {"supported": True, "note": "native"}},
+    }
+    provider = _from_manifest(row)
+    assert provider.capabilities["documents"].supported is True
+    assert provider.capabilities["attachments"].supported is True
+    # Where the annotation does know the answer, it still wins.
+    assert provider.capabilities["threads"] == ANNOTATIONS_BY_ID["telegram"].capabilities["threads"]

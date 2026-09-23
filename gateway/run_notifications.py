@@ -1207,10 +1207,11 @@ class GatewayNotificationsMixin:
 
     def _process_event_source_key(self, source: SessionSource) -> str:
         """Session key for a reconstructed process-event source, using runner isolation flags."""
+        config = getattr(self, "config", None)
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
             profile=source.profile,
         )
 

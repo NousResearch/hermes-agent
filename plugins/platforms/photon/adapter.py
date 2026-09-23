@@ -1559,13 +1559,20 @@ def register(ctx) -> None:
         allow_all_env="PHOTON_ALLOW_ALL_USERS", max_message_length=_MAX_MESSAGE_LENGTH, emoji="📱",
         pii_safe=True,  # E.164 phone numbers: redact session descriptions before they reach the LLM
         allow_update_command=True,
+        # Grounded in spectrum-ts markdownToIMessageText + sidecar send-format.mjs: headings -> bold, tables ->
+        # "a | b" rows, code -> Unicode math-monospace; any message containing a URL is sent as raw text.
         platform_hint=(
-            "You are communicating via Photon Spectrum (iMessage). "
-            "Treat replies like regular text messages — short and friendly. "
-            "Markdown is rendered (bold, italics, lists, code), but keep "
-            "formatting light and conversational. Recipient identifiers are "
-            "E.164 phone numbers; never expose them in responses unless the "
-            "user asked. Attachments arrive as metadata only."))
+            "You are texting via iMessage (Photon). Write like a person texting: short and conversational, "
+            "answer first, no preamble or recap. Markdown mostly does not survive here: a message containing "
+            "a link is sent as raw text (every *, #, ``` and | shows literally), headings flatten to bold, "
+            "tables to pipe-separated lines, and backtick or code-block text turns into Unicode look-alike "
+            "glyphs that break when copied. So no headers, tables, code fences or backticks; an occasional "
+            "**bold** word is fine in a message without links. Put a command or code snippet on its own line "
+            "as plain text so it copies and runs. Write links as bare URLs; a message that is only a URL "
+            "sends as a rich preview card. You can send files natively: write MEDIA:/absolute/path/to/file "
+            "in your response (images and video appear inline, audio as voice notes, other files as "
+            "attachments). Recipient identifiers are E.164 phone numbers; never expose them in responses "
+            "unless the user asked."))
     ctx.register_cli_command(
         name="photon", help="Set up and manage the Photon iMessage integration",
         setup_fn=_cli.register_cli, handler_fn=_cli.dispatch)

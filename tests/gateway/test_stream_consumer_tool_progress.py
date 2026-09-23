@@ -62,10 +62,12 @@ def _make_native_streaming_adapter(*, supports_native: bool = True):
     return adapter
 
 
-def _make_consumer(*, native_streaming: bool = True) -> GatewayStreamConsumer:
+def _make_consumer(*, native_streaming: bool = True, max_tool_progress_lines: int = 0) -> GatewayStreamConsumer:
     """Create a GatewayStreamConsumer configured for native streaming."""
     adapter = _make_native_streaming_adapter(supports_native=native_streaming)
-    cfg = StreamConsumerConfig(chat_type="dm", cursor="▌")
+    cfg = StreamConsumerConfig(
+        chat_type="dm", cursor="▌", max_tool_progress_lines=max_tool_progress_lines,
+    )
     consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
     # Force native streaming resolution
     consumer._use_native_streaming = native_streaming
@@ -147,12 +149,51 @@ class TestComposeFrameContent:
         result = consumer._compose_frame_content()
         assert result == ""
 
+    def test_window_has_header_omission_marker_and_keeps_attention_and_counts(self):
+        consumer = _make_consumer(max_tool_progress_lines=4)
+        consumer._tool_progress_lines = [
+            "🔍 Searching one",
+            "💻 terminal: git status (×3)",
+            "📄 Reading config",
+            "⚠️ Rate limit warning",
+            "🔍 Searching two",
+            "🔍 Searching three",
+        ]
+
+        result = consumer._compose_frame_content()
+        lines = result.splitlines()
+
+        assert lines[0] == "⏳ Working · 6 tool updates"
+        assert "… 2 earlier updates omitted" in lines
+        assert "💻 terminal: git status (×3)" in lines
+        assert "⚠️ Rate limit warning" in lines
+        assert "🔍 Searching three" in lines
+        assert "🔍 Searching one" not in lines
+
+    def test_window_preserves_chronological_order_for_retained_lines(self):
+        consumer = _make_consumer(max_tool_progress_lines=3)
+        consumer._tool_progress_lines = [
+            "first",
+            "❌ failed",
+            "second",
+            "third",
+        ]
+
+        result = consumer._compose_frame_content()
+        assert result.splitlines() == [
+            "⏳ Working · 4 tool updates",
+            "… 1 earlier update omitted",
+            "❌ failed",
+            "second",
+            "third",
+        ]
+
 
 class TestSegmentReset:
     """Test that segment reset clears tool progress state."""
 
     def test_reset_clears_tool_progress(self):
-        consumer = _make_consumer()
+        consumer = _make_consumer(max_tool_progress_lines=3)
         consumer._tool_progress_lines = ["🔍 Searching..."]
         consumer._tool_progress_active = True
         consumer._reset_segment_state()
@@ -286,7 +327,7 @@ class TestToolProgressDrainLoop:
     @pytest.mark.asyncio
     async def test_finalize_frame_is_pure_text(self):
         """The finalize frame must only contain accumulated text, no tool lines."""
-        consumer = _make_consumer()
+        consumer = _make_consumer(max_tool_progress_lines=3)
         consumer.on_tool_progress("🔍 Searching...")
         consumer.on_delta("The answer is 42.")
         # Add a tool progress AFTER text (Strategy B scenario)

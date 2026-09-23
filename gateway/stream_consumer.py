@@ -74,6 +74,9 @@ class StreamConsumerConfig:
     # (progressive editMessageText).  "off" is handled by the gateway.
     transport: str = "edit"
     chat_type: str = ""  # originating chat type; gates platform-specific drafts
+    # Zero keeps the legacy unbounded composition for direct callers.  Gateway
+    # display config supplies a bounded default for native stream drafts.
+    max_tool_progress_lines: int = 0
 
 
 @dataclass
@@ -250,8 +253,43 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _compose_frame_content(self) -> str:
         """Native frame content: text, with any tool-progress lines below a rule."""
-        progress = "\n".join(self._tool_progress_lines)
+        progress = "\n".join(self._visible_tool_progress_lines())
         return "\n\n---\n".join(p for p in (self._accumulated, progress) if p)
+
+    def _visible_tool_progress_lines(self) -> list[str]:
+        """Return a compact progress draft without hiding actionable updates.
+
+        The configured cap applies to progress entries, not the generated header
+        or omission marker.  Attention and repeat-count entries are protected;
+        if they alone exceed the cap we deliberately exceed it rather than hide
+        an error or collapse count.
+        """
+        lines = self._tool_progress_lines
+        try:
+            cap = max(0, int(self.cfg.max_tool_progress_lines))
+        except (TypeError, ValueError):
+            cap = 0
+        if not lines or cap == 0:
+            return list(lines)
+
+        protected = {
+            index for index, line in enumerate(lines)
+            if "(×" in line or line.lstrip().startswith(("⚠", "❗", "❌", "🚨"))
+        }
+        retained = set(protected)
+        for index in range(len(lines) - 1, -1, -1):
+            if len(retained) >= cap:
+                break
+            retained.add(index)
+
+        omitted = len(lines) - len(retained)
+        visible = [lines[index] for index in sorted(retained)]
+        suffix = "" if len(lines) == 1 else "s"
+        result = [f"⏳ Working · {len(lines)} tool update{suffix}"]
+        if omitted:
+            update_suffix = "" if omitted == 1 else "s"
+            result.append(f"… {omitted} earlier update{update_suffix} omitted")
+        return result + visible
 
     def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False) -> dict | None:
         """Per-send metadata.  ``final`` → notify=True (Mattermost treats notify-worthy sends

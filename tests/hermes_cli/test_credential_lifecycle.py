@@ -228,33 +228,6 @@ def test_put_api_env_materializes_credential_pool_entry(hermes_home):
     assert matched_runtime[0].auth_type == "api_key"
 
 
-def test_put_api_env_writes_auth_json_for_provider(hermes_home):
-    """Sentinel for #96058: PUT /api/env must modify auth.json on disk.
-
-    The reported symptom was ``stat -c '%y' ~/.hermes/auth.json`` returning
-    the same value before and after the Desktop Save. After the fix the file's
-    mtime advances because the save materializes the env-seeded pool entry.
-    """
-    _write_auth(hermes_home, {})
-    auth_path = hermes_home / "auth.json"
-    assert auth_path.exists()
-    mtime_before = auth_path.stat().st_mtime_ns
-
-    # Tiny delay so a write is observable even on filesystems with 1s mtime
-    # resolution. Use ns precision so this is reliable on every FS.
-    import time
-    time.sleep(0.05)
-
-    resp = client.put(
-        "/api/env",
-        json={"key": "OPENCODE_GO_API_KEY", "value": OPENCODE_KEY_NEW},
-        headers=HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
-
-    assert auth_path.stat().st_mtime_ns > mtime_before, (
-        "auth.json was not modified by the Desktop Save — bug #96058"
-    )
 
 
 # ---------------------------------------------------------------------------

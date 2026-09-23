@@ -337,9 +337,12 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         return HostAttachDecision(START, "")
     if gateway is None or gateway.pid == os.getpid():
         return standalone_attach_decision(our_home, None) or HostAttachDecision(START, "")
-    if replace:
-        # --replace is explicit authority over the host role; the target is the host process,
-        # whichever home launched it.
+    if replace and (gateway.serves(profile) or not gateway.served_known):
+        # --replace is authority over the process SERVING THIS PROFILE, whichever home launched it.
+        # An owner known not to serve us is another profile's gateway: replacing it is always refused
+        # (_replace_target_belongs_to_other_profile fails closed) and the gateway exits, so on a
+        # one-process-per-profile fleet, whose generated units all carry --replace, every unit but
+        # the lock holder respawn-storms. Such an owner takes the non-replace path below instead.
         return HostAttachDecision(REPLACE_HOST, "", gateway)
     if gateway.served_known:
         standalone = standalone_attach_decision(our_home, gateway)

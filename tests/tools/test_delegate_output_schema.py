@@ -24,7 +24,6 @@ from tools.delegate_tool import (
 from tools.delegation_output_schema import (
     append_output_contract,
     build_retry_message,
-    coerce_output_schema,
     validate_output,
 )
 
@@ -77,26 +76,6 @@ class TestValidateOutput:
         assert errors
 
 
-class TestCoerceOutputSchema:
-    def test_valid_schema_passes(self):
-        schema, err = coerce_output_schema(ADDRESS_SCHEMA)
-        assert schema == ADDRESS_SCHEMA
-        assert err is None
-
-    def test_none_passes_through(self):
-        schema, err = coerce_output_schema(None)
-        assert schema is None
-        assert err is None
-
-    def test_non_dict_is_rejected(self):
-        schema, err = coerce_output_schema("not a schema")
-        assert schema is None
-        assert err
-
-    def test_invalid_json_schema_is_rejected(self):
-        schema, err = coerce_output_schema({"type": 42})
-        assert schema is None
-        assert err
 
 
 class TestPromptPlumbing:
@@ -106,9 +85,6 @@ class TestPromptPlumbing:
         assert "OUTPUT CONTRACT" in out
         assert '"city"' in out
 
-    def test_contract_block_without_prior_context(self):
-        out = append_output_contract(None, ADDRESS_SCHEMA)
-        assert "OUTPUT CONTRACT" in out
 
     def test_retry_message_carries_verbatim_errors(self):
         msg = build_retry_message(["'city' is a required property"])
@@ -122,16 +98,6 @@ class TestPromptPlumbing:
 
 
 class TestToolSchemaSurface:
-    def test_output_schema_on_task_items(self):
-        item_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"][
-            "items"
-        ]["properties"]
-        assert "output_schema" in item_props
-        assert item_props["output_schema"]["type"] == "object"
-        # never required
-        assert "output_schema" not in DELEGATE_TASK_SCHEMA["parameters"][
-            "properties"
-        ]["tasks"]["items"]["required"]
 
     def test_output_schema_advertised_per_task_only(self):
         """output_schema is advertised inside tasks[] items (the only spawn

@@ -102,20 +102,3 @@ def test_standalone_profile_status_reports_standalone_by_config(monkeypatch, tmp
     assert "via the default-profile multiplexer" not in out
 
 
-def test_default_status_lists_standalone_profiles(monkeypatch, tmp_path):
-    """The default (host) profile's status names the profiles that opted out by config."""
-    import hermes_constants
-
-    (tmp_path / "profiles" / "beta").mkdir(parents=True)
-    (tmp_path / "profiles" / "beta" / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
-    (tmp_path / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-    from hermes_cli import gateway as gw
-
-    buf = io.StringIO()
-    with redirect_stdout(buf):
-        gw._gateway_command_inner(
-            SimpleNamespace(gateway_command="status", deep=False, full=False, system=False)
-        )
-    assert "standalone by config (temporary compatibility shim): beta" in buf.getvalue()

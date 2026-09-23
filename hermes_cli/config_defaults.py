@@ -2462,6 +2462,23 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
 
+    # Bot Desktop: a headless Xfce screen per profile on the gateway host (Linux), streamed to Hermes
+    # Desktop where a human can watch, take over (logins, 2FA, CAPTCHAs) and hand back. `hermes computer-use screen`.
+    "bot_desktop": {
+        "geometry": "1440x900",
+        # Opt-in: start the screen automatically the first time computer_use needs a display on a headless
+        # host. Off by default so installing TigerVNC for other reasons never yields a screen nobody asked
+        # for; Hermes Desktop's Screen pane offers Start and this toggle.
+        "auto_start": False,
+        # Refuse to start the screen while the host (or its container cgroup) has less than this free.
+        # Xvnc + Xfce idle at ~220 MB and a takeover's browser adds 0.5-1 GB; on a small instance the
+        # loser is Chromium mid-login or the gateway itself. 0 disables the check.
+        "min_free_memory_mb": 1536,
+        # Stop a screen nobody has used (no computer_use action, browser spawn, viewer or takeover) for this
+        # long; it restarts on the next use. Idle Xvnc + Xfce hold ~220 MB, an abandoned browser far more.
+        # 0 keeps screens up until stopped.
+        "idle_stop_minutes": 30,
+    },
     "computer_use": {
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.

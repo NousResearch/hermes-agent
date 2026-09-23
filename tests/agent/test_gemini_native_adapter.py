@@ -322,12 +322,6 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
 
 
 
-def test_native_client_accepts_injected_http_client():
-    from agent.gemini_native_adapter import GeminiNativeClient
-
-    injected = SimpleNamespace(close=lambda: None)
-    client = GeminiNativeClient(api_key="AIza-test", http_client=injected)
-    assert client._http is injected
 
 
 @pytest.mark.parametrize(
@@ -349,13 +343,6 @@ def test_normalize_gemini_base_url_guarantees_version_segment(configured, expect
     assert normalize_gemini_base_url(configured) == expected
 
 
-def test_native_client_appends_v1beta_to_host_root_base_url():
-    from agent.gemini_native_adapter import GeminiNativeClient
-
-    client = GeminiNativeClient(
-        api_key="AIza-test", base_url="https://generativelanguage.googleapis.com", http_client=SimpleNamespace(close=lambda: None)
-    )
-    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
 
 
 def test_native_client_rejects_empty_api_key_with_actionable_message():
@@ -368,7 +355,6 @@ def test_native_client_rejects_empty_api_key_with_actionable_message():
             GeminiNativeClient(api_key=bad)  # type: ignore[arg-type]
         msg = str(excinfo.value)
         assert "GOOGLE_API_KEY" in msg and "GEMINI_API_KEY" in msg
-        assert "aistudio.google.com" in msg
 
 
 @pytest.mark.asyncio

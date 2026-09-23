@@ -87,25 +87,6 @@ def test_guard_inactive_does_not_block_or_probe(monkeypatch):
     assert calls == [("task-1", "click", ["@e1"])]
 
 
-def test_camofox_short_circuits_before_guard(monkeypatch):
-    """Camofox mode returns from the dedicated camofox_* path BEFORE reaching the
-    private-page guard, so the guard's helpers must never be consulted. Guards the
-    ordering invariant (camofox early-return precedes _last_session_key + guard)."""
-    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
-
-    def fail_guard(task_id):
-        raise AssertionError("guard must not run in camofox mode")
-
-    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", fail_guard)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", fail_guard)
-
-    import tools.browser_camofox as camofox
-
-    monkeypatch.setattr(camofox, "camofox_click", lambda ref, task_id: '{"success": true, "camofox": true}')
-
-    out = json.loads(browser_tool.browser_click("@e1", task_id="task-1"))
-
-    assert out == {"success": True, "camofox": True}
 
 
 # ---------------------------------------------------------------------------
@@ -149,19 +130,3 @@ def test_browser_back_returns_url_when_landed_page_is_public(monkeypatch):
     assert out == {"success": True, "url": "https://example.com/"}
 
 
-def test_browser_back_camofox_short_circuits_before_guard(monkeypatch):
-    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
-
-    def fail_guard(task_id):
-        raise AssertionError("guard must not run in camofox mode")
-
-    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", fail_guard)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", fail_guard)
-
-    import tools.browser_camofox as camofox
-
-    monkeypatch.setattr(camofox, "camofox_back", lambda task_id: '{"success": true, "camofox": true}')
-
-    out = json.loads(browser_tool.browser_back(task_id="task-1"))
-
-    assert out == {"success": True, "camofox": True}

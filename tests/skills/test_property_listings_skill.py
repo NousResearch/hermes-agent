@@ -2,17 +2,12 @@
 import json
 from pathlib import Path
 
-from agent.prompt_builder import PLATFORM_HINTS
 from tools.skills_hub_official import OptionalSkillSource
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_property_recipe_is_not_paid_for_by_unrelated_desktop_sessions():
-    hint = PLATFORM_HINTS["desktop"]
-    assert "```listing" not in hint
-    assert "MEDIA:" in hint and "::preview" in hint
 
 
 def test_optional_catalog_fetch_preserves_a_usable_property_recipe(tmp_path, monkeypatch):

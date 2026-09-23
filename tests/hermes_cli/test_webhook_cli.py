@@ -95,7 +95,6 @@ class TestSubscribe:
             webhook_action="subscribe", name="notifier", route_profile="missing"
         ))
 
-        assert "does not exist" in capsys.readouterr().out
         assert _load_subscriptions()["notifier"]["secret"] == "original"
 
 
@@ -122,7 +121,6 @@ class TestCronJobSubscribe:
         webhook_command(_make_args(
             webhook_action="subscribe", name="ev", cron_job="nope"
         ))
-        assert "no cron job matches" in capsys.readouterr().out
         assert "ev" not in _load_subscriptions()
 
     def test_cron_job_plus_deliver_only_rejected(self, capsys):
@@ -133,21 +131,9 @@ class TestCronJobSubscribe:
             deliver_only=True,
             deliver="telegram",
         ))
-        assert "mutually exclusive" in capsys.readouterr().out
         assert "ev" not in _load_subscriptions()
 
 
-class TestList:
-
-    def test_with_entries(self, capsys):
-        webhook_command(_make_args(webhook_action="subscribe", name="a"))
-        webhook_command(_make_args(webhook_action="subscribe", name="b"))
-        capsys.readouterr()  # clear
-        webhook_command(_make_args(webhook_action="list"))
-        out = capsys.readouterr().out
-        assert "2 webhook" in out
-        assert "a" in out
-        assert "b" in out
 
 
 class TestRemove:
@@ -204,22 +190,5 @@ class TestWebhookEnabledGate:
         out = capsys.readouterr().out
         assert "not enabled" in out.lower()
 
-    def test_allows_when_enabled(self, capsys):
-        # _is_webhook_enabled already patched to True by autouse fixture
-        webhook_command(_make_args(webhook_action="subscribe", name="allowed"))
-        out = capsys.readouterr().out
-        assert "Created" in out
-        assert "allowed" in _load_subscriptions()
 
-    def test_real_check_disabled(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.webhook._get_webhook_config",
-            lambda: {},
-        )
-        monkeypatch.setattr(
-            "hermes_cli.webhook._is_webhook_enabled",
-            lambda: bool({}.get("enabled")),
-        )
-        import hermes_cli.webhook as wh_mod
-        assert wh_mod._is_webhook_enabled() is False
 

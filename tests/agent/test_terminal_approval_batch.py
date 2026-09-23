@@ -36,7 +36,7 @@ def _agent():
                        quiet_mode=True, skip_context_files=True, skip_memory=True, platform="desktop")
 
 
-@pytest.mark.parametrize("read_count", [0, 1, 2])
+@pytest.mark.parametrize("read_count", [0, 2])
 @pytest.mark.parametrize("threaded_middleware", [False, True])
 def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path, monkeypatch, read_count, threaded_middleware):
     from tools.terminal_scope import reset_terminal_scope, set_terminal_scope

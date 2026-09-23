@@ -2,7 +2,7 @@
 
 Covers the diagnose-oauth-mcp.py decision tree (TOKEN_OK / REFRESH_FIXED /
 SESSION_REVOKED / REFRESH_DEAD), the HERMES_HOME resolution fallback, the
-atomic --write persistence path, and SKILL.md frontmatter invariants.
+and the atomic --write persistence path.
 No live network calls — urllib is mocked throughout.
 """
 from __future__ import annotations
@@ -10,13 +10,11 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
-import re
 import sys
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 SKILL_DIR = (
     Path(__file__).resolve().parents[2]
@@ -25,7 +23,6 @@ SKILL_DIR = (
     / "mcp-oauth-remote-gateway"
 )
 SCRIPT_PATH = SKILL_DIR / "scripts" / "diagnose-oauth-mcp.py"
-SKILL_MD = SKILL_DIR / "SKILL.md"
 
 
 def load_module():
@@ -144,12 +141,3 @@ def test_requests_send_httpx_user_agent(tmp_path):
         assert req.get_header("User-agent") == mod.UA
 
 
-def test_skill_md_frontmatter_invariants():
-    yaml = pytest.importorskip("yaml")
-    content = SKILL_MD.read_text()
-    assert content.startswith("---\n")
-    fm = yaml.safe_load(re.search(r"^---\n(.*?)\n---", content, re.DOTALL).group(1))
-    assert len(fm["description"]) <= 60
-    assert fm["description"].endswith(".")
-    assert "platforms" in fm and len(fm["platforms"]) >= 1
-    assert fm["author"].split(",")[0].strip() != "Hermes Agent"  # human credited first

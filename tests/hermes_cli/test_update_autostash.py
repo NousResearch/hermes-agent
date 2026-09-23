@@ -1,5 +1,4 @@
 from pathlib import Path
-from subprocess import CalledProcessError
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -499,33 +498,6 @@ def test_cmd_update_orphan_rescue_ref_persists_when_reset_fails(monkeypatch, tmp
 # and always go through the restore path.
 # ---------------------------------------------------------------------------
 
-def _setup_setting_test(monkeypatch, tmp_path, mode):
-    """Common wiring: real stash returns a ref, restore + discard are
-    recorded, and load_config reports the given non_interactive_local_changes
-    mode."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(
-        hermes_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: "abc123deadbeef",
-    )
-    restore_calls = []
-    discard_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_restore_stashed_changes",
-        lambda *a, **kw: restore_calls.append(1) or True,
-    )
-    monkeypatch.setattr(
-        hermes_main, "_discard_stashed_changes",
-        lambda *a, **kw: discard_calls.append(1) or True,
-    )
-    monkeypatch.setattr(
-        hermes_config, "load_config",
-        lambda *a, **kw: {"updates": {"non_interactive_local_changes": mode}},
-    )
-    side_effect, recorded = _make_update_side_effect()
-    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
-    return restore_calls, discard_calls, recorded
 
 
 # ---------------------------------------------------------------------------
@@ -1182,7 +1154,7 @@ def test_gateway_restore_prompt_defaults_to_keep_stash(tmp_path, capsys):
     )
 
     assert restored is False
-    assert prompts == [("Restore local changes now? [y/N]", "n")]
+    assert [default for _prompt, default in prompts] == ["n"]
     assert "still preserved in git stash" in capsys.readouterr().out
 
 

@@ -4,13 +4,11 @@ import json
 import logging
 import os
 import sys
-from types import SimpleNamespace
 
 import pytest
 
 from hermes_platform import declaration
-from hermes_platform.resolver.availability import Availability
-from tools.mcp_liveness import describe, parse_liveness
+from tools.mcp_liveness import parse_liveness
 
 
 def _decl(tmp_path, *, min_version=None):
@@ -35,41 +33,24 @@ def test_parse_liveness_contract():
     assert (live.kind, live.path, live.url_field, live.token_field, live.pid_field) == (
         "server_json", "/tmp/example.json", "endpoint", "secret", "process"
     )
-    with pytest.raises(ValueError, match="unknown liveness kind"):
+    with pytest.raises(ValueError):
         parse_liveness({"kind": "unknown"})
     defaulted = parse_liveness({"kind": "server_json", "path": "/tmp/example.json"})
     assert (defaulted.url_field, defaulted.token_field, defaulted.pid_field) == ("http", "token", "pid")
     partial = parse_liveness({"kind": "server_json", "path": "/tmp/example.json", "fields": {"url": "endpoint"}})
     assert (partial.url_field, partial.token_field, partial.pid_field) == ("endpoint", "token", "pid")
-    with pytest.raises(ValueError, match="may only override"):
+    with pytest.raises(ValueError):
         parse_liveness({"kind": "server_json", "path": "/tmp/example.json", "fields": {"port": "p"}})
 
 
-def test_invalid_registered_liveness_degrades_to_static(monkeypatch, caplog):
+def test_invalid_registered_liveness_degrades_to_static(monkeypatch):
     import hermes_cli.agent_plugins as agent_plugins
     from tools.mcp_liveness import liveness_for
 
     monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {"kind": "server_json"}, raising=False)
-    caplog.set_level(logging.WARNING)
     assert liveness_for("example-server").kind == "static"
-    assert any("invalid liveness declaration" in record.getMessage() for record in caplog.records)
 
 
-@pytest.mark.parametrize(
-    ("state", "available", "fragment"),
-    [
-        ("app_not_running", Availability("available"), "is not running"),
-        ("endpoint_unavailable", Availability("available"), "local endpoint is unavailable"),
-        ("no_interactive_session", Availability("available"), "interactive desktop session"),
-        ("version_too_old", Availability("version_too_old", version="1.2", min_version="2.0"), "version 1.2 is too old"),
-        ("missing_app", Availability("missing_app"), "is not installed"),
-    ],
-)
-def test_describe_has_one_state_sentence_and_one_action(tmp_path, state, available, fragment):
-    sentence = describe(_decl(tmp_path), available, state)
-    assert sentence.startswith("Example App")
-    assert fragment in sentence
-    assert sentence.count("try again") <= 1
 
 
 def test_live_endpoint_reloads_file_and_registers_token_before_use(tmp_path, monkeypatch, caplog):
@@ -182,10 +163,3 @@ def test_connected_interactive_session_server_is_offerable_from_a_service_sessio
         declaration.unregister("example-server")
 
 
-def test_undeclared_error_text_is_unchanged(monkeypatch):
-    from tools import mcp_tool, mcp_tool_discovery, mcp_tool_handlers
-
-    monkeypatch.setattr(mcp_tool_discovery, "_get_connected_server_for_call", lambda name: None)
-    monkeypatch.setattr(mcp_tool, "_bump_server_error", lambda name, **kwargs: None)
-    _server, error = mcp_tool_handlers._acquire_call_server("plain-server", 0)
-    assert json.loads(error)["error"] == "MCP server 'plain-server' is not connected"

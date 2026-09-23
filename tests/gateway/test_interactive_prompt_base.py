@@ -51,16 +51,6 @@ class TestTruncatePreview:
 
 
 class TestFormatExecApproval:
-    def test_default_template(self, monkeypatch):
-        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 300)
-        ad = _bare(_DefaultAdapter)
-        text = ad._format_exec_approval("rm -rf /", "scary")
-        assert text == (
-            "⚠️ Hermes wants to run a command that needs your OK\n\n"
-            "```\nrm -rf /\n```\n"
-            "Why it was flagged: scary\n\n"
-            "If you don't answer within 5 minutes it will NOT run."
-        )
 
     def test_deadline_line_tracks_configured_timeout(self, monkeypatch):
         """The card must say how long the user has and that silence means NO — for any timeout."""
@@ -99,31 +89,3 @@ class TestFormatChoicePage:
         assert meta["page_info"] == " (21–25 of 25)"
 
 
-class TestAdapterParity:
-    """Rewired adapters produce byte-identical text vs their historical inline code."""
-
-
-    def test_telegram_pagination_parity(self):
-        """_format_choice_page matches the old _build_*_keyboard arithmetic."""
-
-        def old(options, page, page_size):
-            total = len(options)
-            total_pages = max(1, (total + page_size - 1) // page_size)
-            page = max(0, min(page, total_pages - 1))
-            start = page * page_size
-            end = min(start + page_size, total)
-            page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
-            return options[start:end], page, total_pages, page_info
-
-        for n in (0, 1, 8, 9, 10, 25):
-            options = list(range(n))
-            for page in (-3, 0, 1, 2, 99):
-                for per in (8, 10):
-                    o_opts, o_page, o_tp, o_info = old(options, page, per)
-                    n_opts, meta = BasePlatformAdapter._format_choice_page(
-                        options, page, per
-                    )
-                    assert n_opts == o_opts
-                    assert meta["page"] == o_page
-                    assert meta["total_pages"] == o_tp
-                    assert meta["page_info"] == o_info

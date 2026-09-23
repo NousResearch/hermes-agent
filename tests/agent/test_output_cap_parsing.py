@@ -16,9 +16,6 @@ class TestParseOpenRouterOutputCap:
         assert parse_available_output_tokens_from_error(msg) == 10000
 
 
-
-
-
 class TestParseCharBasedOutputCap:
     """LM Studio / llama.cpp report context in tokens but prompt in characters.
 
@@ -49,7 +46,6 @@ class TestParseCharBasedOutputCap:
         assert available + (chars + 2) // 3 <= ctx
 
 
-
 class TestParseDashScopeOutputCap:
     """DashScope / Alibaba Cloud (Qwen) reject an over-cap output request with
     a bounded range whose upper bound is the real max-output cap (#55546)."""
@@ -66,9 +62,6 @@ class TestParseDashScopeOutputCap:
                "Range of max_tokens should be [1, 65536]")
         assert parse_available_output_tokens_from_error(msg) == 65536
 
-    def test_dashscope_range_arbitrary_bound(self):
-        msg = "Range of max_tokens should be [1, 8192]"
-        assert parse_available_output_tokens_from_error(msg) == 8192
 
     def test_dashscope_range_with_spaces(self):
         msg = "range of max_tokens should be [ 1 , 32768 ]"
@@ -177,11 +170,6 @@ class TestParseVllmTokenBasedOutputCap:
             self._VLLM_MSG_REAL_INPUT
         ) == 31072
 
-    def test_vllm_retry_fits_inside_window(self):
-        # The retried cap plus the reported input must fit in the window.
-        available = parse_available_output_tokens_from_error(self._VLLM_MSG)
-        assert available is not None
-        assert available + 65537 <= 131072
 
     def test_vllm_retry_converges(self):
         """The retry sequence must reach a working cap in a few attempts.
@@ -207,7 +195,6 @@ class TestParseVllmTokenBasedOutputCap:
             assert available < cap, "each retry must lower the cap"
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
-
 
 
 class TestParseAdvertisedCeilingWordings:

@@ -218,6 +218,11 @@ export function useSessionTileDelegate({
           }
         }
       },
+      dropRuntimeBindings: storedSessionIds => {
+        for (const storedSessionId of storedSessionIds) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+        }
+      },
       // Reconnect reconcile (#93059): retire an orphaned runtime's busy claim
       // through updateSessionState so the cache, focused view, busyRef and
       // tile mirrors settle together. A runtime this cache never held reports

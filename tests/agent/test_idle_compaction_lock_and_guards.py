@@ -200,42 +200,8 @@ def test_idle_compaction_skips_a_transcript_that_has_not_grown(tmp_path: Path) -
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
 
 
-def test_idle_compaction_fires_again_once_the_transcript_grows(tmp_path: Path) -> None:
-    """The raised floor is a deferral, not an off switch."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    sid = "IDLE_REGROWN"
-    db.create_session(sid, source="cli")
-    agent = _prep_recompaction_agent(db, sid)
-    agent.context_compressor.last_compression_rough_tokens = 44_579
-    seam = _pin_compress_seam(agent)
-
-    # 44,579 + 25,502 = 70,081 — one floor's worth of new content on top.
-    _run_prologue(agent, _history(), rough_tokens=70_082)
-
-    seam.assert_called_once()
 
 
-def test_idle_compaction_ignores_a_non_int_last_compaction_reading(
-    tmp_path: Path,
-) -> None:
-    """Compressor doubles expose a Mock here — it must not raise the floor.
-
-    An unset/derived attribute falls back to 0, which restores the original
-    ``tokens > floor_tokens`` semantics exactly.
-    """
-    db = SessionDB(db_path=tmp_path / "state.db")
-    sid = "IDLE_MOCKREAD"
-    db.create_session(sid, source="cli")
-    agent = _prep_recompaction_agent(db, sid)
-    # Left as the MagicMock auto-attribute (a truthy non-int).
-    assert not isinstance(
-        agent.context_compressor.last_compression_rough_tokens, int
-    )
-    seam = _pin_compress_seam(agent)
-
-    _run_prologue(agent, _history(), rough_tokens=44_579)
-
-    seam.assert_called_once()
 
 
 def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:

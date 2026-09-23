@@ -794,7 +794,8 @@ def _windows_cold_start_plan() -> dict | None:
     gateway that died without a clean exit. The Desktop hand-off exits the app before the updater starts
     and can kill the running gateway in those same seconds, so discovery finds no live PID to pause
     (#109538) — the dead attestation is the only surviving "a gateway was up" evidence, and the Desktop
-    does not restart the messaging gateway itself. Keep the plan, and record the attestation
+    only restarts gateways it stopped itself (its hand-off script, after the update verifies; #119809).
+    Keep the plan, and record the attestation
     *generation* that authorized it on the token: the marker is a mutable one-shot that any concurrent
     ``hermes gateway status``/``start`` consumes, so execution authorizes the spawn from the token and
     consumes only that generation (#110020 review)."""

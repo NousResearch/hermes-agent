@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
+import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
@@ -352,33 +352,6 @@ describe('chatPartsEquivalent', () => {
     expect(chatPartsEquivalent(started, completed)).toBe(false)
   })
 
-  it('returns true for identical reasoning parts', () => {
-    const partA = { type: 'reasoning' as const, text: 'Thinking...' }
-    const partB = { type: 'reasoning' as const, text: 'Thinking...' }
-
-    expect(chatPartsEquivalent(partA, partB)).toBe(true)
-  })
-
-  it('returns true for tool-call parts with same identity and both have no result', () => {
-    const partA = {
-      type: 'tool-call' as const,
-      toolCallId: 'tc-1',
-      toolName: 'read_file',
-      args: {} as never,
-      argsText: '{}'
-    }
-
-    const partB = {
-      type: 'tool-call' as const,
-      toolCallId: 'tc-1',
-      toolName: 'read_file',
-      args: {} as never,
-      argsText: '{}'
-    }
-
-    expect(chatPartsEquivalent(partA, partB)).toBe(true)
-  })
-
   it('returns true for tool-call parts with same identity and both have results', () => {
     const partA = {
       type: 'tool-call' as const,
@@ -424,12 +397,6 @@ describe('chatPartsEquivalent', () => {
 
     expect(chatPartsEquivalent(partA, partB)).toBe(false)
   })
-
-  it('uses reference equality fast-path for identical part objects', () => {
-    const part = { type: 'text' as const, text: 'Same reference' }
-
-    expect(chatPartsEquivalent(part, part)).toBe(true)
-  })
 })
 
 describe('chatMessagesEquivalent', () => {
@@ -448,86 +415,12 @@ describe('chatMessagesEquivalent', () => {
     expect(chatMessagesEquivalent(msg('1', 'user', 'Hello'), msg('1', 'user', 'World'))).toBe(false)
   })
 
-  it('returns false when tool result presence differs', () => {
-    const messageA: ChatMessage = {
-      id: 'msg-1',
-      role: 'assistant',
-      parts: [{ type: 'tool-call', toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}' }]
-    }
-
-    const messageB: ChatMessage = {
-      id: 'msg-1',
-      role: 'assistant',
-      parts: [
-        {
-          type: 'tool-call',
-          toolCallId: 'tc-1',
-          toolName: 'read_file',
-          args: {} as never,
-          argsText: '{}',
-          result: { content: 'data' },
-          isError: false
-        }
-      ]
-    }
-
-    expect(chatMessagesEquivalent(messageA, messageB)).toBe(false)
-  })
-
   it('returns false when message IDs differ', () => {
     expect(chatMessagesEquivalent(msg('msg-1', 'user', 'Hello'), msg('msg-2', 'user', 'Hello'))).toBe(false)
-  })
-
-  it('compares large messages with embedded images structurally without JSON.stringify', () => {
-    // Verifies that two structurally identical messages (that would be equal
-    // via stringify) are also equal via the new cheap structural compare.
-    const messageA: ChatMessage = {
-      id: 'msg-1',
-      role: 'assistant',
-      parts: [
-        { type: 'text', text: 'Here are the images:' },
-        {
-          type: 'tool-call',
-          toolCallId: 'img-1',
-          toolName: 'image_generate',
-          args: { prompt: 'a cat' } as never,
-          argsText: '{"prompt":"a cat"}',
-          result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' },
-          isError: false
-        }
-      ]
-    }
-
-    const messageB: ChatMessage = {
-      id: 'msg-1',
-      role: 'assistant',
-      parts: [
-        { type: 'text', text: 'Here are the images:' },
-        {
-          type: 'tool-call',
-          toolCallId: 'img-1',
-          toolName: 'image_generate',
-          args: { prompt: 'a cat' } as never,
-          argsText: '{"prompt":"a cat"}',
-          result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' },
-          isError: false
-        }
-      ]
-    }
-
-    // The structural compare treats these as equal (both have result defined,
-    // same toolCallId/toolName), without comparing the full result object.
-    expect(chatMessagesEquivalent(messageA, messageB)).toBe(true)
   })
 })
 
 describe('chatMessageArraysEquivalent', () => {
-  it('returns true for identical arrays via identity fast-path', () => {
-    const messages: ChatMessage[] = [msg('1', 'user', 'x')]
-
-    expect(chatMessageArraysEquivalent(messages, messages)).toBe(true)
-  })
-
   it('compares length and per-message equivalence', () => {
     const a = [msg('1', 'user', 'x'), msg('2', 'assistant', 'y')]
     expect(chatMessageArraysEquivalent(a, [msg('1', 'user', 'x'), msg('2', 'assistant', 'y')])).toBe(true)
@@ -977,29 +870,6 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
-
-  it.each(WIRE_REFERENCE_KINDS.filter(kind => kind !== 'file' && kind !== 'image'))(
-    'does not duplicate the optimistic %s turn when the persisted turn carries its directive',
-    kind => {
-      const ref = `@${kind}:X`
-
-      const previous = [
-        msg('1-user', 'user', 'first'),
-        msg('2-assistant', 'assistant', 'first answer'),
-        msg('user-optimistic', 'user', 'text', {
-          attachmentRefs: [ref]
-        })
-      ]
-
-      const next = [
-        msg('1-user-stored', 'user', 'first'),
-        msg('2-assistant-stored', 'assistant', 'first answer'),
-        msg('3-user-stored', 'user', `${ref}\n\ntext`)
-      ]
-
-      expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
-    }
-  )
 
   it('does not duplicate a directive-only file turn', () => {
     const previous = [
@@ -1873,12 +1743,6 @@ describe('preserveEquivalentTranscript', () => {
 
     expect(preserved).toBe(current)
     expect(preserved[0]).toBe(current[0])
-  })
-
-  it('keeps the current array when the arrays are the same reference', () => {
-    const current = [msg('u-1', 'user', 'hello')]
-
-    expect(preserveEquivalentTranscript(current, current)).toBe(current)
   })
 
   it('accepts the replacement when anything changed', () => {

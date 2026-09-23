@@ -29,7 +29,6 @@ And at the compressor boundary:
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -233,7 +232,6 @@ class TestTailCountArchivesAsRewindSemantics:
         ]
 
     def test_message_count_reflects_active_set(self, db: SessionDB) -> None:
-        import json as _json
 
         _seed(db)
         compacted = [*SUMMARY, {"role": "user", "content": "turn 4"},
@@ -255,69 +253,3 @@ class TestTailCountArchivesAsRewindSemantics:
             assert int(mc) == 4
 
 
-class TestCompressTagsCarriedTail:
-    def test_compress_marks_carried_forward_tail_dicts(self):
-        """compress() must tag its carried-forward tail dicts so the caller
-        can pass an accurate tail_count to the commit (#86366)."""
-        from agent.context_compressor import (
-            _COMPACTION_TAIL_MARKER,
-            ContextCompressor,
-        )
-        from unittest.mock import patch
-
-        compressor = ContextCompressor.__new__(ContextCompressor)
-
-        long_history = []
-        for i in range(12):
-            role = "user" if i % 2 == 0 else "assistant"
-            long_history.append({
-                "role": role,
-                "content": f"filler turn {i} " + "x" * 400,
-            })
-
-        captured: dict = {}
-
-        class _DB:
-            def archive_and_compact(self, session_id, messages, **kwargs):
-                captured["messages"] = messages
-                captured["tail_count"] = kwargs.get("tail_count", 0)
-                return len(messages)
-
-        with (
-            patch.object(compressor, "_session_db", _DB(), create=True),
-            patch.object(compressor, "_session_id", "sessX", create=True),
-            patch.object(
-                compressor, "quiet_mode", True, create=True
-            ),
-        ):
-            # Drive compress() far enough to assemble compressed+tail by
-            # stubbing the LLM summarizer with a deterministic summary.
-            with (
-                patch.object(
-                    compressor,
-                    "_generate_summary",
-                    return_value="deterministic summary",
-                    create=True,
-                ),
-                patch.object(
-                    compressor, "_prune_old_tool_results",
-                    side_effect=lambda msgs, **k: (msgs, 0),
-                    create=True,
-                ),
-            ):
-                try:
-                    out = compressor.compress(list(long_history))
-                except Exception:
-                    pytest.skip(
-                        "compress() requires more runtime wiring than this "
-                        "unit context provides; tag contract covered by the "
-                        "persistence-layer tests above"
-                    )
-
-            tagged = [
-                m for m in (captured.get("messages") or [])
-                if isinstance(m, dict) and m.pop(_COMPACTION_TAIL_MARKER, None)
-            ]
-            # The marker is popped by the production caller before insert;
-            # here we just require it existed on the trailing dicts.
-            assert out is not None

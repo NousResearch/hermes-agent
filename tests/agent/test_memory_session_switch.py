@@ -8,7 +8,6 @@ for scoped writes) keep writing into the old session's record.
 """
 
 
-import pytest
 
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
@@ -64,30 +63,6 @@ class _RecordingProvider(MemoryProvider):
 
 
 # ---------------------------------------------------------------------------
-# MemoryProvider ABC — default on_session_switch is a no-op
-# ---------------------------------------------------------------------------
-
-
-class _MinimalProvider(MemoryProvider):
-    """Provider that does NOT override on_session_switch — ABC default must no-op."""
-
-    @property
-    def name(self) -> str:
-        return "minimal"
-
-    def is_available(self) -> bool:
-        return True
-
-    def initialize(self, session_id, **kwargs):  # pragma: no cover - unused
-        pass
-
-    def get_tool_schemas(self):
-        return []
-
-
-
-
-# ---------------------------------------------------------------------------
 # MemoryManager.on_session_switch — fan-out
 # ---------------------------------------------------------------------------
 
@@ -111,8 +86,6 @@ def test_manager_fans_out_to_all_providers():
         assert call["extra"] == {"reason": "resume"}
 
 
-
-
 def test_manager_isolates_provider_failures():
     """A provider that raises must not block other providers."""
 
@@ -132,8 +105,6 @@ def test_manager_isolates_provider_failures():
     mm.on_session_switch("new-sid", parent_session_id="old-sid")
     assert len(good.switch_calls) == 1
     assert good.switch_calls[0]["new"] == "new-sid"
-
-
 
 
 # ---------------------------------------------------------------------------

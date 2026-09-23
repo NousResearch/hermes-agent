@@ -140,7 +140,7 @@ def test_wedged_dispatch_does_not_starve_later_tools(monkeypatch):
 
     agent = _make_agent(monkeypatch)
     monkeypatch.setattr(te, "_START_ORDER_GATE_TIMEOUT_S", 0.3)
-    monkeypatch.setattr(te, "_resolve_concurrent_tool_timeout", lambda: 6.0)
+    monkeypatch.setattr(te, "_resolve_concurrent_tool_timeout", lambda: 2.5)
 
     dispatched: list = []
     stop = threading.Event()
@@ -243,7 +243,7 @@ def test_abandoned_batch_does_not_dispatch_late(monkeypatch):
     )
 
     # Give a would-be late worker room to misbehave.
-    time.sleep(1.0)
+    time.sleep(0.5)
     late = [(n, t) for n, t in dispatched if t > returned_at]
     assert not late, f"tool(s) dispatched after the batch was abandoned: {late}"
     assert agent._current_tool is None, (

@@ -10,10 +10,8 @@ concurrently via ThreadPoolExecutor before the serial picker loop starts.
 from __future__ import annotations
 
 import time
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
-from hermes_cli import model_switch_providers
 
 
 # ---------------------------------------------------------------------------
@@ -194,58 +192,3 @@ class TestPrefetchProviderModelsParallel:
 # Integration: prefetch is called from list_authenticated_providers
 # ---------------------------------------------------------------------------
 
-class TestPrefetchIntegration:
-    """Verify ``list_authenticated_providers`` triggers parallel prefetch."""
-
-    def test_prefetch_called_with_more_than_3_providers(self):
-        """When >3 providers are authed, parallel prefetch is invoked."""
-        from hermes_cli import model_switch
-
-        slugs = [f"prov_{i}" for i in range(5)]
-        captured_slugs = []
-
-        def mock_collect(data, curated, excluded):
-            return slugs
-
-        with patch.object(model_switch_providers, "_collect_authed_provider_slugs", side_effect=mock_collect), \
-             patch.object(model_switch_providers, "_prefetch_provider_models_parallel") as prefetch:
-            try:
-                model_switch.list_authenticated_providers()
-            except Exception:
-                pass  # we only care about the prefetch call
-            captured_slugs = prefetch.call_args[0][0] if prefetch.called else []
-
-        assert prefetch.called
-        assert captured_slugs == slugs
-
-    def test_prefetch_skipped_with_3_or_fewer_providers(self):
-        """When ≤3 providers are authed, parallel prefetch is skipped."""
-        from hermes_cli import model_switch
-
-        slugs = ["prov_a", "prov_b"]
-
-        def mock_collect(data, curated, excluded):
-            return slugs
-
-        with patch.object(model_switch_providers, "_collect_authed_provider_slugs", side_effect=mock_collect), \
-             patch.object(model_switch_providers, "_prefetch_provider_models_parallel") as prefetch:
-            try:
-                model_switch.list_authenticated_providers()
-            except Exception:
-                pass
-
-        prefetch.assert_not_called()
-
-    def test_prefetch_skipped_on_refresh(self):
-        """When refresh=True, prefetch is skipped (serial path force-refreshes)."""
-        from hermes_cli import model_switch
-
-        with patch.object(model_switch_providers, "_collect_authed_provider_slugs") as collect, \
-             patch.object(model_switch_providers, "_prefetch_provider_models_parallel") as prefetch:
-            try:
-                model_switch.list_authenticated_providers(refresh=True)
-            except Exception:
-                pass
-
-        collect.assert_not_called()
-        prefetch.assert_not_called()

@@ -80,13 +80,23 @@ rather than "this profile's gateway":
   multiplexer*. They never sweep every gateway process on the box; a profile
   that still runs its own gateway is reported, never killed, with the
   `hermes gateway migrate --multiplex` one-liner.
-- `hermes gateway run --replace` takes the host role over, whichever profile
-  launched the running process; `hermes gateway run --force` starts a separate
-  gateway without asking the host process at all (the escape hatch when it is
-  wedged or answering wrongly).
+- `hermes gateway run --replace` takes over the process **serving this
+  profile**, whichever profile launched it. When the host owner is another
+  profile's standalone gateway (an unmigrated per-profile fleet) it never serves
+  this profile, so `--replace` starts beside it exactly as a plain `run` does,
+  instead of refusing and respawn-storming under the supervisor. An older Hermes
+  wrote a systemd drop-in (`hermes-gateway.service.d/20-replace.conf`) that
+  forced `--replace` onto the unit; `hermes update` / `hermes gateway restart`
+  now remove that file. `hermes gateway run --force` starts a separate gateway
+  without asking the host process at all (the escape hatch when it is wedged or
+  answering wrongly).
 - Under a service supervisor the attach exits 75, not 0 — systemd, s6 and
   launchd all restart a 75 after a short delay, so the unit keeps retrying and
   takes over by itself the moment the host process goes away.
+- Two units started at once can both see no host process yet; the host lock
+  decides which one runs, and the loser exits 75 and attaches on the retry.
+  `--replace` does not skip that check (every generated unit carries it), only
+  `--force` does.
 
 Multiplexing is **on by default** (`gateway.multiplex_profiles` defaults to
 `true`), with one safety rule: an *unset* flag is a request the default gateway

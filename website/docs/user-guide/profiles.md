@@ -71,7 +71,9 @@ A fresh profile still resolves providers and credential-pool entries from the de
 default store. To opt out for a disposable profile, use
 `hermes profile create sandbox --no-root-auth --no-alias --no-skills`. This persists a
 `.no-root-auth` marker in the profile and disables default-store reads and refresh write-through;
-credentials added to the sandbox's own `auth.json` still work. The flag is for fresh profiles,
+it also prevents Nous OAuth from reading or writing the root's shared token store, even when
+`HERMES_SHARED_AUTH_DIR` is set in the parent process. Credentials added to the sandbox's own
+`auth.json` still work. The flag is for fresh profiles,
 not clones. Shell environment keys and explicitly configured external credentials can still be
 used: clear those separately if you require a credential-free process. For a local preflight
 without connectivity probes, run `hermes -p sandbox doctor --offline` (not with `--live` or `--fix`).

@@ -41,3 +41,50 @@ def test_isolated_profile_keeps_its_own_auth_without_root_writethrough(tmp_path,
     auth._save_active_provider_state("nous", {"access_token": "local"})
     assert auth.get_provider_auth_state("nous")["access_token"] == "local"
     assert json.loads(root_auth.read_text())["providers"]["nous"]["access_token"] == "root"
+
+
+def test_isolated_nous_refresh_never_uses_shared_store(tmp_path, monkeypatch):
+    from hermes_cli import auth
+    from hermes_cli.auth_nous import _NousRuntimeResolve, _clear_shared_nous_state
+    from hermes_cli.profiles import create_profile
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    # Even an explicit process-wide override must not defeat a profile's isolation marker.
+    shared_dir = tmp_path / "shared-override"
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    root_state = {"access_token": "root-access", "refresh_token": "root-refresh"}
+    auth._write_shared_nous_state(root_state)
+    shared_file = shared_dir / "nous_auth.json"
+    original_shared = shared_file.read_bytes()
+    isolated = create_profile("isolated", no_skills=True, no_root_auth=True)
+    ordinary = create_profile("ordinary", no_skills=True)
+
+    for home, enabled in ((ordinary, True), (isolated, False), (ordinary, True)):
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        state = {"access_token": "local-access", "refresh_token": "local-refresh"}
+        assert (auth._read_shared_nous_state() is not None) is enabled
+        with auth._nous_shared_store_lock():
+            assert auth._merge_shared_nous_oauth_state(state) is enabled
+        assert state["refresh_token"] == ("root-refresh" if enabled else "local-refresh")
+
+    monkeypatch.setenv("HERMES_HOME", str(isolated))
+    assert auth._try_import_shared_nous_state() is None
+    auth._save_active_provider_state("nous", {
+        "access_token": "local-access", "refresh_token": "local-refresh"})
+    store = auth._load_auth_store()
+    local_state = dict(store["providers"]["nous"])
+    run = _NousRuntimeResolve(
+        store, local_state, isolated / "auth.json", force_refresh=False,
+        stale_access_token=None, timeout_seconds=1.0)
+    local_state.update(access_token="local-rotated", refresh_token="local-rotated-refresh")
+    with run.shared_lock():
+        run.persist("post_refresh_access_token")
+    assert auth.get_provider_auth_state("nous")["refresh_token"] == "local-rotated-refresh"
+    _clear_shared_nous_state("isolated_terminal_refresh_failure")
+    assert shared_file.read_bytes() == original_shared
+
+    monkeypatch.setenv("HERMES_HOME", str(ordinary))
+    assert auth._read_shared_nous_state()["refresh_token"] == "root-refresh"

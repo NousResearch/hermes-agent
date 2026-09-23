@@ -82,6 +82,16 @@ def _answer_identify(monkeypatch, pid: int, home: Path, served: list[str]) -> No
             if Path(dialled) == home else None))
 
 
+def _answer_identify_standalone(monkeypatch, pid: int, home: Path, profile: str) -> None:
+    """A standalone owner's ``identify`` answer carries NO ``served_profiles`` list, only its own
+    profile — the shape ``build_identify_payload`` produces when multiplex is off."""
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda dialled, **kw: (
+            {"pid": pid, "hermes_home": str(home), "profile": profile}
+            if Path(dialled) == home else None))
+
+
 def test_a_record_only_owner_never_produces_attach(tmp_path, monkeypatch, owner_pid):
     """Owner present, control socket silent: the served set is UNKNOWN, so never ATTACH.
 
@@ -181,6 +191,66 @@ def test_replace_signals_the_owner_instead_of_standing_down(tmp_path, monkeypatc
 
     assert asyncio.run(gateway_run._host_attach_or_none(replace=True)) is None
     assert signalled == [owner_pid]
+
+
+def test_replace_starts_beside_a_different_profiles_standalone_owner(
+        tmp_path, monkeypatch, owner_pid):
+    """``--replace`` must not signal a standalone owner for a DIFFERENT profile.
+
+    launchd/systemd default every unit to ``gateway run --replace``; on a
+    one-process-per-profile fleet a second profile's supervised unit would otherwise target the
+    unrelated standalone owner, get refused by the cross-profile ownership guard, and crash-loop
+    under the supervisor's retry. Standalone is proven by the owner's own rescan answer
+    (``multiplex: False``), never inferred from an absent ``served_profiles``.
+    """
+    owner_home = tmp_path / "root" / "profiles" / "leader"
+    ours = tmp_path / "root" / "profiles" / "default"
+    _publish(owner_pid, owner_home, ("leader",))
+    _answer_identify_standalone(monkeypatch, owner_pid, owner_home, "leader")
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["leader"]})
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: ours)
+
+    decision = host_attach.decide(ours, replace=True)
+
+    assert decision.outcome == host_attach.START
+
+
+def test_replace_signals_a_just_starting_multiplexer_whose_roster_is_not_published(
+        tmp_path, monkeypatch, owner_pid):
+    """A multiplexer that has not yet published its served set is NOT standalone.
+
+    The control socket answers before the adapters settle, so during the boot window ``identify``
+    carries no ``served_profiles``. That absence must not START a second gateway beside the live
+    multiplexer: the owner's rescan still answers ``multiplex: True`` (with ``pending``), so
+    ``--replace`` reaches it as the host process instead of standing it up as a peer.
+    """
+    owner_home = tmp_path / "root"
+    ours = owner_home / "profiles" / "other"
+    _publish(owner_pid, owner_home, ())  # the claim-time record publishes no roster
+    _answer_identify_standalone(monkeypatch, owner_pid, owner_home, "default")
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": True, "pending": True,
+                                                   "served_profiles": ["default"]})
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: ours)
+
+    decision = host_attach.decide(ours, replace=True)
+
+    assert decision.outcome == host_attach.REPLACE_HOST
+
+
+def test_replace_still_signals_this_profiles_own_standalone_instance(
+        tmp_path, monkeypatch, owner_pid):
+    """The same profile's own standalone instance is the legitimate ``--replace`` target: STARTing
+    beside it would double-bind this profile's platforms."""
+    owner_home = tmp_path / "root"
+    _publish(owner_pid, owner_home, ("default",))
+    _answer_identify_standalone(monkeypatch, owner_pid, owner_home, "default")
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: owner_home)
+
+    decision = host_attach.decide(owner_home, replace=True)
+
+    assert decision.outcome == host_attach.REPLACE_HOST
 
 
 def test_force_starts_without_consulting_the_owner(tmp_path, monkeypatch, owner_pid):

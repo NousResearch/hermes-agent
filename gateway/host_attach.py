@@ -338,8 +338,27 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
     if gateway is None or gateway.pid == os.getpid():
         return standalone_attach_decision(our_home, None) or HostAttachDecision(START, "")
     if replace:
-        # --replace is explicit authority over the host role; the target is the host process,
-        # whichever home launched it.
+        # --replace names the host process, whichever home launched it — UNLESS the owner is
+        # PROVABLY a STANDALONE gateway for a DIFFERENT profile. Standalone is the documented
+        # one-process-per-profile topology: each profile runs its own gateway with its own
+        # credentials, so "replace" there means "replace my own instance", never signal an
+        # unrelated owner. Before host rendezvous, launchd/systemd defaulted every unit to
+        # `gateway run --replace`, so a second profile's supervised unit must start beside the
+        # owner exactly as it did then — not kill it (which the cross-profile ownership guard
+        # refused, and the supervisor's retry loop turned into a respawn storm).
+        #
+        # The only reliable standalone signal is the owner's own rescan answer (`multiplex: False`).
+        # A missing `served_profiles` roster does NOT prove standalone: a just-starting multiplexer
+        # publishes no roster until its adapters settle, and treating it as standalone would START a
+        # second gateway beside the live host owner — whose host lock `--replace` then takes via its
+        # own `force=force or replace` semantics, so the extra gateway persists instead of exiting.
+        try:
+            attached = request_serve_profile(profile, owner=gateway)
+        except Exception:
+            logger.debug("host gateway rescan request failed", exc_info=True)
+            attached = None
+        if attached is not None and attached.standalone and not attached.serves(profile):
+            return HostAttachDecision(START, "")
         return HostAttachDecision(REPLACE_HOST, "", gateway)
     if gateway.served_known:
         standalone = standalone_attach_decision(our_home, gateway)

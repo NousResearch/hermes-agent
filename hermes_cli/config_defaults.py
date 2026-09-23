@@ -2782,8 +2782,8 @@ OPTIONAL_ENV_VARS = {
         "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
         "Azure Foundry base URL", None, password=False),
     "TOKEN_KIOSK_API_KEY": _prov("Token Kiosk API key for multi-model AI routing", "Token Kiosk API Key",
-        "https://agent-router.gaib.ai", advanced=False),
-    "TOKEN_KIOSK_BASE_URL": _prov("Token Kiosk base URL override (default: https://agent-router.gaib.ai/v1)",
+        "https://token-kiosk.gaib.ai", advanced=False),
+    "TOKEN_KIOSK_BASE_URL": _prov("Token Kiosk base URL override (default: https://api-token-kiosk.gaib.ai/v1)",
         "Token Kiosk base URL (leave empty for default)", None, password=False),
     # ── Tool API keys ──
     "EXA_API_KEY": _tool("Exa API key for AI-native web search and contents", "Exa API key",

@@ -83,7 +83,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "ollama-cloud": HermesOverlay(base_url_override="https://ollama.com/v1", base_url_env_var="OLLAMA_BASE_URL"),
     "token-kiosk": HermesOverlay(transport="openai_chat", is_aggregator=True,
                                  extra_env_vars=("TOKEN_KIOSK_API_KEY",),
-                                 base_url_override="https://agent-router.gaib.ai/v1",
+                                 base_url_override="https://api-token-kiosk.gaib.ai/v1",
                                  base_url_env_var="TOKEN_KIOSK_BASE_URL"),
     # Azure Foundry serves OpenAI- and Anthropic-style endpoints; transport comes from model.api_mode.
     "azure-foundry": HermesOverlay(base_url_env_var="AZURE_FOUNDRY_BASE_URL"),

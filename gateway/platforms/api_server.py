@@ -1192,7 +1192,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
-        self._response_store = ResponseStore()
+        from hermes_constants import get_hermes_home
+        self._response_store = ResponseStore()  # this home's; a /p/<profile>/ route gets its own
+        self._response_store_home = str(get_hermes_home())
+        self._response_stores: Dict[str, ResponseStore] = {}
+        self._response_store_lock = threading.Lock()
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
@@ -1701,6 +1705,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if len(raw) > self._MAX_SESSION_HEADER_LEN:
             return None, _invalid_request("Session key too long")
         return raw, None
+
+    # -- Responses state ----------------------------------------------------------------
+
+    def _current_response_store(self) -> "ResponseStore":
+        """Responses state of the routed profile's home. Conversation names are client-chosen, so one
+        shared store let any profile's key read, chain onto and overwrite another's (#84253)."""
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+        if str(home) == self._response_store_home:
+            return self._response_store
+        with self._response_store_lock:
+            store = self._response_stores.get(str(home))
+            if store is None:
+                store = self._response_stores[str(home)] = ResponseStore(db_path=str(home / "response_store.db"))
+            return store
 
     # -- Session DB -------------------------------------------------------------------
 
@@ -4282,9 +4301,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         files, #37011).
         """
         self._mark_disconnected()
-        if self._response_store is not None:
+        # getattr: disconnect() tolerates bare __new__ fixtures (pinned in test_api_server_run_idempotency).
+        routed = getattr(self, "_response_stores", {})
+        stores = [s for s in (getattr(self, "_response_store", None), *list(routed.values())) if s is not None]
+        routed.clear()
+        for store in stores:
             try:
-                self._response_store.close()
+                store.close()
             except Exception:
                 logger.debug("Failed to close response store for %s", self.name, exc_info=True)
         _api_runs._close_run_state(self)

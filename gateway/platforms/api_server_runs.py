@@ -393,7 +393,7 @@ def _resolve_conversation_history(
             logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
     stored_session_id = None
     if not conversation_history and previous_response_id:
-        stored = self._response_store.get(previous_response_id)
+        stored = self._current_response_store().get(previous_response_id)
         if stored:
             conversation_history = list(stored.get("conversation_history", []))
             stored_session_id = stored.get("session_id")

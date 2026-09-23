@@ -740,6 +740,10 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     lines = ([title] if title else []) + [line for line in _collect_card_lines(card_payload) if line != title]
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
+    # LOCAL PATCH (feishu-merge-forward-expand, 2026-09-23): expose URL-bearing buttons
+    action_urls = _collect_action_urls(card_payload)
+    if action_urls:
+        lines.append("链接: " + " | ".join(action_urls))
     return FeishuNormalizedMessage(
         raw_type=message_type,
         text_content="\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT,
@@ -796,6 +800,42 @@ def _collect_action_labels(payload: Any) -> List[str]:
         if label:
             labels.append(label)
     return _unique_lines(labels)
+
+
+# LOCAL PATCH (feishu-merge-forward-expand, 2026-09-23): extract URL-bearing buttons
+# (multi_url / url / href) so forwarded cards expose the link target in text form.
+# Callback-only buttons have no URL field — nothing to extract for those.
+def _collect_action_urls(payload: Any) -> List[str]:
+    urls: List[str] = []
+    for item in _walk_nodes(payload):
+        if not isinstance(item, dict):
+            continue
+        tag = str(item.get("tag", "") or item.get("type", "")).strip().lower()
+        if tag != "button":
+            continue
+        label = _first_text_field(item, "text", "name", deep=("text", "content", "name"))
+        candidates: List[str] = []
+        multi_url = item.get("multi_url")
+        if isinstance(multi_url, dict):
+            url = str(multi_url.get("url", "") or "").strip()
+            if url:
+                candidates.append(url)
+            android_url = str(multi_url.get("android_url", "") or "").strip()
+            ios_url = str(multi_url.get("ios_url", "") or "").strip()
+            pc_url = str(multi_url.get("pc_url", "") or "").strip()
+            for alt in (pc_url, ios_url, android_url):
+                if alt and alt != url:
+                    candidates.append(alt)
+        for key in ("url", "href", "open_url", "default_url", "link"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+        for url in candidates:
+            if label:
+                urls.append(f"{label}: {url}")
+            else:
+                urls.append(url)
+    return _unique_lines(urls)
 
 
 def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
@@ -2184,15 +2224,27 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, open_id: str) -> bool:
-        """Return whether this card-action operator may answer gated prompts."""
+    def _is_interactive_operator_authorized(self, open_id: str, user_id: str = "") -> bool:
+        """Return whether this card-action operator may answer gated prompts.
+
+        Matches against both the Feishu open_id (ou_...) and the short user_id
+        (e.g. bgbbcc5e): FEISHU_ALLOWED_USERS may store either form.
+
+        LOCAL PATCH (feishu-approval-button-dm-authorization). Re-applied on
+        v2026.9.22 main@ee8a919fd2 (2026-09-22).
+        """
         normalized = str(open_id or "").strip()
-        if not normalized:
+        normalized_uid = str(user_id or "").strip()
+        if not normalized and not normalized_uid:
             return False
         allowed_ids = set(self._admins) | set(self._allowed_group_users)
         if not allowed_ids:
             return True
-        return "*" in allowed_ids or normalized in allowed_ids
+        return (
+            "*" in allowed_ids
+            or normalized in allowed_ids
+            or normalized_uid in allowed_ids
+        )
 
     @staticmethod
     def _card_response(card_data: Optional[Dict[str, Any]] = None) -> Any:
@@ -2216,7 +2268,10 @@ class FeishuAdapter(BasePlatformAdapter):
         """
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        if not self._is_interactive_operator_authorized(open_id):
+        # LOCAL PATCH (feishu-approval-button-dm-authorization): the allowlist may
+        # store either open_id (ou_...) or short user_id, so match both.
+        operator_user_id = str(getattr(operator, "user_id", "") or "")
+        if not self._is_interactive_operator_authorized(open_id, operator_user_id):
             logger.warning("[Feishu] Unauthorized %s click by %s", label, open_id or "<unknown>")
             return None
         callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
@@ -2244,8 +2299,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name = checked
+        operator_user_id = str(getattr(getattr(event, "operator", None), "user_id", "") or "")
         coro = self._resolve_approval(
-            approval_id=approval_id, choice=choice, user_name=user_name, open_id=open_id, chat_id=chat_id,
+            approval_id=approval_id, choice=choice, user_name=user_name,
+            open_id=open_id, user_id=operator_user_id, chat_id=chat_id,
         )
         if not self._submit_on_loop(loop, coro):
             return self._card_response()
@@ -2269,13 +2326,15 @@ class FeishuAdapter(BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name = checked
-        coro = self._resolve_update_prompt(prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id)
+        operator_user_id = str(getattr(getattr(event, "operator", None), "user_id", "") or "")
+        coro = self._resolve_update_prompt(prompt_id, answer, user_name, open_id=open_id, user_id=operator_user_id, chat_id=chat_id)
         if not self._submit_on_loop(loop, coro):
             return self._card_response()
         return self._card_response(self._build_resolved_update_prompt_card(answer=answer, user_name=user_name))
 
     def _pop_validated_prompt_state(
-        self, *, states: Dict[int, Dict[str, str]], ident: Any, label: str, open_id: str, chat_id: str,
+        self, *, states: Dict[int, Dict[str, str]], ident: Any, label: str, open_id: str, user_id: str = "",
+        chat_id: str,
         unauthorized_fmt: str, operator_repr: str,
     ) -> Optional[Dict[str, str]]:
         """Re-validate on the loop thread (state may have changed since the callback) and pop."""
@@ -2283,7 +2342,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] %s %s already resolved or unknown", label, ident)
             return None
-        if not self._is_interactive_operator_authorized(open_id):
+        if not self._is_interactive_operator_authorized(open_id, user_id):
             logger.warning(unauthorized_fmt, operator_repr, ident)
             return None
         expected_chat_id = str(state.get("chat_id", "") or "")
@@ -2296,11 +2355,13 @@ class FeishuAdapter(BasePlatformAdapter):
         return state
 
     async def _resolve_approval(
-        self, approval_id: Any, choice: str, user_name: str, *, open_id: str = "", chat_id: str = "",
+        self, approval_id: Any, choice: str, user_name: str, *, open_id: str = "", user_id: str = "",
+        chat_id: str = "",
     ) -> None:
         """Pop approval state and unblock the waiting agent thread."""
         state = self._pop_validated_prompt_state(
-            states=self._approval_state, ident=approval_id, label="Approval", open_id=open_id, chat_id=chat_id,
+            states=self._approval_state, ident=approval_id, label="Approval", open_id=open_id,
+            user_id=user_id, chat_id=chat_id,
             unauthorized_fmt="[Feishu] Unauthorized approval click by %s for approval %s",
             operator_repr=open_id or "<unknown>",
         )
@@ -2331,12 +2392,13 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
     async def _resolve_update_prompt(
-        self, prompt_id: Any, answer: str, user_name: str, *, open_id: str = "", chat_id: str = "",
+        self, prompt_id: Any, answer: str, user_name: str, *, open_id: str = "", user_id: str = "",
+        chat_id: str = "",
     ) -> None:
         """Persist an update prompt answer for the detached update process."""
         state = self._pop_validated_prompt_state(
             states=self._update_prompt_state, ident=prompt_id, label="Update prompt", open_id=open_id,
-            chat_id=chat_id, unauthorized_fmt="[Feishu] Unauthorized update prompt click by %s for prompt %s",
+            user_id=user_id, chat_id=chat_id, unauthorized_fmt="[Feishu] Unauthorized update prompt click by %s for prompt %s",
             operator_repr=open_id,
         )
         if not state:
@@ -2963,6 +3025,49 @@ class FeishuAdapter(BasePlatformAdapter):
             message_type=message_type, raw_content=raw_content, mentions=mentions, bot=self._bot_identity(),
         )
 
+    # LOCAL PATCH (feishu-merge-forward-expand, 2026-09-23). Feishu delivers merge_forward
+    # messages with a fixed "Merged and Forwarded Message" content — the actual sub-messages
+    # are only retrievable via GET im/v1/messages/{id}, whose items[0] is the merge_forward
+    # itself and items[1:] are the forwarded originals (confirmed live, 2026-09-23).
+    async def _expand_merge_forward(self, message_id: str, fallback: FeishuNormalizedMessage) -> Optional[FeishuNormalizedMessage]:
+        if not self._client or not message_id:
+            return None
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            if not self._response_succeeded(response):
+                logger.warning("[Feishu] merge_forward expand failed: %s %s",
+                               getattr(response, "code", "unknown"), getattr(response, "msg", ""))
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            sub_items = items[1:] if len(items) > 1 else []
+            lines: List[str] = []
+            for item in sub_items:
+                sub_type = str(getattr(item, "msg_type", "") or "")
+                sub_content = str(getattr(getattr(item, "body", None), "content", "") or "")
+                if not sub_type or not sub_content:
+                    continue
+                sub_normalized = self._normalize(sub_type, sub_content, None)
+                sub_text = (sub_normalized.text_content or "").strip()
+                if sub_text:
+                    lines.append(sub_text)
+                # URL-bearing buttons: expose the link target so the agent can open it
+                sub_payload = _load_feishu_payload(sub_content)
+                card_payload = sub_payload.get("card") if isinstance(sub_payload.get("card"), dict) else sub_payload
+                action_urls = _collect_action_urls(card_payload)
+                if action_urls:
+                    lines.append("链接: " + " | ".join(action_urls))
+            if not lines:
+                return None
+            return FeishuNormalizedMessage(
+                raw_type="merge_forward", text_content="\n\n---\n\n".join(lines),
+                relation_kind="merge_forward",
+                metadata={"expanded": True, "sub_message_count": len(lines)},
+            )
+        except Exception:
+            logger.debug("[Feishu] merge_forward expand error", exc_info=True)
+            return None
+
     async def _extract_message_content(
         self, message: Any
     ) -> tuple[str, MessageType, List[str], List[str], List[bool], List[FeishuMentionRef]]:
@@ -2971,6 +3076,10 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id = str(getattr(message, "message_id", "") or "")
         logger.info("[Feishu] Received raw message type=%s message_id=%s", raw_type, message_id)
         normalized = self._normalize(raw_type, raw_content, getattr(message, "mentions", None))
+        if str(raw_type).strip().lower() == "merge_forward":
+            expanded = await self._expand_merge_forward(message_id, normalized)
+            if expanded is not None:
+                normalized = expanded
         media_urls, media_types = await self._download_feishu_message_resources(
             message_id=message_id, normalized=normalized,
         )

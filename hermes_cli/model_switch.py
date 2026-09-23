@@ -15,7 +15,7 @@ from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
     LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
-    host_mandated_api_mode, is_aggregator, resolve_provider_full)
+    host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -759,7 +759,7 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
     for alias_name, da in DIRECT_ALIASES.items():
         if da.model.lower() != key:
             continue
-        if da.provider == current_provider:
+        if normalize_provider(da.provider or "") == normalize_provider(current_provider or ""):
             return (da.provider, da.model, alias_name)
         if reverse_fallback is None:
             reverse_fallback = (da.provider, da.model, alias_name)
@@ -1245,7 +1245,7 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         # Adopt the alias (and with it its base_url and key) only when it belongs to the provider
         # the user named: a reverse model-id match may land on another provider's alias, and
         # honouring it would send the turn to that provider's endpoint under this one's identity.
-        if alias_provider == st.target_provider:
+        if normalize_provider(alias_provider or "") == normalize_provider(st.target_provider or ""):
             st.resolved_alias = alias_name
     return None
 

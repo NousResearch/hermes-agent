@@ -139,3 +139,11 @@ def test_cli_specify_tenant_filter(kanban_home, capsys):
         assert kb.get_task(conn, inside).status in {"todo", "ready"}
 
 
+
+
+def test_extract_json_blob_survives_trailing_prose_with_braces():
+    """Models append a diagnostics line after the object; first-``{``/last-``}`` slicing swallowed it
+    and the whole specify call returned None."""
+    raw = '```json\n{"title": "Fix login", "tags": ["auth"]}\n```\nDiagnostics: {tokens: 1200}'
+    assert spec._extract_json_blob(raw) == {"title": "Fix login", "tags": ["auth"]}
+    assert spec._extract_json_blob("nothing here {broken") is None

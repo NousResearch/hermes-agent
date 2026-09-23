@@ -723,9 +723,6 @@ def _session_waiting(session_id: str) -> bool:
         return False
 
 
-_JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
-
-
 def _goal_judge_setting(key: str, default, cast):
     """Resolve ``auxiliary.goal_judge.<key>``; non-positive/garbage falls back to ``default``
     rather than crashing the loop. ``load_config()`` is cached on (mtime, size) so this is cheap."""
@@ -761,13 +758,14 @@ def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
     try:
         data = json.loads(text)
     except Exception:
-        match = _JSON_OBJECT_RE.search(text)
-        if not match:
+        from tools.delegation_output_schema import first_json_value_span
+
+        # First complete object, not a non-greedy ``\{.*?\}`` — that regex stopped at the first
+        # ``}`` and lost every reply carrying a nested ``wait`` directive.
+        span = first_json_value_span(text, openers="{")
+        if span is None:
             return None
-        try:
-            data = json.loads(match.group(0))
-        except Exception:
-            return None
+        data = json.loads(span)
     return data if isinstance(data, dict) else None
 
 

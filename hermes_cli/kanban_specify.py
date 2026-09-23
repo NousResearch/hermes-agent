@@ -89,19 +89,18 @@ _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 
 
 def _extract_json_blob(raw: str, fence_re: re.Pattern = _FENCE_RE) -> Optional[dict]:
-    """Lenient JSON object extraction: strip code fences, take the first ``{``
-    to the last ``}``. None if nothing parses to a dict."""
+    """Lenient JSON object extraction: strip code fences, take the first ``{...}`` that decodes as
+    one complete value (not first-``{``/last-``}`` — trailing prose with a brace broke that).
+    None if nothing parses to a dict."""
     if not raw:
         return None
+    from tools.delegation_output_schema import first_json_value_span
+
     stripped = fence_re.sub("", raw.strip())
-    first = stripped.find("{")
-    last = stripped.rfind("}")
-    if first == -1 or last == -1 or last <= first:
+    span = first_json_value_span(stripped, openers="{")
+    if span is None:
         return None
-    try:
-        val = json.loads(stripped[first : last + 1])
-    except (ValueError, json.JSONDecodeError):
-        return None
+    val = json.loads(span)
     return val if isinstance(val, dict) else None
 
 

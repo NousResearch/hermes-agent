@@ -60,6 +60,16 @@ class TestParseJudgeResponse:
         assert wait == {"pid": 4242}
         assert reason == "CI running"
 
+    def test_prose_wrapped_reply_with_nested_object_still_parses(self):
+        """Judges wrap the verdict in prose; the old non-greedy ``{.*?}`` stopped at the first ``}``
+        and dropped every reply whose wait directive was a nested object → silent fail-open."""
+        from hermes_cli.goals import _parse_judge_response
+
+        v, _reason, pf, _wait = _parse_judge_response(
+            'Assessment:\n{"verdict": "wait", "wait_on_pid": 7, "reason": "x", "meta": {"k": 1}}\nTrailing note: {unbalanced'
+        )
+        assert (v, pf) == ("wait", False)
+
 
 
 

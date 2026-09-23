@@ -76,6 +76,32 @@ class TestValidateOutput:
         assert ok is False
         assert errors
 
+    def test_fenced_json_with_trailing_prose_is_accepted(self):
+        """A fenced answer followed by prose that itself contains a brace: the old extractor cut to
+        the LAST closer in the text, so the span ran past the payload into the prose and the answer
+        came back "Response is not valid JSON: Extra data: line 2 column 1" — burning the one
+        bounded retry on a correct answer."""
+        text = '```json\n{"city": "Oslo"}\n```\n\nNote: the `{city}` block above is the answer.\n'
+        ok, errors = validate_output(text, ADDRESS_SCHEMA)
+        assert ok is True, errors
+        assert errors == []
+
+    def test_bare_json_with_trailing_prose_brace_is_accepted(self):
+        """Same class, unfenced, in the shape the child loop actually appends: the
+        file-mutation-verifier footer carries "Run `git status` to confirm {…}"."""
+        text = (
+            '{"city": "Lima"}\n\n'
+            "\u26a0\ufe0f File-mutation verifier: 1 file(s) were NOT modified this turn despite any "
+            "wording above. Run `git status` or `read_file` to confirm {see above}.\n"
+        )
+        ok, errors = validate_output(text, ADDRESS_SCHEMA)
+        assert ok is True, errors
+
+    def test_leading_prose_brace_before_json_is_accepted(self):
+        """Prose BEFORE the payload, with its own brace, must not derail the span either."""
+        ok, errors = validate_output('Findings (cross-ref {x}):\n{"city": "Kyiv"}\n', ADDRESS_SCHEMA)
+        assert ok is True, errors
+
 
 class TestCoerceOutputSchema:
     def test_valid_schema_passes(self):
@@ -288,6 +314,25 @@ class TestRunSingleChildSchemaValidation:
         child._delegate_output_schema = {"type": "array", "items": {"type": "object"}}
         entry = _run(child)
         assert entry["schema_valid"] is True and len(child.calls) == 1
+
+    def test_answer_followed_by_verifier_footer_is_not_a_failure(self):
+        """End-to-end invariant for the audit trail: a child whose final text is valid JSON plus the
+        loop's file-mutation-verifier footer (which contains a brace) must be recorded as a SCHEMA
+        PASS on the first try — no failed status, no burned retry. Status-based watchers counted
+        these as verifier failures while the sign-off was consumed."""
+        text = (
+            '{"city": "Berlin"}\n\n'
+            "\u26a0\ufe0f File-mutation verifier: 1 file(s) were NOT modified this turn. "
+            "Run `git status` to confirm {see above}.\n"
+        )
+        child = _StubChild([text])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert entry["schema_valid"] is True
+        assert "schema_errors" not in entry
+        assert "schema_note" not in entry
+        assert len(child.calls) == 1  # the answer was understood; no correction turn spent
 
     def test_schema_valid_entry_still_completed(self):
         """Guard: schema_valid=True keeps status="completed" untouched."""

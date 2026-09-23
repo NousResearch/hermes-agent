@@ -58,12 +58,25 @@ export interface ManagedSshLaunchCapability {
   readonly __managedSshLaunchCapability: true
 }
 
+/** Main-owned installation and SSH route reviewed for one coordinator launch. */
+export interface ManagedSshCoordinatorSourceBinding {
+  installId: string
+  installationFingerprint: string
+  sourceFingerprint: string
+}
+
 export interface ManagedSshUpdateRequestOptions {
   correlationId?: string
   intent?: ManagedSshUpdateIntent
   mode?: ManagedSshUpdateMode
   launchCapability?: ManagedSshLaunchCapability
+  expectedSource?: ManagedSshCoordinatorSourceBinding
 }
+
+/** Synchronous admission verdict; the operation continues asynchronously after acceptance. */
+export type ManagedSshUpdateAdmission =
+  | { admitted: true; operation: Promise<ManagedConnectionUpdateResult> }
+  | { admitted: false; reason: string; operation: Promise<ManagedConnectionUpdateResult> }
 
 export interface ManagedSshPreparationReceipt {
   kind: 'preparation'
@@ -100,6 +113,12 @@ export interface ManagedSshUpdateServiceDependencies<
     correlationId: string,
     context: { connectionId: string; intent?: ManagedSshUpdateIntent; onLaunchProved: () => Promise<void> }
   ) => Promise<RemoteUpdateProof>
+  /** Probe the selected transport, live registry route, installation, and host key before mutation. */
+  verifyCoordinatorSource?: (
+    source: TSource,
+    target: RemoteUpdateTarget,
+    expected: ManagedSshCoordinatorSourceBinding
+  ) => Promise<void>
   preflightRemote: (target: RemoteUpdateTarget, correlationId: string) => Promise<unknown>
   awaitRestoreClearance: (
     target: RemoteUpdateTarget,
@@ -126,6 +145,7 @@ export interface ManagedSshUpdateService<TSource extends ManagedSshUpdateSource 
   readonly activePreparations: Map<string, Promise<ManagedSshPreparationResult>>
   readonly activeRecoveries: Map<string, Promise<void>>
   readonly request: (rawId: unknown, options?: ManagedSshUpdateRequestOptions) => Promise<ManagedConnectionUpdateResult>
+  readonly requestCoordinator: (rawId: unknown, options: ManagedSshUpdateRequestOptions) => ManagedSshUpdateAdmission
   readonly prepare: (
     rawId: unknown,
     options?: Pick<ManagedSshUpdateRequestOptions, 'correlationId' | 'intent'>
@@ -133,7 +153,8 @@ export interface ManagedSshUpdateService<TSource extends ManagedSshUpdateSource 
   readonly issueLaunchCapability: (
     connectionId: string,
     correlationId: string,
-    intent: ManagedSshUpdateIntent
+    intent: ManagedSshUpdateIntent,
+    expectedSource: ManagedSshCoordinatorSourceBinding
   ) => ManagedSshLaunchCapability
   readonly recover: (record: ManagedSshRecoveryRecord) => Promise<void>
   readonly resumeRecoveries: () => Promise<void>
@@ -167,6 +188,7 @@ interface LaunchCapabilityRecord {
   connectionId: string
   correlationId: string
   intent: ManagedSshUpdateIntent
+  expectedSource: ManagedSshCoordinatorSourceBinding
   consumed: boolean
 }
 
@@ -185,13 +207,30 @@ function sameIntent(left: ManagedSshUpdateIntent, right: ManagedSshUpdateIntent)
   )
 }
 
+function validateSourceBinding(value: ManagedSshCoordinatorSourceBinding | undefined): ManagedSshCoordinatorSourceBinding {
+  if (
+    !value || !/^[0-9a-f]{32}$/.test(value.installId) ||
+    !/^[0-9a-f]{64}$/.test(value.installationFingerprint) ||
+    !/^[0-9a-f]{64}$/.test(value.sourceFingerprint)
+  ) {throw new Error('Coordinator update requires a reviewed installation and source binding.')}
+
+  return value
+}
+
+function sameSourceBinding(left: ManagedSshCoordinatorSourceBinding, right: ManagedSshCoordinatorSourceBinding): boolean {
+  return left.installId === right.installId &&
+    left.installationFingerprint === right.installationFingerprint &&
+    left.sourceFingerprint === right.sourceFingerprint
+}
+
 function createLaunchCapability(
   connectionId: string,
   correlationId: string,
-  intent: ManagedSshUpdateIntent
+  intent: ManagedSshUpdateIntent,
+  expectedSource: ManagedSshCoordinatorSourceBinding
 ): ManagedSshLaunchCapability {
   const capability = Object.freeze({ __managedSshLaunchCapability: true }) as ManagedSshLaunchCapability
-  launchCapabilityRecords.set(capability, { connectionId, correlationId, intent, consumed: false })
+  launchCapabilityRecords.set(capability, { connectionId, correlationId, intent, expectedSource, consumed: false })
 
   return capability
 }
@@ -200,7 +239,8 @@ function consumeLaunchCapability(
   capability: ManagedSshLaunchCapability | undefined,
   connectionId: string,
   correlationId: string,
-  intent: ManagedSshUpdateIntent | undefined
+  intent: ManagedSshUpdateIntent | undefined,
+  expectedSource: ManagedSshCoordinatorSourceBinding | undefined
 ): void {
   const record = capability ? launchCapabilityRecords.get(capability) : undefined
 
@@ -212,7 +252,8 @@ function consumeLaunchCapability(
     throw new Error('The managed SSH launch capability has already been consumed.')
   }
 
-  if (!intent || record.connectionId !== connectionId || record.correlationId !== correlationId || !sameIntent(record.intent, intent)) {
+  if (!intent || !expectedSource || record.connectionId !== connectionId || record.correlationId !== correlationId ||
+      !sameIntent(record.intent, intent) || !sameSourceBinding(record.expectedSource, expectedSource)) {
     throw new Error('The managed SSH launch capability was bound to a different update transaction.')
   }
 
@@ -262,11 +303,12 @@ export function createManagedSshUpdateService<
       drainScope: async scope => {
         await deps.drainScope(scope)
       },
-      updateRemote: () => {
+      updateRemote: async () => {
         // Consume only at the mutation edge. A preflight or drain failure has
         // not dispatched a remote update and therefore must not burn approval.
         if (options.mode === 'coordinator') {
-          consumeLaunchCapability(options.launchCapability, connectionId, correlationId, intent)
+          await deps.verifyCoordinatorSource!(sourceSnapshot, target, options.expectedSource!)
+          consumeLaunchCapability(options.launchCapability, connectionId, correlationId, intent, options.expectedSource)
         }
 
         return deps.executeRemoteUpdate(target, correlationId, {
@@ -296,15 +338,24 @@ export function createManagedSshUpdateService<
     })
   }
 
-  const request = (
+  const admitRequest = (
     rawId: unknown,
     options: ManagedSshUpdateRequestOptions = {}
-  ): Promise<ManagedConnectionUpdateResult> => {
+  ): ManagedSshUpdateAdmission => {
     const connectionId = String(rawId || '').trim()
+
+    const refuse = (correlationId: string, reason: string): ManagedSshUpdateAdmission => ({
+      admitted: false,
+      reason,
+      operation: Promise.resolve(refusedManagedSshUpdate(connectionId, correlationId, reason))
+    })
+
     const existing = activeUpdates.get(connectionId)
 
     if (existing) {
-      return existing
+      return options.mode === 'coordinator'
+        ? refuse(String(options.correlationId || ''), 'A managed update is already in progress.')
+        : { admitted: true, operation: existing }
     }
 
     let correlationId: string
@@ -314,9 +365,7 @@ export function createManagedSshUpdateService<
         ? validateCorrelationId(options.correlationId)
         : deps.createCorrelationId?.() || crypto.randomUUID()
     } catch (error) {
-      return Promise.resolve(
-        refusedManagedSshUpdate(connectionId, String(options.correlationId || ''), errorMessage(error))
-      )
+      return refuse(String(options.correlationId || ''), errorMessage(error))
     }
 
     let intent: ManagedSshUpdateIntent | undefined
@@ -324,45 +373,43 @@ export function createManagedSshUpdateService<
     try {
       intent = validateManagedSshUpdateIntent(options.intent)
     } catch (error) {
-      return Promise.resolve(refusedManagedSshUpdate(connectionId, correlationId, errorMessage(error)))
+      return refuse(correlationId, errorMessage(error))
     }
 
     if (options.mode === 'coordinator' && !intent) {
-      return Promise.resolve(
-        refusedManagedSshUpdate(connectionId, correlationId, 'Coordinator update requires a reviewed pinned target.')
-      )
+      return refuse(correlationId, 'Coordinator update requires a reviewed pinned target.')
     }
 
     if (intent && options.mode !== 'coordinator') {
-      return Promise.resolve(
-        refusedManagedSshUpdate(connectionId, correlationId, 'Reviewed pinned updates require coordinator admission.')
-      )
+      return refuse(correlationId, 'Reviewed pinned updates require coordinator admission.')
+    }
+
+    if (options.mode === 'coordinator') {
+      try {
+        validateSourceBinding(options.expectedSource)
+      } catch (error) {
+        return refuse(correlationId, errorMessage(error))
+      }
+
+      if (!deps.verifyCoordinatorSource) {
+        return refuse(correlationId, 'Coordinator source verifier is unavailable.')
+      }
     }
 
     const source = deps.resolveSource(connectionId)
 
     if (!source) {
-      return Promise.resolve(
-        refusedManagedSshUpdate(connectionId, correlationId, `No connection with id "${connectionId}".`)
-      )
+      return refuse(correlationId, `No connection with id "${connectionId}".`)
     }
 
     const sourceIsManaged = deps.isManagedSshSource?.(source) ?? isSshSource(source)
 
     if (!sourceIsManaged) {
-      return Promise.resolve(
-        refusedManagedSshUpdate(
-          connectionId,
-          correlationId,
-          'Only registered Desktop-managed SSH connections can use this update lifecycle.'
-        )
-      )
+      return refuse(correlationId, 'Only registered Desktop-managed SSH connections can use this update lifecycle.')
     }
 
     if (!gate.claim(connectionId, correlationId)) {
-      return Promise.resolve(
-        refusedManagedSshUpdate(connectionId, correlationId, 'A managed update is already in progress.')
-      )
+      return refuse(correlationId, 'A managed update is already in progress.')
     }
 
     const operation = (async () => {
@@ -378,8 +425,14 @@ export function createManagedSshUpdateService<
 
     activeUpdates.set(connectionId, operation)
 
-    return operation
+    return { admitted: true, operation }
   }
+
+  const request = (rawId: unknown, options: ManagedSshUpdateRequestOptions = {}): Promise<ManagedConnectionUpdateResult> =>
+    admitRequest(rawId, options).operation
+
+  const requestCoordinator = (rawId: unknown, options: ManagedSshUpdateRequestOptions): ManagedSshUpdateAdmission =>
+    admitRequest(rawId, { ...options, mode: 'coordinator' })
 
   const prepare = (
     rawId: unknown,
@@ -629,8 +682,9 @@ export function createManagedSshUpdateService<
     activePreparations,
     activeRecoveries,
     request,
+    requestCoordinator,
     prepare,
-    issueLaunchCapability: (connectionId, correlationId, intent) => {
+    issueLaunchCapability: (connectionId, correlationId, intent, expectedSource) => {
       const normalizedIntent = validateManagedSshUpdateIntent(intent)
 
       if (!normalizedIntent) {
@@ -640,7 +694,8 @@ export function createManagedSshUpdateService<
       return createLaunchCapability(
         String(connectionId || '').trim(),
         validateCorrelationId(correlationId),
-        normalizedIntent
+        normalizedIntent,
+        { ...validateSourceBinding(expectedSource) }
       )
     },
     recover,

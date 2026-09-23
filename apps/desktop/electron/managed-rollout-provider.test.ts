@@ -225,13 +225,12 @@ function makeDependencies(options: { origin?: string; plan?: RolloutPlan } = {})
 
       return { internal: 'not-for-ipc' }
     },
-    request: async (connectionId: string, input: { mode: string; correlationId: string }) => {
+    requestCoordinator: (connectionId: string, input: { correlationId: string }) => {
       assert.equal(connectionId, CONNECTION_ID)
-      assert.equal(input.mode, 'coordinator')
       launchCalls.push(`${connectionId}:${input.correlationId}`)
 
-      return {
-        connectionId,
+      return { admitted: true as const, operation: Promise.resolve({
+        connectionId: String(connectionId),
         correlationId: input.correlationId,
         ok: true,
         updateOk: true,
@@ -247,7 +246,7 @@ function makeDependencies(options: { origin?: string; plan?: RolloutPlan } = {})
           postSha: TARGET_SHA
         },
         scopes: []
-      }
+      }) }
     }
   }
 
@@ -347,6 +346,7 @@ test('reports missing real-SSH capacity even when a review manifest is not insta
       ready: () => false,
       measuredMaxInstallations: undefined
     })
+
     const capability = await provider.capabilities()
     assert.equal(capability.available, false)
     assert.equal(capability.reason, 'unverified-capacity')
@@ -638,6 +638,86 @@ test('rejects exact-source drift before issuing a review token', async () => {
       }),
       /reviewed-origin-mismatch/
     )
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('refuses a selected route edit after preflight before creating a rollout journal', async () => {
+  const { dependencies, journalDirectory, launchCalls } = makeDependencies()
+  let liveInventory = INVENTORY
+  dependencies.inventoryReader = { capture: async () => liveInventory }
+
+  try {
+    const provider = createManagedRolloutProvider(dependencies)
+    await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null })
+
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision,
+      targetResolutionId: RESOLUTION.id,
+      waves: [[INSTALL_ID]],
+      concurrency: 1,
+      promotionPolicy: 'auto-if-healthy',
+      retryOf: null
+    }) as { token: string; requestId: string }
+
+    liveInventory = {
+      ...INVENTORY,
+      observations: [{
+        ...INVENTORY.observations[0],
+        source: { ...INVENTORY.observations[0].source, verifiedHostKeyFingerprint: '9'.repeat(64) }
+      }]
+    }
+
+    await assert.rejects(() => provider.start(preflight), /inventory-source-or-scope-mismatch/)
+    assert.equal(dependencies.journal.history({ limit: 50 }).items.length, 0)
+    assert.deepEqual(launchCalls, [])
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('does not record service handoff when service refuses coordinator admission', async () => {
+  const { dependencies, journalDirectory } = makeDependencies()
+  dependencies.managedSshUpdateService = {
+    ...dependencies.managedSshUpdateService,
+    requestCoordinator: (connectionId, options) => ({
+      admitted: false,
+      reason: 'coordinator-source-binding-mismatch',
+      operation: Promise.resolve({
+        connectionId: String(connectionId),
+        correlationId: options?.correlationId || '',
+        ok: false,
+        updateOk: false,
+        restoreOk: true,
+        outcome: 'refused',
+        exitCode: null,
+        receipt: null,
+        scopes: [],
+        error: 'coordinator-source-binding-mismatch'
+      })
+    })
+  }
+
+  try {
+    const provider = createManagedRolloutProvider(dependencies)
+    await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null })
+
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision,
+      targetResolutionId: RESOLUTION.id,
+      waves: [[INSTALL_ID]],
+      concurrency: 1,
+      promotionPolicy: 'auto-if-healthy',
+      retryOf: null
+    }) as { token: string; requestId: string }
+
+    const started = await provider.start(preflight) as { id: string }
+    await provider.waitForIdle()
+
+    const facts = dependencies.journal.read(started.id).facts.map(item => item.kind)
+    assert.equal(facts.includes('handoff-accepted'), false)
+    assert.equal(facts.includes('detached-intent'), false)
   } finally {
     fs.rmSync(journalDirectory, { recursive: true, force: true })
   }

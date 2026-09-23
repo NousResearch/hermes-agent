@@ -26,6 +26,12 @@ const PINNED_INTENT: ManagedSshUpdateIntent = {
   }
 }
 
+const EXPECTED_SOURCE = {
+  installId: 'a'.repeat(32),
+  installationFingerprint: 'b'.repeat(64),
+  sourceFingerprint: 'c'.repeat(64)
+}
+
 interface TestScope extends ManagedSshUpdateScope {
   state?: object | null
 }
@@ -171,6 +177,7 @@ test('coordinator forwarding requires a capability bound to one exact pinned mut
 
   const service = createManagedSshUpdateService(
     deps({
+      verifyCoordinatorSource: async () => {},
       executeRemoteUpdate: async (_target, correlation, context) => {
         mutations += 1
         forwarded = context.intent
@@ -181,20 +188,22 @@ test('coordinator forwarding requires a capability bound to one exact pinned mut
     })
   )
 
-  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT)
+  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
 
   const first = await service.request('homelab', {
     correlationId: CORRELATION,
     intent: PINNED_INTENT,
     mode: 'coordinator',
-    launchCapability: capability
+    launchCapability: capability,
+    expectedSource: EXPECTED_SOURCE
   })
 
   const reused = await service.request('homelab', {
     correlationId: CORRELATION,
     intent: PINNED_INTENT,
     mode: 'coordinator',
-    launchCapability: capability
+    launchCapability: capability,
+    expectedSource: EXPECTED_SOURCE
   })
 
   assert.equal(first.ok, true)
@@ -209,6 +218,7 @@ test('a coordinator update cannot reach mutation transport without its matching 
 
   const service = createManagedSshUpdateService(
     deps({
+      verifyCoordinatorSource: async () => {},
       executeRemoteUpdate: async (_target, correlation, context) => {
         mutations += 1
         await context.onLaunchProved()
@@ -221,11 +231,110 @@ test('a coordinator update cannot reach mutation transport without its matching 
   const result = await service.request('homelab', {
     correlationId: CORRELATION,
     intent: PINNED_INTENT,
-    mode: 'coordinator'
+    mode: 'coordinator',
+    expectedSource: EXPECTED_SOURCE
   })
 
   assert.equal(result.ok, false)
   assert.match(result.error || '', /single-use launch capability/)
+  assert.equal(mutations, 0)
+})
+
+test('a route edit after rollout start cannot dispatch to the newly selected installation', async () => {
+  let mutations = 0
+  let verificationCalls = 0
+  const selectedRoute = source('homelab')
+  const selectedTarget = target()
+
+  const service = createManagedSshUpdateService(Object.assign(deps({
+    resolveSource: () => selectedRoute,
+    openTransport: async () => ({ target: selectedTarget, close: async () => {} }),
+    executeRemoteUpdate: async (_target, correlation) => {
+      mutations += 1
+
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }), {
+    verifyCoordinatorSource: async (resolved: TestSource, actualTarget: RemoteUpdateTarget, expected: typeof EXPECTED_SOURCE) => {
+      verificationCalls += 1
+      assert.deepEqual(expected, EXPECTED_SOURCE)
+      assert.strictEqual(actualTarget, selectedTarget)
+
+      if (resolved.label !== 'reviewed-route') {throw new Error('coordinator-source-binding-mismatch')}
+    }
+  }))
+
+  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+  selectedRoute.label = 'edited-route'
+
+  const admission = service.requestCoordinator('homelab', Object.assign({
+    correlationId: CORRELATION,
+    intent: PINNED_INTENT,
+    launchCapability: capability
+  }, { expectedSource: EXPECTED_SOURCE }))
+
+  const result = await admission.operation
+
+  assert.equal(admission.admitted, true)
+  assert.equal(result.ok, false)
+  assert.match(result.error || '', /coordinator-source-binding-mismatch/)
+  assert.equal(verificationCalls, 1)
+  assert.equal(mutations, 0)
+})
+
+test('coordinator admission fails closed without a trusted source verifier', async () => {
+  let mutations = 0
+
+  const service = createManagedSshUpdateService(deps({
+    executeRemoteUpdate: async (_target, correlation) => {
+      mutations += 1
+
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+
+  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+
+  const admission = service.requestCoordinator('homelab', Object.assign({
+    correlationId: CORRELATION,
+    intent: PINNED_INTENT,
+    launchCapability: capability
+  }, { expectedSource: EXPECTED_SOURCE }))
+
+  const result = await admission.operation
+
+  assert.equal(admission.admitted, false)
+  assert.equal(result.outcome, 'refused')
+  assert.match(result.error || '', /source verifier/i)
+  assert.equal(mutations, 0)
+})
+
+test('coordinator capability cannot authorize a different source binding', async () => {
+  let mutations = 0
+
+  const service = createManagedSshUpdateService(deps({
+    verifyCoordinatorSource: async () => {},
+    executeRemoteUpdate: async (_target, correlation) => {
+      mutations += 1
+
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+
+  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+
+  const admission = service.requestCoordinator('homelab', {
+    correlationId: CORRELATION,
+    intent: PINNED_INTENT,
+    launchCapability: capability,
+    expectedSource: { ...EXPECTED_SOURCE, sourceFingerprint: 'f'.repeat(64) }
+  })
+
+  const result = await admission.operation
+
+  assert.equal(admission.admitted, true)
+  assert.equal(result.ok, false)
+  assert.match(result.error || '', /different update transaction/)
   assert.equal(mutations, 0)
 })
 

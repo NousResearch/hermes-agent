@@ -70,6 +70,7 @@ import type {
   ManagedSshUpdateIntent
 } from './managed-ssh-update'
 import type {
+  ManagedSshCoordinatorSourceBinding,
   ManagedSshLaunchCapability,
   ManagedSshUpdateService
 } from './managed-ssh-update-service'
@@ -126,7 +127,7 @@ export interface ManagedRolloutProviderDependencies {
     retryOf: string | null
   }) => Promise<ManagedRolloutTargetResolution>
   journal: ManagedRolloutJournal
-  managedSshUpdateService: Pick<ManagedSshUpdateService, 'issueLaunchCapability' | 'request'>
+  managedSshUpdateService: Pick<ManagedSshUpdateService, 'issueLaunchCapability' | 'requestCoordinator'>
   observe: ManagedRolloutObservationReader
   evidence: ManagedRolloutEvidenceAdapter
   ready?: () => boolean
@@ -333,7 +334,7 @@ function isCompleteDependencies(value: Partial<ManagedRolloutProviderDependencie
     isFunction(value.journal.create) && isFunction(value.journal.record) &&
     isFunction(value.journal.read) && isFunction(value.journal.history) && isFunction(value.journal.events) &&
     value.managedSshUpdateService && isFunction(value.managedSshUpdateService.issueLaunchCapability) &&
-    isFunction(value.managedSshUpdateService.request) &&
+    isFunction(value.managedSshUpdateService.requestCoordinator) &&
     value.observe && isFunction(value.observe.observe) &&
     value.evidence && isFunction(value.evidence.sweep) &&
     Number.isSafeInteger(value.processGeneration) && Number(value.processGeneration) >= 1
@@ -780,6 +781,14 @@ function sameAuthorization(left: ManagedRolloutAuthorization, right: ManagedRoll
     left.queueGeneration === right.queueGeneration && JSON.stringify(left.reviewedSource) === JSON.stringify(right.reviewedSource)
 }
 
+function coordinatorSourceBinding(authorization: ManagedRolloutAuthorization): ManagedSshCoordinatorSourceBinding {
+  return {
+    installId: authorization.installId,
+    installationFingerprint: authorization.installationFingerprint,
+    sourceFingerprint: authorization.sourceFingerprint
+  }
+}
+
 function successfulHealth(
   health: HealthEvidence | null,
   authorization: ManagedRolloutAuthorization,
@@ -1047,7 +1056,8 @@ export function createManagedRolloutProvider(
             const capability = deps.managedSshUpdateService.issueLaunchCapability(
               authorization.connectionId,
               authorization.correlationId,
-              { targetSha: authorization.targetSha, source: authorization.reviewedSource } satisfies ManagedSshUpdateIntent
+              { targetSha: authorization.targetSha, source: authorization.reviewedSource } satisfies ManagedSshUpdateIntent,
+              coordinatorSourceBinding(authorization)
             )
 
             if (!capability || typeof capability !== 'object') {throw new Error('invalid-launch-capability')}
@@ -1063,12 +1073,15 @@ export function createManagedRolloutProvider(
           let request: Promise<ManagedConnectionUpdateResult>
 
           try {
-            request = deps.managedSshUpdateService.request(authorization.connectionId, {
-              mode: 'coordinator',
+            const admission = deps.managedSshUpdateService.requestCoordinator(authorization.connectionId, {
               correlationId: authorization.correlationId,
               intent: { targetSha: authorization.targetSha, source: authorization.reviewedSource },
-              launchCapability: capability as ManagedSshLaunchCapability
+              launchCapability: capability as ManagedSshLaunchCapability,
+              expectedSource: coordinatorSourceBinding(authorization)
             })
+
+            if (admission.admitted === false) {throw new Error(admission.reason)}
+            request = admission.operation
           } catch (error) {
             runtime.handoffBarrier?.resolve()
             runtime.handoffBarrier = null
@@ -1364,6 +1377,11 @@ export function createManagedRolloutProvider(
     }
 
     requireMeasuredCapacity(session.plan.rows.length)
+
+    // The reviewed route can change after preflight while its token remains valid.
+    // Recheck trusted installation, host-key, source, and assurance evidence
+    // before creating any journal or authorizing a fleet effect.
+    await validateAdmission(session.plan)
 
     const active = deps.journal.history({ limit: MAX_PROVIDER_PAGE_SIZE }).items.find(item => activePhase(item.phase) && !item.archived)
 

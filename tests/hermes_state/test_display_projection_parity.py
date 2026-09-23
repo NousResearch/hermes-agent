@@ -31,8 +31,13 @@ def db(tmp_path):
     return SessionDB(tmp_path / "state.db")
 
 
-def _compact_in_place(db, sid, *, epochs=3, turns=4, tail_count=2):
-    """Drive *sid* through repeated in-place compaction, like a long chat."""
+def _compact_in_place(db, sid, *, epochs=3, turns=4, tail_count=2, rewind_tail=True):
+    """Drive *sid* through repeated in-place compaction, like a long chat.
+
+    ``rewind_tail=False`` keeps tail originals as ``compacted=1`` next to the
+    live clones (same 6-tuple, new id) — the generation-copy shape the resume
+    guard must dedupe. The default still rewind-stamps them for search.
+    """
     db.create_session(sid, source="desktop")
     for epoch in range(epochs):
         for i in range(turns):
@@ -42,7 +47,7 @@ def _compact_in_place(db, sid, *, epochs=3, turns=4, tail_count=2):
         db.archive_and_compact(
             sid,
             [{"role": "user", "content": f"[summary {epoch}]"}] + live[-tail_count:],
-            tail_count=tail_count,
+            tail_count=tail_count if rewind_tail else 0,
         )
     return sid
 
@@ -211,3 +216,61 @@ class TestResumeGuardBoundsWhatResumeLoads:
 
         assert tip_count < db.get_resume_message_count(sid)
         assert db.assert_resume_safe(sid, max_messages=tip_count, tip_only=True)
+
+    def test_guard_counts_deduped_compaction_generations_not_raw_copies(self, db):
+        """In-place compaction copies the protected tail into every generation.
+
+        The display reader dedupes those copies by the stored 6-tuple
+        (role, content, timestamp, tool_call_id, tool_calls, tool_name).
+        The guard must count the same logical keys — not raw SQL rows —
+        or a 4.7k-message chat is refused at the 20k raw-row limit.
+        """
+        sid = _compact_in_place(
+            db, "chat", epochs=4, turns=4, tail_count=2, rewind_tail=False
+        )
+        _, display = db.get_resume_conversations(sid)
+        raw = db._read_one(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? "
+            "AND (active = 1 OR compacted = 1)",
+            (sid,),
+        )[0]
+        logical = db._read_one(
+            "SELECT COUNT(*) FROM ("
+            "SELECT 1 FROM messages WHERE session_id = ? "
+            "AND (active = 1 OR compacted = 1) "
+            "GROUP BY role, content, timestamp, tool_call_id, tool_calls, tool_name)",
+            (sid,),
+        )[0]
+
+        assert raw > len(display)
+        assert raw > logical
+        # raw > limit >= logical: pre-fix refuses on the raw count; post-fix accepts.
+        limit = logical
+        assert raw > limit >= logical
+        assert db.assert_resume_safe(sid, max_messages=limit) <= limit
+        assert db.get_resume_message_count(sid) == logical
+
+    def test_guard_still_rejects_when_logical_count_exceeds_limit(self, db):
+        """CONTROL: a session that is logically over the limit still refuses."""
+        from hermes_state import SessionResumeTooLargeError
+
+        sid = _compact_in_place(
+            db, "chat", epochs=4, turns=4, tail_count=2, rewind_tail=False
+        )
+        logical = db._read_one(
+            "SELECT COUNT(*) FROM ("
+            "SELECT 1 FROM messages WHERE session_id = ? "
+            "AND (active = 1 OR compacted = 1) "
+            "GROUP BY role, content, timestamp, tool_call_id, tool_calls, tool_name)",
+            (sid,),
+        )[0]
+        raw = db._read_one(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? "
+            "AND (active = 1 OR compacted = 1)",
+            (sid,),
+        )[0]
+        limit = 2
+        assert raw > limit
+        assert logical > limit
+        with pytest.raises(SessionResumeTooLargeError):
+            db.assert_resume_safe(sid, max_messages=limit)

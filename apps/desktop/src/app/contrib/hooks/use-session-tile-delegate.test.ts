@@ -232,6 +232,45 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(texts.some(text => text.includes('cron delivery'))).toBe(true)
   })
 
+  it('keeps the newest durable rows when an active tile refresh receives a stale partial page (#119819)', async () => {
+    const state = {
+      busy: false,
+      messages: [
+        { id: '1', rowId: 1, role: 'user', parts: [{ type: 'text', text: 'first prompt' }] },
+        { id: '2', rowId: 2, role: 'assistant', parts: [{ type: 'text', text: 'first answer' }] },
+        { id: '3', rowId: 3, role: 'user', parts: [{ type: 'text', text: 'latest prompt' }] },
+        { id: '4', rowId: 4, role: 'assistant', parts: [{ type: 'text', text: 'latest answer' }] }
+      ],
+      storedSessionId: 'stored-stale-page'
+    }
+
+    const states = { current: new Map([['runtime-stale-page', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-stale-page',
+      messages: [
+        { id: 1, role: 'user', content: 'first prompt', timestamp: 1 },
+        { id: 2, role: 'assistant', content: 'first answer', timestamp: 2 }
+      ]
+    } as never)
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-stale-page', 'runtime-stale-page']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+    await sessionTileDelegate()!.resumeTile('stored-stale-page', { refreshTranscript: true })
+
+    expect(states.current.get('runtime-stale-page')!.messages.map(message => message.rowId)).toEqual([1, 2, 3, 4])
+  })
+
   it('refreshes a retained live tile even when the reverse lookup is absent', async () => {
     const state = {
       busy: true,

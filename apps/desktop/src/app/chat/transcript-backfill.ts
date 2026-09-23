@@ -85,11 +85,29 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
       message.id === first.id
   )
 
-  if (anchor <= 0) {
-    return refreshedTail
+  const grafted = anchor <= 0 ? refreshedTail : [...previous.slice(0, anchor), ...refreshedTail]
+
+  const newestRefreshedRowId = refreshedTail.reduce((newest, message) => Math.max(newest, message.rowId ?? 0), 0)
+  const newestPreviousRowId = previous.reduce((newest, message) => Math.max(newest, message.rowId ?? 0), 0)
+
+  // A stale or partial REST response can start at an older page and omit the
+  // durable tail already rendered by an active tile. Row ids are monotonic in
+  // stored history, so retain only durable rows newer than that response; a
+  // genuinely refreshed tail has an equal or newer high-water mark and keeps
+  // the existing compaction behavior.
+  if (!newestRefreshedRowId || newestRefreshedRowId >= newestPreviousRowId) {
+    return grafted
   }
 
-  return [...previous.slice(0, anchor), ...refreshedTail]
+  const graftedRowIds = new Set(
+    grafted.map(message => message.rowId).filter((rowId): rowId is number => rowId !== undefined)
+  )
+
+  const missingNewerRows = previous.filter(
+    message => message.rowId !== undefined && message.rowId > newestRefreshedRowId && !graftedRowIds.has(message.rowId)
+  )
+
+  return missingNewerRows.length ? [...grafted, ...missingNewerRows] : grafted
 }
 
 export interface BackfillRequest {

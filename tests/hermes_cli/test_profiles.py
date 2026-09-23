@@ -1108,6 +1108,24 @@ class TestRenameProfile:
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
 
+    def test_rename_keeps_a_no_alias_profile_alias_free(self, profile_env):
+        from hermes_cli.profiles import _wrapper_path
+
+        create_profile("oldname", no_alias=True)
+        with patch("hermes_cli.profiles.check_alias_collision", return_value=None):
+            rename_profile("oldname", "newname")
+        assert not _wrapper_path("newname").exists()
+
+    def test_rename_moves_an_existing_alias(self, profile_env):
+        from hermes_cli.profiles import _wrapper_path
+
+        create_profile("oldname", no_alias=True)
+        create_wrapper_script("oldname")
+        with patch("hermes_cli.profiles.check_alias_collision", return_value=None):
+            rename_profile("oldname", "newname")
+        assert not _wrapper_path("oldname").exists()
+        assert "hermes -p newname" in _wrapper_path("newname").read_text(encoding="utf-8")
+
     def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
         tmp_path = profile_env
         create_profile("ssi_health", no_alias=True)

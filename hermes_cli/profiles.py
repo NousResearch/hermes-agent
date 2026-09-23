@@ -2316,14 +2316,15 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
     _migrate_honcho_profile_host(old_canon, new_canon, new_dir)
 
-    # 4. Update wrapper script
-    remove_wrapper_script(old_canon)
-    collision = check_alias_collision(new_canon)
-    if not collision:
-        create_wrapper_script(new_canon)
-        print(f"✓ Alias updated: {new_canon}")
-    else:
-        print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
+    # 4. Update wrapper script — only move one that existed: a profile created with --no-alias
+    # (or whose alias was removed) must not gain a ~/.local/bin wrapper just by being renamed.
+    if remove_wrapper_script(old_canon):
+        collision = check_alias_collision(new_canon)
+        if not collision:
+            create_wrapper_script(new_canon)
+            print(f"✓ Alias updated: {new_canon}")
+        else:
+            print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
 
     # 5. Update active_profile if it pointed to old name
     _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")

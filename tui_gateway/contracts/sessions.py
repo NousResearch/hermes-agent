@@ -681,6 +681,8 @@ class LlmOneshotParams(ProfileParams):
     temperature: float | None = None
     max_tokens: int | None = None
     session_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 class LlmOneshotResult(Result):

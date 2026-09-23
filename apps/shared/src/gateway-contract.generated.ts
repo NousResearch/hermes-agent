@@ -3304,6 +3304,8 @@ export interface LlmOneshotParams {
   temperature?: number | null
   max_tokens?: number | null
   session_id?: string | null
+  provider?: string | null
+  model?: string | null
 }
 export interface LlmOneshotResult {
   text: string

@@ -1125,6 +1125,10 @@ def _(rid, params: dict, session: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """Stateless one-shot LLM request; a live ``session_id`` lends its model, else the ``task`` backend.
+    Optional ``provider``/``model`` pin the route explicitly (they win over the session model and the
+    task's aux config) — for callers that carry their own per-task model pin (e.g. a desktop plugin's
+    picker). They are resolved through the config table server-side; the caller never sends
+    base_url/api_key.
     Runs under the session's profile scope (else ``params.profile`` / the launch scope): the aux
     task config and its API key otherwise resolved from the LAUNCH profile — a secondary's titles /
     project ideas ran on, and billed, the default profile's auxiliary provider."""
@@ -1132,6 +1136,8 @@ def _(rid, params: dict) -> dict:
     instructions = params.get("instructions") or ""
     user_input = params.get("input") or ""
     variables = params.get("variables") if isinstance(params.get("variables"), dict) else {}
+    provider = (str(params.get("provider") or "")).strip() or None
+    model = (str(params.get("model") or "")).strip() or None
     try:
         temperature = float(params["temperature"]) if params.get("temperature") is not None else 0.3
     except (TypeError, ValueError):
@@ -1146,6 +1152,7 @@ def _(rid, params: dict) -> dict:
                 instructions=instructions, user_input=user_input, template=template, variables=variables,
                 task=(params.get("task") or "title_generation").strip() or "title_generation",
                 max_tokens=_int_param(params, "max_tokens", 1024) or 1024, temperature=temperature,
+                provider=provider, model=model,
                 main_runtime=_main_runtime_from_agent(session.get("agent")) if session else None)})
     except (KeyError, ValueError) as e:
         return _err(rid, 4031 if isinstance(e, KeyError) else 4032, str(e))

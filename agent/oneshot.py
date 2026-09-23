@@ -88,8 +88,15 @@ def run_oneshot(
     temperature: Optional[float] = 0.3,
     timeout: float = 60.0,
     main_runtime: Optional[Dict[str, Any]] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Run a single stateless LLM request and return its text (fence-stripped).
+
+    ``provider``/``model`` pin the route explicitly — the highest-priority arm of
+    the auxiliary resolver (explicit args > ``auxiliary.<task>.*`` config > auto),
+    used by callers that carry their own per-task model pin (e.g. a desktop
+    plugin's picker) instead of inheriting the session/main model.
 
     Raises RuntimeError when no provider is configured (from :func:`call_llm`),
     KeyError for an unknown template, ValueError when the prompt is empty.
@@ -108,6 +115,8 @@ def run_oneshot(
         temperature=temperature,
         timeout=timeout,
         main_runtime=main_runtime,
+        provider=provider,
+        model=model,
     )
     return _strip_code_fence((extract_content_or_reasoning(response) or "").strip())
 

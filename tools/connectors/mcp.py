@@ -153,9 +153,16 @@ class _CatalogBackend:
             tools = [str(tool[0]) for tool in (_probe_single_server(name, cfg) or [])]
         finally:
             reset_secret_scope(token)
+        from hermes_cli.mcp_config import _mcp_server_entry, _restore_mcp_server_entry
+
+        previous_cfg = _mcp_server_entry(name)
         if not _save_mcp_server(name, cfg):
             raise RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
-        _save_env({k: v for k, v in env.items() if k in secret_names})
+        try:
+            _save_env({k: v for k, v in env.items() if k in secret_names})
+        except Exception:
+            _restore_mcp_server_entry(name, previous_cfg)
+            raise
         return tools
 
     def enable(self, name: str) -> None:
@@ -187,11 +194,27 @@ def _check_declared(name: str, entry: Any, env: Dict[str, str]) -> None:
 
 
 def _save_env(env: Dict[str, str]) -> None:
-    from hermes_cli.config import save_env_value
+    """Persist setup secrets atomically: a mid-write failure restores every value already
+    written, so a failed install leaves the previous .env state rather than a half-written set."""
+    from hermes_cli.config import get_env_value_prefer_dotenv, remove_env_value, save_env_value
 
-    for key, value in env.items():
-        if value:
-            save_env_value(key, value)
+    previous = {key: get_env_value_prefer_dotenv(key) for key, value in env.items() if value}
+    written: List[str] = []
+    try:
+        for key, value in env.items():
+            if value:
+                save_env_value(key, value)
+                written.append(key)
+    except Exception:
+        for key in written:
+            try:
+                if previous[key] is None:
+                    remove_env_value(key)
+                else:
+                    save_env_value(key, previous[key])
+            except Exception:
+                logger.warning("MCP install rollback could not restore env %s", key, exc_info=True)
+        raise
 
 
 def _default_backend() -> Any:

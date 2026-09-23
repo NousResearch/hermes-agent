@@ -278,6 +278,33 @@ def _remove_mcp_server(name: str) -> bool:
     return True
 
 
+def _mcp_server_entry(name: str) -> Optional[dict]:
+    """The currently-saved config.yaml entry for ``name``, or None — the rollback baseline a
+    multi-step install captures before overwriting it."""
+    servers = load_config().get("mcp_servers")
+    entry = servers.get(name) if isinstance(servers, dict) else None
+    return entry if isinstance(entry, dict) else None
+
+
+def _restore_mcp_server_entry(name: str, previous: Optional[dict]) -> None:
+    """Put back the entry ``_mcp_server_entry`` captured, or drop the new one when there was
+    none. Writes verbatim rather than through ``_save_mcp_server``: the baseline belonged to
+    config.yaml however it scores against today's suspicious-entry screen. Best-effort: a
+    failed restore warns rather than masking the error the rollback is answering."""
+    try:
+        config = load_config()
+        servers = config.setdefault("mcp_servers", {})
+        if previous is None:
+            servers.pop(name, None)
+        else:
+            servers[name] = previous
+        if not servers:
+            config.pop("mcp_servers", None)
+        save_config(config)
+    except Exception:
+        _warning(f"Could not restore the previous config.yaml entry for '{name}'")
+
+
 def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
     """Replace the WHOLE ``mcp_servers`` map in config.yaml.
 

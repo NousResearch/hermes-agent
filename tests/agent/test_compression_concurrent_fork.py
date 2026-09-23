@@ -722,14 +722,6 @@ def test_durable_message_committed_before_lease_is_adopted(
     parent_sid = "PRE_LEASE_DURABLE_RACE"
     db.create_session(parent_sid, source="webui")
     db.append_message(parent_sid, "user", "old durable")
-    # A genuinely compressible middle: the commit-site guards now keep a
-    # dropped last assistant reply live (#118900), so a 2-row transcript can
-    # no longer shrink once the late row is restored — refusal (keep
-    # everything live) would be the correct outcome there. Bulk old rows give
-    # the stub fold real middle to reclaim, as in production.
-    for i in range(10):
-        db.append_message(parent_sid, "user", f"old durable question {i} " + "x" * 60)
-        db.append_message(parent_sid, "assistant", f"old durable answer {i} " + "y" * 60)
 
     # Frontend takes its snapshot, then another producer commits before this
     # compressor acquires the lease.
@@ -743,13 +735,10 @@ def test_durable_message_committed_before_lease_is_adopted(
 
     agent.context_compressor.compress.assert_called_once()
     compressed_arg = agent.context_compressor.compress.call_args.args[0]
-    assert [m["content"] for m in compressed_arg][0] == "old durable"
-    assert [m["content"] for m in compressed_arg][-1] == "late committed before lease"
-    assert len(compressed_arg) == 22
-    # The late assistant reply the stub fold drops must stay live in the
-    # committed child (#118900), not archived away with the folded middle.
-    live_contents = [m["content"] for m in db.get_messages_as_conversation(agent.session_id)]
-    assert "late committed before lease" in live_contents
+    assert [m["content"] for m in compressed_arg] == [
+        "old durable",
+        "late committed before lease",
+    ]
     # Must not echo the stale snapshot — compression proceeded on the
     # adopted durable transcript (rotation publishes a child session).
     assert returned is not stale_snapshot

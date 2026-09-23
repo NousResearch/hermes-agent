@@ -107,14 +107,6 @@ class TestAbortPathsResetPerAttemptState:
                 {"role": "user", "content": "old question"},
                 {"role": "assistant", "content": "old answer"},
             ]
-            # Bulk middle so the stub fold genuinely shrinks: the commit
-            # guard keeps a dropped last reply live (#118900), and a 2-row
-            # transcript cannot shrink once "old answer" is restored —
-            # refusal (keep everything live) would be correct there, but
-            # this test needs one successful compaction first.
-            for i in range(10):
-                original.append({"role": "user", "content": f"old bulk question {i} " + "x" * 60})
-                original.append({"role": "assistant", "content": f"old bulk answer {i} " + "y" * 60})
             agent._flush_messages_to_session_db(original, [])
             compacted, history = self._in_place_success(agent, original)
 

@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor, _DB_PERSISTED_MARKER
+from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor, _DB_PERSISTED_MARKER
 from agent.conversation_compression import (
     CompressionCommitFence,
     _is_real_user_message,
@@ -68,6 +68,32 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
     # rotation regardless of the global default (flipped to True in #38763).
     agent.compression_in_place = False
     return agent
+
+
+def _seed_bulk_head(db: SessionDB, parent: str) -> None:
+    """Durable parent transcript: 10 bulk turns + the persisted question/answer pair.
+
+    Bulk head so the stub fold genuinely shrinks: the no-growth commit guard
+    refuses a 3-row candidate that is not smaller than a 3-row original; the
+    transcript's last reply stays "persisted answer" (#118900 guard shape).
+    """
+    for i in range(10):
+        db.append_message(parent, "user", f"bulk question {i} " + "x" * 60)
+        db.append_message(parent, "assistant", f"bulk answer {i} " + "y" * 60)
+    db.append_message(parent, "user", "persisted question")
+    db.append_message(parent, "assistant", "persisted answer")
+
+
+def _conforming_fold(*tail: dict) -> list:
+    """Conforming-engine shape (#118900): a real handoff summary (recognized as
+    scaffolding, not human intent) plus the transcript's own last reply kept
+    verbatim ahead of the scaffolding tail, so the commit guard sees the reply
+    present and the user-turn anchor still takes the MERGED branch these tests exercise."""
+    return [
+        {"role": "user", "content": SUMMARY_PREFIX + " earlier turns"},
+        {"role": "assistant", "content": "persisted answer"},
+        *tail,
+    ]
 
 
 def _msgs(n=20):
@@ -221,12 +247,6 @@ class TestRotationChildFlushDedup:
         db.create_session(parent, source="cli")
         db.append_message(parent, "user", "persisted question")
         db.append_message(parent, "assistant", "persisted answer")
-        # Bulk middle so the stub fold genuinely shrinks: the commit guard
-        # keeps a dropped last reply live (#118900), and without real middle
-        # to reclaim the no-growth guard correctly refuses the attempt.
-        for i in range(10):
-            db.append_message(parent, "user", f"bulk question {i} " + "x" * 60)
-            db.append_message(parent, "assistant", f"bulk answer {i} " + "y" * 60)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [*loaded, {"role": "user", "content": "live question"}]
@@ -515,8 +535,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_DRIFTED_MERGED"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [
@@ -531,13 +550,13 @@ class TestRotationChildFlushDedup:
 
         agent = _build_agent_with_db(db, parent)
         agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "handoff scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
@@ -572,21 +591,20 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_MERGED_LIVE"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [*loaded, {"role": "user", "content": "live question"}]
 
         agent = _build_agent_with_db(db, parent)
         agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
@@ -627,8 +645,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_ADOPT_DIVERGE"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         # (b) Old live list object kept alive; divergence set so the twin is
         # the SAME object the guard scans (not a fresh copy).
@@ -656,18 +673,18 @@ class TestRotationChildFlushDedup:
         # condition (durable parent longer than the caller snapshot) fires.
         db.append_message(parent, "user", "live question")
         durable_check = db.get_messages_as_conversation(parent)
-        assert len(durable_check) == 3 > len(stale_snapshot) == 2
+        assert len(durable_check) == len(loaded) + 1 > len(stale_snapshot) == 2
         # Sync the twin's timestamp to the committed row so the guard's
         # exact-timestamp twin scan matches the adopted anchor.
         old_live_list[-1]["timestamp"] = durable_check[-1]["timestamp"]
 
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "handoff scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         # The pre-publish flush fails, so the post-rotation flush below is the
         # only writer of the live view.
@@ -829,8 +846,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_LIST_MERGED"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [
@@ -843,13 +859,13 @@ class TestRotationChildFlushDedup:
 
         agent = _build_agent_with_db(db, parent)
         agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": [{"type": "text", "text": "scaffolding"}],
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
@@ -902,8 +918,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_STAMPED_TWIN"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [
@@ -927,13 +942,13 @@ class TestRotationChildFlushDedup:
             },
             {"role": "user", "content": "live question"},
         ]
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "handoff scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         with patch.object(
             agent,

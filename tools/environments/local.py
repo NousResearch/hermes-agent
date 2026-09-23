@@ -114,7 +114,10 @@ class _BrokerProcessHandle:
 
                 try:
                     reply = json.loads(self._reply.split(b"\n", 1)[0])
-                    self._returncode = int(reply["exit"])
+                    returncode = reply["exit"]
+                    if not isinstance(returncode, int) or isinstance(returncode, bool):
+                        raise ValueError("exit status is not an integer")
+                    self._returncode = returncode
                 except (KeyError, TypeError, ValueError) as exc:
                     self._conn.close()
                     self._close_stdin_handle()

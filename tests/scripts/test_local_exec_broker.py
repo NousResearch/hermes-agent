@@ -1715,7 +1715,16 @@ def test_broker_process_kill_preserves_buffered_stdout_for_caller():
 
 
 @pytest.mark.linux_only
-@pytest.mark.parametrize("remainder", (b"not-json\n", b'{"status": 7}\n'))
+@pytest.mark.parametrize(
+    "remainder",
+    (
+        b"not-json\n",
+        b'{"status": 7}\n',
+        b'{"exit": true}\n',
+        b'{"exit": "7"}\n',
+        b'{"exit": 7.9}\n',
+    ),
+)
 def test_broker_process_poll_rejects_malformed_buffered_exit_frame(remainder):
     """Malformed buffered status is a typed broker failure that closes its lease."""
     from tools.environments.base import EnvironmentConnectionError

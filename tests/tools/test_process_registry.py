@@ -1153,6 +1153,52 @@ class TestSpawnEnvSanitization:
         assert session.completion_reason == "exited"
         assert session.exit_code == 0
 
+    def test_nonlinux_broker_config_keeps_legacy_poller_protocol(
+        self, registry, tmp_path, monkeypatch
+    ):
+        class FakeEnv:
+            _local_exec_broker_socket = "/run/hermes-broker/broker.sock"
+
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **_kwargs):
+                self.commands.append(command)
+                if "wc -c" in command:
+                    return {"output": "0 0\n"}
+                if command.startswith("kill -0"):
+                    return {"output": "1\n"}
+                if command.startswith("cat ") and command.endswith(".pid 2>/dev/null"):
+                    return {"output": "4242\n"}
+                if command.startswith("cat ") and command.endswith(".exit 2>/dev/null"):
+                    return {"output": "0\n"}
+                raise AssertionError(command)
+
+        env = FakeEnv()
+        session = registry._new_session(
+            "legacy background",
+            "",
+            "",
+            "",
+            None,
+            env_ref=env,
+            pid_scope="sandbox",
+        )
+        session.pid = 4242
+        monkeypatch.setattr("tools.process_registry._IS_LINUX", False)
+        monkeypatch.setattr("tools.process_registry.time.sleep", lambda _seconds: None)
+
+        registry._env_poller_loop(
+            session,
+            env,
+            str(tmp_path / "legacy.log"),
+            str(tmp_path / "legacy.pid"),
+            str(tmp_path / "legacy.exit"),
+        )
+
+        assert session.exit_code == 0
+        assert any(command.startswith("kill -0") for command in env.commands)
+
     @pytest.mark.linux_only
     def test_broker_background_reads_matching_pid_artifact_once(
         self, registry, tmp_path, monkeypatch
@@ -1718,6 +1764,29 @@ class TestKillProcess:
         assert env.commands[0][0] == (
             "kill -TERM -- -4321 2>/dev/null || kill -TERM 4321 2>/dev/null"
         )
+
+    def test_nonlinux_broker_config_keeps_legacy_kill_protocol(
+        self, registry, monkeypatch
+    ):
+        class FakeEnv:
+            _local_exec_broker_socket = "/run/test-broker.sock"
+
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "", "returncode": 0}
+
+        env = FakeEnv()
+        session = _make_session(sid="proc_legacy_group", command="sleep 999")
+        session.env_ref = env
+        session.pid = 4321
+        session.pid_scope = "sandbox"
+        monkeypatch.setattr("tools.process_registry._IS_LINUX", False)
+
+        assert registry._signal_kill(session, session.id, False) is None
+        assert env.commands == [("kill 4321 2>/dev/null", {"timeout": 5})]
 
     def test_kill_broker_session_stops_scope_through_broker_owner(
         self, registry, monkeypatch

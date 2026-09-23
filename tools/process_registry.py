@@ -1452,7 +1452,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
 
-                broker_background = bool(
+                broker_background = _IS_LINUX and bool(
                     getattr(env, "_local_exec_broker_socket", None)
                 )
                 if broker_background and not broker_pid_artifact_confirmed:
@@ -2224,7 +2224,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            if getattr(session.env_ref, "_local_exec_broker_socket", None):
+            if _IS_LINUX and getattr(
+                session.env_ref, "_local_exec_broker_socket", None
+            ):
                 if session.host_start_time is None or not self._host_pid_is_ours(
                     session.pid, session.host_start_time
                 ):

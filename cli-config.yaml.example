@@ -1490,6 +1490,10 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#       # Also put the :eyes: → :white_check_mark: reactions on unmentioned
+#       # replies in a thread the bot already follows (default: only @mentions
+#       # and 1:1 DMs). Env: SLACK_THREAD_REPLY_REACTIONS.
+#       thread_reply_reactions: false
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

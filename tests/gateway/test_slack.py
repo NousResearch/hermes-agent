@@ -2808,6 +2808,46 @@ class TestThreadReplyHandling:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag,expect", [(None, False), (True, True), (False, False)])
+    async def test_thread_reply_reactions_opt_in(
+        self, adapter_with_session_store, mock_session_store, flag, expect
+    ):
+        """Unmentioned thread replies the bot follows get reactions only with thread_reply_reactions."""
+        from gateway.session import SessionEntry
+
+        adapter = adapter_with_session_store
+        session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
+        adapter.config.extra["thread_sessions_per_user"] = True
+        if flag is not None:
+            adapter.config.extra["thread_reply_reactions"] = flag
+        mock_session_store._entries = {session_key: SessionEntry.from_dict({
+            "session_key": session_key,
+            "session_id": "slack-thread-session",
+            "created_at": "2024-01-01T00:00:00",
+            "updated_at": "2024-01-01T00:00:00",
+        })}
+        event = {
+            "text": "Follow-up question", "user": "U_USER", "channel": "C123",
+            "ts": "123.456", "thread_ts": "123.000", "channel_type": "channel", "team": "T_TEAM",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
+        marker = adapter._workspace_message_marker("T_TEAM", "123.456")
+        assert (marker in adapter._reacting_message_ids) is expect
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_reactions_ignores_unfollowed_threads(self, adapter):
+        """The flag never makes the bot react to a thread it does not follow."""
+        adapter.config.extra["thread_reply_reactions"] = True
+        event = {
+            "text": "chatter", "user": "U_USER", "channel": "C123",
+            "ts": "555.556", "thread_ts": "555.000", "channel_type": "channel", "team": "T_TEAM",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+        assert adapter._workspace_message_marker("T_TEAM", "555.556") not in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
     async def test_thread_reply_without_mention_with_session_processed(
         self, adapter_with_session_store, mock_session_store
     ):

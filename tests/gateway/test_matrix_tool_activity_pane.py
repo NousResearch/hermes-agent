@@ -315,3 +315,25 @@ async def test_long_progress_remains_deliverable_on_same_root(monkeypatch, tmp_p
     assert "latest tool" in html and "first tool" not in html
     assert "Showing latest" in html
     assert "<ol>" in html and "<details>" not in html
+
+
+@pytest.mark.asyncio
+async def test_bind_turn_wiring_uses_delivery_adapter_for_activity_pane():
+    from gateway.run_turn import GatewayTurnMixin
+
+    adapter = SimpleNamespace(name="matrix")
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", user_id="@user:example.org")
+    ctx = TurnContext(source=source, tool_progress_enabled=True)
+    host = SimpleNamespace(
+        _delivery_adapter_for=lambda _source: adapter,
+        _run_agent_progress_threading=lambda *_a, **_k: ({"thread_id": "$t"}, "$reply", None),
+        hooks=object(),
+    )
+    turn_runner = SimpleNamespace(
+        _step_callback_sync=object(),
+        _event_callback_sync=object(),
+        _status_callback_sync=object(),
+    )
+    GatewayTurnMixin._run_agent_bind_turn_wiring(host, ctx, turn_runner, source, "$event", False)
+    assert ctx.matrix_activity_pane is not None
+    assert ctx.matrix_activity_pane.adapter is adapter

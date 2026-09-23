@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { __resetElapsedTimerRegistryForTests } from '@/components/chat/activity-timer'
 import { I18nProvider } from '@/i18n'
 import { $providerWaitSessions, setSessionProviderWait } from '@/store/provider-wait'
-import { $activeSessionId, $turnStartedAt } from '@/store/session'
+import { $activeSessionId, $busy, $turnStartedAt } from '@/store/session'
 
 import { ResponseLoadingIndicator } from './status'
 
@@ -30,6 +30,7 @@ describe('ResponseLoadingIndicator timer', () => {
   afterEach(() => {
     cleanup()
     $activeSessionId.set(null)
+    $busy.set(false)
     $turnStartedAt.set(null)
     $providerWaitSessions.set({})
     __resetElapsedTimerRegistryForTests()
@@ -39,6 +40,7 @@ describe('ResponseLoadingIndicator timer', () => {
 
   it('preserves each running session timer while switching between sessions', () => {
     $activeSessionId.set('session-a')
+    $busy.set(true)
     $turnStartedAt.set(Date.now())
     const sessionA = renderIndicator()
 
@@ -47,6 +49,7 @@ describe('ResponseLoadingIndicator timer', () => {
     sessionA.unmount()
 
     $activeSessionId.set('session-b')
+    $busy.set(true)
     $turnStartedAt.set(Date.now())
     const sessionB = renderIndicator()
 
@@ -55,6 +58,7 @@ describe('ResponseLoadingIndicator timer', () => {
     sessionB.unmount()
 
     $activeSessionId.set('session-a')
+    $busy.set(true)
     $turnStartedAt.set(new Date('2026-01-01T00:00:00.000Z').getTime())
     renderIndicator()
 
@@ -63,12 +67,29 @@ describe('ResponseLoadingIndicator timer', () => {
 
   it('names a prolonged provider wait in the existing response status row', () => {
     $activeSessionId.set('session-a')
+    $busy.set(true)
     $turnStartedAt.set(Date.now())
     setSessionProviderWait('session-a', '⏳ waiting on local-model — 30s with no output yet')
 
     renderIndicator()
 
     expect(screen.getByText('⏳ waiting on local-model — 30s with no output yet')).toBeTruthy()
+  })
+
+  it('stops the composer timer when the session completes', () => {
+    $activeSessionId.set('session-a')
+    $busy.set(true)
+    $turnStartedAt.set(Date.now())
+    renderIndicator()
+
+    act(() => vi.advanceTimersByTime(5_000))
+    expect(screen.getAllByText((_, node) => node?.textContent === '5s').length).toBeGreaterThan(0)
+
+    act(() => $busy.set(false))
+    act(() => vi.advanceTimersByTime(5_000))
+
+    expect(screen.getAllByText((_, node) => node?.textContent === '5s').length).toBeGreaterThan(0)
+    expect(screen.queryByText((_, node) => node?.textContent === '10s')).toBeNull()
   })
 })
 
@@ -80,6 +101,7 @@ describe('status line', () => {
 
   it('is marked as transcript scaffolding', () => {
     $activeSessionId.set('session-a')
+    $busy.set(true)
     $turnStartedAt.set(Date.now())
     const { container } = renderIndicator()
 

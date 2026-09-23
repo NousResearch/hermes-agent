@@ -8,15 +8,32 @@ sweep, an idle grace for live owners, and teardown of our own claims at exit.
 Daemons are simulated with real child processes and a real AF_UNIX server speaking the
 ``browser_harness._ipc`` wire protocol, so the IPC-first stop path is exercised for real
 rather than mocked.
+
+Two isolation concerns specific to this file:
+
+- **AF_UNIX ``sun_path`` is capped at ~104 bytes (macOS) / ~108 (Linux).** pytest's
+  ``tmp_path`` nests under the runner's ``TMPDIR``, which can be a long
+  ``~/.hermes/cache/scratch/...`` path on this host — long enough that ``bu-<stem>.sock``
+  under it overflows the limit. ``runtime_dir`` below binds sockets under a short-lived
+  ``/tmp`` directory instead (mirrors ``tests/gateway/test_control_socket.py::
+  test_short_home_binds_in_home``), independent of the host's configured TMPDIR.
+- **``_sweep_unindexed`` scans the REAL process table.** A stray fake daemon leaked by an
+  earlier interrupted run (or another test file) would otherwise be visible to it, and
+  the conftest live-system guard blocks signalling anything outside this test's own
+  process subtree. ``confined_process_table`` monkeypatches ``psutil.process_iter`` to an
+  explicit per-test allowlist, so the sweep only ever sees processes THIS test spawned.
 """
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +45,24 @@ pytestmark = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------- helpers
+
+
+def _write_harness_daemon_script(base_dir: Path, code: str) -> Path:
+    """Write ``code`` to a real ``browser_harness/daemon.py`` under ``base_dir``.
+
+    The identity check the reaper applies (``_is_harness_daemon_cmdline``) matches the
+    process's OWN argv — a real ``-m browser_harness.daemon`` invocation or a script path
+    ending in ``browser_harness/daemon.py`` — never a substring test on the joined command
+    line. Spawning the fake daemon as an actual file at that path (rather than
+    ``python -c "...browser_harness.daemon..."``) is what lets these tests exercise the
+    tightened production matcher for real instead of accidentally relying on the old,
+    looser substring behavior.
+    """
+    pkg = base_dir / "browser_harness"
+    pkg.mkdir(parents=True, exist_ok=True)
+    script = pkg / "daemon.py"
+    script.write_text(code, encoding="utf-8")
+    return script
 
 
 class _FakeDaemon:
@@ -42,13 +77,14 @@ class _FakeDaemon:
         self.shutdown_requested = threading.Event()
         self._stop = threading.Event()
 
-        # A real, signalable process whose cmdline identifies it as a harness daemon, so
-        # the signal path's identity check runs against a genuine /proc-equivalent entry.
+        # A real process whose own argv is a genuine ``python .../browser_harness/
+        # daemon.py`` invocation, so the signal path's identity check runs against a
+        # real match rather than a substring hit on script source.
+        script = _write_harness_daemon_script(
+            runtime_dir / f".src-{stem}", "import time\ntime.sleep(300)\n"
+        )
         self.proc = subprocess.Popen(
-            [sys.executable, "-c",
-             "import sys, time\n"
-             "sys.argv[0] = 'browser_harness.daemon'\n"
-             "time.sleep(300)\n"],
+            [sys.executable, str(script)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         (runtime_dir / f"{stem}.pid").write_text(str(self.proc.pid), encoding="utf-8")
@@ -118,22 +154,57 @@ def _dead_pid():
 
 
 @pytest.fixture
-def runtime_dir(tmp_path, monkeypatch):
-    """An isolated BH_RUNTIME_DIR, with the reaper's claim registry reset per test."""
-    d = tmp_path / "rt"
-    d.mkdir()
-    monkeypatch.setenv("BH_RUNTIME_DIR", str(d))
-    monkeypatch.setattr(reaper, "_claimed_runtime_dirs", set())
-    return d
+def confined_process_table(monkeypatch):
+    """Restrict ``psutil.process_iter`` to an explicit per-test PID allowlist.
+
+    ``_sweep_unindexed`` scans the REAL process table for anything that looks like a
+    harness daemon. Without confinement it can find a fake daemon a previous test/run
+    leaked (ppid=1, invisible to any per-test cleanup), and signalling a PID outside this
+    test's own subtree is exactly what ``tests/conftest.py``'s live-system guard exists to
+    block — surfacing as a spurious ``RuntimeError`` unrelated to the behaviour under
+    test. Tests add PIDs they spawn to the returned set to make them visible to the sweep.
+    """
+    import psutil
+
+    allowed: set = set()
+    real_iter = psutil.process_iter
+
+    def _confined_iter(attrs=None):
+        for proc in real_iter(attrs):
+            try:
+                if proc.pid in allowed:
+                    yield proc
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+    monkeypatch.setattr(psutil, "process_iter", _confined_iter)
+    return allowed
 
 
 @pytest.fixture
-def daemons(runtime_dir):
+def runtime_dir(monkeypatch, confined_process_table):
+    """An isolated, SHORT ``BH_RUNTIME_DIR`` (AF_UNIX ``sun_path`` safety — see module
+    docstring), with the reaper's claim registry reset and the process table confined."""
+    try:
+        d = Path(tempfile.mkdtemp(prefix="bu-rt-", dir="/tmp"))
+    except OSError:
+        pytest.skip("/tmp not writable on this host")
+    monkeypatch.setenv("BH_RUNTIME_DIR", str(d))
+    monkeypatch.setattr(reaper, "_claimed_runtime_dirs", set())
+    try:
+        yield d
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture
+def daemons(runtime_dir, confined_process_table):
     made = []
 
     def _make(stem="bu-probe", **kwargs):
         d = _FakeDaemon(runtime_dir, stem, **kwargs)
         made.append(d)
+        confined_process_table.add(d.proc.pid)
         return d
 
     yield _make
@@ -314,11 +385,12 @@ def test_signal_fallback_when_shutdown_is_refused(runtime_dir, daemons):
     assert not daemon.alive()
 
 
-def test_refuses_to_signal_a_process_that_is_not_a_harness_daemon(runtime_dir):
+def test_refuses_to_signal_a_process_that_is_not_a_harness_daemon(runtime_dir, confined_process_table):
     """The pid file is a plain file: a planted or recycled PID must not turn the reaper
     into an arbitrary-process killer. Identity is verified before any signal."""
     victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
     try:
+        confined_process_table.add(victim.pid)
         (runtime_dir / "bu-imposter.pid").write_text(str(victim.pid), encoding="utf-8")
         (runtime_dir / "bu-imposter.owner_pid").write_text(str(_dead_pid()), encoding="utf-8")
 
@@ -328,6 +400,34 @@ def test_refuses_to_signal_a_process_that_is_not_a_harness_daemon(runtime_dir):
     finally:
         victim.kill()
         victim.wait(timeout=10)
+
+
+def test_cmdline_mention_without_real_invocation_is_not_matched(runtime_dir, confined_process_table):
+    """A process whose script merely MENTIONS ``browser_harness.daemon`` as text (e.g. a
+    comment or string literal) must not be treated as a real daemon invocation — only a
+    genuine ``-m browser_harness.daemon`` or a ``.../browser_harness/daemon.py`` script
+    path counts. Regression for the argv-substring bug class root AGENTS.md calls out:
+    "Never infer process identity from argv substrings"."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c",
+         "import time\n"
+         "# not a real browser_harness.daemon invocation, just text mentioning it\n"
+         "time.sleep(300)\n"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        confined_process_table.add(proc.pid)
+        assert not reaper._verified_daemon_pid(proc.pid)
+
+        (runtime_dir / "bu-mention.pid").write_text(str(proc.pid), encoding="utf-8")
+        (runtime_dir / "bu-mention.owner_pid").write_text(str(_dead_pid()), encoding="utf-8")
+
+        reaper.reap_orphaned_harness_daemons()
+
+        assert proc.poll() is None, "a process that merely mentions the module name must survive"
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
 
 
 def test_out_of_range_pid_file_is_never_signalled(runtime_dir):
@@ -342,20 +442,23 @@ def test_out_of_range_pid_file_is_never_signalled(runtime_dir):
     assert reaper._read_pid(probe) == os.getpid()
 
 
-def test_wedged_daemon_is_escalated_to_sigkill(runtime_dir, daemons, monkeypatch):
+def test_wedged_daemon_is_escalated_to_sigkill(runtime_dir, confined_process_table, monkeypatch):
     """A daemon that ignores SIGTERM must still be reclaimed — otherwise one wedged
     process keeps its CDP connection and memory forever."""
     monkeypatch.setattr(reaper, "_SHUTDOWN_EXIT_WAIT_S", 1.0)
 
+    script = _write_harness_daemon_script(
+        runtime_dir / ".src-wedged",
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "time.sleep(300)\n",
+    )
     proc = subprocess.Popen(
-        [sys.executable, "-c",
-         "import signal, sys, time\n"
-         "sys.argv[0] = 'browser_harness.daemon'\n"
-         "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-         "time.sleep(300)\n"],
+        [sys.executable, str(script)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
+        confined_process_table.add(proc.pid)
         time.sleep(0.5)  # let the handler install before we signal
         (runtime_dir / "bu-wedged.pid").write_text(str(proc.pid), encoding="utf-8")
         (runtime_dir / "bu-wedged.owner_pid").write_text(str(_dead_pid()), encoding="utf-8")
@@ -407,7 +510,8 @@ def test_endpoint_less_sweep_spares_a_daemon_inside_the_grace(runtime_dir, daemo
     assert daemon.alive(), "a just-started daemon must not be reaped"
 
 
-def test_endpoint_less_sweep_spares_indexed_and_foreign_processes(runtime_dir, daemons, monkeypatch):
+def test_endpoint_less_sweep_spares_indexed_and_foreign_processes(runtime_dir, daemons,
+                                                                   confined_process_table, monkeypatch):
     """The process-table sweep must not touch a daemon a pid file still points at (it has
     an owner and an idle clock), nor any non-harness process."""
     import tools.browser_tool as bt
@@ -418,6 +522,7 @@ def test_endpoint_less_sweep_spares_indexed_and_foreign_processes(runtime_dir, d
 
     victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
     try:
+        confined_process_table.add(victim.pid)
         reaper._sweep_unindexed()
 
         assert indexed.alive(), "a pid-file-indexed daemon is the file sweep's business"
@@ -430,7 +535,7 @@ def test_endpoint_less_sweep_spares_indexed_and_foreign_processes(runtime_dir, d
 # ---------------------------------------------------------------- exit teardown
 
 
-def test_exit_teardown_stops_only_our_own_claims(runtime_dir, daemons):
+def test_exit_teardown_stops_only_our_own_claims(runtime_dir, daemons, confined_process_table):
     """Several hermes processes share one runtime dir; at exit we stop what WE claimed and
     leave another live process's daemon running."""
     mine = daemons(stem="bu-mine")
@@ -439,6 +544,7 @@ def test_exit_teardown_stops_only_our_own_claims(runtime_dir, daemons):
 
     other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
     try:
+        confined_process_table.add(other.pid)
         theirs.claim(other.pid)
 
         reaper.shutdown_owned_harness_daemons()

@@ -2725,7 +2725,12 @@ checkpoints:
 
 ## Delegation
 
-Configure subagent behavior for the delegate tool:
+Configure subagent behavior for the delegate tool. The model, provider, endpoint,
+protocol and fallback settings below govern unmanaged and observational-shadow
+children. Enforced [guided routing](features/kanban-worker-lanes.md#guided-model-routing-opt-in-per-task)
+instead pins the receipted selection, resolves that route's credentials and runtime
+request settings, and disables inherited fallback chains. Width, depth and lifecycle
+limits still apply to every child.
 
 ```yaml
 delegation:
@@ -2745,11 +2750,11 @@ delegation:
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
 ```
 
-**Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
+**Subagent provider:model override:** For unmanaged and observational-shadow children, the default is to inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route those children to a different provider:model pair. Enforced children use their independently receipted, qualified route instead; price does not determine guided selection.
 
-**Subagent fallback chain:** Set `delegation.fallback_providers` to give workers their own chain (same entry shape as the top-level list). An explicitly pinned child (by provider, endpoint, or model) uses that chain only when it is declared; otherwise it fails loudly instead of borrowing the parent agent's route. For an unpinned child, an absent or `null` setting preserves parent-chain inheritance. Use `fallback_providers: []` under `delegation:` to disable child fallback entirely.
+**Subagent fallback chain:** For unmanaged and observational-shadow children, set `delegation.fallback_providers` to give workers their own chain (same entry shape as the top-level list). An explicitly pinned child (by provider, endpoint, or model) uses that chain only when it is declared; otherwise it fails loudly instead of borrowing the parent agent's route. For an unpinned child, an absent or `null` setting preserves parent-chain inheritance. Use `fallback_providers: []` under `delegation:` to disable child fallback entirely. Enforced children never use this chain; a different route requires a new authorized attempt, not an in-conversation fallback.
 
-**Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only. When `delegation.provider` is set alongside `delegation.base_url`, the explicit endpoint and key still win, but that provider's request settings (`extra_body` overrides and max output tokens from your `custom_providers` entry) are carried into the subagent.
+**Direct endpoint override:** For unmanaged and observational-shadow children, set `delegation.base_url`, `delegation.api_key`, and `delegation.model` to use a custom endpoint. That sends those children directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only. When `delegation.provider` is set alongside `delegation.base_url`, the explicit endpoint and key still win, but that provider's request settings (`extra_body` overrides and max output tokens from your `custom_providers` entry) are carried into the subagent. Enforced children instead use the selected approved destination and its resolved credentials.
 
 **Per-child request settings (`request_overrides`):** For unmanaged and observational-shadow children, `delegation.request_overrides` is a dict of request settings sent on every subagent API call. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. It is honored on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit. Precedence: explicit `request_overrides` values merge **over** any runtime- or parent-derived overrides — top-level explicit keys win, and `extra_body` is deep-merged one level so runtime `extra_body` keys (e.g. a provider's `thinking: {type: disabled}` personality) survive unless your key redefines them. Enforced guided-routing children instead use only the selected provider's runtime request settings, not this global delegation override bundle; final-wire validation still enforces the receipted route, reasoning and budget. The canonical unmanaged/shadow use case is OpenRouter routing hints for delegation children:
 
@@ -2767,7 +2772,7 @@ delegation:
 
 The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 
-**Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
+**Precedence:** For unmanaged and observational-shadow children: `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter). This inheritance order does not override an enforced child's receipted selection.
 
 **Width and depth:** `max_concurrent_children` caps how many subagents run in parallel per batch (default `3`, floor of 1, no ceiling). Can also be set via the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var. When the model submits a `tasks` array longer than the cap, `delegate_task` returns a tool error explaining the limit rather than silently truncating. `max_spawn_depth` controls the delegation tree depth (clamped to 1-3). At the default `1`, delegation is flat: children cannot spawn grandchildren, and passing `role="orchestrator"` silently degrades to `leaf`. Raise to `2` so orchestrator children can spawn leaf grandchildren; `3` for three-level trees. The agent opts into orchestration per call via `role="orchestrator"`; `orchestrator_enabled: false` forces every child back to leaf regardless. Cost scales multiplicatively — at `max_spawn_depth: 3` with `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. See [Subagent Delegation → Depth Limit and Nested Orchestration](features/delegation.md#depth-limit-and-nested-orchestration) for usage patterns.
 

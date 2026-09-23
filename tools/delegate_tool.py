@@ -427,6 +427,11 @@ def _build_children(
         except ValueError as exc:
             discard_unstarted_children(parent_agent, children)
             return [], f"Task {i} routing: {exc}"
+        except Exception:
+            # Persistence failures are fatal, not independent policy denials.
+            # No runner owns the earlier children yet.
+            discard_unstarted_children(parent_agent, children)
+            raise
         _task_overrides = dict(overrides)
         _routing_enforced = bool(
             _routing_resolution is not None

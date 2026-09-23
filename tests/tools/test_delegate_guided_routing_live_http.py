@@ -225,15 +225,18 @@ def test_separate_calls_have_host_owned_receipts(routed_home, monkeypatch, first
         parent.close()
 
 
-@pytest.mark.parametrize("failure", ["malformed_first", "malformed_last", "constructor"])
+@pytest.mark.parametrize("failure", ["malformed_first", "malformed_last", "constructor", "storage"])
 def test_batch_fatal_failure_releases_real_children(routed_home, monkeypatch, failure):
+    import sqlite3
+
+    import agent.managed_route_runtime as runtime
     import tools.delegate_tool as dt
 
     home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
     _publish_active(home, url)
     _patch_custom_provider(monkeypatch, url)
     parent = _make_parent(home)
-    built, closed = [], []
+    built, closed, clients = [], [], []
     build = dt._build_child_preserving_parent_tools
 
     def record_child(**kwargs):
@@ -241,6 +244,7 @@ def test_batch_fatal_failure_releases_real_children(routed_home, monkeypatch, fa
             raise ValueError("fixture fatal constructor failure")
         child = build(**kwargs)
         built.append(child)
+        clients.append(child.client)
         close = child.close
         def record_close():
             closed.append(child)
@@ -249,18 +253,32 @@ def test_batch_fatal_failure_releases_real_children(routed_home, monkeypatch, fa
         return child
 
     monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", record_child)
+    persist = runtime.persist_receipt
+
+    def fail_later_receipt(*args, **kwargs):
+        if built:
+            raise sqlite3.OperationalError("fixture late receipt storage failure")
+        return persist(*args, **kwargs)
+
+    if failure == "storage":
+        monkeypatch.setattr(runtime, "persist_receipt", fail_later_receipt)
     tasks = [{"goal": "Complete eligible batch member", "routing_role": "builder",
               "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}}
              for _ in range(2)]
-    if failure != "constructor":
+    if failure.startswith("malformed"):
         tasks[0 if failure == "malformed_first" else 1]["routing_requirements"]["unexpected"] = True
     try:
-        result = json.loads(dt.delegate_task(tasks=tasks, parent_agent=parent))
-        assert "error" in result, result
+        if failure == "storage":
+            with pytest.raises(sqlite3.OperationalError, match="fixture late receipt storage failure"):
+                dt.delegate_task(tasks=tasks, parent_agent=parent)
+        else:
+            result = json.loads(dt.delegate_task(tasks=tasks, parent_agent=parent))
+            assert "error" in result, result
         assert handler.requests == []
         assert parent._active_children == []
         assert closed == built
-        if failure != "constructor":
+        assert all(client is not None and client.is_closed() for client in clients)
+        if failure.startswith("malformed"):
             assert built == [], "validate every member before constructing any child"
         else:
             assert len(built) == 1, "exercise cleanup of an actually constructed child"

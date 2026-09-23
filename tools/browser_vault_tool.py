@@ -28,8 +28,9 @@ from __future__ import annotations
 
 import json
 import secrets
+import time
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,37 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     return (origin or focused.get("url")) if focused.get("ok") else None
 
 
+# The supervisor's page session can be mid-re-attach — the tab it was attached to is gone,
+# because the agent closed it between two calls — and a page navigated to a moment ago may
+# still be rendering the form the probe looks for. One probe therefore reports "no page" for
+# a state that resolves on its own, and the caller reads that as "the credential is missing".
+_ORIGIN_READ_ATTEMPTS = 2
+_ORIGIN_READ_RETRY_SECONDS = 1.5
+
+
+def _resolve_page_origin(task_id: str, origins: Sequence[str], kind: str) -> Optional[str]:
+    """Normalized origin of the page a vault write should target, or None.
+
+    ``origins`` is the item's bound origin(s); ``""`` means "any page holding a ``kind``
+    form" for the callers that must find the right tab before they know its origin. The
+    focus-and-read pair is retried once, because both halves can fail transiently while
+    the supervisor re-attaches or the page finishes rendering.
+    """
+    for attempt in range(_ORIGIN_READ_ATTEMPTS):
+        for candidate in origins:
+            focused = _focus_bound_origin(task_id, candidate, kind)
+            # "" carries no origin to return (the raw focused URL is not normalized);
+            # fall through to the current-page read, which normalizes it.
+            if focused and candidate:
+                return focused
+        current = _current_page_origin(task_id)
+        if current:
+            return current
+        if attempt + 1 < _ORIGIN_READ_ATTEMPTS:
+            time.sleep(_ORIGIN_READ_RETRY_SECONDS)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -286,10 +318,11 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     effective_task_id = task_id or "default"
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
-    _focus_bound_origin(effective_task_id, "", "login")
-    origin = _current_page_origin(effective_task_id)
+    origin = _resolve_page_origin(effective_task_id, [""], "login")
     if not origin:
-        return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
+        return json.dumps({"success": False, "error_type": "no_bound_tab",
+                           "error": ("Could not determine the current page origin: no open tab holds a login form. "
+                                     "Open the site's login page, leave that tab open, and retry.")})
     prompt = get_save_login_prompt_callback()
     if prompt is None or not can_prompt_here():
         return json.dumps({"success": False, "error_type": "prompt_unavailable",
@@ -332,10 +365,10 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
+    origin = _resolve_page_origin(effective_task_id, [""], "otp")
     if not origin:
-        return json.dumps({"success": False, "error": "No page with a code field is open."})
+        return json.dumps({"success": False, "error_type": "no_bound_tab",
+                           "error": "Could not determine the current page origin: no page with a code field is open."})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
@@ -444,15 +477,18 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # every saved origin is a valid fill target. Matching stays exact-origin —
     # nothing wildcard/parent-domain is ever inferred.
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
-    page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
-    page_origin = page_origin or _current_page_origin(effective_task_id)
+    page_origin = _resolve_page_origin(effective_task_id, allowed, meta.kind)
     if not page_origin:
         return json.dumps(
-            {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
+            {
+                "success": False,
+                "error_type": "no_bound_tab",
+                "error": (
+                    f"Could not determine the current page origin: no open tab holds a {meta.kind} form on "
+                    f"{', '.join(allowed) or 'the bound site'}. Open that page, leave the tab open — closing it "
+                    "between calls drops the page session — and retry."
+                ),
+            }
         )
     if page_origin not in allowed:
         return json.dumps(

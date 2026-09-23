@@ -5,6 +5,7 @@ from __future__ import annotations
 import yaml
 
 from hermes_cli.xai_retirement import (
+    RetirementIssue,
     _RETIRED_MODELS,
     _looks_like_xai,
     _normalize,

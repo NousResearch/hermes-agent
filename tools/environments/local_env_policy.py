@@ -199,23 +199,53 @@ def _is_hermes_internal_secret(key: str) -> bool:
 # no secret scrub touches them, and most profiles' ``.env`` files do not define them, so the
 # child's own dotenv load never overwrites an inherited value: a child spawned FOR profile B
 # from a process that loaded profile A's gates (or a unit-file ``Environment=``) would enforce
-# A's channel/user/role list as its own (#113270). Matched by shape so a gate added to any
-# adapter is covered without a second edit; ``HERMES_*`` never counts (``HERMES_MEDIA_ALLOW_DIRS``,
+# A's channel/user/role list as its own (#113270). The suffix is matched by shape so a gate
+# added to any adapter is covered without a second edit, but ONLY under a platform prefix
+# (``DISCORD_``, ``GATEWAY_``, a plugin adapter's name): an operator's own ``DEMO_ALLOWED_SENDER``
+# is script data, not a Hermes gate, and deleting it by name shape broke routed ``no_agent``
+# cron scripts (#119539). ``HERMES_*`` never counts (``HERMES_MEDIA_ALLOW_DIRS``,
 # ``HERMES_ALLOW_PRIVATE_URLS`` are process settings, not adapter gates).
 _PROFILE_GATE_ENV_MARKERS = (
     "_ALLOWED_", "_ALLOW_ALL_", "_ALLOW_FROM", "_ALLOW_BOTS", "_ALLOW_PUBLIC_", "_IGNORED_CHANNELS",
     "_NO_THREAD_CHANNELS", "_FREE_RESPONSE_CHANNELS", "_BACKFILL_CHANNELS", "_GROUP_ALLOWED",
 )
+# Gate owners that are not a ``Platform`` value: the cross-platform pairing gate and adapters whose
+# env prefix differs from their platform name (``qqbot`` reads ``QQ_*``).
+_EXTRA_GATE_ENV_PREFIXES = frozenset({"GATEWAY", "QQ"})
+
+
+def _platform_gate_env_prefixes() -> frozenset:
+    """Upper-cased owners of authorization gates: built-in platforms, bundled platform plugins and
+    runtime-registered plugin adapters (``platform_registry``), plus :data:`_EXTRA_GATE_ENV_PREFIXES`.
+    Resolved per call — plugin registration is dynamic and profile-scoped."""
+    names = set(_EXTRA_GATE_ENV_PREFIXES)
+    try:
+        from gateway.config import Platform
+        names.update(m.value for m in Platform.__members__.values())
+        bundled, aliases = Platform._scan_bundled_plugin_platforms()
+        names.update(bundled)
+        names.update(aliases)
+    except Exception:  # noqa: BLE001 — a broken gateway import must not disable the gate strip
+        pass
+    try:
+        from gateway.platform_registry import platform_registry
+        names.update(platform_registry.registered_names())
+    except Exception:  # noqa: BLE001
+        pass
+    return frozenset(str(n).upper().replace("-", "_") for n in names if n)
 
 
 def is_profile_gate_env(name: str) -> bool:
     """True for a platform authorization gate (``DISCORD_ALLOWED_CHANNELS``, ``TELEGRAM_ALLOW_ALL_USERS``,
     ``GATEWAY_ALLOWED_USERS``, ``WHATSAPP_GROUP_ALLOW_FROM`` ...) — profile-scoped policy a child acting
-    for ANOTHER profile must never inherit."""
+    for ANOTHER profile must never inherit. A gate is a platform prefix AND a gate-shaped suffix;
+    an operator variable that merely contains ``_ALLOWED_`` is not one."""
     upper = name.upper()
     if upper.startswith("HERMES_") or upper.startswith("_"):
         return False
-    return any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS)
+    if not any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS):
+        return False
+    return any(upper.startswith(prefix + "_") for prefix in _platform_gate_env_prefixes())
 
 
 def strip_profile_gate_env(env: dict) -> dict:

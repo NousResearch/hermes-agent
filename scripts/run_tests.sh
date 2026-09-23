@@ -48,31 +48,60 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # .venv — every file then died with "No module named pytest" and the run
 # reported "0 tests passed" (which reads green at a glance even though the
 # exit code is 1). Skip such a venv and keep probing instead.
+#
+# pytest alone does not make the suite TRUSTWORTHY, though: a venv missing
+# other declared deps is selected, runs, and reports ordinary assertion
+# failures that read as code regressions. Absent croniter costs ~22 tests/cron
+# failures whose cause shows up only as a "'croniter' is not installed" log
+# warning; absent psutil stops conftest's _is_own_subtree() walking the process
+# tree, so _live_system_guard refuses the test's OWN children and tempts you
+# into @pytest.mark.live_system_guard_bypass — disabling a real guard to hide a
+# missing package; absent pytest-asyncio fails every async test with
+# "Unknown pytest.mark.asyncio".
+#
+# So: prefer a candidate satisfying the full set, fall back to pytest-only
+# (a lean venv still serves a narrow selection, and run_tests_parallel.py is
+# stdlib-only), and name the gap after selecting. Warning, not a gate — the
+# failure mode being prevented is a plausible wall of red, not a crash.
 VENV=""
 VENV_PYTHON=""
+FALLBACK_VENV=""
+FALLBACK_PYTHON=""
 SKIPPED_VENVS=""
+SUITE_IMPORTS="pytest croniter psutil pytest_asyncio yaml"
+
+# Echo the subset of SUITE_IMPORTS that $1 cannot import, space-separated.
+missing_suite_imports() {
+  "$1" - "$SUITE_IMPORTS" 2>/dev/null <<'PROBE_EOF' || true
+import importlib.util, sys
+missing = [m for m in sys.argv[1].split() if importlib.util.find_spec(m) is None]
+print(" ".join(missing))
+PROBE_EOF
+}
+
+# One pass, two tiers: a complete venv wins outright; otherwise the first
+# pytest-capable one is held as fallback. Both venv layouts are probed —
+# POSIX bin/python and native Windows Scripts/python.exe (Git Bash / MSYS,
+# where there is no bin/ at all).
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
-    if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
-      VENV="$candidate"
-      VENV_PYTHON="$candidate/bin/python"
-      break
+  for _py in "$candidate/bin/python" "$candidate/Scripts/python.exe"; do
+    [ -x "$_py" ] || continue
+    if ! "$_py" -c 'import pytest' 2>/dev/null; then
+      SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
+      continue
     fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
-  fi
-  # Native Windows venv layout: python.exe and activate live under
-  # Scripts/, and there is no bin/. Anyone running this script from
-  # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
-  # this branch — without it the canonical runner refuses to start.
-  if [ -f "$candidate/Scripts/activate" ]; then
-    if "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
+    if [ -z "$(missing_suite_imports "$_py")" ]; then
       VENV="$candidate"
-      VENV_PYTHON="$candidate/Scripts/python.exe"
-      break
+      VENV_PYTHON="$_py"
+      break 2
     fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
-  fi
+    [ -n "$FALLBACK_VENV" ] || { FALLBACK_VENV="$candidate"; FALLBACK_PYTHON="$_py"; }
+  done
 done
+if [ -z "$VENV" ] && [ -n "$FALLBACK_VENV" ]; then
+  VENV="$FALLBACK_VENV"
+  VENV_PYTHON="$FALLBACK_PYTHON"
+fi
 
 if [ -n "$SKIPPED_VENVS" ]; then
   for skipped in $SKIPPED_VENVS; do
@@ -82,6 +111,18 @@ fi
 
 if [ -n "$VENV" ]; then
   PYTHON="$VENV_PYTHON"
+  # Selection succeeded, but say so plainly if the venv cannot give
+  # trustworthy results. Without this the run proceeds and misattributes
+  # missing packages as code failures (see the SUITE_IMPORTS note above).
+  MISSING_SUITE="$(missing_suite_imports "$PYTHON")"
+  if [ -n "$MISSING_SUITE" ]; then
+    echo "▶ WARNING: selected venv is missing suite dependencies:$(printf ' %s' $MISSING_SUITE)" >&2
+    echo "  $VENV" >&2
+    echo "  Tests will RUN but failures may be caused by these missing packages," >&2
+    echo "  not by your changes. Install the project's declared dependencies:" >&2
+    echo "    uv pip install --python '$PYTHON' -e '.[dev]'" >&2
+    echo "  (a uv-created venv has no pip module, so 'pip install' fails there)" >&2
+  fi
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
     && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
   # Guard with an import check: HERMES_PYTHON may point at the RELEASE

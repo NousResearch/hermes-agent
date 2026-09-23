@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { copyTextWithFeedback } from '@/components/ui/copy-button'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
@@ -510,7 +511,10 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             <div className="mt-2 flex items-center gap-2">
               <Button
                 onClick={() => {
-                  void navigator.clipboard?.writeText(ups.installCommand).catch(() => {})
+                  void copyTextWithFeedback(ups.installCommand, {
+                    notifySuccess: true,
+                    successTitle: copy.copyCommand
+                  }).catch(() => undefined)
                 }}
                 size="sm"
                 variant="secondary"
@@ -716,11 +720,11 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                     const fullText = state.error ? `Error: ${state.error}\n\n${text}` : text
 
                     try {
-                      await navigator.clipboard.writeText(fullText)
+                      await copyTextWithFeedback(fullText)
                       setCopied(true)
                       window.setTimeout(() => setCopied(false), 1500)
                     } catch {
-                      // ignore -- some environments forbid clipboard writes
+                      // copyTextWithFeedback already posts the failure toast.
                     }
                   }}
                   size="sm"

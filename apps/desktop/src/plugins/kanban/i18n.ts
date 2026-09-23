@@ -127,6 +127,7 @@ type KanbanMessages = {
   readyUnassignedBody: string
   diagnosticsN: (n: number) => string
   commandCopied: string
+  copyFailed: string
   description: string
   editDescription: string
   cancelEdit: string
@@ -346,6 +347,7 @@ export const en: KanbanMessages = {
     'The dispatcher only claims Ready cards that have an assignee. Pick a profile in the Assignee field above (or set a default assignee in the orchestration settings) and it runs within a minute.',
   diagnosticsN: n => `Diagnostics · ${n}`,
   commandCopied: 'Command copied',
+  copyFailed: 'Copy failed',
   description: 'Description',
   editDescription: 'Edit description',
   cancelEdit: 'Cancel edit',
@@ -559,6 +561,7 @@ const ja: KanbanMessages = {
     'ディスパッチャは担当のある Ready カードのみ取得します。上の担当フィールドでプロフィールを選ぶ（またはオーケストレーション設定でデフォルトの担当を設定する）と、1分以内に実行されます。',
   diagnosticsN: n => `診断・${n}`,
   commandCopied: 'コマンドをコピーしました',
+  copyFailed: 'コピーできませんでした',
   description: '説明',
   editDescription: '説明を編集',
   cancelEdit: '編集をキャンセル',
@@ -771,6 +774,7 @@ const zh: KanbanMessages = {
     '调度器只领取有负责人的就绪卡片。在上面的负责人字段选择一个配置档（或在编排设置中设置默认负责人），它会在一分钟内运行。',
   diagnosticsN: n => `诊断・${n}`,
   commandCopied: '命令已复制',
+  copyFailed: '复制失败',
   description: '描述',
   editDescription: '编辑描述',
   cancelEdit: '取消编辑',
@@ -981,6 +985,7 @@ const zhHant: KanbanMessages = {
     '排程器只領取有負責人的就緒卡片。在上方的負責人欄位選擇一個設定檔（或在編排設定中設定預設負責人），它會在一分鐘內執行。',
   diagnosticsN: n => `診斷・${n}`,
   commandCopied: '指令已複製',
+  copyFailed: '複製失敗',
   description: '描述',
   editDescription: '編輯描述',
   cancelEdit: '取消編輯',

@@ -4,10 +4,11 @@ import { Button } from '@/components/ui/button'
 import { ContextMenuItem } from '@/components/ui/context-menu'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
-import { useI18n } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Copy, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 
 type CopyPayload = string | (() => Promise<string> | string)
 type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'context-menu-item' | 'tool-row'
@@ -32,6 +33,57 @@ export async function writeClipboardText(text: string) {
   }
 
   throw new Error('Clipboard API is unavailable')
+}
+
+export interface CopyTextFeedbackOptions {
+  errorMessage?: string
+  haptic?: boolean
+  notifyFailure?: boolean
+  notifySuccess?: boolean
+  successMessage?: string
+  successTitle?: string
+}
+
+/**
+ * Write to the clipboard and tell the user how it went. Failure always toasts
+ * (the clipboard really does refuse: focus loss, insecure origins, headless
+ * shells) so a silent copy never looks identical to a refused one. The success
+ * toast is opt-in: callers with an inline affordance (CopyButton's check icon,
+ * a "Copied" label flash) already confirm the write on the element itself.
+ */
+export async function copyTextWithFeedback(text: string, options: CopyTextFeedbackOptions = {}): Promise<boolean> {
+  if (!text) {
+    return false
+  }
+
+  const {
+    errorMessage = translateNow('common.copyFailed'),
+    haptic = true,
+    notifyFailure = true,
+    notifySuccess = false,
+    successMessage = translateNow('common.copied'),
+    successTitle
+  } = options
+
+  try {
+    await writeClipboardText(text)
+
+    if (haptic) {
+      triggerHaptic('selection')
+    }
+
+    if (notifySuccess) {
+      notify({ kind: 'success', message: successMessage, title: successTitle })
+    }
+
+    return true
+  } catch (error) {
+    if (notifyFailure) {
+      notifyError(error, errorMessage)
+    }
+
+    throw error
+  }
 }
 
 export interface CopyButtonProps {
@@ -106,11 +158,7 @@ export function CopyButton({
           return
         }
 
-        await writeClipboardText(value)
-
-        if (haptic) {
-          triggerHaptic('selection')
-        }
+        await copyTextWithFeedback(value, { errorMessage: resolvedErrorMessage, haptic })
 
         if (resetRef.current !== null) {
           window.clearTimeout(resetRef.current)
@@ -136,7 +184,7 @@ export function CopyButton({
         }, COPIED_RESET_MS)
       }
     },
-    [haptic, onCopied, onCopyError, preventDefault, stopPropagation, text]
+    [haptic, onCopied, onCopyError, preventDefault, resolvedErrorMessage, stopPropagation, text]
   )
 
   const Icon = status === 'copied' ? Check : status === 'error' ? X : Copy

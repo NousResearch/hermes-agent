@@ -182,6 +182,18 @@ function MetaRow({ children, label }: { children: ReactNode; label: string }) {
   )
 }
 
+/** Toast only after the clipboard write settles. Firing the "Copied" toast
+ *  alongside a fire-and-forget write reported success for writes the browser
+ *  refused (focus lost to a portaled menu, insecure origin). */
+async function copyToClipboard(text: string, copiedMessage: string, failedMessage: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    host.notify({ kind: 'info', message: copiedMessage })
+  } catch {
+    host.notify({ kind: 'error', message: failedMessage })
+  }
+}
+
 /** The dashboard's diagnostics panel: severity-toned, plain-English, with the
  *  backend's structured recovery actions as buttons. `reassign` is skipped —
  *  the Assignee control in the meta table IS that action, inline. */
@@ -192,8 +204,7 @@ function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () 
     if (action.kind === 'reclaim') {
       onReclaim()
     } else if (action.kind === 'cli_hint') {
-      void navigator.clipboard.writeText(String(action.payload?.command ?? action.label))
-      host.notify({ kind: 'info', message: k.commandCopied })
+      void copyToClipboard(String(action.payload?.command ?? action.label), k.commandCopied, k.copyFailed)
     }
   }
 
@@ -708,8 +719,7 @@ export function TaskDrawer({
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem
                     onSelect={() => {
-                      void navigator.clipboard.writeText(task.id)
-                      host.notify({ kind: 'info', message: k.copiedId(task.id) })
+                      void copyToClipboard(task.id, k.copiedId(task.id), k.copyFailed)
                     }}
                   >
                     <Codicon name="copy" size="0.85rem" />
@@ -717,8 +727,7 @@ export function TaskDrawer({
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={() => {
-                      void navigator.clipboard.writeText(task.title || task.id)
-                      host.notify({ kind: 'info', message: k.copiedTitle })
+                      void copyToClipboard(task.title || task.id, k.copiedTitle, k.copyFailed)
                     }}
                   >
                     <Codicon name="copy" size="0.85rem" />

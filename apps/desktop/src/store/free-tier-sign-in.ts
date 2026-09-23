@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { copyTextWithFeedback } from '@/components/ui/copy-button'
 import { cancelOAuthSession, listOAuthProviders, pollOAuthSession, startOAuthLogin } from '@/hermes'
 
 import { type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
@@ -303,7 +304,7 @@ async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mi
 
 async function copyAndFlash(text: string, field: 'codeCopied' | 'urlCopied') {
   try {
-    await navigator.clipboard.writeText(text)
+    await copyTextWithFeedback(text)
   } catch {
     return
   }

@@ -12,7 +12,12 @@ import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { groupTranscriptRowText, mirrorExternalGroupWrites, syntheticGroupUserRow } from './group-external-writes'
+import {
+  failedTurnBoundaryRow,
+  groupTranscriptRowText,
+  mirrorExternalGroupWrites,
+  syntheticGroupUserRow
+} from './group-external-writes'
 import {
   followGroupChat,
   groupMemberAuthor,
@@ -41,6 +46,7 @@ export function isGroupPassText(text: unknown) {
  *  `content` is a plain string on most providers and a part array on the rest. */
 interface GroupTurnTranscriptMessage {
   content?: string | Array<string | { text?: string }>
+  display_kind?: string
   role?: string
   text?: string
 }
@@ -71,6 +77,10 @@ function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: numb
           : msg?.text || ''
 
     const replyText = String(text).trim()
+
+    if (failedTurnBoundaryRow(msg)) {
+      continue
+    }
 
     if (isGroupPassText(replyText)) {
       if (passText === null) {
@@ -112,7 +122,7 @@ function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], befo
       break
     }
 
-    if (msg?.role !== 'assistant' || !text) {
+    if (msg?.role !== 'assistant' || !text || failedTurnBoundaryRow(msg)) {
       continue
     }
 

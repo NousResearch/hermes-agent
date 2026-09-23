@@ -333,6 +333,41 @@ describe('session-gone classification', () => {
     }
   })
 
+  // The core loop closes a failed turn with a Hermes-authored assistant row
+  // typed `display_kind: failed_turn` (agent/turn_failure_copy.py). That row is
+  // a transcript boundary, not the member speaking: read as the reply, the
+  // room posted it as the bot's answer, re-drove the member and hid the error.
+  it('reports a failed turn whose transcript Hermes closed with the failed-turn notice', async () => {
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000))
+
+    const room = await loadRoom({
+      turn: () => [{ content: 'Your request was not processed.', display_kind: 'failed_turn', role: 'assistant' }]
+    })
+
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+    let submitted = false
+
+    // The real gateway keeps the tombstone AND the closed transcript.
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      const result = (await request(method, params)) as Record<string, unknown>
+
+      submitted = submitted || method === 'prompt.submit'
+
+      return method === 'session.resume' && submitted
+        ? { ...result, inflight: { error: 'HTTP 401: invalid_api_key', status: 'error', streaming: false } }
+        : result
+    }
+
+    try {
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])).rejects.toThrow(
+        'HTTP 401: invalid_api_key'
+      )
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
   // A turn that dies BEFORE its prompt is committed (agent-init failure,
   // no-agent refusal) leaves a retained `{ status: 'error' }` and a transcript
   // that never grew — the failure must still surface instead of the poll

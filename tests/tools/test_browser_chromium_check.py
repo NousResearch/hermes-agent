@@ -157,6 +157,33 @@ class TestChromiumInstalled:
 
         assert "AGENT_BROWSER_EXECUTABLE_PATH" not in env
 
+    @pytest.mark.parametrize(
+        ("engine", "cdp_url", "expected"),
+        [("chrome", None, True), ("lightpanda", None, False), ("chrome", "ws://remote/devtools", False)],
+    )
+    def test_spawn_pins_local_executable_only_for_local_chrome(
+        self, monkeypatch, tmp_path, engine, cdp_url, expected,
+    ):
+        """Lightpanda runs its own engine binary and CDP sessions drive a remote browser."""
+        seen = []
+
+        class _Stop(Exception):
+            pass
+
+        def fake_command_env(_socket_dir, *, include_browser_executable=True):
+            seen.append(include_browser_executable)
+            raise _Stop
+
+        monkeypatch.setattr(bt_session, "_prepare_session_socket_dir", lambda _name: str(tmp_path))
+        monkeypatch.setattr(bt_session, "_agent_browser_command_env", fake_command_env)
+
+        with pytest.raises(_Stop):
+            bt_session._spawn_and_collect(
+                "task", {"session_name": "s", "cdp_url": cdp_url}, ["agent-browser"], "snapshot",
+                engine, 5)
+
+        assert seen == [expected]
+
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         (tmp_path / "chromium-1208").mkdir()

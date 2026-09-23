@@ -577,10 +577,11 @@ def _spawn_and_collect(
     task_socket_dir = _prepare_session_socket_dir(session_info["session_name"])
     _bt.logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                  command, task_id, task_socket_dir, len(task_socket_dir))
-    # A cdp_url session drives a remote/cloud browser, so it must not be pinned to a
-    # locally discovered executable; local sessions get one.
+    # A cdp_url session drives a remote/cloud browser and a Lightpanda command runs its own
+    # engine binary, so neither is pinned to a locally discovered Chrome; local Chrome gets one.
     browser_env = _agent_browser_command_env(
-        task_socket_dir, include_browser_executable=not session_info.get("cdp_url"))
+        task_socket_dir,
+        include_browser_executable=not session_info.get("cdp_url") and engine != "lightpanda")
 
     # Lightpanda rejects Chromium-only launch flags: strip current and legacy vars;
     # Chrome commands and fallback use the shared Chromium policy.

@@ -83,7 +83,7 @@ MathTex(r"\begin{vmatrix} a & b \\ c & d \end{vmatrix}")
 MathTex(r"\begin{matrix} x_1 \\ x_2 \\ x_3 \end{matrix}")
 ```
 
-For matrices you need to animate element-by-element or color individual entries, use the `IntegerMatrix`, `DecimalMatrix`, or `MobjectMatrix` mobjects instead — see `mobjects.md`.
+For matrices you need to animate element-by-element or color individual entries, use the `IntegerMatrix`, `DecimalMatrix`, or `MobjectMatrix` mobjects instead: see `mobjects.md`.
 
 ## Cases and Piecewise Functions
 
@@ -150,7 +150,7 @@ lagrangian.set_color_by_tex(r"\psi", BLUE)
 lagrangian.set_color_by_tex(r"F_{\mu\nu}", YELLOW)
 ```
 
-Essential for `TransformMatchingTex` on complex equations — without isolation, matching fails on dense expressions.
+Essential for `TransformMatchingTex` on complex equations: without isolation, matching fails on dense expressions.
 
 ## Multi-Line Complex Equations
 
@@ -183,7 +183,7 @@ self.play(TransformMatchingTex(
 ))
 ```
 
-## set_color_by_tex — Color by Substring
+## set_color_by_tex: Color by Substring
 
 ```python
 eq = MathTex(r"E = mc^2")

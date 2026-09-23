@@ -1209,7 +1209,7 @@ class SessionStore(
                 return old_entry
             new_entry = self._replace_route_locked(
                 session_key, old_entry, target_session_id, _now(),
-                display_name=old_entry.display_name,
+                display_name=old_entry.display_name, model_override=old_entry.model_override,
             )
 
         if self._db_for_key(session_key) and old_entry.session_id:

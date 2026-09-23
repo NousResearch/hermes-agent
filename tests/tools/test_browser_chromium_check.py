@@ -13,6 +13,7 @@ import pytest
 
 from tools import browser_tool as bt
 from tools import browser_tool_install as bt_install
+from tools import browser_tool_session as bt_session
 from tools import browser_tool_cloud as bt_cloud
 
 
@@ -49,6 +50,140 @@ class TestChromiumInstalled:
         assert bt_install._chromium_installed() is True
 
 
+    def test_true_when_macos_user_app_bundle_present(self, monkeypatch):
+        # macOS app bundles are not on PATH, so which() must not be what saves us.
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt_install.sys, "platform", "darwin")
+        monkeypatch.setattr(bt_install.shutil, "which", lambda _name: None)
+        monkeypatch.setenv("HOME", "/Users/alice")
+
+        user_chrome = os.path.join(
+            "/Users/alice", "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome",
+        )
+        monkeypatch.setattr(bt_install.os.path, "isfile", lambda path: path == user_chrome)
+        monkeypatch.setattr(bt_install.os.path, "isdir", lambda _path: False)
+
+        assert bt_install._detect_system_chromium_executable() == user_chrome
+        assert bt_install._chromium_installed() is True
+
+    def test_system_app_bundle_wins_over_user_bundle(self, monkeypatch):
+        """Ordering contract: /Applications is probed before ~/Applications."""
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt_install.sys, "platform", "darwin")
+        monkeypatch.setattr(bt_install.shutil, "which", lambda _name: None)
+        monkeypatch.setenv("HOME", "/Users/alice")
+
+        system_chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        user_chrome = os.path.join(
+            "/Users/alice", "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome",
+        )
+        monkeypatch.setattr(bt_install.os.path, "isfile", lambda path: path in {system_chrome, user_chrome})
+
+        assert bt_install._detect_system_chromium_executable() == system_chrome
+
+    def test_command_env_sets_macos_app_bundle_executable(self, monkeypatch):
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt_install.sys, "platform", "darwin")
+        monkeypatch.setattr(bt_install.shutil, "which", lambda _name: None)
+        monkeypatch.setenv("HOME", "/Users/alice")
+
+        user_chrome = os.path.join(
+            "/Users/alice", "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome",
+        )
+        monkeypatch.setattr(bt_install.os.path, "isfile", lambda path: path == user_chrome)
+        monkeypatch.setattr(bt_install.os.path, "isdir", lambda _path: False)
+
+        env = bt_session._agent_browser_command_env("/tmp/hermes-browser-socket")
+
+        assert env["AGENT_BROWSER_SOCKET_DIR"] == "/tmp/hermes-browser-socket"
+        assert env["AGENT_BROWSER_EXECUTABLE_PATH"] == user_chrome
+
+    def test_command_env_excludes_unrelated_credentials(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-reach-agent-browser")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_PROFILE", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/tmp/browser-credentials")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/tmp/browser-token")
+        monkeypatch.setenv("BROWSERBASE_API_KEY", "allowed-browser-key")
+
+        env = bt_session._agent_browser_command_env("/tmp/hermes-browser-socket")
+
+        assert "ANTHROPIC_API_KEY" not in env
+        assert not {
+            "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+            "AWS_SHARED_CREDENTIALS_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE",
+        } & env.keys()
+        # The documented browser-backend passthrough must still survive the scrub.
+        assert env["BROWSERBASE_API_KEY"] == "allowed-browser-key"
+
+    def test_popen_receives_the_scrubbed_env_verbatim(self, monkeypatch, tmp_path):
+        """Launch-level guard: the spawn helper must pass our env through, never os.environ."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-reach-agent-browser")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "browser-must-not-inherit")
+
+        launched_envs = []
+
+        class FakeProcess:
+            returncode = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(_argv, *, stdout, stderr, stdin, env, **_kwargs):
+            launched_envs.append(env)
+            return FakeProcess()
+
+        monkeypatch.setattr(bt_session.subprocess, "Popen", fake_popen)
+
+        env = bt_session._agent_browser_command_env(str(tmp_path))
+        bt_session._popen_agent_browser(["agent-browser", "snapshot"], env, str(tmp_path), "tag")
+
+        assert launched_envs
+        assert all("ANTHROPIC_API_KEY" not in e for e in launched_envs)
+        assert all(
+            not {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} & e.keys() for e in launched_envs
+        )
+
+    def test_command_env_skips_browser_executable_for_cloud(self, monkeypatch):
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(
+            bt_install, "_detect_system_chromium_executable", lambda: "/Applications/Chrome")
+
+        env = bt_session._agent_browser_command_env(
+            "/tmp/hermes-browser-socket", include_browser_executable=False)
+
+        assert "AGENT_BROWSER_EXECUTABLE_PATH" not in env
+
+    @pytest.mark.parametrize(
+        ("engine", "cdp_url", "expected"),
+        [("chrome", None, True), ("lightpanda", None, False), ("chrome", "ws://remote/devtools", False)],
+    )
+    def test_spawn_pins_local_executable_only_for_local_chrome(
+        self, monkeypatch, tmp_path, engine, cdp_url, expected,
+    ):
+        """Lightpanda runs its own engine binary and CDP sessions drive a remote browser."""
+        seen = []
+
+        class _Stop(Exception):
+            pass
+
+        def fake_command_env(_socket_dir, *, include_browser_executable=True):
+            seen.append(include_browser_executable)
+            raise _Stop
+
+        monkeypatch.setattr(bt_session, "_prepare_session_socket_dir", lambda _name: str(tmp_path))
+        monkeypatch.setattr(bt_session, "_agent_browser_command_env", fake_command_env)
+
+        with pytest.raises(_Stop):
+            bt_session._spawn_and_collect(
+                "task", {"session_name": "s", "cdp_url": cdp_url}, ["agent-browser"], "snapshot",
+                engine, 5)
+
+        assert seen == [expected]
+
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         (tmp_path / "chromium-1208").mkdir()
@@ -84,5 +219,3 @@ class TestRunBrowserCommandChromiumGuard:
     """Verify _run_browser_command fails fast (no timeout hang) when
     Chromium is missing in local mode.
     """
-
-

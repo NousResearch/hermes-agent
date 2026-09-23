@@ -1295,23 +1295,32 @@ class SessionSessionsMixin:
                 where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
             )
             # A recent compression continuation is not listable itself, but it must first map back to its
-            # logical root.  Seed with the non-child filters, then apply the full root filters outside.
+            # logical root.  Rank logical roots by their indexed physical members before the page LIMIT so
+            # a multi-hop chain cannot consume several candidate slots.
             candidate_where = _where_sql(where_clauses[2:] if not include_children else where_clauses)
             candidate_limit = -1 if (id_query or search_query or limit < 0) else limit + offset
             query = f"""
-                WITH RECURSIVE recent_candidates(id) AS MATERIALIZED (
-                    SELECT s.id FROM sessions s {candidate_where}
-                    ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC,
-                             s.started_at DESC, s.id DESC
-                    LIMIT ?
+                WITH RECURSIVE candidate_sessions(id, activity, started_at) AS MATERIALIZED (
+                    SELECT s.id, COALESCE(s.last_activity_at, s.started_at), s.started_at
+                    FROM sessions s {candidate_where}
                 ),
-                ancestors(candidate_id, cur_id) AS (
-                    SELECT id, id FROM recent_candidates
+                rooted_candidates(root_id, cur_id) AS (
+                    SELECT cs.id, cs.id FROM candidate_sessions cs
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM sessions child
+                        JOIN sessions parent ON parent.id = child.parent_session_id
+                        WHERE child.id = cs.id AND parent.end_reason = 'compression'
+                          AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                          AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                          AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+                          AND COALESCE(child.source, '') != 'tool'
+                    )
                     UNION
-                    SELECT a.candidate_id, parent.id
-                    FROM ancestors a
-                    JOIN sessions child ON child.id = a.cur_id
-                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    SELECT rc.root_id, child.id
+                    FROM rooted_candidates rc
+                    JOIN sessions parent ON parent.id = rc.cur_id
+                    JOIN sessions child ON child.parent_session_id = rc.cur_id
+                    JOIN candidate_sessions cs ON cs.id = child.id
                     WHERE parent.end_reason = 'compression'
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
@@ -1319,16 +1328,15 @@ class SessionSessionsMixin:
                       AND COALESCE(child.source, '') != 'tool'
                 ),
                 candidate_roots(root_id) AS (
-                    SELECT DISTINCT a.cur_id FROM ancestors a
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM sessions child
-                        JOIN sessions parent ON parent.id = child.parent_session_id
-                        WHERE child.id = a.cur_id AND parent.end_reason = 'compression'
-                          AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
-                          AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
-                          AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                          AND COALESCE(child.source, '') != 'tool'
+                    SELECT root_id FROM (
+                        SELECT rc.root_id, MAX(cs.activity) AS candidate_activity,
+                               MAX(cs.started_at) AS candidate_started_at
+                        FROM rooted_candidates rc
+                        JOIN candidate_sessions cs ON cs.id = rc.cur_id
+                        GROUP BY rc.root_id
                     )
+                    ORDER BY candidate_activity DESC, candidate_started_at DESC, root_id DESC
+                    LIMIT ?
                 ),
                 chain(root_id, cur_id) AS (
                     SELECT root_id, root_id FROM candidate_roots

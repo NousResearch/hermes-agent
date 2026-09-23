@@ -3077,6 +3077,7 @@ class TestSessionListPreviewHydration:
 
         conn = sqlite3.connect(db_path)
         conn.execute("UPDATE schema_version SET version = 30")
+        conn.execute("DELETE FROM state_meta WHERE key = 'session_activity_message_backfill_version'")
         conn.executemany(
             "UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = ?",
             [(100.0, None, "newest"), (200.0, 200.0, "older")],
@@ -3107,6 +3108,23 @@ class TestSessionListPreviewHydration:
 
         assert [row["id"] for row in rows] == ["tip", "competing"]
         assert rows[0]["_lineage_root_id"] == "root"
+
+    def test_last_active_candidate_window_deduplicates_compression_chain(self, db):
+        """Several recent physical continuations must not consume one logical page twice."""
+        db.create_session("root-a", "cli")
+        db.append_message("root-a", "user", "root-a", timestamp=100.0)
+        db.end_session("root-a", "compression")
+        db.create_session("child-a1", "cli", parent_session_id="root-a")
+        db.append_message("child-a1", "user", "child-a1", timestamp=400.0)
+        db.end_session("child-a1", "compression")
+        db.create_session("child-a2", "cli", parent_session_id="child-a1")
+        db.append_message("child-a2", "user", "child-a2", timestamp=500.0)
+        db.create_session("logical-b", "cli")
+        db.append_message("logical-b", "user", "logical-b", timestamp=300.0)
+
+        rows = db.list_sessions_rich(limit=2, order_by_last_active=True)
+
+        assert [row["id"] for row in rows] == ["child-a2", "logical-b"]
 
     def test_append_message_advances_activity_without_regressing_heartbeat(self, db):
         db.create_session("session", "cli")
@@ -3205,6 +3223,7 @@ class TestSessionActivityBackfill:
 
         conn = sqlite3.connect(db_path)
         conn.execute("UPDATE schema_version SET version = 30")
+        conn.execute("DELETE FROM state_meta WHERE key = 'session_activity_message_backfill_version'")
         conn.executemany(
             "UPDATE sessions SET last_activity_at = ? WHERE id = ?",
             [(None, "null"), (150.0, "stale"), (300.0, "heartbeat")],

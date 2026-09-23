@@ -618,7 +618,8 @@ class SessionMessagesMixin:
                 f"""{_SET_COUNTERS_SQL}, last_activity_at = CASE
                        WHEN ? IS NOT NULL AND (last_activity_at IS NULL OR last_activity_at < ?) THEN ?
                        ELSE last_activity_at END WHERE id = ?""",
-                (kept + inserted, kept_tool_calls, activity_at, activity_at, activity_at, session_id))
+                (kept + inserted, kept_tool_calls + inserted_tool_calls,
+                 activity_at, activity_at, activity_at, session_id))
         self._execute_write(_do)
 
     @classmethod

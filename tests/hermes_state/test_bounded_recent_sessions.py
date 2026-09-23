@@ -100,6 +100,41 @@ def test_v31_activity_backfill_is_monotonic_and_runs_once(tmp_path):
         reopened.close()
 
 
+def test_v31_backfill_marker_skips_rescan_when_schema_is_fts_deferred(tmp_path, monkeypatch):
+    """A marker-complete v30 store must not aggregate messages again while FTS defers version advancement."""
+    path = tmp_path / "marker-complete-legacy.db"
+    original = SessionDB(path)
+    original.create_session("session", "cli")
+    original.append_message("session", "user", "persisted", timestamp=50.0)
+    original._conn.execute("UPDATE schema_version SET version = 30")
+    original._conn.execute(
+        "INSERT OR REPLACE INTO state_meta(key, value) VALUES (?, ?)",
+        ("session_activity_message_backfill_version", "1"),
+    )
+    original._conn.commit()
+    original.close()
+
+    import hermes_state_schema
+
+    statements = []
+    original_migration = hermes_state_schema.SessionSchemaMixin._run_data_migrations
+
+    def traced_migration(self, cursor, current_version, fts5_available):
+        cursor.connection.set_trace_callback(statements.append)
+        return original_migration(self, cursor, current_version, fts5_available)
+
+    monkeypatch.setattr(hermes_state_schema.SessionSchemaMixin, "_sqlite_supports_fts5", lambda *_: False)
+    monkeypatch.setattr(hermes_state_schema.SessionSchemaMixin, "_run_data_migrations", traced_migration)
+
+    reopened = SessionDB(path)
+    try:
+        assert reopened._conn.execute("SELECT version FROM schema_version").fetchone()[0] == 30
+    finally:
+        reopened.close()
+
+    assert not any("message_activity" in statement.lower() for statement in statements)
+
+
 def test_bounded_recent_orders_by_durable_activity_and_shapes_preview(db):
     now = time.time()
     db.create_session("older", source="cli")

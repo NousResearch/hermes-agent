@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
+from gateway.platforms.base import BasePlatformAdapter, SendResult, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
@@ -416,6 +416,14 @@ class GatewayNotificationsMixin:
         from gateway.run import _strip_response_attachments_for_direct_send
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
+            deferred_hook = getattr(stream_consumer, "deferred_final_delivery", None)
+            deferred = deferred_hook(response) if callable(deferred_hook) else None
+            if text_content and isinstance(deferred, SendResult) and not deferred.success:
+                await self._send_queued_final_text(
+                    adapter, source, text_content, metadata, event_message_id, session_key,
+                    inbound_message_id, prior_result=deferred,
+                )
+                text_content = ""
             if text_content:
                 # Reconcile-by-edit first: a stream-sealed message already carries most of the answer;
                 # a plain send here would duplicate it.
@@ -473,7 +481,7 @@ class GatewayNotificationsMixin:
     async def _send_queued_final_text(
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
         event_message_id: Optional[str], session_key: Optional[str],
-        inbound_message_id: Optional[str] = None,
+        inbound_message_id: Optional[str] = None, *, prior_result: Optional[SendResult] = None,
     ):
         """Send a queued-lane final through the same ledger bracket as the normal final
         (``send_final_ledgered``). This lane used to call ``adapter.send`` bare and discard the
@@ -484,9 +492,14 @@ class GatewayNotificationsMixin:
         inbound id the ledger falls back to the event's own (empty) message id. Adapters without
         the base contract and sends without a session key keep the plain send."""
         if session_key and isinstance(adapter, BasePlatformAdapter):
+            event = MessageEvent(text="", source=source, ledger_message_id=inbound_message_id)
+            if prior_result is not None:
+                event._deferred_final_delivery = (text_content, prior_result)
             result, _ = await adapter.send_final_ledgered(
-                MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
+                event,
                 session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
+        elif prior_result is not None:
+            result = prior_result
         else:
             result = await adapter.send(source.chat_id, text_content, metadata=metadata)
         if not getattr(result, "success", False):

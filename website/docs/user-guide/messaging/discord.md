@@ -25,6 +25,12 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 If you want a normal bot-help channel where people can talk to Hermes without tagging it every time, add that channel to `DISCORD_FREE_RESPONSE_CHANNELS`.
 :::
 
+### Long Responses
+
+Responses that fit within eight Discord message chunks keep their normal inline delivery. If a response would need more than eight chunks, Hermes sends the complete original response as one UTF-8 Markdown (`.md`) attachment with a short caption instead of flooding the channel or dropping the tail. This also applies to forum posts and final edits of streamed replies; an edited reply keeps the attachment on the existing message.
+
+The bot needs **Attach Files** permission. If the attachment is rejected or exceeds Discord's upload limit, Hermes attempts only a short truncation notice rather than sending a burst of text. The delivery remains failed—not a successful delivery of the full response—so a missing attachment is not silently treated as success.
+
 ### Discord Gateway Model
 
 Hermes on Discord is not a webhook that replies statelessly. It runs through the full messaging gateway, which means each incoming message goes through:

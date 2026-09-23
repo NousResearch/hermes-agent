@@ -104,6 +104,24 @@ class StreamFallbackMixin:
                 "declined this destination for this run"
             )
             return
+        if (getattr(self.adapter, "MANAGES_STREAM_OVERFLOW", False) is True
+                and not self._fallback_preserve_partial_messages):
+            # Keep the WHOLE final intact for the adapter's attachment threshold.
+            text = self._clean_for_display(text)
+            result = await self.adapter.send(
+                chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
+                metadata=self._metadata_for_send(final=True),
+            )
+            if self._defer_failed_final(result, text):
+                return
+            if result.success:
+                await self._delete_previews(self._stale_preview_ids(), skip=result.message_id,
+                                            label="Bounded final")
+                self._adopt_message_id(result.message_id)
+                self._already_sent = True
+                self._final_response_sent = True
+                self._mark_final_delivered(record=text)
+            return
         # Balance fences BEFORE computing the continuation so the closing fence
         # reaches the user even when only the tail is delivered.
         final_text = ensure_closed_code_fences(self._clean_for_display(text))

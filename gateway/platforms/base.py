@@ -4236,8 +4236,16 @@ class BasePlatformAdapter(ABC):
                     len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        prior = getattr(event, "_deferred_final_delivery", None)
+        if prior is not None:
+            delattr(event, "_deferred_final_delivery")
+        if (isinstance(prior, tuple) and len(prior) == 2 and isinstance(prior[0], str)
+                and prior[0].strip() == text_content.strip()
+                and isinstance(prior[1], SendResult) and not prior[1].success):
+            result = prior[1]
+        else:
+            result = await delivery_adapter._send_with_retry(
+                chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter

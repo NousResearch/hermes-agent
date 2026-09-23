@@ -17,7 +17,11 @@ These tests pin the expanded whitelist so it doesn't regress.
 from __future__ import annotations
 
 
-from gateway.run import _ASSISTANT_REPLAY_FIELDS, _build_replay_entry
+from gateway.run import (
+    _ASSISTANT_REPLAY_FIELDS,
+    _build_gateway_agent_history,
+    _build_replay_entry,
+)
 
 
 class TestBuildReplayEntry:
@@ -132,10 +136,251 @@ class TestReplayEntryApiContentSidecar:
         assert entry["api_content"] == "a <memory-context>"
 
 
+def _assistant_rows(history):
+    """Rebuild replay history via the PRODUCTION builder and return the
+    assistant rows.
+
+    These tests deliberately exercise ``_build_gateway_agent_history``
+    itself rather than a local copy of its filtering logic: the dispatch
+    under test lives in the builder, so a replica would pass no matter what
+    the builder does.
+    """
+    agent_history, _observed = _build_gateway_agent_history(history)
+    return [m for m in agent_history if m.get("role") == "assistant"]
+
+
+class TestReasoningOnlyAssistantTurnsSurviveReload:
+    """An assistant turn whose only payload is reasoning state must survive
+    the transcript -> agent_history rebuild.
+
+    The builder's row dispatch keeps rich rows (tool_calls / tool results)
+    and rows with truthy ``content``.  A row with empty ``content`` carrying
+    only the fields named by ``_ASSISTANT_REPLAY_FIELDS`` matched neither
+    arm and was dropped outright, losing multi-turn thinking fidelity on
+    reload.
+    """
+
+    def test_reasoning_content_only_turn_is_preserved(self):
+        """DeepSeek/Kimi thinking-mode shape: content empty, reasoning_content set."""
+        assistant = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": "step by step"},
+        ])
+        assert len(assistant) == 1
+        assert assistant[0]["reasoning_content"] == "step by step"
+        assert assistant[0]["content"] == ""
+
+    def test_reasoning_only_turn_with_none_content_is_preserved(self):
+        """A dead stream persists ``content=None``; the reasoning still replays."""
+        assistant = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None, "reasoning": "thinking"},
+        ])
+        assert len(assistant) == 1
+        assert assistant[0]["reasoning"] == "thinking"
+        # `content` is normalized to "" -- the shape the API builders expect.
+        assert assistant[0]["content"] == ""
+
+    def test_reasoning_details_only_turn_is_preserved(self):
+        """``content`` may be absent entirely, not merely falsy."""
+        details = [{"type": "reasoning.summary", "summary": "s"}]
+        assistant = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "reasoning_details": details},
+        ])
+        assert len(assistant) == 1
+        assert assistant[0]["reasoning_details"] == details
+
+    def test_reasoning_only_turn_keeps_position_between_user_turns(self):
+        """The recovered row must replay in transcript order, not be appended."""
+        agent_history, _observed = _build_gateway_agent_history([
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "", "reasoning_content": "mulling"},
+            {"role": "user", "content": "second"},
+        ])
+        assert [m["role"] for m in agent_history] == ["user", "assistant", "user"]
+        assert agent_history[1]["reasoning_content"] == "mulling"
+
+    def test_assistant_timestamp_is_still_dropped(self):
+        """Assistant timestamps are deliberately not replayed; recovering the
+        row must not start leaking them."""
+        assistant = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "thinking",
+                "timestamp": 12345.6,
+            },
+        ])
+        assert len(assistant) == 1
+        assert "timestamp" not in assistant[0]
+
+    def test_empty_list_content_keeps_its_type(self):
+        """Only ``None``/absent normalizes to ``""``.
+
+        An empty multimodal block list is falsy but is not a missing value,
+        so it must survive as a list rather than being rewritten to a string
+        -- downstream consumers branch on `isinstance(content, list)`.
+        """
+        assistant = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [], "reasoning_content": "thinking"},
+        ])
+        assert len(assistant) == 1
+        assert assistant[0]["content"] == []
+
+    def test_truthy_content_turn_is_unaffected(self):
+        """Control: the pre-existing hot path is unchanged."""
+        assistant = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "answer", "reasoning_content": "thinking"},
+        ])
+        assert assistant == [
+            {"role": "assistant", "content": "answer", "reasoning_content": "thinking"}
+        ]
+
+
+class TestCodexReasoningOnlyTurnsSurviveReload:
+    """Codex Responses item carriers are the case where an empty ``content``
+    is not a degenerate row but the designed representation.
+
+    A commentary-phase assistant turn persists with ``content: ""`` because
+    its text lives in ``codex_message_items``; OpenAI's docs require those
+    items be replayed on every assistant message for prefix-cache hits.
+    Dropping the row on reload discards them.
+    """
+
+    def test_codex_message_items_only_turn_is_preserved(self):
+        msg_items = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "working on it"}],
+            }
+        ]
+        assistant = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "codex_message_items": msg_items},
+        ])
+        assert len(assistant) == 1
+        assert assistant[0]["codex_message_items"] == msg_items
+
+    def test_codex_reasoning_items_only_turn_is_preserved(self):
+        codex_items = [{"type": "reasoning", "encrypted_content": "blob"}]
+        assistant = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "codex_reasoning_items": codex_items},
+        ])
+        assert len(assistant) == 1
+        assert assistant[0]["codex_reasoning_items"] == codex_items
+
+
+class TestEmptyAssistantShellsStillDrop:
+    """Negative cases: the recovery must not resurrect rows that carry no
+    replay state at all.
+
+    These already dropped before the change and must keep dropping -- they
+    guard the fix against over-reaching, which is the failure mode that
+    would turn it into a source of empty assistant turns.
+    """
+
+    def test_truly_empty_assistant_shell_still_drops(self):
+        assert _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": ""},
+        ]) == []
+
+    def test_assistant_shell_with_none_content_still_drops(self):
+        assert _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None},
+        ]) == []
+
+    def test_assistant_shell_with_all_falsy_replay_fields_still_drops(self):
+        """Every contract field present but empty carries no information --
+        matching `_build_replay_entry`, which drops them individually."""
+        assert _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "",
+                "reasoning_details": [],
+                "codex_reasoning_items": [],
+                "codex_message_items": [],
+                "finish_reason": "",
+            },
+        ]) == []
+
+    def test_non_assistant_empty_row_still_drops(self):
+        """The new arm is assistant-scoped; an empty user row is untouched
+        and must not pick up reasoning fields."""
+        agent_history, _observed = _build_gateway_agent_history([
+            {"role": "user", "content": "", "reasoning": "not mine"},
+            {"role": "assistant", "content": "answer"},
+        ])
+        assert [m["role"] for m in agent_history] == ["assistant"]
+
+
+class TestEmptyStringReasoningContentSentinelSurvivesReload:
+    """``reasoning_content == ""`` is a meaningful sentinel, not an empty
+    value, and the rebuild must not collapse it.
+
+    ``_build_replay_entry`` singles this field out: every other replay field
+    is dropped when falsy, but an empty-string ``reasoning_content`` is kept
+    because thinking-mode replay upgrades it to a single space. If the row
+    is dropped on reload instead, the next request carries no
+    ``reasoning_content`` at all, which strict thinking providers reject
+    with HTTP 400.
+
+    This is also the case a plain truthiness test gets wrong, so it pins the
+    ``None``-vs-``""`` distinction rather than just the round-trip.
+    """
+
+    def test_empty_string_sentinel_row_is_preserved(self):
+        assistant = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": ""},
+        ])
+        assert len(assistant) == 1
+        assert assistant[0]["reasoning_content"] == ""
+
+    def test_sentinel_is_distinguished_from_absent_reasoning_content(self):
+        """An empty-string sentinel is payload; an absent key is not."""
+        with_sentinel = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": ""},
+        ])
+        without_key = _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": ""},
+        ])
+        assert len(with_sentinel) == 1
+        assert without_key == []
+
+    def test_explicit_none_reasoning_content_is_not_payload(self):
+        """``None`` is the genuine no-value case and must not resurrect the
+        row -- matching `_build_replay_entry`, which skips it on ``None``."""
+        assert _assistant_rows([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": None},
+        ]) == []
+
+    def test_sentinel_survives_alongside_a_later_user_turn(self):
+        """The sentinel must still be there when it is no longer the tail."""
+        agent_history, _observed = _build_gateway_agent_history([
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "", "reasoning_content": ""},
+            {"role": "user", "content": "second"},
+        ])
+        assert [m["role"] for m in agent_history] == ["user", "assistant", "user"]
+        assert agent_history[1]["reasoning_content"] == ""
+
+
 class TestGatewayHistoryBuildForwardsSidecar:
     def test_end_to_end_history_build_keeps_sidecar(self):
-        from gateway.run import _build_gateway_agent_history
-
         history = [
             {"role": "user", "content": "hi", "api_content": "hi\n\nCTX", "timestamp": 123.0},
             {"role": "assistant", "content": "hello"},

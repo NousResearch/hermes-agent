@@ -20,7 +20,9 @@ describe('ProfileGlyph', () => {
       '--dev',
       ''
     ]
+
     const expected = ['研', 'Р', 'Ε', 'Á', 'A\u0301', '👨‍💻', '🇨🇳', '1️⃣', '𠮷', 'd', '?']
+
     const { container } = render(
       <>
         {names.map(name => (

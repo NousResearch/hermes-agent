@@ -41,6 +41,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +60,7 @@ _current_source: str | None = None
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
 _discovering = False
+_PLUGIN_DIR_STAMP_TTL_SECONDS = 1.0
 
 
 @dataclass
@@ -75,6 +77,7 @@ class _HomeLayer:
     registry: dict[str, ProviderProfile] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     stamps: tuple = ()
+    stamp_checked_at: float | None = None
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -158,6 +161,13 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     layer = _home_layer()
     canonical = layer.aliases.get(name) or _ALIASES.get(name, name)
     profile = layer.registry.get(canonical) or _REGISTRY.get(canonical)
+    # A newly installed provider is normally first requested by its new name.
+    # Refresh that miss immediately so installs remain usable without waiting
+    # for the periodic stamp check, while known-provider lookups stay hot.
+    if profile is None:
+        layer = _home_layer(force_stamp_check=True)
+        canonical = layer.aliases.get(name) or _ALIASES.get(name, name)
+        profile = layer.registry.get(canonical) or _REGISTRY.get(canonical)
     # Named custom routes share the generic wire policy unless a plugin
     # explicitly registered that route. Other names retain exact lookup.
     if profile is None and isinstance(name, str) and name.lower().startswith("custom:"):
@@ -213,7 +223,7 @@ def list_providers() -> list[ProviderProfile]:
     return result
 
 
-def _home_layer() -> _HomeLayer:
+def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
     """The layer for the home bound right now, importing plugin dirs it has not seen yet."""
     try:
         from hermes_constants import get_hermes_home, hermes_home_key
@@ -226,11 +236,23 @@ def _home_layer() -> _HomeLayer:
         layer = _HOME_LAYERS.get(key)
         if layer is None:
             layer = _HOME_LAYERS[key] = _HomeLayer()
-    # Stamps are read before the scan: a plugin that lands mid-scan changes them and the next lookup
-    # picks it up. Two threads scanning the same home at once only re-import idempotently.
-    if home is not None and (stamps := _plugin_dir_stamps(home)) != layer.stamps:
-        _scan_home_layer(layer, key)
-        layer.stamps = stamps
+    # Stamps are read before the scan: a plugin that lands mid-scan changes them and the next
+    # check picks it up. Checking on a short cadence keeps a newly installed plugin discoverable
+    # without making every model lookup perform two filesystem stats.
+    now = time.monotonic()
+    if (
+        home is not None
+        and (
+            force_stamp_check
+            or layer.stamp_checked_at is None
+            or now - layer.stamp_checked_at >= _PLUGIN_DIR_STAMP_TTL_SECONDS
+        )
+    ):
+        stamps = _plugin_dir_stamps(home)
+        if stamps != layer.stamps:
+            _scan_home_layer(layer, key)
+            layer.stamps = stamps
+        layer.stamp_checked_at = now
     return layer
 
 

@@ -953,6 +953,121 @@ class TestLoadGatewayConfig:
         load_gateway_config()
         assert os.environ.get("GATEWAY_ALLOW_ALL_USERS") is None
 
+    def test_bridged_require_mention_does_not_survive_a_config_flip_or_restart(self, tmp_path, monkeypatch):
+        """Same ownership contract as GATEWAY_ALLOW_ALL_USERS: a reload after the YAML key flips to
+        false or disappears must rewrite/clear the env var instead of leaving the first bridged
+        value pinned for the life of the process, and restart child envs never carry it."""
+        from gateway import config_loader
+        from gateway.run_shutdown import GatewayShutdownMixin
+        from hermes_cli.web_server_gateway import _profile_action_environment
+
+        monkeypatch.setattr(config_loader, "_BRIDGED_ENV", {}, raising=False)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("require_mention: true\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+
+        load_gateway_config()
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") == "true"
+        assert "TELEGRAM_REQUIRE_MENTION" not in GatewayShutdownMixin._restart_watcher_env()
+        assert "TELEGRAM_REQUIRE_MENTION" not in _profile_action_environment(["gateway", "restart"])
+
+        (hermes_home / "config.yaml").write_text("require_mention: false\n", encoding="utf-8")
+        load_gateway_config()
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") is None
+
+        (hermes_home / "config.yaml").write_text("require_mention: true\n", encoding="utf-8")
+        load_gateway_config()
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") == "true"
+        (hermes_home / "config.yaml").write_text("group_sessions_per_user: true\n", encoding="utf-8")
+        load_gateway_config()
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") is None
+
+    def test_bridged_require_mention_signal_reload_and_operator_env(self, tmp_path, monkeypatch):
+        """signal.require_mention tracks the same way, and an operator-set env var is never
+        overwritten or dropped: env wins over YAML in both directions."""
+        from gateway import config_loader
+        from gateway.run_shutdown import GatewayShutdownMixin
+
+        monkeypatch.setattr(config_loader, "_BRIDGED_ENV", {}, raising=False)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("signal:\n  require_mention: true\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("SIGNAL_REQUIRE_MENTION", raising=False)
+
+        load_gateway_config()
+        assert os.environ.get("SIGNAL_REQUIRE_MENTION") == "true"
+
+        (hermes_home / "config.yaml").write_text("signal:\n  require_mention: false\n", encoding="utf-8")
+        load_gateway_config()
+        assert os.environ.get("SIGNAL_REQUIRE_MENTION") is None
+
+        monkeypatch.setenv("SIGNAL_REQUIRE_MENTION", "false")
+        (hermes_home / "config.yaml").write_text("signal:\n  require_mention: true\n", encoding="utf-8")
+        load_gateway_config()
+        assert os.environ.get("SIGNAL_REQUIRE_MENTION") == "false"
+        assert GatewayShutdownMixin._restart_watcher_env().get("SIGNAL_REQUIRE_MENTION") == "false"
+
+    def test_e2e_require_mention_reload_reaches_the_adapters(self, tmp_path, monkeypatch):
+        """config.yaml -> load_gateway_config() -> PlatformConfig -> the real adapter gate readers:
+        a flipped or removed require_mention must change what a newly built adapter enforces, not
+        just what os.environ holds. Telegram reads scoped env BEFORE extra, so a stale env var
+        outranks the corrected YAML value; Signal reads extra first and only falls to env when the
+        key is gone."""
+        from gateway import config_loader
+        from gateway.platforms.signal import SignalAdapter
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        monkeypatch.setattr(config_loader, "_BRIDGED_ENV", {}, raising=False)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("require_mention: true\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+        monkeypatch.delenv("SIGNAL_REQUIRE_MENTION", raising=False)
+
+        def telegram_gate():
+            config = load_gateway_config()
+            adapter = object.__new__(TelegramAdapter)
+            adapter.config = config.platforms[Platform.TELEGRAM]
+            return adapter._telegram_require_mention()
+
+        assert telegram_gate() is True
+
+        (hermes_home / "config.yaml").write_text("require_mention: false\n", encoding="utf-8")
+        assert telegram_gate() is False
+
+        # Signal: extra wins while the key is present; the stale env only surfaces once the key is
+        # removed, which is exactly when the bridge must retract it.
+        (hermes_home / "config.yaml").write_text("signal:\n  require_mention: true\n", encoding="utf-8")
+        config = load_gateway_config()
+        assert SignalAdapter(config.platforms[Platform.SIGNAL]).require_mention is True
+        (hermes_home / "config.yaml").write_text("signal:\n  enabled: false\n", encoding="utf-8")
+        config = load_gateway_config()
+        assert SignalAdapter(config.platforms[Platform.SIGNAL]).require_mention is False
+
+    def test_bridged_env_never_clobbers_a_foreign_write(self, tmp_path, monkeypatch):
+        """The bridge's ownership record is a written VALUE, not a name: if something else
+        overwrites the env var mid-process (an operator edit, a plugin hook), the next reload
+        must leave the foreign value alone instead of restoring the recorded one."""
+        from gateway import config_loader
+
+        monkeypatch.setattr(config_loader, "_BRIDGED_ENV", {}, raising=False)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("require_mention: true\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+        load_gateway_config()
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") == "true"
+
+        os.environ["TELEGRAM_REQUIRE_MENTION"] = "yes"  # foreign write, no longer the bridge's value
+        (hermes_home / "config.yaml").write_text("require_mention: false\n", encoding="utf-8")
+        load_gateway_config()
+        assert os.environ.get("TELEGRAM_REQUIRE_MENTION") == "yes"
+
     def test_allow_all_users_yaml_reaches_the_default_profile_under_multiplex(self, tmp_path, monkeypatch):
         """Default-profile events are authorized inside its secret scope, where gate readers never fall to
         os.environ: the bridged grant must be part of that profile's scope (and only that profile's)."""

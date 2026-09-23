@@ -48,21 +48,41 @@ def load_legacy_gateway_json(home: Path) -> Any:
 #   "dict":     top-level value is not a mapping → nested value; accepted only if a mapping.
 #   "nested":   nested form only (no top-level spelling is bridged).
 
-# True while GATEWAY_ALLOW_ALL_USERS in os.environ is the bridge's own write (from config.yaml), not an
-# operator's env var: only then may a reload overwrite/clear it, and restart env builders drop it so a
-# child gateway re-derives the grant from its config.yaml instead of inheriting a stale open posture.
-_BRIDGED_ALLOW_ALL_USERS = False
+# Env names whose current os.environ value is this bridge's own write (from config.yaml), keyed by
+# the value it wrote: only then may a reload overwrite/clear them, and restart env builders drop
+# them so a child gateway re-derives its posture from its own config.yaml instead of inheriting a
+# stale one. A foreign write (an operator's env var, a plugin hook's) never matches the recorded
+# value and is left alone.
+_BRIDGED_ENV: dict = {}
+
+
+def _env_bridge_allowed(name: str) -> bool:
+    """True when *name* is unset or still holds this bridge's own write; an operator's env var wins."""
+    current = os.environ.get(name)
+    return current is None or current == _BRIDGED_ENV.get(name)
+
+
+def _write_bridged_env(name: str, value: Optional[str]) -> None:
+    """Export *value* as a bridge-owned var, or retract the bridge's write when *value* is None."""
+    if value is None:
+        os.environ.pop(name, None)
+        _BRIDGED_ENV.pop(name, None)
+    else:
+        os.environ[name] = value
+        _BRIDGED_ENV[name] = value
 
 
 def bridged_allow_all_users() -> Optional[str]:
     """``os.environ['GATEWAY_ALLOW_ALL_USERS']`` when it is the bridge's own write, else None."""
-    return os.environ.get("GATEWAY_ALLOW_ALL_USERS") if _BRIDGED_ALLOW_ALL_USERS else None
+    value = os.environ.get("GATEWAY_ALLOW_ALL_USERS")
+    return value if value is not None and value == _BRIDGED_ENV.get("GATEWAY_ALLOW_ALL_USERS") else None
 
 
 def drop_bridged_env(env: dict) -> dict:
-    """Remove the bridge-owned ``GATEWAY_ALLOW_ALL_USERS`` from a child-process env (operator-set stays)."""
-    if bridged_allow_all_users() is not None:
-        env.pop("GATEWAY_ALLOW_ALL_USERS", None)
+    """Remove every bridge-owned var from a child-process env (operator-set values stay)."""
+    for name, value in _BRIDGED_ENV.items():
+        if env.get(name) == value:
+            env.pop(name, None)
     return env
 
 def _quick_commands_ok(value: Any) -> bool:
@@ -329,7 +349,6 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     there would make the secondary's policy the DEFAULT profile's (#80099 class). A secondary profile
     sets ``GATEWAY_ALLOW_ALL_USERS`` in its own ``.env`` like every other scoped authorization gate.
     """
-    global _BRIDGED_ALLOW_ALL_USERS
     from gateway.platforms._shared import profile_scoped
 
     skip_env_bridge = profile_scoped()
@@ -340,10 +359,9 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     # Only a value this bridge wrote may be overwritten/cleared by a later load (config flipped to
     # false + reload); an operator's explicit env var still wins. Only a truthy grant is exported:
     # presence-based readers treat any non-empty value as "auth configured".
-    if not skip_env_bridge and (_BRIDGED_ALLOW_ALL_USERS or not os.getenv("GATEWAY_ALLOW_ALL_USERS")):
-        _BRIDGED_ALLOW_ALL_USERS = str(allow_all).lower() in {"true", "1", "yes"}
-        if _BRIDGED_ALLOW_ALL_USERS:
-            os.environ["GATEWAY_ALLOW_ALL_USERS"] = "true"
+    if not skip_env_bridge and _env_bridge_allowed("GATEWAY_ALLOW_ALL_USERS"):
+        if str(allow_all).lower() in {"true", "1", "yes"}:
+            _write_bridged_env("GATEWAY_ALLOW_ALL_USERS", "true")
             # The key was inert before it was bridged, so a forgotten line silently flips the
             # posture to open — name the grant source at startup.
             logger.warning(
@@ -351,29 +369,38 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
                 "(bridged to GATEWAY_ALLOW_ALL_USERS; an explicit env var wins)."
             )
         else:
-            os.environ.pop("GATEWAY_ALLOW_ALL_USERS", None)
+            _write_bridged_env("GATEWAY_ALLOW_ALL_USERS", None)
     tl_require_mention = yaml_cfg.get("require_mention")
-    if tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {}):
+    tl_rm_applies = tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {})
+    if tl_rm_applies:
         tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
         tg_plat.setdefault("extra", {}).setdefault("require_mention", tl_require_mention)
-        # Also bridge to the TELEGRAM_REQUIRE_MENTION env var that the adapter reads at runtime. This used
-        # to live in the telegram_cfg block in core; it stays in core because it keys off the TOP-LEVEL
-        # require_mention (not a telegram: block), so the telegram plugin's apply_yaml_config_fn hook —
-        # which only runs when a telegram config block exists — can't cover the no-telegram-block case
-        # (#3979).
-        if not skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
-            os.environ["TELEGRAM_REQUIRE_MENTION"] = str(tl_require_mention).lower()
+    # Also bridge to the TELEGRAM_REQUIRE_MENTION env var that the adapter reads at runtime. This used
+    # to live in the telegram_cfg block in core; it stays in core because it keys off the TOP-LEVEL
+    # require_mention (not a telegram: block), so the telegram plugin's apply_yaml_config_fn hook —
+    # which only runs when a telegram config block exists — can't cover the no-telegram-block case
+    # (#3979). Like GATEWAY_ALLOW_ALL_USERS the write is bridge-owned so a reload after a flip or
+    # key removal clears it; a literal "false" is never exported (presence-based readers).
+    if not skip_env_bridge and _env_bridge_allowed("TELEGRAM_REQUIRE_MENTION"):
+        if tl_rm_applies and str(tl_require_mention).lower() in {"true", "1", "yes"}:
+            _write_bridged_env("TELEGRAM_REQUIRE_MENTION", "true")
+        else:
+            _write_bridged_env("TELEGRAM_REQUIRE_MENTION", None)
 
     # Telegram settings → env vars / extra: migrated to the telegram plugin's apply_yaml_config_fn hook
     # (plugins/platforms/telegram/adapter.py). #41112 / #3823.
     # WhatsApp settings → env vars: migrated to the whatsapp plugin's apply_yaml_config_fn hook
     # (plugins/platforms/whatsapp/adapter.py). #41112 / #3823.
     signal_cfg = yaml_cfg.get("signal", {})
-    if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg:
+    sig_rm_present = isinstance(signal_cfg, dict) and "require_mention" in signal_cfg
+    if sig_rm_present:
         sig_plat = platforms_data.setdefault(Platform.SIGNAL.value, {})
         sig_plat.setdefault("extra", {}).setdefault("require_mention", signal_cfg["require_mention"])
-        if not skip_env_bridge and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-            os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+    if not skip_env_bridge and _env_bridge_allowed("SIGNAL_REQUIRE_MENTION"):
+        if sig_rm_present and str(signal_cfg["require_mention"]).lower() in {"true", "1", "yes"}:
+            _write_bridged_env("SIGNAL_REQUIRE_MENTION", "true")
+        else:
+            _write_bridged_env("SIGNAL_REQUIRE_MENTION", None)
 
 
 def read_yaml_layers(home: Path) -> dict:

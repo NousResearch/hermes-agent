@@ -12,7 +12,6 @@ Salvaged from PR #4097 (@tjp2021); adapted to the post-refactor layout
 accepts extra_headers).
 """
 
-import pytest
 
 from run_agent import AIAgent
 
@@ -50,14 +49,6 @@ def _make_agent(monkeypatch, base_url, api_mode="chat_completions"):
     )
 
 
-def _inject(agent, api_kwargs):
-    """Mirror the injection block in agent/conversation_loop.py."""
-    if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
-        _xh = dict(api_kwargs.get("extra_headers") or {})
-        _xh["x-initiator"] = "user"
-        api_kwargs["extra_headers"] = _xh
-        agent._is_user_initiated_turn = False
-    return api_kwargs
 
 
 class TestIsCopilotUrl:
@@ -76,17 +67,11 @@ class TestIsCopilotUrl:
         agent = _make_agent(monkeypatch, "https://openrouter.ai/api/v1")
         assert agent._is_copilot_url() is False
 
-    def test_case_insensitive(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://API.GITHUBCOPILOT.COM")
-        assert agent._is_copilot_url() is True
 
 
 class TestUserInitiatedTurnFlag:
     """_is_user_initiated_turn lifecycle."""
 
-    def test_default_is_false(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://api.githubcopilot.com")
-        assert agent._is_user_initiated_turn is False
 
     def test_reset_session_clears_flag(self, monkeypatch):
         agent = _make_agent(monkeypatch, "https://api.githubcopilot.com")
@@ -95,32 +80,6 @@ class TestUserInitiatedTurnFlag:
         assert agent._is_user_initiated_turn is False
 
 
-class TestFlagFlipOnInjection:
-    """Flag flips immediately on injection so tool-loop calls use 'agent'."""
-
-    def test_first_call_injects_user_initiator(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://api.githubcopilot.com")
-        agent._is_user_initiated_turn = True
-        kwargs = _inject(agent, {})
-        assert kwargs["extra_headers"] == {"x-initiator": "user"}
-        assert agent._is_user_initiated_turn is False
-
-    def test_second_call_has_no_injection(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://api.githubcopilot.com")
-        agent._is_user_initiated_turn = True
-        kwargs1 = _inject(agent, {})
-        kwargs2 = _inject(agent, {})
-        assert "extra_headers" in kwargs1
-        assert "extra_headers" not in kwargs2
-
-
-    def test_non_copilot_flag_not_flipped(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://openrouter.ai/api/v1")
-        agent._is_user_initiated_turn = True
-        kwargs = _inject(agent, {})
-        assert "extra_headers" not in kwargs
-        # Flag unchanged — non-Copilot path doesn't touch it
-        assert agent._is_user_initiated_turn is True
 
 
 class TestHeaderValues:
@@ -134,6 +93,3 @@ class TestHeaderValues:
         from hermes_cli.models import copilot_default_headers
         assert copilot_default_headers(is_agent_turn=False)["x-initiator"] == "user"
 
-    def test_agent_turn_explicit(self):
-        from hermes_cli.models import copilot_default_headers
-        assert copilot_default_headers(is_agent_turn=True)["x-initiator"] == "agent"

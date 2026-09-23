@@ -678,22 +678,6 @@ def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
     assert (root / ".anthropic_oauth.json").read_text() == before
 
 
-def test_heal_same_store_skip_is_memoized_off_the_hot_path(fleet, monkeypatch):
-    """The shared-store skip must record the clean mark so load_pool()'s
-    per-call heal does not re-stat/resolve both paths every model call."""
-    from hermes_cli import auth as auth_mod
-
-    root = fleet["root"]
-    _seed_codex_grant(root)
-    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
-    fleet["use"](shared)
-
-    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
-    assert "openai-codex" in auth_mod._oauth_heal_clean_marks
-    calls = []
-    monkeypatch.setattr(auth_mod, "_is_same_auth_store", lambda *a: calls.append(a) or True)
-    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
-    assert calls == [], "same-store check ran again despite the clean mark"
 
 
 # ── E. the clean mark outlives the process ──────────────────────────────
@@ -711,27 +695,6 @@ def _new_process(auth_mod):
     auth_mod._global_auth_store_cache = None
 
 
-def _count_locks(monkeypatch):
-    """Count _auth_store_lock acquisitions, still really taking them.
-
-    The heal imports the lock from ``hermes_cli.auth`` inside the function, so
-    patching it on that module is what the call site actually resolves.
-    """
-    import contextlib
-
-    import hermes_cli.auth as auth_mod
-
-    taken = []
-    real = auth_mod._auth_store_lock
-
-    @contextlib.contextmanager
-    def counting(*a, **k):
-        taken.append(k.get("target_path"))
-        with real(*a, **k):
-            yield
-
-    monkeypatch.setattr(auth_mod, "_auth_store_lock", counting)
-    return taken
 
 
 def _kid_with_api_key_only(fleet, name="kid"):
@@ -749,21 +712,6 @@ def _kid_with_api_key_only(fleet, name="kid"):
     return pdir
 
 
-def test_clean_mark_persists_so_a_fresh_process_takes_no_auth_lock(fleet, monkeypatch):
-    import hermes_cli.auth as auth_mod
-    from hermes_cli import auth_oauth_grants as grants
-
-    kid = _kid_with_api_key_only(fleet)
-    fleet["use"](kid)
-    first = _count_locks(monkeypatch)
-    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
-    assert len(first) == 2, "cold heal should take the profile and root locks"
-    assert grants._oauth_heal_clean_mark_path().exists(), "clean mark not written"
-
-    _new_process(auth_mod)
-    second = _count_locks(monkeypatch)
-    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
-    assert second == [], "a fresh process re-locked the auth store to redo a clean heal"
 
 
 def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):

@@ -110,6 +110,33 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     assert kbd._process_fingerprint(os.getpid()) == live_fingerprint
 
 
+def test_start_time_drift_within_tolerance_is_our_worker(board):
+    """macOS boot-time basis can drift between the spawn-time capture and a later re-derivation
+    (upstream #117505): the recorded start time reads up to 2 s later than the live one. The
+    worker is OURS — alive, claim extended, no reclaim — while a drift beyond the tolerance is
+    still a stranger."""
+    conn = board
+    live_fingerprint = kbd._process_fingerprint(os.getpid())
+    assert live_fingerprint is not None
+    epoch, _, start = live_fingerprint.partition("|")
+    for drifted in (int(start) + 200, int(start) - 200):
+        drifted_fingerprint = f"{epoch}|{drifted}"
+        assert kbd._worker_alive(os.getpid(), drifted_fingerprint) is True
+        tid = _claimed_running(conn, pid=os.getpid(), started_at=drifted_fingerprint)
+        assert kb.release_stale_claims(conn) == 0
+        assert kb.get_task(conn, tid).status == "running"
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "claim_extended" in kinds
+    # Beyond the tolerance the PID is treated as recycled: claim released, never signalled.
+    killed = []
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=f"{epoch}|{int(start) + 201}")
+    assert kbd._worker_alive(os.getpid(), f"{epoch}|{int(start) + 201}") is False
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 1
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "ready" and task.worker_pid is None
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released

@@ -1580,7 +1580,14 @@ def _main_model_pin() -> Tuple[Optional[str], Optional[str]]:
     provider = None
     with contextlib.suppress(Exception):
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
+        runtime = resolve_runtime_provider(requested=None)
+        provider = _normalize_job_optional_text(runtime.get("provider"))
+        requested_provider = _normalize_job_optional_text(runtime.get("requested_provider"))
+        # Named custom endpoints run through the shared ``custom`` billing class, but the
+        # persisted pin must retain the requested endpoint name so it can recover that endpoint's
+        # URL and credentials when the job fires. Bare ``custom`` remains its own valid pin.
+        if provider and provider.lower() == "custom" and requested_provider and requested_provider.lower() != "custom":
+            provider = requested_provider
     return (provider.lower() if provider else None), model
 
 

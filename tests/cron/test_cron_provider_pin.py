@@ -172,6 +172,27 @@ class TestPinnedLocksTheMainModel:
         still = jobs.update_job(job["id"], {"pinned": True, "model": "other-model"})
         assert still["model"] == "other-model"
 
+    def test_pinned_named_custom_provider_keeps_its_configured_identity(self, monkeypatch, tmp_path):
+        """A named endpoint resolves on the wire as ``custom``, but cron must store its name.
+
+        Otherwise a later scheduler run asks for bare ``custom`` and loses the endpoint credentials.
+        """
+        jobs, resolver = self._store(monkeypatch, tmp_path, main_provider="custom")
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  provider: agnes\n  default: main-model\n"
+            "providers:\n  agnes:\n    api: https://agnes.example.invalid/v1\n")
+        resolver.return_value = {"provider": "custom", "requested_provider": "agnes"}
+
+        created = jobs.create_job(prompt="do a thing", schedule="every 1 hour", pinned=True)
+        assert (created["model"], created["provider"]) == ("main-model", "agnes")
+
+        unpinned = jobs.create_job(prompt="do another thing", schedule="every 1 hour")
+        updated = jobs.update_job(unpinned["id"], {"pinned": True})
+        assert (updated["model"], updated["provider"]) == ("main-model", "agnes")
+
+        resolver.return_value = {"provider": "custom", "requested_provider": "custom"}
+        assert jobs._main_model_pin() == ("custom", "main-model")
+
 
 class TestRuntimeResolutionTargetModel:
     """run_job must resolve the primary provider against the model the job will actually run

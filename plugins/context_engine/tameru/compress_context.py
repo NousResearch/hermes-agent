@@ -17,7 +17,7 @@ import stat
 import tempfile
 import time
 import unicodedata
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -28,7 +28,12 @@ from .contract_gates import (
 )
 from .industrial import IndustrialLimits, IndustrialResult, industrial_preprocess
 from .supersession import apply_supersession
-from .unicode_profile import script_of, search_units, token_units
+from .unicode_profile import (
+    script_of,
+    search_units,
+    token_units,
+    unicode_safety_counts,
+)
 
 try:  # optional semantic tier — never required
     from .semantic import resolve_tier  # noqa: F401
@@ -56,6 +61,35 @@ DEFAULT_SUMMARY_MODELS = (
 DEFAULT_SUMMARY_TIMEOUT = 30.0
 _CCR_HASH_RE = re.compile(r"^[0-9a-f]{24}$")
 _CCR_SWEEP_CURSOR = 0
+
+# Degraded scoring view (opt-in, JEV-inspired): on input size-limit breaches,
+# score a bounded head+tail view per block while emitted output stays
+# byte-exact. The oversize factor bounds total work when limits are bypassed.
+_DEGRADED_VIEW_HEAD = 400
+_DEGRADED_VIEW_TAIL = 200
+_DEGRADED_OVERSIZE_FACTOR = 4
+
+# Secrets screen (dsh-jev-pre-compaction inspired): never persist probable
+# credentials to the CCR store. Conservative patterns only — private key
+# blocks, well-known token prefixes, JWTs, and long quoted assignments.
+_SECRETS_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+    r"|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}"
+    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+    r"|(?i:\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b"
+    r"\s*[:=]\s*[\"'][^\"'\s]{16,}[\"'])"
+)
+
+# Recursion guard markers: output Tameru itself produced.
+_RECURSION_MARKERS = ("<compressed_context", "[CC-Retrieve:")
+
+
+def _contains_secret(text: str) -> bool:
+    return bool(text) and _SECRETS_RE.search(text) is not None
 
 _STOP = {
     "what", "how", "does", "do", "the", "is", "are", "was", "were", "why",
@@ -1705,12 +1739,18 @@ def select_adaptive(
     needle_only: bool = False,
     query: str = "",
     semantic_tier: Any = None,
+    out: dict[str, Any] | None = None,
 ) -> tuple[set[int], bool, str]:
+    def _ret(kept, fail, risk, name):
+        if out is not None:
+            out["path"] = name
+        return kept, fail, risk
+
     if not blocks:
-        return set(), True, "high"
+        return _ret(set(), True, "high", "empty")
     signal = _query_signal(blocks)
     if signal < 0.04 and max(b["score"] for b in blocks) < 3.5:
-        return {b["id"] for b in blocks}, True, "high"
+        return _ret({b["id"] for b in blocks}, True, "high", "weak-signal")
     hits = {b["id"] for b in blocks if b["entity_hits"] or b["term_hits"]}
     rare = {
         b["id"]
@@ -1721,7 +1761,7 @@ def select_adaptive(
         use = rare if rare else hits
         safe_use = {bid for bid in use if not blocks[bid].get("trust_risk")}
         if not safe_use:
-            return {b["id"] for b in blocks}, True, "high"
+            return _ret({b["id"] for b in blocks}, True, "high", "needle-all-trust")
         use = safe_use
         kept = set(use)
         if not blocks[0].get("trust_risk") or blocks[0].get("pinned"):
@@ -1750,8 +1790,8 @@ def select_adaptive(
         if _counterfactual_overlap_ambiguity(
             blocks, kept, query=query, link_terms=link_terms_map, semantic_tier=semantic_tier
         ):
-            return {b["id"] for b in blocks}, True, "high"
-        return kept, False, "low"
+            return _ret({b["id"] for b in blocks}, True, "high", "needle-ambiguous")
+        return _ret(kept, False, "low", "needle")
     important = _important(blocks)
     safe_blocks = [b for b in blocks if not b.get("trust_risk")]
     top = max((b["score"] for b in safe_blocks), default=0.0)
@@ -1775,8 +1815,10 @@ def select_adaptive(
     floor_ratio = sum(b["tokens"] for b in safe_blocks if b["id"] in kept) / max(
         1, sum(b["tokens"] for b in safe_blocks)
     )
+    path = "floor"
     if floor_ratio > 0.9 and len(safe_blocks) > 64 and not needle_only:
         kept = set(important)
+        path = "floor-saturated"
     # Keep the head. A trust-risk tail is not a safe recency sink.
     # Exception (leanctx old-error purge): a stale-error head is handled
     # history — citations preserve its fact; don't re-admit the dump.
@@ -1811,13 +1853,14 @@ def select_adaptive(
     # much -> fail open" escape would preempt.
     texts = [b["text"] for b in blocks]
     if _looks_like_line_records(texts):
+        path = "line-records"
         kept = {
             b["id"]
             for b in blocks
             if (b["entity_hits"] or b["term_hits"]) and not b.get("trust_risk")
         }
         if not kept:
-            return {b["id"] for b in blocks}, True, "high"
+            return _ret({b["id"] for b in blocks}, True, "high", "line-records-empty")
         if not blocks[0].get("trust_risk") or blocks[0].get("pinned"):
             kept.add(blocks[0]["id"])
         if (
@@ -1828,30 +1871,45 @@ def select_adaptive(
         kept = _stitch_neighbors(blocks, kept)
         keep_ratio = sum(blocks[i]["tokens"] for i in kept) / max(1, sum(b["tokens"] for b in blocks))
     if keep_ratio > 0.92 and signal < 0.12:
-        return {b["id"] for b in blocks}, True, "high"
+        return _ret({b["id"] for b in blocks}, True, "high", "saturated-failopen")
     if _counterfactual_overlap_ambiguity(
         blocks, kept, query=query, link_terms=link_terms_map, semantic_tier=semantic_tier
     ):
-        return {b["id"] for b in blocks}, True, "high"
+        return _ret({b["id"] for b in blocks}, True, "high", "ambiguous-failopen")
     risk = "low"
     if keep_ratio > 0.8:
         risk = "medium"
     if not important and signal < 0.1:
         risk = "high"
-    return kept, False, risk
+    return _ret(kept, False, risk, path)
 
 
-def select_fixed(blocks: list[dict[str, Any]], budget_ratio: float) -> tuple[set[int], bool, str]:
+def select_fixed(
+    blocks: list[dict[str, Any]],
+    budget_ratio: float,
+    out: dict[str, Any] | None = None,
+) -> tuple[set[int], bool, str]:
+    if out is not None:
+        out["path"] = "fixed"
     if not blocks:
         return set(), True, "high"
     total = sum(b["tokens"] for b in blocks)
-    budget = max(1, int(round(total * budget_ratio)))
+    pinned_ids = {b["id"] for b in blocks if b.get("pinned")}
+    if pinned_ids:
+        # ARGP-style: the ratio governs compressible tokens only. Pins are
+        # immovable — they must not consume the budget they outrank.
+        pinned_tokens = sum(b["tokens"] for b in blocks if b["id"] in pinned_ids)
+        budget = pinned_tokens + max(
+            1, int(round(max(0, total - pinned_tokens) * budget_ratio))
+        )
+    else:
+        budget = max(1, int(round(total * budget_ratio)))
     important = _important(blocks)
     ranked = sorted(
         (b for b in blocks if not b.get("trust_risk")),
         key=lambda b: (-b["score"], b["start"]),
     )
-    kept: set[int] = set(important)
+    kept: set[int] = set(important) | pinned_ids
     used = sum(b["tokens"] for b in blocks if b["id"] in kept)
     for b in ranked:
         if b["id"] in kept:
@@ -2034,8 +2092,9 @@ def _render(
                 dropped_tokens = 0
                 for d in dropped:
                     dropped_tokens += d["tokens"]
-                    head = d["text"].split("\n", 1)[0][:60]
-                    tail = d["text"].rsplit("\n", 1)[-1][:60]
+                    d_text = d.get("full_text") or d["text"]
+                    head = d_text.split("\n", 1)[0][:60]
+                    tail = d_text.rsplit("\n", 1)[-1][:60]
                     stub = f'[§] "{head}"…"{tail}"'
                     gap_tokens += estimate_tokens(stub)
                 if gap_tokens < dropped_tokens:
@@ -2051,9 +2110,10 @@ def _render(
                         )
                     else:
                         for d in dropped:
-                            digest = hashlib.sha256(d["text"].encode("utf-8")).hexdigest()[:8]
-                            head = d["text"].split("\n", 1)[0][:60]
-                            tail = d["text"].rsplit("\n", 1)[-1][:60]
+                            d_text = d.get("full_text") or d["text"]
+                            digest = hashlib.sha256(d_text.encode("utf-8")).hexdigest()[:8]
+                            head = d_text.split("\n", 1)[0][:60]
+                            tail = d_text.rsplit("\n", 1)[-1][:60]
                             parts.append(f'[§{digest}] "{head}"…"{tail}"')
                 else:
                     # Citations would add more tokens than they save — use bare gap
@@ -2285,7 +2345,10 @@ def sweep_ccr_cache(
     return removed
 
 
-def _ccr_store(original: str, ccr_dir: str | Path) -> dict[str, Any]:
+def _ccr_store(original: str, ccr_dir: str | Path) -> dict[str, Any] | None:
+    # Secrets screen: archival would persist credentials to disk at rest.
+    if _contains_secret(original):
+        return None
     path = Path(ccr_dir)
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.is_symlink() or not path.is_dir():
@@ -2667,7 +2730,15 @@ def _summary_preserves_required_facts(
     return recall == 1.0 and no_novel_ids, recall
 
 
-def retrieve(ccr_hash: str, ccr_dir: str | Path = DEFAULT_CCR_DIR) -> Optional[str]:
+def retrieve(
+    ccr_hash: str,
+    ccr_dir: str | Path = DEFAULT_CCR_DIR,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> Optional[str]:
+    """Fetch a CCR record's original text. offset/limit paginate large
+    records (pi-lcm lcm_expand-style partial recall)."""
     if not isinstance(ccr_hash, str) or not _CCR_HASH_RE.fullmatch(ccr_hash):
         return None
     root = Path(ccr_dir)
@@ -2703,7 +2774,64 @@ def retrieve(ccr_hash: str, ccr_dir: str | Path = DEFAULT_CCR_DIR) -> Optional[s
         return None
     if hashlib.sha256(original.encode("utf-8")).hexdigest()[:24] != ccr_hash:
         return None
+    if offset or limit is not None:
+        start = max(0, int(offset))
+        return original[start:] if limit is None else original[start:start + max(0, int(limit))]
     return original
+
+
+def list_ccr(
+    ccr_dir: str | Path = DEFAULT_CCR_DIR,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """List live CCR records newest-first (pi-lcm lcm_grep/describe analog).
+
+    Returns metadata only — hash, stored_at, ttl, chars, and a short
+    preview — so callers can discover records without loading full
+    originals. Expired or malformed records are skipped.
+    """
+    root = Path(ccr_dir)
+    if root.is_symlink() or not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    current = time.time()
+    for fp in root.glob("*.json"):
+        if not fp.name.startswith(".") and _CCR_HASH_RE.fullmatch(fp.stem):
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, RecursionError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            metadata = _ccr_metadata(data)
+            if (
+                metadata is None
+                or metadata[0] > current + CCR_MAX_CLOCK_SKEW_SECONDS
+                or current - metadata[0] > metadata[1]
+            ):
+                continue
+            record_hash = data.get("hash")
+            original = data.get("original")
+            if (
+                not isinstance(record_hash, str)
+                or record_hash != fp.stem
+                or not isinstance(original, str)
+            ):
+                continue
+            out.append({
+                "hash": record_hash,
+                "stored_at": metadata[0],
+                "ttl": metadata[1],
+                "chars": len(original),
+                "preview": original[:80],
+            })
+    out.sort(key=lambda r: (-r["stored_at"], r["hash"]))
+    start = max(0, int(offset))
+    if limit is None:
+        return out[start:]
+    return out[start:start + max(0, int(limit))]
 
 
 # ---------------------------------------------------------------------------
@@ -2919,6 +3047,9 @@ def compress_context(
     semantic_tier: Any = None,
     log_dir: str | Path | None = None,
     pin_patterns: Optional[list[str]] = None,
+    pin_recent: int = 0,
+    min_savings_ratio: float = 0.10,
+    degraded_view: bool = False,
     summary_endpoint: str | None = None,
     summary_models: Iterable[str] | str | None = None,
     summary_timeout: float | None = None,
@@ -2934,7 +3065,68 @@ def compress_context(
     mode_norm = (
         "adaptive" if requested_mode in {"compiler", "precision"} else requested_mode
     )
+    pin_recent = max(0, int(pin_recent or 0))
+    if min_savings_ratio is None:
+        min_savings_ratio = 0.10
+    min_savings_ratio = float(min_savings_ratio)
+    if not 0.0 <= min_savings_ratio < 1.0:
+        raise ValueError(
+            f"min_savings_ratio must be in [0, 1), got {min_savings_ratio!r}"
+        )
+    # Recursion guard (Claude Code teardown inspired): Tameru output fed
+    # back as input would nest wrappers and could drop the CCR pointer
+    # that makes earlier drops recoverable. Refuse to compact our own
+    # output — the caller already has the compacted form.
+    if any(marker in caller_text for marker in _RECURSION_MARKERS):
+        tokens = estimate_tokens(caller_text)
+        return CompressResult(
+            compressed_text=caller_text,
+            original_tokens=tokens,
+            kept_tokens=tokens,
+            tokens_saved_pct=0.0,
+            policy_name="local-noop-recursion",
+            mode=requested_mode,
+            keep_ratio=1.0,
+            tokens_saved=0,
+            kept_line_ratio=1.0,
+            compression_risk="low",
+            confidence=1.0,
+            fail_open=True,
+            reasons=["input already compressed (recursion guard)"],
+        )
+    secret_in_input = _contains_secret(caller_text)
+    savings_gate = False
+    degraded = False
     industrial = industrial_preprocess(caller_text, query or "", limits)
+    if (
+        industrial.hard_fail_open
+        and degraded_view
+        and industrial.profile.limit_reason.startswith(
+            ("character limit", "line limit")
+        )
+        and len(caller_text)
+        <= industrial.limits.max_input_chars * _DEGRADED_OVERSIZE_FACTOR
+        and industrial.profile.lines
+        <= industrial.limits.max_lines * _DEGRADED_OVERSIZE_FACTOR
+        and len(query or "") <= industrial.limits.max_query_chars
+    ):
+        # JEV-style degrade: keep size limits as a throughput guard, but let
+        # the scorer see a bounded per-block view instead of refusing.
+        # Safety gates preflight skipped (bidi controls, malformed
+        # surrogates, oversize query) are re-verified here and stay hard.
+        controls, overrides, malformed = unicode_safety_counts(caller_text)
+        lim = industrial.limits
+        if (
+            not malformed
+            and controls <= lim.max_bidi_controls
+            and overrides <= lim.max_bidi_overrides
+        ):
+            industrial = replace(
+                industrial,
+                hard_fail_open=False,
+                reason=f"degraded scoring view: {industrial.reason}",
+            )
+            degraded = True
     if industrial.hard_fail_open:
         tokens = estimate_tokens(caller_text)
         reason = industrial.reason or "industrial preflight failed open"
@@ -3007,8 +3199,49 @@ def compress_context(
     #                 on any LLM failure (model down, timeout, empty response).
     #                 Highest quality, highest cost.
     strategy_norm = (strategy or "extract").strip().lower()
-    if strategy_norm not in {"clear", "extract", "summarise"}:
-        raise ValueError(f"unknown strategy {strategy!r} (expected clear/extract/summarise)")
+    if strategy_norm not in {"clear", "extract", "summarise", "auto"}:
+        raise ValueError(
+            f"unknown strategy {strategy!r} (expected clear/extract/summarise/auto)"
+        )
+
+    if strategy_norm == "auto":
+        # Progressive ladder (Claude Code tiers / JEV hook fallback):
+        # run the cheap deterministic tier first, then escalate to the
+        # LLM summariser only when extraction fails open (ambiguity,
+        # saturated floors, min_savings undershoot). 'summarise' itself
+        # falls back to 'extract' on any LLM failure, so the worst case
+        # here is one extra deterministic pass.
+        ladder_kwargs = dict(
+            mode=requested_mode,
+            budget_ratio=budget_ratio,
+            ccr=ccr,
+            cache_prefix=cache_prefix,
+            citations=citations,
+            ccr_dir=ccr_dir,
+            decision_cache=decision_cache,
+            ambiguity_fail_open=ambiguity_fail_open,
+            reorder_best=reorder_best,
+            semantic_tier=semantic_tier,
+            log_dir=log_dir,
+            pin_patterns=pin_patterns,
+            pin_recent=pin_recent,
+            min_savings_ratio=min_savings_ratio,
+            degraded_view=degraded_view,
+            limits=limits,
+        )
+        base = compress_context(caller_text, query, strategy="extract", **ladder_kwargs)
+        if not base.fail_open:
+            return base
+        return compress_context(
+            caller_text,
+            query,
+            strategy="summarise",
+            summary_endpoint=summary_endpoint,
+            summary_models=summary_models,
+            summary_timeout=summary_timeout,
+            summary_allow_remote=summary_allow_remote,
+            **ladder_kwargs,
+        )
 
     if strategy_norm == "clear":
         text = _clear_tool_payloads(text)
@@ -3076,7 +3309,10 @@ def compress_context(
                 content_type="text",
                 fail_open=False,
                 frozen_blocks=0,
-                reasons=["llm summary", "query facts verified"],
+                reasons=(
+                    ["llm summary", "query facts verified"]
+                    + (["ccr skipped: secret material detected"] if ccr and secret_in_input else [])
+                ),
                 verifier=summary_verifier,
                 receipt={
                     "schema_version": "1",
@@ -3155,6 +3391,20 @@ def compress_context(
             reasons=[reason],
             receipt=receipt,
         )
+    if degraded:
+        # Score a bounded head+tail view per block. _render emits exact
+        # spans from `lines`, and citation digests use `full_text`, so the
+        # judge sees the shrink while output stays byte-exact.
+        for b in blocks:
+            full = b["text"]
+            if len(full) > _DEGRADED_VIEW_HEAD + _DEGRADED_VIEW_TAIL + 64:
+                b["full_text"] = full
+                omitted = len(full) - _DEGRADED_VIEW_HEAD - _DEGRADED_VIEW_TAIL
+                b["text"] = (
+                    f"{full[:_DEGRADED_VIEW_HEAD]}\n"
+                    f"[… {omitted} chars omitted …]\n"
+                    f"{full[-_DEGRADED_VIEW_TAIL:]}"
+                )
     scored = score_blocks(blocks, query or "")
 
     # v0.10.0 (G2, KVzip sink semantics): pinned blocks are exempt from
@@ -3169,6 +3419,18 @@ def compress_context(
                 b["score"] = max(b["score"], 999.0)
                 b["pinned"] = True
 
+    # JEV-style positional pinning: the opening block and the newest N
+    # blocks are unconditional keeps — the caller's working-context floor.
+    # Same trust semantics as pin_patterns: pins outrank drop and risk paths.
+    pin_recent_ids: set[int] = set()
+    if pin_recent and scored:
+        pin_recent_ids = {scored[0]["id"]}
+        pin_recent_ids.update(b["id"] for b in scored[-pin_recent:])
+        for b in scored:
+            if b["id"] in pin_recent_ids:
+                b["score"] = max(b["score"], 999.0)
+                b["pinned"] = True
+
     # Freeze-on-first-sight: if a decision_cache is provided and the block
     # fingerprints match prior turns, replay the stored keep/drop decisions
     # byte-identically. This keeps the provider prompt cache warm across a
@@ -3178,17 +3440,19 @@ def compress_context(
     if decision_cache is not None:
         scored = _apply_freeze(decision_cache, scored, text, query or "")
     _reorder = bool(reorder_best)
+    selection: dict[str, Any] = {}
     if mode_norm == "fixed":
         ratio = 0.35 if budget_ratio is None else float(budget_ratio)
         if not (0.0 < ratio <= 1.0):
             raise ValueError(f"budget_ratio must be in (0, 1], got {ratio!r}")
-        kept, fail_open, risk = select_fixed(scored, ratio)
+        kept, fail_open, risk = select_fixed(scored, ratio, out=selection)
     else:
         kept, fail_open, risk = select_adaptive(
             scored,
             needle_only=query_has_distinctive_selectors(query or ""),
             query=query or "",
             semantic_tier=resolve_tier(semantic_tier) if semantic_tier is not None else None,
+            out=selection,
         )
         ratio = budget_ratio if budget_ratio is not None else 0.0
     if not fail_open:
@@ -3198,6 +3462,11 @@ def compress_context(
         # earlier kept block stale (now/obsolete/override/newer date) prunes
         # it after cache replay, so a frozen keep cannot revive stale data.
         kept = apply_supersession(scored, kept)
+        if pin_recent_ids:
+            # Pins are never touched: a score-999 boost alone cannot reach
+            # kept when a selector path ignores raw scores (needle-only),
+            # and neither freeze nor supersession may evict a pin.
+            kept |= pin_recent_ids
     if ambiguity_fail_open:
         fail_open = True
         risk = "high"
@@ -3321,11 +3590,12 @@ def compress_context(
         # citation/CCR overhead likely exceeds the benefit, especially
         # when the provider cache makes the original cheap to re-send.
         savings_ratio = 1.0 - (kept_tokens / max(1, original_tokens))
-        if savings_ratio < 0.10 and not trust_filtered:
+        if savings_ratio < min_savings_ratio and not trust_filtered:
             compressed = original_text
             kept = {b["id"] for b in scored}
             fail_open = True
             risk = "high"
+            savings_gate = True
             kept_tokens = estimate_tokens(compressed)
 
     if fail_open and compressed != caller_text:
@@ -3351,6 +3621,15 @@ def compress_context(
         reasons.append(f"industrial adapter: {industrial.profile.format}")
     if freeze_cache_saturated:
         reasons.append("freeze cache capacity reached")
+    if savings_gate:
+        reasons.append("savings below min_savings_ratio")
+    if degraded:
+        reasons.append("degraded scoring view")
+        if risk == "low":
+            risk = "medium"
+    if ccr and secret_in_input:
+        # dsh-jev-pre-compaction lesson: scan for secrets BEFORE archiving.
+        reasons.append("ccr skipped: secret material detected")
     result_text = compressed
     cache_applied = False
     if cache_prefix and not fail_open:
@@ -3360,7 +3639,7 @@ def compress_context(
     ccr_info = None
     pending_ccr_hash = None
     candidate_text = result_text
-    if ccr and not fail_open and compressed != original_text:
+    if ccr and not fail_open and compressed != original_text and not secret_in_input:
         pending_ccr_hash = hashlib.sha256(caller_text.encode("utf-8")).hexdigest()[:24]
         if "[CC-Retrieve:" not in candidate_text:
             candidate_text = (
@@ -3385,6 +3664,9 @@ def compress_context(
                 ccr_info = _ccr_store(caller_text, ccr_dir)
             except OSError:
                 ccr_info = None
+            if ccr_info is None:
+                # Store refused (secret screen) or failed — never emit a
+                # dangling retrieval pointer.
                 result_text = result_text.replace(
                     f"\n[CC-Retrieve: {pending_ccr_hash}]\n", ""
                 )
@@ -3447,6 +3729,10 @@ def compress_context(
         "savings_pct": savings,
         "risk": risk,
         "verifier": verifier,
+        "degraded_view": degraded,
+        # dsh-jev-prune lesson: never degrade silently — report which
+        # selector path decided the keep-set.
+        "selection": selection.get("path"),
         "industrial": industrial.to_dict(),
     }
     receipt.update(
@@ -3543,8 +3829,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                    help="Disable citations")
     p.add_argument("--decision-cache", default=None,
                    help="JSON file path for freeze-on-first-sight decision cache")
-    p.add_argument("--strategy", default="extract", choices=["clear", "extract", "summarise"],
-                   help="Compression strategy: clear (drop tool payloads), extract (default, query-aware), summarise (falls back to extract)")
+    p.add_argument("--strategy", default="extract", choices=["clear", "extract", "summarise", "auto"],
+                   help="Compression strategy: clear (drop tool payloads), extract (default, query-aware), summarise (falls back to extract), auto (extract first, escalate to summarise only if extraction fails open)")
+    p.add_argument("--pin-recent", type=int, default=0,
+                   help="Unconditionally keep the first block and the newest N blocks")
+    p.add_argument("--min-savings-ratio", type=float, default=0.10,
+                   help="Fail open when achieved savings fall below this ratio (0 disables)")
+    p.add_argument("--degraded-view", action="store_true",
+                   help="On input size-limit breach, score a bounded head+tail view per block instead of failing open")
     p.add_argument("--stats", action="store_true")
     args = p.parse_args(list(argv) if argv is not None else None)
     if args.context_file == "-":
@@ -3591,6 +3883,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         citations=citations_val,
         decision_cache=decision_cache,
         strategy=args.strategy,
+        pin_recent=args.pin_recent,
+        min_savings_ratio=args.min_savings_ratio,
+        degraded_view=args.degraded_view,
         limits=limits,
     )
     if args.stats:

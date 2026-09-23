@@ -168,11 +168,46 @@ describe('managed rollout renderer store', () => {
     })
 
     const pending = pollManagedRollouts()
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1))
     stopManagedRolloutPolling()
     resolve({ revision: 2, snapshot: snapshot(2) })
     await pending
 
     expect($managedRollouts.get()).toMatchObject({ status: 'loading', revision: null, snapshot: null })
+  })
+
+  it('starts a fresh poll after remount and ignores stale cleanup and replies', async () => {
+    let resolveFirst!: (value: unknown) => void
+    const firstRead = new Promise<unknown>(resolve => {resolveFirst = resolve})
+
+    const read = vi.fn()
+      .mockReturnValueOnce(firstRead)
+      .mockResolvedValue({ revision: 2, snapshot: snapshot(2) })
+
+    const activeRevision = vi.fn().mockResolvedValue(2)
+
+    _setManagedRolloutsBridgeForTests({
+      capabilities: vi.fn().mockResolvedValue(availableCapability),
+      activeRevision,
+      read,
+      command: vi.fn()
+    })
+
+    const stopFirst = startManagedRolloutPolling(250)
+
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1))
+    stopFirst()
+    const stopSecond = startManagedRolloutPolling(250)
+
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect($managedRollouts.get().revision).toBe(2))
+    resolveFirst({ revision: 1, snapshot: snapshot(1) })
+    await Promise.resolve()
+
+    expect($managedRollouts.get().revision).toBe(2)
+    stopFirst()
+    await vi.waitFor(() => expect(activeRevision.mock.calls.length).toBeGreaterThanOrEqual(3))
+    stopSecond()
   })
 
   it('requires a stable request id before crossing the command bridge', async () => {

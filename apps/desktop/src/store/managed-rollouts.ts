@@ -105,7 +105,7 @@ export const $managedRollouts = atom<ManagedRolloutsState>(initial)
 let bridgeOverride: ManagedRolloutsBridge | null = null
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 let pollGeneration = 0
-let pollInFlight: Promise<void> | null = null
+let pollInFlight: { generation: number; promise: Promise<void> } | null = null
 let commandInFlight: { key: string; promise: Promise<unknown> } | null = null
 let pollingActive = false
 let pollingInterval = 5_000
@@ -276,9 +276,11 @@ function schedulePoll(delayMs: number, generation = pollGeneration): void {
   }, Math.max(0, delayMs))
 }
 
-async function capabilityAvailable(requestBridge: ManagedRolloutsBridge): Promise<boolean> {
+async function capabilityAvailable(requestBridge: ManagedRolloutsBridge, generation: number): Promise<boolean> {
   try {
     const result = validateRolloutCapabilities(await requestBridge.capabilities())
+
+    if (generation !== pollGeneration) {return false}
 
     if (!result.available) {
       setUnsupported(result.reason ?? 'managed-rollouts-unavailable', result)
@@ -290,6 +292,8 @@ async function capabilityAvailable(requestBridge: ManagedRolloutsBridge): Promis
 
     return true
   } catch (error: unknown) {
+    if (generation !== pollGeneration) {return false}
+
     setUnsupported(error instanceof Error ? error.message : String(error))
 
     return false
@@ -297,16 +301,19 @@ async function capabilityAvailable(requestBridge: ManagedRolloutsBridge): Promis
 }
 
 export async function pollManagedRollouts(): Promise<void> {
-  if (pollInFlight) {return pollInFlight}
-  const requestBridge = bridge()
   const generation = pollGeneration
 
+  if (pollInFlight?.generation === generation) {return pollInFlight.promise}
+  const requestBridge = bridge()
+
   const run = (async () => {
-    if (!requestBridge || !(await capabilityAvailable(requestBridge))) {
+    if (!requestBridge || !(await capabilityAvailable(requestBridge, generation))) {
       if (pollingActive && generation === pollGeneration) {schedulePoll(pollingInterval, generation)}
 
       return
     }
+
+    if (generation !== pollGeneration) {return}
 
     const previous = $managedRollouts.get()
     $managedRollouts.set({
@@ -317,6 +324,8 @@ export async function pollManagedRollouts(): Promise<void> {
 
     try {
       const activeRevision = await requestBridge.activeRevision()
+
+      if (generation !== pollGeneration) {return}
 
       if (activeRevision !== null && (!Number.isSafeInteger(activeRevision) || activeRevision < 0)) {
         throw new Error('managed-rollouts-invalid-active-revision')
@@ -401,11 +410,17 @@ export async function pollManagedRollouts(): Promise<void> {
     }
   })()
 
-  pollInFlight = run.finally(() => {
-    pollInFlight = null
-  })
+  let entry: { generation: number; promise: Promise<void> }
 
-  return pollInFlight
+  entry = {
+    generation,
+    promise: run.finally(() => {
+      if (pollInFlight === entry) {pollInFlight = null}
+    })
+  }
+  pollInFlight = entry
+
+  return entry.promise
 }
 
 export async function readManagedRolloutInventory(): Promise<ManagedRolloutInventory> {
@@ -544,9 +559,12 @@ export function startManagedRolloutPolling(intervalMs = 5_000): () => void {
   pollingInterval = Math.max(250, intervalMs)
   retryDelay = 1_000
   pollGeneration += 1
+  const ownerGeneration = pollGeneration
   void pollManagedRollouts()
 
-  return stopManagedRolloutPolling
+  return () => {
+    if (pollGeneration === ownerGeneration) {stopManagedRolloutPolling()}
+  }
 }
 
 export function stopManagedRolloutPolling(): void {

@@ -99,7 +99,7 @@ def test_flood_deadline_and_profile_scope_are_preserved(postgres_db):
         ledger.sweep_failed_for_runtime("telegram", now=due - 1, profile="reviewer")
         == []
     )
-    pending = ledger.pending_flood_retries(now=due - 1)
+    pending = ledger.pending_retries(now=due - 1)
     assert [(item["platform"], item["profile"]) for item in pending] == [
         ("telegram", "reviewer")
     ]

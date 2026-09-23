@@ -7,7 +7,7 @@ thinking off is trying to stop paying for.  The disable has to be sent:
 
     thinking: {"type": "disabled"}
 
-Reasoning-mandatory families (claude-fable) reject that with an HTTP 400
+Reasoning-mandatory families (claude-fable, claude-opus-5-5) reject that with an HTTP 400
 ("Thinking is mandatory for this model"), so they keep the omission — a
 silently-ignored disable is a much better failure than a dead turn.
 
@@ -64,10 +64,14 @@ class TestThinkingOffIsSentExplicitly:
         assert kwargs["thinking"] == {"type": "disabled"}
         assert "output_config" not in kwargs
 
-    def test_mandatory_thinking_models_keep_the_omission(self) -> None:
-        """claude-fable answers a disable with HTTP 400, so don't send one."""
-        kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": False})
+    @pytest.mark.parametrize("model", [
+        "anthropic/claude-fable-5", "claude-opus-5-5", "anthropic/claude-opus-5.5",
+    ])
+    def test_mandatory_thinking_models_keep_the_omission(self, model: str) -> None:
+        """Mandatory thinking rejects an explicit disable with HTTP 400."""
+        kwargs = _kwargs(model, {"enabled": False, "effort": "none"})
         assert "thinking" not in kwargs
+        assert "output_config" not in kwargs
 
     def test_legacy_manual_thinking_models_keep_the_omission(self) -> None:
         """Pre-4.6 thinking is opt-in via budget_tokens: absence IS off."""
@@ -96,7 +100,7 @@ class TestEnablePathIsUnchanged:
         assert kwargs["output_config"] == {"effort": "high"}
 
     def test_mandatory_model_still_thinks_when_asked_to(self) -> None:
-        kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": True, "effort": "max"})
+        kwargs = _kwargs("anthropic/claude-opus-5-5", {"enabled": True, "effort": "max"})
         assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "max"}
 

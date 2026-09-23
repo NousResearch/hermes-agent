@@ -1,9 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { extendRefreshPageToOverlap, graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
-import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
+import { getLatestSessionMessages, getOlderSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
@@ -278,8 +278,35 @@ export async function reconcileTileTranscripts({
         continue
       }
 
+      let olderOffset = latest.messages.length
+
+      const messages = await extendRefreshPageToOverlap(
+        toChatMessages(latest.messages),
+        current?.messages ?? [],
+        async () => {
+          if (!latest.pagination) {
+            return []
+          }
+
+          const older = await getOlderSessionMessages(storedSessionId, profileScope, olderOffset)
+          olderOffset += older.messages.length
+
+          return toChatMessages(older.messages)
+        }
+      )
+
+      if (
+        requestId !== requestSequenceRef.current ||
+        tileRuntimeOwnsLiveState(runtimeSessionId) ||
+        transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
+        !tileStillPresent()
+      ) {
+        signatureRef.current.delete(signatureKey)
+
+        continue
+      }
+
       signatureRef.current.set(signatureKey, signature)
-      const messages = toChatMessages(latest.messages)
 
       updateSessionState(
         runtimeSessionId,
@@ -357,7 +384,27 @@ export async function hydrateStoredSessionTranscript({
         continue
       }
 
-      const messages = toChatMessages(latest.messages)
+      let olderOffset = latest.messages.length
+
+      const messages = await extendRefreshPageToOverlap(
+        toChatMessages(latest.messages),
+        $sessionStates.get()[runtimeSessionId]?.messages ?? [],
+        async () => {
+          if (!latest.pagination) {
+            return []
+          }
+
+          const older = await getOlderSessionMessages(storedSessionId, storedProfile, olderOffset)
+          olderOffset += older.messages.length
+
+          return toChatMessages(older.messages)
+        }
+      )
+
+      if (superseded()) {
+        return
+      }
+
       updateSessionState(
         runtimeSessionId,
         state => ({
@@ -477,8 +524,35 @@ export async function reconcileActiveTranscript({
       return
     }
 
+    let olderOffset = latest.messages.length
+
+    const messages = await extendRefreshPageToOverlap(
+      toChatMessages(latest.messages),
+      current?.messages ?? [],
+      async () => {
+        if (!latest.pagination) {
+          return []
+        }
+
+        const older = await getOlderSessionMessages(storedSessionId, profileScope, olderOffset)
+        olderOffset += older.messages.length
+
+        return toChatMessages(older.messages)
+      }
+    )
+
+    if (
+      requestId !== requestSequenceRef.current ||
+      busyRef.current ||
+      tileRuntimeOwnsLiveState(runtimeSessionId) ||
+      transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
+      selectedStoredSessionIdRef.current !== storedSessionId ||
+      activeSessionIdRef.current !== runtimeSessionId
+    ) {
+      return
+    }
+
     signatureRef.current.set(signatureKey, signature)
-    const messages = toChatMessages(latest.messages)
 
     updateSessionState(
       runtimeSessionId,

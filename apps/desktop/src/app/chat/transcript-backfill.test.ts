@@ -6,6 +6,7 @@ import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState }
 import {
   _resetTranscriptBackfillForTests,
   backfillOlderTranscriptPage,
+  extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
   mergeOlderTranscriptPage,
   transcriptBackfillAvailable
@@ -178,11 +179,42 @@ describe('graftRefreshedTailOntoBackfill', () => {
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
   })
 
+  it('keeps the earlier transcript when a page-local fold precedes a shared durable row', () => {
+    const previous = [chat('earlier', 1), chat('prompt', 2), chat('reply', 3)]
+    const refreshed = [chat('page-local-fold'), chat('reply-refetched', 3), chat('new-reply', 4)]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.rowId)).toEqual([1, 2, undefined, 3, 4])
+  })
+
   it('returns the refreshed tail when it is not shorter than the previous transcript', () => {
     const previous = [chat('a', 1)]
     const refreshed = [chat('a', 1), chat('b', 2)]
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+  })
+})
+
+describe('extendRefreshPageToOverlap', () => {
+  it('reads older pages until a long refresh shares a durable row with the rendered transcript', async () => {
+    const previous = [chat('earlier', 1), chat('prompt', 2), chat('reply', 3)]
+    const readOlderPage = vi.fn().mockResolvedValueOnce([chat('reply-refetched', 3), chat('tool-fold', 4)])
+
+    const extended = await extendRefreshPageToOverlap(
+      [chat('new-tool', 5), chat('new-reply', 6)],
+      previous,
+      readOlderPage
+    )
+
+    expect(readOlderPage).toHaveBeenCalledTimes(1)
+    expect(graftRefreshedTailOntoBackfill(extended, previous).map(message => message.rowId)).toEqual([1, 2, 3, 4, 5, 6])
+  })
+
+  it('keeps the newest page when an older-page read fails', async () => {
+    const refreshed = [chat('new-tool', 5)]
+
+    await expect(
+      extendRefreshPageToOverlap(refreshed, [chat('earlier', 1)], vi.fn().mockRejectedValue(new Error()))
+    ).resolves.toBe(refreshed)
   })
 })
 

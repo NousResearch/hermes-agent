@@ -11,6 +11,7 @@ turn reports SUCCESS and a failed one still reports FAILURE.
 """
 
 import asyncio
+import os
 
 import pytest
 
@@ -98,7 +99,14 @@ async def test_media_only_success_reports_success(tmp_path, monkeypatch):
     event = _make_event()
     await adapter._process_message_background(event, build_session_key(event.source))
 
-    assert adapter.images_sent == [str(png)]
+    # The delivery contract is "the adapter can open this path", not "the path is
+    # spelled with the platform separator": the shared decoder returns forward-slash
+    # paths on Windows (``C:/dir/a.png``), which is the same file as ``str(png)``.
+    # Compare separator-agnostically; the assertions that matter here are the
+    # SUCCESS/FAILURE outcomes below.
+    assert [os.path.normcase(p) for p in adapter.images_sent] == [
+        os.path.normcase(str(png))
+    ]
     assert adapter.outcomes == [ProcessingOutcome.SUCCESS]
 
 
@@ -116,5 +124,7 @@ async def test_media_only_failure_still_reports_failure(tmp_path, monkeypatch):
     event = _make_event()
     await adapter._process_message_background(event, build_session_key(event.source))
 
-    assert adapter.images_sent == [str(png)]
+    assert [os.path.normcase(p) for p in adapter.images_sent] == [
+        os.path.normcase(str(png))
+    ]
     assert adapter.outcomes == [ProcessingOutcome.FAILURE]

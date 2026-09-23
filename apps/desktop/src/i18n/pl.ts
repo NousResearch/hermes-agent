@@ -1,4 +1,3 @@
-import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
@@ -645,6 +644,7 @@ export const pl = defineLocale({
       appearance: 'Wygląd',
       workspace: 'Przestrzeń robocza',
       safety: 'Bezpieczeństwo',
+      browser: 'Przeglądarka',
       memory: 'Pamięć i kontekst',
       voice: 'Głos',
       advanced: 'Zaawansowane'
@@ -796,8 +796,259 @@ export const pl = defineLocale({
         turnOffFailed: 'Nie udało się wyłączyć zwierzaka.'
       }
     },
-    fieldLabels: FIELD_LABELS,
-    fieldDescriptions: FIELD_DESCRIPTIONS,
+    fieldLabels: defineFieldCopy({
+      model: 'Domyślny model',
+      modelContextLength: 'Okno kontekstu',
+      fallbackProviders: 'Modele zapasowe',
+      toolsets: 'Włączone zestawy narzędzi',
+      timezone: 'Strefa czasowa',
+      display: {
+        personality: 'Osobowość',
+        showReasoning: 'Bloki rozumowania'
+      },
+      desktop: {
+        repoScanEnabled: 'Automatyczne wykrywanie repozytoriów',
+        repoScanRoots: 'Katalogi przeszukiwania repozytoriów',
+        repoScanExcludePaths: 'Wykluczone ścieżki repozytoriów'
+      },
+      agent: {
+        maxTurns: 'Maksymalna liczba kroków agenta',
+        imageInputMode: 'Załączniki obrazów',
+        apiMaxRetries: 'Ponawianie zapytań API',
+        serviceTier: 'Poziom usługi',
+        toolUseEnforcement: 'Wymuszanie użycia narzędzi'
+      },
+      terminal: {
+        cwd: 'Katalog roboczy',
+        backend: 'Środowisko wykonawcze',
+        timeout: 'Limit czasu polecenia',
+        persistentShell: 'Trwała powłoka',
+        envPassthrough: 'Przekazywanie zmiennych środowiskowych',
+        dockerImage: 'Obraz Dockera',
+        singularityImage: 'Obraz Singularity',
+        modalImage: 'Obraz Modal',
+        daytonaImage: 'Obraz Daytona'
+      },
+      fileReadMaxChars: 'Limit odczytu pliku',
+      toolOutput: {
+        maxBytes: 'Limit danych wyjściowych terminala',
+        maxLines: 'Limit stron pliku',
+        maxLineLength: 'Limit długości linii'
+      },
+      codeExecution: {
+        mode: 'Tryb wykonywania kodu'
+      },
+      approvals: {
+        mode: 'Tryb zatwierdzania',
+        timeout: 'Limit czasu na zatwierdzenie',
+        mcpReloadConfirm: 'Potwierdzaj przeładowania MCP'
+      },
+      commandAllowlist: 'Biała lista poleceń',
+      security: {
+        redactSecrets: 'Maskowanie sekretów',
+        allowPrivateUrls: 'Zezwalaj na prywatne adresy URL'
+      },
+      browser: {
+        allowPrivateUrls: 'Prywatne adresy URL w przeglądarce',
+        autoLocalForPrivateUrls: 'Lokalna przeglądarka dla prywatnych adresów URL',
+        useRealProfile: 'Użyj mojego prawdziwego profilu przeglądarki'
+      },
+      checkpoints: {
+        enabled: 'Punkty kontrolne plików',
+        maxSnapshots: 'Limit punktów kontrolnych'
+      },
+      voice: {
+        recordKey: 'Skrót głosowy',
+        maxRecordingSeconds: 'Maksymalny czas nagrywania',
+        autoTts: 'Czytaj odpowiedzi na głos'
+      },
+      stt: {
+        enabled: 'Zamiana mowy na tekst',
+        echoTranscripts: 'Powtarzaj transkrypcje',
+        provider: 'Dostawca zamiany mowy na tekst',
+        local: {
+          model: 'Lokalny model transkrypcji',
+          language: 'Język transkrypcji'
+        },
+        openai: {
+          model: 'Model STT OpenAI'
+        },
+        groq: {
+          model: 'Model STT Groq'
+        },
+        mistral: {
+          model: 'Model STT Mistral'
+        },
+        elevenlabs: {
+          modelId: 'Model STT ElevenLabs',
+          languageCode: 'Język ElevenLabs',
+          tagAudioEvents: 'Oznaczaj zdarzenia dźwiękowe',
+          diarize: 'Rozpoznawanie mówców'
+        }
+      },
+      tts: {
+        provider: 'Dostawca syntezy mowy',
+        edge: {
+          voice: 'Głos Edge'
+        },
+        openai: {
+          model: 'Model TTS OpenAI',
+          voice: 'Głos OpenAI'
+        },
+        elevenlabs: {
+          voiceId: 'Głos ElevenLabs',
+          modelId: 'Model ElevenLabs'
+        },
+        xai: {
+          voiceId: 'Głos xAI (Grok)',
+          language: 'Język xAI',
+          speed: 'Prędkość odtwarzania xAI',
+          autoSpeechTags: 'Automatyczne znaczniki mowy xAI',
+          optimizeStreamingLatency: 'Optymalizacja opóźnienia transmisji xAI',
+          sampleRate: 'Częstotliwość próbkowania xAI',
+          bitRate: 'Przepływność bitowa xAI'
+        },
+        minimax: {
+          model: 'Model TTS MiniMax',
+          voiceId: 'Głos MiniMax'
+        },
+        mistral: {
+          model: 'Model TTS Mistral',
+          voiceId: 'Głos Mistral'
+        },
+        gemini: {
+          model: 'Model TTS Gemini',
+          voiceId: 'Głos Gemini'
+        },
+        neutts: {
+          model: 'Model NeuTTS',
+          device: 'Urządzenie NeuTTS'
+        },
+        kittentts: {
+          model: 'Model KittenTTS',
+          voice: 'Głos KittenTTS'
+        },
+        piper: {
+          voice: 'Głos Piper'
+        },
+        deepinfra: {
+          model: 'Model TTS DeepInfra',
+          voice: 'Głos DeepInfra'
+        }
+      },
+      memory: {
+        memoryEnabled: 'Pamięć trwała',
+        userProfileEnabled: 'Profil użytkownika',
+        memoryCharLimit: 'Budżet pamięci',
+        userCharLimit: 'Budżet profilu',
+        provider: 'Dostawca pamięci'
+      },
+      context: {
+        engine: 'Silnik kontekstu'
+      },
+      compression: {
+        enabled: 'Automatyczna kompresja',
+        threshold: 'Próg kompresji',
+        targetRatio: 'Docelowy współczynnik kompresji',
+        protectLastN: 'Chroń ostatnie wiadomości'
+      },
+      delegation: {
+        model: 'Model podagenta',
+        provider: 'Dostawca podagenta',
+        maxIterations: 'Limit kroków podagenta',
+        maxConcurrentChildren: 'Równolegli podagenci',
+        childTimeoutSeconds: 'Limit czasu podagenta',
+        reasoningEffort: 'Poziom rozumowania podagenta'
+      },
+      updates: {
+        nonInteractiveLocalChanges: 'Lokalne zmiany podczas aktualizacji w aplikacji'
+      }
+    }),
+    fieldDescriptions: defineFieldCopy({
+      model: 'Używany dla nowych czatów, chyba że wybierzesz inny model w oknie tworzenia wiadomości.',
+      modelContextLength: 'Pozostaw 0, aby użyć wykrytego okna kontekstu wybranego modelu.',
+      fallbackProviders: 'Zapasowe pozycje dostawca:model do wypróbowania w przypadku awarii modelu domyślnego.',
+      display: {
+        personality: 'Domyślny styl asystenta dla nowych sesji.',
+        showReasoning: 'Pokazuj sekcje rozumowania, gdy backend je udostępnia.'
+      },
+      desktop: {
+        repoScanEnabled: 'Skanuj foldery lokalne w poszukiwaniu repozytoriów Git, aby wyświetlić je w Projektach.',
+        repoScanRoots: 'Foldery do przeskanowania. Pozostaw puste, aby przeskanować katalog domowy.',
+        repoScanExcludePaths: 'Foldery i ich elementy podrzędne do pominięcia podczas wykrywania repozytoriów.'
+      },
+      timezone: 'Identyfikator strefy czasowej IANA. Puste pole oznacza użycie strefy czasowej systemu.',
+      browser: {
+        useRealProfile:
+          'Lokalne przeglądanie używa Twoich prawdziwych danych logowania. Hermes kopiuje profil domyślnej przeglądarki (pliki cookie, dane logowania, preferencje) do zarządzanej migawki i uruchamia ją za pomocą dołączonego Chromium — Twój działający profil nigdy nie jest otwierany bezpośrednio, a kopia jest odświeżana przy każdym uruchomieniu. Pozwala także agentowi otworzyć lokalną sesję z prawdziwym profilem na żądanie, nawet jeśli skonfigurowano przeglądarkę w chmurze. Obsługiwane są wyłącznie przeglądarki oparte na Chromium (Chrome, Edge, Brave, Brave Origin, Chromium); domyślna przeglądarka inna niż Chromium zwróci czytelny komunikat o błędzie. Domyślnie wyłączone.'
+      },
+      agent: {
+        imageInputMode: 'Kontroluje sposób przesyłania załączników graficznych do modelu.',
+        maxTurns: 'Górny limit kroków wywoływania narzędzi przed zatrzymaniem przebiegu przez Hermesa.'
+      },
+      terminal: {
+        cwd: 'Domyślny folder projektu dla narzędzi i pracy w terminalu.',
+        persistentShell: 'Zachowaj stan powłoki między poleceniami, gdy backend to obsługuje.',
+        envPassthrough: 'Zmienne środowiskowe przekazywane do wykonywania narzędzi.',
+        dockerImage: 'Obraz kontenera używany, gdy środowiskiem wykonawczym jest Docker.',
+        singularityImage: 'Obraz używany, gdy środowiskiem wykonawczym jest Singularity.',
+        modalImage: 'Obraz używany, gdy środowiskiem wykonawczym jest Modal.',
+        daytonaImage: 'Obraz używany, gdy środowiskiem wykonawczym jest Daytona.'
+      },
+      codeExecution: {
+        mode: 'Jak ściśle wykonywanie kodu jest ograniczone do bieżącego projektu.'
+      },
+      fileReadMaxChars: 'Maksymalna liczba znaków, jaką Hermes może odczytać z jednego żądania pliku.',
+      approvals: {
+        mode: 'Jak Hermes obsługuje polecenia wymagające wyraźnego zatwierdzenia.',
+        timeout: 'Jak długo monity o zatwierdzenie czekają przed przekroczeniem limitu czasu.'
+      },
+      security: {
+        redactSecrets: 'Ukrywaj wykryte sekrety przed treściami widocznymi dla modelu, gdy to możliwe.'
+      },
+      checkpoints: {
+        enabled: 'Twórz migawki przywracania przed edycją plików.',
+        maxSnapshots: 'Maksymalna liczba migawek przywracania przechowywanych na sesję.'
+      },
+      memory: {
+        memoryEnabled: 'Zapisuj trwałe wspomnienia, które mogą pomóc w przyszłych sesjach.',
+        userProfileEnabled: 'Utrzymuj zwięzły profil preferencji użytkownika.'
+      },
+      context: {
+        engine: 'Strategia zarządzania długimi rozmowami w pobliżu limitu kontekstu.'
+      },
+      compression: {
+        enabled: 'Podsumowuj starszy kontekst, gdy rozmowy stają się obszerne.'
+      },
+      voice: {
+        autoTts: 'Automatycznie odczytuj na głos odpowiedzi asystenta.'
+      },
+      tts: {
+        xai: {
+          voiceId: 'Identyfikator głosu xAI (np. eve) lub niestandardowy identyfikator głosu.',
+          language: 'Kod języka mówionego (np. pl, en, pt-BR) lub „auto” dla automatycznego wykrywania.',
+          speed: 'Prędkość odtwarzania. 0.7 = wolniej, 1.0 = normalnie, 1.5 = szybciej.',
+          autoSpeechTags: 'Pozwól modelowi LLM wstawiać ekspresyjne znaczniki audio ([laughing], [sighs]) do skryptu przed syntezą.',
+          optimizeStreamingLatency: 'Kompromis między opóźnieniem a jakością. 0 = najlepsza jakość, 2 = najniższe opóźnienie.',
+          sampleRate: 'Częstotliwość próbkowania dźwięku w Hz. Wyższa = lepsza jakość, większe pliki.',
+          bitRate: 'Przepływność MP3 w bps. Ma zastosowanie tylko wtedy, gdy kodekiem jest mp3.'
+        },
+        neutts: {
+          device: 'Lokalne urządzenie wnioskowania dla NeuTTS.'
+        }
+      },
+      stt: {
+        enabled: 'Włącz lokalną lub chmurową transkrypcję mowy.',
+        echoTranscripts: 'Publikuj surową transkrypcję 🎙️ wiadomości głosowych z powrotem na czacie.',
+        elevenlabs: {
+          languageCode: 'Opcjonalny kod języka ISO-639-3. Puste pole pozwala ElevenLabs na automatyczne wykrycie.'
+        }
+      },
+      updates: {
+        nonInteractiveLocalChanges:
+          'Gdy Hermes aktualizuje się z poziomu aplikacji (bez monitu w terminalu), zachowaj lokalne zmiany w kodzie źródłowym (stash) lub je odrzuć (discard). Aktualizacje w terminalu zawsze pytają o decyzję.'
+      }
+    }),
     about: {
       heading: 'Hermes Desktop',
       version: value => `Wersja ${value}`,

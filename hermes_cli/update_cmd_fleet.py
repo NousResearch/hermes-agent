@@ -581,6 +581,8 @@ def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
 
     for key in keys:
         scope, scope_cmd, svc_name = targets[key]
+        if not _systemd_unit_owned_by_update(scope_cmd, svc_name):
+            continue
         manage_cmd = list(scope_cmd) + ["--no-ask-password"]
         if _needs_sudo(scope):
             manage_cmd = ["sudo", "-n"] + manage_cmd
@@ -867,6 +869,34 @@ def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: 
     return _systemctl(manage_cmd + ["restart", svc_name], timeout=timeout)
 
 
+def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
+    """Gate a unit restart on the unit's home being one this update owns (#93349).
+
+    ``hermes-gateway*`` is an account-wide namespace: a second install's ``hermes update`` used
+    to drain and restart the account's real ``hermes-gateway.service`` because the unit was
+    listed, not because it ran the updated code. Foreign or unreadable ownership prints a notice
+    and leaves the unit alone; it is not a failed restart.
+    """
+    from hermes_cli.update_fleet_scope import describe_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
+    home = systemd_unit_hermes_home(scope_cmd, svc_name)
+    if home is not None and home_in_update_scope(home):
+        return True
+    print(describe_skipped_runtime("systemd unit", svc_name, home))
+    return False
+
+
+def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[int]:
+    """*pids* whose live home this update owns (plus *keep*, PIDs already mapped to this
+    install's profile PID files); every other gateway process is named and left running."""
+    from hermes_cli.update_fleet_scope import describe_skipped_runtime, partition_gateway_pids_by_scope
+    keep = set(keep)
+    owned, foreign = partition_gateway_pids_by_scope([pid for pid in pids if pid not in keep])
+    if not quiet:
+        for pid, home in foreign:
+            print(describe_skipped_runtime("gateway process", f"PID {pid}", home))
+    return [pid for pid in pids if pid in keep or pid in owned]
+
+
 def _is_hermes_gateway_unit(unit: str) -> bool:
     """Exact base unit or hyphenated profile family only: ``startswith("hermes-serve")``
     would accept ``hermes-server.service``."""
@@ -1053,8 +1083,14 @@ def _restart_macos_launchd_gateways(
     legacy_labels = legacy_launchd_labels_for_install(exclude=set(derived_labels) | {current_label})
     if legacy_labels:
         print(f"  ↻ legacy-labelled units of this install join the restart: {', '.join(legacy_labels)}")
+    from hermes_cli.update_fleet_scope import describe_skipped_runtime, launchd_label_foreign_home
     for label in derived_labels + legacy_labels:
         if label == current_label:
+            continue
+        # Labels are account-global: root B's default profile derives the same bare label root A
+        # installed. A plist pinning a foreign HERMES_HOME is another install's job (#93349).
+        if (foreign_home := launchd_label_foreign_home(label)) is not None:
+            print(describe_skipped_runtime("launchd job", label, foreign_home))
             continue
         try:
             # Locate = liveness + domain in one probe; kickstart and fresh-PID checks
@@ -1107,7 +1143,7 @@ def _surviving_gateway_pids_after_failed_restart():
     """
     try:
         from hermes_cli.gateway import find_gateway_pids
-        return list(find_gateway_pids(all_profiles=True))
+        return _scoped_manual_gateway_pids(find_gateway_pids(all_profiles=True), quiet=True)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not probe for surviving gateways after update: %s", exc)
         return None
@@ -1335,6 +1371,8 @@ def _restart_one_systemd_gateway_unit(
     check = _systemctl(scope_cmd + ["is-active", svc_name], timeout=5)
     if check.stdout.strip() != "active":
         return
+    if not _systemd_unit_owned_by_update(scope_cmd, svc_name):
+        return
     _repair_unit_without_fatal_exit_park(svc_name, scope)
 
     # None ⇒ no non-interactive privilege path; avoid manage-units verbs
@@ -1541,6 +1579,9 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         for proc in find_profile_gateway_processes(exclude_pids=service_pids)
         if proc.pid in manual_pids
     }
+    # ``all_profiles`` is host-wide: a sibling install's gateway matches too. Only this update's
+    # homes are stopped; the profile-mapped PIDs come from this install's own PID files (#93349).
+    manual_pids = _scoped_manual_gateway_pids(manual_pids, keep=profile_processes)
     # Profile gateways we couldn't arm a relaunch for must NOT keep running stale:
     # the unmapped sweep below stops them and lists them under "Restart manually".
     # These must NOT be left running: their modules are the pre-update ones and every lazy import from here
@@ -1756,7 +1797,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         # Snapshot before any stop/drain so an empty survivor probe reads as "stopped
         # and never came back", not "nothing was running"; None fails closed.
         try:
-            out.pre_restart_gateway_pids = list(find_gateway_pids(all_profiles=True))
+            out.pre_restart_gateway_pids = _scoped_manual_gateway_pids(find_gateway_pids(all_profiles=True), quiet=True)
         except Exception:
             out.pre_restart_gateway_pids = None
 

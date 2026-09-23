@@ -327,6 +327,61 @@ class TestDiscoveryShape:
         )
 
 
+def _emitted_session_search_kwargs(pointer: str, query: str) -> dict:
+    """The keyword arguments of the ``session_search(...)`` call a recovery pointer tells the model to
+    make, with its placeholder query (``'<keywords>'`` or ``...``) filled in."""
+    import ast
+
+    start = pointer.index("session_search(")
+    depth, end = 0, None
+    for i, ch in enumerate(pointer[start:], start):
+        depth += ch == "("
+        depth -= ch == ")"
+        if ch == ")" and depth == 0:
+            end = i + 1
+            break
+    call = ast.parse(pointer[start:end], mode="eval").body
+    kwargs = {kw.arg: kw.value.value for kw in call.keywords}
+    if kwargs.get("query") in (Ellipsis, "<keywords>"):
+        kwargs["query"] = query
+    return kwargs
+
+
+class TestCompactionRecoveryPointersRecover:
+    """The call each compaction recovery pointer emits must actually return the compacted detail when the
+    model makes it verbatim, under the runtime's own ``current_session_id`` (#99568). Asserting on the
+    pointer text alone let a pointer that selects READ mode, which ignores the query, pass review."""
+
+    def _compacted_session(self, db):
+        sid = "s_recover"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, role="user", content="Remember the port: PORTMARK_7741")
+        db.append_message(sid, role="assistant", content="Noted the port.")
+        db.append_message(sid, role="tool", content="build log\n" * 200 + "fatal: TOOLMARK_0923",
+                          tool_name="terminal")
+        db.archive_and_compact(sid, [
+            {"role": "user", "content": "[CONTEXT COMPACTION] earlier turns summarized"},
+            {"role": "assistant", "content": "Summary: a port was noted and a build failed."},
+        ])
+        return sid
+
+    def test_the_summary_footer_call_recovers_a_compacted_turn(self, db):
+        from agent.context_compressor import _build_recovery_footer
+
+        sid = self._compacted_session(db)
+        kwargs = _emitted_session_search_kwargs(_build_recovery_footer(sid, region_len=10), "PORTMARK_7741")
+        result = json.loads(session_search(**kwargs, db=db, current_session_id=sid))
+        assert "PORTMARK_7741" in json.dumps(result), result
+
+    def test_the_demoted_tool_stub_call_recovers_the_tool_output(self, db):
+        from agent.context_compressor import _lean_recovery_stub
+
+        sid = self._compacted_session(db)
+        kwargs = _emitted_session_search_kwargs(_lean_recovery_stub("terminal", 3200, sid), "TOOLMARK_0923")
+        result = json.loads(session_search(**kwargs, db=db, current_session_id=sid))
+        assert "TOOLMARK_0923" in json.dumps(result), result
+
+
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):
         _seed_modpack_sessions(db)

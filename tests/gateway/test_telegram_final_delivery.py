@@ -63,6 +63,7 @@ async def test_turn_final_flood_immediately_delivers_missing_tail():
     assert adapter.send.await_args.kwargs["metadata"] == {
         "thread_id": "77",
         "notify": True,
+        "_turn_final": True,
     }
     adapter.delete_message.assert_not_awaited()
     assert consumer.final_response_sent is True

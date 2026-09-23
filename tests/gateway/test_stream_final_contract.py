@@ -50,7 +50,7 @@ def _make_draft_adapter():
 
     async def _send(chat_id, content, reply_to=None, metadata=None, **kw):
         a.send_calls.append({"content": content, "metadata": dict(metadata or {})})
-        return SendResult(success=True, message_id="sealed_ts_1")
+        return SendResult(success=True, message_id=f"message_{len(a.send_calls)}")
     a.send = _send
 
     async def _edit(chat_id, message_id, content, **kw):
@@ -86,6 +86,7 @@ class TestConsumerDeclaredFinal:
         # The turn-final send carried the COMPLETE footer-bearing final.
         assert adapter.send_calls, "expected a turn-final send"
         assert adapter.send_calls[-1]["content"] == final_with_footer
+        assert adapter.send_calls[-1]["metadata"]["_turn_final"] is True
         # And the recorded payload reconciles → gateway suppression is safe.
         assert sc.delivered_final_matches(final_with_footer) is True
 
@@ -106,6 +107,77 @@ class TestConsumerDeclaredFinal:
 
 
 class TestInterimSendContract:
+    @pytest.mark.asyncio
+    async def test_only_got_done_overflow_tail_is_marked_turn_final(self):
+        """First sends, tool-boundary segments, commentary, and overflow heads are
+        not authoritative; only the final got_done tail carries the adapter marker."""
+        adapter = _make_draft_adapter()
+        type(adapter).MAX_MESSAGE_LENGTH = 700
+        cfg = StreamConsumerConfig(
+            transport="edit", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=1, cursor="",
+        )
+        sc = GatewayStreamConsumer(adapter, "D1", cfg)
+
+        task = asyncio.create_task(sc.run())
+        sc.on_delta("I will inspect that first.")
+        await asyncio.sleep(0.06)
+        sc.on_segment_break()
+        await asyncio.sleep(0.06)
+        sc.on_commentary("The inspection is still running.")
+        await asyncio.sleep(0.06)
+        final_text = "final answer " * 120
+        sc.on_delta(final_text)
+        sc.finish(final_text)
+        await task
+
+        marked = [
+            call for call in adapter.send_calls
+            if call["metadata"].get("_turn_final") is True
+        ]
+        assert len(marked) == 1
+        assert marked[0] is adapter.send_calls[-1]
+        assert adapter.send_calls[-1]["content"].startswith("final answer ")
+        assert all(
+            "_turn_final" not in call["metadata"]
+            for call in adapter.send_calls[:-1]
+        )
+
+    @pytest.mark.asyncio
+    async def test_fallback_chunks_mark_only_authoritative_last_send(self):
+        adapter = _make_draft_adapter()
+        type(adapter).MAX_MESSAGE_LENGTH = 700
+        sc = GatewayStreamConsumer(
+            adapter, "D1", StreamConsumerConfig(transport="edit", cursor=""))
+
+        await sc._send_fallback_final("fallback final " * 100)
+
+        assert len(adapter.send_calls) > 1
+        assert all(
+            "_turn_final" not in call["metadata"]
+            for call in adapter.send_calls[:-1]
+        )
+        assert adapter.send_calls[-1]["metadata"]["_turn_final"] is True
+
+    @pytest.mark.asyncio
+    async def test_fresh_final_marker_follows_turn_final_fact(self):
+        async def fresh_send(*, is_turn_final):
+            adapter = _make_draft_adapter()
+            adapter.prefers_fresh_final_streaming = lambda *args, **kwargs: True
+            sc = GatewayStreamConsumer(
+                adapter, "D1", StreamConsumerConfig(transport="edit", cursor=""))
+            sc._message_id = "preview"
+            sc._message_created_ts = 0.0
+            sc._last_sent_text = "preview"
+            assert await sc._send_or_edit(
+                "replacement", finalize=True, is_turn_final=is_turn_final)
+            return adapter.send_calls[-1]["metadata"]
+
+        segment_metadata = await fresh_send(is_turn_final=False)
+        final_metadata = await fresh_send(is_turn_final=True)
+        assert "_turn_final" not in segment_metadata
+        assert final_metadata["_turn_final"] is True
+
     @pytest.mark.asyncio
     async def test_commentary_is_marked_interim(self):
         adapter = _make_draft_adapter()

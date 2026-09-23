@@ -17,6 +17,7 @@ def test_stream_send_metadata_carries_original_reply_anchor():
         adapter=MagicMock(),
         chat_id="123",
         initial_reply_to_id="456",
+        metadata={"_turn_final": True},
     )
 
     assert consumer._metadata_for_send(final=False) == {
@@ -25,6 +26,11 @@ def test_stream_send_metadata_carries_original_reply_anchor():
     assert consumer._metadata_for_send(final=True) == {
         "reply_to_message_id": "456",
         "notify": True,
+    }
+    assert consumer._metadata_for_send(final=True, is_turn_final=True) == {
+        "reply_to_message_id": "456",
+        "notify": True,
+        "_turn_final": True,
     }
 
 

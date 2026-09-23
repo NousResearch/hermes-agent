@@ -258,7 +258,8 @@ jobs:
           scripts/run_tests.sh --include-integration tests/e2e
         env:
           # Multi-process episodes (torture chamber, compaction kill -9,
-          # gateway liveness) legitimately run past the 300 s default.
+          # gateway liveness, delivery exactly-once through a real gateway,
+          # the cron virtual-clock soak) legitimately run past the 300 s default.
           HERMES_TEST_FILE_TIMEOUT: "900"
           # No automatic re-run of a failed file: the torture chamber and the
           # exactly-once/compaction suites are race detectors, and a rare

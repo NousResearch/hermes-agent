@@ -105,6 +105,52 @@ class TestSessionStatePersistence(unittest.TestCase):
 
 class TestKernelLifecycle(unittest.TestCase):
     @pytest.mark.linux_only
+    def test_cross_uid_rpc_listener_rejects_unexpected_peer_before_serving(self):
+        from tools.code_kernel import _UidFilteringSocket
+
+        unexpected = Mock()
+        unexpected.getsockopt.return_value = (
+            (123).to_bytes(4, sys.byteorder)
+            + (os.geteuid() + 1).to_bytes(4, sys.byteorder)
+            + (456).to_bytes(4, sys.byteorder)
+        )
+        expected = Mock()
+        expected.getsockopt.return_value = (
+            (789).to_bytes(4, sys.byteorder)
+            + os.geteuid().to_bytes(4, sys.byteorder)
+            + (456).to_bytes(4, sys.byteorder)
+        )
+        listener = Mock()
+        listener.accept.side_effect = [(unexpected, None), (expected, None)]
+
+        accepted, address = _UidFilteringSocket(listener, os.geteuid()).accept()
+
+        unexpected.close.assert_called_once_with()
+        self.assertIs(accepted, expected)
+        self.assertIsNone(address)
+
+    @pytest.mark.linux_only
+    def test_cross_uid_rpc_listener_closes_peer_when_credential_read_fails(self):
+        from tools.code_kernel import _UidFilteringSocket
+
+        unreadable = Mock()
+        unreadable.getsockopt.side_effect = OSError("peer disappeared")
+        expected = Mock()
+        expected.getsockopt.return_value = (
+            (789).to_bytes(4, sys.byteorder)
+            + os.geteuid().to_bytes(4, sys.byteorder)
+            + os.getegid().to_bytes(4, sys.byteorder)
+        )
+        listener = Mock()
+        listener.accept.side_effect = [(unreadable, None), (expected, None)]
+
+        accepted, address = _UidFilteringSocket(listener, os.geteuid()).accept()
+
+        unreadable.close.assert_called_once_with()
+        self.assertIs(accepted, expected)
+        self.assertIsNone(address)
+
+    @pytest.mark.linux_only
     def test_runner_imports_generated_tools_without_listing_staging_dir(self):
         from tools.code_kernel import KERNEL_RUNNER_SOURCE
 
@@ -334,6 +380,22 @@ class TestKernelLifecycle(unittest.TestCase):
         finally:
             kernel.teardown()
 
+    def test_stdout_reader_reports_non_object_frame_as_protocol_error(self):
+        from tools.code_kernel import SessionKernel, _stdout_reader
+
+        body = b"[1, 2]"
+        kernel = SessionKernel(("non-object-frame",))
+        kernel.sentinel = "@@FRAME@@"
+        kernel.proc = Mock()
+        kernel.proc.stdout.read1.side_effect = [
+            b"\n@@FRAME@@ " + str(len(body)).encode() + b"\n" + body,
+            b"",
+        ]
+
+        _stdout_reader(kernel)
+
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "protocol-error"})
+
     @pytest.mark.linux_only
     def test_configured_local_broker_failure_does_not_fall_back_to_popen(self):
         from tools.code_kernel import SessionKernel, _spawn
@@ -393,6 +455,22 @@ class TestKernelLifecycle(unittest.TestCase):
         server_sock.close.assert_called_once_with()
         assert kernel.broker_lease is None
         assert kernel.server_sock is None
+
+    @pytest.mark.linux_only
+    def test_broker_teardown_retires_output_handles_after_wait_timeout(self):
+        from tools.code_kernel import SessionKernel
+
+        proc = Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = subprocess.TimeoutExpired("local execution broker", 5)
+        proc.pid = 4321
+        kernel = SessionKernel(("broker-timeout",))
+        kernel.proc = proc
+        kernel.broker_lease = Mock()
+
+        kernel.teardown()
+
+        proc._close_owned_handles.assert_called_once_with()
 
     @pytest.mark.linux_only
     def test_broker_teardown_cleans_up_when_alive_check_gets_bad_reply(self):

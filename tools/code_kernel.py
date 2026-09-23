@@ -27,6 +27,7 @@ import queue
 import secrets
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -335,6 +336,7 @@ class SessionKernel:
         self.tmpdir = self.rpc_token = self.sentinel = ""
         self.sock_path: Optional[str] = None
         self.server_sock: Optional[socket.socket] = None
+        self.rpc_peer_uid: Optional[int] = None
         self.stop_event = threading.Event()
         self.death_pipe_w: Optional[int] = None
         self.broker_lease: Optional[socket.socket] = None
@@ -388,6 +390,7 @@ class SessionKernel:
                         "broker-owned kernel %s did not exit within teardown grace",
                         self.proc.pid,
                     )
+                    self.proc._close_owned_handles()
                 except BrokerError as exc:
                     logger.warning(
                         "broker-owned kernel %s returned an invalid exit reply: %s",
@@ -534,6 +537,31 @@ def shutdown_kernels_for_delegated_child(child_session_id: str) -> None:
 atexit.register(shutdown_all_kernels)
 
 
+class _UidFilteringSocket:
+    """Accept only Unix peers running as the configured broker uid."""
+
+    def __init__(self, server_sock: socket.socket, expected_uid: int):
+        self._server_sock = server_sock
+        self._expected_uid = expected_uid
+
+    def settimeout(self, timeout: float) -> None:
+        self._server_sock.settimeout(timeout)
+
+    def accept(self):
+        while True:
+            conn, address = self._server_sock.accept()
+            try:
+                _pid, uid, _gid = struct.unpack(
+                    "3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+                )
+            except OSError:
+                conn.close()
+                continue
+            if uid == self._expected_uid:
+                return conn, address
+            conn.close()
+
+
 def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
                  sandbox_tools: frozenset) -> None:
     """Serve tool RPC for the kernel's whole life: ``_rpc_server_loop`` returns on disconnect or
@@ -548,7 +576,10 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
             return tool_error("No active execute_code cell: this kernel has no cell authority installed.")
         return authority.dispatch(tool_name, tool_args)
     while not kernel.stop_event.is_set():
-        _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
+        server_sock = kernel.server_sock
+        if kernel.rpc_peer_uid is not None:
+            server_sock = _UidFilteringSocket(server_sock, kernel.rpc_peer_uid)
+        _rpc_server_loop(server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
                          max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
                          dispatch=_dispatch)
 
@@ -635,6 +666,8 @@ def _stdout_reader(kernel: SessionKernel) -> None:
                 body += more
             try:
                 payload = json.loads(body[:length].decode("utf-8", errors="replace"))
+                if not isinstance(payload, dict):
+                    raise ValueError("kernel response is not an object")
                 _materialize_inline_spill(kernel, payload)
                 kernel.response_q.put(payload)
             except ValueError:
@@ -992,6 +1025,7 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     from tools.code_execution_env import _build_child_env
     from tools.code_execution_tool import generate_hermes_tools_module
     broker_config = _local_exec_broker_config()
+    kernel.rpc_peer_uid = broker_config[1] if broker_config is not None else None
     kernel.tmpdir = tempfile.mkdtemp(
         prefix="hermes_kernel_",
         # no-tmp: ok — a broker child under another uid must traverse the parent directory.

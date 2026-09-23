@@ -2320,6 +2320,57 @@ def test_departed_peer_during_exit_frame_does_not_escape_connection_worker(
 
 
 @pytest.mark.linux_only
+def test_legacy_runner_observes_lease_eof_before_process_tree_cleanup(
+    monkeypatch, tmp_path
+):
+    broker = _load_broker()
+    root = _staging_root(tmp_path)
+    runner = _stage_runner(root, "runner.py", "pass\n")
+    events = []
+
+    class Connection:
+        def getsockopt(self, *_args):
+            return broker._UCRED.pack(os.getpid(), os.geteuid(), os.getegid())
+
+        def sendall(self, _payload):
+            pass
+
+        def close(self):
+            events.append("close")
+
+    class Process:
+        pid = 123
+
+    conn = Connection()
+    process = Process()
+    leases = broker._Leases()
+    assert leases.register(conn, threading.current_thread())
+    monkeypatch.setattr(
+        broker,
+        "_recv_request",
+        lambda *_args: (
+            str(runner),
+            False,
+            None,
+            None,
+            None,
+            {},
+            {},
+            False,
+            False,
+        ),
+    )
+    monkeypatch.setattr(broker, "_launch", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(broker, "_process_start_time", lambda _pid: 9876)
+    monkeypatch.setattr(broker, "_await_lease_end", lambda *_args: None)
+    monkeypatch.setattr(broker, "_terminate", lambda _proc: events.append("terminate"))
+
+    broker._serve_connection(conn, str(root), HANDSHAKE_TIMEOUT, leases)
+
+    assert events == ["close", "terminate"]
+
+
+@pytest.mark.linux_only
 def test_detached_launch_is_terminated_when_client_misses_acknowledgement(
     monkeypatch, tmp_path
 ):

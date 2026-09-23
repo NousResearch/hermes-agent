@@ -1450,6 +1450,8 @@ def _serve_connection(
     cleanup_armed = False
     registered = False
     exit_reply: int | None = None
+    legacy_completion = False
+    connection_closed = False
     # Descriptors the kernel installed on our behalf. One owner, one close, every path out.
     fds: list = []
     stdio_fds: dict[str, int] = {}
@@ -1476,6 +1478,7 @@ def _serve_connection(
                 detached,
                 scratch,
             ) = _recv_request(conn, fds, handshake_timeout)
+            legacy_completion = argv is None and not scratch
             indexes = list(stdio.values())
             if (
                 len(set(indexes)) != len(indexes)
@@ -1601,6 +1604,10 @@ def _serve_connection(
             if proc is not None and registered:
                 cleanup_owned_here = leases.claim(conn, proc)
                 if cleanup_owned_here:
+                    if legacy_completion:
+                        with contextlib.suppress(OSError):
+                            conn.close()
+                        connection_closed = True
                     _terminate(proc)
             if cleanup_owned_here and cleanup_dirs:
                 try:
@@ -1619,8 +1626,9 @@ def _serve_connection(
                         },
                     )
         finally:
-            with contextlib.suppress(OSError):
-                conn.close()
+            if not connection_closed:
+                with contextlib.suppress(OSError):
+                    conn.close()
             leases.finished(conn)
 
 

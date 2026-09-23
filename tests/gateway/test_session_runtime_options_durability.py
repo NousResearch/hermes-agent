@@ -211,9 +211,23 @@ def test_runner_rehydrates_all_runtime_options_live_wins(home):
 # -- C3-3 -------------------------------------------------------------------------------------
 
 
+def _drive_api_model_pick(runner, monkeypatch):
+    """The structured host API (#92185) picking gpt-5.5, with model resolution stubbed."""
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: ModelSwitchResult(
+        success=True, new_model=kw["raw_input"], target_provider="openai", api_key="sk-live-only",
+        api_mode="responses"))
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard.enrich_model_switch_warnings_for_gateway", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_selection_guards.combined_selection_warning", lambda *a, **k: None)
+    runner._resolve_session_agent_runtime = lambda **_kw: ("gpt-5.4", {"provider": "openai"})
+    return runner.apply_session_options(_source(), {"model": "gpt-5.5"})
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("picker", [False, True], ids=["typed", "picker"])
-async def test_model_commit_pops_armed_one_shot(home, picker):
+@pytest.mark.parametrize("surface", ["typed", "picker", "api"])
+async def test_model_commit_pops_armed_one_shot(home, monkeypatch, surface):
     store = _store(home)
     source = _source()
     session_key = store.get_or_create_session(source).session_key
@@ -223,8 +237,13 @@ async def test_model_commit_pops_armed_one_shot(home, picker):
     #    post-turn restore reverts memory to the pre-moa model while disk holds the pick.
     runner._claim_one_turn_restore(session_key)
     runner._session_state(session_key).conversation.model_override = {"provider": "moa", "model": "default"}
-    await runner._record_model_switch(
-        _switch_result(), _switch_ctx(session_key), source=source, one_turn=False, picker=picker)
+    if surface == "api":
+        result = await _drive_api_model_pick(runner, monkeypatch)
+        assert result["status"] == "accepted", result
+    else:
+        await runner._record_model_switch(
+            _switch_result(), _switch_ctx(session_key), source=source, one_turn=False,
+            picker=surface == "picker")
     conv = runner._session_state(session_key).conversation
     assert conv.one_turn_restore is None
     assert _live(runner, session_key)[0] == _durable(home, session_key)[0] == "gpt-5.5"

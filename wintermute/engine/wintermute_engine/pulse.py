@@ -157,7 +157,8 @@ def tick(ts: Optional[datetime] = None, force_wake: bool = False) -> Tuple[bool,
         lines += ["", "[TEXTURE]"] + render.texture(drives, ts)
         if target:
             lines += ["", "[CHANNEL]",
-                      f"Whatever you answer this pulse reaches {target}. [SILENT] keeps it inside."]
+                      f"Whatever you answer this pulse reaches {target}. [SILENT] keeps it inside.",
+                      "wintermute_send reaches anyone else."]
         store.log_event("pulse", f"Woke ({'; '.join(reasons)}).", ts)
         return True, sanitize("\n".join(lines))
 

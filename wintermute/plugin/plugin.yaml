@@ -7,6 +7,7 @@ provides_hooks:
   - post_llm_call
   - post_tool_call
 provides_tools:
+  - wintermute_send
   - wintermute_set_wake
   - wintermute_await_reply
   - wintermute_note_peer

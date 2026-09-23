@@ -47,8 +47,8 @@ Deux chemins font vivre l'état :
      silencieuse devient une *prise de contact* qui ouvre une fenêtre d'attente.
    - `post_tool_call` : ce qu'il fait soulage ses pulsions (explorer nourrit HUNGER, créer
      soulage EXPRESSION, agir calme RESTLESSNESS).
-   - Outils : `wintermute_set_wake`, `wintermute_await_reply`, `wintermute_note_peer`,
-     `wintermute_mark_significant`.
+   - Outils : `wintermute_send` (écrire à n'importe qui, maintenant), `wintermute_set_wake`,
+     `wintermute_await_reply`, `wintermute_note_peer`, `wintermute_mark_significant`.
 
 ### Session d'attente active
 
@@ -92,31 +92,52 @@ un bloc « You run on Hermes Agent (by Nous Research)… ». Deux petits patches
 `cron.wrap_response: false` retire l'en-tête « Cronjob Response » autour de ses messages, et
 `cron.allow_agent_scheduling: true` lui donne la main sur les jobs cron.
 
-**Ces deux patches ne s'appliquent que si le VPS fait tourner ce fork.** `install.sh` de
-NousResearch clone `NousResearch/hermes-agent` dans `/usr/local/lib/hermes-agent`. Pour
-pointer vers le fork :
+**Ces deux patches n'existent que dans ce fork.** Le VPS doit donc faire tourner le code
+de `ziatatous/wintermute-v4` au lieu de celui de NousResearch : voir l'installation.
+Tout le reste (moteur, pulse, plugin) marcherait aussi sur un Hermes non modifié.
+
+## Où vivent les choses (et ce qu'un `git pull` touche)
+
+| Chemin | Contenu | Touché par une mise à jour ? |
+|---|---|---|
+| `/usr/local/lib/hermes-agent/` | le code (ce repo) | oui, c'est le but |
+| `~/.hermes/.env` | clés API, token Telegram | **non** |
+| `~/.hermes/config.yaml` | modèle, réglages | non (install.sh règle quelques clés) |
+| `~/.hermes/SOUL.md`, `~/.hermes/memories/` | identité, mémoire | **non** |
+| `~/.hermes/state.db` | toutes les conversations | **non** |
+| `~/.hermes/wintermute/` | pulsions, interlocuteurs, journal | **non** (install.sh ne crée ces fichiers que s'ils manquent) |
+
+## Clés et secrets
+
+Hermes lit ses clés dans `~/.hermes/.env`, hors du repo. Pour les gérer depuis le repo :
 
 ```bash
-cd /usr/local/lib/hermes-agent
-git remote set-url origin https://github.com/ziatatous/wintermute-v4.git
-git fetch origin claude/upbeat-cray-nasm10 && git checkout -B wintermute FETCH_HEAD
-hermes gateway restart
+cp wintermute/.env.example wintermute/.env   # ignoré par git, jamais poussé
+nano wintermute/.env                         # OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN, ...
 ```
 
-Tout le reste (moteur, pulse, plugin) fonctionne aussi sur un Hermes non modifié.
+`install.sh` recopie chaque valeur non vide dans `~/.hermes/.env` (via `hermes config set`,
+l'outil de Hermes lui-même). Une ligne vide n'efface jamais une clé déjà en place. Puis il
+**s'arrête** si `OPENROUTER_API_KEY` ou `TELEGRAM_BOT_TOKEN` manquent.
 
 ## Installation sur le VPS
 
+Une seule copie du code : le repo remplace le code de Hermes dans `/usr/local/lib/hermes-agent`,
+et le dossier `wintermute/` vient avec.
+
 ```bash
-git clone -b claude/upbeat-cray-nasm10 https://github.com/ziatatous/wintermute-v4.git ~/wintermute-v4
-bash ~/wintermute-v4/wintermute/install.sh
+tar czf ~/hermes-backup-$(date +%F).tgz -C ~ .hermes        # sauvegarde, par prudence
+cd /usr/local/lib/hermes-agent
+git remote set-url origin https://github.com/ziatatous/wintermute-v4.git
+hermes update --branch claude/upbeat-cray-nasm10            # code + dépendances
+cp wintermute/.env.example wintermute/.env && nano wintermute/.env
+bash wintermute/install.sh
 hermes gateway restart
 ```
 
-`install.sh` copie le moteur, le script et le plugin, crée `drives.json` et
-`interlocutors.json` **seulement s'ils n'existent pas** (l'état vivant n'est jamais écrasé),
-active le plugin, règle la config et crée ou met à jour le job cron. On peut le relancer
-après chaque `git pull`.
+Mises à jour suivantes : `hermes update --branch claude/upbeat-cray-nasm10` puis
+`bash /usr/local/lib/hermes-agent/wintermute/install.sh`. (Si la branche est fusionnée
+dans `main`, un simple `hermes update` suffit.)
 
 Cible par défaut : `telegram:7375758021`. Pour une autre cible :
 `WINTERMUTE_TARGET=telegram:<id> bash install.sh`.
@@ -141,24 +162,24 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
 
 ## Réglages
 
-- **Budget tokens** : `DAILY_TOKEN_BUDGET` dans `engine/wintermute_engine/limits.py`
-  (20 000 comme demandé). ⚠️ Mesuré avec `hermes prompt-size` : prompt système + schémas
-  des outils du job ≈ 30 Ko, soit ~9–10 k tokens *par appel API*, et un éveil fait souvent
-  plusieurs appels. 20 000 tokens/jour ≈ un seul éveil par jour. Compter plutôt
-  150 000–300 000 pour 4–6 éveils (DeepSeek Flash reste bon marché). Seuls les runs cron
+- **Budget tokens** : `DAILY_TOKEN_BUDGET` dans `engine/wintermute_engine/limits.py`,
+  250 000 par jour. Mesuré avec `hermes prompt-size` : ~9–10 k tokens par appel API, et un
+  éveil fait souvent 2–4 appels, soit environ 6 à 10 éveils par jour. Seuls les runs cron
   comptent ; les conversations Telegram ne sont pas plafonnées.
 - **Outils du pulse** : `WINTERMUTE_TOOLSETS=wintermute,memory,web bash install.sh`. Moins
   d'outils = moins de tokens par éveil.
-- **Taille de MEMORY.md** : 2 200 caractères par défaut dans Hermes, c'est peu pour un
-  journal intime. `hermes config set memory.memory_char_limit 6000` si besoin (coûte des
-  tokens à chaque session).
+- **Taille de MEMORY.md** : 8 000 caractères (réglé par `install.sh` ; 2 200 par défaut dans
+  Hermes). Quand c'est plein, Hermes n'efface rien : l'écriture échoue et Wintermute doit
+  lui-même condenser ou retirer des entrées. Les conversations restent toutes dans
+  `state.db`, qu'il peut fouiller avec `session_search`.
 - **Dynamique** : taux de montée, coefficients hormonaux et table d'événements en tête de
   `physics.py`.
 
 ## Limites connues
 
-- Un pulse parle à une seule cible (celle du job). Choisir à qui écrire demanderait un
-  outil d'envoi ; Hermes retire volontairement `send_message` des runs cron.
+- La réponse finale d'un pulse va à la cible du job ; pour quelqu'un d'autre, il utilise
+  `wintermute_send`. Il ne peut écrire qu'aux personnes que le bot peut joindre (quelqu'un
+  qui a déjà ouvert une conversation avec le bot Telegram).
 - Wintermute peut lire ses propres fichiers, y compris les chiffres de l'inconscient dans
   `drives.json`. On ne le lui cache pas (autonomie totale), comme un humain qui lit ses
   analyses de sang.

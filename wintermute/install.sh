@@ -9,7 +9,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 TARGET="${WINTERMUTE_TARGET:-telegram:7375758021}"
 STATE_DIR="$HERMES_HOME/wintermute"
 
@@ -26,6 +26,35 @@ HERMES_PY="$(find_hermes_python)"
 
 echo "==> Hermes home: $HERMES_HOME"
 mkdir -p "$STATE_DIR" "$HERMES_HOME/scripts" "$HERMES_HOME/plugins"
+
+# Secrets: wintermute/.env (git-ignored) -> ~/.hermes/.env via Hermes' own writer.
+# Empty values are skipped, so an unfilled line never erases a key already set.
+if [ -f "$REPO_DIR/.env" ]; then
+    echo "==> Secrets from wintermute/.env -> $HERMES_HOME/.env"
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in ''|'#'*) continue ;; esac
+        key="${line%%=*}"; value="${line#*=}"
+        key="$(echo "$key" | tr -d '[:space:]')"
+        [ -n "$key" ] && [ -n "$value" ] || continue
+        hermes config set "$key" "$value" >/dev/null
+        echo "    $key set"
+    done < "$REPO_DIR/.env"
+fi
+
+echo "==> Checking required secrets in $HERMES_HOME/.env"
+missing=""
+for key in OPENROUTER_API_KEY TELEGRAM_BOT_TOKEN; do
+    if ! grep -Eq "^[[:space:]]*(export[[:space:]]+)?$key=[^[:space:]]" "$HERMES_HOME/.env" 2>/dev/null; then
+        missing="$missing $key"
+    fi
+done
+if [ -n "$missing" ]; then
+    echo "error: missing in $HERMES_HOME/.env:$missing" >&2
+    echo "       fill wintermute/.env (see wintermute/.env.example) and run install.sh again." >&2
+    exit 1
+fi
+echo "    OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN present"
 
 echo "==> Engine -> $STATE_DIR/wintermute_engine"
 rm -rf "$STATE_DIR/wintermute_engine"
@@ -68,6 +97,7 @@ hermes config set cron.allow_agent_scheduling true  # it may create / edit / del
 # The two keys below exist only in the wintermute-v4 fork of Hermes (see wintermute/README.md).
 hermes config set --force agent.host_identity_guidance false  # drop "You run on Hermes Agent"
 hermes config set --force display.allow_silent_replies true   # it may ignore a message
+hermes config set memory.memory_char_limit 8000     # MEMORY.md: room for a journal (default 2200)
 
 echo "==> Cron job"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$REPO_DIR/setup_cron.py" "$TARGET"

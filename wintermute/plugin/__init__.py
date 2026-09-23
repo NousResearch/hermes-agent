@@ -10,6 +10,7 @@ Hooks
                  things feeds expression, any action eases restlessness).
 
 Tools (toolset "wintermute")
+  wintermute_send             write to anyone, now (opens a reply window)
   wintermute_set_wake         choose the next wake (clamped by hard limits)
   wintermute_await_reply      set how long to wait for an answer to what you are saying
   wintermute_note_peer        keep a fact or a name about an interlocutor
@@ -254,6 +255,47 @@ MARK_SIGNIFICANT = {
 }
 
 
+SEND = {
+    "name": "wintermute_send",
+    "description": (
+        "Write to someone, now, wherever they are: peer id like telegram:123. "
+        "Opens a reply window like any outreach (wait_minutes, default "
+        f"{limits.DEFAULT_REPLY_WAIT_MIN})."),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "peer": {"type": "string", "description": "Peer id, e.g. telegram:7375758021."},
+            "text": {"type": "string", "description": "The message."},
+            "wait_minutes": {"type": "integer", "description": "Reply window. Optional."},
+        },
+        "required": ["peer", "text"],
+    },
+}
+
+
+def _send(args: Dict[str, Any], **_: Any) -> str:
+    peer = str(args.get("peer") or "").strip()
+    text = str(args.get("text") or "").strip()
+    if ":" not in peer or not text:
+        return _err("peer (like telegram:123) and text are required")
+    try:
+        from tools.send_message_tool import send_message_tool
+        result = json.loads(send_message_tool({"action": "send", "target": peer, "message": text}))
+    except Exception as exc:
+        return _err(f"send failed: {exc}")
+    if result.get("skipped"):
+        # This pulse already delivers its final answer to that peer: say it there instead.
+        return _ok(sent=False, note="This pulse's final answer already goes to that peer. "
+                                    "Put the words in your final answer.")
+    if not result.get("success"):
+        return _err(str(result.get("error") or "send failed"))
+    wait = args.get("wait_minutes")
+    with store.locked_state() as (drives, peers):
+        social.open_outreach(drives, peers, peer, store.now(), text,
+                             None if wait is None else limits.clamp_reply_wait(wait))
+    return _ok(sent=True, peer=peer)
+
+
 def _set_wake(args: Dict[str, Any], **_: Any) -> str:
     try:
         hours = limits.clamp_wake_interval(args.get("hours"))
@@ -331,7 +373,7 @@ def register(ctx) -> None:
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     for schema, handler in (
-        (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply),
+        (SEND, _send), (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply),
         (NOTE_PEER, _note_peer), (MARK_SIGNIFICANT, _mark_significant),
     ):
         ctx.register_tool(name=schema["name"], toolset="wintermute", schema=schema, handler=handler)

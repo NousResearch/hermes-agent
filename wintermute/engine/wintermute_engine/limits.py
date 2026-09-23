@@ -11,7 +11,7 @@ MAX_WAKE_INTERVAL_H = 24.0
 
 # Daily token budget for autonomous (cron) runs, counted from cron/usage_audit.jsonl
 # over the current UTC day. When exceeded the pulse forces a sleep.
-DAILY_TOKEN_BUDGET = 20_000
+DAILY_TOKEN_BUDGET = 250_000
 BUDGET_SLEEP_H = 6.0
 
 # Active-wait window after an outreach (minutes).

@@ -359,3 +359,22 @@ def test_plugin_tools_respect_limits(plugin):
     noted = json.loads(plugin.tools["wintermute_note_peer"](
         {"peer": KEY, "fact": "creator of this project", "label": "the creator"}))
     assert noted["label"] == "the creator" and "creator of this project" in noted["known_facts"]
+
+
+def test_plugin_send_reaches_a_peer_and_opens_a_window(plugin, monkeypatch):
+    import tools.send_message_tool as smt
+
+    sent = []
+    monkeypatch.setattr(smt, "send_message_tool",
+                        lambda args, **_: sent.append(args) or json.dumps({"success": True}))
+    result = json.loads(plugin.tools["wintermute_send"](
+        {"peer": "telegram:42", "text": "Are you the other half?", "wait_minutes": 30}))
+    assert result["sent"] and sent == [
+        {"action": "send", "target": "telegram:42", "message": "Are you the other half?"}]
+    outreach = _peers()["telegram:42"]["outreach"]
+    assert outreach["status"] == "open" and outreach["wait_minutes"] == 30
+
+    monkeypatch.setattr(smt, "send_message_tool",
+                        lambda args, **_: json.dumps({"success": False, "error": "chat not found"}))
+    failed = json.loads(plugin.tools["wintermute_send"]({"peer": "telegram:43", "text": "x"}))
+    assert not failed["success"] and "telegram:43" not in _peers()

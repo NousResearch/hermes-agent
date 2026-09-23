@@ -28,7 +28,7 @@
     "last_pulse": null,
     "last_tick": null,
     "next_pulse_in_hours": 4,
-    "daily_token_budget": 20000,
+    "daily_token_budget": 250000,
     "tokens_used_today": 0,
     "last_budget_reset": null,
     "forced_sleep_until": null,

@@ -415,7 +415,7 @@ async def read_managed_file(request: Request, path: str):
     policy, target, display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     size = _managed_file_size(target, max_bytes)
     with _io_errors("File is not readable", "Could not read file"):
-        encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+        encoded = await asyncio.to_thread(_read_base64_file, target)
     return {
         "name": target.name,
         "path": display_path,
@@ -639,7 +639,9 @@ async def fs_read_text(path: str):
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    data = _fs_read_bytes(target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES))
+    data = await asyncio.to_thread(
+        _fs_read_bytes, target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES),
+    )
     return {
         "binary": _fs_looks_binary(data[:4096]),
         "byteSize": st.st_size,
@@ -719,7 +721,9 @@ async def fs_read_data_url(
     target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
+    encoded = await asyncio.to_thread(
+        lambda: base64.b64encode(_fs_read_bytes(target)).decode("ascii"),
+    )
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 

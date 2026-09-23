@@ -15,7 +15,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 from gateway.run import GatewayRunner, _parse_session_key
 
 
@@ -858,3 +860,117 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+# ---------------------------------------------------------------------------
+# Webhook one-shot completion routing after the delivery session closes
+# ---------------------------------------------------------------------------
+
+
+_WEBHOOK_ROUTE = "pump-pr-events"
+_WEBHOOK_DELIVERY_ID = "0a1b2c3d-4e5f-6789-abcd-ef0123456789"
+_WEBHOOK_EXPECTED_KEY = (
+    "agent:main:webhook:webhook:webhook:"
+    f"{_WEBHOOK_ROUTE}:{_WEBHOOK_DELIVERY_ID}:webhook:{_WEBHOOK_ROUTE}"
+)
+
+
+def _webhook_adapter():
+    adapter = WebhookAdapter(PlatformConfig(
+        enabled=True,
+        extra={"host": "127.0.0.1", "port": 0, "routes": {}, "secret": _INSECURE_NO_AUTH},
+    ))
+    adapter.set_message_handler(AdmittingHandler())
+    adapter._start_session_processing = lambda event, session_key: True
+    return adapter
+
+
+def _closed_webhook_runner(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = _webhook_adapter()
+    runner.adapters[Platform.WEBHOOK] = adapter
+    runner.session_store._entries.clear()
+    runner._session_sources.clear()
+    return runner, adapter
+
+
+def _webhook_delivery_source(adapter):
+    return adapter.build_source(
+        chat_id=f"webhook:{_WEBHOOK_ROUTE}:{_WEBHOOK_DELIVERY_ID}",
+        chat_name=f"webhook/{_WEBHOOK_ROUTE}",
+        chat_type="webhook",
+        user_id=f"webhook:{_WEBHOOK_ROUTE}",
+        user_name=_WEBHOOK_ROUTE,
+    )
+
+
+def _webhook_watch_event(session_key, **fields):
+    evt = {
+        "type": "watch_match",
+        "session_id": "proc_webhook_bg",
+        "session_key": session_key,
+        "platform": "webhook",
+        "user_id": f"webhook:{_WEBHOOK_ROUTE}",
+        "user_name": _WEBHOOK_ROUTE,
+        "pattern": "DONE",
+        "command": "sleep 30",
+        "output": "DONE\n",
+    }
+    evt.update(fields)
+    return evt
+
+
+@pytest.mark.asyncio
+async def test_closed_webhook_watch_event_keeps_delivery_identity_or_acks(monkeypatch, tmp_path):
+    """A background watch/completion for a closed one-shot webhook delivery must
+    not requeue forever after ``_parse_session_key`` strips colon-bearing ids.
+
+    Production: expected
+    ``agent:main:webhook:webhook:webhook:pump-pr-events:<delivery>:webhook:pump-pr-events``,
+    rebuilt ``agent:main:webhook:webhook:webhook:webhook:pump-pr-events``, then
+    ``Dropping internally routed event`` every drain.
+    """
+    runner, adapter = _closed_webhook_runner(monkeypatch, tmp_path)
+    source = _webhook_delivery_source(adapter)
+    expected_key = adapter._source_session_key(source)
+    assert expected_key == _WEBHOOK_EXPECTED_KEY
+    assert _parse_session_key(expected_key) == {
+        "platform": "webhook",
+        "chat_type": "webhook",
+        "chat_id": "webhook",
+    }
+
+    inbound = []
+    original_handle = adapter.handle_message
+
+    async def capture_handle(event):
+        inbound.append(event)
+        return await original_handle(event)
+
+    adapter.handle_message = capture_handle
+
+    completion_queue = queue.Queue()
+    completion_queue.put(_webhook_watch_event(expected_key))
+    await runner._drain_watch_notifications(completion_queue)
+
+    assert completion_queue.empty()
+    if inbound:
+        synth_event = inbound[0]
+        assert synth_event.internal is True
+        assert adapter._event_session_key(synth_event) == expected_key
+        assert synth_event.metadata.get("gateway_session_key") == expected_key
+        assert synth_event._gateway_accepted is True
+    else:
+        rebuilt = runner._build_process_event_source(_webhook_watch_event(expected_key))
+        assert rebuilt is None or adapter._source_session_key(rebuilt) != expected_key
+
+    mismatched = MessageEvent(
+        text="ordinary input",
+        message_type=MessageType.TEXT,
+        source=source,
+        internal=True,
+        metadata={"gateway_session_key": "agent:main:webhook:webhook:webhook:other"},
+    )
+    await original_handle(mismatched)
+    assert mismatched._gateway_accepted is not True
+    adapter._message_handler.assert_not_awaited()

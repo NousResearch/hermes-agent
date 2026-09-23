@@ -158,23 +158,26 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     """
     if not _discovered:
         _discover_providers()
-    layer = _home_layer()
-    canonical = layer.aliases.get(name) or _ALIASES.get(name, name)
-    profile = layer.registry.get(canonical) or _REGISTRY.get(canonical)
-    # A newly installed provider is normally first requested by its new name.
-    # Refresh that miss immediately so installs remain usable without waiting
-    # for the periodic stamp check, while known-provider lookups stay hot.
-    # ``custom:<route>`` names resolve to the generic profile below on a miss, and
-    # the picker asks for them once per model, so they wait for the periodic check.
+    layer, home, key = _bound_home_layer()
+    checked = _refresh_home_layer(layer, home, key)
+
+    def lookup(n: str) -> ProviderProfile | None:
+        canonical = layer.aliases.get(n) or _ALIASES.get(n, n)
+        return layer.registry.get(canonical) or _REGISTRY.get(canonical)
+
+    profile = lookup(name)
+    # A newly installed provider is normally first requested by its new name, so a miss
+    # re-checks the plugin dirs now (unless this call just did) instead of waiting for the
+    # periodic check. ``custom:<route>`` misses resolve to the generic profile below and the
+    # picker asks for them once per model, so they wait for the periodic check.
     is_custom_route = isinstance(name, str) and name.lower().startswith("custom:")
-    if profile is None and not is_custom_route:
-        layer = _home_layer(force_stamp_check=True)
-        canonical = layer.aliases.get(name) or _ALIASES.get(name, name)
-        profile = layer.registry.get(canonical) or _REGISTRY.get(canonical)
+    if profile is None and not is_custom_route and not checked:
+        if _refresh_home_layer(layer, home, key, force=True):
+            profile = lookup(name)
     # Named custom routes share the generic wire policy unless a plugin
     # explicitly registered that route. Other names retain exact lookup.
     if profile is None and is_custom_route:
-        profile = layer.registry.get("custom") or _REGISTRY.get("custom")
+        profile = lookup("custom")
     return profile
 
 
@@ -228,6 +231,12 @@ def list_providers() -> list[ProviderProfile]:
 
 def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
     """The layer for the home bound right now, importing plugin dirs it has not seen yet."""
+    layer, home, key = _bound_home_layer()
+    _refresh_home_layer(layer, home, key, force=force_stamp_check)
+    return layer
+
+
+def _bound_home_layer() -> tuple[_HomeLayer, Path | None, str]:
     try:
         from hermes_constants import get_hermes_home, hermes_home_key
 
@@ -239,24 +248,29 @@ def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
         layer = _HOME_LAYERS.get(key)
         if layer is None:
             layer = _HOME_LAYERS[key] = _HomeLayer()
-    # Stamps are read before the scan: a plugin that lands mid-scan changes them and the next
-    # check picks it up. Checking on a short cadence keeps a newly installed plugin discoverable
-    # without making every model lookup perform two filesystem stats.
+    return layer, home, key
+
+
+def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force: bool = False) -> bool:
+    """Re-stat the layer's plugin dirs when due (or *force*d); True when it stat'ed this call.
+
+    Stamps are read before the scan: a plugin that lands mid-scan changes them and the next
+    check picks it up. Checking on a short cadence keeps a newly installed plugin discoverable
+    without making every model lookup perform two filesystem stats.
+    """
     now = time.monotonic()
-    if (
-        home is not None
-        and (
-            force_stamp_check
-            or layer.stamp_checked_at is None
-            or now - layer.stamp_checked_at >= _PLUGIN_DIR_STAMP_TTL_SECONDS
-        )
+    if home is None or not (
+        force
+        or layer.stamp_checked_at is None
+        or now - layer.stamp_checked_at >= _PLUGIN_DIR_STAMP_TTL_SECONDS
     ):
-        stamps = _plugin_dir_stamps(home)
-        if stamps != layer.stamps:
-            _scan_home_layer(layer, key)
-            layer.stamps = stamps
-        layer.stamp_checked_at = now
-    return layer
+        return False
+    stamps = _plugin_dir_stamps(home)
+    if stamps != layer.stamps:
+        _scan_home_layer(layer, key)
+        layer.stamps = stamps
+    layer.stamp_checked_at = now
+    return True
 
 
 def _plugin_dir_stamps(home: Path) -> tuple:

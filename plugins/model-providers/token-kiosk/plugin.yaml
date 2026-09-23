@@ -1,0 +1,5 @@
+name: token-kiosk-provider
+kind: model-provider
+version: 1.0.0
+description: Token Kiosk
+author: Nous Research

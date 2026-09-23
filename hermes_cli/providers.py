@@ -82,6 +82,10 @@ HERMES_OVERLAYS: dict[str, HermesOverlay] = {
                                           base_url_override="https://api.tokenfactory.nebius.com/v1",
                                           base_url_env_var="NEBIUS_BASE_URL"),
     "ollama-cloud": HermesOverlay(base_url_override="https://ollama.com/v1", base_url_env_var="OLLAMA_BASE_URL"),
+    "token-kiosk": HermesOverlay(transport="openai_chat", is_aggregator=True,
+                                 extra_env_vars=("TOKEN_KIOSK_API_KEY",),
+                                 base_url_override="https://agent-router.gaib.ai/v1",
+                                 base_url_env_var="TOKEN_KIOSK_BASE_URL"),
     # Azure Foundry serves OpenAI- and Anthropic-style endpoints; transport comes from model.api_mode.
     "azure-foundry": HermesOverlay(base_url_env_var="AZURE_FOUNDRY_BASE_URL"),
     "bedrock": HermesOverlay(transport="bedrock_converse", auth_type="aws_sdk"),
@@ -135,6 +139,7 @@ _ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     # Local OpenAI-compatible servers route through the generic "custom" provider,
     # matching hermes_cli.auth and hermes_cli.models so every layer agrees. Issue #62213.
     "custom": ("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
+    "token-kiosk": ("tokenkiosk", "token_kiosk", "tokenrouter"),
 }
 ALIASES: dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
 
@@ -145,7 +150,7 @@ _LABEL_OVERRIDES: dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
     "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
-    "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
+    "nebius-token-factory": "Nebius Token Factory", "token-kiosk": "Token Kiosk", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "custom": "Custom endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }

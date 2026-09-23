@@ -407,6 +407,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("bedrock", "AWS Bedrock", "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ("azure-foundry", "Azure Foundry", "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ("ai-gateway", "Vercel AI Gateway", "Vercel AI Gateway (Multi-model aggregator)"),
+    ("token-kiosk", "Token Kiosk", "Token Kiosk (Multi-model AI router)"),
     ("qwen-oauth", "Qwen OAuth (Portal)", "Qwen OAuth (Reuses local Qwen CLI login)"),
 )]
 
@@ -645,6 +646,7 @@ _PROVIDER_ALIASES = _CatalogAliases((
     # aliases stay unmapped: they are the managed local runtime's picker id, and the model
     # validator must reach its staged-library branch before the custom one.
     ("local", "custom"), ("vllm", "custom"),
+    ("tokenkiosk", "token-kiosk"), ("token_kiosk", "token-kiosk"), ("tokenrouter", "token-kiosk"),
 ))
 
 

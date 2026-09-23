@@ -60,7 +60,7 @@ registry.register(
 
 All handlers must return JSON strings. Use `get_hermes_home()` for paths,
 never hardcode `~/.hermes`. For custom/local-only tools, write a plugin in
-`~/.hermes/plugins/` instead of editing core — see the developer docs.
+`${HERMES_HOME:-~/.hermes}/plugins/` instead of editing core — see the developer docs.
 
 ### Adding a Slash Command
 

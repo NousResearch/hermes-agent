@@ -653,9 +653,10 @@ desktop_product_present() {
     # stale instead of removing them.
     # electron-builder suffixes the output dir with the arch on every non-x64
     # target (linux-arm64-unpacked, mac-arm64, win-arm64-unpacked), so the x64
-    # names alone miss a desktop build on ARM64 Linux/Windows (#94703).
+    # names alone miss a desktop build on ARM64 Linux/Windows (#94703). An
+    # explicit-arch mac build lands in mac-x64 alongside the legacy mac layout.
     local release="$INSTALL_DIR/apps/desktop/release" dir
-    for dir in linux-unpacked linux-arm64-unpacked mac mac-arm64 \
+    for dir in linux-unpacked linux-arm64-unpacked mac mac-x64 mac-arm64 \
                win-unpacked win-ia32-unpacked win-arm64-unpacked; do
         [ -d "$release/$dir" ] && return 0
     done

@@ -998,7 +998,7 @@ function Test-DesktopProductPresent {
     # names alone miss a desktop build on ARM64 (#94703).
     $release = Join-Path $InstallDir "apps/desktop/release"
     foreach ($candidate in @("win-unpacked", "win-ia32-unpacked", "win-arm64-unpacked",
-                             "linux-unpacked", "linux-arm64-unpacked", "mac", "mac-arm64")) {
+                             "linux-unpacked", "linux-arm64-unpacked", "mac", "mac-x64", "mac-arm64")) {
         if (Test-Path (Join-Path $release $candidate)) { return $true }
     }
     return $false

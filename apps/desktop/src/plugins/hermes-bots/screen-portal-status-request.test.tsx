@@ -65,7 +65,10 @@ afterEach(() => vi.restoreAllMocks())
 it('a portal status reply superseded by a newer status request does not move running/display backwards', async () => {
   let reply: (status: DisplayStatus) => void = () => undefined
   vi.mocked(host.requestProfile).mockImplementation(
-    () => new Promise<DisplayStatus>(resolve => { reply = resolve }) as Promise<never>
+    () =>
+      new Promise<DisplayStatus>(resolve => {
+        reply = resolve
+      }) as Promise<never>
   )
 
   const view = renderHook(() => useScreenPortalState(bot))

@@ -1694,11 +1694,35 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
     return False, blocked_doc, "", f"{marker} {_pf_reason}"
 
 
+def _degrade_stale_pin_to_global(requested, cfg: dict, model: str):
+    """Runtime for a stale same-class pin from the still-resolving global config, else None.
+
+    A pin orphaned by a provider rename (e.g. ``custom`` requalified to ``custom:<host>``) must
+    not hard-block the job when the persisted ``model.provider`` still resolves and is the same
+    provider class; a deliberately different-class pin still fails loud (#118621). Shared by
+    ``_resolve_job_runtime`` and the pre-run provider-key check so the two cannot drift."""
+    if not requested:
+        return None
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    global_provider = str(model_cfg.get("provider") or "").strip()
+    if not global_provider:
+        return None
+    if requested.split(":", 1)[0] != global_provider.split(":", 1)[0]:
+        return None
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    try:
+        return resolve_runtime_provider(requested=None, target_model=model)
+    except Exception:
+        return None
+
+
 def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
     """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
     ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
     a paid primary model). Provider precedence: per-job pin > cron.model_provider > persisted
-    global config (None lets resolve_runtime_provider read it)."""
+    global config (None lets resolve_runtime_provider read it). A pin that no longer resolves but
+    matches the global provider's class (e.g. stale ``custom`` vs requalified ``custom:<host>``)
+    degrades to the global config instead of blocking the job; a different-class pin fails loud."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
     from hermes_cli.auth import AuthError
@@ -1759,6 +1783,14 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                 return runtime, fb_model
             except Exception as fb_exc:
                 logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
+        # Degradation rung (mirror of the pre-run provider-key check): a stale same-class pin
+        # self-heals onto the global config instead of blocking the job (#118621).
+        degraded = _degrade_stale_pin_to_global(requested, jc.cfg, model)
+        if degraded is not None:
+            logger.warning(
+                "Job '%s': pinned provider '%s' no longer resolves; using the global provider",
+                job_id, requested)
+            return degraded, model
         raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
 

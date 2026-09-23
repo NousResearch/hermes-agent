@@ -88,3 +88,32 @@ def test_close_hard_closes_shared_client_when_idle(retired):
     assert client.close_calls == 1
     assert retired == []
     assert agent.client is None
+
+
+def test_close_retires_shared_client_while_shared_bracket_active(retired):
+    """Auxiliary requests (summaries, codex direct streams) bracket with _shared_client_bracket."""
+    client = _FakeSharedClient()
+    agent = _build_agent(client)
+
+    with agent._shared_client_bracket(reason="test_summary"):
+        assert agent._shared_openai_client_in_use() is True
+        agent.close()
+        assert client.close_calls == 0, "in-flight summary still owns the pool's FDs"
+        assert retired[0][1] == "agent_close_in_flight"
+        assert agent.client is None
+
+    assert getattr(agent, "_shared_client_in_flight", 0) == 0
+
+
+def test_shared_client_bracket_releases_on_exception():
+    """Bracket count must not leak on failure."""
+    client = _FakeSharedClient()
+    agent = _build_agent(client)
+
+    with pytest.raises(RuntimeError):
+        with agent._shared_client_bracket(reason="failing_call"):
+            assert getattr(agent, "_shared_client_in_flight", 0) == 1
+            raise RuntimeError("stream broke")
+
+    assert getattr(agent, "_shared_client_in_flight", 0) == 0
+    assert agent._shared_openai_client_in_use() is False

@@ -6,7 +6,7 @@
 import logging
 import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from typing import Any, Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
@@ -214,13 +214,32 @@ class ClientLifecycleMixin:
         except Exception as exc:
             logger.debug("Shared OpenAI client retire failed (%s) %s error=%s", reason, self._client_log_context(), exc)
 
+    @contextmanager
+    def _shared_client_bracket(self, *, reason: str = ""):
+        """Mark the shared primary OpenAI client as in-use for in-place requests (#107475)."""
+        lock = self._openai_client_lock() if hasattr(self, "_openai_client_lock") else None
+        if lock is not None:
+            with lock:
+                setattr(self, "_shared_client_in_flight", getattr(self, "_shared_client_in_flight", 0) + 1)
+        else:
+            setattr(self, "_shared_client_in_flight", getattr(self, "_shared_client_in_flight", 0) + 1)
+        try:
+            yield
+        finally:
+            if lock is not None:
+                with lock:
+                    setattr(self, "_shared_client_in_flight", max(0, getattr(self, "_shared_client_in_flight", 1) - 1))
+            else:
+                setattr(self, "_shared_client_in_flight", max(0, getattr(self, "_shared_client_in_flight", 1) - 1))
+
     def _shared_openai_client_in_use(self) -> bool:
         """True while a provider request that may still hold the shared client is running on this agent.
 
         The shared client's ``in_use`` cannot be a plain flag (many threads share one client), so it is
-        derived from the two request brackets: the turn path sets ``_model_request_active`` around its
-        provider call, and the inline (cron/delegated) path registers ``_active_request_abort`` until the
-        call settles. Either marker means a worker thread still owns the pool's FDs. #107475
+        derived from the request brackets: the turn path sets ``_model_request_active`` around its
+        provider call, summary/direct streams bracket with ``_shared_client_bracket``, and the inline
+        (cron/delegated) path registers ``_active_request_abort`` until the call settles. Either marker
+        means a worker thread still owns the pool's FDs. #107475
         """
         try:
             active = getattr(self, "_model_request_active", None)
@@ -228,6 +247,8 @@ class ClientLifecycleMixin:
                 return True
         except Exception:
             pass
+        if getattr(self, "_shared_client_in_flight", 0) > 0:
+            return True
         return callable(getattr(self, "_active_request_abort", None))
 
     def _close_shared_openai_client(self, client: Any, *, reason: str) -> None:

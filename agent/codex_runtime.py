@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import time
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
@@ -866,6 +866,13 @@ def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
 
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
+    bracket = getattr(agent, "_shared_client_bracket", None)
+    ctx = bracket(reason="codex_stream_direct") if (client is None and callable(bracket)) else nullcontext()
+    with ctx:
+        return _run_codex_stream_body(agent, api_kwargs, client=client, on_first_delta=on_first_delta)
+
+
+def _run_codex_stream_body(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError
     from agent import relay_llm

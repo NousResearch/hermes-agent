@@ -39,6 +39,9 @@ import type {
   KanbanTask,
   KanbanTaskDetail,
   OrchestrationSettings,
+  ProjectFeedbackResult,
+  ProjectOverview,
+  ProjectSummary,
   TaskEstimate,
   WorkerLog
 } from './types'
@@ -243,6 +246,11 @@ export const logKey = (scope: string, slug: string, id: string) => ['kanban', 'l
 export const boardsKey = (scope: string) => ['kanban', 'boards', scope] as const
 export const profilesKey = (scope: string) => ['kanban', 'profiles', scope] as const
 export const projectsKey = (scope: string) => ['kanban', 'projects', scope] as const
+/** Batch project rows for the Projects list (connection-scoped). */
+export const projectsOverviewKey = (scope: string) => ['kanban', 'projects-overview', scope] as const
+/** One project's detail, keyed by project ref (connection-scoped). */
+export const projectOverviewKey = (scope: string, ref: string) =>
+  ['kanban', 'project-overview', scope, ref] as const
 export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', scope] as const
 
 // ── reads ─────────────────────────────────────────────────────────────────────
@@ -261,6 +269,13 @@ export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profile
 
 /** First-class Hermes projects, for scoping a board's default workspace. */
 export const fetchProjects = () => call<{ projects: KanbanProject[] }>('/projects')
+
+/** Rich project list rows: status, % complete, ETA, lead, board, totals. */
+export const fetchProjectsOverview = () => call<{ projects: ProjectSummary[] }>('/projects/overview')
+
+/** Project detail: location, board stage funnel, % complete, plan milestones + ETA. */
+export const fetchProjectOverview = (ref: string) =>
+  call<ProjectOverview>(`/projects/${encodeURIComponent(ref)}/overview`)
 
 export const fetchOrchestration = () => call<OrchestrationSettings>('/orchestration')
 
@@ -343,6 +358,23 @@ export const estimateNew = (title: string, body: string) =>
  *  `default_workdir: ''` to clear it. Slug is immutable. */
 export const updateBoard = (slug: string, patch: Record<string, unknown>) =>
   call<{ board: BoardMeta }>(`/boards/${encodeURIComponent(slug)}`, { method: 'PATCH', body: patch })
+
+/** Patch a project's display metadata, board scope, lead, and plan path.
+ *  `""` clears a field; omitting it leaves the field unchanged. */
+export const updateProject = (ref: string, patch: Record<string, unknown>) =>
+  call<{ project: KanbanProject }>(`/projects/${encodeURIComponent(ref)}`, { method: 'PATCH', body: patch })
+
+/** Send a request/feedback to a project's lead — creates a card on the project's
+ *  board assigned to the lead (and nudges the dispatcher server-side). */
+export const sendProjectFeedback = (
+  ref: string,
+  body: string,
+  opts?: { author?: string; status?: 'ready' | 'triage' }
+) =>
+  call<ProjectFeedbackResult>(`/projects/${encodeURIComponent(ref)}/feedback`, {
+    method: 'POST',
+    body: { body, author: opts?.author ?? 'desktop', status: opts?.status ?? 'ready' }
+  })
 
 /** Archive a board to `boards/_archived/` — recoverable, and the backend
  *  refuses to touch `default`. (`?delete=true` hard-deletes; no caller yet.) */

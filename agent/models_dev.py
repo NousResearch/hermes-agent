@@ -782,9 +782,19 @@ def _provider_model_capabilities(provider: str, model: str) -> Dict[str, Any]:
     ``model_overrides`` schema). The ONE plugin seam: every consumer that reads models.dev through this
     module (picker badges, image routing, ``/api/model/info``, context lookup) sees it (#102115)."""
     from providers import get_provider_profile
+    from hermes_cli.model_normalize import normalize_model_for_provider
 
     profile = get_provider_profile(provider)
-    return profile.model_capabilities.get(model, {}) if profile is not None else {}
+    if profile is None:
+        # Auth routes such as xai-oauth share the direct provider's catalog unless
+        # they register a profile of their own.
+        profile = get_provider_profile(PROVIDER_TO_MODELS_DEV.get(provider, provider))
+    if profile is None or not profile.model_capabilities:
+        return {}
+    for candidate in (model, normalize_model_for_provider(model, profile.name)):
+        for _, declaration in _iter_model_entries(profile.model_capabilities, candidate, suffix_fallback=False):
+            return declaration
+    return {}
 
 
 def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

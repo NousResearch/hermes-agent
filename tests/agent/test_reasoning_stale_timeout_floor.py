@@ -95,6 +95,7 @@ import pytest
     ("x-ai/grok-4.20-reasoning", 300.0),
     ("x-ai/grok-4.5", 300.0),
     ("x-ai/grok-4.6", 300.0),
+    ("x-ai/grok-4.7", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
     # Thinking Machines Inkling — family entry covers -small and the
     # OpenRouter :free / :batch SKU suffixes (":" is a slug separator
@@ -268,3 +269,41 @@ def test_explicit_provider_stale_timeout_wins_over_context_tier_and_reasoning_fl
 
     _write_config(tmp_path, "")
     assert _derive_stream_stale_timeout(agent, api_kwargs) == 600.0
+
+
+def test_grok_day_zero_floor_respects_explicit_timeouts_and_run_budget(monkeypatch, tmp_path):
+    import time
+
+    from agent.chat_completion_helpers import _derive_stream_stale_timeout, _resolve_nonstream_watchdogs
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for variable in ("HERMES_API_CALL_STALE_TIMEOUT", "HERMES_STREAM_STALE_TIMEOUT"):
+        monkeypatch.delenv(variable, raising=False)
+    _write_config(tmp_path, "")
+    agent = _make_agent(tmp_path, model="grok-4.7", provider="xai", base_url="https://api.x.ai/v1")
+    agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    payload = {"model": agent.model, "input": "small"}
+    floor = get_reasoning_stale_timeout_floor("grok-4.6")
+    assert agent._resolved_api_call_stale_timeout_base() == (floor, False)
+    assert _derive_stream_stale_timeout(agent, payload) == floor
+    assert _resolve_nonstream_watchdogs(agent, payload).stale_timeout >= floor
+    for neighbor in ("grok-4.70", "grok-4.8", "custom-grok-4.7"):
+        assert get_reasoning_stale_timeout_floor(neighbor) is None
+
+    agent.run_budget_seconds = 100
+    agent._run_budget_started_at = time.time() - 5
+    assert _resolve_nonstream_watchdogs(agent, payload).stale_timeout == 60.0
+
+    _write_config(tmp_path, "providers:\n  xai:\n    stale_timeout_seconds: 75\n")
+    assert agent._resolved_api_call_stale_timeout_base() == (75.0, False)
+    assert _derive_stream_stale_timeout(agent, payload) == 75.0
+    assert _resolve_nonstream_watchdogs(agent, payload).stale_timeout == 75.0
+
+    _write_config(tmp_path, "")
+    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "45")
+    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "45")
+    assert _derive_stream_stale_timeout(agent, payload) == 45.0
+    assert _resolve_nonstream_watchdogs(agent, payload).stale_timeout == 45.0
+    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "invalid")
+    assert _derive_stream_stale_timeout(agent, payload) == floor

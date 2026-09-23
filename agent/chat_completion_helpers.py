@@ -648,12 +648,15 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
 def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
     """An explicit ``providers.<id>.stale_timeout_seconds`` is the operator's deadline and
     wins over every implicit floor — the context-size tier as well as the reasoning-model
-    floor — so it can SHORTEN patience for a hung stream (#115024). Only the 180s default
-    is scaled and floored."""
+    floor — so it can SHORTEN patience for a hung stream (#115024). An explicit legacy
+    environment value also wins; only the 180s default is scaled and floored."""
     explicit = get_provider_stale_timeout(agent.provider, agent.model)
     if explicit is not None:
         return explicit
-    return _cloud_stale_timeout(env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), api_kwargs)
+    explicit = env_float("HERMES_STREAM_STALE_TIMEOUT", -1.0)
+    if explicit != -1.0:
+        return explicit
+    return _cloud_stale_timeout(180.0, api_kwargs)
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":

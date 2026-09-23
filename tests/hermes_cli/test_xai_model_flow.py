@@ -75,3 +75,21 @@ def test_auth_credentials_choice_falls_back_to_numbered_prompt(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": "2")
 
     assert main_mod._prompt_auth_credentials_choice("Credentials:") == "reauth"
+
+
+def test_xai_headline_only_defaults_an_unconfigured_selection(monkeypatch, tmp_path):
+    from hermes_cli import model_setup_flows as flows
+    from hermes_cli.models_catalog_static import _XAI_TOP_MODEL
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.auth.get_xai_oauth_auth_status", lambda: {"logged_in": True})
+    monkeypatch.setattr("hermes_cli.setup._curses_prompt_choice", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("hermes_cli.auth.resolve_xai_oauth_runtime_credentials", lambda: {})
+    monkeypatch.setattr("agent.models_dev.list_agentic_models", lambda *args, **kwargs: [])
+    selections = []
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection",
+                        lambda model_ids, current_model="": selections.append((model_ids[0], current_model)))
+    # Returning None cancels the picker without mutating any configuration.
+    flows._model_flow_xai_oauth({}, current_model="grok-4.6")
+    flows._model_flow_xai_oauth({})
+    assert selections == [(_XAI_TOP_MODEL, "grok-4.6"), (_XAI_TOP_MODEL, _XAI_TOP_MODEL)]

@@ -36,6 +36,7 @@ def test_declared_capabilities_reach_every_consumer_and_user_override_wins(monke
         assert models_dev.lookup_models_dev_context(name, "tier-high") == 64000
         # Negative: an undeclared model keeps the catalog/heuristic path (catalog miss → None).
         assert models_dev.get_model_capabilities(name, "undeclared") is None
+        assert models_dev.get_model_capabilities(name, "TIER-HIGH").context_window == caps.context_window
 
     cfg = {"model": {"provider": "fixture-provider", "default": "tier-high"}}
     assert decide_image_input_mode("fixture-provider", "tier-high", cfg) == "native"
@@ -72,3 +73,13 @@ def test_partial_plugin_metadata_preserves_unknowns_and_catalog_fields(monkeypat
     assert unknown.context_window == 48000
     assert unknown.supports_reasoning is None and unknown.supports_vision is None
     assert catalog == original
+
+    # An auth route can share its canonical provider's declaration, but its own
+    # registered profile remains authoritative, including deliberate omissions.
+    monkeypatch.setitem(models_dev.PROVIDER_TO_MODELS_DEV, "fixture-auth", "fixture-provider")
+    assert models_dev.lookup_models_dev_context("fixture-auth", "known") == known.context_window
+    providers.register_provider(ProviderProfile(name="fixture-auth", model_capabilities={
+        "known": {"context_window": 80000},
+    }))
+    assert models_dev.lookup_models_dev_context("fixture-auth", "known") == 80000
+    assert models_dev.get_model_capabilities("fixture-auth", "unknown") is None

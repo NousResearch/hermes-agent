@@ -7,11 +7,14 @@ from hermes_cli.models import (
     _PROVIDER_MODELS,
     provider_model_ids,
 )
+from hermes_cli.models_catalog_static import _XAI_TOP_MODEL, _xai_curated_models
 
 
-def test_grok_4_6_is_default_pin():
-    models = _PROVIDER_MODELS["xai-oauth"]
-    assert models[0] == "grok-4.6"
+def test_offline_catalog_keeps_the_same_headline_as_both_provider_pickers():
+    with patch("agent.models_dev._load_disk_cache", return_value=None):
+        assert _xai_curated_models()[0] == _XAI_TOP_MODEL
+    for provider in ("xai", "xai-oauth"):
+        assert _PROVIDER_MODELS[provider][0] == _XAI_TOP_MODEL
 
 
 def test_xai_providers_are_models_dev_preferred():
@@ -26,7 +29,7 @@ def test_xai_oauth_picker_merges_models_dev_at_call_time():
         models = provider_model_ids("xai-oauth")
 
     mocked.assert_called()
-    assert models[0] == "grok-4.6"
+    assert models[0] == _XAI_TOP_MODEL
     assert "grok-new-from-models-dev" in models
 
 
@@ -44,13 +47,13 @@ def test_xai_api_key_picker_merges_models_dev_when_live_unavailable():
 
     mocked.assert_called()
     assert "grok-new-from-models-dev" in models
-    assert models[0] == "grok-4.6"
+    assert models[0] == _XAI_TOP_MODEL
 
 
 def test_xai_pin_survives_when_top_model_only_in_extras():
-    """If models.dev omits grok-4.6, curated extras + finalize still pin it."""
+    """An external catalog missing the headline still gets the curated model."""
     mdev = ["grok-build-0.1", "grok-new-from-models-dev"]
     with patch("agent.models_dev.list_agentic_models", return_value=mdev):
         models = provider_model_ids("xai-oauth")
 
-    assert models[0] == "grok-4.6"
+    assert models[0] == _XAI_TOP_MODEL

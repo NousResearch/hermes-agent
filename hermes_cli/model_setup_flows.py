@@ -397,6 +397,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         get_xai_oauth_auth_status, _prompt_model_selection, resolve_xai_oauth_runtime_credentials, _login_xai_oauth,
         DEFAULT_XAI_OAUTH_BASE_URL, PROVIDER_REGISTRY)
     from hermes_cli.models import provider_model_ids
+    from hermes_cli.models_catalog_static import _XAI_TOP_MODEL
     login_args = argparse.Namespace(no_browser=bool(getattr(args, "no_browser", False)), timeout=getattr(args, "timeout", None))
     if not _oauth_gate(
         bool(get_xai_oauth_auth_status().get("logged_in")), "xAI Grok OAuth (SuperGrok / Premium+)", _login_xai_oauth,
@@ -412,7 +413,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
 
     models = provider_model_ids("xai-oauth")
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else _XAI_TOP_MODEL))
     _activate_provider_model(selected, "xai-oauth", base_url,
                              f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
 

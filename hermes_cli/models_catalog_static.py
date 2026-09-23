@@ -85,15 +85,15 @@ def _codex_curated_models() -> list[str]:
 # next refresh. Models xAI retired on 2026-05-15 (grok-4*, grok-4-fast*, grok-4-1-fast*,
 # grok-code-fast-1) are excluded — see docs.x.ai/developers/migration/may-15-retirement.
 _XAI_STATIC_FALLBACK: list[str] = [
-    "grok-4.6", "grok-build-0.1", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning",
+    "grok-4.7", "grok-4.6", "grok-build-0.1", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning", "grok-4.20-multi-agent-0309",
 ]
 
-# Callable via xAI OAuth but omitted from models.dev and /v1/models listings. grok-4.6 / grok-4.5
-# stay here until the models.dev disk cache refreshes.
-_XAI_CURATED_EXTRAS: list[str] = ["grok-4.6", "grok-4.5", "grok-composer-2.5-fast"]
+# Keep newly released models visible until the models.dev disk cache catches up.
+# Composer is an existing OAuth extra omitted from the discovery catalogs.
+_XAI_CURATED_EXTRAS: list[str] = ["grok-4.7", "grok-4.6", "grok-4.5", "grok-composer-2.5-fast"]
 
-_XAI_TOP_MODEL = "grok-4.6"
+_XAI_TOP_MODEL = "grok-4.7"
 
 
 def _xai_promote_top(ids: list[str]) -> list[str]:

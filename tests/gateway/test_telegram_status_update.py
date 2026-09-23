@@ -9,6 +9,8 @@ The status-update path must:
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import sys
 import types
 from types import SimpleNamespace
@@ -104,5 +106,92 @@ async def test_distinct_status_keys_do_not_collide(adapter):
     adapter.edit_message.assert_not_awaited()
     assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
     assert adapter._status_message_ids[("chat-1", "model-switch")] == "200"
+
+
+@pytest.mark.asyncio
+async def test_gateway_status_bubbles_are_owned_by_one_turn(adapter, monkeypatch):
+    from gateway.config import Platform
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    pending = []
+    monkeypatch.setattr(TurnRunner, "_schedule", lambda self, coro, message: pending.append(coro))
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id=str(index)) for index in range(10)
+    ]
+    adapter.edit_message.return_value = SendResult(success=True)
+
+    async def emit(session_key, generation, event_type="lifecycle"):
+        ctx = TurnContext(
+            source=SimpleNamespace(platform=Platform.TELEGRAM),
+            session_key=session_key, run_generation=generation,
+            _run_still_current=lambda: True,
+            _status_adapter=adapter, _status_chat_id="chat-1",
+            user_config={},
+        )
+        TurnRunner(MagicMock(), ctx)._status_callback_sync(event_type, "Recalling memories")
+        assert len(pending) == 1
+        await pending.pop()
+
+    await emit("topic-a", 1)
+    await emit("topic-a", 1)
+    adapter.send.assert_awaited_once()
+    assert adapter.edit_message.await_args.args[1] == "0"
+    await emit("topic-a", 2)
+    assert adapter.send.await_count == 2
+    await emit("topic-b", 1)
+    assert adapter.send.await_count == 3
+    await emit("topic-a", 1, "model-switch")
+    assert adapter.send.await_count == 4
+    # Incomplete identities retain the legacy event-type contract.
+    await emit(None, 1)
+    await emit("topic-a", None)
+    assert adapter.send.await_count == 5
+    assert adapter.edit_message.await_args.args[1] == "4"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["overlap", "bounds"])
+async def test_status_bookkeeping_is_serialized_and_bounded(adapter, mode):
+    if mode == "bounds":
+        adapter._STATUS_MESSAGE_IDS_MAX = 4
+        adapter.send.side_effect = [
+            SendResult(success=True, message_id=str(index)) for index in range(8)
+        ]
+        for index in range(8):
+            await adapter.send_or_update_status("chat-1", f"turn-{index}", "status")
+        assert len(adapter._status_message_ids) <= adapter._STATUS_MESSAGE_IDS_MAX
+        assert adapter._status_message_ids[("chat-1", "turn-7")] == "7"
+        gc.collect()
+        assert not adapter._status_locks
+        return
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_send(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return SendResult(success=True, message_id="100")
+
+    adapter.send.side_effect = delayed_send
+    adapter.edit_message.return_value = SendResult(success=True)
+    tasks = [asyncio.create_task(adapter.send_or_update_status("chat-1", "turn-1", "first"))]
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        tasks.append(asyncio.create_task(adapter.send_or_update_status("chat-1", "turn-1", "second")))
+        await asyncio.sleep(0)
+        gc.collect()
+        tasks.append(asyncio.create_task(adapter.send_or_update_status("chat-1", "turn-1", "third")))
+        await asyncio.sleep(0)
+        assert adapter.send.await_count == 1
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+    assert adapter.edit_message.await_count == 2
+    assert not adapter._status_locks
+    # A failed edit must drop the old id and recover with a new send.
+    adapter.edit_message.return_value = SendResult(success=False)
+    await adapter.send_or_update_status("chat-1", "turn-1", "recover")
+    assert adapter.send.await_count == 2
 
 

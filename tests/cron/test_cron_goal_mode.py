@@ -5,6 +5,7 @@ from cron.scheduler_goal import (
     goal_prompt_from_job,
     run_goal_turns,
 )
+from cron.scheduler_prompt import _CRON_HINT, _GOAL_CRON_HINT, _build_job_prompt
 
 
 def test_goal_prompt_from_job_keeps_plain_cron_prompts_unchanged():
@@ -16,6 +17,71 @@ def test_goal_prompt_from_job_keeps_plain_cron_prompts_unchanged():
 
 def test_cron_goal_session_is_stable_per_job():
     assert cron_goal_session_id("nightly") == "cron-goal:nightly"
+
+
+def test_goal_first_turn_uses_goal_adapted_cron_hint_without_losing_assembly_context(monkeypatch):
+    """Goal fires keep ordinary assembly inputs but not its one-shot delivery contract."""
+    monkeypatch.setattr(
+        "cron.scheduler_prompt._load_cron_skill_parts",
+        lambda _job, _names: ["SKILL INSTRUCTIONS"],
+    )
+    monkeypatch.setattr(
+        "cron.notepad.render_notepad_section",
+        lambda _job_id: "## Cron Notepad\nremember this\n\n",
+    )
+
+    prompt = _build_job_prompt(
+        {
+            "id": "goal-job",
+            "prompt": "ship the release",
+            "skills": ["release-skill"],
+            "script": "collect-context.sh",
+        },
+        prerun_script=(True, "SCRIPT OUTPUT"),
+        extra_prompt="RUN CONTEXT",
+        runtime_data_prompt="MONITOR CONTEXT",
+        cron_hint=_GOAL_CRON_HINT,
+    )
+
+    assert "SKILL INSTRUCTIONS" in prompt
+    assert "SCRIPT OUTPUT" in prompt
+    assert "RUN CONTEXT" in prompt
+    assert "MONITOR CONTEXT" in prompt
+    assert "remember this" in prompt
+    assert _GOAL_CRON_HINT in prompt
+    assert _CRON_HINT not in prompt
+    assert "bounded goal loop" in prompt
+    assert 'respond with exactly "[SILENT]"' not in _GOAL_CRON_HINT
+    assert "final response will be automatically delivered" not in _GOAL_CRON_HINT
+
+
+def test_ordinary_cron_prompt_keeps_the_original_hint_bytes():
+    assert _CRON_HINT in _build_job_prompt({"prompt": "check for updates"})
+
+
+def test_prepare_goal_prompt_selects_goal_adapted_hint(monkeypatch):
+    import cron.scheduler as scheduler
+
+    captured = {}
+    monkeypatch.setattr("hermes_cli.config.require_parseable_user_config", lambda: None)
+    monkeypatch.setattr(
+        scheduler,
+        "_build_job_prompt",
+        lambda job, **kwargs: captured.update(job=job, **kwargs) or "assembled goal prompt",
+    )
+
+    early, prompt = scheduler._prepare_job_prompt(
+        {"id": "goal-job", "prompt": "/goal ship the release"},
+        "goal-job",
+        "goal job",
+        None,
+        None,
+    )
+
+    assert early is None
+    assert prompt == "assembled goal prompt"
+    assert captured["job"]["prompt"] == "ship the release"
+    assert captured["cron_hint"] == _GOAL_CRON_HINT
 
 
 def test_run_goal_turns_continues_until_the_judge_finishes(monkeypatch):

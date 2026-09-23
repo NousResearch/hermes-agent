@@ -2201,11 +2201,13 @@ def _prepare_job_prompt(
         # The assembled prompt never starts with ``/``, so gateway slash-command
         # dispatch cannot perform this recognition later in the path.
         from cron.scheduler_goal import goal_prompt_from_job
+        from cron.scheduler_prompt import _CRON_HINT, _GOAL_CRON_HINT
         _goal_prompt = goal_prompt_from_job(job)
         _prompt_job = {**job, "prompt": _goal_prompt} if _goal_prompt else job
         prompt = _build_job_prompt(
             _prompt_job, prerun_script=prerun_script, extra_prompt=extra_prompt,
             runtime_data_prompt=monitor_context,
+            cron_hint=_GOAL_CRON_HINT if _goal_prompt else _CRON_HINT,
         )
     except CronPromptInjectionBlocked as block_exc:
         # Injection scanner tripped: refuse this tick and tell the operator WHY.

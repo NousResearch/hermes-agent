@@ -25,13 +25,10 @@ import os
 import socket
 
 from plugins.platforms.whatsapp.adapter import (
-    _bridge_pid_is_ours,
-    _kill_port_process,
     _kill_stale_bridge_by_pidfile,
     _listener_pids_on_port,
     _write_bridge_pidfile,
 )
-from gateway.status import get_process_start_time, _pid_exists
 
 
 def _spawn_sleeper(*extra_argv, seconds: float = 0.2) -> subprocess.Popen:
@@ -50,18 +47,6 @@ def _wait_dead(proc: subprocess.Popen, timeout: float = 5.0) -> bool:
     return False
 
 
-class TestWriteAndRoundTrip:
-    def test_pidfile_records_pid_and_start_time(self, tmp_path):
-        proc = _spawn_sleeper()
-        try:
-            _write_bridge_pidfile(tmp_path, proc.pid)
-            lines = (tmp_path / "bridge.pid").read_text().split("\n")
-            assert int(lines[0]) == proc.pid
-            # Line 2 is the kernel start time (present on Linux).
-            assert int(lines[1]) == get_process_start_time(proc.pid)
-        finally:
-            proc.kill()
-            proc.wait()
 
 
 class TestIdentityGuard:

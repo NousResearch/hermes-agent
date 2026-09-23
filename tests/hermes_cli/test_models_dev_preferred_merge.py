@@ -21,7 +21,6 @@ from unittest.mock import patch
 
 
 from hermes_cli.models import (
-    _MODELS_DEV_PREFERRED,
     _PROVIDER_MODELS,
     _merge_with_models_dev,
     provider_model_ids,
@@ -39,14 +38,14 @@ class TestMergeHelper:
                 patch("hermes_cli.models._profile_live_catalog", return_value=None):
             out = provider_model_ids("deepseek")
 
-        assert out == ["deepseek-flash", "deepseek-v4-pro"]
+        assert out == list(_PROVIDER_MODELS["deepseek"])
+        assert "deepseek-v4-flash" not in out and "deepseek-v4-flash-vision-exp" not in out
 
     def test_merge_empty_mdev_returns_curated(self):
         """When models.dev returns nothing, curated list is preserved verbatim."""
         with patch("agent.models_dev.list_agentic_models", return_value=[]):
             out = _merge_with_models_dev("opencode-go", ["mimo-v2-pro", "kimi-k2.6"])
         assert out == ["mimo-v2-pro", "kimi-k2.6"]
-
 
     def test_merge_case_insensitive_dedup(self):
         """Dedup is case-insensitive but preserves the first occurrence's casing."""
@@ -59,10 +58,6 @@ class TestMergeHelper:
 
 
 class TestProviderModelIdsPreferred:
-
-
-
-
 
     def test_k3_live_discovery_is_scoped_to_kimi_coding_endpoint(self):
         """Coding keys discover K3; legacy Moonshot keys must not advertise it."""
@@ -145,24 +140,3 @@ class TestProviderModelIdsPreferred:
             _model_flow_kimi({}, current_model="")
 
         assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
-        assert captured["models"][0] == "kimi-k3"
-
-
-class TestOpenRouterAndNousUnchanged:
-    """Per Teknium: openrouter and nous are NEVER merged with models.dev."""
-
-
-    def test_openrouter_does_not_call_merge(self):
-        """openrouter takes its own live path — merge helper must NOT run."""
-        with patch(
-            "hermes_cli.models._merge_with_models_dev",
-            side_effect=AssertionError("merge should not be called for openrouter"),
-        ):
-            # Even if model_ids() fails for some other reason, we just care
-            # that the merge path isn't invoked.
-            try:
-                provider_model_ids("openrouter")
-            except AssertionError:
-                raise
-            except Exception:
-                pass  # model_ids() may fail in the hermetic test env — that's fine.

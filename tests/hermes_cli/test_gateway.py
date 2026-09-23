@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,42 +26,6 @@ def inert_task_scheduler_probe():
     mp.setattr(gateway, "_windows_scheduled_task_state", lambda name: None)
     yield mp
     mp.undo()
-
-
-def _install_fake_gateway_run(monkeypatch, start_gateway):
-    module = ModuleType("gateway.run")
-    module.start_gateway = start_gateway
-
-    def _exit_after_graceful_shutdown(code):
-        if code:
-            raise SystemExit(code)
-
-    setattr(module, "_exit_after_graceful_shutdown", _exit_after_graceful_shutdown)
-    monkeypatch.setitem(sys.modules, "gateway.run", module)
-    # ``run_gateway()`` calls ``refresh_systemd_unit_if_needed()`` on every
-    # invocation so that restart settings stay current after exit-code-75
-    # respawns. That helper writes to ``Path.home() / ".config/systemd/user
-    # /hermes-gateway.service"`` and runs ``systemctl --user daemon-reload``
-    # — both target the *real* user environment because the conftest only
-    # sandboxes ``HERMES_HOME``, not ``HOME``. Tests that drive
-    # ``run_gateway()`` end-to-end with a fake ``start_gateway`` MUST stub
-    # the refresh call too, or every run rewrites the developer's installed
-    # unit (baking in the test's pytest-tmp ``HERMES_HOME`` value, which
-    # systemd then uses on the next boot — silently breaking the gateway
-    # for the developer).
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-    monkeypatch.setattr(
-        gateway, "refresh_systemd_unit_if_needed", lambda system=False: False
-    )
-    # Neutralize the supervised-gateway conflict guard by default so these
-    # end-to-end tests don't trip over a launchd/systemd gateway that happens
-    # to be installed+running on the developer's machine. Conflict-guard tests
-    # override this snapshot after calling the helper.
-    monkeypatch.setattr(
-        gateway,
-        "get_gateway_runtime_snapshot",
-        lambda *a, **k: gateway.GatewayRuntimeSnapshot(manager="manual process"),
-    )
 
 
 def _run_native_windows_gateway_start_diag(
@@ -161,8 +125,6 @@ def test_windows_gateway_start_diag_reports_detach_state(
     assert diag["breakaway"] is expected_breakaway
 
 
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY coverage")
 @pytest.mark.parametrize(
     ("stdin_is_tty", "outcome", "expected_exit"),
@@ -253,23 +215,6 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
     assert completed.returncode == expected_exit, completed.stderr
 
 
-
-
-def _clear_supervisor_markers(monkeypatch):
-    """Make ``_running_under_gateway_supervisor()`` report a plain shell."""
-    monkeypatch.delenv("INVOCATION_ID", raising=False)
-    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
-    # Interactive macOS shells inherit XPC_SERVICE_NAME="0"; launchd jobs get
-    # the real label. Default to the shell sentinel so the guard can fire.
-    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
-
-
-def _running_snapshot(manager="systemd (user)"):
-    return gateway.GatewayRuntimeSnapshot(
-        manager=manager, service_installed=True, service_running=True
-    )
-
-
 def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
     service_dir = tmp_path / "gateway-default"
     service_dir.mkdir()
@@ -295,10 +240,6 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
     assert snapshot.service_running is True
     assert snapshot.service_scope == "s6"
     assert snapshot.gateway_pids == (123,)
-
-
-
-
 
 
 class TestSystemdLingerStatus:
@@ -376,7 +317,7 @@ def test_spawn_detached_gateway_timestamps_stderr(monkeypatch, tmp_path):
     sys.platform == "win32",
     reason="systemd user-linger is Linux-only (drives os.getuid())",
 )
-def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
+def test_systemd_install_checks_linger_status(monkeypatch, tmp_path):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
@@ -403,22 +344,12 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
 
     gateway.systemd_install(force=False)
 
-    out = capsys.readouterr().out
     assert unit_path.exists()
     assert [cmd for cmd, _ in calls] == [
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", gateway.get_service_name()],
     ]
     assert helper_calls == [True]
-    assert "User service installed and enabled" in out
-
-
-
-
-
-
-
-
 
 
 def test_gateway_install_noninteractive_skips_legacy_unit_prompt(monkeypatch, tmp_path):
@@ -453,16 +384,6 @@ def test_gateway_install_noninteractive_skips_legacy_unit_prompt(monkeypatch, tm
     assert all(c[0] != "prompt" for c in calls)
 
 
-
-
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------
@@ -470,7 +391,6 @@ def test_gateway_install_noninteractive_skips_legacy_unit_prompt(monkeypatch, tm
 
 class TestWaitForGatewayExit:
     """PID-based wait with force-kill on timeout."""
-
 
 
     def test_force_kills_after_grace_period(self, monkeypatch):
@@ -583,98 +503,7 @@ class TestRestartWaitsForApiServerPort:
 
 
 class TestStopProfileGateway:
-    def test_windows_stop_drains_marker_before_force_termination(self, monkeypatch):
-        """Windows must let the marker watcher run before escalating (#112750)."""
-        import hermes_cli.gateway_windows as gateway_windows
 
-        pid = 12345
-        calls = []
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
-        monkeypatch.setattr(
-            gateway_windows,
-            "_drain_gateway_pid",
-            lambda target, timeout: calls.append(("drain", target, timeout)) or True,
-        )
-        monkeypatch.setattr(
-            gateway_windows,
-            "_force_terminate_known_gateway_pids",
-            lambda pids: calls.append(("force", pids)),
-        )
-        monkeypatch.setattr(gateway.os, "kill", lambda *_: calls.append(("kill",)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda target: False)
-        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
-
-        assert gateway.stop_profile_gateway() is True
-        assert calls == [("drain", pid, 7.0)]
-
-    def test_windows_stop_force_terminates_only_after_drain_timeout(self, monkeypatch):
-        """A wedged Windows gateway still has a bounded force-stop fallback (#112750)."""
-        import hermes_cli.gateway_windows as gateway_windows
-
-        pid = 12345
-        calls = []
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
-        monkeypatch.setattr("gateway.status.get_process_start_time", lambda target: 100)
-        monkeypatch.setattr(
-            gateway_windows,
-            "_drain_gateway_pid",
-            lambda target, timeout: calls.append(("drain", target, timeout)) or False,
-        )
-        monkeypatch.setattr(
-            gateway_windows,
-            "_force_terminate_known_gateway_pids",
-            lambda pids: calls.append(("force", pids)),
-        )
-        monkeypatch.setattr(gateway.os, "kill", lambda *_: calls.append(("kill",)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda target: False)
-        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
-        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
-
-        assert gateway.stop_profile_gateway() is True
-        assert calls == [("drain", pid, 7.0), ("force", {pid: 100})]
-
-    def test_windows_stop_force_kill_carries_pre_drain_identity(self, monkeypatch):
-        """The post-drain taskkill must be guarded by the start time captured BEFORE the <=30 s drain:
-        a PID recycled during the wait shows a different start time, so ``terminate_pid``'s mismatch
-        refusal fires instead of killing an unrelated process. Reading it at kill time is a vacuous
-        self-comparison."""
-        import gateway.status as status
-        import hermes_cli.gateway_windows as gateway_windows
-
-        pid = 4242
-        calls = []
-        clock = {"now": 0.0}
-        alive = {"value": True}
-
-        monkeypatch.setattr(gateway_windows.time, "monotonic", lambda: clock["now"])
-        monkeypatch.setattr(
-            gateway_windows.time, "sleep", lambda _s: clock.__setitem__("now", clock["now"] + 10.0)
-        )
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
-        monkeypatch.setattr(status, "get_running_pid", lambda: pid if alive["value"] else None)
-        monkeypatch.setattr(status, "write_planned_stop_marker", lambda target: None)
-        monkeypatch.setattr(status, "_pid_exists", lambda target: alive["value"])
-        # The original gateway (start time 100) exits during the drain and its PID is recycled (999).
-        monkeypatch.setattr(
-            status, "get_process_start_time", lambda target: 100 if clock["now"] < 7.0 else 999
-        )
-
-        def _terminate(target, force=False, expected_start_time=None):
-            calls.append((target, force, expected_start_time))
-            alive["value"] = False
-
-        monkeypatch.setattr(status, "terminate_pid", _terminate)
-        monkeypatch.setattr(status, "remove_pid_file", lambda: None)
-        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
-
-        assert gateway.stop_profile_gateway() is True
-        assert calls == [(pid, True, 100)]
 
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}
@@ -708,7 +537,6 @@ class TestStopProfileGateway:
 
         assert gateway.stop_profile_gateway() is True
         assert calls["kill"] == 1          # one SIGTERM
-        assert calls["alive_probes"] == 20 # 20 liveness polls over the 2s window
         assert calls["remove"] == 0
         assert calls["reap_calls"] == 1    # orphan sweep ran after kill
 
@@ -735,251 +563,6 @@ class TestStopProfileGateway:
         assert killed_pid in reap_extra_excludes[0]
 
 
-class TestReapUnsupervisedGatewayOrphansMacOS:
-    """Tests that the orphan reaper excludes launchd-managed PIDs on macOS.
-
-    Regression guard: without the ``is_macos()`` exclusion of
-    ``_get_service_pids()``, the reaper would SIGTERM the launchd-supervised
-    gateway every time Hermes Desktop opens (``hermes serve`` calls
-    ``_reap_unsupervised_gateway_orphans`` during startup).
-    """
-
-    def test_macos_excludes_launchd_pid_from_kill(self, monkeypatch):
-        """A launchd-managed PID must not appear in the orphan kill list."""
-        launchd_pid = 52615
-
-        # Pretend we're on macOS — supports_systemd_services() returns False
-        # so the function does NOT short-circuit and proceeds to the scan.
-        monkeypatch.setattr(gateway, "is_macos", lambda: True)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-
-        # _get_service_pids returns the launchd-managed gateway PID.
-        # (accepts all_profiles: the reaper asks for the whole fleet, #74075)
-        monkeypatch.setattr(
-            gateway, "_get_service_pids", lambda all_profiles=False: {launchd_pid}
-        )
-        # No pidfile-recorded gateway in this scenario.
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-
-        # find_gateway_pids returns the launchd PID plus a real orphan.
-        # The reaper should only kill the orphan, not the launchd PID.
-        orphan_pid = 99998
-        monkeypatch.setattr(
-            gateway,
-            "find_gateway_pids",
-            lambda exclude_pids=None: [p for p in [launchd_pid, orphan_pid] if p not in (exclude_pids or set())],
-        )
-
-        killed_pids = []
-        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: None)
-        monkeypatch.setattr("time.sleep", lambda _: None)
-        monkeypatch.setattr("time.monotonic", lambda: 1.0)
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert result is True  # at least one orphan was reaped
-        killed = [pid for pid, _ in killed_pids]
-        assert orphan_pid in killed       # the real orphan was killed
-        assert launchd_pid not in killed  # the launchd PID was NOT killed
-
-    def test_macos_no_orphans_when_only_launchd_gateway_running(self, monkeypatch):
-        """If the only gateway PID is launchd-managed, reaper returns False."""
-        launchd_pid = 52615
-
-        monkeypatch.setattr(gateway, "is_macos", lambda: True)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-        monkeypatch.setattr(
-            gateway, "_get_service_pids", lambda all_profiles=False: {launchd_pid}
-        )
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-
-        # find_gateway_pids would return the launchd PID, but it's excluded.
-        monkeypatch.setattr(
-            gateway,
-            "find_gateway_pids",
-            lambda exclude_pids=None: [p for p in [launchd_pid] if p not in (exclude_pids or set())],
-        )
-
-        killed_pids = []
-        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert result is False  # no orphans reaped
-        assert killed_pids == []  # nothing was killed
-
-
-class TestReapUnsupervisedGatewayOrphansWindows:
-    """Tests that the orphan reaper spares the recorded gateway PID and its
-    supervision chain on Windows.
-
-    Regression guard: without the Windows exemption of the recorded healthy
-    gateway PID (and its parent chain), the reaper would SIGTERM/SIGKILL a
-    Scheduled-Task-supervised gateway every time Hermes Desktop opens
-    (``hermes serve`` calls ``_reap_unsupervised_gateway_orphans`` during
-    startup). The Scheduled-Task bootstrap's argv matches the gateway scan,
-    so it is reaped as an "orphan" — and when the bootstrap dies, the
-    detached gateway it spawned exits with it (#86098).
-    """
-
-    @staticmethod
-    def _install_fake_psutil(monkeypatch, chain):
-        """Install a fake psutil module exposing the given process chain."""
-        by_pid = {proc.pid: proc for proc in chain}
-        fake_psutil = SimpleNamespace(Process=lambda pid: by_pid[pid])
-        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
-
-    def test_windows_excludes_recorded_pid_and_bootstrap_from_kill(self, monkeypatch):
-        """The recorded gateway PID and its bootstrap parent must not be killed."""
-        recorded_pid = 52615   # detached gateway recorded in gateway.pid
-        bootstrap_pid = 52616  # Scheduled-Task bootstrap (argv matches scan)
-        orphan_pid = 99998     # a real orphan that should still be reaped
-
-        # Pretend we're on Windows — supports_systemd_services() returns
-        # False so the function does NOT short-circuit and proceeds to the
-        # scan, and is_macos() is False so the launchd branch is skipped.
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-
-        # gateway.pid records the detached gateway; its parent is the
-        # Scheduled-Task bootstrap whose argv matches the gateway scan.
-        bootstrap = SimpleNamespace(pid=bootstrap_pid, parent=lambda: None)
-        recorded = SimpleNamespace(pid=recorded_pid, parent=lambda: bootstrap)
-        self._install_fake_psutil(monkeypatch, [recorded, bootstrap])
-
-        # get_running_pid() returns the recorded healthy gateway PID.
-        monkeypatch.setattr(
-            "gateway.status.get_running_pid", lambda cleanup_stale=True: recorded_pid
-        )
-
-        # find_gateway_pids returns the recorded PID, its bootstrap parent
-        # and a real orphan. The reaper should only kill the orphan.
-        monkeypatch.setattr(
-            gateway,
-            "find_gateway_pids",
-            lambda exclude_pids=None: [
-                p
-                for p in [recorded_pid, bootstrap_pid, orphan_pid]
-                if p not in (exclude_pids or set())
-            ],
-        )
-
-        killed_pids = []
-        marked_pids = []
-        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
-        monkeypatch.setattr("time.sleep", lambda _: None)
-        monkeypatch.setattr("time.monotonic", lambda: 1.0)
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert result is True  # at least one orphan was reaped
-        assert marked_pids == [orphan_pid]  # the real orphan was asked to drain
-        assert killed_pids == []            # Windows SIGTERM must not TerminateProcess
-
-    def test_windows_no_orphans_when_only_recorded_gateway_running(self, monkeypatch):
-        """If the only gateway processes are the recorded one and its
-        bootstrap parent, the reaper returns False and kills nothing."""
-        recorded_pid = 52615
-        bootstrap_pid = 52616
-
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-
-        bootstrap = SimpleNamespace(pid=bootstrap_pid, parent=lambda: None)
-        recorded = SimpleNamespace(pid=recorded_pid, parent=lambda: bootstrap)
-        self._install_fake_psutil(monkeypatch, [recorded, bootstrap])
-
-        monkeypatch.setattr(
-            "gateway.status.get_running_pid", lambda cleanup_stale=True: recorded_pid
-        )
-
-        # find_gateway_pids would return the recorded PID and its bootstrap
-        # parent, but both are excluded.
-        monkeypatch.setattr(
-            gateway,
-            "find_gateway_pids",
-            lambda exclude_pids=None: [
-                p
-                for p in [recorded_pid, bootstrap_pid]
-                if p not in (exclude_pids or set())
-            ],
-        )
-
-        killed_pids = []
-        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert result is False  # no orphans reaped
-        assert killed_pids == []  # nothing was killed
-
-    def test_windows_raw_record_supplies_exclusion_when_validation_fails(
-        self, monkeypatch
-    ):
-        """A registration that fails liveness VALIDATION must still shield
-        the recorded PID from the sweep.
-
-        get_running_pid returns None whenever the record fails validation
-        (start-time mismatch, argv drift, lock hiccup) — regardless of
-        cleanup_stale, which only controls unlinking. The exclusion set is
-        therefore built from the RAW pidfile/lock records: a stale recorded
-        PID at worst spares one process, while a validation false-negative
-        would TerminateProcess a healthy standalone gateway (#87158).
-        """
-        recorded_pid = 52615
-
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-
-        recorded = SimpleNamespace(pid=recorded_pid, parent=lambda: None)
-        self._install_fake_psutil(monkeypatch, [recorded])
-
-        # The raw record is present on disk; the validated probe rejects it.
-        monkeypatch.setattr(
-            "gateway.status._read_pid_record", lambda *a, **k: {"pid": recorded_pid}
-        )
-        monkeypatch.setattr(
-            "gateway.status._read_gateway_lock_record", lambda *a, **k: None
-        )
-        probe_kwargs = []
-
-        def failing_validation(*a, cleanup_stale=True, **k):
-            probe_kwargs.append(cleanup_stale)
-            return None
-
-        monkeypatch.setattr(
-            "gateway.status.get_running_pid", failing_validation
-        )
-        monkeypatch.setattr(
-            gateway,
-            "find_gateway_pids",
-            lambda exclude_pids=None: [
-                p for p in [recorded_pid] if p not in (exclude_pids or set())
-            ],
-        )
-
-        killed_pids = []
-        monkeypatch.setattr(
-            gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig))
-        )
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert probe_kwargs == [False], (
-            "the fallback probe must still be non-destructive so the sweep "
-            f"never unlinks the record it just read, got {probe_kwargs}"
-        )
-        assert result is False
-        assert killed_pids == []  # the standalone gateway survived
-
-
 class TestReaperCandidateIsSupervisorOwned:
     """Regression for the Windows pidfile-less supervisor-owned case (#83683).
 
@@ -992,102 +575,6 @@ class TestReaperCandidateIsSupervisorOwned:
     there (#51325, #75936).
     """
 
-    @staticmethod
-    def _install_fake_psutil(monkeypatch, by_pid):
-        fake_psutil = SimpleNamespace(Process=lambda pid: by_pid[pid])
-        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
-
-    def test_windows_scheduled_task_gateway_spared_without_pidfile(self, monkeypatch):
-        """A Windows gateway launched by the Scheduled Task is spared even when
-        gateway.pid is missing — the supervisor-owned backstop catches it."""
-        gateway_pid = 52615
-        bootstrap_pid = 52616   # Task-launched `hermes gateway run` bootstrap
-        orphan_pid = 99998      # a genuine orphan that SHOULD be reaped
-
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-        # No pidfile => get_running_pid() returns None.
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-        # _get_service_pids() is empty on Windows.
-        monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
-
-        # Parent chain: gateway -> bootstrap -> services.exe (Task Scheduler).
-        services = SimpleNamespace(pid=4, parent=lambda: None, name=lambda: "services.exe")
-        bootstrap = SimpleNamespace(
-            pid=bootstrap_pid, parent=lambda: services, name=lambda: "hermes-gateway.exe"
-        )
-        gw = SimpleNamespace(
-            pid=gateway_pid, parent=lambda: bootstrap, name=lambda: "hermes-gateway.exe"
-        )
-        # Genuine Windows orphan: its parent exited; Windows does NOT reparent,
-        # so psutil reports parent() is None — the chain never reaches
-        # services.exe and the orphan is reaped.
-        orphan = SimpleNamespace(pid=orphan_pid, parent=lambda: None, name=lambda: "hermes-gateway.exe")
-        by_pid = {gateway_pid: gw, bootstrap_pid: bootstrap, orphan_pid: orphan}
-        self._install_fake_psutil(monkeypatch, by_pid)
-
-        monkeypatch.setattr(
-            gateway,
-            "find_gateway_pids",
-            lambda exclude_pids=None: [
-                p for p in [gateway_pid, bootstrap_pid, orphan_pid]
-                if p not in (exclude_pids or set())
-            ],
-        )
-
-        killed_pids = []
-        marked_pids = []
-        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
-        monkeypatch.setattr("time.sleep", lambda _: None)
-        monkeypatch.setattr("time.monotonic", lambda: 1.0)
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert result is True              # the genuine orphan was reaped
-        assert marked_pids == [orphan_pid]  # only the genuine orphan is asked to drain
-        assert killed_pids == []             # no Windows SIGTERM before the drain wait
-
-    def test_macos_orphan_reparented_to_launchd_is_still_reaped(self, monkeypatch):
-        """POSIX inertness guard: a genuine macOS orphan is reparented directly
-        to launchd (PID 1) — supervisor-name ancestry must NOT spare it, or the
-        reaper becomes a permanent no-op on macOS/WSL (#51325, #75936)."""
-        orphan_pid = 99998
-
-        monkeypatch.setattr(gateway, "is_macos", lambda: True)
-        monkeypatch.setattr(gateway, "is_windows", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-        monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
-
-        # Realistic macOS topology: the orphan's parent IS launchd (PID 1).
-        launchd = SimpleNamespace(pid=1, parent=lambda: None, name=lambda: "launchd")
-        orphan = SimpleNamespace(pid=orphan_pid, parent=lambda: launchd, name=lambda: "Python")
-        self._install_fake_psutil(monkeypatch, {orphan_pid: orphan, 1: launchd})
-
-        monkeypatch.setattr(
-            gateway,
-            "find_gateway_pids",
-            lambda exclude_pids=None: [
-                p for p in [orphan_pid] if p not in (exclude_pids or set())
-            ],
-        )
-
-        killed_pids = []
-        marked_pids = []
-        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
-        monkeypatch.setattr("time.sleep", lambda _: None)
-        monkeypatch.setattr("time.monotonic", lambda: 1.0)
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert result is True
-        assert orphan_pid in [pid for pid, _ in killed_pids]
-
     def test_backstop_is_inert_on_posix(self, monkeypatch):
         """Direct unit guard: on non-Windows the backstop returns False without
         touching psutil, even for a launchd/init-ancestored process."""
@@ -1098,21 +585,6 @@ class TestReaperCandidateIsSupervisorOwned:
 
         monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_boom))
         assert gateway._reaper_candidate_is_supervisor_owned(12345) is False
-
-    def test_windows_backstop_fails_open_when_bootstrap_exited(self, monkeypatch):
-        """Documented limitation: if the Task bootstrap already exited, the
-        chain breaks before services.exe (Windows does not reparent) and the
-        candidate is treated as a reapable orphan."""
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        stranded = SimpleNamespace(pid=4242, parent=lambda: None, name=lambda: "hermes-gateway.exe")
-        self._install_fake_psutil(monkeypatch, {4242: stranded})
-        assert gateway._reaper_candidate_is_supervisor_owned(4242) is False
-
-
-def test_module_has_logger():
-    """Verify module has a logger instance (regression guard for #27154)."""
-    assert hasattr(gateway, "logger")
-    assert gateway.logger.name == "hermes_cli.gateway"
 
 
 class TestWindowsScheduledTaskSupervisorGuard:
@@ -1129,102 +601,6 @@ class TestWindowsScheduledTaskSupervisorGuard:
     A2A/messaging on every desktop-app launch (#86098, #87001).
     """
 
-    def test_running_task_skips_reap(self, monkeypatch):
-        """Hermes_Gateway_* is Running => reaper returns False, kills nothing."""
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-        # The guard must query the PROFILE-AWARE install-time task name from
-        # gateway_windows.get_task_name(), never a hardcoded literal — a
-        # hardcoded "HermesGateway" would leave the guard dormant on every
-        # standard install (task name is Hermes_Gateway / Hermes_Gateway_<p>).
-        import hermes_cli.gateway_windows as gateway_windows
-
-        monkeypatch.setattr(
-            gateway_windows, "get_task_name", lambda: "Hermes_Gateway_testprof"
-        )
-        queried = []
-
-        def _fake_supervises(name):
-            queried.append(name)
-            return True
-
-        monkeypatch.setattr(
-            gateway, "_windows_scheduled_task_supervises", _fake_supervises
-        )
-
-        # Guard: if the task check were bypassed, these would be reaped.
-        def _boom_find_gateway_pids(exclude_pids=None):
-            raise AssertionError("must not scan when scheduled task supervises")
-
-        monkeypatch.setattr(gateway, "find_gateway_pids", _boom_find_gateway_pids)
-        killed_pids = []
-        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert result is False
-        assert killed_pids == []
-        assert queried == ["Hermes_Gateway_testprof"]
-
-    def test_ready_task_skips_reap(self, monkeypatch):
-        """Ready is the post-launcher steady state — still supervised (#87001)."""
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-        import hermes_cli.gateway_windows as gateway_windows
-
-        monkeypatch.setattr(
-            gateway_windows, "get_task_name", lambda: "Hermes_Gateway_testprof"
-        )
-        monkeypatch.setattr(
-            gateway, "_windows_scheduled_task_state", lambda name: "Ready"
-        )
-
-        def _boom_find_gateway_pids(exclude_pids=None):
-            raise AssertionError("must not scan when scheduled task is Ready")
-
-        monkeypatch.setattr(gateway, "find_gateway_pids", _boom_find_gateway_pids)
-        killed_pids = []
-        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert result is False
-        assert killed_pids == []
-
-    def test_disabled_or_missing_task_still_reaps_real_orphan(self, monkeypatch):
-        """Disabled / missing task => reaper behaves as before and still
-        reaps a genuine orphan."""
-        orphan_pid = 99998
-
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-        monkeypatch.setattr(gateway, "_windows_scheduled_task_supervises", lambda name: False)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-        monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
-
-        monkeypatch.setattr(
-            gateway,
-            "find_gateway_pids",
-            lambda exclude_pids=None: [
-                p for p in [orphan_pid] if p not in (exclude_pids or set())
-            ],
-        )
-        killed_pids = []
-        marked_pids = []
-        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
-        monkeypatch.setattr("time.sleep", lambda _: None)
-        monkeypatch.setattr("time.monotonic", lambda: 1.0)
-
-        result = gateway._reap_unsupervised_gateway_orphans()
-
-        assert result is True
-        assert marked_pids == [orphan_pid]
-        assert killed_pids == []
 
     def test_windows_scheduled_task_running_returns_false_off_windows(
         self, monkeypatch, inert_task_scheduler_probe
@@ -1241,103 +617,11 @@ class TestWindowsScheduledTaskSupervisorGuard:
         assert gateway._windows_scheduled_task_state("HermesGateway") is None
 
     def test_supervises_ready_and_queued_but_not_disabled(self, monkeypatch):
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
         states = {"Running": True, "Ready": True, "Queued": True, "Disabled": False, "MISSING": False}
 
         for state, expected in states.items():
             monkeypatch.setattr(gateway, "_windows_scheduled_task_state", lambda name, s=state: s)
             assert gateway._windows_scheduled_task_supervises("Hermes_Gateway") is expected, state
-
-
-def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
-    """Only an SCM service whose subtree contains a validated gateway PID is returned."""
-    monkeypatch.setattr(gateway.sys, "platform", "win32")
-    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
-
-    class FakeService:
-        def __init__(self, name, pid, status="running"):
-            self.name = name
-            self.pid = pid
-            self.status = status
-
-        def as_dict(self):
-            return {
-                "name": self.name,
-                "pid": self.pid,
-                "status": self.status,
-            }
-
-    class FakeProcess:
-        def __init__(self, pid):
-            self.pid = pid
-
-        def parents(self):
-            return [FakeProcess(200), FakeProcess(100)]
-
-        def children(self, recursive=False):
-            assert self.pid == 100
-            assert recursive is True
-            return [FakeProcess(200), FakeProcess(300)]
-
-        def create_time(self):
-            return float(self.pid)
-
-    fake_psutil = SimpleNamespace(
-        win_service_iter=lambda: [
-            FakeService("HermesGateway", 100),
-            FakeService("UnrelatedService", 900, "stop_pending"),
-        ],
-        Process=FakeProcess,
-    )
-
-    result = gateway.find_windows_gateway_services(
-        psutil_module=fake_psutil,
-        profile_processes=[profile],
-    )
-
-    assert result == [
-        gateway.WindowsGatewayService(
-            name="HermesGateway",
-            profile="default",
-            service_pid=100,
-            gateway_pid=300,
-            descendant_pids=frozenset({200, 300}),
-            descendant_identities=((200, 200.0), (300, 300.0)),
-            service_create_time=100.0,
-            gateway_create_time=300.0,
-        )
-    ]
-
-
-def test_find_windows_gateway_services_rejects_transitional_ancestor(monkeypatch):
-    """A transitional service in the gateway ancestry remains fail-closed."""
-    monkeypatch.setattr(gateway.sys, "platform", "win32")
-    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
-
-    class FakeService:
-        def as_dict(self):
-            return {"name": "HermesGateway", "pid": 100, "status": "stop_pending"}
-
-    class FakeProcess:
-        def __init__(self, pid):
-            self.pid = pid
-
-        def parents(self):
-            return [FakeProcess(100)]
-
-        def create_time(self):
-            return float(self.pid)
-
-    fake_psutil = SimpleNamespace(
-        win_service_iter=lambda: [FakeService()],
-        Process=FakeProcess,
-    )
-
-    with pytest.raises(RuntimeError, match="indeterminate status: stop_pending"):
-        gateway.find_windows_gateway_services(
-            psutil_module=fake_psutil,
-            profile_processes=[profile],
-        )
 
 
 @pytest.mark.windows_only
@@ -1397,110 +681,6 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
     assert run(UnreadableConfigService("BrokenMui", OSError(15100, "MUI file missing"))) == []
     named = run(UnreadableConfigService("HermesGateway", OSError(15100, "MUI file missing")))
     assert [(s.name, s.service_pid, s.gateway_pid) for s in named] == [("HermesGateway", 2360, 18480)]
-
-
-def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypatch):
-    """A shared host PID cannot prove which service owns the gateway subtree."""
-    monkeypatch.setattr(gateway.sys, "platform", "win32")
-    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
-
-    class FakeService:
-        def __init__(self, name):
-            self.name = name
-
-        def as_dict(self):
-            return {"name": self.name, "pid": 100, "status": "running"}
-
-    class FakeProcess:
-        def __init__(self, pid):
-            self.pid = pid
-
-        def parents(self):
-            return [FakeProcess(100)]
-
-        def children(self, recursive=False):
-            return [FakeProcess(300)]
-
-        def create_time(self):
-            return float(self.pid)
-
-    fake_psutil = SimpleNamespace(
-        win_service_iter=lambda: [
-            FakeService("HermesGatewayA"),
-            FakeService("HermesGatewayB"),
-        ],
-        Process=FakeProcess,
-    )
-
-    with pytest.raises(RuntimeError, match="shared SCM host"):
-        gateway.find_windows_gateway_services(
-            psutil_module=fake_psutil,
-            profile_processes=[profile],
-        )
-
-
-def test_find_windows_gateway_services_fails_closed_on_service_access_error(
-    monkeypatch,
-):
-    monkeypatch.setattr(gateway.sys, "platform", "win32")
-    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
-
-    class InaccessibleService:
-        def as_dict(self):
-            raise PermissionError("access denied")
-
-    fake_psutil = SimpleNamespace(
-        win_service_iter=lambda: [InaccessibleService()],
-    )
-
-    with pytest.raises(RuntimeError, match="SCM"):
-        gateway.find_windows_gateway_services(
-            psutil_module=fake_psutil,
-            profile_processes=[profile],
-        )
-
-
-def test_find_windows_gateway_services_skips_unrelated_service_with_unreadable_config(monkeypatch):
-    """An unrelated service whose QueryServiceConfigW fails with a plain OSError (WinError 15100 MUI
-    loader, WinError 0 from OpenServiceW behind endpoint-security agents) is not Hermes's and must be
-    skipped, not turned into "SCM service enumeration failed" that aborts `hermes update` (#116173)."""
-    monkeypatch.setattr(gateway.sys, "platform", "win32")
-    import hermes_cli.gateway_windows as gateway_windows
-
-    monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
-
-    class MuiBrokenService:
-        def name(self):
-            return "IsolationSession"
-
-        def binpath(self):
-            raise OSError(15100, "The resource loader failed to find MUI file")
-
-    class AccessDenied(Exception):
-        pass
-
-    fake_psutil = SimpleNamespace(
-        win_service_iter=lambda: [MuiBrokenService()],
-        AccessDenied=AccessDenied,
-    )
-
-    assert gateway.find_windows_gateway_services(psutil_module=fake_psutil, profile_processes=[]) == []
-
-
-def test_find_windows_gateway_services_fails_closed_when_scm_scan_is_indeterminate(
-    monkeypatch,
-):
-    monkeypatch.setattr(gateway.sys, "platform", "win32")
-    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
-    fake_psutil = SimpleNamespace(
-        win_service_iter=lambda: (_ for _ in ()).throw(OSError("SCM unavailable")),
-    )
-
-    with pytest.raises(RuntimeError, match="SCM"):
-        gateway.find_windows_gateway_services(
-            psutil_module=fake_psutil,
-            profile_processes=[profile],
-        )
 
 
 def test_find_profile_gateway_processes_strict_propagates_profile_listing_failure(

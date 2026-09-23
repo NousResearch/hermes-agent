@@ -234,7 +234,7 @@ def enabled_declarations(home: Path) -> list[PythonDeclaration]:
 def dependency_homes() -> list[Path]:
     """Every home whose plugins share this venv: the default home plus live named profiles."""
     from hermes_cli.profiles import profiles_to_serve
-    return [home for _name, home in profiles_to_serve(multiplex=True)]
+    return [home for _name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
 
 
 def union_specs(declarations: Iterable[PythonDeclaration]) -> list[str]:

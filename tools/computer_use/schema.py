@@ -147,7 +147,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return', 'escape', 'tab'. Use '+' to combine."
         ),
     },
-    "seconds": {"type": "number", "description": "Seconds to wait. Max 30."},
+    "seconds": {"type": "number", "description": "wait: seconds to pause (max 30)."},
     "raise_window": {
         "type": "boolean",
         "description": (
@@ -206,3 +206,4 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
 def get_computer_use_schema() -> Dict[str, Any]:
     """Return the generic OpenAI function-calling schema."""
     return COMPUTER_USE_SCHEMA
+

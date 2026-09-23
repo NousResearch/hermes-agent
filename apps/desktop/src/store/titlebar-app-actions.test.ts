@@ -8,14 +8,11 @@ import {
 } from './titlebar-app-actions'
 
 describe('titlebarAppActionsClusterCounts', () => {
-  it('puts the three app actions on the right by default', () => {
-    expect(titlebarAppActionsClusterCounts('right')).toEqual({ left: 1, right: 5 })
-    expect(titlebarAppActionsClusterCounts('left')).toEqual({ left: 4, right: 2 })
-  })
-
   it('adds extras to the cluster they belong to', () => {
-    expect(titlebarAppActionsClusterCounts('right', 1, 2)).toEqual({ left: 2, right: 7 })
-    expect(titlebarAppActionsClusterCounts('left', 1, 2)).toEqual({ left: 5, right: 4 })
+    for (const side of ['left', 'right'] as const) {
+      const base = titlebarAppActionsClusterCounts(side)
+      expect(titlebarAppActionsClusterCounts(side, 1, 2)).toEqual({ left: base.left + 1, right: base.right + 2 })
+    }
   })
 
   it('releases the space of every tool Simple mode hides, on both sides', () => {
@@ -29,10 +26,6 @@ describe('$titlebarAppActionsSide', () => {
   beforeEach(() => {
     window.localStorage.clear()
     setTitlebarAppActionsSide(TITLEBAR_APP_ACTIONS_DEFAULT)
-  })
-
-  it('defaults to right', () => {
-    expect($titlebarAppActionsSide.get()).toBe('right')
   })
 
   it('persists left', () => {

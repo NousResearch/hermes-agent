@@ -353,12 +353,10 @@ export const zhHant = defineLocale({
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo',
-        connectServers: (name, n) =>
-          n === 1 ? `${name} 已安裝。其 MCP 伺服器尚未連線。` : `${name} 已安裝。其 ${n} 個 MCP 伺服器尚未連線。`,
-        connectNow: '立即連線',
-        connectSub: '開啟的聊天會重新傳送其上下文',
-        connectFailed: '無法連線該外掛的 MCP 伺服器。',
-        liveNow: name => `${name} 已安裝並生效。`
+        toolsConnected: n => `已連線 ${n} 個工具`,
+        skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就緒` : `${names.length} 個技能已就緒`),
+        nextChat: '更多工具將在下一次聊天中可用',
+        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`
       }
     },
     closeSettings: '關閉設定',
@@ -1412,7 +1410,7 @@ export const zhHant = defineLocale({
     sessions: {
       loading: '正在載入已封存工作階段…',
       archivedTitle: '已封存工作階段',
-      archivedIntro: '已封存的聊天會從側邊欄隱藏，但保留全部訊息。在側邊欄 Ctrl/⌘ 點擊聊天即可封存。',
+      archivedIntro: '已封存的聊天會從側邊欄隱藏，但保留全部訊息。在側邊欄 Alt/⌥+Shift 點擊聊天即可封存。',
       emptyArchivedTitle: '暫無封存',
       emptyArchivedDesc: '封存一個聊天後會顯示在這裡。',
       unarchive: '取消封存',
@@ -2803,6 +2801,13 @@ export const zhHant = defineLocale({
     everythingSkipped: '已略過',
     everythingRowFailed: '更新失敗',
     everythingFanoutFailedTitle: '無法更新其他執行個體',
+    changeLogNew: '新增功能',
+    changeLogFixed: '修復',
+    changeLogFaster: '更快',
+    changeLogImproved: '改進',
+    changeLogOther: '其他改進',
+    changeLogFallbackLabel: '本次更新',
+    changeLogFallbackItem: '改進與修復',
     applyStatus: {
       preparing: '正在更新後端…',
       pulling: '後端更新中…',
@@ -3344,6 +3349,29 @@ export const zhHant = defineLocale({
   },
 
   assistant: {
+    catalogInstall: {
+      preparing: '正在準備安裝…',
+      install: '安裝',
+      advanced: '進階',
+      skip: '略過',
+      installing: '正在安裝…',
+      installed: '已安裝',
+      notInstalled: '未安裝',
+      failed: '失敗',
+      showNames: '顯示名稱',
+      hideNames: '隱藏名稱',
+      skill: name => `技能 ${name}`,
+      kind: { plugin: '外掛', skill: '技能' },
+      tier: { official: '官方', community: '社群' },
+      targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
+      sendFailed: '無法傳送你的回覆，請再試一次。',
+      commitLabel: '提交',
+      subdirLabel: '資料夾',
+      securityHeading: '安全性',
+      scan: { passed: '掃描通過', warnings: '掃描發現警告', failed: '掃描未通過' },
+      requirementsLabel: '需求',
+      credentialsHeading: '憑證'
+    },
     thread: {
       loadingSession: '正在載入工作階段',
       showEarlier: '顯示較早的訊息',
@@ -3541,6 +3569,8 @@ export const zhHant = defineLocale({
     sudoTitle: '管理員密碼',
     sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
     sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
+    sudoInstallDesc:
+      'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',

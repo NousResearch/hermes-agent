@@ -9,6 +9,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
+import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
@@ -119,6 +120,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
         <ClarifyTool {...props} />
       </>
     )
+  }
+
+  if (props.toolName === 'manage_catalog') {
+    return <CatalogInstallTool {...props} />
   }
 
   if (mcpTargets(props.toolName, props.args).length > 0) {

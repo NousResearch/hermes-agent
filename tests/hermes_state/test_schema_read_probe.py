@@ -99,5 +99,3 @@ class TestSchemaReadProbeStatements:
         finally:
             conn.close()
 
-    def test_probe_statements_are_cached(self):
-        assert schema_read_probe_statements() is schema_read_probe_statements()

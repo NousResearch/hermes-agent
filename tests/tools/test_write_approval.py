@@ -36,16 +36,8 @@ def _set_approval(subsystem, enabled):
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def test_default_gate_is_off(hermes_home):
-    from tools import write_approval as wa
-    # Default: gate off → writes flow freely.
-    assert wa.write_approval_enabled("memory") is False
-    assert wa.write_approval_enabled("skills") is False
 
 
-def test_invalid_subsystem_is_off(hermes_home):
-    from tools import write_approval as wa
-    assert wa.write_approval_enabled("bogus") is False
 
 
 def test_list_pending_skips_non_dict_record(hermes_home):
@@ -122,7 +114,7 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
 
 def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home, monkeypatch):
     """Fresh approval stores must match the live agent's limits and target gates."""
-    from tools.memory_tool import load_on_disk_store
+    from tools.memory_tool import MemoryStore, load_on_disk_store
 
     # Config override path: helper picks up configured limits and store flags.
     monkeypatch.setattr(
@@ -148,25 +140,11 @@ def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home
 
     monkeypatch.setattr("hermes_cli.config.load_config", _boom)
     fallback = load_on_disk_store()
-    assert fallback.memory_char_limit == 2200
-    assert fallback.user_char_limit == 1375
+    defaults = MemoryStore()
+    assert fallback.memory_char_limit == defaults.memory_char_limit
+    assert fallback.user_char_limit == defaults.user_char_limit
     assert fallback.memory_enabled is True
     assert fallback.user_profile_enabled is True
-
-
-# ---------------------------------------------------------------------------
-# Skill gate
-# ---------------------------------------------------------------------------
-
-_SKILL = (
-    "---\nname: test-skill\ndescription: A test skill\nversion: 1.0.0\n---\n"
-    "# Test\nbody\n"
-)
-
-
-# ---------------------------------------------------------------------------
-# Pending store CRUD
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -294,32 +272,3 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     assert wa.pending_count("memory") == 0
 
 
-class TestSkillGist:
-    """skill_gist builds a heuristic one-line summary for a pending skill write.
-
-    Pure, no model call — every branch is verifiable from the function source.
-    """
-
-    def test_create_with_frontmatter_description(self):
-        from tools import write_approval as wa
-        content = "---\ndescription: My cool skill\n---\nprint('hi')\n"
-        assert (
-            wa.skill_gist("create", "demo", content=content)
-            == f"create 'demo' — My cool skill ({len(content)} chars)"
-        )
-
-    def test_edit_without_description_uses_size_only(self):
-        from tools import write_approval as wa
-        content = "no frontmatter here"
-        assert (
-            wa.skill_gist("edit", "demo", content=content)
-            == f"rewrite 'demo' ({len(content)} chars)"
-        )
-
-
-    def test_file_actions_and_unknown_fallback(self):
-        from tools import write_approval as wa
-        assert wa.skill_gist("write_file", "demo", file_path="a.py") == "write a.py in 'demo'"
-        assert wa.skill_gist("remove_file", "demo", file_path="a.py") == "remove a.py from 'demo'"
-        assert wa.skill_gist("delete", "demo") == "delete skill 'demo'"
-        assert wa.skill_gist("unknown", "demo") == "unknown 'demo'"

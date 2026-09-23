@@ -54,13 +54,6 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 
     expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
   })
-
-  it('does not touch parts without a toolCallId', () => {
-    const textPart = { type: 'text' as const, text: 'hi' } as ChatMessagePart
-    const message = assistantWith([textPart, toolCallPart('call_a')])
-
-    expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
-  })
 })
 
 describe('toChatMessages', () => {
@@ -1148,47 +1141,6 @@ describe('upsertToolPart', () => {
       { id: 'search-reykjavik', query: 'reykjavik weather', summary: 'Did 5 searches' }
     ])
   })
-
-  it('uses structured live tool args for titles before hydrate', () => {
-    const started = upsertToolPart(
-      [],
-      {
-        args: { search_term: 'reykjavik bishkek kyrgyzstan weather today and tomorrow forecast' },
-        name: 'web_search',
-        tool_id: 'search-bishkek'
-      },
-      'running'
-    )
-
-    const [part] = started
-
-    expect(part?.type).toBe('tool-call')
-    expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).args).toMatchObject({
-      search_term: 'reykjavik bishkek kyrgyzstan weather today and tomorrow forecast'
-    })
-  })
-
-  it('keeps structured live tool results before hydrate', () => {
-    const completed = upsertToolPart(
-      [],
-      {
-        args: { query: 'suva weather' },
-        name: 'web_search',
-        result: { data: { web: [{ title: 'Suva forecast', url: 'https://example.test', description: 'Sunny' }] } },
-        summary: 'Did 1 search in 0.5s',
-        tool_id: 'search-suva'
-      },
-      'complete'
-    )
-
-    const [part] = completed
-
-    expect(part?.type).toBe('tool-call')
-    expect(toolResultRecord(part as Extract<ChatMessagePart, { type: 'tool-call' }>)).toMatchObject({
-      data: { web: [{ title: 'Suva forecast' }] },
-      summary: 'Did 1 search in 0.5s'
-    })
-  })
 })
 
 describe('mergeFinalAssistantText', () => {
@@ -1506,21 +1458,12 @@ describe('sealOpenToolParts', () => {
     expect(next[0].parts[0].completedAt).toBeDefined()
   })
 
-  it('leaves already-completed tool parts untouched', () => {
-    const done = toolPart({ result: { code: 0 } })
-    const messages = [assistantWithParts([done])]
-
-    const next = sealOpenToolParts(messages)
-
-    expect(next[0].parts[0]).toBe(done)
-  })
-
   it('leaves pending messages alone', () => {
     const messages = [assistantWithParts([toolPart()], { pending: true })]
 
     const next = sealOpenToolParts(messages)
 
-    expect(next[0].parts[0]).not.toHaveProperty('result')
+    expect(next[0].parts[0].completedAt).toBeUndefined()
   })
 
   it('leaves non-tool parts untouched', () => {

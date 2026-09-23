@@ -12,7 +12,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.secret_scope import get_secret
+from agent.secret_scope import get_secret, get_secret_str
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
@@ -70,7 +70,7 @@ def _resolve_endpoint() -> Tuple[str, str]:
     named = str(cfg.get("provider") or "").strip()
     named_base, named_key = _named_endpoint(named) if named else ("", "")
     base_url = (str(cfg.get("base_url") or "").strip().rstrip("/") or named_base
-                or os.environ.get("OPENAI_BASE_URL", "").strip())
+                or get_secret_str("OPENAI_BASE_URL").strip())
     key_env = str(cfg.get("key_env") or "").strip()
     api_key = (get_secret(key_env) if key_env else None) or named_key or get_secret("OPENAI_API_KEY") or ""
     return base_url, api_key

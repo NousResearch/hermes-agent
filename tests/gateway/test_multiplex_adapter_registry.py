@@ -834,7 +834,7 @@ class TestSecondaryProfileConfigHandling:
             runner._profile_adapters[profile_name] = {}
             return 2
 
-        def fake_profiles_to_serve(multiplex):
+        def fake_profiles_to_serve(multiplex, **kw):
             assert multiplex is True
             return [
                 ("default", Path("/tmp/default")),
@@ -902,7 +902,7 @@ class TestSecondaryProfileConfigHandling:
 
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [
+            lambda multiplex, **kw: [
                 ("default", Path("/tmp/default")),
                 ("unsafe", Path("/tmp/unsafe")),
             ],

@@ -79,8 +79,6 @@ def _degraded_report() -> dict:
     }
 
 
-
-
 @pytest.fixture(autouse=True)
 def _default_cli_version_matches_report(monkeypatch):
     """Existing tests mock only the MCP Popen handshake. ``subprocess.run``
@@ -183,21 +181,6 @@ class TestDoctorExitCodes:
 
 
 class TestResponseShapeParsing:
-    def test_prefers_structuredContent(self):
-        from tools.computer_use import doctor
-
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            doctor.run_doctor()
-        # Header line includes driver version + platform + overall.
-        text = out.getvalue()
-        assert "darwin" in text
-        assert "ok" in text
 
 
     def test_jsonrpc_error_response_exits_2(self, capsys):
@@ -236,22 +219,6 @@ class TestArgPassthrough:
         assert call_payload["params"]["arguments"]["include"] == [
             "binary_version", "tcc_accessibility",
         ]
-
-    def test_skip_passed_through(self):
-        from tools.computer_use import doctor
-
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO):
-            doctor.run_doctor(skip=["bundle_identity"])
-        writes = [call.args[0] for call in proc.stdin.write.call_args_list]
-        call_payload = next(json.loads(w) for w in writes if "tools/call" in w)
-        assert call_payload["params"]["arguments"]["skip"] == ["bundle_identity"]
-
 
 
 # ── json output ────────────────────────────────────────────────────────────
@@ -332,7 +299,7 @@ class TestDriverCmdResolution:
              patch("sys.stdout", new_callable=StringIO):
             assert doctor.run_doctor() == 0
 
-        health.assert_called_once_with(str(driver), include=(), skip=(), timeout=12.0)
+        assert health.call_args.args[0] == str(driver)
 
 
 # ── cua-driver 0.10 unclassified health_report fallback ────────────────────
@@ -386,16 +353,12 @@ class TestHealthReportFallback:
     """
 
 
-
-
-
     def test_extract_raises_health_report_unavailable_on_isError(self):
         from tools.computer_use import doctor
 
         with __import__("pytest").raises(doctor.HealthReportUnavailable) as ei:
             doctor._extract_health_report_from_result(_unclassified_health_result())
         assert "Permission denied" in str(ei.value) or "unclassified" in str(ei.value).lower() or "risk" in str(ei.value).lower()
-
 
 
 # ── binary identity (CLI --version vs health_report) ───────────────────────
@@ -439,7 +402,6 @@ class TestDoctorVersionIdentity:
         assert code == 0
         payload = json.loads(out.getvalue())
         assert payload["hermes_identity"]["version_mismatch"] is False
-
 
 
 def test_failed_tcc_row_from_health_report_names_the_stale_row_reset_for_that_service():

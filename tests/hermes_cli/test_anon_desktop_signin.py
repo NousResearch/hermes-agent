@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import time
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -97,11 +96,13 @@ def test_a_sign_in_cancelled_while_waiting_never_persists_the_account(portal, fr
         return {"status": "completed", "user_id": "nas_user:9", "account_email": EMAIL}
     monkeypatch.setattr(anon_auth, "wait_for_promotion", _wait_until_released)
 
+    threads_before = set(threading.enumerate())
     start = client.post("/api/providers/oauth/nous/start", headers=HEADERS).json()
     assert client.delete(f"/api/providers/oauth/sessions/{start['session_id']}", headers=HEADERS).json()["ok"] is True
     release.set()
-    for _ in range(100):
-        time.sleep(0.05)
+    # Let the poller finish whatever it does with the "completed" result before asserting.
+    for t in set(threading.enumerate()) - threads_before:
+        t.join(timeout=5)
     assert portal.token_grants == 0
     state = _load_auth_store()["providers"]["nous"]
     assert state["anon_token"] == guest["anon_token"] and anon_auth.is_guest_state(state)

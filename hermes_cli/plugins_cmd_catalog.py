@@ -93,7 +93,7 @@ def _adopt_legacy_sidecar(plugin_dir: Path, record: dict) -> Optional[dict]:
     """Installs made before provenance moved out of the tree carry only the in-tree file. Trust it once —
     only when the installer record agrees (pinned at that sha, cloned from that catalog entry's repo) —
     and copy it onto the record so later reads never consult the tree again."""
-    from hermes_cli.plugins_cmd import _read_install_metadata, _write_install_metadata
+    from hermes_cli.plugins_cmd import _update_install_record
     path = plugin_dir / CATALOG_SIDECAR
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
@@ -109,9 +109,7 @@ def _adopt_legacy_sidecar(plugin_dir: Path, record: dict) -> Optional[dict]:
     if _normalize_repo(source) != _normalize_repo(entry.repo):
         return None
     block = {"name": entry.name, "repo": entry.repo, "tier": str(data.get("tier") or entry.tier), "pin": sha, "sha": sha}
-    metadata = _read_install_metadata()
-    metadata[plugin_dir.name] = {**record, "catalog": block}
-    _write_install_metadata(metadata)
+    _update_install_record(plugin_dir.name, lambda current: {**current, "catalog": block} if current else None)
     return block
 
 

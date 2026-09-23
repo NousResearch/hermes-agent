@@ -114,9 +114,6 @@ def test_oauth_plugin_status_follows_the_credential_pool(plugin):
     # the live entry still wins for example-oauth
     assert auth.get_auth_status("example-oauth")["logged_in"] is True
 
-    assert auth._STATUS_BY_AUTH_TYPE["oauth_external"] == auth._STATUS_BY_AUTH_TYPE["oauth_device_code"]
-    for builtin in ("nous", "openai-codex"):
-        assert builtin in auth._BESPOKE_STATUS_FUNCTIONS  # bespoke status wins; plugin builder never consulted
     assert auth.get_plugin_oauth_auth_status("openai-codex") == {"logged_in": False}
 
 

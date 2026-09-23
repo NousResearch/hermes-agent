@@ -28,16 +28,13 @@ import {
 import {
   type ActiveTranscriptRefreshDeps,
   hydrateStoredSessionTranscript,
-  isTypingBurstActive,
-  noteRendererKeyboardActivity,
   profileScopeForTranscriptSession,
   reconcileActiveTranscript,
   reconcileTileTranscripts as reconcileTileTranscriptsForTest,
   rehydrateLiveSessionStatuses,
   resetTypingActivityTracking,
   resolveActiveTranscriptSession,
-  useBackgroundSync,
-  windowIsActivelyViewed
+  useBackgroundSync
 } from './use-background-sync'
 
 vi.mock('@/hermes', async importOriginal => ({
@@ -898,14 +895,6 @@ describe('reconcileActiveTranscript', () => {
   })
 })
 
-describe('windowIsActivelyViewed', () => {
-  it('requires both DOM visibility and keyboard focus', () => {
-    expect(windowIsActivelyViewed({ focused: true, visibilityState: 'visible' })).toBe(true)
-    expect(windowIsActivelyViewed({ focused: false, visibilityState: 'visible' })).toBe(false)
-    expect(windowIsActivelyViewed({ focused: true, visibilityState: 'hidden' })).toBe(false)
-  })
-})
-
 describe('rehydrateLiveSessionStatuses', () => {
   it('restores running sessions after reconnect without opening them', () => {
     const now = 1_800_000_000_000
@@ -1121,22 +1110,6 @@ describe('typing-aware sessions.changed deferral', () => {
     })
 
     expect(refreshSessions).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('isTypingBurstActive', () => {
-  it('marks a burst warm for the quiet threshold and cold at it', () => {
-    resetTypingActivityTracking()
-
-    // No keyboard history → nothing to defer for.
-    expect(isTypingBurstActive(1_000_000)).toBe(false)
-
-    noteRendererKeyboardActivity(1_000_000)
-    expect(isTypingBurstActive(1_000_000)).toBe(true)
-    expect(isTypingBurstActive(1_000_000 + 1_499)).toBe(true)
-
-    // Exactly one quiet threshold after the last key the keyboard is cold.
-    expect(isTypingBurstActive(1_000_000 + 1_500)).toBe(false)
   })
 })
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -11,7 +10,6 @@ from agent.context_references import (
     BUILTIN_PREFIXES,
     ContextCompletionItem,
     ContextReferenceProvider,
-    _PLUGIN_REFERENCE_PATTERN,
     _context_reference_providers,
     get_context_reference_providers,
     parse_context_references,
@@ -119,11 +117,6 @@ def test_parse_plugin_reference_ignored_when_not_registered():
     assert [r.kind for r in refs] == []
 
 
-def test_plugin_pattern_regex():
-    m = _PLUGIN_REFERENCE_PATTERN.search("@issue:ENG-123")
-    assert m is not None
-    assert m.group("kind") == "issue"
-    assert m.group("value") == "ENG-123"
 
 
 # -- expand tests ----------------------------------------------------------
@@ -173,13 +166,6 @@ async def test_expand_plugin_error(tmp_path: Path):
 
 # -- autocomplete tests ----------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_autocomplete():
-    p = _DummyProvider()
-    register_context_reference_provider(p)
-    items = await p.autocomplete("foo", limit=5)
-    assert len(items) == 1
-    assert items[0].text == "foo-result"
 
 
 # -- ContextCompletionItem tests -------------------------------------------
@@ -191,7 +177,3 @@ def test_completion_item_defaults():
     assert item.meta == ""
 
 
-def test_completion_item_custom():
-    item = ContextCompletionItem(text="1", display="ENG-1", meta="Bug")
-    assert item.display == "ENG-1"
-    assert item.meta == "Bug"

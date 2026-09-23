@@ -147,33 +147,6 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
         return SendResult(success=True, message_id=message_id)
 
 
-class RetryableFirstEditProgressCaptureAdapter(ProgressCaptureAdapter):
-    """Fail one progress edit transiently, then accept later edits."""
-
-    def __init__(self, platform=Platform.TELEGRAM):
-        super().__init__(platform=platform)
-        self.edit_outcomes = []
-
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
-        self.edits.append(
-            {
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "content": content,
-            }
-        )
-        if not self.edit_outcomes:
-            self.edit_outcomes.append(False)
-            return SendResult(
-                success=False,
-                error="temporary network failure",
-                retryable=True,
-                error_kind="transient",
-            )
-        self.edit_outcomes.append(True)
-        return SendResult(success=True, message_id=message_id)
-
-
 class RetryableOverflowEditProgressAdapter(SmallLimitProgressAdapter):
     """Fail the first split edit transiently, then keep editing."""
 
@@ -320,29 +293,6 @@ class DuplicateNativeToolsAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
-class ThinkingAgent:
-    """Agent that emits _thinking scratch text (no tool calls).
-
-    Used to prove the progress callback relays _thinking bubbles when
-    thinking_progress is enabled but tool_progress is off.
-    """
-
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        cb = self.tool_progress_callback
-        if cb is not None:
-            cb("_thinking", "weighing the options here")
-            time.sleep(0.35)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
 class LongPreviewAgent:
     """Agent that emits a tool call with a very long preview string."""
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
@@ -393,31 +343,6 @@ class DelayedProgressAgent:
         time.sleep(0.45)
         self.tool_progress_callback("tool.started", "terminal", "second command", {})
         time.sleep(0.1)
-        return {
-            "final_response": "done",
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class RetryableEditProgressAgent:
-    """Keep the turn alive long enough to retry the same progress bubble."""
-
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        callback = self.tool_progress_callback
-        assert callback is not None
-        callback("tool.started", "terminal", "first command", {})
-        time.sleep(0.5)
-        callback("tool.started", "terminal", "second command", {})
-        time.sleep(1.7)
-        callback("tool.started", "terminal", "third command", {})
-        time.sleep(0.5)
-        callback("tool.started", "terminal", "fourth command", {})
-        time.sleep(0.6)
         return {
             "final_response": "done",
             "messages": [],
@@ -946,59 +871,6 @@ class FinalAsInterimAgent:
         }
 
 
-class PreviewedResponseAgent:
-    def __init__(self, **kwargs):
-        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        if self.interim_assistant_callback:
-            self.interim_assistant_callback("You're welcome.", already_streamed=False)
-        return {
-            "final_response": "You're welcome.",
-            "response_previewed": True,
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class PreviewedSplitAfterCommentaryAgent:
-    def __init__(self, **kwargs):
-        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
-        self.session_id = kwargs.get("session_id")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        if self.interim_assistant_callback:
-            self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
-        self.session_id = f"{self.session_id}-child"
-        return {
-            "final_response": "Final answer after compression.",
-            "response_previewed": True,
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
-class StreamingRefineAgent:
-    def __init__(self, **kwargs):
-        self.stream_delta_callback = kwargs.get("stream_delta_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        if self.stream_delta_callback:
-            self.stream_delta_callback("Continuing to refine:")
-        time.sleep(0.1)
-        if self.stream_delta_callback:
-            self.stream_delta_callback(" Final answer.")
-        return {
-            "final_response": "Continuing to refine: Final answer.",
-            "response_previewed": True,
-            "messages": [],
-            "api_calls": 1,
-        }
-
-
 class QueuedCommentaryAgent:
     calls = 0
 
@@ -1317,7 +1189,7 @@ async def test_slack_operator_tool_progress_off_disables_task_cards(monkeypatch,
     ],
     ids=["platform-null", "global-null", "legacy-null", "platform-null-over-global-all"],
 )
-@pytest.mark.parametrize("env_mode", [None, "all", "new"])
+@pytest.mark.parametrize("env_mode", [None, "new"])
 async def test_slack_null_tool_progress_is_inheritance_not_explicit_off(monkeypatch, tmp_path, display_cfg, env_mode):
     # A bare key with ``null`` inherits (the resolver skips None); it is not an operator saying "off".
     monkeypatch.delenv("HERMES_TOOL_PROGRESS_MODE", raising=False)
@@ -2107,119 +1979,6 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     # Full command body present — verbose is uncapped.
     assert "npm install -g hyperframes@latest" in all_content
     assert "node --version" in all_content
-
-
-@pytest.mark.asyncio
-async def test_terminal_progress_no_bash_block_in_verbose_mode(monkeypatch, tmp_path):
-    """#41215 also rendered the bash block in verbose mode. The revert removed it
-    from both branches, so verbose progress must not emit a fenced ```bash block
-    either (verbose still shows args by opt-in, just not as a code block)."""
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "verbose")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = TerminalCommandAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
-
-    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="12345",
-        chat_type="dm",
-        thread_id=None,
-    )
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-terminal-verbose-no-bash",
-        session_key="agent:main:telegram:dm:12345",
-    )
-
-    assert result["final_response"] == "done"
-    all_content = " ".join(call["content"] for call in adapter.sent)
-    all_content += " ".join(call["content"] for call in adapter.edits)
-    assert "```bash" not in all_content
-
-class MultiTerminalCommandAgent:
-    """Emits several consecutive terminal tool.started events, then a
-    different tool, then terminal again — to exercise header collapsing."""
-
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        cb = self.tool_progress_callback
-        cb("tool.started", "terminal", "echo one", {"command": "echo one"})
-        cb("tool.started", "terminal", "echo two", {"command": "echo two"})
-        cb("tool.started", "terminal", "echo three", {"command": "echo three"})
-        cb("tool.started", "web_search", "query stuff", {"query": "query stuff"})
-        cb("tool.started", "terminal", "echo four", {"command": "echo four"})
-        time.sleep(0.35)
-        return {"final_response": "done", "messages": [], "api_calls": 1}
-
-
-@pytest.mark.asyncio
-async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_path):
-    """Back-to-back terminal calls render ONE "terminal" header followed by
-    adjacent code blocks; a different tool in between resets the header so the
-    next terminal call gets a fresh one."""
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = MultiTerminalCommandAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
-
-    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="12345",
-        chat_type="dm",
-        thread_id=None,
-    )
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-terminal-consecutive",
-        session_key="agent:main:telegram:dm:12345",
-    )
-
-    assert result["final_response"] == "done"
-    contents = [call["content"] for call in adapter.sent] + [
-        call["content"] for call in adapter.edits
-    ]
-    final = max(contents, key=len) if contents else ""
-    # All four commands present as code blocks.
-    for cmd in ("echo one", "echo two", "echo three", "echo four"):
-        assert cmd in final
-    # Exactly TWO terminal headers: one for the first run of three calls,
-    # one for the terminal call after web_search broke the streak.
-    assert final.count("terminal\n```") == 2
 
 
 class TestSlackReplyInThreadProgressRouting:

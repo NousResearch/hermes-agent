@@ -373,11 +373,10 @@ def is_installed(name: str) -> bool:
 
 
 def server_enabled(cfg: dict) -> bool:
-    """Interpret a server block's ``enabled`` flag (bools, and yes/true/1 strings)."""
-    enabled = cfg.get("enabled", True)
-    if isinstance(enabled, str):
-        return enabled.lower() in {"true", "1", "yes"}
-    return bool(enabled)
+    """Whether the server block is on: the same reader the MCP client uses."""
+    from tools.mcp_tool_common import mcp_server_enabled
+
+    return mcp_server_enabled(cfg)
 
 
 def is_enabled(name: str) -> bool:

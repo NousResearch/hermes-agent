@@ -2425,13 +2425,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `save_b64_image` | moved-lazy | `agent.image_gen_provider` |
 | `save_url_image` | moved-lazy | `agent.image_gen_provider` |
 
-### `plugins.memory.hindsight`
-
-| name | kind | new location |
-|---|---|---|
-| `dataclass` | import | `dataclasses` |
-| `importlib` | import | `importlib` |
-
 ### `plugins.memory.honcho`
 
 | name | kind | new location |

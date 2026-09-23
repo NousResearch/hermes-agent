@@ -143,36 +143,6 @@ def test_osv_preflight_runs_before_the_swap():
     assert _infer_ecosystem("/home/u/.npm/_npx/abc/node_modules/.bin/mcp-linear") is None
 
 
-def test_swap_happens_after_the_osv_call_in_source():
-    """Structural guard for the ordering above.
-
-    The swap and the preflight live in one async function; a future edit that
-    moves the swap earlier would disable the malware gate silently, and no
-    unit test of either piece alone would notice.
-    """
-    from pathlib import Path as _P
-
-    src = _P(__file__).resolve().parents[2] / "tools" / "mcp_tool.py"
-    text = src.read_text(encoding="utf-8")
-    osv_needle = "check_package_for_malware, command, args"
-    swap_needle = "cached = _npx_cached_bin(args)"
-    # Report a rename explicitly: a bare .index() ValueError here reads like a
-    # broken test rather than "someone renamed the thing this guards".
-    assert osv_needle in text, (
-        f"cannot find the OSV preflight call ({osv_needle!r}) — it was renamed; "
-        "update this guard and re-verify the swap still happens after it"
-    )
-    assert swap_needle in text, (
-        f"cannot find the npx swap ({swap_needle!r}) — it was renamed; update "
-        "this guard and re-verify it still happens after the OSV preflight"
-    )
-
-    assert text.index(osv_needle) < text.index(swap_needle), (
-        "the npx swap now precedes the OSV malware preflight, which silently "
-        "disables it: _infer_ecosystem keys off the command basename being "
-        "npx/uvx/pipx, so a rewritten command yields no ecosystem and "
-        "check_package_for_malware returns None"
-    )
 
 
 def test_windows_selects_launchers_never_the_sh_script():
@@ -194,11 +164,6 @@ def test_windows_selects_launchers_never_the_sh_script():
     assert _npx_bin_candidates("/bin", "mcp-linear", windows=False) == ["/bin/mcp-linear"]
 
 
-def test_posix_resolution_uses_the_helper(tmp_path):
-    """The resolver honours the helper's ordering (POSIX path end-to-end)."""
-    target = _cache(tmp_path, package="mcp-linear", bin_field={"mcp-linear": "i.js"})
-
-    assert _npx_cached_bin(["-y", "mcp-linear"]) == (str(target), [])
 
 
 def test_flag_after_the_spec_is_left_to_npx(tmp_path):

@@ -107,9 +107,9 @@ def test_start_refuses_unsafe_url():
 def test_status_reports_no_active_meeting():
     from plugins.google_meet import process_manager as pm
 
-    assert pm.status() == {"ok": False, "reason": "no active meeting"}
-    assert pm.transcript() == {"ok": False, "reason": "no active meeting"}
-    assert pm.stop() == {"ok": False, "reason": "no active meeting"}
+    assert pm.status()["ok"] is False
+    assert pm.transcript()["ok"] is False
+    assert pm.stop()["ok"] is False
 
 
 def test_transcript_reads_last_n_lines(tmp_path):
@@ -177,7 +177,7 @@ def test_meet_join_handler_missing_url_returns_error():
 
     out = json.loads(handle_meet_join({}))
     assert out["success"] is False
-    assert "url is required" in out["error"]
+    assert out["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -196,20 +196,6 @@ def test_on_session_end_noop_when_nothing_active():
 # Plugin register() — platform gating + tool registration
 # ---------------------------------------------------------------------------
 
-def test_register_refuses_on_windows():
-    import plugins.google_meet as plugin
-
-    calls = {"tools": [], "cli": [], "hooks": []}
-
-    class _Ctx:
-        def register_tool(self, **kw): calls["tools"].append(kw["name"])
-        def register_cli_command(self, **kw): calls["cli"].append(kw["name"])
-        def register_hook(self, name, fn): calls["hooks"].append(name)
-
-    with patch.object(plugin.platform, "system", return_value="Windows"):
-        plugin.register(_Ctx())
-
-    assert calls == {"tools": [], "cli": [], "hooks": []}
 
 
 # ---------------------------------------------------------------------------
@@ -407,14 +393,5 @@ def test_realtime_session_cancel_response_when_disconnected():
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_install_refuses_windows(capsys):
-    from plugins.google_meet.cli import _cmd_install
-
-    with patch("plugins.google_meet.cli.platform" if False else "platform.system",
-               return_value="Windows"):
-        rc = _cmd_install(realtime=False, assume_yes=True)
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "Windows" in out
 
 

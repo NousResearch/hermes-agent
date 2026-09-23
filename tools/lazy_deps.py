@@ -107,14 +107,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.2.0",),
-    # Plugin-owned SDKs mirror the range their plugin.yaml declares instead of an exact pin: an exact pin
-    # made _is_satisfied() reject every newer compatible release, so `hermes update` (and the hindsight
-    # plugin's own >=_MIN_CLIENT_VERSION auto-upgrade) kept downgrading a working 0.9.x client to 0.6.1
-    # and broke embedded daemons whose DB a newer client had migrated (#86992, #39424, #98407).
-    "memory.hindsight": ("hindsight-client>=0.6.1,<1",),
     # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
     # install on the sealed Docker image (durable-target only).
     "memory.supermemory": ("supermemory==3.50.0",),
+    # Plugin-owned SDKs mirror the range their plugin.yaml declares instead of an exact pin: an exact pin
+    # made _is_satisfied() reject every newer compatible release, so `hermes update` kept downgrading a
+    # working newer client and broke daemons whose DB it had migrated (#86992, #39424, #98407).
     "memory.mem0": ("mem0ai>=2.0.10,<3",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
@@ -206,15 +204,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "httpx2==2.7.0",  # mcp 2.x HTTP stack — sync with pyproject [computer-use]
         "starlette==1.3.1",
     ),
-    # huggingface-hub is SHARED with transformers (>=1.5.0,<2 via Hindsight) and marked active
-    # on mere presence, so `hermes update` re-asserts this pin everywhere hub exists. MUST stay
-    # inside transformers' window and match uv.lock (tests/test_project_metadata.py enforces).
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace). huggingface-hub is a SHARED
-    # dependency: transformers (pulled by sentence-transformers for local Hindsight embeddings) requires
-    # >=1.5.0,<2, and faster-whisper/tokenizers depend on it transitively. Because active_features() marks a
-    # feature active from mere package presence, the `hermes update` lazy-refresh pass re-asserts THIS pin
-    # on every install where hub is present — so an exact pin below 1.5.0 force-downgrades the shared
-    # package and breaks Hindsight startup (#60783). Policy: keep the exact pin (no ranges — security
+    # dependency: transformers (pulled by sentence-transformers when a memory plugin runs local embeddings,
+    # e.g. the catalog hindsight plugin's local_embedded mode) requires >=1.5.0,<2, and
+    # faster-whisper/tokenizers depend on it transitively. Because active_features() marks a feature active
+    # from mere package presence, the `hermes update` lazy-refresh pass re-asserts THIS pin on every install
+    # where hub is present — so an exact pin below 1.5.0 force-downgrades the shared package and breaks
+    # those embedding daemons on startup (#60783). Policy: keep the exact pin (no ranges — security
     # posture), but it MUST stay inside transformers' accepted window and MUST match uv.lock so the whole
     # tree converges on ONE hub version (tests/test_project_metadata.py enforces both). When bumping: update
     # here AND `uv lock --upgrade-package huggingface-hub` in lockstep.

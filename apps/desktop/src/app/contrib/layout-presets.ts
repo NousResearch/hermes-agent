@@ -53,7 +53,7 @@ const FOCUS_TREE = split(
 // files a right column that ⌘J / ⌘G open. A tree that simply omitted them was
 // a lie — applying it adopts every missing pane back in as workspace tabs,
 // which is Focus.
-const BASIC_TREE = split(
+export const BASIC_TREE = split(
   'row',
   [
     group(['sessions']),

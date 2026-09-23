@@ -241,11 +241,25 @@ export interface AgentPluginInstallResult {
   warnings?: string[]
   missingEnv?: string[]
   error?: string
-  /** Plugin MCP servers not connected yet (`activation.deferred.mcp_servers`). */
-  deferredMcpServers: string[]
-  /** A running gateway already re-wired the plugin's handlers. */
-  gatewayReloaded: boolean
+  /** What became usable in open chats of the profile (`activation.live_now`). */
+  live: AgentPluginLiveNow
+  /** Python tools or prompt sections that wait for the next chat (`activation.deferred`). */
+  nextChat: boolean
 }
+
+export interface AgentPluginLiveServer {
+  name: string
+  connected: boolean
+  tools: string[]
+  error?: string | null
+}
+
+export interface AgentPluginLiveNow {
+  mcpServers: AgentPluginLiveServer[]
+  skills: string[]
+}
+
+const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
 
 export async function installAgentPlugin(
   request: GatewayRequest,
@@ -268,8 +282,13 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
-      activation?: { activated_now?: Record<string, string[]>; deferred?: Record<string, string[]> } | null
-      gateway_reloaded?: boolean
+      activation?: {
+        live_now?: {
+          mcp_servers?: AgentPluginLiveServer[]
+          skills?: { name: string }[]
+        } | null
+        deferred?: Record<string, string[]>
+      } | null
       error?: string
     }>(
       'plugins.manage',
@@ -287,7 +306,7 @@ export async function installAgentPlugin(
     )
 
     if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed', deferredMcpServers: [], gatewayReloaded: false }
+      return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
     }
 
     return {
@@ -295,15 +314,19 @@ export async function installAgentPlugin(
       pluginName: result.plugin_name,
       warnings: result.warnings,
       missingEnv: result.missing_env,
-      deferredMcpServers: result.activation?.deferred?.mcp_servers ?? [],
-      gatewayReloaded: Boolean(result.gateway_reloaded)
+      live: {
+        mcpServers: result.activation?.live_now?.mcp_servers ?? [],
+        // `<namespace>:<skill>` is what the model loads; the toast shows the skill's own name.
+        skills: (result.activation?.live_now?.skills ?? []).map(skill => skill.name.split(':').pop() ?? skill.name)
+      },
+      nextChat: Object.keys(result.activation?.deferred ?? {}).length > 0
     }
   } catch (e) {
     return {
       ok: false,
       error: e instanceof Error ? e.message : String(e),
-      deferredMcpServers: [],
-      gatewayReloaded: false
+      live: NO_LIVE,
+      nextChat: false
     }
   }
 }

@@ -9,7 +9,8 @@ gateway housekeeping, claims and fires those jobs after a grace window.
 
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -67,6 +68,27 @@ def _park_in_past(job_id, minutes):
 
 
 class TestFireOverdueJobs:
+    def test_future_fold_one_slot_is_not_overdue_in_fold_zero(self, tmp_cron_dir, monkeypatch):
+        """A repeated-hour slot stays future in the external-provider backstop too."""
+        import hermes_time
+
+        monkeypatch.setenv("HERMES_TIMEZONE", "America/New_York")
+        hermes_time.reset_cache()
+        try:
+            zone = ZoneInfo("America/New_York")
+            now = datetime(2026, 11, 1, 5, 40, tzinfo=timezone.utc).astimezone(zone)
+            next_run = datetime(2026, 11, 1, 6, 0, tzinfo=timezone.utc).astimezone(zone)
+            monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+            create_job(prompt="p", schedule="every 1h")
+            rows = load_jobs()
+            rows[0]["next_run_at"] = next_run.isoformat()
+            save_jobs(rows)
+
+            assert now.fold == 0 and next_run.fold == 1
+            assert fire_overdue_jobs(RecordingProvider(), now=now) == 0
+        finally:
+            hermes_time.reset_cache()
+
     def test_noop_for_builtin_provider(self, tmp_cron_dir):
         """The in-process ticker self-heals past-due jobs — the sweep must
         never double-dispatch under it."""

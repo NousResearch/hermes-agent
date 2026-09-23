@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
 logger = logging.getLogger(__name__)
 
 _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
+_SUPERVISOR_LOCK = threading.Lock()
 
 
 def _detect_gpu_vendor() -> str | None:
@@ -268,6 +270,17 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
     falls back to configured providers."""
+    section = (config or {}).get("local_runtime") or {}
+    if not force and not section.get("enabled"):
+        return None
+    # start() waits for health and can take up to two minutes. Hold the singleton lock for the
+    # complete boot path so concurrent session starts reuse that one in-flight supervisor.
+    with _SUPERVISOR_LOCK:
+        return _ensure_local_runtime(config, force)
+
+
+def _ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
+    """Run the enabled managed-runtime boot path while holding ``_SUPERVISOR_LOCK``."""
     global _SUPERVISOR
     section = (config or {}).get("local_runtime") or {}
     if not force and not section.get("enabled"):

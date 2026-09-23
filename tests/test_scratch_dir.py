@@ -31,6 +31,24 @@ def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
     assert user_env["TMPDIR"] == "/var/folders/zz" and "HERMES_SCRATCH_DIR" not in user_env
     assert "TMP" not in user_env  # a partially user-set triple is left exactly as found
 
+@pytest.mark.windows_only
+def test_git_bash_default_tmp_triple_yields_to_scratch_but_custom_temp_does_not(tmp_path):
+    """Regression for #120323: the inherited MSYS /tmp triple is not a user override."""
+    home = str(tmp_path / "home")
+    env = {"HERMES_HOME": home, "MSYSTEM": "MINGW64",
+           "TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": "/tmp"}
+    assert apply_scratch_tmp_env(env) is True
+    scratch = str(tmp_path / "home" / "cache" / "scratch")
+    assert all(env[key] == scratch for key in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR"))
+
+    custom = {"HERMES_HOME": home, "MSYSTEM": "MINGW64",
+              "TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": str(tmp_path / "custom")}
+    assert apply_scratch_tmp_env(custom) is False
+    assert custom["TMPDIR"] == "/tmp" and "HERMES_SCRATCH_DIR" not in custom
+
+    native = {"HERMES_HOME": home, "TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": "/tmp"}
+    assert apply_scratch_tmp_env(native) is False
+
 
 def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
     """``import hermes_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch."""

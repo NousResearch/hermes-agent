@@ -211,6 +211,27 @@ def _profile_author() -> str:
         return "user"
 
 
+def _author_for(args: argparse.Namespace, action: str) -> str:
+    """Resolve the comment/attachment author with CLI-side anti-forgery (V2, t_3a5d14ef R3).
+
+    Parity with the tool path, which binds the comment author to the worker's
+    profile instead of trusting caller-supplied args (#19713): a
+    dispatcher-spawned worker must not be able to forge an arbitrary author
+    (e.g. ``--author hermes-system``) because ``build_worker_context``
+    injects comments into future worker prompts with the author rendered as
+    an authority. Operators may still pass ``--author`` explicitly via
+    ``--operator``; workers get their profile name, period.
+    """
+    requested = getattr(args, "author", None)
+    explicit_operator = getattr(args, "operator", False)
+    if requested and requested != _profile_author() and not explicit_operator:
+        raise ValueError(
+            f"--author {requested!r} does not match this profile ({_profile_author()!r}); "
+            "pass --operator to override as a human operator"
+        )
+    return requested or _profile_author()
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
@@ -761,7 +782,7 @@ def _cmd_comment(args: argparse.Namespace) -> int:
         if len(body) > args.max_len:
             suffix = f"\n\n[trimmed to {args.max_len} chars by --max-len]"
             body = body[: max(0, args.max_len - len(suffix))].rstrip() + suffix
-    author = args.author or _profile_author()
+    author = _author_for(args, "comment")
     with kbc.connect_closing() as conn:
         kb.add_comment(conn, args.task_id, author, body)
     print(f"Comment added to {args.task_id}")
@@ -780,7 +801,7 @@ def _cmd_attach(args: argparse.Namespace) -> int:
     data = src.read_bytes()
     name = args.name or src.name
     content_type = args.content_type or mimetypes.guess_type(name)[0]
-    uploaded_by = args.author or _profile_author()
+    uploaded_by = _author_for(args, "attach")
     try:
         with kbc.connect_closing() as conn:
             att_id = kb.store_attachment_bytes(conn, args.task_id, name, data, content_type=content_type,
@@ -818,7 +839,41 @@ def _cmd_attach_rm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_worker_env_stripped() -> bool:
+    """Detect a dispatcher-spawned worker that stripped its identity vars (V1, t_3a5d14ef R1).
+
+    The dispatcher pins ``HERMES_KANBAN_TASK``, ``HERMES_KANBAN_RUN_ID``,
+    ``HERMES_KANBAN_CLAIM_LOCK`` *and* ``HERMES_KANBAN_WORKSPACE`` /
+    ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` in the worker's spawn env
+    (kanban_db_dispatch.py). ``kanban_tools.py`` refuses orchestrator tools to
+    dispatcher-owned workers on exactly those pins, so a worker that unsets
+    only the *identity* trio (``env -u HERMES_KANBAN_TASK -u
+    HERMES_KANBAN_RUN_ID -u HERMES_KANBAN_CLAIM_LOCK ...``) keeps the
+    ambient dispatcher pins — and the CLI would then misread it as an
+    operator and allow cross-task mutations. The reverse (operator shells
+    with stray identity vars) cannot occur: the identity vars are only ever
+    set by the dispatcher's spawn.
+
+    Returns ``True`` when the ambient workspace pin is present without the
+    task pin — i.e. an operator context is implausible and the call must be
+    treated as a stripped worker shell.
+    """
+    if os.environ.get("HERMES_KANBAN_WORKSPACE") and not os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+    # Same suspicion when the dispatcher's board pins survive without identity.
+    if os.environ.get("HERMES_KANBAN_BOARD") and not os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+    return False
+
+
 def _worker_run_id_for(task_id: str) -> Optional[int]:
+    if _is_worker_env_stripped():
+        raise ValueError(
+            "worker identity vars are unset but dispatcher pins "
+            "(HERMES_KANBAN_WORKSPACE/BOARD) are still present — refusing to treat "
+            "this as an operator call; workers must mutate their own task through "
+            "the kanban_* tools, not by stripping HERMES_KANBAN_* from their shell"
+        )
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     if env_tid and env_tid != task_id:
         raise ValueError(f"worker is scoped to task {env_tid}; refusing to mutate {task_id}")

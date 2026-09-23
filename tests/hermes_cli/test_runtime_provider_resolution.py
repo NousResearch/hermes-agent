@@ -623,6 +623,90 @@ def test_openai_key_used_when_no_openrouter_key(monkeypatch):
     assert resolved["api_key"] == "sk-openai-fallback"
 
 
+def test_openrouter_env_file_key_survives_exhausted_pool(monkeypatch):
+    """A key living only in ~/.hermes/.env must survive an exhausted pool entry.
+
+    Regression test for #117667: with the pool's OPENROUTER_API_KEY entry benched
+    (select() -> None), the terminal resolver read os.environ only, so the documented
+    .env location was skipped and `hermes chat --provider openrouter` failed with
+    "No API key found" until the key was exported in the shell.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None),
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    or_env_name = "OPENROUTER_" + "API_KEY"
+    monkeypatch.delenv(or_env_name, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env", lambda: {or_env_name: "dotenv-or-key"}
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "dotenv-or-key"
+
+
+def test_openrouter_raw_op_ref_in_dotenv_loses_to_resolved_env(monkeypatch):
+    """A raw op:// reference in .env must lose to the resolved os.environ value on the
+    terminal resolver path.
+
+    Mirrors test_credential_pool_prefers_resolved_env_over_raw_op_ref: a 1Password
+    user keeps ``OPENROUTER_API_KEY=op://Vault/Item/field`` in .env while the resolved
+    key is exported into os.environ at startup. With the pool entry exhausted
+    (select() -> None), the fallback must send the resolved key, not the op:// URL
+    (which the provider would reject with 401)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None),
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    or_env_name = "OPENROUTER_" + "API_KEY"
+    monkeypatch.setenv(or_env_name, "resolved-or-key")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env", lambda: {or_env_name: "op://Vault/Item/field"}
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "resolved-or-key"
+
+
+def test_openai_env_file_key_used_as_fallback_without_openrouter_key(monkeypatch):
+    """The OPENAI_API_KEY .env rung of the same fallback works like the OpenRouter one.
+
+    Covers the second candidate (runtime_provider_backends reads both keys through
+    get_env_value_prefer_dotenv): with no OpenRouter key anywhere, a key living only
+    in ~/.hermes/.env still resolves the rung-8 fallback."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda _provider: SimpleNamespace(has_credentials=lambda: True, select=lambda **_kw: None),
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    oa_env_name = "OPENAI_" + "API_KEY"
+    or_env_name = "OPENROUTER_" + "API_KEY"
+    monkeypatch.delenv(oa_env_name, raising=False)
+    monkeypatch.delenv(or_env_name, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env", lambda: {oa_env_name: "dotenv-openai-key"}
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "dotenv-openai-key"
+
+
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
     """Persisted custom endpoints in config.yaml must still resolve when
     OPENAI_BASE_URL is absent from the current environment.

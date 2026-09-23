@@ -97,8 +97,11 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     from hermes_cli.plugin_python_deps import dependency_homes
     installed: list[str] = []
     for home in dependency_homes():
+        def say_for_home(message: str, home: Path = home) -> None:
+            say(f"  [{home}] {message.lstrip()}")
+
         try:
-            name = migrate_home(home, install=_install_into(home), say=say)
+            name = migrate_home(home, install=_install_into(home), say=say_for_home)
         except Exception as exc:
             logger.debug("memory provider migration skipped for %s: %s", home, exc)
             continue

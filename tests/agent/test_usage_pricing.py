@@ -962,3 +962,83 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+_SOL_PRO_TIER_METADATA = {
+    "openai/gpt-5.6-sol-pro": {
+        "pricing": {
+            "prompt": "0.000002",
+            "completion": "0.00001",
+            "input_cache_read": "0.0000002",
+            "input_cache_write": "0.0000025",
+            "overrides": [{
+                "min_prompt_tokens": 272000,
+                "prompt": "0.000004",
+                "completion": "0.000015",
+                "input_cache_read": "0.0000004",
+                "input_cache_write": "0.000005",
+            }],
+        }
+    }
+}
+
+
+def test_openrouter_tier_overrides_populate_tier_fields(monkeypatch):
+    """OpenRouter's pricing.overrides[] must reach the tier fields instead of
+    being dropped: the override rates apply to the whole request once its
+    billed prompt-token total crosses min_prompt_tokens (#109976)."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata", lambda *_a, **_k: _SOL_PRO_TIER_METADATA
+    )
+
+    entry = get_pricing_entry("openai/gpt-5.6-sol-pro", provider="openrouter")
+
+    assert entry is not None
+    assert entry.tier_threshold_tokens == 272_000
+    assert entry.input_cost_per_million_above == Decimal("4")
+    assert entry.output_cost_per_million_above == Decimal("15")
+    assert entry.cache_read_cost_per_million_above == Decimal("0.4")
+    assert entry.cache_write_cost_per_million_above == Decimal("5")
+
+
+def test_openrouter_tier_above_threshold_prices_whole_request_at_override_rates(monkeypatch):
+    """Above the threshold every component bills at its override rate — the
+    issue's per-call reconstruction for 428,897 billed prompt tokens."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata", lambda *_a, **_k: _SOL_PRO_TIER_METADATA
+    )
+
+    result = estimate_usage_cost(
+        "openai/gpt-5.6-sol-pro",
+        CanonicalUsage(
+            input_tokens=103_469, cache_read_tokens=216_952,
+            cache_write_tokens=108_476, output_tokens=907,
+        ),
+        provider="openrouter",
+    )
+    # prompt = 428,897 > 272k → 103,469×$4/M + 216,952×$0.4/M + 108,476×$5/M + 907×$15/M
+    assert result.amount_usd == Decimal("1.0566418")
+
+
+def test_openrouter_below_threshold_and_override_free_metadata_keep_base_rates(monkeypatch):
+    """Below the threshold base rates apply, and metadata without overrides
+    never populates the tier fields."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda *_a, **_k: {"openai/gpt-5.6-sol-pro": {
+            "pricing": {"prompt": "0.000002", "completion": "0.00001"}
+        }},
+    )
+
+    entry = get_pricing_entry("openai/gpt-5.6-sol-pro", provider="openrouter")
+    assert entry is not None
+    assert entry.tier_threshold_tokens is None
+    assert entry.input_cost_per_million_above is None
+
+    result = estimate_usage_cost(
+        "openai/gpt-5.6-sol-pro",
+        CanonicalUsage(input_tokens=2_530, output_tokens=280),
+        provider="openrouter",
+    )
+    # prompt = 2,530 < 272k → 2,530×$2/M + 280×$10/M
+    assert result.amount_usd == Decimal("0.00786")

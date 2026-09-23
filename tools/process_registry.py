@@ -2275,10 +2275,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         cross-task entries sharing the gateway session (a forgotten preview server
         blocking session reset) are flagged ``"session_scoped": true``.
 
-        When ``task_id`` is given, processes for that task are included. When ``session_key`` is also given,
-        session-scoped background processes (``background: true``) registered under that gateway session are
-        surfaced too, even if they belong to a different task — so the agent can discover a forgotten
-        preview server that is blocking session reset (#29177).
+        When ``task_id`` is given, processes that task spawned (its ``owner_task_id``) are included. When
+        ``session_key`` is also given, session-scoped background processes (``background: true``) registered
+        under that gateway session are surfaced too, even if they belong to a different task — so the agent
+        can discover a forgotten preview server that is blocking session reset (#29177).
         """
         # Only an explicit tool query reads historical receipts. Status bars and
         # gateway liveness scans call this frequently and need the live registry.
@@ -2290,7 +2290,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
-                if (task_id and s.task_id == task_id) or (session_key and s.session_key == session_key)
+                if (task_id and (s.owner_task_id or s.task_id) == task_id)
+                or (session_key and s.session_key == session_key)
             ]
         result = []
         for s in all_sessions:
@@ -2310,7 +2311,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             }
             # Flag processes surfaced only because they share the gateway session (not the current task) —
             # these are the long-lived background processes a user may have forgotten about (#29177).
-            if task_id and session_key and s.task_id != task_id and s.session_key == session_key:
+            if task_id and session_key and (s.owner_task_id or s.task_id) != task_id and s.session_key == session_key:
                 entry["session_scoped"] = True
             # Trigger metadata for goal-loop judges (a watcher may never exit).
             if s.watch_patterns and not s._watch_disabled:
@@ -2389,9 +2390,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def snapshot_running_ids(self, task_id: str) -> frozenset[str]:
         """Running IDs owned by ``task_id`` — a turn-boundary marker: on timeout
         only processes absent from the starting snapshot belong to the abandoned
-        turn; older ones intentionally span turns and must survive."""
+        turn; older ones intentionally span turns and must survive. Ownership is
+        ``owner_task_id``: ``task_id`` is the container key (``session:<key>``,
+        ``default``), shared across turns and sessions, not the turn's id."""
         with self._lock:
-            return frozenset(s.id for s in self._running.values() if s.task_id == task_id and not s.exited)
+            return frozenset(
+                s.id for s in self._running.values() if (s.owner_task_id or s.task_id) == task_id and not s.exited)
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is
@@ -2402,11 +2406,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def kill_all(
         self, task_id: Optional[str] = None, *, exclude_ids: frozenset = frozenset(),
         source: str = "kill_all", consume_output: bool = False) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
+        """Kill all running processes, optionally only those ``task_id`` spawned (its ``owner_task_id``).
+        Returns count killed."""
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and s.id not in exclude_ids and not s.exited
+                if (task_id is None or (s.owner_task_id or s.task_id) == task_id)
+                and s.id not in exclude_ids and not s.exited
             ]
         return sum(
             self.kill_process(s.id, source=source, consume_output=consume_output).get("status")

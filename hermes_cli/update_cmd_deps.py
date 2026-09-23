@@ -18,24 +18,38 @@ from hermes_cli._subprocess_compat import bounded_probe_run
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
 
-# Files defining the editable install; a pull touching none of them cannot invalidate it.
+# Explicit packaging inputs, separate from the root modules discovered at build time.
 _INSTALL_DEFINING_FILES = "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "uv.lock"
 
 
 def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool:
-    """True when the pulled commits cannot have invalidated the editable install: ``uv pip install
-    -e .`` always rewrites console-script shims (Windows: ``hermes.exe`` quarantine, ``os error 32``
-    on a lost race), so skip it when only non-install files changed. Safe because the editable
-    finder uses a *static* module list. Fails closed: no pre-pull SHA or failed diff -> False."""
+    """Skip shim rewrites only when packaging inputs and root module names are unchanged.
+
+    The editable finder snapshots the root modules discovered by setup.py, so a
+    source-only addition, deletion, or rename can require a reinstall too.
+    Ordinary edits and submodules of mapped packages keep the fast path.
+    Missing history or a failed diff cannot prove the install is current.
+    """
     if not pre_pull_sha:
         return False
-    try:
-        result = subprocess.run(
-            git_cmd + ["diff", "--name-only", f"{pre_pull_sha}..HEAD", "--"] + list(_INSTALL_DEFINING_FILES),
-            cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return result.returncode == 0 and not result.stdout.strip()
+    root_modules = ":(top,glob)*.py"
+    commands = (
+        ["diff", "--name-only", f"{pre_pull_sha}..HEAD", "--", *_INSTALL_DEFINING_FILES],
+        # Compare the restored worktree, not just HEAD: autostash is already popped.
+        ["diff", "--name-only", "--diff-filter=AD", "--no-renames", pre_pull_sha, "--", root_modules],
+        # setup.py discovers root modules even when Git ignores them.
+        ["ls-files", "--others", "--", root_modules],
+    )
+    for command in commands:
+        try:
+            result = subprocess.run(
+                git_cmd + command,
+                cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        if result.returncode != 0 or result.stdout.strip():
+            return False
+    return True
 
 
 # Modules imported on every startup. Unlike _UPDATE_CRITICAL_FILES (only parsed) these are

@@ -907,6 +907,9 @@ export interface Translations {
       backdropDesc: string
       userBubbleTitle: string
       userBubbleDesc: string
+      textDirectionTitle: string
+      textDirectionDesc: string
+      textDirection: { auto: string; rtl: string; ltr: string }
       introSplashTitle: string
       introSplashDesc: string
       reactionsTitle: string

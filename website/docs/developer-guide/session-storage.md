@@ -332,8 +332,8 @@ Lock contention is recognised by SQLite result code (`SQLITE_BUSY` /
 text. In rollback-journal (`delete`) mode a lock lost inside FTS5's table
 constructor arrives as `SQLITE_BUSY` with the text `vtable constructor failed:
 messages_fts`; it is treated like `database is locked`. Opening a writable
-`SessionDB` waits up to `_WRITE_PATIENCE_S`; a read-only open retries the busy
-timeout a bounded number of times. If the lock outlasts that, the dashboard
+`SessionDB` waits up to `_WRITE_PATIENCE_S`; a read-only open waits its
+`_READ_BUSY_TIMEOUT_S` (5 s) read budget once. If the lock outlasts that, the dashboard
 answers 503 (busy), not 500.
 
 

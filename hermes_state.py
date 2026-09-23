@@ -711,9 +711,9 @@ class SessionDB(
                 # SQLITE_IOERR to a mode=ro reader (it can't do the -shm recovery the read
                 # needs). Closes in milliseconds: retry a bounded number of times before
                 # classifying the store as failed (#100436; see _READ_ONLY_IOERR_RETRY_ATTEMPTS).
-                # A DELETE-mode writer's commit outlasting the busy timeout is the same "busy,
-                # not broken" class; each retry waits the busy timeout again.
-                transient = is_sqlite_lock_error(ioerr) or _DISK_IO_ERROR_MARKER in str(ioerr).lower()
+                # A lock is NOT retried here: the connection already waited _READ_BUSY_TIMEOUT_S,
+                # and a retry would multiply that wait on blocking callers (TUI, `hermes status`).
+                transient = _DISK_IO_ERROR_MARKER in str(ioerr).lower()
                 if attempt >= _READ_ONLY_IOERR_RETRY_ATTEMPTS or not transient:
                     raise
                 time.sleep(_READ_ONLY_IOERR_RETRY_BACKOFF_S)

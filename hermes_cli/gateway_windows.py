@@ -57,6 +57,7 @@ _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
+_RECOVERY_TASK_SUFFIX = "_Liveness"
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
@@ -291,6 +292,11 @@ def get_task_name() -> str:
     return f"{_TASK_NAME_DEFAULT}_{suffix}" if suffix else _TASK_NAME_DEFAULT
 
 
+def get_liveness_task_name() -> str:
+    """Scheduled Task name for the profile-scoped liveness consumer."""
+    return get_task_name() + _RECOVERY_TASK_SUFFIX
+
+
 def _sanitize_filename(value: str) -> str:
     """Remove characters illegal in Windows filenames."""
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value)
@@ -442,6 +448,20 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     return "\r\n".join(lines) + "\r\n"
 
 
+def _build_liveness_vbs_script(python_path: str, working_dir: str, hermes_home: str, profile_arg: str) -> str:
+    """Render the hidden one-shot consumer that asks the primary task to recover a dead gateway."""
+    python_exe_path, _venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    command_line = subprocess.list2cmdline([python_exe_path, "-c", "from hermes_cli.gateway_windows_liveness import run; run()"])
+    q = _quote_vbs_string
+    return "\r\n".join([
+        f"' {_TASK_DESCRIPTION} liveness consumer", "Option Explicit", "Dim sh, env",
+        'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")',
+        f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
+        f"env.Item({q('PYTHONPATH')}) = {q(os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath)))}",
+        f"sh.CurrentDirectory = {q(working_dir)}", f"sh.Run {q(command_line)}, 0, False",
+    ]) + "\r\n"
+
+
 def _build_startup_launcher(script_path: Path) -> str:
     """The tiny Startup-folder .vbs that chains hidden. Quits silently if the target is gone so a
     stale entry doesn't error on every login."""
@@ -471,6 +491,8 @@ def _write_task_script() -> Path:
     # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
     vbs_path = script_path.with_suffix(".vbs")
     _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
+    liveness_path = script_path.with_name(script_path.stem + "_liveness.vbs")
+    _atomic_write(liveness_path, _build_liveness_vbs_script(*settings), liveness_path.with_name(liveness_path.name + ".tmp"))
     return script_path
 
 
@@ -504,24 +526,24 @@ def _resolve_task_user() -> str | None:
     return f"{domain}\\{username}" if domain else username
 
 
-def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> str:
+def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None, *, liveness: bool = False) -> str:
     """Task Scheduler XML with safe long-running defaults. ``launcher_path`` is the console-less
     ``.vbs`` run via ``wscript.exe`` (see ``_build_gateway_vbs_script`` for why not cmd.exe).
 
     See #45599.
     """
     user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    trigger = (
+        "<TimeTrigger><Repetition><Interval>PT1M</Interval></Repetition>"
+        "<StartBoundary>2020-01-01T00:00:00</StartBoundary><Enabled>true</Enabled></TimeTrigger>"
+        if liveness else f"<LogonTrigger><Enabled>true</Enabled><Delay>{_TASK_LOGON_DELAY}</Delay></LogonTrigger>"
+    )
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>{escape(_TASK_DESCRIPTION)}</Description>
   </RegistrationInfo>
-  <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-      <Delay>{_TASK_LOGON_DELAY}</Delay>
-    </LogonTrigger>
-  </Triggers>
+  <Triggers>{trigger}</Triggers>
   <Principals>
     <Principal id="Author">{user_principal}
       <LogonType>InteractiveToken</LogonType>
@@ -561,7 +583,7 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
 """
 
 
-def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
+def _install_scheduled_task(task_name: str, script_path: Path, *, liveness: bool = False) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail). Always delete+create, never
     ``/Change``: it preserves stale repeat/restart settings that relaunch the gateway every minute."""
     delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
@@ -572,9 +594,9 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
     # Other /Delete failures are non-fatal: /Create /F may still replace it; keep the detail.
     user = _resolve_task_user()
-    launcher_path = script_path.with_suffix(".vbs")   # the task launches the console-less .vbs
+    launcher_path = script_path.with_name(script_path.stem + "_liveness.vbs") if liveness else script_path.with_suffix(".vbs")
     xml_path = launcher_path.with_suffix(".task.xml")
-    xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
+    xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user, liveness=liveness), encoding="utf-16", newline="")
     # Immediate manual starts use _spawn_detached(). See #45599.
     base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
     variants = [[*base, "/RU", user, "/NP", "/IT"], base] if user else [base]
@@ -896,6 +918,9 @@ def install(
 
     ok, detail = _install_scheduled_task(task_name, script_path)
     if ok:
+        liveness_ok, liveness_detail = _install_scheduled_task(get_liveness_task_name(), script_path, liveness=True)
+        if not liveness_ok:
+            print(f"⚠ Windows liveness recovery task was not installed: {liveness_detail}")
         print(f"✓ {detail}")
         print(f"  Task script: {script_path}")
         print("ℹ Gateway auto-start installed for Windows login.")
@@ -1264,6 +1289,9 @@ def uninstall() -> None:
         else:
             print(f"⚠ schtasks /Delete returned code {code}: {detail}")
 
+    # The minute-level consumer is independent of the gateway task, so remove it explicitly.
+    _exec_schtasks(["/Delete", "/F", "/TN", get_liveness_task_name()])
+
     for path, label in (
         (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
         (_startup_staging_path(), "Windows login item staging file"),
@@ -1562,6 +1590,12 @@ def status(deep: bool = False) -> None:
     warn_legacy_launchers()
 
     print(f"✓ Gateway process running (PID: {', '.join(map(str, pids))})" if pids else "✗ No gateway process detected")
+    try:
+        attention = json.loads((_hermes_home() / "state" / "gateway-needs-attention.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        attention = {}
+    if attention.get("message"):
+        print(f"⚠ {attention['message']}")
 
     if deep:
         print()

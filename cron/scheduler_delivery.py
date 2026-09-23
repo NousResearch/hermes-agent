@@ -12,13 +12,19 @@ import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
+import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, List, Optional
+
+from hermes_cli.active_sessions import _FileLock
+from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 
 # Log-record parity with the origin module.
@@ -1316,6 +1322,7 @@ class _TargetDelivery:
     in_channel_surface: bool
     inchannel_continuable: bool
     opened_thread_id: Optional[str]
+    replace_previous: bool = False
     live_adapter_ready: bool = False
 
     @property
@@ -1325,6 +1332,91 @@ class _TargetDelivery:
     @property
     def where(self) -> str:
         return f"{self.platform_name}:{self.chat_id}"
+
+
+def _replace_previous_enabled(job: dict, user_cfg: Optional[dict]) -> bool:
+    """Whether cron text reports should update one persistent message per target."""
+    if "replace_previous" in job:
+        return bool(job.get("replace_previous"))
+    try:
+        return bool((user_cfg or {}).get("cron", {}).get("delivery", {}).get("replace_previous", False))
+    except (AttributeError, TypeError):
+        return False
+
+
+def _delivery_message_state_path() -> Path:
+    return Path(get_hermes_home()) / "cron" / "delivery-message-state.json"
+
+
+def _delivery_message_key(t: _TargetDelivery) -> str:
+    return "\x1f".join((t.platform_name, str(t.chat_id), str(t.thread_id or "")))
+
+
+def _read_delivery_message_state(path: Optional[Path] = None) -> dict[str, str]:
+    path = path or _delivery_message_state_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    messages = payload.get("messages") if isinstance(payload, dict) else None
+    return {str(key): str(value) for key, value in messages.items()} if isinstance(messages, dict) else {}
+
+
+def _previous_delivery_message_id(t: _TargetDelivery) -> Optional[str]:
+    return _read_delivery_message_state().get(_delivery_message_key(t))
+
+
+def _remember_delivery_message_id(t: _TargetDelivery, message_id: Any) -> None:
+    if message_id is None or str(message_id).strip() == "":
+        return
+    path = _delivery_message_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _FileLock(path.with_suffix(".lock")):
+        messages = _read_delivery_message_state(path)
+        messages[_delivery_message_key(t)] = str(message_id)
+        atomic_json_write(path, {"messages": messages}, mode=0o600)
+
+
+def _delete_previous_delivery_message(t: _TargetDelivery, message_id: str) -> bool:
+    """Best-effort delete through the already-authorized live adapter."""
+    from agent.async_utils import safe_schedule_threadsafe
+    from gateway.platforms.base import BasePlatformAdapter
+
+    adapter = t.runtime_adapter
+    if adapter is None:
+        return False
+    delete_message = getattr(type(adapter), "delete_message", None)
+    if delete_message in (None, BasePlatformAdapter.delete_message):
+        return False
+    if t.loop is None or not getattr(t.loop, "is_running", lambda: False)():
+        return False
+    future = safe_schedule_threadsafe(
+        adapter.delete_message(chat_id=t.chat_id, message_id=message_id), t.loop)
+    if future is None:
+        return False
+    try:
+        return bool(future.result(timeout=30))
+    except Exception:
+        logger.debug(
+            "Job '%s': could not delete previous cron delivery %s from %s",
+            t.job.get("id", "?"), message_id, t.where, exc_info=True)
+        return False
+
+
+def _replace_previous_after_confirmed_text(t: _TargetDelivery, message_id: Any) -> None:
+    """Advance replacement state only after a text send returned a concrete message id."""
+    if not t.replace_previous or message_id is None or str(message_id).strip() == "":
+        return
+    new_message_id = str(message_id)
+    previous_message_id = _previous_delivery_message_id(t)
+    if previous_message_id and previous_message_id != new_message_id:
+        _delete_previous_delivery_message(t, previous_message_id)
+    try:
+        _remember_delivery_message_id(t, new_message_id)
+    except Exception:
+        logger.warning(
+            "Job '%s': could not remember cron delivery message %s for %s",
+            t.job.get("id", "?"), new_message_id, t.where, exc_info=True)
 
 
 def _note_target_error(job: dict, msg: str, errors: list) -> None:
@@ -1635,6 +1727,8 @@ def _deliver_via_live_adapter(
                 target_errors=target_errors, delivery_errors=delivery_errors,
                 unverified_targets=unverified_targets,
             )
+            if adapter_ok and not timed_out:
+                _replace_previous_after_confirmed_text(t, delivered_message_id)
 
         # Media rides the same DM-topic-aware routing as text. Skipped after a confirmation
         # timeout (loop contended, text already assumed delivered) — record the drop instead.
@@ -1766,6 +1860,8 @@ def _deliver_standalone(
         msg = f"delivery warning: {_w} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
+    if content.strip():
+        _replace_previous_after_confirmed_text(t, _result_field(result, "message_id"))
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
@@ -1776,7 +1872,7 @@ def _deliver_standalone(
 
 def _prepare_target_delivery(
     job: dict, target: dict, *, adapters, loop, config, notify_delivery: bool, mirror_enabled: bool,
-    mirror_text: str, delivery_errors: list,
+    replace_previous: bool, mirror_text: str, delivery_errors: list,
 ) -> Optional[_TargetDelivery]:
     """Per-target prologue of ``_deliver_result``: origin/mirror/in_channel gates, transport
     resolution, continuable-thread open. None (error noted in ``delivery_errors``) if unservable."""
@@ -1877,7 +1973,8 @@ def _prepare_target_delivery(
         origin=origin, origin_target=origin_target, origin_user_id=origin_user_id,
         is_dm_target=is_dm_target, mirror_text=mirror_text, mirror_this_target=mirror_this_target,
         in_channel_surface=in_channel_surface, inchannel_continuable=inchannel_continuable,
-        opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready)
+        opened_thread_id=opened_thread_id, replace_previous=replace_previous,
+        live_adapter_ready=live_adapter_ready)
 
 
 def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
@@ -1949,6 +2046,7 @@ def _deliver_result(
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
+    replace_previous = _replace_previous_enabled(job, user_cfg)
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
@@ -2033,7 +2131,8 @@ def _deliver_result(
         t = _prepare_target_delivery(
             job, target, adapters=adapters, loop=loop, config=config,
             notify_delivery=notify_delivery,
-            mirror_enabled=mirror_enabled, mirror_text=mirror_text, delivery_errors=delivery_errors)
+            mirror_enabled=mirror_enabled, replace_previous=replace_previous,
+            mirror_text=mirror_text, delivery_errors=delivery_errors)
         if t is None:
             continue
         target_errors: list = []

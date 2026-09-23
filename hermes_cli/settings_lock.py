@@ -89,8 +89,12 @@ def hermes_root(home: Path | str | None = None) -> Path:
     return base.parent.parent if base.parent.name == "profiles" else base
 
 
-def _read_root_yaml(root: Path) -> dict:
-    """The root config as raw YAML, or {} — read directly, never through the config loader.
+def _read_root_yaml(root: Path) -> Optional[dict]:
+    """The root config as raw YAML, {} when it names no lock, or ``None`` when it names one but
+    does not parse to a mapping — read directly, never through the config loader.
+
+    ``None`` is not "no lock": a typo anywhere in the root file would otherwise switch the lock off
+    for every profile, whose own config.yaml still parses and writes normally.
 
     Deliberately not ``load_config()``: this runs inside ``save_config``'s ``_CONFIG_LOCK``, and
     re-entering the loader (which touches the dotenv/secrets locks) is the shape of the
@@ -109,13 +113,13 @@ def _read_root_yaml(root: Path) -> dict:
         data = yaml.safe_load(raw)
     except Exception:
         logger.warning("settings lock: root config.yaml could not be parsed", exc_info=True)
-        return {}
-    return data if isinstance(data, dict) else {}
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def lock_spec(home: Path | str | None = None) -> dict:
     """The ``settings_lock`` mapping from the ROOT config, or {} when absent/unusable."""
-    section = _read_root_yaml(hermes_root(home)).get(LOCK_SECTION)
+    section = (_read_root_yaml(hermes_root(home)) or {}).get(LOCK_SECTION)
     return section if isinstance(section, dict) else {}
 
 
@@ -212,7 +216,11 @@ def lock_state(home: Path | str | None = None) -> LockState:
     disable from a value it failed to recognise.
     """
     root = hermes_root(home)
-    section = _read_root_yaml(root).get(LOCK_SECTION)
+    data = _read_root_yaml(root)
+    if data is None:
+        return LockState("unusable", {},
+                         f"the root config.yaml mentions {LOCK_SECTION} but does not parse as a YAML mapping")
+    section = data.get(LOCK_SECTION)
     if section is None:
         return LockState("off", {})
     if not isinstance(section, dict):

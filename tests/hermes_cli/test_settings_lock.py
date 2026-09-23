@@ -151,6 +151,23 @@ def test_a_settings_lock_that_is_not_a_mapping_is_unusable(tmp_path):
         sl.check_write({"approvals": {"mode": "manual"}}, {"approvals": {"mode": "off"}}, home)
 
 
+def test_a_root_config_that_no_longer_parses_does_not_switch_the_lock_off(tmp_path):
+    """A typo anywhere in the root file must not unarm the lock for the profiles, whose own
+    config.yaml still parses and writes normally."""
+    home = _root(tmp_path, LOCKED + "model: [unclosed\n")
+    profile = home / "profiles" / "lucky"
+    profile.mkdir(parents=True)
+
+    assert sl.lock_state(profile).status == "unusable"
+    with pytest.raises(sl.SettingsLockError, match="cannot be applied"):
+        sl.check_config_write(profile / "config.yaml", {"approvals": {"mode": "manual"}},
+                              {"approvals": {"mode": "off"}})
+
+    # A broken root that never named a lock has nothing to fail closed on.
+    (home / "config.yaml").write_text("model: [unclosed\n", encoding="utf-8")
+    assert sl.lock_state(profile).status == "off"
+
+
 def test_an_unusable_lock_is_refused_even_inside_an_unlock_window(tmp_path):
     """A window cannot authorise writes against a spec that cannot be normalised: it has no
     generation to be bound to, and the password meant to gate it may be the malformed part."""

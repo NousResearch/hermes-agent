@@ -148,6 +148,10 @@ def check_api_response(
             return _verdict(_iv.action, _iv.result)
 
     agent._turn_received_provider_response = True
+    # The call that carried the one-shot overrides has its answer. They are cleared here, not while the request is
+    # built: a retry of a failed attempt (429, 5xx, stream drop, pool rotation) is the same call and needs them (#99897).
+    agent._ephemeral_reasoning_off = False
+    agent._ephemeral_max_output_tokens = None
     finish_reason = _derive_finish_reason(agent, response, messages)
 
     # HTTP-200 refusals are deterministic: one fallback try, else return the refusal.

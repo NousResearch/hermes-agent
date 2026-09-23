@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -96,9 +97,14 @@ def _profile_to_dict(info) -> Dict[str, Any]:
 
 
 def _profile_setup_command(name: str) -> str:
-    """Return the shell command used to configure a profile in the CLI."""
+    """Return the shell command used to configure a profile in the CLI.
+
+    Named profiles use the canonical ``hermes -p <name> setup`` form: the bare
+    ``<name> setup`` only works when dashboard profile creation managed to write
+    an alias wrapper, which it skips whenever ``check_alias_collision()`` fails.
+    """
     _resolve_profile_dir(name)
-    return "hermes setup" if name == "default" else f"{name} setup"
+    return "hermes setup" if name == "default" else f"hermes -p {shlex.quote(name)} setup"
 
 
 def _scope_profile_name(path: Path) -> Optional[str]:

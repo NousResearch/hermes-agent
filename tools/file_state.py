@@ -189,6 +189,18 @@ class FileStateRegistry:
                     out[writer_tid].append(p)
         return dict(out)
 
+    def writes_by(self, task_id: str, since_ts: float) -> List[str]:
+        """Sorted paths whose last recorded write is by ``task_id`` at/after ``since_ts``
+        (``subagent.complete``'s ``files_written`` payload). Last-writer semantics: a
+        path rewritten by someone after ``task_id`` no longer counts for it."""
+        if _disabled():
+            return []
+        with self._state_lock:
+            return sorted(
+                p for p, (writer_tid, ts) in self._last_writer.items()
+                if writer_tid == task_id and ts >= since_ts
+            )
+
     def known_reads(self, task_id: str) -> List[str]:
         """Resolved paths this agent has read."""
         if _disabled():
@@ -245,6 +257,10 @@ def writes_since(exclude_task_id: str, since_ts: float, paths: Iterable[str | Pa
     return _registry.writes_since(exclude_task_id, since_ts, [str(p) for p in paths])
 
 
+def writes_by(task_id: str, since_ts: float) -> List[str]:
+    return _registry.writes_by(task_id, since_ts)
+
+
 def known_reads(task_id: str) -> List[str]:
     return _registry.known_reads(task_id)
 
@@ -257,4 +273,5 @@ __all__ = [
     "check_stale",
     "lock_path",
     "writes_since",
+    "writes_by",
     "known_reads"]

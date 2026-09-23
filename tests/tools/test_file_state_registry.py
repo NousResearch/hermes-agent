@@ -190,6 +190,46 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         file_state.note_write("subagent-1-live", p)
         self.assertIn("sibling subagent 'subagent-1-live'", file_state.check_stale("cron:JOB:run2", p))
 
+    def test_writes_by_returns_only_that_tasks_writes_since(self):
+        """``writes_by`` (subagent.complete's files_written source) filters by writer and
+        since-ts with last-writer semantics — the empty-whitelist trap that made the old
+        ``writes_since("", ts, [])`` call return {} forever does not apply to it."""
+        pa, pb, pc = self._mk(), self._mk(), self._mk()
+        t0 = time.time()
+        file_state.note_write("subagent-2", pa)
+        file_state.note_write("subagent-2", pb)
+        file_state.note_write("subagent-9", pc)
+        # Last-writer: subagent-9 rewrites pb, so pb no longer counts for subagent-2.
+        file_state.note_write("subagent-9", pb)
+
+        self.assertEqual(file_state.writes_by("subagent-2", t0 - 1), [pa])
+        self.assertEqual(file_state.writes_by("subagent-9", t0 - 1), sorted([pb, pc]))
+        # since-ts gate: a timestamp after every write sees nothing.
+        self.assertEqual(file_state.writes_by("subagent-2", time.time() + 60), [])
+
+    def test_emit_complete_files_written_nonempty(self):
+        """Regression: emit_complete used writes_since("", wall_start, []) whose paths
+        argument is a strict whitelist — files_written in the subagent.complete event was
+        permanently empty on main. The event must now carry the child's real writes."""
+        from unittest.mock import MagicMock
+
+        from tools.delegate_tool_child_run import _ChildRun
+
+        p = self._mk()
+        file_state.note_write("subagent-2-run", p)
+        captured: dict = {}
+        run = _ChildRun(
+            child=MagicMock(session_id="s"), parent_agent=MagicMock(), task_index=0, goal="g",
+            subagent_id=None, child_progress_cb=lambda topic, **kw: captured.update(kw, topic=topic),
+        )
+        run.child_task_id = "subagent-2-run"
+        run.wall_start = time.time() - 1
+
+        entry = {"status": "completed", "summary": "done", "api_calls": 1, "error": ""}
+        run.emit_complete(result={}, entry=entry, duration=1.0)
+
+        self.assertIn(p, captured["files_written"])
+
     def test_agent_close_forgets_every_task_id_it_ran(self):
         """``AIAgent.close()`` receives the session_id, but file tools key the registry by
         the per-turn task_id (cron ``cron:<job>:<uuid>``, subagent ``subagent-N-xxxx``).

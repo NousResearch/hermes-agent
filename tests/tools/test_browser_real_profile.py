@@ -257,7 +257,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt_real_profile, "_capture_agent_browser_cli", return_value=proc), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert err is None
@@ -286,10 +286,10 @@ class TestRealProfileCdpLaunch:
         proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
         captured = {}
 
-        def fake_run(argv, **kw):
+        def fake_agent_browser_spawn(argv, env, socket_dir, tag):
             captured["argv"] = argv
-            captured["env"] = kw["env"]
-            return proc
+            captured["env"] = env
+            return Mock(wait=Mock(return_value=0), returncode=0)
 
         class FakeChrome:
             def poll(self):
@@ -308,7 +308,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", side_effect=fake_run), \
+             patch.object(bt_session, "_popen_agent_browser", side_effect=fake_agent_browser_spawn), \
              patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             bt_real_profile._real_profile_cdp()
@@ -353,7 +353,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_agent_browser_close_session",
                           side_effect=lambda s: closed.__setitem__("n", closed["n"] + 1)), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt_real_profile, "_capture_agent_browser_cli", return_value=proc), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert closed["n"] == 1  # stale wrong-dir session was closed
@@ -393,6 +393,119 @@ class TestRealProfileCdpLaunch:
         (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
         assert bt_real_profile._cdp_on_data_dir("http://127.0.0.1:41000", str(tmp_path))
         assert not bt_real_profile._cdp_on_data_dir("http://127.0.0.1:9999", str(tmp_path))
+
+
+class TestAgentBrowserCliCapture:
+    """#96731: agent-browser's resident daemon inherits the caller's stdio and
+    outlives the CLI, so pipe-based capture never sees EOF after the CLI
+    exits. Capture must go through temp files and wait only for the CLI."""
+
+    STUB_GRANDCHILD = (
+        "import subprocess, sys\n"
+        # A grandchild that inherits stdout and outlives the CLI — exactly
+        # what agent-browser's first-use daemon spawn does.
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "sys.stdout.write('ws://127.0.0.1:41022/devtools/browser/stub\\n')\n"
+        "sys.stderr.write('daemon warm\\n')\n"
+    )
+
+    def test_get_cdp_returns_despite_grandchild_holding_stdio(self, tmp_path):
+        """The blocking frame from the #96731 py-spy capture: get cdp-url."""
+        import sys
+        import time
+
+        stub = tmp_path / "agent_browser_daemon_stub.py"
+        stub.write_text(self.STUB_GRANDCHILD)
+        with patch.object(bt_install, "_find_agent_browser", return_value=str(stub)), \
+             patch.object(bt_session, "_agent_browser_argv", return_value=[sys.executable, str(stub)]), \
+             patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
+            start = time.monotonic()
+            cdp = bt_real_profile._agent_browser_get_cdp("hermes-real-profile")
+            elapsed = time.monotonic() - start
+
+        assert cdp == "http://127.0.0.1:41022"
+        # Pipe capture would stall here for the full 15s timeout on POSIX and
+        # hang past the outer tool deadline on Windows.
+        assert elapsed < 10, f"get cdp-url stalled {elapsed:.1f}s behind a grandchild"
+
+    @pytest.mark.linux_only
+    def test_get_cdp_cleans_capture_files_despite_grandchild(self, tmp_path):
+        """POSIX: the capture files are unlinked even while the daemon
+        grandchild still holds them open. On Windows the inherited handles
+        keep the files until the daemon exits and the unlink is best-effort
+        by design (_unlink_command_output_files swallows OSError), so this
+        assertion is a linux_only test rather than a bare sys.platform check
+        — the contract stays visible in both CI lanes."""
+        import sys
+
+        stub = tmp_path / "agent_browser_daemon_stub.py"
+        stub.write_text(self.STUB_GRANDCHILD)
+        with patch.object(bt_install, "_find_agent_browser", return_value=str(stub)), \
+             patch.object(bt_session, "_agent_browser_argv", return_value=[sys.executable, str(stub)]), \
+             patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
+            cdp = bt_real_profile._agent_browser_get_cdp("hermes-real-profile")
+
+        assert cdp == "http://127.0.0.1:41022"
+        assert not list(tmp_path.glob("_std*_rp-*"))
+
+    def test_capture_cli_surfaces_stdout_stderr_and_exit_code(self, tmp_path):
+        import sys
+
+        stub = tmp_path / "agent_browser_echo_stub.py"
+        stub.write_text(
+            "import sys\n"
+            "sys.stdout.write('out-42\\n')\n"
+            "sys.stderr.write('err-7\\n')\n"
+            "sys.exit(3)\n"
+        )
+        with patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
+            proc = bt_real_profile._capture_agent_browser_cli(
+                [sys.executable, str(stub)], timeout=15, tag="rp-test",
+            )
+        assert proc.returncode == 3
+        assert proc.stdout == "out-42"
+        assert proc.stderr == "err-7"
+
+    def test_capture_cli_timeout_kills_cli_without_stall(self, tmp_path):
+        import subprocess
+        import sys
+        import time
+
+        stub = tmp_path / "agent_browser_sleep_stub.py"
+        stub.write_text("import time; time.sleep(30)\n")
+        with patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
+            start = time.monotonic()
+            with pytest.raises(subprocess.TimeoutExpired):
+                bt_real_profile._capture_agent_browser_cli(
+                    [sys.executable, str(stub)], timeout=2, tag="rp-timeout",
+                )
+            elapsed = time.monotonic() - start
+
+        # The CLI itself is killed at the deadline instead of draining pipes
+        # behind a daemon grandchild forever.
+        assert elapsed < 10, f"timeout path stalled {elapsed:.1f}s"
+
+    @pytest.mark.linux_only
+    def test_capture_cli_timeout_cleans_capture_files(self, tmp_path):
+        """POSIX: the capture files are unlinked after the timeout kill. On
+        Windows the killed CLI's handles can outlive the kill() return, so
+        the best-effort unlink may hit a still-open file and leave the
+        fixed-name pair behind (bounded: reused and truncated by the next
+        call with the same tag) — hence linux_only, not an inline
+        sys.platform guard."""
+        import subprocess
+        import sys
+
+        stub = tmp_path / "agent_browser_sleep_stub.py"
+        stub.write_text("import time; time.sleep(30)\n")
+        with patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
+            with pytest.raises(subprocess.TimeoutExpired):
+                bt_real_profile._capture_agent_browser_cli(
+                    [sys.executable, str(stub)], timeout=2, tag="rp-timeout",
+                )
+
+        assert not (tmp_path / "_stdout_rp-timeout").exists()
+        assert not (tmp_path / "_stderr_rp-timeout").exists()
 
 
 class TestConsentConfigRead:
@@ -1020,7 +1133,7 @@ class TestReviewRound3:
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:9251"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt_real_profile, "_capture_agent_browser_cli", return_value=proc), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert err is None

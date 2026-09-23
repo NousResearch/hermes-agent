@@ -370,9 +370,18 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
         resumed.tools = [_tool("read_file"), _described("tool_search", "Search 5 additional tools.")]
         _mcp_agent.restore_agent_tool_prefix(resumed, json.loads(db.get_session("s1")["tool_names"]))
 
+        # `hermes update` changed read_file's parameters: the handler validates the NEW
+        # signature, so that one tool takes the fresh def while the rest stay pinned.
+        upgraded_read = _tool("read_file")
+        upgraded_read["function"]["parameters"] = {"type": "object", "properties": {"path_v2": {"type": "string"}}}
+        updated = _agent([])
+        updated.tools = [upgraded_read, _described("tool_search", "Search 5 additional tools.")]
+        _mcp_agent.restore_agent_tool_prefix(updated, json.loads(db.get_session("s2")["tool_names"]))
+
     assert json.dumps(resumed.tools) == json.dumps(sent.tools)
     assert resumed.valid_tool_names == {"read_file", "skill_manage", "tool_search"}
     assert stored == 1
+    assert updated.tools == [upgraded_read, *sent.tools[1:]]
 
 
 def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):

@@ -176,13 +176,20 @@ def restore_agent_tool_prefix(agent, saved: list) -> bool:
     fresh = {_def_name(t): t for t in fresh_defs}
     registered_names = {entry.name for entry in registry.get_all_entries()}
 
-    def _pinned_def(item):
-        if isinstance(item, dict):
-            return item
-        if item in fresh:
-            return fresh[item]
-        entry = registry.get_entry(item)
+    def _current_def(name):
+        if name in fresh:
+            return fresh[name]
+        entry = registry.get_entry(name)
         return None if entry is None else {"type": "function", "function": {**entry.schema, "name": entry.name}}
+
+    def _pinned_def(item):
+        if not isinstance(item, dict):
+            return _current_def(item)
+        # Surfaces differ only in descriptions; changed PARAMETERS mean the handler's contract
+        # moved (``hermes update``), and the model must not keep calling the old signature.
+        current = _current_def(_def_name(item))
+        params = lambda d: (d.get("function") or {}).get("parameters")  # noqa: E731
+        return current if current is not None and params(current) != params(item) else item
 
     merged = [d for d in map(_pinned_def, saved) if d and (_def_name(d) in fresh or _def_name(d) in registered_names)]
     pinned_names = {_def_name(d) for d in merged}

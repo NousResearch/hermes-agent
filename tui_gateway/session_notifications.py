@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import contextlib
 
+from gateway.kanban_watchers_common import CRASH_RETRY_NOTE, gave_up_cause
+
 from .method_ctx import bind_module
 
 
@@ -312,18 +314,35 @@ def _kb_completed(task, payload: dict, title: str) -> str:
 
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:
+    limit = 0
     with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+        limit = int(payload.get("limit_seconds") or 0)
+    minutes = max(1, round(limit / 60)) if limit else 0
+    span = f"its {minutes}-minute limit" if minutes else "its time limit"
+    return f" ran past {span} and was stopped; {CRASH_RETRY_NOTE}"
+
+
+def _kb_gave_up(task, payload: dict, title: str) -> str:
+    """Terminal: the breaker tripped and the card is waiting for a human.
+
+    The cause comes from ``trigger_outcome`` (spawn failure, crash or timeout alike);
+    this copy used to attribute every trip to "repeated spawn failures", which sent
+    operators of crash- and timeout-tripped cards to the wrong logs.
+    """
+    error = f"\n{str(payload.get('error'))[:200]}" if payload.get("error") else ""
+    task_id = str(getattr(task, "id", "") or "")
+    remedy = f"\nFix the cause, then `hermes kanban unblock {task_id}`." if task_id else ""
+    return f" is now blocked: {gave_up_cause(payload)}{error}{remedy}"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
+# Retry/terminal phrasing comes from gateway.kanban_watchers_common so this surface
+# cannot drift from the chat notifier again.
 _KANBAN_EVENT_FORMATTERS = {
     "completed": ("✔", _kb_completed),
     "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
-    "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
-                + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
-    "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
+    "gave_up": ("✖", _kb_gave_up),
+    "crashed": ("✖", lambda t, p, title: f" — its worker stopped unexpectedly; {CRASH_RETRY_NOTE}"),
     "timed_out": ("⏱", _kb_timed_out),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
 }

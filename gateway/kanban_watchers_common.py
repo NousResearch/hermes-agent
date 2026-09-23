@@ -148,3 +148,41 @@ def _release_singleton_lock(handle) -> None:
         _release_file_lock(handle)
     with contextlib.suppress(Exception):
         handle.close()
+
+
+# --- Worker-outcome phrasing, shared with the TUI/desktop poller ---
+#
+# The dispatcher emits ``crashed``/``timed_out`` from the reclaim txn and only then
+# accounts the failure against the circuit breaker (``_account_crashes``), so the
+# crash event genuinely cannot know whether the task is going back in the queue or
+# is about to be blocked. The retry copy therefore states the condition instead of
+# promising an outcome, and the terminal ``gave_up`` copy names what actually
+# tripped it (``trigger_outcome``: spawn failure, crash or timeout alike).
+#
+# Both surfaces render from here: the TUI copy silently drifted into attributing
+# every trip to "repeated spawn failures" once the gateway's own wording moved on.
+
+_GAVE_UP_TRIGGERS = {
+    "crashed": "its worker crashed",
+    "timed_out": "it timed out",
+    "spawn_failed": "its worker could not be spawned",
+    "rate_limited": "it kept hitting a provider limit",
+}
+
+CRASH_RETRY_NOTE = (
+    "it will be retried unless that was its last attempt "
+    "(a \"now blocked\" ping follows if it was)"
+)
+
+
+def gave_up_cause(payload: Optional[dict]) -> str:
+    """Why the breaker tripped, as one clause. Degrades for pre-``trigger_outcome``
+    events rather than guessing a cause."""
+    payload = payload or {}
+    failures = payload.get("failures")
+    try:
+        count = f"it failed {int(failures)} times in a row" if failures else "it kept failing"
+    except (TypeError, ValueError):
+        count = "it kept failing"
+    trigger = _GAVE_UP_TRIGGERS.get(str(payload.get("trigger_outcome") or "").strip())
+    return f"{count} and the last attempt ended because {trigger}" if trigger else count

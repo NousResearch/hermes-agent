@@ -86,8 +86,9 @@ Durable SQLite-backed board letting multiple profiles/workers collaborate. Users
 <verb>`; dispatcher-spawned workers use a dedicated `kanban_*` toolset so their schema footprint is
 zero outside a kanban task (footprint ladder rung 3).
 
-- **CLI:** `hermes_cli/kanban.py` facade + 14 `kanban_*.py` siblings (`boards`, `db`, `db_connect`,
-  `db_dispatch`, `db_notify`, `db_graph` (task initialization and decomposition), `workspace`, ...). Verbs: `init, create, list (ls), show, assign, link,
+- **CLI:** `hermes_cli/kanban.py` facade + `kanban_*.py` siblings (`boards`, `db`, `db_connect`,
+  `db_dispatch`, `db_notify`, `db_graph` (task initialization and decomposition), `db_skills`
+  (forced-skill validation), `workspace`, ...). Verbs: `init, create, list (ls), show, assign, link,
   unlink, comment, attach, attachments, attach-rm, complete, request-review, request-changes,
   reopen-review, block, unblock, archive, tail`, plus `watch, stats, runs, log, assignees, heartbeat,
   notify-*, dispatch, daemon, gc`. Argparse alias dispatch must accept both `list` and `ls` (root).
@@ -123,6 +124,20 @@ recycled PID gets killed on reclaim.
   Dispatched workers get `HERMES_KANBAN_BOARD` and the assignee's `HERMES_HOME` pinned in a
   scrubbed child env (`build_subprocess_env` + `strip_launch_profile_env`); they never inherit the
   default profile's `.env`.
+- **A card's forced skills are validated against the ASSIGNEE's profile, never the creator's.**
+  `kanban_db_skills.check_forced_skills` binds the assignee's home + secret scope for the scan
+  (one resolver; `create_task` calls it for every surface, the dispatcher again at the spawn
+  boundary once the workspace — hence project-local skills — is known). Force-loading is
+  fail-soft downstream: `build_preloaded_skills_prompt` reports an unresolvable name *missing*
+  and runs anyway, so an unvalidated typo costs a whole worker run in the wrong context.
+  Creation-time checking fails OPEN (no profile dir, scan raised); the dispatcher backstop
+  `block_task`s instead of `_record_task_failure` — a malformed card is not a flaky one and must
+  not spend the breaker's budget or read as "gave up after N failures".
+- **`crashed`/`timed_out` are emitted BEFORE the breaker is accounted** (reclaim txn writes the
+  event; `_account_crashes` decides after), so they cannot know whether a retry follows: their copy
+  states the condition, never a guarantee, and terminal `gave_up` names its real `trigger_outcome`.
+  Gateway notifier and TUI poller both render from `gateway/kanban_watchers_common.py`
+  (`CRASH_RETRY_NOTE`, `gave_up_cause`) — the TUI copy had drifted to blaming every trip on spawns.
 - **Prompt injection sites gate on ownership, not tool access.** Tool access (`kanban_show` visible
   via a profile's toolset) and an inherited `HERMES_KANBAN_TASK` (delegate children, cron runs beside
   a worker) are not ownership. The kanban guidance (`agent_init`, `system_prompt` fallback) and the

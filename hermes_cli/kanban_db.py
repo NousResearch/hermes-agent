@@ -232,7 +232,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "blocked_malformed",
 )
 
 
@@ -1206,10 +1206,19 @@ def _project_from_source_task(
     return project_obj, project_repo
 
 
-def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
+def _normalize_task_skills(
+    skills: Optional[Iterable[str]], *,
+    assignee: Optional[str] = None, project_repo: Optional[str] = None,
+) -> Optional[list[str]]:
     """Strip/dedupe a skills list. Commas are refused (a comma-joined string must
     not land in one argv slot); toolset names are rejected all at once because
-    agents that confuse the two usually pass several."""
+    agents that confuse the two usually pass several.
+
+    With an *assignee*, the surviving names are then checked against that profile's
+    installed skills (``kanban_db_skills``) — every creation surface funnels through
+    here, so CLI and ``kanban_create`` share one answer, and a card that would have
+    silently run without its forced context never reaches the queue.
+    """
     if skills is None:
         return None
     cleaned: list[str] = []
@@ -1243,6 +1252,10 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
             "(e.g. `blogwatcher`, `github-code-review`); toolsets are runtime "
             "capabilities (e.g. `web`, `browser`, `terminal`)."
         )
+    if cleaned:
+        from hermes_cli.kanban_db_skills import validate_forced_skills
+
+        validate_forced_skills(cleaned, assignee=assignee, project_path=project_repo)
     return cleaned
 
 
@@ -1312,7 +1325,9 @@ def create_task(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
     parents = tuple(p for p in parents if p)
-    skills_list = _normalize_task_skills(skills)
+    # Validated AFTER _resolve_project_link: a project-anchored card may force-load
+    # that project's own trusted skills, which only exist relative to its repo.
+    skills_list = _normalize_task_skills(skills, assignee=assignee, project_repo=project_repo)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.

@@ -129,6 +129,11 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    blocked_malformed: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, assignee)`` blocked at the spawn boundary because the card itself
+    is unrunnable — today, forced skills that do not resolve on the assignee's
+    profile. Operator-actionable and NOT a failure: no worker ran, so the circuit
+    breaker's budget is untouched (see :func:`_block_unresolvable_forced_skills`)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1988,6 +1993,37 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _block_unresolvable_forced_skills(
+    conn: sqlite3.Connection, claimed: Task, assignee: str, workspace: str,
+) -> bool:
+    """Block a claimed card whose forced skills cannot resolve; True when it did.
+
+    The spawn-boundary backstop for cards pre-queue validation never saw (written
+    before it shipped, or created while the assignee profile did not yet exist —
+    the creation check fails open there). Without it the worker starts, the
+    preloader reports the name missing, and the run costs an attempt while quietly
+    lacking the context the card exists to pin.
+
+    Runs after profile and workspace resolution: a project-anchored card may force-load
+    its repo's own trusted skills, which are only locatable once the workspace is known.
+
+    Uses ``block_task`` rather than ``_record_task_failure`` deliberately — the
+    breaker's budget is for flaky runs. A malformed card is not flaky; charging it a
+    failure would hide the real cause behind "gave up after N failures", and the
+    ``blocked`` event makes the block sticky so ``recompute_ready`` cannot hand the
+    same broken card back on the next tick.
+    """
+    from hermes_cli import kanban_db_skills as _kbs
+
+    problems = _kbs.check_forced_skills(
+        claimed.skills, assignee=assignee, project_path=workspace)
+    if not problems:
+        return False
+    reason = _kbs.forced_skill_error(problems, assignee=assignee)
+    _kb._log.warning("kanban dispatch: %s — %s", claimed.id, reason)
+    return _kb.block_task(conn, claimed.id, reason=reason, kind="capability")
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2069,6 +2105,9 @@ def _dispatch_lane_task(
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+    if _block_unresolvable_forced_skills(conn, claimed, assignee, str(workspace)):
+        result.blocked_malformed.append((claimed.id, assignee))
+        return False
     if lane == "review":
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.

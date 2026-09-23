@@ -33,6 +33,9 @@ def test_crashed_and_timed_out_say_retry_and_hide_internals():
     crashed, *_ = _EVENT_FORMATTERS["crashed"](_event(), _names())
     timed_out, *_ = _EVENT_FORMATTERS["timed_out"](_event(limit_seconds=1800), _names())
     for msg in (crashed, timed_out):
-        assert "retried automatically" in msg
+        # Retry is the normal outcome, but the breaker is accounted AFTER these
+        # events are written, so the copy must not state it as a certainty.
+        assert "retried" in msg
+        assert "blocked" in msg
         assert "pid" not in msg and "max_runtime" not in msg
     assert "30-minute" in timed_out

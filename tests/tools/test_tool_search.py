@@ -691,6 +691,61 @@ class TestRegression_ToolsetScoping:
 
 
 class TestCatalogListing:
+    def test_largest_local_group_degrades_without_costing_small_group_descriptions(self):
+        """Regression for #116406: disclosure levels belong to individual toolsets."""
+        from tools.registry import registry
+        from tools.tool_search_catalog import build_catalog_listing_with_form
+
+        defs = []
+        for toolset, count in (("browser", 12), ("kanban", 1)):
+            for i in range(count):
+                td = _td(f"listing_{toolset}_action_{i:02d}", "Perform a useful domain action.")
+                registry.register(name=td["function"]["name"], toolset=toolset,
+                                  schema=td["function"], handler=lambda args, **kw: "{}")
+                defs.append(td)
+
+        for budget in (200, 100):
+            text, form = build_catalog_listing_with_form(defs, max_tokens=budget)
+            assert text is not None
+            assert len(text) <= budget * 4
+            assert "- listing_kanban_action_00: Perform a useful domain action." in text
+            assert form == "mixed"
+            if budget == 200:
+                assert all(td["function"]["name"] in text for td in defs)
+                assert "- listing_browser_action_00:" not in text
+            else:
+                assert "browser tools (12)" in text
+                assert "listing_browser_action_00" not in text
+            assert (text, form) == build_catalog_listing_with_form(list(reversed(defs)), max_tokens=budget)
+
+    def test_count_floor_survives_assembly_and_domains_remain_searchable(self):
+        """Regression for #116406: even a zero budget retains every reachable domain."""
+        from tools.registry import registry
+        from tools.tool_search import ToolSearchConfig, assemble_tool_defs
+        from tools.tool_search_catalog import build_catalog, search_catalog
+
+        defs = []
+        families = ("browser", "kanban", "homeassistant", "desktop_ui", "mcp-calendar")
+        for i, toolset in enumerate(families):
+            td = _td(f"listing_floor_action_{i}", "Perform an action.")
+            registry.register(name=td["function"]["name"], toolset=toolset,
+                              schema=td["function"], handler=lambda args, **kw: "{}")
+            defs.append(td)
+        result = assemble_tool_defs(defs, context_length=1000, config=ToolSearchConfig.from_raw({
+            "enabled": "on", "threshold_pct": 0,
+            "defer": [td["function"]["name"] for td in defs],
+        }))
+        assert result.threshold_tokens == 0
+        assert result.listing_form == "groups"
+        description = next(td["function"]["description"] for td in result.tool_defs
+                           if td["function"]["name"] == "tool_search")
+        catalog = build_catalog(defs)
+        for td, toolset in zip(defs, families):
+            label = toolset.removeprefix("mcp-")
+            assert f"{label} tools (1)" in description
+            assert td["function"]["name"] not in description
+            assert [entry.name for entry in search_catalog(catalog, label)] == [td["function"]["name"]]
+
     def test_config_defaults(self):
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw(None)

@@ -473,7 +473,26 @@ function ConfigSettingsInner({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                optionDescriptions={
+                  key === 'approvals.mode'
+                    ? {
+                        manual: t.shell.approvalMode.manualDescription,
+                        smart: t.shell.approvalMode.smartDescription,
+                        off: t.shell.approvalMode.offDescription
+                      }
+                    : undefined
+                }
+                optionLabels={
+                  key === 'tts.elevenlabs.voice_id'
+                    ? elevenLabsVoiceLabels
+                    : key === 'approvals.mode'
+                      ? {
+                          manual: t.shell.approvalMode.manual,
+                          smart: t.shell.approvalMode.smart,
+                          off: t.shell.approvalMode.off
+                        }
+                      : undefined
+                }
                 schema={field}
                 schemaKey={key}
                 value={getNested(config, key)}

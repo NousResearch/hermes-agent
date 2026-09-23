@@ -46,10 +46,10 @@ describe('approval mode statusbar item', () => {
 
     fireEvent.pointerDown(trigger, { button: 0 })
 
-    expect(await screen.findByRole('menuitemradio', { name: /manual/i })).toBeTruthy()
+    expect(await screen.findByRole('menuitemradio', { name: /^Ask/ })).toBeTruthy()
     expect(trigger.getAttribute('aria-haspopup')).toBe('menu')
-    expect(screen.getByRole('menuitemradio', { name: /smart/i })).toBeTruthy()
-    expect(screen.getByRole('menuitemradio', { name: /off/i })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: /^Smart/ })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: /^Auto Approve/ })).toBeTruthy()
   })
 
   it('writes the selected mode through the gateway and updates its shared trigger label', async () => {
@@ -57,11 +57,11 @@ describe('approval mode statusbar item', () => {
     render(<Harness profile="work" requestGateway={requestGateway} />)
 
     fireEvent.pointerDown(screen.getByRole('button', { name: /smart/i }), { button: 0 })
-    fireEvent.click(await screen.findByRole('menuitemradio', { name: /manual/i }))
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /^Ask/ }))
 
     await waitFor(() => {
       expect(requestGateway).toHaveBeenCalledWith('config.set', { key: 'approvals.mode', value: 'manual' })
-      expect(screen.getByRole('button', { name: /manual/i })).toBeTruthy()
+      expect(screen.getByRole('button', { name: /ask/i })).toBeTruthy()
     })
   })
 
@@ -75,7 +75,7 @@ describe('approval mode statusbar item', () => {
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'スマート' }), { button: 0 })
 
-    expect(await screen.findByText('必要な場合にのみ確認します')).toBeTruthy()
-    expect(screen.getByText('承認プロンプトなしで実行します')).toBeTruthy()
+    expect(await screen.findByText('操作を判断し、必要な場合のみ確認します')).toBeTruthy()
+    expect(screen.getByText('確認せずに操作を承認します')).toBeTruthy()
   })
 })

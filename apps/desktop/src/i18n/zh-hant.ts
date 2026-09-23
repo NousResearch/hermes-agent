@@ -3031,12 +3031,12 @@ export const zhHant = defineLocale({
     approvalMode: {
       title: '核准模式',
       ariaLabel: mode => `核准模式：${mode}`,
-      manual: '手動',
+      manual: '詢問',
       manualDescription: '執行需要核准的操作前詢問',
       smart: '智慧',
-      smartDescription: '自動評估操作，並在需要時詢問',
-      off: '關閉',
-      offDescription: '不顯示核准提示，直接執行'
+      smartDescription: '評估操作，僅在需要時詢問',
+      off: '自動核准',
+      offDescription: '無需詢問，直接核准操作'
     },
     statusbar: {
       unknown: '未知',

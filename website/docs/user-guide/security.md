@@ -23,7 +23,7 @@ The security model has eight layers:
 
 ## Dangerous Command Approval
 
-Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.
+Before executing any command, Hermes checks it against a curated list of dangerous patterns. Matches are handled according to the active approval mode below.
 
 ### Approval Modes
 
@@ -52,14 +52,16 @@ The full set of keys:
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
-| Mode | Behavior |
-|------|----------|
-| **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
-| **manual** | Always prompt the user for approval on dangerous commands. |
-| **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
+Desktop uses plain-language labels while `config.yaml` and `/approvals` keep the stable mode values:
+
+| Desktop label | Config value | Behavior |
+|---------------|--------------|----------|
+| **Smart** (default) | `smart` | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a prompt. |
+| **Ask** | `manual` | Always prompt the user for approval on dangerous commands. |
+| **Auto Approve** | `off` | Approve actions without asking, equivalent to running with `--yolo`. |
 
 :::warning
-Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
+Setting `approvals.mode: off` disables dangerous-command approval prompts. Other independent confirmations remain active. Use only in trusted environments (CI/CD, containers, etc.).
 :::
 
 ### YOLO Mode

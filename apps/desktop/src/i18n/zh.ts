@@ -3783,12 +3783,12 @@ export const zh = defineLocale({
     approvalMode: {
       title: '审批模式',
       ariaLabel: mode => `审批模式：${mode}`,
-      manual: '手动',
+      manual: '询问',
       manualDescription: '执行需要审批的操作前询问',
       smart: '智能',
-      smartDescription: '自动评估操作，并在需要时询问',
-      off: '关闭',
-      offDescription: '不显示审批提示，直接运行'
+      smartDescription: '评估操作，仅在需要时询问',
+      off: '自动批准',
+      offDescription: '无需询问，直接批准操作'
     },
     statusbar: {
       unknown: '未知',

@@ -3355,12 +3355,12 @@ export const ru = defineLocale({
     approvalMode: {
       title: 'Режим подтверждения',
       ariaLabel: mode => `Режим подтверждения: ${mode}`,
-      manual: 'Ручной',
+      manual: 'Спрашивать',
       manualDescription: 'Спрашивать перед действиями, требующими подтверждения',
       smart: 'Умный',
-      smartDescription: 'Автоматически оценивать действия и спрашивать при необходимости',
-      off: 'Выкл',
-      offDescription: 'Выполнять без запросов подтверждения'
+      smartDescription: 'Оценивать действия и спрашивать только при необходимости',
+      off: 'Автоодобрение',
+      offDescription: 'Одобрять действия без запроса'
     },
     statusbar: {
       unknown: 'неизвестно',

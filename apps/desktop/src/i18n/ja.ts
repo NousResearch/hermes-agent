@@ -3074,12 +3074,12 @@ export const ja = defineLocale({
     approvalMode: {
       title: '承認モード',
       ariaLabel: mode => `承認モード: ${mode}`,
-      manual: '手動',
+      manual: '確認',
       manualDescription: '承認が必要な操作の前に確認します',
       smart: 'スマート',
-      smartDescription: '必要な場合にのみ確認します',
-      off: 'オフ',
-      offDescription: '承認プロンプトなしで実行します'
+      smartDescription: '操作を判断し、必要な場合のみ確認します',
+      off: '自動承認',
+      offDescription: '確認せずに操作を承認します'
     },
     statusbar: {
       unknown: '不明',

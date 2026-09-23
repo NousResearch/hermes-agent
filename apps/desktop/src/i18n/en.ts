@@ -3975,12 +3975,12 @@ export const en: Translations = {
     approvalMode: {
       title: 'Approval mode',
       ariaLabel: mode => `Approval mode: ${mode}`,
-      manual: 'Manual',
-      manualDescription: 'Ask before actions that require approval',
+      manual: 'Ask',
+      manualDescription: 'Ask before actions that need approval',
       smart: 'Smart',
-      smartDescription: 'Automatically assess actions and ask when needed',
-      off: 'Off',
-      offDescription: 'Run without approval prompts'
+      smartDescription: 'Assess actions and ask only when needed',
+      off: 'Auto Approve',
+      offDescription: 'Approve actions without asking'
     },
     statusbar: {
       unknown: 'unknown',

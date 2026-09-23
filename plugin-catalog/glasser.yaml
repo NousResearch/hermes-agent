@@ -1,0 +1,21 @@
+name: glasser
+repo: https://github.com/glasser-ai/hermes-plugin-glasser
+sha: a315091fbe4239a5f5c81d161a139551762798ad
+description: >-
+  Glasser's hosted MCP: search, inspect and run 1,000+ paid data endpoints (people and
+  company enrichment, SEO, web, social media, US property, stock quotes) with one key, pay
+  per call. Portable Agent Plugins v1 package: a stdio bridge through mcp-remote (browser
+  sign-in, no key in the package) plus a bundled skill for setup and the spending rules.
+  Requires Node.js 18+.
+maintainer: glasser-ai
+tier: community
+category: web
+requires_hermes: ">=0.20"
+docs_url: https://glasser.ai/docs/mcp-server
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

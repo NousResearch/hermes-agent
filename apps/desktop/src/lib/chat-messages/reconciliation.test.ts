@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 
-import { type ChatMessage, preserveLocalAssistantErrors, textPart, toChatMessages } from './index'
+import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, textPart, toChatMessages } from './index'
 
 const row = (id: string, role: 'user' | 'assistant', text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
   id,
@@ -85,4 +85,51 @@ it('reconciles only the represented failed tail, retaining its structured error 
   const merged = preserveLocalAssistantErrors(stored, current)
   expect(merged.map(message => message.id)).toEqual(stored.map(message => message.id))
   expect(merged.at(-1)).toMatchObject({ error: failed.error, errorSurface: failed.errorSurface })
+})
+
+const turnLabels = (messages: ChatMessage[]) => messages.map(message => `${message.role}:${chatMessageText(message)}`)
+
+it('drops a local errored turn the refreshed transcript already stored under new ids', () => {
+  const stored = [
+    row('s1', 'user', 'old q', { rowId: 1 }),
+    row('s2', 'assistant', 'old a', { rowId: 2 }),
+    row('s3', 'user', 'new q', { rowId: 3 }),
+    row('s4', 'assistant', 'new a', { rowId: 4 })
+  ]
+
+  const current = [
+    row('user-1-x', 'user', 'old q'),
+    row('assistant-stream-1-0', 'assistant', 'old a', { error: 'boom' }),
+    row('s3', 'user', 'new q'),
+    row('s4', 'assistant', 'new a')
+  ]
+
+  expect(turnLabels(preserveLocalAssistantErrors(stored, current))).toEqual(turnLabels(stored))
+})
+
+it('keeps an unstored errored turn at its original position instead of after newer turns', () => {
+  const stored = [
+    row('s1', 'user', 'first q'),
+    row('s2', 'assistant', 'first a'),
+    row('s3', 'user', 'later q'),
+    row('s4', 'assistant', 'later a')
+  ]
+
+  const current = [
+    row('s1', 'user', 'first q'),
+    row('s2', 'assistant', 'first a'),
+    row('user-9-x', 'user', 'failed q'),
+    row('assistant-stream-9-0', 'assistant', '', { error: 'boom' }),
+    row('s3', 'user', 'later q'),
+    row('s4', 'assistant', 'later a')
+  ]
+
+  expect(turnLabels(preserveLocalAssistantErrors(stored, current))).toEqual([
+    'user:first q',
+    'assistant:first a',
+    'user:failed q',
+    'assistant:',
+    'user:later q',
+    'assistant:later a'
+  ])
 })

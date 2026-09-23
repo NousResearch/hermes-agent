@@ -288,7 +288,7 @@ _INTERPRETER_NAME_RE = re.compile(
     r"^(?:python(?:[23](?:\.\d+)*)?|pypy[23]?|ipython|perl|ruby|node|bun|deno)(?:\.exe)?$",
     re.IGNORECASE,
 )
-_INTERPRETER_EXEC_FLAGS = frozenset({"-c", "-e", "--eval"})
+_INTERPRETER_EXEC_FLAGS = frozenset({"-c", "-e", "--eval", "eval"})
 
 # Strict allowlist: inline interpreter code is arbitrary execution by default.
 # Only provably benign display/print shapes without imports, subprocesses, or filesystem access are masked.

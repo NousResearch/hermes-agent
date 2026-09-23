@@ -12,6 +12,7 @@ Contracts:
 
 import json
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -373,3 +374,160 @@ def test_a_desktop_session_with_no_callback_gets_the_link_at_once_and_opens_no_o
     assert out["status"] == "initiated"
     assert out["targets"][0]["connect_url"] == "https://auth.example/paper/1"
     assert live.current("s1") is None
+
+
+
+# ---------------------------------------------------------------------------
+# install commits are all-or-nothing: a post-config-save failure restores both stores
+# ---------------------------------------------------------------------------
+
+
+def test_install_env_failure_rolls_back_config_and_env(tmp_path, monkeypatch):
+    """install() promises 'a failure writes nothing'. _save_mcp_server lands before _save_env,
+    so a mid-env failure must put the previous server entry and the previous .env values back."""
+    import tools.connectors.mcp as mcp
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("LINEAR_TOKEN=old-token\n")
+    (home / "config.yaml").write_text("mcp_servers:\n  linear:\n    command: old-linear\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    entry = SimpleNamespace(auth=SimpleNamespace(env=[
+        SimpleNamespace(name="LINEAR_TOKEN", prompt="token?", required=True, secret=True, default=""),
+        SimpleNamespace(name="LINEAR_TEAM", prompt="team?", required=True, secret=True, default=""),
+    ]))
+
+    import hermes_cli.config as config_mod
+    real_save = config_mod.save_env_value
+    calls = []
+
+    def flaky_save(key, value):
+        calls.append(key)
+        if len(calls) == 2:
+            raise RuntimeError("disk full")
+        return real_save(key, value)
+
+    with patch("tools.connectors.mcp._catalog_entry", return_value=entry), \
+         patch("hermes_cli.mcp_catalog.card_install_config", return_value={"command": "new-linear"}), \
+         patch("hermes_cli.mcp_config._probe_single_server", return_value=[("read", "desc")]), \
+         patch("hermes_cli.config._publish_env_value", lambda *_a, **_k: None), \
+         patch("hermes_cli.config.save_env_value", side_effect=flaky_save):
+        with pytest.raises(RuntimeError, match="disk full"):
+            mcp._CatalogBackend().install("linear", {"LINEAR_TOKEN": "new-token", "LINEAR_TEAM": "eng"})
+
+    # write, failing write, then the rollback restoring the first key through the same path
+    assert calls == ["LINEAR_TOKEN", "LINEAR_TEAM", "LINEAR_TOKEN"]
+    from hermes_cli.config import load_config
+    assert load_config().get("mcp_servers", {}).get("linear") == {"command": "old-linear"}
+    env_text = (home / ".env").read_text()
+    assert "LINEAR_TOKEN=old-token" in env_text and "LINEAR_TEAM" not in env_text
+
+
+def test_e2e_carded_install_failure_restores_config_and_env(tmp_path, monkeypatch):
+    """The carded production path end to end: manage_connections install -> the card supplies
+    the secrets -> _start_install -> backend.install -> probe -> _save_mcp_server -> _save_env.
+    A mid-env failure must report the failure AND restore both config.yaml and .env."""
+    import tools.connectors.mcp as mcp
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("LINEAR_TOKEN=old-token\n")
+    (home / "config.yaml").write_text("mcp_servers:\n  linear:\n    command: old-linear\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    entry = SimpleNamespace(auth=SimpleNamespace(type="api_key", provider=None, env=[
+        SimpleNamespace(name="LINEAR_TOKEN", prompt="token?", required=True, secret=True, default=""),
+        SimpleNamespace(name="LINEAR_TEAM", prompt="team?", required=True, secret=True, default=""),
+    ]))
+
+    import hermes_cli.config as config_mod
+    real_save = config_mod.save_env_value
+    calls = []
+
+    def flaky_save(key, value):
+        calls.append(key)
+        if len(calls) == 2:
+            raise RuntimeError("disk full")
+        return real_save(key, value)
+
+    # A failed target stays resumable (failed is not a resolved state, so the card can offer
+    # retry/skip). The callback sees only the opening payload, so a watcher thread plays the
+    # renderer: it polls the live operation and answers "skipped" once the failure lands.
+    approve = json.dumps({"targets": [{"name": "linear", "status": "approved",
+                                       "env": {"LINEAR_TOKEN": "new-token", "LINEAR_TEAM": "eng"}}]})
+    skip = json.dumps({"targets": [{"name": "linear", "status": "skipped"}]})
+    seen_failed = []
+    op_ids = []
+
+    def answering(payload):
+        op_ids.append(payload["op_id"])
+
+        def respond():
+            operation = live.get("s1", payload["op_id"])
+            if operation is not None:
+                apply_answer(operation, approve)
+
+        threading.Timer(0.01, respond).start()
+        return None
+
+    def watch_for_failure():
+        deadline = time.time() + 10
+        while time.time() < deadline and not seen_failed:
+            for op_id in op_ids:
+                operation = live.get("s1", op_id)
+                if operation is None:
+                    continue
+                target = operation.target("linear")
+                if target is not None and target.state == TargetState.failed:
+                    seen_failed.append(target.snapshot())
+                    apply_answer(operation, skip)
+                    return
+            time.sleep(0.01)
+
+    watcher = threading.Thread(target=watch_for_failure, daemon=True)
+    watcher.start()
+
+    with patch("tools.connectors.mcp._default_backend", return_value=mcp._CatalogBackend()), \
+         patch("tools.connectors.mcp._catalog_entry", return_value=entry), \
+         patch("hermes_cli.mcp_catalog.card_install_config", return_value={"command": "new-linear"}), \
+         patch("hermes_cli.mcp_config._probe_single_server", return_value=[("read", "desc")]), \
+         patch("hermes_cli.config._publish_env_value", lambda *_a, **_k: None), \
+         patch("hermes_cli.config.save_env_value", side_effect=flaky_save):
+        out = _mcp({"action": "install", "connectors": [_linear()]}, answering)
+    watcher.join(timeout=5)
+
+    (failed,) = seen_failed
+    assert "disk full" in failed["detail"]
+    assert out["targets"][0]["state"] == TargetState.skipped.value
+    assert calls == ["LINEAR_TOKEN", "LINEAR_TEAM", "LINEAR_TOKEN"]
+    from hermes_cli.config import load_config
+    assert load_config().get("mcp_servers", {}).get("linear") == {"command": "old-linear"}
+    env_text = (home / ".env").read_text()
+    assert "LINEAR_TOKEN=old-token" in env_text and "LINEAR_TEAM" not in env_text
+
+
+def test_probe_commit_on_commit_failure_rolls_back(tmp_path, monkeypatch):
+    """probe_with_rollback undid only AttemptCanceled: a failing on_commit left the new config
+    committed, the previous provider entry evicted and the pre-attempt tokens deleted."""
+    from tools.connectors import mcp_oauth
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("mcp_servers:\n  linear:\n    command: old-linear\n")
+    token_dir = home / "mcp-tokens"
+    token_dir.mkdir()
+    (token_dir / "linear.json").write_text('{"grant": "old"}')
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with patch("hermes_cli.mcp_config._probe_single_server", return_value=[("read", "desc")]), \
+         patch("hermes_cli.mcp_config._oauth_tokens_present", return_value=True), \
+         patch("hermes_cli.config._publish_env_value", lambda *_a, **_k: None):
+        with pytest.raises(RuntimeError, match="env broke"):
+            mcp_oauth.probe_with_rollback(
+                "linear", {"command": "new-linear"}, str(home), None, False,
+                on_commit=lambda: (_ for _ in ()).throw(RuntimeError("env broke")))
+
+    from hermes_cli.config import load_config
+    assert load_config().get("mcp_servers", {}).get("linear") == {"command": "old-linear"}
+    assert (token_dir / "linear.json").read_text() == '{"grant": "old"}'

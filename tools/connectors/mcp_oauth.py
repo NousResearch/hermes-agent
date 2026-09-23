@@ -67,7 +67,7 @@ def probe_with_rollback(
         tools, discovery_error = [], exception_message(exc)
     try:
         _commit(server_name, cfg, on_commit, flow)
-    except AttemptCanceled:
+    except Exception:
         undo()
         raise
     if flow is not None:
@@ -106,15 +106,20 @@ def cancel_attempt(flow) -> bool:
 
 
 def _commit(server_name: str, cfg: dict, on_commit: Optional[Callable[[], None]], flow=None) -> None:
-    from hermes_cli.mcp_config import _save_mcp_server
+    from hermes_cli.mcp_config import _mcp_server_entry, _restore_mcp_server_entry, _save_mcp_server
 
     with _COMMIT_GUARD:
         if flow is not None and getattr(flow, "cancelled", False):
             raise AttemptCanceled("canceled")
+        previous = _mcp_server_entry(server_name)
         if not _save_mcp_server(server_name, cfg):
             raise RuntimeError(f"'{server_name}' was rejected: suspicious command/args configuration")
-        if on_commit is not None:
-            on_commit()
+        try:
+            if on_commit is not None:
+                on_commit()
+        except Exception:
+            _restore_mcp_server_entry(server_name, previous)
+            raise
         if flow is not None:
             flow.committed = True
 

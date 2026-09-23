@@ -89,7 +89,15 @@ def _service_label(service: tuple[str, bool]) -> str:
     kind, system = service
     if kind == "systemd":
         return f"systemd ({'system' if system else 'user'})"
+    if kind == "s6":
+        return "s6 slot"
     return "Windows scheduled task" if kind == "windows" else kind
+
+
+def _remove_verb(service: tuple[str, bool]) -> str:
+    """An s6 slot is parked down (it stays registered as the `hermes -p X gateway start` target), every
+    other unit is uninstalled."""
+    return "park" if service[0] == "s6" else "uninstall"
 
 
 def _service_dict(service: tuple[str, bool]) -> dict:
@@ -672,7 +680,7 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     steps = []
     signalled = _signalled_gateways(plan)
     for p in plan.standalone_secondaries:
-        what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", f"uninstall {p.service_label()}" if p.services else "") if x)
+        what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", " + ".join(f"{_remove_verb(s)} {_service_label(s)}" for s in p.services)) if x)
         steps.append(f"  - {p.name}: {what}")
     if len(plan.profiles) < 2:  # the notice already says "only one profile exists"
         return lines + _plan_tail(plan)
@@ -873,7 +881,8 @@ def _remove_secondary_gateways(plan: MigrationPlan) -> None:
         for kind, system in p.services:
             _service_op(kind, system, "stop", p.home)
             _service_op(kind, system, "uninstall", p.home)
-            print(f"  ✓ {p.name}: stopped and removed its {_service_label((kind, system))} service")
+            done = "parked (down file)" if kind == "s6" else "removed"
+            print(f"  ✓ {p.name}: stopped and {done} its {_service_label((kind, system))}")
         if p.pid is not None:
             _stop_gateway_process(p.home)
             print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")

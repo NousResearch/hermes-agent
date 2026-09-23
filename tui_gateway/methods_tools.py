@@ -563,24 +563,36 @@ def _dispatch_quick(rid, params, session, name, arg):
     return _ok(rid, {"type": "alias", "target": qc.get("target", "")}) if qc.get("type") == "alias" else None
 
 
-def _plugin_command_handler(name: str):
+def _plugin_command_handler(name: str, session=None):
     try:
-        return _tools_mod("hermes_cli.plugins").get_plugin_command_handler(name)
+        home = (session or {}).get("profile_home") or _tools_mod("hermes_constants").get_hermes_home()
+        with _tools_mod("hermes_cli.plugins_loader")._plugin_home_scope(home):
+            return _tools_mod("hermes_cli.plugins").get_plugin_command_handler(name)
     except Exception:
         return None
 
 
-def _run_plugin_command(handler, arg: str, session=None) -> str:
+def _run_plugin_command(handler, arg: str, session, runtime_session_id) -> str:
     """Run a plugin slash-command handler under the session's ``HERMES_SESSION_*`` binding.
 
     Plugin handlers read ``get_session_env()`` for the chat/session they serve; these RPCs run on
     the socket/worker thread where nothing upstream binds it (only the turn path does), so a handler
     saw ``""`` or the launch process's inherited values. Same class as the messaging gateway's
     #108698; ``_set_session_context`` is the turn path's own seam."""
-    plugins = _tools_mod("hermes_cli.plugins")
     tokens = _set_session_context(session.get("session_key", "") or "", cwd=str(session.get("cwd") or "")) if session else []
     try:
-        return str(plugins.resolve_plugin_command_result(handler(arg)) or "")
+        session = session or {}
+        home = session.get("profile_home") or _tools_mod("hermes_constants").get_hermes_home()
+        with _tools_mod("hermes_cli.plugins_loader")._plugin_home_scope(home):
+            commands = _tools_mod("hermes_cli.plugins_command")
+            stored_id = session.get("session_key") or None
+            context = commands.plugin_command_context(
+                session_id=getattr(session.get("agent"), "session_id", None) or stored_id,
+                task_id=stored_id, stored_session_id=stored_id,
+                runtime_session_id=runtime_session_id if session else None,
+                surface=session.get("source") or "tui")
+            result = commands.invoke_plugin_command(handler, arg, **context)
+            return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(result) or "")
     finally:
         _clear_session_context(tokens)
 
@@ -621,9 +633,12 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 
 
 def _dispatch_plugin(rid, params, session, name, arg):
-    if handler := _plugin_command_handler(name):
+    if handler := _plugin_command_handler(name, session):
+        if params.get("session_id") and session is None:
+            return _err(rid, 4001, "session not found")
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
+            output = _run_plugin_command(handler, arg, session, params.get("session_id"))
+            return _ok(rid, {"type": "plugin", "output": output})
     return None
 
 
@@ -957,9 +972,10 @@ def _(rid, params: dict) -> dict:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     if _is_profile_skill_command(session, base):
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
-    if plugin_handler := _plugin_command_handler(base) if base else None:
+    if plugin_handler := _plugin_command_handler(base, session) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
+            output = _run_plugin_command(plugin_handler, arg, session, sid)
+            return _ok(rid, {"output": output or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
@@ -1543,6 +1559,7 @@ def _plugin_rows() -> list[dict]:
         # Bundled backends/platforms/providers and the live memory provider run without an explicit
         # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
         status = pc._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active)
+        default_enabled = source == "bundled" and pc._bundled_default_on(_dir)
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
         # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
         # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
@@ -1550,7 +1567,8 @@ def _plugin_rows() -> list[dict]:
         portable = pc._is_portable_plugin_dir(_dir)
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": portable,
+            "source": source, "status": status, "default_enabled": default_enabled,
+            "portable": portable,
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
@@ -1606,9 +1624,10 @@ def _plugins_toggle(rid, params):
         return _err(rid, 4019, "plugins.toggle requires a 'key' or 'name'")
     _ensure_plugin_activation_listener()
     toggle = _tools_mod("hermes_cli.plugins_cmd").dashboard_set_agent_plugin_enabled
-    result = toggle(ident, enabled=bool(params.get("enable")))
+    result = toggle(ident, enabled=bool(params.get("enable")),
+                    **({"setup_consent": params["setup_consent"]} if "setup_consent" in params else {}))
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "toggle failed")
+        return _err(rid, 5026, result.get("error") or "toggle failed", data=result)
     # The toggle resolves a bare leaf / manifest name to the canonical key it wrote; report that key.
     key = result.get("name") or ident
     row = next((r for r in _plugin_rows() if key in (r["key"], r["name"])), None)
@@ -1629,9 +1648,10 @@ def _plugins_install(rid, params):
     _ensure_plugin_activation_listener()
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
         ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
-        ref=str(params.get("ref") or "").strip() or None)
+        ref=str(params.get("ref") or "").strip() or None,
+        **({"setup_consent": params["setup_consent"]} if "setup_consent" in params else {}))
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "install failed")
+        return _err(rid, 5026, result.get("error") or "install failed", data=result)
     return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)
 
 

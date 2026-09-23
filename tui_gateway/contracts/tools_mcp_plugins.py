@@ -593,7 +593,9 @@ class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
     that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);
-    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only)."""
+    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only).
+    ``toggle``/``install`` may carry ``setup_consent``: the reviewed native-setup consent echoed back from a
+    ``consent_required`` refusal (bound to plugin key, profile home and revision)."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -606,6 +608,7 @@ class PluginsManageParams(ProfileParams):
     ref: str | None = None
     accept_capabilities: bool | None = None
     values: dict[str, JsonValue] | None = None
+    setup_consent: dict[str, JsonValue] | None = None
 
 
 class PluginSettingFieldType(WireEnum):
@@ -659,6 +662,8 @@ class AgentPluginRow(Result):
     description: str
     source: str
     status: str
+    # Bundled plugins that are on without an explicit enable; False marks an opt-in bundled plugin.
+    default_enabled: bool
     portable: bool
     install_dir: str
     has_desktop_half: bool

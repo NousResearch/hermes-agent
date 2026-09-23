@@ -4424,6 +4424,10 @@
             "title": "Status",
             "type": "string"
           },
+          "default_enabled": {
+            "title": "Default Enabled",
+            "type": "boolean"
+          },
           "portable": {
             "title": "Portable",
             "type": "boolean"
@@ -4550,6 +4554,7 @@
           "description",
           "source",
           "status",
+          "default_enabled",
           "portable",
           "install_dir",
           "has_desktop_half",
@@ -21216,7 +21221,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only).\n``toggle``/``install`` may carry ``setup_consent``: the reviewed native-setup consent echoed back from a\n``consent_required`` refusal (bound to plugin key, profile home and revision).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -21354,6 +21359,19 @@
             ],
             "default": null,
             "title": "Values"
+          },
+          "setup_consent": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Setup Consent"
           }
         },
         "title": "PluginsManageParams",

@@ -209,7 +209,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return {"ok": True, "dialog": dialog.to_dict()}
 
     def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> Dict[str, Any]:
+                         await_promise: bool = True, timeout: float = 10.0,
+                         frame_id: Optional[str] = None) -> Dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
         Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
@@ -223,6 +224,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return _fail("supervisor is not active")
         if not session_id:
             return _fail("supervisor has no attached page session")
+        if frame_id:
+            with self._state_lock:
+                frame = self._frames.get(frame_id)
+                session_id = frame.cdp_session_id if frame and frame.is_oopif else None
+            if not session_id:
+                return _fail("iframe session is no longer attached")
 
         def _run_eval(by_value: bool) -> Dict[str, Any]:
             # userGesture: clipboard / fullscreen APIs need user activation.
@@ -263,7 +270,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
 
-    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+    def focus_page(self, origin: str, *, accept: Optional[str] = None,
+                   frame_accept: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
         """Re-attach the supervisor's page session to an open page target on ``origin``
         (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
         that open their own tabs (browser_exec) put the login form somewhere else. With
@@ -296,15 +304,34 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     continue
             for target_id, url in candidates:
                 sid = await _attach(target_id)
+                frame_id = None
                 if accept:
                     probe = await self._cdp("Runtime.evaluate", {"expression": accept, "returnByValue": True},
                                             session_id=sid, timeout=timeout)
                     if not probe.get("result", {}).get("result", {}).get("value"):
-                        await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
-                        continue
+                        if frame_accept:
+                            tree = (await self._cdp("Page.getFrameTree", session_id=sid, timeout=timeout))["result"]["frameTree"]
+                            def descendants(node):
+                                for child in node.get("childFrames", []):
+                                    yield child["frame"]["id"]
+                                    yield from descendants(child)
+                            for fid in descendants(tree):
+                                with self._state_lock:
+                                    frame = self._frames.get(fid)
+                                    child_sid = frame.cdp_session_id if frame and frame.is_oopif else None
+                                if not child_sid:
+                                    continue
+                                check = await self._cdp("Runtime.evaluate", {"expression": frame_accept, "returnByValue": True},
+                                                        session_id=child_sid, timeout=timeout)
+                                if check.get("result", {}).get("result", {}).get("value"):
+                                    frame_id = fid
+                                    break
+                        if not frame_id:
+                            await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
+                            continue
                 with self._state_lock:
                     self._page_session_id = sid
-                return {"ok": True, "url": url}
+                return {"ok": True, "url": url, "frame_id": frame_id}
             return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
         try:

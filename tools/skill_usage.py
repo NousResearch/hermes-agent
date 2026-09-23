@@ -705,9 +705,13 @@ def curated_report() -> List[Dict[str, Any]]:
     return [_report_row(n, data.get(n), _persisted=n in data, provenance=provenance(n)) for n in sorted(names)]
 
 
-def provenance(skill_name: str) -> str:
-    """'hub' | 'bundled' | 'agent' (the latter also covers local manually-authored skills)."""
-    return "hub" if is_hub_installed(skill_name) else "bundled" if is_bundled(skill_name) else "agent"
+def provenance(skill_name: str, record: Optional[Dict[str, Any]] = None) -> str:
+    """Display origin: hub/bundled, curator-managed agent, or unmanaged local."""
+    if is_hub_installed(skill_name):
+        return "hub"
+    if is_bundled(skill_name):
+        return "bundled"
+    return "agent" if _is_curator_managed_record(record) else "local"
 
 
 def usage_report() -> List[Dict[str, Any]]:
@@ -715,7 +719,7 @@ def usage_report() -> List[Dict[str, Any]]:
     if not (base := _skills_dir()).exists():
         return []
     data = load_usage()
-    return [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data)
+    return [_report_row(n, data.get(n), provenance=provenance(n, data.get(n)), _persisted=n in data)
             for n in sorted({name for name, _md in _iter_skill_mds(base, local_only=False)})]
 
 

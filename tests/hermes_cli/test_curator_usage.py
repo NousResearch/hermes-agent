@@ -27,7 +27,7 @@ def _fake_rows():
             "created_at": "2026-01-01T00:00:00+00:00", "_persisted": True,
         },
         {
-            "name": "hub-skill", "provenance": "hub", "state": "active",
+            "name": "local-skill", "provenance": "local", "state": "active",
             "use_count": 0, "view_count": 0, "patch_count": 0,
             "activity_count": 0, "last_activity_at": None,
             "created_at": "2026-01-01T00:00:00+00:00", "_persisted": False,
@@ -44,10 +44,10 @@ def test_usage_lists_all_provenances(monkeypatch, capsys):
     assert curator_cli._cmd_usage(args) == 0
     out = capsys.readouterr().out
     # Header tally and all three skills present.
-    assert "agent=1" in out and "bundled=1" in out and "hub=1" in out
+    assert "agent=1" in out and "local=1" in out and "bundled=1" in out
     assert "agent-skill" in out
     assert "bundled-skill" in out
-    assert "hub-skill" in out
+    assert "local-skill" in out
 
 
 def test_usage_empty(monkeypatch, capsys):
@@ -72,3 +72,12 @@ def test_usage_command_is_registered():
     assert args.sort == "recent"
     assert args.provenance == "hub"
     assert args.json is True
+
+
+def test_usage_provenance_distinguishes_unmanaged_local(monkeypatch, tmp_path):
+    import tools.skill_usage as skill_usage
+    monkeypatch.setattr(skill_usage, "_skills_dir", lambda: tmp_path)
+    (tmp_path / "handmade").mkdir()
+    (tmp_path / "handmade" / "SKILL.md").write_text("---\nname: handmade\n---\n")
+    rows = skill_usage.usage_report()
+    assert next(r for r in rows if r["name"] == "handmade")["provenance"] == "local"

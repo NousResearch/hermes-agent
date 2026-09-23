@@ -578,10 +578,10 @@ def _cmd_usage(args) -> int:
         print("curator: no skills found")
         return 0
     provenance = [r.get("provenance", "agent") for r in rows]
-    counts = {k: provenance.count(k) for k in ("agent", "bundled", "hub")}
+    counts = {k: provenance.count(k) for k in ("agent", "local", "bundled", "hub")}
     print(
         f"skills: {len(rows)} total  "
-        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']})\n")
+        f"(agent={counts['agent']}  local={counts['local']}  bundled={counts['bundled']}  hub={counts['hub']})\n")
     print(
         f"  {'skill':40s}  {'origin':8s}  "
         f"{'use':>4s}  {'view':>4s}  {'patch':>5s}  {'act':>4s}  last_activity")
@@ -614,7 +614,7 @@ _SUBCOMMANDS = (
         _arg("--sort", choices=("activity", "recent", "name"), default="activity",
              help="Sort order: activity (most-used first, default), recent "
                   "(most-recently-active first), or name (alphabetical)"),
-        _arg("--provenance", choices=("agent", "bundled", "hub"), default=None,
+        _arg("--provenance", choices=("agent", "local", "bundled", "hub"), default=None,
              help="Only show skills of this origin"),
         _arg("--json", **_STORE_TRUE, help="Emit the full report as JSON instead of a table")),
     (

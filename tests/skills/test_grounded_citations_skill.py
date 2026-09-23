@@ -12,13 +12,16 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 import yaml
 
 SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "research" / "grounded-citations"
 SCRIPT = SKILL_DIR / "scripts" / "sources.py"
+HOME_SCRIPT = SKILL_DIR / "scripts" / "_hermes_home.py"
 
 
 @pytest.fixture(scope="module")
@@ -604,3 +607,34 @@ def test_stats_reports_provenance_total_matching_coverage(sources_mod, ledger: P
     stats = warnings[0]
     # 4 sentences, 3 with provenance (the both-marked sentence counts once).
     assert "4 prose sentence(s), 3 with declared provenance (75%)" in stats
+
+
+# ---------------------------------------------------------------------------
+# Standalone home fallback (regression for #88660 item 3)
+# ---------------------------------------------------------------------------
+
+
+def _load_home_fallback(monkeypatch) -> ModuleType:
+    """Load _hermes_home.py with hermes_constants blocked, forcing the fallback."""
+    monkeypatch.setitem(sys.modules, "hermes_constants", None)
+    spec = importlib.util.spec_from_file_location("gc_hermes_home_fallback", HOME_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_home_fallback_honors_env(monkeypatch, tmp_path: Path) -> None:
+    """HERMES_HOME set means the fallback returns it verbatim."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "custom"))
+    module = _load_home_fallback(monkeypatch)
+    assert module.get_hermes_home() == tmp_path / "custom"
+
+
+def test_home_fallback_matches_platform_default(monkeypatch) -> None:
+    """HERMES_HOME unset means the fallback agrees with the canonical resolver."""
+    from hermes_constants import _get_platform_default_hermes_home
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    module = _load_home_fallback(monkeypatch)
+    assert module.get_hermes_home() == _get_platform_default_hermes_home()

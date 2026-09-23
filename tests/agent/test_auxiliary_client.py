@@ -3444,6 +3444,7 @@ class TestCodexAdapterPromptCacheKey:
 
         real_client = MagicMock()
         real_client.base_url = base_url
+        real_client._hermes_aux_effective_provider = None
         real_client.responses.create = _create
         adapter = _CodexCompletionsAdapter(real_client, model)
         return adapter, captured_kwargs
@@ -3522,11 +3523,36 @@ class TestCodexAdapterPromptCacheKey:
     def test_xai_backend_drops_auxiliary_service_tier(self):
         adapter, captured = self._build_adapter(
             base_url="https://api.x.ai/v1",
+            model="grok-4",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"service_tier": "priority"},
+        )
+        assert "service_tier" not in captured
+
+    def test_xai_backend_preserves_grok46_priority_service_tier(self):
+        # Grok 4.6 accepts Priority Processing on the Responses endpoint,
+        # unlike older xAI models — mirrors agent/transports/codex.py's
+        # build_kwargs() carve-out for the main agent transport.
+        adapter, captured = self._build_adapter(
+            base_url="https://api.x.ai/v1",
             model="grok-4.6",
         )
         adapter.create(
             messages=[{"role": "user", "content": "hi"}],
             extra_body={"service_tier": "priority"},
+        )
+        assert captured["service_tier"] == "priority"
+
+    def test_xai_backend_drops_non_priority_service_tier_for_grok46(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://api.x.ai/v1",
+            model="grok-4.6",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"service_tier": "flex"},
         )
         assert "service_tier" not in captured
 
@@ -3607,6 +3633,7 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
 
         real_client = MagicMock()
         real_client.base_url = base_url
+        real_client._hermes_aux_effective_provider = None
         real_client.responses.create = _create
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
         return adapter, captured_kwargs

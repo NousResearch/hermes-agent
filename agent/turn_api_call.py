@@ -73,6 +73,7 @@ def perform_api_call(
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
+    agent.last_requested_service_tier = agent.last_served_service_tier = None
 
     def _verdict(action: str) -> ApiCallVerdict:
         return ApiCallVerdict(
@@ -92,6 +93,10 @@ def perform_api_call(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
+        from agent.service_tier import served_service_tier
+        extra_body = next_api_kwargs.get("extra_body")
+        agent.last_requested_service_tier = served_service_tier({
+            **next_api_kwargs, **(extra_body if isinstance(extra_body, dict) else {})})
         if _use_streaming:
             return agent._interruptible_streaming_api_call(
                 next_api_kwargs, on_first_delta=_stop_spinner
@@ -154,6 +159,8 @@ def perform_api_call(
         else:
             interrupted = True
         return _verdict("break")
+    from agent.service_tier import served_service_tier
+    agent.last_served_service_tier = served_service_tier(response)
     return _verdict("fallthrough")
 
 

@@ -1497,10 +1497,16 @@ class _CodexCompletionsAdapter:
         # The Codex endpoint rejects max_output_tokens/temperature (400) — omit.
         extra_body = kwargs.get("extra_body") or {}
         if isinstance(extra_body, dict):
-            # service_tier (fast mode) is a top-level Responses field; xAI's endpoint rejects it.
-            service_tier = extra_body.get("service_tier")
-            if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
+            # Auxiliary tiers are explicit per-call settings, never inherited from /fast.
+            service_tier = extra_body.get("service_tier", kwargs.get("service_tier"))
+            if isinstance(service_tier, str) and service_tier.strip():
                 resp_kwargs["service_tier"] = service_tier.strip()
+            from agent.service_tier import filter_xai_service_tier
+            filter_xai_service_tier(
+                resp_kwargs, model=wire_model,
+                provider=getattr(self._client, "_hermes_aux_effective_provider", None),
+                base_url=host, is_xai=is_xai,
+            )
             reasoning_cfg = extra_body.get("reasoning")
             if isinstance(reasoning_cfg, dict):
                 # Shared per-model vocabulary with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra"
@@ -1611,7 +1617,9 @@ class _CodexCompletionsAdapter:
         choice = SimpleNamespace(
             index=0, message=message, finish_reason="stop" if not tool_calls_raw else "tool_calls"
         )
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        from agent.service_tier import served_service_tier
+        return SimpleNamespace(choices=[choice], model=model, usage=usage,
+                               service_tier=served_service_tier(final))
 
 
 class _ChatShim:
@@ -2905,6 +2913,7 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     real_client = _create_openai_client(
         api_key=api_key, base_url=base_url, default_headers=hermes_xai_default_headers()
     )
+    real_client._hermes_aux_effective_provider = "xai-oauth"
     return CodexAuxiliaryClient(real_client, model), model
 
 
@@ -4892,6 +4901,8 @@ def _profile_declared_messages_wire(provider: str) -> Optional[str]:
 
 def _route_client(req: _ResolveRequest, client_obj: Any, final_model_str: Optional[str]) -> _ResolveResult:
     """Return (client, model), converting to the async wrapper when ``req.async_mode``."""
+    if isinstance(client_obj, CodexAuxiliaryClient) and req.provider != "auto":
+        client_obj._real_client._hermes_aux_effective_provider = req.provider
     if req.async_mode:
         return _to_async_client(client_obj, final_model_str, is_vision=req.is_vision)
     return client_obj, final_model_str
@@ -4917,7 +4928,7 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
         logger.debug("Dropping OpenRouter-format model %r for non-OpenRouter "
                      "auxiliary provider (using %r instead)", model, resolved)
         model = None
-    routed_client, routed_model = _route_client(req, client, model or resolved)
+    routed_client, routed_model = _route_client(req._replace(provider=effective_provider or req.provider), client, model or resolved)
     if routed_client is not None and effective_provider:
         try:
             setattr(routed_client, "_hermes_aux_effective_provider", effective_provider)
@@ -6075,7 +6086,7 @@ def _resolve_task_provider_model(
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if cfg_base_url and cfg_api_key:
-        kept = cfg_provider if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES else "custom"
+        kept = cfg_provider if _preserve_provider_with_base_url(cfg_provider) else "custom"
         return kept, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     if cfg_base_url and cfg_provider and cfg_provider != "auto":
         # base_url without api_key: keep the provider so it can resolve credentials from env

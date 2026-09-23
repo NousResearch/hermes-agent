@@ -1938,7 +1938,7 @@ The override applies automatically everywhere: CLI startup, `hermes -p` one-shot
 
 ## Fast Mode
 
-Fast mode asks the provider for faster output at a premium price: OpenAI [Priority Processing](https://openai.com/api-priority-processing/) (`service_tier: priority`), xAI Priority Processing on Grok 4.6, and Anthropic [Fast Mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) (`speed: fast`, Opus 4.8 / Opus 5 only). It is **off by default**.
+Fast mode asks the provider for faster output at a premium price: OpenAI [Priority Processing](https://openai.com/api-priority-processing/) (`service_tier: priority`), xAI Priority Processing on Grok 4.6 and 4.7, and Anthropic [Fast Mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) (`speed: fast`, Opus 4.8 / Opus 5 only). It is **off by default**.
 
 ```yaml
 agent:
@@ -1955,7 +1955,21 @@ agent:
 
 `/fast normal|fast|auto|cold` switches the mode for the session; add `--global` to persist to `config.yaml`. `/fast` alone shows the current mode.
 
-**Cost note:** both providers bill fast requests at a multiplier on standard rates (Anthropic: $10 / $50 per MTok in/out on Opus 4.8 and Opus 5), stacking with prompt-cache pricing. `auto`/`cold` bound that premium to the window only. Fast params are only sent to the first-party endpoint that supports them (`api.openai.com` / Codex subscription, `api.anthropic.com`, `api.x.ai`); OpenRouter, Nous Portal, Copilot, Azure, Bedrock, and custom `base_url` routes never receive them in any mode. Only the per-request parameter changes between requests — the system prompt, tools, and messages stay byte-identical, so the prompt cache survives the window boundary.
+**Cost note:** providers bill fast requests at a multiplier on standard rates (Anthropic: $10 / $50 per MTok in/out on Opus 4.8 and Opus 5), stacking with prompt-cache pricing. `auto`/`cold` bound that premium to the window only. Fast params are only sent to the first-party endpoint that supports them (`api.openai.com` / Codex subscription, `api.anthropic.com`, `api.x.ai`); OpenRouter, Nous Portal, Copilot, Azure, Bedrock, and custom `base_url` routes never receive them in any mode. Only the per-request parameter changes between requests — the system prompt, tools, and messages stay byte-identical, so the prompt cache survives the window boundary.
+
+For xAI, Hermes enables Priority only on the direct API-key `xai` route at
+`https://api.x.ai/v1`. OAuth, regional endpoints, routers and proxies are not eligible.
+[xAI Priority Processing](https://docs.x.ai/developers/advanced-api-usage/priority-processing)
+costs **2× the standard token rates when served at the priority tier**. It is a request
+option for `grok-4.7`, distinct from **Grok 4.7 Fast**, which is reserved for Cursor and
+Grok Build and is not a public API model in Hermes.
+
+The main turn result includes optional `served_service_tier` from the last provider
+response; auxiliary responses retain `service_tier`. A returned `default` or missing
+value does not confirm Priority, even when it was requested. Streaming preserves the
+terminal response's tier. No pricing calculation is performed from this metadata.
+Auxiliary tasks do not inherit `/fast`; request Priority explicitly with, for example,
+`auxiliary.compression.extra_body.service_tier: priority` on an eligible xAI route.
 
 ### Fast tiers behind a gateway or proxy
 

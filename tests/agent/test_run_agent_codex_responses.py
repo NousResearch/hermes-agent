@@ -3035,3 +3035,17 @@ def test_codex_text_only_max_output_incomplete_keeps_codex_continuation(monkeypa
     assert result["completed"] is True
     assert not any(m.get("_length_continuation_nudge") for m in result["messages"])
     assert any(m.get("finish_reason") == "incomplete" for m in result["messages"] if m["role"] == "assistant")
+
+
+def test_conversation_result_tracks_served_tier_without_stale_confirmation(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.request_overrides = {"service_tier": "priority"}
+    for tier in ("priority", "default", None):
+        response = _codex_message_response("OK")
+        if tier is not None:
+            response.service_tier = tier
+        monkeypatch.setattr(agent, "_interruptible_api_call", lambda kwargs: response)
+        result = agent.run_conversation("Say OK")
+        assert result["completed"] is True
+        assert result["served_service_tier"] == tier
+        assert result["service_tier"] == "priority"

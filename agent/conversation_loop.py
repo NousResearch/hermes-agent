@@ -1464,6 +1464,7 @@ def _run_conversation_turn(
     # in-place boundary would make a later uncompressed result look compacted.
     agent._last_compaction_in_place = agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
+    agent.last_requested_service_tier = agent.last_served_service_tier = None
     begin_fast_mode_turn(agent, conversation_history)
 
     # Adopt ~/.hermes/.env credential/base-url edits made since the last turn — a

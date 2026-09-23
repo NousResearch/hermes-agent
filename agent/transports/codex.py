@@ -757,14 +757,11 @@ class ResponsesApiTransport(ProviderTransport):
 
         _bound_prompt_cache_key_field(kwargs)
 
-        # Older xAI models reject ``service_tier`` (HTTP 400); only Grok 4.6 accepts Priority Processing.
-        # Grok 4.6 accepts Priority Processing, but continue stripping stale or unsupported tier values on
-        # every other xAI path. See #28490 and #84799.
-        if is_xai_responses:
-            from agent.model_metadata import is_grok_46_family
-
-            if not (is_grok_46_family(model) and kwargs.get("service_tier") == "priority"):
-                kwargs.pop("service_tier", None)
+        from agent.service_tier import filter_xai_service_tier
+        filter_xai_service_tier(
+            kwargs, model=wire_model, provider=params.get("provider"),
+            base_url=params.get("base_url"), is_xai=is_xai_responses,
+        )
 
         # Forward per-request timeout to the SDK (providers.<id>.request_timeout_seconds).
         timeout = _coerce_timeout(kwargs.get("timeout", params.get("timeout")))

@@ -755,6 +755,7 @@ class _CodexResponseAssembler:
     active_summary_index: Any = None
     terminal_status: str = "completed"
     terminal_usage = terminal_response_id = terminal_incomplete_details = terminal_error = None
+    terminal_service_tier = None
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
 
@@ -875,6 +876,8 @@ class _CodexResponseAssembler:
         self.saw_terminal = True
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
+            from agent.service_tier import served_service_tier
+            self.terminal_service_tier = served_service_tier(resp_obj)
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
             rstatus = _event_field(resp_obj, "status")
             if isinstance(rstatus, str):
@@ -943,7 +946,7 @@ class _CodexResponseAssembler:
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
-            error=self.terminal_error)
+            error=self.terminal_error, service_tier=self.terminal_service_tier)
 
 
 def _consume_codex_event_stream(

@@ -1833,6 +1833,7 @@ class TestCodexTransportXaiServiceTierStrip:
             model="x-ai/grok-4.6-latest",
             messages=[{"role": "user", "content": "hi"}],
             tools=[],
+            provider="xai", base_url="https://api.x.ai/v1",
             is_xai_responses=True,
             request_overrides={"service_tier": "priority"},
         )

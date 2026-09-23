@@ -1145,12 +1145,12 @@ def _strip_vendor_prefix(model_id: str) -> str:
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
-    from agent.model_metadata import is_grok_46_family
+    from agent.service_tier import supports_xai_priority, xai_priority_route
 
     return (
         _is_anthropic_fast_model(model_id)
         or _is_openai_fast_model(model_id)
-        or is_grok_46_family(str(model_id or "")))
+        or supports_xai_priority(model_id))
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
@@ -1168,12 +1168,12 @@ def _fast_mode_route_supported(
     """Only the first-party endpoint that bills for fast mode may receive its params."""
     from urllib.parse import urlparse
 
-    from agent.model_metadata import is_grok_46_family
+    from agent.service_tier import supports_xai_priority, xai_priority_route
 
     if _is_anthropic_fast_model(model_id):
         allowed = {"anthropic": "api.anthropic.com"}
-    elif is_grok_46_family(str(model_id or "")):
-        allowed = {"xai": "api.x.ai"}
+    elif supports_xai_priority(model_id):
+        return xai_priority_route(model_id, provider, base_url)
     else:
         allowed = {"openai": "api.openai.com", "openai-codex": "chatgpt.com"}
     if provider and normalize_provider(provider) not in allowed:

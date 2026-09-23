@@ -56,6 +56,40 @@ def test_run_conversation_persists_tokens_for_telegram_sessions():
     assert session_db.queue_token_counts.call_args.args[0] == "telegram-session"
 
 
+def _mock_response_no_usage(*, content: str = "done"):
+    """A response with no usage block — triggers the no-usage accounting branch."""
+    msg = SimpleNamespace(content=content, tool_calls=None)
+    choice = SimpleNamespace(message=msg, finish_reason="stop")
+    return SimpleNamespace(
+        choices=[choice],
+        model="test/model",
+    )
+
+
+def test_run_conversation_persists_call_count_without_usage():
+    """Regression for #71578: a provider that never emits a usage chunk must still get the
+    call itself recorded — api_call_count + the billing route — while the token counters
+    stay at zero rather than being fabricated."""
+    session_db = MagicMock()
+    agent = _make_agent(session_db, platform="telegram")
+    agent.client.chat.completions.create.return_value = _mock_response_no_usage()
+
+    result = agent.run_conversation("hello")
+
+    assert result["final_response"] == "done"
+    assert agent.session_api_calls == 1
+    assert agent.session_prompt_tokens == 0
+    assert agent.session_completion_tokens == 0
+    assert agent.session_total_tokens == 0
+    session_db.queue_token_counts.assert_called()
+    kwargs = session_db.queue_token_counts.call_args.kwargs
+    assert kwargs["billing_provider"] == agent.provider
+    assert kwargs["billing_base_url"] == agent.base_url
+    assert kwargs["api_call_count"] == 1
+    assert kwargs["input_tokens"] == 0
+    assert kwargs["output_tokens"] == 0
+
+
 
 
 def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):

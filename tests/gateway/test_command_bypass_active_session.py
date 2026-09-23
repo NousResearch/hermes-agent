@@ -311,9 +311,6 @@ class TestAllResolvableCommandsBypassGuard:
             ("/insights 7", "insights"),
             ("/title my session", "title"),
             ("/resume yesterday", "resume"),
-            ("/retry", "retry"),
-            ("/undo", "undo"),
-            ("/compress", "compress"),
             ("/usage", "usage"),
             ("/reload-mcp", "reload-mcp"),
             ("/sethome", "sethome"),
@@ -321,7 +318,7 @@ class TestAllResolvableCommandsBypassGuard:
     )
     @pytest.mark.asyncio
     async def test_command_bypasses_guard(self, command_text, canonical):
-        """Any resolvable slash command bypasses instead of being queued."""
+        """Resolvable non-deferred slash commands bypass instead of being queued."""
         adapter = _make_adapter()
         sk = _session_key()
         adapter._active_sessions[sk] = asyncio.Event()

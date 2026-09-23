@@ -800,6 +800,19 @@ class GatewayBusySessionMixin:
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
+        # The adapter guard outlives the runner's active-agent slot through final delivery. A
+        # deferred slash arriving in that window must still join the post-delivery command queue,
+        # not execute inline against a transcript whose reply is still being delivered.
+        from hermes_cli.commands import resolve_command as _resolve_busy_command
+        _command = event.get_command()
+        _command_def = _resolve_busy_command(_command) if _command else None
+        if _command_def is not None and _command_def.busy_policy == "defer_until_idle":
+            _denied = self._check_slash_access(event.source, _command_def.name)
+            result = _denied or await self._dispatch_busy_slash_command(
+                event, _command_def, session_key, event.source)
+            if result:
+                await self._send_busy_ack_reply(event, adapter, str(result))
+            return True
         # Internal synthetic events (delegation / background completions) must never interrupt or
         # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
         # queue them through the FIFO (security metadata kept apart).
@@ -916,8 +929,9 @@ class GatewayBusySessionMixin:
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
         """Dispatch a recognized slash command while an agent is running.
 
-        Order: ``busy_handler`` (mid-run variant) → ``busy_policy == "dispatch"`` (normal handler)
-        → catch-all reject text. Rejecting is required rather than falling through to
+        Order: ``busy_handler`` (mid-run variant) → ``defer_until_idle`` (post-delivery command
+        queue) → ``busy_policy == "dispatch"`` (normal handler) → catch-all reject text.
+        Rejecting is required rather than falling through to
         interrupt + discard: commands like /model, /reasoning, /voice, /insights, /title,
         /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome, /reset (all
         registered as Discord slash commands) would interrupt the agent AND get silently
@@ -937,6 +951,25 @@ class GatewayBusySessionMixin:
             reject_text = self._BUSY_REJECT_TEXT.get(handler_key)
             if reject_text is not None:
                 return reject_text
+        if policy == "defer_until_idle":
+            if self._draining:
+                return (
+                    f"⚠️ `/{name}` was not scheduled because the gateway is "
+                    f"{self._status_action_gerund()}. Run it again after the gateway is online."
+                )
+            adapter = self._adapter_for_source(source)
+            defer = getattr(adapter, "defer_command_until_idle", None) if adapter is not None else None
+            if not callable(defer):
+                return f"⚠️ `/{name}` was not scheduled because this session cannot defer commands."
+            status, position = defer(
+                quick_key, event, command_name=name, coalesce=bool(cmd_def.busy_coalesce)
+            )
+            if status == "full":
+                return f"⚠️ `/{name}` was not scheduled because the deferred-command queue is full."
+            if status == "coalesced":
+                return f"⏳ `/{name}` is already scheduled after the current response (position {position})."
+            suffix = f" (position {position})" if position > 1 else ""
+            return f"⏳ `/{name}` scheduled after the current response is delivered{suffix}."
         if policy in ("dispatch", "interrupt_then_dispatch"):
             plain = self._gateway_plain_command_handlers().get(name)
             if plain is not None:

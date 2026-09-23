@@ -34,9 +34,11 @@ class CommandDef:
     # Mid-run (agent busy) gateway behavior (gateway/run.py Guard-2 dispatcher): "dispatch" = run
     # while busy (normal handler or the ``busy_handler`` variant); "reject" = refuse mid-run
     # (generic "Agent is running" unless ``busy_handler`` names a reject message);
-    # "interrupt_then_dispatch" = interrupt first (/stop, /new, /reset; Guard 1, platforms/base.py).
+    # "interrupt_then_dispatch" = interrupt first (/stop, /new, /reset; Guard 1, platforms/base.py);
+    # "defer_until_idle" = retain command identity and run after the active turn's delivery boundary.
     busy_policy: str = "reject"
     busy_handler: str | None = None  # key of a special mid-run handler in Guard-2 table
+    busy_coalesce: bool = False  # exact duplicate deferred commands share one queued execution
     # Key in ``hermes_cli.slash_exec.EXECUTORS`` (a string, not a callable: keeps this module
     # import-light for the gateway).
     execute: str | None = None
@@ -45,7 +47,9 @@ class CommandDef:
     desktop: str | None = None
 
 
-VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrupt_then_dispatch"})
+VALID_BUSY_POLICIES: frozenset[str] = frozenset(
+    {"dispatch", "reject", "interrupt_then_dispatch", "defer_until_idle"}
+)
 
 
 COMMAND_REGISTRY: list[CommandDef] = [
@@ -64,12 +68,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True, desktop="terminal"),
     CommandDef("save", "Export the current conversation (bare /save shows usage)", "Session",
-               args_hint="<json|md|html> [filename] [redact]"),
-    CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
+               args_hint="<json|md|html> [filename] [redact]", busy_policy="defer_until_idle"),
+    CommandDef("retry", "Retry the last message (resend to agent)", "Session",
+               busy_policy="defer_until_idle"),
     CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
-               args_hint="[N]"),
+               args_hint="[N]", busy_policy="defer_until_idle"),
     CommandDef("title", "Set a title for the current session", "Session", args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True, argument_mode="options"),
@@ -79,7 +84,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[new [name]|list|prune [--dry-run]]",
                subcommands=("new", "list", "prune")),
     CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
-               aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]"),
+               aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]",
+               busy_policy="defer_until_idle", busy_coalesce=True),
     CommandDef("rollback", "List or restore filesystem checkpoints (restores keep your hand-edits; --all overrides)", "Session",
                args_hint="[number] [--all]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
@@ -422,6 +428,12 @@ def is_interrupt_then_dispatch(command_name: str | None) -> bool:
     """Guard 1 (gateway/platforms/base.py) routes these through the cancel-handoff path."""
     cmd = resolve_command(command_name) if command_name else None
     return cmd is not None and cmd.busy_policy == "interrupt_then_dispatch"
+
+
+def is_defer_until_idle(command_name: str | None) -> bool:
+    """Guard 1 keeps these commands behind the active adapter delivery boundary."""
+    cmd = resolve_command(command_name) if command_name else None
+    return cmd is not None and cmd.busy_policy == "defer_until_idle"
 
 
 def should_bypass_active_session(command_name: str | None) -> bool:

@@ -1892,6 +1892,10 @@ class BasePlatformAdapter(ABC):
         # could drop a newer guard.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        # Session-mutating slash commands accepted mid-turn. They are separate from ordinary
+        # prompt follow-ups so they retain command identity and always run first at the boundary.
+        self._deferred_commands: Dict[str, List[MessageEvent]] = {}
+        self._cancelling_background_tasks = False
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
@@ -3970,7 +3974,28 @@ class BasePlatformAdapter(ABC):
         # runner. Without this, they are queued as pending messages and either: See #4926.
         self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
-        from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
+        from hermes_cli.commands import (
+            is_defer_until_idle, is_interrupt_then_dispatch, resolve_command,
+            should_bypass_active_session,
+        )
+        if cmd and is_defer_until_idle(cmd):
+            if self._busy_session_handler is not None:
+                try:
+                    if await self._busy_session_handler(event, session_key):
+                        return
+                except Exception as e:
+                    logger.error("[%s] Deferred command '/%s' dispatch failed: %s",
+                                 self.name, cmd, e, exc_info=True)
+            # A custom adapter without a runner still preserves command identity and does not
+            # overwrite an ordinary pending prompt. It simply cannot provide the immediate ack.
+            command_def = resolve_command(cmd)
+            self.defer_command_until_idle(
+                session_key,
+                event,
+                command_name=command_def.name if command_def is not None else cmd,
+                coalesce=bool(command_def and command_def.busy_coalesce),
+            )
+            return
         if should_bypass_active_session(cmd):
             try:
                 # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.
@@ -4371,27 +4396,61 @@ class BasePlatformAdapter(ABC):
                 if inspect.isawaitable(_post_result):
                     await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
+    _DEFERRED_COMMAND_MAX_PENDING = 32
+
+    def defer_command_until_idle(
+        self, session_key: str, event: MessageEvent, *, command_name: str, coalesce: bool = False
+    ) -> Tuple[str, int]:
+        """Queue a typed slash command for the next completed-turn boundary.
+
+        Returns ``(status, position)`` where status is ``queued``, ``coalesced``, or ``full``.
+        Exact duplicate coalescing is opt-in per command; all other conflicts retain arrival order.
+        """
+        queue = self._deferred_commands.setdefault(session_key, [])
+        args = (event.get_command_args() or "").strip()
+        if coalesce:
+            for index, queued in enumerate(queue):
+                queued_name = getattr(queued, "_deferred_command_name", queued.get_command())
+                queued_args = (queued.get_command_args() or "").strip()
+                if queued_name == command_name and queued_args == args:
+                    return "coalesced", index + 1
+        if len(queue) >= self._DEFERRED_COMMAND_MAX_PENDING:
+            return "full", len(queue)
+        event._deferred_command_name = command_name
+        event._gateway_accepted = True
+        queue.append(event)
+        return "queued", len(queue)
+
+    def _pop_deferred_command(self, session_key: str) -> Optional[MessageEvent]:
+        queue = self._deferred_commands.get(session_key)
+        if not queue:
+            return None
+        event = queue.pop(0)
+        if not queue:
+            self._deferred_commands.pop(session_key, None)
+        return event
+
+    def _pop_next_session_event(self, session_key: str) -> Optional[MessageEvent]:
+        """Deferred controls precede ordinary prompts; both queues remain FIFO."""
+        return self._pop_deferred_command(session_key) or self._pending_messages.pop(session_key, None)
+
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
         drop: re-queue it if another task already owns the session (drain handoff), else spawn the
         drain task and leave it the guard. Nothing pending: release the guard only if we still own
         it."""
-        late_pending = self._pending_messages.pop(session_key, None)
         current_task = asyncio.current_task()
+        existing_task = self._session_tasks.get(session_key)
+        if existing_task is not None and existing_task is not current_task:
+            return
+        if getattr(self, "_cancelling_background_tasks", False):
+            if current_task is not None and existing_task is current_task:
+                self._cleanup_finished_session_task(session_key, interrupt_event)
+            return
+        late_pending = self._pop_next_session_event(session_key)
         if late_pending is not None:
-            existing_task = self._session_tasks.get(session_key)
-            if existing_task is not None and existing_task is not current_task:
-                # The in-band drain (or an earlier late-arrival drain) already spawned a follow-up task that
-                # owns this session. Re-queue the late-arrival event so that task picks it up — avoids
-                # spawning two concurrent _process_message_background tasks for the same key (#17758
-                # follow-up: prevents the create_task path from racing with itself across the
-                # in-band/finally boundary).
-                self._pending_messages[session_key] = late_pending
-            else:
-                logger.debug(
-                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
-                    self.name)
-                self._spawn_drain_task(late_pending, session_key)
+            logger.debug("[%s] Late-arrival queued event during cleanup — spawning drain task", self.name)
+            self._spawn_drain_task(late_pending, session_key)
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
 
@@ -4481,8 +4540,8 @@ class BasePlatformAdapter(ABC):
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
-            if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
+            pending_event = self._pop_next_session_event(session_key)
+            if pending_event is not None:
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
@@ -4549,6 +4608,7 @@ class BasePlatformAdapter(ABC):
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
         stragglers are untracked and left to unwind."""
+        self._cancelling_background_tasks = True
         # Re-drain (max 5 rounds): a message arriving mid-gather spawns a task clear() would
         # untrack.
         for _ in range(5):
@@ -4567,14 +4627,30 @@ class BasePlatformAdapter(ABC):
                                "releasing tracking and letting them unwind in the background",
                                self.name, sum(not t.done() for t in tasks))
                 break
+        # Deferred commands are process-local control work, not user prompts. Never replay them as
+        # transcript text after restart; tell their original thread they did not run instead.
+        for queue in list(self._deferred_commands.values()):
+            for event in list(queue):
+                command = getattr(event, "_deferred_command_name", event.get_command() or "command")
+                try:
+                    await self.send(
+                        event.source.chat_id,
+                        f"⚠️ `/{command}` did not run because the gateway stopped. Run it again after restart.",
+                        metadata=_thread_metadata_for_event(event),
+                    )
+                except Exception:
+                    logger.warning("[%s] Could not deliver deferred /%s cancellation", self.name, command,
+                                   exc_info=True)
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
             from gateway.shutdown_flush import flush_pending_to_file
             flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
-                       self._pending_messages, self._active_sessions, self._text_debounce_store()):
+                       self._pending_messages, self._deferred_commands, self._active_sessions,
+                       self._text_debounce_store()):
             bucket.clear()
+        self._cancelling_background_tasks = False
 
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""

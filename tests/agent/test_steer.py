@@ -592,6 +592,43 @@ class TestSteerInjection:
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
         assert messages[-1]["content"] == "output"  # unchanged
 
+    def test_aborting_turn_requeues_steer_instead_of_delivering(self):
+        """A hard stop racing the batch boundary must not consume the steer.
+
+        The turn exits at its next interrupt check, so a delivered row would sit in
+        the transcript unanswered and the surface (voice barge-in) waited for a manual
+        resend. The text stays pending; the finalizer's leftover handoff turns it into
+        a clean next user turn."""
+        agent = _bare_agent()
+        agent._interrupt_requested = True
+        agent.steer("müssten eigentlich mehr sein, oder")
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "a"}]},
+            {"role": "tool", "content": "output", "tool_call_id": "a"},
+        ]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        # Nothing appended — no delivered-and-ignored row.
+        assert messages[-1]["role"] == "tool"
+        assert len(messages) == 2
+        # The text is back in the pending slot for the leftover handoff.
+        assert agent._pending_steer == "müssten eigentlich mehr sein, oder"
+
+    def test_redirect_in_flight_still_delivers(self):
+        """A redirect keeps the same logical turn running (rebuild consumes the
+        steer), so an interrupt flag with a live redirect must not requeue."""
+        agent = _bare_agent()
+        agent._interrupt_requested = True
+        agent.steer("please also check auth.log")
+        agent._pending_redirect = "no, use the other endpoint"
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "a"}]},
+            {"role": "tool", "content": "output", "tool_call_id": "a"},
+        ]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert messages[-1]["role"] == "user"
+        assert "please also check auth.log" in messages[-1]["content"]
+        assert agent._pending_steer is None
+
 
     def test_marker_labels_text_as_out_of_band_user_message(self):
         """The injection marker must attribute the appended text to the user

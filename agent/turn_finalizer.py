@@ -42,6 +42,28 @@ def _assistant_row_missing_visible_text(msg: dict) -> bool:
     return not flatten_message_text(msg.get("content")).strip()
 
 
+def _unanswered_steer_tail(messages: Any) -> Optional[str]:
+    """Inner text of a steer row sitting, unanswered, at the transcript tail, else None.
+
+    A steer delivered into the live request (``apply_pending_steer_to_tool_results``) is
+    appended as a ``role:"user"`` marker row; if the turn aborts before the next API call
+    ever runs (a stop racing the batch boundary), that row is the tail and the model never
+    saw it. Only an exact tail match counts — an assistant or tool row after it means the
+    loop moved on and the steer was consumed normally."""
+    if not messages:
+        return None
+    tail = messages[-1]
+    if not isinstance(tail, dict) or tail.get("role") != "user":
+        return None
+    try:
+        from agent.conversation_compression import _extract_steer_text_from_message
+
+        text = _extract_steer_text_from_message(tail)
+    except Exception:
+        return None
+    return text.strip() if isinstance(text, str) and text.strip() else None
+
+
 def _record_kanban_budget_exhausted(
     kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger
 ) -> None:
@@ -662,8 +684,15 @@ def finalize_turn(
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
     # A /steer landing after the final assistant turn has no tool batch to drain into;
-    # hand it back so it becomes the next user turn instead of being lost.
+    # hand it back so it becomes the next user turn instead of being lost. Same handoff
+    # for a steer that WAS delivered into the live request but never seen: when the turn
+    # aborts right after delivery, the marker row is the unanswered transcript tail
+    # (voice barge-in raced a hard stop into the batch boundary and the surface waited
+    # for a manual resend). It re-posts as the next user turn — an extra row is a fair
+    # price for never dropping a user message.
     _leftover_steer = agent._drain_pending_steer()
+    if not _leftover_steer and interrupted:
+        _leftover_steer = _unanswered_steer_tail(messages)
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
     agent._response_was_previewed = False

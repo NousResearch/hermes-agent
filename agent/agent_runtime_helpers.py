@@ -3490,6 +3490,19 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     steer_text = agent._drain_pending_steer()
     if not steer_text:
         return
+    # An aborting turn will never consume a delivered steer: the loop exits at its next
+    # interrupt check (begin_iteration), leaving the appended user row in the transcript
+    # with no chance of being seen by the model — observed live with voice barge-in, where
+    # a hard stop racing the batch boundary delivered the message and then ended the turn,
+    # and the surface sat waiting for a manual resend. Requeue instead; the finalizer hands
+    # leftovers back through result["pending_steer"], which the surface turns into a clean
+    # next user turn (one row, not a delivered-and-ignored one).
+    # A live redirect is the one interrupt that keeps the same logical turn running —
+    # its rebuild consumes the steer, so deliver as before.
+    _has_redirect = getattr(agent, "_has_pending_redirect", None)
+    if getattr(agent, "_interrupt_requested", False) and not (_has_redirect and _has_redirect()):
+        _requeue_pending_steer(agent, steer_text)
+        return
     # Skip non-tool messages in the tail in case something else is appended at the boundary.
     tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
     target = next((messages[j] for j in tail if isinstance(messages[j], dict) and messages[j].get("role") == "tool"), None)

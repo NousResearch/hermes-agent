@@ -1,7 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
-import http from 'node:http'
 import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
@@ -19,7 +18,6 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
-  type MenuItemConstructorOptions,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
@@ -32,16 +30,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
-import {
-  destroyKeepaliveAgents,
-  downloadAgentFor,
-  htmlResponseError,
-  httpStatusError,
-  jsonAgentFor,
-  readJsonErrorBody,
-  readStatusCode,
-  withRetry
-} from './api-transport'
+import { destroyKeepaliveAgents, readJsonErrorBody, readStatusCode } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
 import {
@@ -76,7 +65,6 @@ import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
-  shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
@@ -90,19 +78,10 @@ import {
 } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
-import {
-  BROWSER_WINDOW_HEIGHT,
-  BROWSER_WINDOW_MIN_HEIGHT,
-  BROWSER_WINDOW_MIN_WIDTH,
-  BROWSER_WINDOW_WIDTH,
-  buildBrowserWindowUrl
-} from './browser-windows'
-import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { discoverWithTeamFallback } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
-import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
   connectionInstallIds,
@@ -128,11 +107,9 @@ import {
   normalizeSshConfig,
   normAuthMode,
   pathForRegistryBackendRequest,
-  pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
-  type RegistryBackendRequestScope,
   resolveAuthMode,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
@@ -172,27 +149,25 @@ import {
   upsertConnection
 } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
+import { createContentFileRuntime } from './content-file-runtime'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
+import { createDesktopAppLifecycleRuntime } from './desktop-app-lifecycle-runtime'
+import { registerDesktopFileIpc } from './desktop-file-ipc'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
-import { formatDesktopLogLine } from './desktop-log-line'
+import { createDesktopLogRuntime, rotateLogIfNeededSync } from './desktop-log-runtime'
+import { createDesktopNativeChromeRuntime } from './desktop-native-chrome-runtime'
+import { createDesktopPrimaryWindowRuntime } from './desktop-primary-window-runtime'
 import {
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
   type DesktopProfileRoute,
-  resolveDesktopConnectionRequest,
-  resolveDesktopWindowLaunch
+  resolveDesktopConnectionRequest
 } from './desktop-profile'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
-import {
-  buildPosixCleanupScript,
-  buildWindowsCleanupScript,
-  modeRemovesAgent,
-  modeRemovesUserData,
-  resolveRemovableAppPath,
-  shouldRemoveAppBundle,
-  uninstallArgsForMode
-} from './desktop-uninstall'
+import { createDesktopSecondaryWindowRuntime } from './desktop-secondary-window-runtime'
+import { createDesktopShellRuntime } from './desktop-shell-runtime'
+import { resolveRemovableAppPath } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
@@ -203,7 +178,6 @@ import {
   terminalScriptExtension,
   tuiResumeArgs
 } from './external-terminal'
-import { type FaviconIo, resolveFavicon } from './favicon'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import {
   installFindShortcut,
@@ -211,19 +185,10 @@ import {
   performFindAfterIndexingStarted,
   stopFind
 } from './find-in-page'
-import { createFirstRunSetupGate } from './first-run-setup-gate'
+import { createFirstRunBootRuntime } from './first-run-boot-runtime'
 import { registerFsIpc } from './fs-ipc'
-import {
-  filenameFromContentDisposition,
-  fsPumpDeps,
-  gatewayFilePath,
-  gatewayFileRequestPaths,
-  isNotFoundError,
-  parseDataUrlToBuffer,
-  pumpStreamToFile,
-  resolveGatewayFileBackend,
-  writeBufferToFile
-} from './gateway-file-download'
+import { createGatewayFileRuntime } from './gateway-file-runtime'
+import { createGatewayJsonRuntime } from './gateway-json-runtime'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
@@ -237,22 +202,15 @@ import {
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
-  ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
-  clampDataUrlReadMaxMb,
-  DATA_URL_READ_DEFAULT_MAX_MB,
-  dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
-  homeRelativeAttachmentCandidates,
-  readFileDataUrlForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
   resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   SAFE_STORAGE_ENCODING,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
@@ -275,12 +233,10 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
-import { isAuthWall, resolveLinkTitle } from './link-title-wall'
-import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { createLinkMetadataRuntime } from './link-metadata-runtime'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
-import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -302,8 +258,8 @@ import {
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
-import { createMinimizeToTray } from './minimize-to-tray'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
+import { createNativeAppearanceController } from './native-appearance-controller'
 import { oauthSessionIsLive, resolveJsonBody, resolveReadinessProbeAuth } from './native-auth-decisions'
 import {
   nativeRefreshUrl,
@@ -350,8 +306,8 @@ import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
-import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
+import { createPreviewTargetRuntime, registerPreviewTargetIpc } from './preview-target-runtime'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
@@ -417,15 +373,7 @@ import {
   writeSecretStoragePolicy
 } from './secret-storage-policy'
 import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
-import {
-  buildInstanceWindowUrl,
-  buildSessionWindowUrl,
-  chatWindowWebPreferences,
-  createSessionWindowRegistry,
-  instanceWindowBounds,
-  SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
-} from './session-windows'
+import { chatWindowWebPreferences } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -434,20 +382,8 @@ import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
-import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
-import {
-  backgroundMaterialFor,
-  defaultTranslucencyState,
-  glassActive,
-  glassSupportedOn,
-  normalizeState as normalizeTranslucency,
-  opacityNeedsSetting,
-  translucencySupportedOn,
-  vibrancyFor as vibrancyForTranslucency,
-  windowBackingOptions,
-  windowOpacityFor,
-  windowOpacityOptions
-} from './translucency'
+import { nativeOverlayWidth as computeNativeOverlayWidth } from './titlebar-overlay-width'
+import { glassSupportedOn, translucencySupportedOn } from './translucency'
 import {
   branchTipApiUrl,
   cacheIsFresh,
@@ -536,8 +472,15 @@ import {
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
-import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
-import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
+import { setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
+import {
+  DEFAULT_ZOOM_LEVEL,
+  installZoomReassertOnNavigation,
+  installZoomReassertOnWindowEvents,
+  percentToZoomLevel,
+  zoomLevelToPercent,
+  zoomWiringForWindowKind
+} from './zoom'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -979,8 +922,11 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
-const DESKTOP_LOG_FLUSH_MS = 120
-const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
+
+// Native appearance receives rememberLog during module evaluation, so the
+// logging runtime must be created before that controller.
+const { hermesLog, flushDesktopLogBufferSync, rememberLog, startChromiumLogWatcher, stopDesktopLogFlushTimer } =
+  createDesktopLogRuntime(DESKTOP_LOG_PATH)
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
 // (version-skew crash -> backend exits instantly -> renderer keeps hitting
 // Retry) appends the full bootstrap transcript every attempt and grows without
@@ -1057,368 +1003,18 @@ const APP_ICON_PATHS = appIconCandidates({
   unpackedPathFor
 })
 
-let rendererTitleBarTheme = null
-
-// Force the NATIVE window appearance (vibrancy material, titlebar, the
-// pre-first-paint window background) to follow the APP theme instead of the
-// OS appearance. With `vibrancy` set, macOS paints an NSVisualEffectView that
-// tracks the window's effective appearance and ignores `backgroundColor` —
-// so a dark-themed app on a light-mode Mac flashes a white material on every
-// new window until the renderer covers it. The renderer reports its mode via
-// 'hermes:native-theme' ('dark' | 'light' | 'system'); we pin
-// nativeTheme.themeSource to it and persist the value so cold launches paint
-// correctly before the renderer has even loaded.
-const NATIVE_THEME_CONFIG_PATH = path.join(app.getPath('userData'), 'native-theme.json')
-const THEME_SOURCES = new Set(['dark', 'light', 'system'])
-
-function readPersistedThemeSource() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(NATIVE_THEME_CONFIG_PATH, 'utf8'))
-
-    if (parsed && THEME_SOURCES.has(parsed.themeSource)) {
-      return parsed.themeSource
-    }
-  } catch {
-    // Missing / malformed → follow the OS like a fresh install.
-  }
-
-  return 'system'
-}
-
-function writePersistedThemeSource(mode) {
-  try {
-    fs.mkdirSync(path.dirname(NATIVE_THEME_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(NATIVE_THEME_CONFIG_PATH, JSON.stringify({ themeSource: mode }, null, 2), 'utf8')
-  } catch (error) {
-    rememberLog(`[theme] write native theme failed: ${error.message}`)
-  }
-}
-
-nativeTheme.themeSource = readPersistedThemeSource()
-
-// Window translucency (see-through window). One lever, 0–100; 0 = off (the
-// default). Two modes share the lever (see electron/translucency.ts and
-// store/translucency): 'clear' maps it to the native window opacity so the
-// desktop shows through the whole window; 'glass' keeps the window opaque
-// and lets the renderer thin its surfaces over a platform material instead
-// — a matte blur with full-contrast text. macOS uses vibrancy; Windows 11
-// uses DWM acrylic/mica/tabbed. Persisted so a cold launch applies it at
-// window creation, before the renderer reports its value.
-// macOS + Windows only; `setOpacity` is a no-op on Linux.
-const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucency.json')
-
-function readPersistedTranslucency() {
-  try {
-    return normalizeTranslucency(JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')), GLASS_SUPPORTED)
-  } catch {
-    // Nothing persisted yet — a first launch. Glass ships on, so the FIRST
-    // window has to be created with the glass backing already: a window born
-    // opaque cannot reliably be swapped to glass afterwards (see
-    // windowBackingOptions). nativeTheme is the only appearance signal main
-    // has this early; the renderer's first resolved send corrects it.
-    return defaultTranslucencyState(nativeTheme.shouldUseDarkColors ? 'dark' : 'light', GLASS_SUPPORTED, IS_WINDOWS)
-  }
-}
-
-function writePersistedTranslucency(state) {
-  try {
-    fs.mkdirSync(path.dirname(TRANSLUCENCY_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(TRANSLUCENCY_CONFIG_PATH, JSON.stringify(state, null, 2), 'utf8')
-  } catch (error) {
-    rememberLog(`[translucency] write failed: ${error.message}`)
-  }
-}
-
-let translucencyState = readPersistedTranslucency()
-
-// Chat windows whose webContents backing follows translucency (primary,
-// instance peers, session windows). The HUD / pet overlay / quick entry /
-// wake indicator are `transparent: true` windows that own their backgrounds —
-// painting a themed backing onto them would turn them into opaque rectangles.
-const translucencyBackedWindows = new WeakSet()
-
-// Set a live window's native opacity, but only when the state asks it to fade
-// — or when the window is already faded and is on its way back to opaque. The
-// window's own opacity is the record of whether that door was ever opened; see
-// opacityNeedsSetting for why it matters that it stays shut.
-function applyWindowOpacity(win) {
-  const opacity = windowOpacityFor(translucencyState)
-
-  if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
-    win.setOpacity(opacity)
-  }
-}
-
-// Re-apply translucency to a live window (runtime toggle, no recreation).
-// Opacity goes through applyWindowOpacity, which knows when the call is worth
-// making at all. The backing swap is the glass half: Chromium composites the
-// page against the window backing BEFORE the OS composites the window, so
-// glass needs the backing dropped for the platform material to reach it, and
-// every other state needs the opaque themed backing (anti-flash, and it is
-// what makes clear mode fade to the desktop instead of to black).
-//
-// `changed` says which native properties actually need touching. Dragging the
-// intensity slider emits ~100 updates, and in glass mode NONE of them change
-// anything native — the tint is painted by the renderer and windowOpacityFor
-// answers off `fade`, not `intensity`, there. Re-issuing setVibrancy on every
-// tick restarts its 150ms animation before macOS can settle the material,
-// which reads as jank and flattens the frost levels into each other. Windows
-// setBackgroundMaterial is instantaneous but still skipped on tint-only ticks.
-// The glass Fade lever is the one glass drag that does reach main, and it
-// costs exactly what a Clear drag costs: one setOpacity.
-//
-// CAUTION (measured, macOS 26 / Electron 40): a runtime
-// setBackgroundColor('#00000000') is silently LOST on a window whose
-// compositor hasn't been up for a few seconds — including calls from
-// 'ready-to-show' and 'did-finish-load'. Cold launches therefore must not
-// rely on this path: windows are BORN with the right backing
-// (windowBackingOptions at each creation site). This path only has to cover
-// live toggles from Settings, where the window is long settled.
-function applyWindowTranslucency(win, changed = { backing: true, material: true, opacity: true }) {
-  if (!win || win.isDestroyed()) {
-    return
-  }
-
-  try {
-    // Backing swap + material are scoped to registered chat windows (see
-    // translucencyBackedWindows above).
-    if (translucencyBackedWindows.has(win)) {
-      if (changed.backing && typeof win.setBackgroundColor === 'function') {
-        win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
-      }
-
-      if (changed.material) {
-        // Glass frost level = the platform material. Animate the macOS hop so
-        // a deliberate frost switch feels continuous — which only works if we
-        // don't re-issue it on unrelated updates. Windows has no equivalent
-        // animation option; setBackgroundMaterial is instantaneous.
-        if (IS_MAC && typeof win.setVibrancy === 'function') {
-          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
-        }
-
-        if (IS_WINDOWS && GLASS_SUPPORTED && typeof win.setBackgroundMaterial === 'function') {
-          win.setBackgroundMaterial(backgroundMaterialFor(translucencyState))
-        }
-      }
-    }
-
-    if (changed.opacity) {
-      applyWindowOpacity(win)
-    }
-  } catch (error) {
-    rememberLog(`[translucency] apply failed: ${error.message}`)
-  }
-}
-
-// Constructor options every chat window shares for its translucency surface:
-// the platform material, the webContents backing, and a native opacity only if
-// the state actually fades — all under the CURRENT state. Glass omits
-// backgroundColor so the material shows from the first frame (Electron hands a
-// translucent window a transparent default backing, and runtime swaps are lost
-// early in a window's life — see applyWindowTranslucency); otherwise the opaque
-// themed anti-flash backing.
-//
-// Call sites also register the window in translucencyBackedWindows so a live
-// toggle can re-apply. The HUD, pet overlay, quick entry and wake indicator
-// are `transparent: true` windows that own their backgrounds and are
-// deliberately not chat windows.
-function chatWindowSurfaceOptions() {
-  return {
-    vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
-    // Pin the material to its ACTIVE appearance: several NSVisualEffectView
-    // materials collapse to a shared inactive look when the window blurs
-    // (measured on macOS 26: sidebar, popover and under-window composited
-    // pixel-identically once unfocused), which would quietly erase the
-    // user's frost choice whenever they click elsewhere. Only observable
-    // under glass — everywhere else the page buries the material.
-    visualEffectState: IS_MAC ? ('active' as const) : undefined,
-    // NOT `transparent: true` on Windows. The backdrop material already makes
-    // the window translucent on its own: `IsTranslucent` answers yes off
-    // `background_material_` alone, which is what gives the page its transparent
-    // default backing, and `SetBackgroundMaterial` flips widget translucency
-    // live, so a Clear→Glass toggle needs no recreate either way. Its one gate
-    // is a frameless window, and `titleBarStyle: 'hidden'` already makes
-    // `has_frame()` false here.
-    //
-    // What `transparent` adds on top is permanent and unwanted: it pins the
-    // widget to kTranslucent for the window's whole life, so even glass-OFF
-    // windows pay a DirectComposition redraw per frame (electron#39895), and it
-    // opts into the documented transparent-window limits — including that a
-    // RESIZABLE transparent window is unsupported and breaks (electron#48421).
-    // Every chat window is resizable.
-    backgroundMaterial: IS_WINDOWS && GLASS_SUPPORTED ? backgroundMaterialFor(translucencyState) : undefined,
-    ...windowOpacityOptions(translucencyState),
-    ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
-  }
-}
-
-function isHexColor(value) {
-  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
-}
-
-// Background color to paint a window with BEFORE its renderer loads, so a new
-// (or reopened) window doesn't flash white/light in dark mode. Prefer the theme
-// the renderer last reported; fall back to the OS preference on first launch.
-function getWindowBackgroundColor() {
-  if (rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.background)) {
-    return rendererTitleBarTheme.background
-  }
-
-  return nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f7f7'
-}
-
-// Transparent WCO — renderer chrome shows through. rgba(0,0,0,0) can fall back
-// to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
-const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
-
-// WSLg returns false: the RDP host paints nothing for a frameless window and
-// Electron's own overlay drifts its hit-region under RAIL, so the renderer
-// paints its own min/max/close (wslg-window-controls.tsx) over the
-// hermes:window-control IPC channel. See titleBarOverlayOptions.
-function getTitleBarOverlayOptions() {
-  return titleBarOverlayOptions({
-    platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
-    darwinMajor: DARWIN_MAJOR,
-    titlebarHeight: TITLEBAR_HEIGHT,
-    color: TITLEBAR_OVERLAY_COLOR,
-    foreground:
-      rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
-    dark: nativeTheme.shouldUseDarkColors
-  })
-}
-
-// Push refreshed overlay options to a live window after a theme/appearance
-// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
-// returns false; the try/catch additionally guards builds where
-// setTitleBarOverlay isn't supported.
-function applyTitleBarOverlay(win) {
-  const options = getTitleBarOverlayOptions()
-
-  if (!options || typeof options !== 'object') {
-    return
-  }
-
-  try {
-    win?.setTitleBarOverlay?.(options)
-  } catch {
-    // Overlay not supported on this platform/build — leave the frameless
-    // titlebar as-is.
-  }
-}
-
-const MEDIA_MIME_TYPES = {
-  '.avi': 'video/x-msvideo',
-  '.bmp': 'image/bmp',
-  '.flac': 'audio/flac',
-  '.gif': 'image/gif',
-  '.jpeg': 'image/jpeg',
-  '.jpg': 'image/jpeg',
-  '.m4a': 'audio/mp4',
-  '.mkv': 'video/x-matroska',
-  '.mov': 'video/quicktime',
-  '.mp3': 'audio/mpeg',
-  '.mp4': 'video/mp4',
-  '.ogg': 'audio/ogg',
-  '.opus': 'audio/ogg; codecs=opus',
-  '.pdf': 'application/pdf',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.wav': 'audio/wav',
-  '.webm': 'video/webm',
-  '.webp': 'image/webp'
-}
-
-const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
-const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
-const PREVIEW_WATCH_DEBOUNCE_MS = 120
-const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
-const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
-
-const PREVIEW_LANGUAGE_BY_EXT = {
-  '.c': 'c',
-  '.conf': 'ini',
-  '.cpp': 'cpp',
-  '.css': 'css',
-  '.csv': 'csv',
-  '.go': 'go',
-  '.graphql': 'graphql',
-  '.h': 'c',
-  '.hpp': 'cpp',
-  '.html': 'html',
-  '.java': 'java',
-  '.js': 'javascript',
-  '.json': 'json',
-  '.jsx': 'jsx',
-  '.kt': 'kotlin',
-  '.lua': 'lua',
-  '.md': 'markdown',
-  '.mjs': 'javascript',
-  '.py': 'python',
-  '.rb': 'ruby',
-  '.rs': 'rust',
-  '.sh': 'shell',
-  '.sql': 'sql',
-  '.svg': 'xml',
-  '.toml': 'toml',
-  '.ts': 'typescript',
-  '.tsx': 'tsx',
-  '.txt': 'text',
-  '.xml': 'xml',
-  '.yaml': 'yaml',
-  '.yml': 'yaml',
-  '.zsh': 'shell'
-}
-
-function looksBinary(buffer) {
-  if (!buffer.length) {
-    return false
-  }
-
-  let suspicious = 0
-
-  for (const byte of buffer) {
-    if (byte === 0) {
-      return true
-    }
-
-    // Allow common whitespace controls: tab, LF, CR.
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-      suspicious += 1
-    }
-  }
-
-  return suspicious / buffer.length > 0.12
-}
-
-function previewFileMetadata(filePath, mimeType) {
-  let byteSize = 0
-  let binary = false
-
-  try {
-    const stat = fs.statSync(filePath)
-    byteSize = stat.size
-
-    if (!mimeType.startsWith('image/')) {
-      const fd = fs.openSync(filePath, 'r')
-
-      try {
-        const sample = Buffer.alloc(Math.min(byteSize, 4096))
-        const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0)
-        binary = looksBinary(sample.subarray(0, bytesRead))
-      } finally {
-        fs.closeSync(fd)
-      }
-    }
-  } catch {
-    // Metadata is best-effort; the read handlers surface hard errors later.
-  }
-
-  return {
-    binary,
-    byteSize,
-    large: byteSize > TEXT_PREVIEW_MAX_BYTES
-  }
-}
+const appearance = createNativeAppearanceController({
+  userDataDir: app.getPath('userData'),
+  nativeTheme,
+  getAllWindows: () => BrowserWindow.getAllWindows(),
+  log: rememberLog,
+  isMac: IS_MAC,
+  isWindows: IS_WINDOWS,
+  isWsl: IS_WSL,
+  darwinMajor: DARWIN_MAJOR,
+  glassSupported: GLASS_SUPPORTED,
+  titlebarHeight: TITLEBAR_HEIGHT
+})
 
 app.setName(APP_NAME)
 
@@ -1441,13 +1037,44 @@ if (IS_WINDOWS) {
   app.setAppUserModelId('com.nousresearch.hermes')
 }
 
+const desktopShellRuntime = createDesktopShellRuntime({
+  ACTIVE_HERMES_ROOT,
+  APP_NAME,
+  HERMES_HOME,
+  INSTALL_STAMP,
+  IS_PACKAGED,
+  IS_WINDOWS,
+  VENV_ROOT,
+  app,
+  buildNoSandboxRelaunchArgs,
+  exitAfterBackendShutdown,
+  fileExists,
+  findSystemPython,
+  fs,
+  getVenvPython,
+  hiddenWindowsChildOptions,
+  isHermesSourceRoot,
+  loadInstallStamp,
+  os,
+  path,
+  process,
+  releaseBackendLock,
+  rememberLog,
+  resolveUpdateRoot,
+  runGit,
+  setQuittingForHandoff: () => {
+    isQuittingForHandoff = true
+  },
+  spawn
+})
+
 // Seed the native About panel with the live Hermes version. This is refreshed
 // on every open via the explicit "About" menu handler (refreshAboutPanel), so
 // an in-place `hermes update` mid-session is reflected without an app restart;
 // the seed here just covers the first open and any non-menu invocation path.
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
-  applicationVersion: resolveHermesVersion(),
+  applicationVersion: desktopShellRuntime.resolveHermesVersion(),
   copyright: 'Copyright © 2026 Nous Research'
 })
 
@@ -1523,7 +1150,7 @@ const localBackendLifecycle = createLocalBackendLifecycle<ReturnType<typeof spaw
   },
   waitForExit: child => waitForBackendExit(child),
   cancelSetup: () => {
-    firstRunSetupGate?.resetForRetry()
+    firstRunBoot.resetExistingSetupGateForRetry()
     bootstrapAbortController?.abort()
   }
 })
@@ -1619,15 +1246,6 @@ function persistPoolLimits(limits) {
     rememberLog(`[pool-limits] write failed: ${error.message}`)
   }
 }
-
-// rememberLog() state. Declared here, before the top-level
-// readPersistedPoolLimits() call below, because that call logs during module
-// evaluation; declaring these later crashed launch with `undefined.push` in
-// the packaged build (esbuild lowers the TDZ to undefined instead of throwing).
-const hermesLog: string[] = []
-let desktopLogBuffer = ''
-let desktopLogFlushTimer = null
-let desktopLogFlushPromise = Promise.resolve()
 
 let poolLimits = readPersistedPoolLimits()
 // Hard cap on local backends that are starting OR running (the LRU eviction
@@ -1814,177 +1432,17 @@ let connectionRegistryCache = null
 let connectionRegistryCacheMtime = null
 const remoteHeaderSessions = new WeakSet<object>()
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
-const previewWatchers = new Map()
 let previewShortcutActive = false
-let nativeThemeListenerInstalled = false
 
-let bootProgressState = {
-  error: null,
+const firstRunBoot = createFirstRunBootRuntime({
+  activeRoot: ACTIVE_HERMES_ROOT,
   fakeMode: BOOT_FAKE_MODE,
-  isCloudBackendDown: false,
-  message: 'Waiting to start Hermes backend',
-  phase: 'idle',
-  progress: 0,
-  retryable: false,
-  running: false,
-  statusCode: null,
-  timestamp: Date.now()
-}
-
-// Chromium owns its --log-file for the life of the process, so the startup
-// reclaim above cannot bound a shell that stays up for days writing errors.
-// Poll and truncate in place; renaming would leave Chromium appending to the
-// renamed inode. Unref'd so it never holds the process open.
-function startChromiumLogWatcher(file) {
-  const io = {
-    size: f => {
-      try {
-        return fs.statSync(f).size
-      } catch {
-        return null // Not created yet — nothing has been logged.
-      }
-    },
-    truncate: f => fs.truncateSync(f, 0)
-  }
-
-  const timer = setInterval(() => {
-    try {
-      if (reclaimActiveLogIfOversized(file, io)) {
-        rememberLog(`[diagnostics] truncated oversized Chromium log ${file}`)
-      }
-    } catch {
-      // Best-effort — an unbounded log beats a crashed shell.
-    }
-  }, ACTIVE_LOG_POLL_MS)
-
-  timer.unref?.()
-}
-
-function rotateLogIfNeededSync(base) {
-  let size
-
-  try {
-    size = fs.statSync(base).size
-  } catch {
-    return // No live file yet — the append (re)creates it.
-  }
-
-  for (const [op, src, dst] of planLogRotation(size, base)) {
-    try {
-      if (op === 'rm') {
-        fs.rmSync(src, { force: true })
-      } else {
-        fs.renameSync(src, dst)
-      }
-    } catch {
-      // Best-effort — logging must never block startup/shutdown.
-    }
-  }
-}
-
-async function rotateDesktopLogIfNeededAsync() {
-  let size
-
-  try {
-    size = (await fs.promises.stat(DESKTOP_LOG_PATH)).size
-  } catch {
-    return // No live file yet — the append (re)creates it.
-  }
-
-  for (const [op, src, dst] of planLogRotation(size, DESKTOP_LOG_PATH)) {
-    try {
-      if (op === 'rm') {
-        await fs.promises.rm(src, { force: true })
-      } else {
-        await fs.promises.rename(src, dst)
-      }
-    } catch {
-      // Best-effort — logging must never crash the shell.
-    }
-  }
-}
-
-function flushDesktopLogBufferSync() {
-  if (!desktopLogBuffer) {
-    return
-  }
-
-  const chunk = desktopLogBuffer
-  desktopLogBuffer = ''
-
-  try {
-    fs.mkdirSync(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
-    rotateLogIfNeededSync(DESKTOP_LOG_PATH)
-    fs.appendFileSync(DESKTOP_LOG_PATH, chunk)
-  } catch {
-    // Logging must never block app startup/shutdown.
-  }
-}
-
-function flushDesktopLogBufferAsync() {
-  if (!desktopLogBuffer) {
-    return desktopLogFlushPromise
-  }
-
-  const chunk = desktopLogBuffer
-  desktopLogBuffer = ''
-
-  desktopLogFlushPromise = desktopLogFlushPromise
-    .then(async () => {
-      await fs.promises.mkdir(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
-      await rotateDesktopLogIfNeededAsync()
-      await fs.promises.appendFile(DESKTOP_LOG_PATH, chunk)
-    })
-    .catch(() => {
-      // Logging must never crash the desktop shell.
-    })
-
-  return desktopLogFlushPromise
-}
-
-function scheduleDesktopLogFlush() {
-  if (desktopLogFlushTimer) {
-    return
-  }
-
-  desktopLogFlushTimer = setTimeout(() => {
-    desktopLogFlushTimer = null
-    void flushDesktopLogBufferAsync()
-  }, DESKTOP_LOG_FLUSH_MS)
-}
-
-function rememberLog(chunk) {
-  const text = String(chunk || '').trim()
-
-  if (!text) {
-    return
-  }
-
-  // One timestamp per chunk: lines arriving in the same event happened
-  // at the same moment.  ISO-8601 UTC, matching agent.log/gateway.log.
-  const stamp = new Date().toISOString()
-  const lines = text.split(/\r?\n/).map(line => formatDesktopLogLine(line, stamp))
-  hermesLog.push(...lines)
-
-  if (hermesLog.length > 300) {
-    hermesLog.splice(0, hermesLog.length - 300)
-  }
-
-  desktopLogBuffer += `${lines.join('\n')}\n`
-
-  if (desktopLogBuffer.length >= DESKTOP_LOG_BUFFER_MAX_CHARS) {
-    if (desktopLogFlushTimer) {
-      clearTimeout(desktopLogFlushTimer)
-      desktopLogFlushTimer = null
-    }
-
-    void flushDesktopLogBufferAsync()
-
-    return
-  }
-
-  scheduleDesktopLogFlush()
-}
+  fakeStepMs: BOOT_FAKE_STEP_MS,
+  getMainWindow: () => mainWindow,
+  getRemoteReauthFailure: () => (remoteReauthFailure ? remoteReauthFailure.message : null),
+  log: rememberLog,
+  platform: process.platform
+})
 
 installCrashForensics({ flush: flushDesktopLogBufferSync, log: rememberLog })
 
@@ -2151,286 +1609,6 @@ function ensureWslWindowsFonts() {
   }
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function clampBootProgress(value) {
-  const numeric = Number(value)
-
-  if (!Number.isFinite(numeric)) {
-    return 0
-  }
-
-  return Math.max(0, Math.min(100, Math.round(numeric)))
-}
-
-function broadcastBootProgress() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:boot-progress', bootProgressState)
-}
-
-// Bootstrap-event broadcast channel + state. The bootstrap runner emits a
-// stream of events (manifest, stage, log, complete, failed) that the renderer
-// install overlay subscribes to. We also keep a running snapshot:
-//   - manifest: the stage list (rendered as a checklist in the overlay)
-//   - stages:   per-stage state ('pending' | 'running' | 'succeeded' |
-//               'skipped' | 'failed') keyed by stage name
-//   - active:   true while a bootstrap is in flight; false otherwise
-//   - error:    last 'failed' event's error message
-//   - log:      bounded ring buffer of the last 200 log lines for the
-//               "Show details" affordance in the overlay
-//
-// The snapshot is queryable via the hermes:bootstrap:get IPC handler so a
-// reloaded renderer (e.g. devtools reload during dev) recovers state.
-// Bootstrap log ring: bounded buffer so a long install (npm + playwright
-// downloads can emit thousands of lines) doesn't grow unbounded in memory
-// AND so the renderer's getBootstrapState() reply stays a reasonable size.
-// We keep enough to cover an entire failed stage's transcript so the
-// 'Copy output' button gives the user actually-actionable context, not
-// just the last few lines.
-const BOOTSTRAP_LOG_RING_MAX = 500
-
-let bootstrapState = {
-  active: false,
-  manifest: null,
-  stages: {},
-  error: null,
-  log: [],
-  startedAt: null,
-  completedAt: null,
-  setupChoice: null,
-  unsupportedPlatform: null
-}
-
-let firstRunSetupGate = null
-
-function broadcastBootstrapEvent(ev) {
-  if (ev.type === 'manifest') {
-    bootstrapState.manifest = ev
-    bootstrapState.active = true
-    bootstrapState.setupChoice = null
-    bootstrapState.startedAt = bootstrapState.startedAt || Date.now()
-    bootstrapState.stages = {}
-
-    for (const stage of ev.stages || []) {
-      bootstrapState.stages[stage.name] = { state: 'pending', json: null, durationMs: null, error: null }
-    }
-  } else if (ev.type === 'stage') {
-    bootstrapState.stages[ev.name] = {
-      state: ev.state,
-      durationMs: ev.durationMs ?? null,
-      json: ev.json ?? null,
-      error: ev.error ?? null
-    }
-  } else if (ev.type === 'log') {
-    bootstrapState.log.push({ ts: Date.now(), stage: ev.stage || null, line: ev.line, stream: ev.stream || 'stdout' })
-
-    if (bootstrapState.log.length > BOOTSTRAP_LOG_RING_MAX) {
-      bootstrapState.log.splice(0, bootstrapState.log.length - BOOTSTRAP_LOG_RING_MAX)
-    }
-  } else if (ev.type === 'complete') {
-    bootstrapState.active = false
-    bootstrapState.completedAt = Date.now()
-    bootstrapState.error = null
-    bootstrapState.unsupportedPlatform = null
-  } else if (ev.type === 'failed') {
-    bootstrapState.active = false
-    bootstrapState.error = ev.error || 'unknown error'
-    bootstrapState.setupChoice = null
-  } else if (ev.type === 'unsupported-platform') {
-    bootstrapState.active = false
-    bootstrapState.setupChoice = null
-    bootstrapState.unsupportedPlatform = {
-      platform: ev.platform,
-      activeRoot: ev.activeRoot,
-      installCommand: ev.installCommand,
-      docsUrl: ev.docsUrl
-    }
-  } else if (ev.type === 'setup-choice') {
-    bootstrapState.active = false
-    bootstrapState.error = null
-    bootstrapState.manifest = null
-    bootstrapState.stages = {}
-    bootstrapState.setupChoice = ev.active
-      ? {
-          platform: ev.platform,
-          activeRoot: ev.activeRoot
-        }
-      : null
-    bootstrapState.unsupportedPlatform = null
-  } else if (ev.type === 'dismissed') {
-    resetBootstrapSnapshot()
-  }
-
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:bootstrap:event', ev)
-}
-
-function getBootstrapState() {
-  return bootstrapState
-}
-
-function resetBootstrapSnapshot() {
-  bootstrapState = {
-    active: false,
-    manifest: null,
-    stages: {},
-    error: null,
-    log: [],
-    startedAt: null,
-    completedAt: null,
-    setupChoice: null,
-    unsupportedPlatform: null
-  }
-}
-
-function promptFirstRunSetupChoice(backend) {
-  broadcastBootstrapEvent({
-    type: 'setup-choice',
-    active: true,
-    platform: backend.platform || process.platform,
-    activeRoot: backend.activeRoot || ACTIVE_HERMES_ROOT
-  })
-}
-
-function hideFirstRunSetupChoice() {
-  if (bootstrapState.setupChoice) {
-    broadcastBootstrapEvent({ type: 'setup-choice', active: false })
-  }
-}
-
-function getFirstRunSetupGate() {
-  if (!firstRunSetupGate) {
-    firstRunSetupGate = createFirstRunSetupGate({
-      hideChoice: hideFirstRunSetupChoice,
-      log: rememberLog,
-      onStuck: (_backend, stuckAfterMs) => {
-        updateBootProgress(
-          {
-            error: null,
-            message: `Still waiting for first-run setup choice after ${Math.round(stuckAfterMs / 1000)} seconds`,
-            phase: 'bootstrap.choice',
-            progress: 12,
-            running: true
-          },
-          { allowDecrease: true }
-        )
-      },
-      promptChoice: promptFirstRunSetupChoice
-    })
-  }
-
-  return firstRunSetupGate
-}
-
-async function waitForFirstRunSetupChoice(backend) {
-  const gate = getFirstRunSetupGate()
-
-  if (!gate.shouldGate(backend)) {
-    return 'continue-local'
-  }
-
-  updateBootProgress(
-    {
-      error: null,
-      message: 'Waiting for first-run setup choice',
-      phase: 'bootstrap.choice',
-      progress: 12,
-      running: true
-    },
-    { allowDecrease: true }
-  )
-
-  return gate.wait(backend)
-}
-
-function continueFirstRunLocalBootstrap() {
-  getFirstRunSetupGate().continueLocal()
-}
-
-function abandonFirstRunSetupChoiceForRemoteApply() {
-  const gate = getFirstRunSetupGate()
-
-  if (!gate.hasWaiter()) {
-    return false
-  }
-
-  const resumedGatedConnection = gate.abandonForRemoteApply()
-
-  if (resumedGatedConnection) {
-    broadcastBootstrapEvent({ type: 'dismissed' })
-  }
-
-  return resumedGatedConnection
-}
-
-function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
-  // A latched reauth rejection owns the boot surface until a recovery path
-  // clears it; see shouldHoldBootProgressForReauth (#95701).
-  if (shouldHoldBootProgressForReauth(remoteReauthFailure ? remoteReauthFailure.message : null, update)) {
-    return
-  }
-
-  const nextProgressRaw =
-    typeof update.progress === 'number' ? clampBootProgress(update.progress) : bootProgressState.progress
-
-  const nextProgress = options.allowDecrease ? nextProgressRaw : Math.max(bootProgressState.progress, nextProgressRaw)
-
-  bootProgressState = {
-    ...bootProgressState,
-    ...update,
-    error: update.error === undefined ? bootProgressState.error : update.error,
-    fakeMode: BOOT_FAKE_MODE || Boolean(update.fakeMode),
-    progress: nextProgress,
-    // `retryable` rides with `error`: it survives updates that preserve the
-    // error and resets alongside a new/cleared error unless explicitly set.
-    retryable:
-      update.retryable === undefined
-        ? update.error === undefined && Boolean(bootProgressState.retryable)
-        : Boolean(update.retryable),
-    timestamp: Date.now()
-  }
-
-  if (update.message) {
-    rememberLog(`[boot] ${update.message}`)
-  }
-
-  broadcastBootProgress()
-}
-
-async function advanceBootProgress(phase, message, progress) {
-  updateBootProgress({
-    phase,
-    message,
-    progress,
-    running: true,
-    error: null
-  })
-
-  if (BOOT_FAKE_MODE) {
-    await sleep(BOOT_FAKE_STEP_MS)
-  }
-}
-
 function fileExists(filePath) {
   try {
     return fs.statSync(filePath).isFile()
@@ -2559,7 +1737,7 @@ async function waitForUpdateToFinish() {
         rememberLog(`[updates] update in progress (${reason}); deferring backend start until it finishes`)
       }
 
-      await advanceBootProgress(
+      await firstRunBoot.advanceBootProgress(
         'backend.update-wait',
         'An update is finishing — Hermes will start automatically when it completes…',
         12
@@ -2634,7 +1812,7 @@ async function waitForUpdateToFinish() {
   if (outcome === 'timeout') {
     rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
   } else if (relaunchIntoSwappedBundle()) {
-    await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
+    await firstRunBoot.advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a
     // backend; the failsafe below only runs if the exit somehow does not.
     await new Promise(resolve => setTimeout(resolve, BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS))
@@ -5458,7 +4636,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
   assertStillOwned()
 
   if (!backend.bootstrap) {
-    await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
+    await firstRunBoot.advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
     return backend
   }
@@ -5493,7 +4671,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
     // We emit a synthetic manifest with an empty stages list -- the real
     // manifest event will overwrite it once install.ps1 -Manifest returns.
     try {
-      broadcastBootstrapEvent({
+      firstRunBoot.broadcastBootstrapEvent({
         type: 'manifest',
         stages: [],
         protocolVersion: null
@@ -5529,7 +4707,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
         }
 
         try {
-          broadcastBootstrapEvent(ev)
+          firstRunBoot.broadcastBootstrapEvent(ev)
         } catch {
           void 0
         }
@@ -5609,7 +4787,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
 
   backend.command = getVenvPython(VENV_ROOT)
   backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
-  updateBootProgress({
+  firstRunBoot.updateBootProgress({
     phase: 'runtime.ready',
     message: 'Hermes runtime is ready',
     progress: 82,
@@ -5620,1141 +4798,29 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
   return backend
 }
 
-// Assemble a single-file multipart/form-data body (FastAPI `UploadFile`
-// endpoints, e.g. kanban attachments). Hand-rolled because node's http has no
-// FormData and the payload is one file — a dependency would be overkill.
-function multipartBody(upload) {
-  const boundary = `----hermes-${crypto.randomBytes(12).toString('hex')}`
-  const filename = String(upload.filename || 'file').replace(/["\r\n]/g, '_')
+const { fetchJson, fetchPublicJson } = createGatewayJsonRuntime({ headersForRemoteRequest })
+
+const { mimeTypeForPath, extensionForMimeType, saveImageFromUrl, writeComposerImage } = createContentFileRuntime({
+  app,
+  dialog,
+  getMainWindow: () => mainWindow,
+  resolveReadableFileForIpc
+})
 
-  const body = Buffer.concat([
-    Buffer.from(
-      `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-        `Content-Type: ${upload.contentType || 'application/octet-stream'}\r\n\r\n`
-    ),
-    Buffer.from(upload.bytes),
-    Buffer.from(`\r\n--${boundary}--\r\n`)
-  ])
-
-  return { body, contentType: `multipart/form-data; boundary=${boundary}` }
-}
-
-function fetchJson(url, token, options: any = {}) {
-  // Retry policy lives in api-transport.ts: idempotent verbs retry on any
-  // transient transport error; POST/PUT/DELETE only when the request provably
-  // never reached the server (see shouldRetryRequest) — never double-submit.
-  return withRetry(
-    (requestState: any) =>
-      new Promise((resolve, reject) => {
-        const { body, contentType } = options.upload
-          ? multipartBody(options.upload)
-          : {
-              body: options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body)),
-              contentType: 'application/json'
-            }
-
-        const parsed = new URL(url)
-        const client = parsed.protocol === 'https:' ? https : http
-        const agent = jsonAgentFor(parsed.protocol)
-        const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-          reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-          return
-        }
-
-        const req = client.request(
-          parsed,
-          {
-            agent,
-            method: options.method || 'GET',
-            headers: {
-              ...headersForRemoteRequest(url),
-              ...(options.headers || {}),
-              'Content-Type': contentType,
-              'X-Hermes-Session-Token': token,
-              // RFC 8252 native flow authenticates the gated gateway with a bearer
-              // token instead of the loopback session-token header. When
-              // ``options.bearer`` is set we send Authorization: Bearer <token>;
-              // the gateway's OAuth gate verifies it via the provider stack with
-              // no cookie involved.
-              ...(options.bearer ? { Authorization: `Bearer ${options.bearer}` } : {}),
-              ...(body ? { 'Content-Length': String(body.length) } : {})
-            }
-          },
-          res => {
-            const chunks = []
-            res.on('error', reject)
-            res.on('data', chunk => chunks.push(chunk))
-            res.on('end', () => {
-              const text = Buffer.concat(chunks).toString('utf8')
-
-              if ((res.statusCode || 500) >= 400) {
-                reject(httpStatusError(res.statusCode, text, res.statusMessage))
-
-                return
-              }
-
-              // http.request never follows redirects, so any 3xx -- with an HTML
-              // login page, an empty body, whatever -- is the request bouncing
-              // off a proxy or a scheme/slash mismatch, never JSON.
-              if (res.statusCode >= 300) {
-                reject(htmlResponseError(url, res.statusCode, res.headers.location))
-
-                return
-              }
-
-              if (!text) {
-                resolve(null)
-
-                return
-              }
-
-              // A 2xx response whose body is HTML means the request fell through
-              // to the SPA index.html (e.g. an unregistered /api path). JSON.parse
-              // would throw an opaque `Unexpected token '<'` here, so surface a
-              // clear diagnostic with the offending URL instead.
-              const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
-              const contentType = String(res.headers['content-type'] || '')
-
-              if (looksHtml || contentType.includes('text/html')) {
-                reject(htmlResponseError(url, res.statusCode))
-
-                return
-              }
-
-              try {
-                resolve(JSON.parse(text))
-              } catch {
-                reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
-              }
-            })
-          }
-        )
-
-        req.on('error', reject)
-        req.setTimeout(timeoutMs, () => {
-          req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-        })
-
-        // From here the request goes on the wire: a later transport error can no
-        // longer prove the server didn't process it, so non-idempotent verbs must
-        // not be retried past this point.
-        requestState.bodySent = true
-
-        if (body) {
-          req.write(body)
-        }
-
-        req.end()
-      }),
-    { method: options.method || 'GET' }
-  )
-}
-
-// Token-auth download that streams the response body straight to a
-// user-selected destination (via finalizeGatewayDownload) instead of buffering
-// the whole file in memory. The connect timeout is cleared once headers arrive
-// so a slow save dialog or a large stream doesn't trip it. `options.bearer`
-// switches the header to Authorization (RFC 8252 native flow), matching fetchJson.
-function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
-  return new Promise((resolve, reject) => {
-    let parsed
-
-    try {
-      parsed = new URL(url)
-    } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
-
-      return
-    }
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-      return
-    }
-
-    const client = parsed.protocol === 'https:' ? https : http
-    const agent = downloadAgentFor(parsed.protocol)
-    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-    const req = client.request(
-      parsed,
-      {
-        agent,
-        method: 'GET',
-        headers: options.bearer ? { Authorization: `Bearer ${options.bearer}` } : { 'X-Hermes-Session-Token': token }
-      },
-      res => {
-        // Headers arrived — the connection phase is done. Drop the idle timeout
-        // so it can't abort mid-stream or while the save dialog is open.
-        req.setTimeout(0)
-        finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
-          ...ctx,
-          abort: () => {
-            try {
-              req.destroy()
-            } catch {
-              // already finished
-            }
-          }
-        }).then(resolve, reject)
-      }
-    )
-
-    req.on('error', reject)
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    })
-    req.end()
-  })
-}
-
-function fetchPublicJson(url, options: any = {}) {
-  // Credential-free JSON GET/POST for public gateway endpoints
-  // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
-  // NO ``X-Hermes-Session-Token`` header — used by the auth-mode probe before
-  // any credentials exist, and any time we must not leak a token to an
-  // endpoint that doesn't need one.
-  return withRetry(
-    (requestState: any) =>
-      new Promise((resolve, reject) => {
-        const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
-        let parsed
-
-        try {
-          parsed = new URL(url)
-        } catch (error) {
-          reject(new Error(`Invalid URL: ${error.message}`))
-
-          return
-        }
-
-        const client = parsed.protocol === 'https:' ? https : http
-        const agent = jsonAgentFor(parsed.protocol)
-        const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-          reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-          return
-        }
-
-        const req = client.request(
-          parsed,
-          {
-            agent,
-            method: options.method || 'GET',
-            headers: {
-              ...headersForRemoteRequest(url),
-              ...(options.headers || {}),
-              'Content-Type': 'application/json',
-              ...(body ? { 'Content-Length': String(body.length) } : {})
-            }
-          },
-          res => {
-            const chunks = []
-            res.on('data', chunk => chunks.push(chunk))
-            res.on('end', () => {
-              const text = Buffer.concat(chunks).toString('utf8')
-
-              if ((res.statusCode || 500) >= 400) {
-                reject(httpStatusError(res.statusCode, text, res.statusMessage))
-
-                return
-              }
-
-              if (res.statusCode >= 300) {
-                reject(htmlResponseError(url, res.statusCode, res.headers.location))
-
-                return
-              }
-
-              if (!text) {
-                resolve(null)
-
-                return
-              }
-
-              const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
-              const contentType = String(res.headers['content-type'] || '')
-
-              if (looksHtml || contentType.includes('text/html')) {
-                reject(htmlResponseError(url, res.statusCode))
-
-                return
-              }
-
-              try {
-                resolve(JSON.parse(text))
-              } catch {
-                reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
-              }
-            })
-          }
-        )
-
-        req.on('error', reject)
-        req.setTimeout(timeoutMs, () => {
-          req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-        })
-
-        // Past this point the request is on the wire — see fetchJson.
-        requestState.bodySent = true
-
-        if (body) {
-          req.write(body)
-        }
-
-        req.end()
-      }),
-    { method: options.method || 'GET' }
-  )
-}
-
-function mimeTypeForPath(filePath) {
-  const ext = path.extname(filePath || '').toLowerCase()
-
-  return MEDIA_MIME_TYPES[ext] || 'application/octet-stream'
-}
-
-function extensionForMimeType(mimeType) {
-  const type = String(mimeType || '')
-    .split(';')[0]
-    .trim()
-    .toLowerCase()
-
-  if (type === 'image/png') {
-    return '.png'
-  }
-
-  if (type === 'image/jpeg') {
-    return '.jpg'
-  }
-
-  if (type === 'image/gif') {
-    return '.gif'
-  }
-
-  if (type === 'image/webp') {
-    return '.webp'
-  }
-
-  if (type === 'image/bmp') {
-    return '.bmp'
-  }
-
-  if (type === 'image/svg+xml') {
-    return '.svg'
-  }
-
-  return ''
-}
-
-function filenameFromUrl(rawUrl, fallback = 'image') {
-  try {
-    const parsed = new URL(rawUrl)
-    const base = path.basename(decodeURIComponent(parsed.pathname || ''))
-
-    return base && base.includes('.') ? base : fallback
-  } catch {
-    return fallback
-  }
-}
-
-// Link title resolution — curl (tier 1) → hidden BrowserWindow (tier 2).
-const titleCache = new Map()
-const titleInflight = new Map()
-const TITLE_CACHE_LIMIT = 500
-const TITLE_BYTE_BUDGET = 96 * 1024
-const TITLE_TIMEOUT_MS = 5000
-const TITLE_MAX_REDIRECTS = 3
-
-// Browser-shaped UA — many bot-walled sites (GetYourGuide, Cloudflare-protected
-// pages) refuse anything that doesn't look like a real Chrome.
-const TITLE_USER_AGENT =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
-
-const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" }
-
-// Tier-2 renderer fallback config. Only invoked when curl came back with no
-// usable title and no sign-in wall (electron/link-title-wall.ts) — keeps
-// cold/CDN-cached pages on the cheap path.
-const RENDER_TITLE_MAX_CONCURRENT = 2
-const RENDER_TITLE_TIMEOUT_MS = 8000
-const RENDER_TITLE_GRACE_MS = 700
-
-// Resource types we cancel before the network even fires — keeps the hidden
-// renderer fast and cuts third-party tracking noise.
-const RENDER_TITLE_BLOCKED_RESOURCES = new Set([
-  'cspReport',
-  'font',
-  'imageset',
-  'media',
-  'object',
-  'ping',
-  'stylesheet'
-])
-
-let linkTitleSession = null
 let oauthSession = null
-let renderTitleInFlight = 0
-const renderTitleQueue = []
-
-function canonicalTitleCacheKey(rawUrl) {
-  const value = String(rawUrl || '').trim()
-
-  if (!value) {
-    return ''
-  }
-
-  try {
-    const url = new URL(value)
-    const host = url.hostname.replace(/^www\./i, '').toLowerCase()
-    const pathname = url.pathname === '/' ? '/' : url.pathname.replace(/\/+$/, '') || '/'
-
-    return `${host}${pathname}${url.search || ''}`
-  } catch {
-    return value
-  }
-}
-
-function cacheTitle(key, title) {
-  if (titleCache.size >= TITLE_CACHE_LIMIT) {
-    titleCache.delete(titleCache.keys().next().value)
-  }
-
-  titleCache.set(key, title)
-}
-
-function decodeHtmlEntities(value) {
-  return value
-    .replace(/&(amp|lt|gt|quot|apos|nbsp|#39);/gi, (_, k) => HTML_ENTITIES[k.toLowerCase()] ?? '')
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16) || 32))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10) || 32))
-}
-
-function parseHtmlTitle(html) {
-  const raw = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
-
-  return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
-}
-
-// `--write-out` trailer: `\n<mark><url_effective>` after the body.
-const URL_EFFECTIVE_MARK = 'hermes-url-effective:'
-const URL_EFFECTIVE_TAIL_BYTES = 4096
-
-function splitUrlEffective(stdout: string): { effectiveUrl: string; html: string } {
-  const at = stdout.lastIndexOf(`\n${URL_EFFECTIVE_MARK}`)
-
-  if (at < 0) {
-    return { effectiveUrl: '', html: stdout }
-  }
-
-  return {
-    effectiveUrl: stdout.slice(at + 1 + URL_EFFECTIVE_MARK.length).trim(),
-    html: stdout.slice(0, at)
-  }
-}
-
-function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
-  return new Promise(resolve => {
-    const url = String(rawUrl || '').trim()
-
-    if (!url) {
-      return resolve({ authWall: false, title: '' })
-    }
-
-    const args = [
-      '--silent',
-      '--show-error',
-      '--location',
-      '--max-redirs',
-      String(TITLE_MAX_REDIRECTS),
-      '--max-time',
-      String(Math.max(2, Math.ceil(TITLE_TIMEOUT_MS / 1000))),
-      '--connect-timeout',
-      '4',
-      '--user-agent',
-      TITLE_USER_AGENT,
-      '--header',
-      'Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
-      '--header',
-      'Accept-Language: en-US,en;q=0.7',
-      '--header',
-      'Accept-Encoding: identity',
-      '--raw',
-      // Arrival URL after redirects, on its own line after the body: a sign-in
-      // wall is proven from where curl landed even when the page has no markup id.
-      '--write-out',
-      `\n${URL_EFFECTIVE_MARK}%{url_effective}`,
-      url
-    ]
-
-    const child = spawn('curl', args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'ignore'] }))
-    const chunks: Buffer[] = []
-    // The last bytes of stdout, kept past the body budget so the `--write-out`
-    // arrival URL survives a body larger than TITLE_BYTE_BUDGET.
-    let tail = Buffer.alloc(0)
-    let bytes = 0
-
-    child.stdout.on('data', chunk => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-      tail = Buffer.concat([tail, buffer]).subarray(-URL_EFFECTIVE_TAIL_BYTES)
-
-      if (bytes >= TITLE_BYTE_BUDGET) {
-        return
-      }
-
-      const remaining = TITLE_BYTE_BUDGET - bytes
-      const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
-      chunks.push(next)
-      bytes += next.length
-    })
-
-    child.on('error', () => resolve({ authWall: false, title: '' }))
-    child.on('close', () => {
-      if (!chunks.length) {
-        return resolve({ authWall: false, title: '' })
-      }
-
-      const body = Buffer.concat(chunks)
-
-      // The trailer is inside `body` unless the budget cut it off; then it is in `tail`.
-      const { effectiveUrl, html } = splitUrlEffective(
-        (bytes >= TITLE_BYTE_BUDGET ? Buffer.concat([body, tail]) : body).toString('utf8')
-      )
-
-      const title = parseHtmlTitle(html)
-
-      // A sign-in wall answers the cookieless title partition, and tier 2 must
-      // never load it: the wall asks the OS for a passkey.
-      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), title })
-    })
-  })
-}
-
-function getLinkTitleSession() {
-  if (linkTitleSession || !app.isReady()) {
-    return linkTitleSession
-  }
-
-  linkTitleSession = session.fromPartition('hermes:link-titles', { cache: false })
-  linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
-  })
-  guardLinkTitleSession(linkTitleSession)
-
-  return linkTitleSession
-}
-
-function dequeueRenderTitle() {
-  while (renderTitleInFlight < RENDER_TITLE_MAX_CONCURRENT && renderTitleQueue.length) {
-    const item = renderTitleQueue.shift()
-    renderTitleInFlight += 1
-    runRenderTitleJob(item.url).then(title => {
-      renderTitleInFlight -= 1
-      item.resolve(title)
-      dequeueRenderTitle()
-    })
-  }
-}
-
-function runRenderTitleJob(rawUrl) {
-  return new Promise(resolve => {
-    if (!app.isReady()) {
-      return resolve('')
-    }
-
-    const partitionSession = getLinkTitleSession()
-
-    if (!partitionSession) {
-      return resolve('')
-    }
-
-    let settled = false
-    let window = null
-    let hardTimer = null
-    let graceTimer = null
-
-    const finish = title => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-
-      if (hardTimer) {
-        clearTimeout(hardTimer)
-      }
-
-      if (graceTimer) {
-        clearTimeout(graceTimer)
-      }
-
-      const value = (title || '').replace(/\s+/g, ' ').trim()
-
-      try {
-        if (window && !window.isDestroyed()) {
-          window.destroy()
-        }
-      } catch {
-        // BrowserWindow may already be torn down; ignore.
-      }
-
-      resolve(value)
-    }
-
-    try {
-      window = createLinkTitleWindow(BrowserWindow, partitionSession)
-    } catch {
-      return finish('')
-    }
-
-    const finishWithTitle = () => finish(readLinkTitleWindowTitle(window))
-
-    const scheduleGrace = () => {
-      if (graceTimer) {
-        clearTimeout(graceTimer)
-      }
-
-      graceTimer = setTimeout(finishWithTitle, RENDER_TITLE_GRACE_MS)
-    }
-
-    hardTimer = setTimeout(finishWithTitle, RENDER_TITLE_TIMEOUT_MS)
-
-    window.webContents.setUserAgent(TITLE_USER_AGENT)
-    window.webContents.on('page-title-updated', scheduleGrace)
-    window.webContents.on('did-finish-load', scheduleGrace)
-    window.webContents.on('did-fail-load', (_event, _code, _desc, _validatedURL, isMainFrame) => {
-      if (isMainFrame) {
-        finish('')
-      }
-    })
-
-    window
-      .loadURL(rawUrl, {
-        httpReferrer: 'https://www.google.com/',
-        userAgent: TITLE_USER_AGENT
-      })
-      .catch(() => finish(''))
-  })
-}
-
-function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
-  return new Promise(resolve => {
-    renderTitleQueue.push({ resolve, url: rawUrl })
-    dequeueRenderTitle()
-  })
-}
-
-// Tier ladder (curl → hidden renderer) and its sign-in-wall rule live in
-// electron/link-title-wall.ts; main.ts only supplies the two tiers' I/O.
-function fetchLinkTitle(rawUrl) {
-  const url = String(rawUrl || '').trim()
-  const key = canonicalTitleCacheKey(url)
-
-  if (!key) {
-    return Promise.resolve('')
-  }
-
-  if (titleCache.has(key)) {
-    return Promise.resolve(titleCache.get(key))
-  }
-
-  if (titleInflight.has(key)) {
-    return Promise.resolve(titleInflight.get(key))
-  }
-
-  const pending = resolveLinkTitle({
-    curl: () => fetchHtmlTitleWithCurl(url),
-    renderer: () => fetchHtmlTitleWithRenderer(url),
-    url
-  }).then(clean => {
-    cacheTitle(key, clean)
-    titleInflight.delete(key)
-
-    return clean
-  })
-
-  titleInflight.set(key, pending)
-
-  return pending
-}
-
-// ─── Favicon resolution ──────────────────────────────────────────────────────
-// The ladder itself is electron/favicon.ts; this is its I/O, its cache, and
-// the one rule that belongs to the app rather than the algorithm: one icon
-// per host. A connector's mark doesn't vary by path, and hosting the cache on
-// the host key means Linear's docs page and Linear's MCP endpoint cost one
-// lookup between them.
-
-const FAVICON_CACHE_PATH = path.join(app.getPath('userData'), 'favicon-cache.json')
-const FAVICON_CACHE_LIMIT = 400
-const FAVICON_TTL_MS = 30 * 24 * 60 * 60 * 1000
-// A miss is cheap to re-check and expensive to be wrong about (a site that
-// was behind a captcha yesterday has a logo today), so it expires fast.
-const FAVICON_MISS_TTL_MS = 12 * 60 * 60 * 1000
-const FAVICON_TIMEOUT_MS = 6000
-const FAVICON_MAX_BYTES = 256 * 1024
-const FAVICON_WRITE_DEBOUNCE_MS = 3000
-
-let faviconCache: Map<string, { at: number; icon: string }> | null = null
-let faviconWriteTimer: null | ReturnType<typeof setTimeout> = null
-const faviconInflight = new Map<string, Promise<string>>()
-
-function faviconCacheKey(rawUrl: string): string {
-  try {
-    return new URL(rawUrl).hostname.replace(/^www\./i, '').toLowerCase()
-  } catch {
-    return ''
-  }
-}
-
-function loadFaviconCache(): Map<string, { at: number; icon: string }> {
-  if (faviconCache) {
-    return faviconCache
-  }
-
-  faviconCache = new Map()
-
-  try {
-    const raw = JSON.parse(fs.readFileSync(FAVICON_CACHE_PATH, 'utf8'))
-
-    for (const [host, entry] of Object.entries(raw?.icons ?? {})) {
-      const at = Number((entry as { at?: number })?.at)
-      const icon = String((entry as { icon?: string })?.icon ?? '')
-
-      if (Number.isFinite(at) && Date.now() - at < (icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {
-        faviconCache.set(host, { at, icon })
-      }
-    }
-  } catch {
-    // No cache yet, or it's unreadable — resolving again is the whole cost.
-  }
-
-  return faviconCache
-}
-
-function saveFaviconCacheSoon() {
-  if (faviconWriteTimer) {
-    return
-  }
-
-  faviconWriteTimer = setTimeout(() => {
-    faviconWriteTimer = null
-
-    try {
-      const icons = Object.fromEntries(loadFaviconCache())
-
-      fs.writeFileSync(FAVICON_CACHE_PATH, JSON.stringify({ icons }), 'utf8')
-    } catch {
-      // Cache is an optimization; failing to persist it costs one refetch.
-    }
-  }, FAVICON_WRITE_DEBOUNCE_MS)
-
-  faviconWriteTimer.unref?.()
-}
-
-async function faviconFetch(url: string, accept: string) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FAVICON_TIMEOUT_MS)
-
-  try {
-    return await electronNet.fetch(url, {
-      // Same browser-shaped identity the title fetcher uses: a plain Electron
-      // UA gets a challenge page from anything behind a bot wall.
-      headers: { Accept: accept, 'Accept-Language': 'en-US,en;q=0.7', 'User-Agent': TITLE_USER_AGENT },
-      redirect: 'follow',
-      signal: controller.signal
-    })
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-const faviconIo: FaviconIo = {
-  fetchImage: async url => {
-    const response = await faviconFetch(url, 'image/avif,image/webp,image/svg+xml,image/*;q=0.8,*/*;q=0.5')
-
-    if (!response.ok) {
-      return null
-    }
-
-    const buffer = await response.arrayBuffer()
-
-    if (buffer.byteLength === 0 || buffer.byteLength > FAVICON_MAX_BYTES) {
-      return null
-    }
-
-    return { bytes: new Uint8Array(buffer), mime: response.headers.get('content-type') ?? '' }
-  },
-  fetchText: async url => {
-    const response = await faviconFetch(url, 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5')
-
-    return response.ok ? (await response.text()).slice(0, TITLE_BYTE_BUDGET * 2) : ''
-  }
-}
-
-function resolveFaviconCached(rawUrl: string): Promise<string> {
-  const key = faviconCacheKey(String(rawUrl || '').trim())
-
-  if (!key) {
-    return Promise.resolve('')
-  }
-
-  const cache = loadFaviconCache()
-  const hit = cache.get(key)
-
-  if (hit && Date.now() - hit.at < (hit.icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {
-    return Promise.resolve(hit.icon)
-  }
-
-  const inflight = faviconInflight.get(key)
-
-  if (inflight) {
-    return inflight
-  }
-
-  const pending = resolveFavicon(rawUrl, faviconIo)
-    .catch(() => '')
-    .then(icon => {
-      if (cache.size >= FAVICON_CACHE_LIMIT) {
-        cache.delete(cache.keys().next().value)
-      }
-
-      cache.set(key, { at: Date.now(), icon })
-      saveFaviconCacheSoon()
-      faviconInflight.delete(key)
-
-      return icon
-    })
-
-  faviconInflight.set(key, pending)
-
-  return pending
-}
-
-async function resourceBufferFromUrl(rawUrl) {
-  if (!rawUrl) {
-    throw new Error('Missing URL')
-  }
-
-  if (rawUrl.startsWith('data:')) {
-    const match = rawUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s)
-
-    if (!match) {
-      throw new Error('Invalid data URL')
-    }
-
-    const mimeType = match[1] || 'application/octet-stream'
-    const encoded = match[3] || ''
-    const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
-
-    return { buffer, mimeType }
-  }
-
-  if (/^file:/i.test(rawUrl)) {
-    const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, { purpose: 'Image file' })
-    const buffer = await fs.promises.readFile(resolvedPath)
-
-    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
-  }
-
-  const parsed = new URL(rawUrl)
-  const client = parsed.protocol === 'https:' ? https : http
-
-  return new Promise((resolve, reject) => {
-    const req = client.get(parsed, res => {
-      if ((res.statusCode || 500) >= 400) {
-        reject(new Error(`Failed to fetch ${rawUrl}: ${res.statusCode}`))
-        res.resume()
-
-        return
-      }
-
-      const chunks = []
-      res.on('error', reject)
-      res.on('data', chunk => chunks.push(chunk))
-      res.on('end', () => {
-        resolve({
-          buffer: Buffer.concat(chunks),
-          mimeType: res.headers['content-type'] || 'application/octet-stream'
-        })
-      })
-    })
-
-    req.on('error', reject)
-  })
-}
-
-async function saveImageFromUrl(rawUrl) {
-  const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
-  const extension = extensionForMimeType(mimeType) || '.png'
-  // Generated-image URLs (fal.media etc.) usually end in an extensionless
-  // content hash. Keep the name but always guarantee an extension — without
-  // one Windows saves an unopenable "All Files" blob (#image18 report).
-  const baseName = filenameFromUrl(rawUrl, `image${extension}`)
-  const fallbackName = path.extname(baseName) ? baseName : `${baseName}${extension}`
-
-  let downloadsDir = ''
-
-  try {
-    downloadsDir = app.getPath('downloads')
-  } catch {
-    // Leave the dialog at its last-used location when the OS has no
-    // Downloads directory to offer.
-  }
-
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save Image',
-    defaultPath: downloadsDir ? path.join(downloadsDir, fallbackName) : fallbackName,
-    filters: [
-      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
-      { name: 'All Files', extensions: ['*'] }
-    ]
-  })
-
-  if (result.canceled || !result.filePath) {
-    return false
-  }
-
-  await fs.promises.writeFile(result.filePath, buffer)
-
-  return true
-}
-
-async function writeComposerImage(buffer, ext = '.png', name = '') {
-  const rawExt = String(ext || '.png')
-    .trim()
-    .toLowerCase()
-
-  const normalizedExt = rawExt.startsWith('.') ? rawExt : `.${rawExt}`
-  const safeExt = /^\.[a-z0-9]{1,5}$/.test(normalizedExt) ? normalizedExt : '.png'
-  const dir = path.join(app.getPath('userData'), 'composer-images')
-  await fs.promises.mkdir(dir, { recursive: true })
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
-  const random = crypto.randomBytes(3).toString('hex')
-
-  const baseName = String(name || '')
-    .split(/[\\/]/)
-    .pop()
-    ?.replace(/\.[^.]+$/, '')
-
-  const safeName = (baseName || '')
-    .replace(/[^\p{L}\p{N}._-]+/gu, '_')
-    .replace(/^[._-]+|[._-]+$/g, '')
-    .slice(0, 80)
-
-  const fileName = safeName ? `${safeName}_${random}${safeExt}` : `composer_${stamp}_${random}${safeExt}`
-  const filePath = path.join(dir, fileName)
-  await fs.promises.writeFile(filePath, buffer)
-
-  return filePath
-}
-
-function previewLabelForUrl(url) {
-  return `${url.host}${url.pathname === '/' ? '' : url.pathname}`
-}
-
-function expandUserPath(filePath) {
-  const value = String(filePath || '').trim()
-
-  if (value === '~') {
-    return app.getPath('home')
-  }
-
-  if (value.startsWith(`~${path.sep}`) || value.startsWith('~/')) {
-    return path.join(app.getPath('home'), value.slice(2))
-  }
-
-  return value
-}
-
-async function previewFileTarget(rawTarget, baseDir) {
-  const raw = String(rawTarget || '').trim()
-  const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
-
-  let resolved = resolveRequestedPathForIpc(/^file:/i.test(raw) ? raw : expandUserPath(raw), {
-    baseDir: base,
-    purpose: 'Preview target'
-  })
-
-  // Attachment references stored in chat history are frequently HOME-relative
-  // (e.g. "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
-  // ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to the
-  // agent's working directory. The primary resolution above only tries
-  // `base` (the working dir), so such a ref never exists there and the
-  // preview/download 404s even though the file is present on disk (#115609).
-  if (!fileExists(resolved) && !directoryExists(resolved)) {
-    for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), HERMES_HOME)) {
-      if (fileExists(candidate)) {
-        resolved = candidate
-
-        break
-      }
-    }
-  }
-
-  if (directoryExists(resolved)) {
-    resolved = path.join(resolved, 'index.html')
-  }
-
-  const ext = path.extname(resolved).toLowerCase()
-
-  if (!fileExists(resolved)) {
-    return null
-  }
-
-  ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))
-
-  const mimeType = mimeTypeForPath(resolved)
-  const metadata = previewFileMetadata(resolved, mimeType)
-  const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
-  const isImage = mimeType.startsWith('image/')
-  const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : metadata.binary ? 'binary' : 'text'
-
-  return {
-    binary: metadata.binary,
-    byteSize: metadata.byteSize,
-    kind: 'file',
-    large: metadata.large,
-    label: path.basename(resolved),
-    language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
-    mimeType,
-    path: resolved,
-    previewKind,
-    source: raw,
-    url: pathToFileURL(resolved).toString()
-  }
-}
-
-function previewUrlTarget(rawTarget) {
-  const raw = String(rawTarget || '').trim()
-  const url = new URL(raw)
-
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    return null
-  }
-
-  if (!LOCAL_PREVIEW_HOSTS.has(url.hostname.toLowerCase())) {
-    return null
-  }
-
-  if (url.hostname === '0.0.0.0') {
-    url.hostname = '127.0.0.1'
-  }
-
-  return {
-    kind: 'url',
-    label: previewLabelForUrl(url),
-    source: raw,
-    url: url.toString()
-  }
-}
-
-async function normalizePreviewTarget(rawTarget, baseDir) {
-  const raw = String(rawTarget || '').trim()
-
-  if (!raw) {
-    return null
-  }
-
-  try {
-    if (/^https?:\/\//i.test(raw)) {
-      return previewUrlTarget(raw)
-    }
-
-    return await previewFileTarget(raw, baseDir)
-  } catch {
-    return null
-  }
-}
-
-async function filePathFromPreviewUrl(rawUrl) {
-  const { resolvedPath } = await resolveReadableFileForIpc(String(rawUrl || ''), { purpose: 'Preview file' })
-
-  return resolvedPath
-}
-
-function sendPreviewFileChanged(payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
-  }
-
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
-  }
-
-  webContents.send('hermes:preview-file-changed', payload)
-}
-
-async function watchPreviewFile(rawUrl) {
-  const filePath = await filePathFromPreviewUrl(rawUrl)
-  const watchDir = path.dirname(filePath)
-  const targetName = path.basename(filePath)
-  const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
-
-  const watcher = fs.watch(watchDir, (_eventType, filename) => {
-    const changedName = filename ? path.basename(String(filename)) : ''
-
-    if (changedName && changedName !== targetName) {
-      return
-    }
-
-    if (timer) {
-      clearTimeout(timer)
-    }
-
-    timer = setTimeout(() => {
-      timer = null
-
-      if (!fileExists(filePath)) {
-        return
-      }
-
-      sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
-  })
-
-  previewWatchers.set(id, {
-    close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      watcher.close()
-    }
-  })
-
-  return { id, path: filePath }
-}
-
-function stopPreviewFileWatch(id) {
-  const watcher = previewWatchers.get(id)
-
-  if (!watcher) {
-    return false
-  }
-
-  watcher.close()
-  previewWatchers.delete(id)
-
-  return true
-}
-
-function closePreviewWatchers() {
-  for (const id of previewWatchers.keys()) {
-    stopPreviewFileWatch(id)
-  }
-}
+const { fetchLinkTitle, resolveFaviconCached } = createLinkMetadataRuntime()
+
+const previewTargetRuntime = createPreviewTargetRuntime({
+  app,
+  directoryExists,
+  fileExists,
+  getMainWindow: () => mainWindow,
+  hermesHome: HERMES_HOME,
+  mimeTypeForPath,
+  resolveHermesCwd
+})
+
+const { expandUserPath } = previewTargetRuntime
 
 function requestOptionsWithHeaders(options: any = {}, headers = {}) {
   return {
@@ -6764,45 +4830,6 @@ function requestOptionsWithHeaders(options: any = {}, headers = {}) {
       ...(options.headers || {})
     }
   }
-}
-
-/** Watch a DIRECTORY for entry churn (folders appearing/vanishing) — the
- *  disk-plugin door's "new plugin folder" signal, replacing the renderer's 5s
- *  readdir poll. Same registry + change channel as the preview file watchers
- *  (the renderer reconciles on any tick; per-file edits stay on their own
- *  watches), so stopPreviewFileWatch/closePreviewWatchers manage these too. */
-function watchDirectory(rawDir) {
-  const watchDir = path.resolve(String(rawDir || ''))
-
-  if (!fs.existsSync(watchDir) || !fs.statSync(watchDir).isDirectory()) {
-    throw new Error(`Not a directory: ${watchDir}`)
-  }
-
-  const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
-
-  const watcher = fs.watch(watchDir, () => {
-    if (timer) {
-      clearTimeout(timer)
-    }
-
-    timer = setTimeout(() => {
-      timer = null
-      sendPreviewFileChanged({ id, path: watchDir, url: pathToFileURL(watchDir).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
-  })
-
-  previewWatchers.set(id, {
-    close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      watcher.close()
-    }
-  })
-
-  return { id, path: watchDir }
 }
 
 // Best-effort read of a gateway's advertised auth providers, cached per base
@@ -7254,489 +5281,35 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
   webContents.send('hermes:window-state-changed', state)
 }
 
-function buildApplicationMenu() {
-  const template: MenuItemConstructorOptions[] = []
-
-  const checkForUpdatesItem = {
-    label: 'Check for Updates…',
-    click: () => sendOpenUpdatesRequested()
-  }
-
-  if (IS_MAC) {
-    template.push({
-      label: APP_NAME,
-      submenu: [
-        { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
-        checkForUpdatesItem,
-        { type: 'separator' },
-        { role: 'services' },
-        { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        { role: 'quit' }
-      ]
-    })
-  }
-
-  template.push({
-    label: 'File',
-    submenu: [
-      // No accelerator: ⌘⇧N is a rebindable renderer keybind (session.newWindow);
-      // a menu accelerator would fight the rebind panel and (on macOS) be
-      // swallowed before the renderer sees it. Here purely for discoverability.
-      { click: () => createInstanceWindow(), label: 'New Window' },
-      // Same no-accelerator rationale: ⌘O is the rebindable renderer keybind
-      // (workspace.openFolder). Clicking runs the same open-folder-as-project
-      // flow through the renderer.
-      { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
-      { type: 'separator' },
-      IS_MAC
-        ? {
-            // NO accelerator: on macOS a registered ⌘W is consumed by the OS
-            // menu before the web contents ever sees it (and registerAccelerator
-            // false is a no-op on mac — electron#18295). Leaving it off lets the
-            // `before-input-event` handler below intercept ⌘W and route it to the
-            // renderer's close-active-tab. Clicking the item still closes the tab
-            // (or window) via the same request.
-            click: () => sendClosePreviewRequested(),
-            label: 'Close'
-          }
-        : { role: 'quit' }
-    ]
-  })
-  template.push({
-    label: 'Edit',
-    submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
-      { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      // ⌘⇧V is only wired up by this item existing: an accelerator with no menu
-      // entry is never translated into an editor command, so the chord was a
-      // no-op in every input in the app. The composer inserts plain text on
-      // every paste anyway, so this is the same result as ⌘V there — it's the
-      // terminal, preview, and other editable surfaces that need the strip.
-      { role: 'pasteAndMatchStyle' },
-      { role: 'delete' },
-      { role: 'selectAll' },
-      ...(IS_MAC
-        ? ([
-            { type: 'separator' },
-            {
-              label: 'Substitutions',
-              submenu: [{ role: 'showSubstitutions' }, { type: 'separator' }, { role: 'toggleTextReplacement' }]
-            }
-          ] satisfies MenuItemConstructorOptions[])
-        : [])
-    ]
-  })
-  template.push({
-    label: 'View',
-    submenu: [
-      // Not `role: 'reload'`: that hard-reloads the RENDERER (every pane, the
-      // whole shell) and a focused in-app browser needs ⌘R to mean "reload
-      // this page", the way it does in every other browser. ⇧⌘R
-      // (`forceReload`) below stays the unconditional escape hatch.
-      //
-      // No accelerator: ⌘R is claimed in `installPreviewShortcut`, which works
-      // on every platform (this menu exists only on macOS). Declaring it here
-      // too would fire the item and the input hook for one keypress.
-      { click: () => sendPreviewNavCommand('reload'), label: 'Reload' },
-      { role: 'forceReload' },
-      {
-        label: 'Toggle Developer Tools',
-        accelerator: process.platform === 'darwin' ? 'Alt+Cmd+I' : 'Ctrl+Shift+I',
-        click: (_menuItem, browserWindow) => toggleDevTools(browserWindow || mainWindow)
-      },
-      { type: 'separator' },
-      {
-        label: 'Actual Size',
-        accelerator: 'CommandOrControl+0',
-        click: () => {
-          setAndPersistZoomLevel(mainWindow, DEFAULT_ZOOM_LEVEL)
-        }
-      },
-      {
-        label: 'Zoom In',
-        accelerator: 'CommandOrControl+Plus',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + ZOOM_STEP)
-          }
-        }
-      },
-      {
-        label: 'Zoom Out',
-        accelerator: 'CommandOrControl+-',
-        click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - ZOOM_STEP)
-          }
-        }
-      },
-      { type: 'separator' },
-      { role: 'togglefullscreen' }
-    ]
-  })
-  template.push({
-    label: 'Window',
-    submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
-  })
-  template.push({
-    label: 'Help',
-    role: 'help',
-    submenu: [checkForUpdatesItem]
-  })
-
-  return Menu.buildFromTemplate(template)
-}
-
-function toggleDevTools(window) {
-  // DevTools is enabled in packaged builds so users can diagnose renderer
-  // issues without needing a dev build. Trade-off: tiny attack surface
-  // increase versus a much better support story when WS connection or
-  // CSP issues surface in the field.
-  const { webContents } = window
-
-  if (webContents.isDevToolsOpened()) {
-    webContents.closeDevTools()
-  } else {
-    webContents.openDevTools({ mode: 'detach' })
-  }
-}
-
-function installDevToolsShortcut(window) {
-  // Only Ctrl+Shift+I (or Cmd+Opt+I on Mac) opens DevTools.
-  // F12 is explicitly blocked so Chromium's built-in handler doesn't open it.
-  window.webContents.on('before-input-event', (event, input) => {
-    const key = input.key.toLowerCase()
-
-    // F12 opens DevTools by default; block only when the user disabled it.
-    if (input.key === 'F12') {
-      if (f12Blocked) {
-        event.preventDefault()
-
-        return
-      }
-      // Not blocked — fall through to open DevTools.
-    }
-
-    const isInspectShortcut =
-      input.key === 'F12' ||
-      (IS_MAC && input.meta && input.alt && key === 'i') ||
-      (!IS_MAC && input.control && input.shift && key === 'i')
-
-    if (!isInspectShortcut) {
-      return
-    }
-
-    event.preventDefault()
-    toggleDevTools(window)
-  })
-}
-
-function installPreviewShortcut(window) {
-  window.webContents.on('before-input-event', (event, input) => {
-    const key = String(input.key || '').toLowerCase()
-    const accel = (IS_MAC ? input.meta : input.control) && !input.alt
-    const isCloseTabShortcut = key === 'w' && accel && !input.shift
-
-    // Always claim ⌘W here (the File>Close item deliberately has no
-    // accelerator, so nothing else does). The renderer decides tab-vs-window
-    // — no `previewShortcutActive` gate, so it works for every closeable tab.
-    if (isCloseTabShortcut) {
-      event.preventDefault()
-
-      // ⌘W in the HUD is "leave HUD mode", not "close a tab in the app
-      // window". Routing it to the main renderer closed the app's tab out
-      // from under the user while the HUD stayed put; routing it through the
-      // HUD's own close path hands the session back like the exit button.
-      if (hudWindow && !hudWindow.isDestroyed() && window === hudWindow) {
-        closeHudWindow()
-
-        return
-      }
-
-      sendClosePreviewRequested()
-
-      return
-    }
-
-    // ⌘R rides here rather than on the View menu item for the same reason:
-    // the application menu only exists on macOS (it is set to null elsewhere,
-    // see #77845), so a menu accelerator would leave Windows and Linux with no
-    // way to reload a page at all. ⇧⌘R is left alone — that is `forceReload`,
-    // the unconditional whole-window escape hatch.
-    if (key === 'r' && accel && !input.shift) {
-      event.preventDefault()
-      sendPreviewNavCommand('reload')
-    }
-  })
-}
-
-// Zoom level is persisted in the renderer's own localStorage (per-origin,
-// survives reloads/restarts) rather than a main-process JSON file. The main
-// process owns setZoomLevel, so we mirror each change into localStorage and
-// read it back on did-finish-load to re-apply after reloads or crash recovery.
-import {
-  applyZoomLevel,
-  DEFAULT_ZOOM_LEVEL,
-  installZoomReassertOnNavigation,
-  installZoomReassertOnWindowEvents,
-  percentToZoomLevel,
-  ZOOM_STEP,
-  ZOOM_STORAGE_KEY,
-  zoomLevelToPercent,
-  zoomWiringForWindowKind
-} from './zoom'
-
-function setAndPersistZoomLevel(window, zoomLevel) {
-  if (!window || window.isDestroyed()) {
-    return
-  }
-
-  // Apply + notify in one funnel so the settings UI stays in sync, including
-  // changes made via the keyboard shortcuts or the View menu.
-  const next = applyZoomLevel(window.webContents, zoomLevel)
-
-  // Primary store: main-process JSON (survives crash recovery — #56726).
-  writeZoomState(next)
-  // Secondary mirror: renderer localStorage (legacy store; kept in sync so a
-  // downgrade or JSON read failure still finds a sane value).
-  window.webContents
-    .executeJavaScript(
-      `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {
-      void 0
-    }`
-    )
-    .catch(error => rememberLog(`[zoom] persist failed: ${error?.message || error}`))
-}
-
-function restorePersistedZoomLevel(window) {
-  if (!window || window.isDestroyed()) {
-    return
-  }
-
-  // Prefer the JSON file — it survives crash recovery wiping Electron's
-  // cache/storage folders (#56726). applyZoomLevel notifies the renderer so
-  // the Appearance UI Scale control stays in sync.
-  const saved = readZoomState()
-
-  if (saved != null) {
-    // Drift-guard: skip when this window already shows the persisted level.
-    // Blindly re-applying on every resize/move would race the compositor's
-    // surface reconfigure during a Wayland resize storm (Cosmic tiled mode
-    // fires one whenever a new session window opens — #84818) and keep the
-    // renderer notification stream churning for no gain. The settle-verify
-    // chain in installZoomReassertOnWindowEvents re-applies only when the
-    // window actually drifted from the persisted level.
-    const current = window.webContents?.getZoomLevel?.()
-
-    if (current != null && Math.abs(current - saved) < 1e-9) {
-      return
-    }
-
-    applyZoomLevel(window.webContents, saved)
-
-    return
-  }
-
-  // No JSON yet: paint the shipped default immediately so a fresh install
-  // doesn't flash Chromium 100%, then try localStorage for pre-JSON installs
-  // and overwrite if a legacy value is there.
-  applyZoomLevel(window.webContents, DEFAULT_ZOOM_LEVEL)
-
-  window.webContents
-    .executeJavaScript(
-      `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
-    )
-    .then(stored => {
-      if (!window || window.isDestroyed()) {
-        return
-      }
-
-      const level = stored == null ? DEFAULT_ZOOM_LEVEL : Number(stored)
-      const applied = applyZoomLevel(window.webContents, level)
-      writeZoomState(applied)
-    })
-    .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
-}
-
-function installZoomShortcuts(window) {
-  // Override Ctrl/Cmd + +/-/0 with half Chromium's default zoom step (ZOOM_STEP
-  // is 0.1 vs Chromium's 0.2). The menu items handle this on macOS (where the
-  // menu is always present), but on Linux/Windows the menu is null and
-  // Chromium's default handler would use the full 0.2 step, so we intercept
-  // here for consistency. Ctrl/Cmd+0 resets to DEFAULT_ZOOM_LEVEL, not Chromium 0.
-  window.webContents.on('before-input-event', (event, input) => {
-    const mod = IS_MAC ? input.meta : input.control
-
-    if (!mod || input.alt) {
-      return
-    }
-
-    const key = input.key
-
-    if (key === '0') {
-      if (input.shift) {
-        return // Ctrl/Cmd+Shift+0 is not a zoom chord — leave it alone
-      }
-
-      event.preventDefault()
-      setAndPersistZoomLevel(window, DEFAULT_ZOOM_LEVEL)
-    } else if (key === '=' || key === '+') {
-      // Zoom-in must accept the shift modifier: on US layouts Plus is
-      // physically Shift+=, so Cmd+Plus arrives as Cmd+Shift+'+' (or '='
-      // depending on platform). The old blanket shift guard silently
-      // dropped keyboard zoom-in on macOS (#43517).
-      event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
-    } else if (key === '-') {
-      if (input.shift) {
-        return // Shift+'-' is '_' territory on most layouts, not zoom-out
-      }
-
-      event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
-    }
-  })
-
-  // Ctrl/Cmd + mouse wheel — the standard desktop/browser zoom gesture
-  // (#40295). Chromium surfaces it as the main-process 'zoom-changed' event
-  // (wheel events are DOM-side, so before-input-event never sees them).
-  // Route through the same persist+notify funnel as the keyboard shortcuts
-  // so wheel zoom survives restarts and the settings Scale control stays in
-  // sync, and use the same half step for consistency.
-  window.webContents.on('zoom-changed', (event, zoomDirection) => {
-    event.preventDefault()
-    const delta = zoomDirection === 'in' ? ZOOM_STEP : -ZOOM_STEP
-    setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + delta)
-  })
-}
-
-/**
- * The custom (renderer) context menu's main-process half.
- *
- * The app popups no native menus: the renderer owns the menu UI so labels
- * are translated with the rest of the app. Main keeps only what Chromium
- * reports here and the renderer cannot see:
- *  - spell-check facts (misspelled word + suggestions) — forwarded so the
- *    renderer appends them to its already-open menu,
- *  - the gesture coordinates — kept for copyImageAt, which needs them.
- */
-const lastContextMenuPoint = new Map<number, { x: number; y: number }>()
-
-function installContextMenuBridge(window: BrowserWindow) {
-  window.webContents.on('context-menu', (_event, params) => {
-    lastContextMenuPoint.set(window.webContents.id, { x: params.x, y: params.y })
-
-    const suggestions = Array.isArray(params.dictionarySuggestions) ? params.dictionarySuggestions : []
-
-    if (params.isEditable && params.misspelledWord) {
-      window.webContents.send('hermes:context-menu-spellcheck', {
-        misspelledWord: params.misspelledWord,
-        suggestions
-      })
-    }
-  })
-}
-
-// Microphone and camera capture. The voice composer drives mic access and
-// renderer features (e.g. desktop plugins) can drive camera access, both
-// through getUserMedia, which Chromium gates behind these two session hooks.
-//
-// The naive `details.mediaTypes.includes('audio')` check works on macOS but
-// breaks on Windows: Chromium frequently fires the request with an empty or
-// undefined `mediaTypes`, so a strict check denies it and getUserMedia throws
-// NotAllowedError. We therefore allow the capture permissions and treat absent
-// metadata as allowed.
-//
-// Granting here is not the last gate: the OS still applies its own capture
-// permission (macOS TCC prompts on first use, per the NSMicrophone/NSCamera
-// usage strings), so the user keeps a real allow/deny and can revoke it in
-// System Settings afterwards.
-function isMediaCapturePermission(permission, details) {
-  // HTML5 video/audio fullscreen asks the request handler for 'fullscreen'
-  // and the check handler for 'automatic-fullscreen'. Both must be allowed
-  // or the native fullscreen button on <video controls> does nothing.
-  if (permission === 'fullscreen' || permission === 'automatic-fullscreen') {
-    return true
-  }
-
-  if (permission === 'audioCapture' || permission === 'videoCapture') {
-    return true
-  }
-
-  if (permission !== 'media') {
-    return false
-  }
-
-  const mediaTypes = details?.mediaTypes
-
-  // Windows: mediaTypes is often empty for a capture request. Don't deny on
-  // missing metadata.
-  if (!Array.isArray(mediaTypes) || mediaTypes.length === 0) {
-    return true
-  }
-
-  return mediaTypes.includes('audio') || mediaTypes.includes('video')
-}
-
-// Chromium-initiated downloads (renderer anchor/blob downloads, drag-outs)
-// land here. Without a handler the OS save dialog opens with the process cwd
-// as the default directory (win-unpacked in packaged installs) and whatever
-// extensionless name the anchor carried. Route every download to the user's
-// Downloads directory and guarantee a MIME-derived extension.
-function installDownloadHandling() {
-  session.defaultSession.on('will-download', (_event, item) => {
-    const suggested = item.getFilename() || 'download'
-    const hasExtension = Boolean(path.extname(suggested))
-    const extension = hasExtension ? '' : extensionForMimeType(item.getMimeType())
-    const filename = `${suggested}${extension}`
-
-    try {
-      item.setSaveDialogOptions({
-        title: 'Save File',
-        defaultPath: path.join(app.getPath('downloads'), filename),
-        filters:
-          extension || /^image\//i.test(item.getMimeType() || '')
-            ? [
-                { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
-                { name: 'All Files', extensions: ['*'] }
-              ]
-            : undefined
-      })
-    } catch {
-      // No Downloads directory to offer — keep Chromium's default prompt.
-    }
-  })
-}
-
-function installMediaPermissions() {
-  // Async request handler: the prompt-style path (most platforms).
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    callback(isMediaCapturePermission(permission, details))
-  })
-
-  // Synchronous check handler: Chromium consults this for getUserMedia on
-  // Windows in addition to (or instead of) the request handler. Without it,
-  // the check defaults to false and capture is denied before the request
-  // handler ever runs.
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    return (
-      permission === 'media' ||
-      (permission as string) === 'automatic-fullscreen' ||
-      permission === ('audioCapture' as any) /* todo: is this needed? */ ||
-      permission === ('videoCapture' as any)
-    )
-  })
-}
+const {
+  buildApplicationMenu,
+  installDevToolsShortcut,
+  installPreviewShortcut,
+  setAndPersistZoomLevel,
+  restorePersistedZoomLevel,
+  installZoomShortcuts,
+  lastContextMenuPoint,
+  installContextMenuBridge,
+  installDownloadHandling,
+  installMediaPermissions
+} = createDesktopNativeChromeRuntime({
+  APP_NAME,
+  IS_MAC,
+  closeHudWindow,
+  extensionForMimeType,
+  getCreateInstanceWindow: () => createInstanceWindow,
+  getF12Blocked: () => f12Blocked,
+  getHudWindow: () => hudWindow,
+  getMainWindow: () => mainWindow,
+  readZoomState,
+  rememberLog,
+  sendClosePreviewRequested,
+  sendOpenFolderRequested,
+  sendOpenUpdatesRequested,
+  sendPreviewNavCommand,
+  showAboutPanelFresh,
+  writeZoomState
+})
 
 // ---------------------------------------------------------------------------
 // OAuth remote-gateway auth.
@@ -8334,264 +5907,17 @@ const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator({
 
 const ensureNativeAccessToken = nativeAccessTokenCoordinator.ensure
 
-// OAuth-session download that streams the response body straight to a
-// user-selected destination (via finalizeGatewayDownload). The connect timeout
-// is cleared once the response headers arrive.
-function downloadViaOauthSessionToFile(url, ctx, options: any = {}) {
-  return new Promise((resolve, reject) => {
-    const sess = getOauthSessionForUrl(url)
-
-    if (!sess) {
-      reject(new Error('OAuth session partition is unavailable.'))
-
-      return
-    }
-
-    let parsed
-
-    try {
-      parsed = new URL(url)
-    } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
-
-      return
-    }
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-
-      return
-    }
-
-    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
-    const request = electronNet.request({
-      method: 'GET',
-      url,
-      session: sess,
-      useSessionCookies: true,
-      redirect: 'follow'
-    } as any)
-
-    let settled = false
-
-    const timer = setTimeout(() => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-
-      try {
-        request.abort()
-      } catch {
-        // already finished
-      }
-
-      reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    }, timeoutMs)
-
-    request.on('response', res => {
-      if (settled) {
-        return
-      }
-
-      // Response headers arrived — cancel the connect timeout so it can't abort
-      // the stream while the save dialog is open or bytes are still flowing.
-      settled = true
-      clearTimeout(timer)
-      finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
-        ...ctx,
-        abort: () => {
-          try {
-            request.abort()
-          } catch {
-            // already finished
-          }
-        }
-      }).then(resolve, reject)
-    })
-    request.on('error', error => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-      clearTimeout(timer)
-      reject(error)
-    })
-    request.end()
-  })
-}
-
-// Shared tail for both transports: validate status, pick a filename, prompt the
-// save dialog, then stream the (still-unconsumed) response body to the chosen
-// destination. On an HTTP error the status code is attached so saveGatewayFile
-// can trigger the 404-only compatibility fallback.
-async function finalizeGatewayDownload(res, statusCode, headers, ctx: any = {}) {
-  if (statusCode >= 400) {
-    throw httpStatusError(statusCode, await readGatewayErrorText(res))
-  }
-
-  const disposition = headers['content-disposition'] || headers['Content-Disposition']
-  const filename = filenameFromContentDisposition(disposition) || ctx.suggested || ctx.fallbackName
-
-  const result = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: filename,
-    title: 'Save File'
-  })
-
-  if (result.canceled || !result.filePath) {
-    ctx.abort?.()
-
-    return { canceled: true, saved: false }
-  }
-
-  try {
-    // Failure-atomic: exclusive temp create beside the destination, rename into
-    // place only once the body is complete (#96597).
-    await pumpStreamToFile(res, result.filePath, fsPumpDeps())
-  } catch (error) {
-    ctx.abort?.()
-    throw error
-  }
-
-  return { path: result.filePath, saved: true }
-}
-
-// Read a bounded amount of an error response body for the thrown message.
-function readGatewayErrorText(res): Promise<string> {
-  return new Promise(resolve => {
-    const chunks = []
-    let total = 0
-
-    res.on('data', chunk => {
-      if (total >= 500) {
-        return
-      }
-
-      const buffer = Buffer.from(chunk)
-
-      total += buffer.length
-      chunks.push(buffer)
-    })
-    res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8').slice(0, 500)))
-    res.on('error', () => resolve(Buffer.concat(chunks).toString('utf8').slice(0, 500)))
-  })
-}
-
-interface GatewayFileConnection extends RegistryBackendRequestScope {
-  authMode?: 'oauth' | 'token'
-  baseUrl: string
-  token?: null | string
-}
-
-interface GatewayFileSaveContext {
-  fallbackName: string
-  suggested: string
-}
-
-interface GatewayFileSavePayload {
-  sessionId?: string
-  connectionId?: unknown
-  path?: unknown
-  profile?: unknown
-  suggestedName?: unknown
-}
-
-function gatewayFileRequestPath(
-  connection: GatewayFileConnection,
-  connectionId: null | string,
-  profile: null | string,
-  requestPath: string
-) {
-  return connectionId
-    ? pathForRegistryBackendRequest(requestPath, profile, connection)
-    : pathWithGlobalRemoteProfile(requestPath, profile, profileRouteOptions(profile))
-}
-
-async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
-  const filePath = gatewayFilePath(payload.path)
-
-  if (!filePath) {
-    throw new Error('Missing gateway file path')
-  }
-
-  const { connection, connectionId, profile } = await resolveGatewayFileBackend<GatewayFileConnection>(payload, {
-    ensureLegacy: ensureBackend,
-    ensureRegistry: ensureRegistryBackend
-  })
-
-  const suggested = String(payload.suggestedName || '').trim()
-  const fallbackName = path.basename(filePath) || suggested || 'download'
-  const ctx = { suggested, fallbackName }
-
-  const requestPaths = gatewayFileRequestPaths(
-    filePath,
-    requestPath => gatewayFileRequestPath(connection, connectionId, profile, requestPath),
-    payload.sessionId
-  )
-
-  const url = `${connection.baseUrl}${requestPaths.download}`
-
-  try {
-    if (connection.authMode === 'oauth') {
-      return await requestWithOauthFallback(connection.baseUrl, {
-        ensureNativeAccessToken,
-        requestWithBearer: bearer => downloadViaTokenToFile(url, null, ctx, { bearer }),
-        requestWithCookie: () => downloadViaOauthSessionToFile(url, ctx)
-      })
-    }
-
-    return await downloadViaTokenToFile(url, connection.token, ctx)
-  } catch (error) {
-    // Desktop and the remote gateway update independently. A gateway predating
-    // /api/fs/download 404s here; fall back (ONLY on 404) to the older capped
-    // data-URL route so downloads keep working against older backends.
-    if (isNotFoundError(error)) {
-      return await saveGatewayFileViaDataUrl(connection, requestPaths.dataUrl, ctx)
-    }
-
-    throw error
-  }
-}
-
-// Compatibility fallback: fetch the file through the capped
-// `/api/fs/read-data-url` route, decode it, and save. Bounded by the gateway's
-// data-URL cap, so it only serves smaller files — enough to keep older gateways
-// working until they gain the streaming route.
-async function saveGatewayFileViaDataUrl(
-  connection: GatewayFileConnection,
-  requestPath: string,
-  ctx: GatewayFileSaveContext
-) {
-  const json = await fetchJsonForBackend(connection, requestPath)
-
-  const dataUrl =
-    json && typeof json === 'object' && 'dataUrl' in json && typeof json.dataUrl === 'string' ? json.dataUrl : ''
-
-  if (!dataUrl) {
-    throw new Error('Gateway returned no file data')
-  }
-
-  const buffer = parseDataUrlToBuffer(dataUrl)
-  const filename = ctx.suggested || ctx.fallbackName
-
-  const result = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: filename,
-    title: 'Save File'
-  })
-
-  if (result.canceled || !result.filePath) {
-    return { canceled: true, saved: false }
-  }
-
-  // Same failure-atomic contract as the streaming path: a direct writeFile
-  // truncates an existing destination before the write completes (#96597).
-  await writeBufferToFile(buffer, result.filePath, fsPumpDeps())
-
-  return { path: result.filePath, saved: true }
-}
+const { saveGatewayFile } = createGatewayFileRuntime({
+  dialog,
+  electronNet,
+  ensureBackend,
+  ensureRegistryBackend,
+  ensureNativeAccessToken,
+  fetchJsonForBackend,
+  getMainWindow: () => mainWindow,
+  getOauthSessionForUrl,
+  profileRouteOptions
+})
 
 // Mint a single-use WS ticket for a gated gateway.
 // Ticket POSTs are replay-safe; arbitrary REST mutations never use this retry loop.
@@ -11269,7 +8595,7 @@ async function fetchConnectionStatus(baseUrl, authMode, token, headers = {}) {
 }
 
 function resetBootProgressForReconnect() {
-  updateBootProgress(
+  firstRunBoot.updateBootProgress(
     {
       error: null,
       message: 'Restarting desktop connection',
@@ -13286,7 +10612,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // E2E: simulate a boot failure without breaking the real backend. The boot
   // progresses a few steps, then fails with the given error message.
   if (BOOT_FAKE_ERROR) {
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await firstRunBoot.advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     const error = new Error(BOOT_FAKE_ERROR) as any
     error.isBootstrapFailure = true
     bootstrapFailure = error
@@ -13330,14 +10656,18 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       // remotes and Apply invalidated this attempt), bail before probing.
       backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
+      await firstRunBoot.advanceBootProgress(
+        'backend.remote',
+        `Connecting to remote Hermes backend at ${remote.baseUrl}`,
+        24
+      )
       await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
       backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
-      updateBootProgress({
+      firstRunBoot.updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
         progress: 94,
@@ -13348,7 +10678,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
     }
 
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await firstRunBoot.advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
 
@@ -13389,7 +10719,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
       prepareLocalBackend: async () => {
-        await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+        await firstRunBoot.advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
         return resolveHermesBackend(backendArgs)
       },
@@ -13400,7 +10730,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
         return resolveRemoteBackend(primaryProfile, { primary: true })
       },
-      waitForDecision: waitForFirstRunSetupChoice,
+      waitForDecision: firstRunBoot.waitForFirstRunSetupChoice,
       // Mutual exclusion with an in-app update (#50238). Remote connections
       // return before this waiter; local starts park until the updater exits.
       waitForLocalStart: waitForUpdateToFinish
@@ -13427,7 +10757,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       setWslBridgeProfileState(primaryProfile, true)
       startAttachedBackendMonitor(attached)
 
-      updateBootProgress({
+      firstRunBoot.updateBootProgress({
         phase: 'backend.ready',
         message: 'Attached to the running Hermes backend',
         progress: 94,
@@ -13462,7 +10792,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
-    await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
+    await firstRunBoot.advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
     const profile = primaryProfileKey()
@@ -13570,7 +10900,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       }
 
       rememberLog(`Hermes backend failed to start: ${error.message}`)
-      updateBootProgress(
+      firstRunBoot.updateBootProgress(
         {
           error: error.message,
           message: `Hermes backend failed to start: ${error.message}`,
@@ -13605,7 +10935,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
       if (!backendReady) {
         const message = `Hermes backend exited before it became ready (${signal || code}).${primaryOutputTail.describe()}`
-        updateBootProgress(
+        firstRunBoot.updateBootProgress(
           {
             error: message,
             message,
@@ -13622,7 +10952,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       }
     })
 
-    await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
+    await firstRunBoot.advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     // Discover the ephemeral port the child bound to
@@ -13634,7 +10964,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     }
 
     const baseUrl = `http://127.0.0.1:${port}`
-    await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
+    await firstRunBoot.advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
@@ -13663,7 +10993,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       )
     }
 
-    updateBootProgress({
+    firstRunBoot.updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',
       progress: 94,
@@ -13756,7 +11086,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // rejection owns the transition into recovery (#95701).
     await waitForBackendExit(failedProcess)
 
-    updateBootProgress(
+    firstRunBoot.updateBootProgress(
       {
         error: message,
         isCloudBackendDown: isCloudBackendDown || undefined,
@@ -13898,305 +11228,34 @@ function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onReve
   return controller
 }
 
-// Secondary "session windows" — one extra OS window per chat so a user can
-// work with multiple chats side by side. The registry guarantees one window
-// per sessionId (re-opening focuses the existing window) and self-cleans on
-// close. The primary mainWindow is never tracked here. Pure logic + the URL
-// builder live in session-windows.ts so they stay unit-testable.
-const sessionWindows = createSessionWindowRegistry()
-
-const minimizeToTray = createMinimizeToTray({
-  preferencesPath: path.join(app.getPath('userData'), 'minimize-to-tray.json'),
-  getIconPath: getAppIconPath,
-  restoreMainWindow: () => ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow }),
-  isQuittingForHandoff: () => isQuittingForHandoff,
-  log: rememberLog
-})
-
-function focusWindow(win) {
-  if (!win || win.isDestroyed()) {
-    return
-  }
-
-  if (win.isMinimized()) {
-    win.restore()
-  }
-
-  if (!win.isVisible()) {
-    win.show()
-  }
-
-  win.focus()
-}
-
-function spawnSecondaryWindow({
-  sessionId,
-  profile,
-  watch
-}: { sessionId?: string; profile?: null | string; watch?: boolean } = {}) {
-  const icon = getAppIconPath()
-
-  const win = new BrowserWindow({
-    width: SESSION_WINDOW_MIN_WIDTH,
-    height: SESSION_WINDOW_MIN_HEIGHT,
-    minWidth: SESSION_WINDOW_MIN_WIDTH,
-    minHeight: SESSION_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    ...chatWindowSurfaceOptions(),
-    icon,
-    // Don't show until the renderer's first themed paint is ready. macOS
-    // `vibrancy` ignores `backgroundColor` and paints a translucent OS
-    // material (which follows the OS appearance, not the app theme), so a
-    // dark-themed app on a light-mode Mac flashes white until the renderer
-    // covers it. ready-to-show fires after the boot-time paint in
-    // themes/context.tsx, so the window appears already themed.
-    show: false,
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+const { minimizeToTray, focusWindow, createSessionWindow, createBrowserWindow, createInstanceWindow } =
+  createDesktopSecondaryWindowRuntime({
+    DEV_SERVER,
+    IS_MAC,
+    PRELOAD_PATH,
+    RENDERER_RELOAD_MAX,
+    RENDERER_RELOAD_WINDOW_MS,
+    WINDOW_BUTTON_POSITION,
+    appearance,
+    createWindow,
+    ensureMainWindow,
+    getAppIconPath,
+    getIsQuittingForHandoff: () => isQuittingForHandoff,
+    getMainWindow: () => mainWindow,
+    getStreamThrottle: () => streamThrottle,
+    getWindowConnectionRoutes: () => windowConnectionRoutes,
+    loadWindowUrl,
+    primaryProfileKey,
+    readWindowState,
+    recordWindowConnectionRoute,
+    rememberLog,
+    rendererReloadTimesRef,
+    resolveRendererIndex,
+    sendWindowStateChanged,
+    validateDesktopProfileRoute,
+    wireCommonWindowHandlers,
+    wireWindowReveal
   })
-
-  // Chat-surface registration: applyWindowTranslucency swaps this window's
-  // backing between opaque-themed and alpha-0 when glass toggles.
-  minimizeToTray.registerWindow(win)
-  translucencyBackedWindows.add(win)
-
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
-
-  wireWindowReveal(win)
-
-  bindWindowChromeEvents(win, sendWindowStateChanged)
-
-  streamThrottle.register(win)
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
-  attachRendererConsoleCapture(win, 'session-window', rememberLog)
-
-  // Renderer lifecycle diagnostics + recovery (#81290): a dead session-window
-  // renderer used to log nothing and stay black; now it logs with its window
-  // kind and reloads under the shared crash-loop budget, exactly like the
-  // primary window, without touching any other window.
-  installWindowRendererLifecycle(win, {
-    kind: 'secondary',
-    callbacks: {
-      log: rememberLog,
-      reload: () => {
-        win.webContents.reload()
-      }
-    },
-    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
-    reloadMax: RENDERER_RELOAD_MAX,
-    recentReloadTimesRef: rendererReloadTimesRef
-  })
-
-  loadWindowUrl(
-    win,
-    buildSessionWindowUrl(sessionId, {
-      devServer: DEV_SERVER,
-      profile,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
-      watch
-    }),
-    'Session window'
-  )
-
-  return win
-}
-
-// Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { profile = null, watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, profile, watch }))
-}
-
-// Popped-out in-app Browser: same webview + address bar as a docked Browser
-// tab, in its own OS window. One window per tab id (re-open focuses); closing
-// it tells the other renderers so they can dock the tab again.
-const browserWindows = createSessionWindowRegistry()
-
-function notifyBrowserPopoutClosed(tabId) {
-  if (typeof tabId !== 'string' || !tabId) {
-    return
-  }
-
-  for (const other of BrowserWindow.getAllWindows()) {
-    if (!other.isDestroyed()) {
-      other.webContents.send('hermes:browser-popout:closed', tabId)
-    }
-  }
-}
-
-function spawnBrowserWindow(tabId) {
-  const icon = getAppIconPath()
-
-  const win = new BrowserWindow({
-    width: BROWSER_WINDOW_WIDTH,
-    height: BROWSER_WINDOW_HEIGHT,
-    minWidth: BROWSER_WINDOW_MIN_WIDTH,
-    minHeight: BROWSER_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    ...chatWindowSurfaceOptions(),
-    icon,
-    show: false,
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
-  })
-
-  translucencyBackedWindows.add(win)
-
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
-
-  wireWindowReveal(win)
-
-  bindWindowChromeEvents(win, sendWindowStateChanged)
-
-  streamThrottle.register(win)
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
-  attachRendererConsoleCapture(win, 'browser-window', rememberLog)
-
-  installWindowRendererLifecycle(win, {
-    kind: 'browser',
-    callbacks: {
-      log: rememberLog,
-      reload: () => {
-        win.webContents.reload()
-      }
-    },
-    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
-    reloadMax: RENDERER_RELOAD_MAX,
-    recentReloadTimesRef: rendererReloadTimesRef
-  })
-
-  minimizeToTray.registerWindow(win)
-  win.on('closed', () => notifyBrowserPopoutClosed(tabId))
-
-  loadWindowUrl(
-    win,
-    buildBrowserWindowUrl(tabId, {
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
-    }),
-    'Browser window'
-  )
-
-  return win
-}
-
-function createBrowserWindow(tabId) {
-  return browserWindows.openOrFocus(tabId, () => spawnBrowserWindow(tabId))
-}
-
-// Additional full "instance" windows — peers of the primary that render the
-// COMPLETE app (sidebar, routing, its own draft) against the shared backend, so
-// a user can run multiple GUI windows at once (⌘⇧N / the "New Window" palette
-// command). Unlike the compact session windows they carry no `?win` flag; a
-// separate `peer=1` marker prevents them from replaying app-launch source
-// restoration after joining that shared backend. The primary mainWindow stays
-// the notification / deep-link / pet-overlay anchor and
-// is NOT tracked here. The set holds a strong reference so an open peer isn't
-// garbage-collected, and drops it on close.
-const instanceWindows = new Set<any>()
-
-// Cascade a new instance off whichever window spawned it so it doesn't land
-// exactly on top of its source. Falls back to the persisted primary geometry
-// when there's no live source window (e.g. all windows closed on macOS). The
-// pure cascade math lives in session-windows.ts (instanceWindowBounds).
-function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow) {
-  const displays = screen.getAllDisplays()
-  const fallback = computeWindowOptions(readWindowState(), displays)
-  const base = source && !source.isDestroyed() ? source.getBounds() : null
-
-  return instanceWindowBounds(base, fallback, displays)
-}
-
-// Open a new full-chrome instance window. Mirrors createWindow()'s window
-// options (shared chatWindowWebPreferences + streamThrottle registration so a
-// streamed answer never stalls in the background) but is a peer, not the
-// primary: it never overwrites mainWindow or re-homes the source. Its renderer
-// joins the requested pooled backend through its own connection/profile route.
-function createInstanceWindow(
-  options?: DesktopProfileRoute,
-  source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
-) {
-  const route = resolveDesktopWindowLaunch(
-    options,
-    source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
-    { connectionId: null, profile: primaryProfileKey() }
-  )
-
-  validateDesktopProfileRoute(route)
-  const icon = getAppIconPath()
-
-  const win = new BrowserWindow({
-    ...nextInstanceBounds(source),
-    minWidth: WINDOW_MIN_WIDTH,
-    minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    ...chatWindowSurfaceOptions(),
-    icon,
-    show: false,
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
-  })
-
-  instanceWindows.add(win)
-  minimizeToTray.registerWindow(win)
-  recordWindowConnectionRoute(win.webContents, { ...route, registryScoped: route.connectionId !== null })
-
-  // Chat-surface registration: see applyWindowTranslucency.
-  translucencyBackedWindows.add(win)
-
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
-
-  wireWindowReveal(win)
-
-  bindWindowChromeEvents(win, sendWindowStateChanged)
-
-  streamThrottle.register(win)
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
-
-  // Renderer lifecycle diagnostics + recovery (#81290), same policy as the
-  // primary and session windows: a crashed instance renderer logs with its
-  // window kind and reloads under the shared crash-loop budget.
-  installWindowRendererLifecycle(win, {
-    kind: 'instance',
-    callbacks: {
-      log: rememberLog,
-      reload: () => {
-        win.webContents.reload()
-      }
-    },
-    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
-    reloadMax: RENDERER_RELOAD_MAX,
-    recentReloadTimesRef: rendererReloadTimesRef
-  })
-
-  win.on('closed', () => {
-    instanceWindows.delete(win)
-  })
-
-  attachRendererConsoleCapture(win, 'instance', rememberLog)
-  loadWindowUrl(
-    win,
-    buildInstanceWindowUrl({
-      ...route,
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
-    }),
-    'Instance window'
-  )
-
-  return win
-}
 
 // A macOS-only ambient wake cue. It is deliberately a gateway-less helper
 // window: the active renderer owns voice state and sends only the visual phase.
@@ -15113,286 +12172,98 @@ function closeQuickEntryWindow() {
   quickEntryWindow = null
 }
 
-function createWindow() {
-  const icon = getAppIconPath()
-  const savedWindowState = readWindowState()
-  mainWindow = new BrowserWindow({
-    ...computeWindowOptions(savedWindowState, screen.getAllDisplays()),
-    minWidth: WINDOW_MIN_WIDTH,
-    minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
-    // Frameless title bar on every platform so the renderer can paint the
-    // "hide sidebar" button (and other left-side titlebar tools) flush with
-    // the top edge — matching the macOS layout where the traffic lights sit
-    // inside the same band. On Windows/Linux, titleBarOverlay tells Electron
-    // to paint native min/max/close in the top-right of the renderer; on
-    // macOS it just reserves a content inset alongside the traffic lights.
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    ...chatWindowSurfaceOptions(),
-    icon,
-    // Hidden until the first themed paint so macOS `vibrancy` (which ignores
-    // `backgroundColor` and follows the OS appearance) can't flash a light
-    // material before the renderer paints the app theme. See createSessionWindow.
-    show: false,
-    // Shared with the secondary session windows (chatWindowWebPreferences);
-    // stream-aware throttling is applied per-window via streamThrottle so a
-    // live answer keeps painting while the window is blurred or minimized,
-    // without pinning visibilityState to 'visible' at idle. See
-    // session-windows.ts and stream-throttle.ts.
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
-  })
-
-  const createdMainWindow = mainWindow
-  minimizeToTray.registerWindow(createdMainWindow, { closeToTray: true })
-  const defaultRoute = desktopProfilePreferences.getDefault()
-
-  if (defaultRoute) {
-    recordWindowConnectionRoute(mainWindow.webContents, {
-      ...defaultRoute,
-      registryScoped: defaultRoute.connectionId !== null
-    })
-  }
-
-  // Chat-surface registration: see applyWindowTranslucency.
-  translucencyBackedWindows.add(mainWindow)
-
-  if (IS_MAC) {
-    mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-
-    if (icon) {
-      app.dock?.setIcon(icon)
-    }
-  }
-
-  if (!IS_MAC) {
-    if (!nativeThemeListenerInstalled) {
-      nativeThemeListenerInstalled = true
-      nativeTheme.on('updated', () => {
-        for (const win of BrowserWindow.getAllWindows()) {
-          applyTitleBarOverlay(win)
-        }
-      })
-    }
-  }
-
-  if (savedWindowState?.isMaximized) {
-    mainWindow.maximize()
-  }
-
-  const revealController = wireWindowReveal(createdMainWindow, {
-    onRevealed: () => {
-      // Persist geometry as soon as the window is visible so a crash before the
-      // first clean resize/move/close still captures the restored bounds (#56726).
-      schedulePersistWindowState()
-
-      // #111906: the Linux launcher holds back its .desktop entry write until the
-      // window is on screen (a STARTING gnome-shell app must not see its entry change).
-      notifyLauncherWindowRevealed()
-
-      // #38216: clear the mid-boot marker only after a window is actually usable.
-      // Keep sticky `fallback` when we launched with --no-sandbox so the next
-      // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
-      // records the app version so the next update re-probes the sandbox.
-      if (IS_WINDOWS) {
-        try {
-          writeSandboxMarker(
-            app.getPath('userData'),
-            markerAfterSuccessfulBoot({
-              fallbackActive: windowsSandboxFallbackSticky,
-              reason: windowsSandboxFallbackReason,
-              appVersion: app.getVersion()
-            })
-          )
-        } catch (error) {
-          rememberLog(`[sandbox] marker update after main-window reveal failed: ${error?.message || error}`)
-        }
-      }
-    }
-  })
-
-  // Under Playwright testing, instantly show the window: `ready-to-show`
-  // doesn't fire in some testing envs, and the suite can't wait out the
-  // production fallback.
-  if (process.env.TEST_WORKER_INDEX !== undefined) {
-    revealController.reveal()
-  }
-
-  bindWindowChromeEvents(mainWindow, sendWindowStateChanged)
-
-  // Reopen where the user left off. close is the backstop, flushed
-  // synchronously before the window is gone.
-  bindGeometryPersistence(mainWindow, schedulePersistWindowState)
-  mainWindow.on('maximize', schedulePersistWindowState)
-  mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
-
-  // the closed wrapper remains truthy, so clear only the window this callback owns.
-  mainWindow.on('closed', () => {
-    closePetOverlay()
-    wakeIndicatorController.close()
-    introRevealController.destroy()
-
-    if (mainWindow === createdMainWindow) {
-      mainWindow = null
-      // the replacement renderer must register before queued links can be delivered.
-      _rendererReadyForDeepLink = false
-    }
-  })
-
-  streamThrottle.register(mainWindow)
-  wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
-
-  // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
-  // policy (crashed/oom → bounded reload via the shared rolling budget, then
-  // the #38216 Windows sandbox relaunch check on suppression) is the same
-  // policy this window used before it moved into the shared helper, so a
-  // crashed peer renderer now logs and recovers exactly like the primary one.
-  installWindowRendererLifecycle(mainWindow, {
-    kind: 'main',
-    callbacks: {
-      log: rememberLog,
-      reload: () => {
-        mainWindow.webContents.reload()
-      },
-      onCrashLoopSuppressed: details => {
-        // #38216 renderer flavor (same recovery as #56726, credit @Sahil-SS9):
-        // a deterministic Windows renderer crash loop with the sandbox
-        // breakpoint signature gets one --no-sandbox relaunch instead of a
-        // dead window. Gated on the exit code so unrelated crash loops don't
-        // silently drop the sandbox.
-        if (
-          !shouldRelaunchForRendererSandboxCrashLoop({
-            reason: details?.reason,
-            exitCode: details?.exitCode,
-            alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
-            relaunchAttempted: windowsNoSandboxRelaunchAttempted
-          })
-        ) {
-          return
-        }
-
-        windowsNoSandboxRelaunchAttempted = true
-        windowsSandboxFallbackActive = true
-        windowsSandboxFallbackSticky = true
-        windowsSandboxFallbackReason = 'renderer-crash-loop'
-
-        try {
-          writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
-        } catch {
-          void 0
-        }
-
-        rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
-
-        try {
-          app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-          void exitAfterBackendShutdown(0)
-        } catch (err) {
-          rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
-        }
-      },
-      // #95575: a renderer that repeatedly fails to load (torn bundle after
-      // an update, file locked by AV, missing index.html) used to sit on a
-      // white screen with only a desktop.log line. Once the bounded reload
-      // budget is exhausted, put the VISIBLE error page in the window so the
-      // user sees what is wrong and how to repair it.
-      onFailedLoadBudgetExhausted: details => {
-        rememberLog(
-          `[renderer:main] load-failure budget exhausted; loading visible error page` +
-            `${details?.errorCode === undefined ? '' : ` code=${String(details.errorCode)}`}`
-        )
-        void loadRendererLoadErrorPage(mainWindow, {
-          errorCode: details?.errorCode,
-          url: details?.url,
-          errorDescription: 'The desktop renderer failed to load repeatedly after the update.',
-          repairHint: 'hermes desktop --force-build',
-          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
-        })
-      },
-      // #116472: the OS/Chromium can SIGKILL a renderer while the window is live (memory
-      // reclaim, an external kill). Hermes never does this itself and never reloads it
-      // (a killed-after-close window must not pop back up), so without this the window sat
-      // silent with only a desktop.log line. Surface the reason + a recovery button instead.
-      onRendererTerminated: details => {
-        // An intentional quit/handoff also tears the renderer down; never pop a
-        // recovery page for it (its window may still be alive when this fires).
-        if (isQuittingForHandoff || backendShutdown.hasStarted() || mainWindow.isDestroyed()) {
-          return
-        }
-
-        const reason = details?.reason ? String(details.reason) : 'unknown'
-        const exit = details?.exitCode === undefined ? '' : `, exit code ${String(details.exitCode)}`
-        rememberLog(`[renderer:main] renderer terminated while live (reason=${reason}${exit}); surfacing recovery page`)
-        void loadRendererLoadErrorPage(mainWindow, {
-          title: 'Hermes desktop UI was terminated',
-          errorDescription:
-            `The desktop UI process was terminated unexpectedly (reason: ${reason}${exit}). ` +
-            'Your sessions and the background gateway are unaffected — reload to continue.',
-          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
-        })
-      }
+const primaryWindowRuntime = createDesktopPrimaryWindowRuntime({
+  app,
+  BrowserWindow,
+  screen,
+  DEV_SERVER,
+  IS_MAC,
+  IS_WINDOWS,
+  PRELOAD_PATH,
+  RENDERER_RELOAD_MAX,
+  RENDERER_RELOAD_WINDOW_MS,
+  WINDOW_BUTTON_POSITION,
+  WINDOW_MIN_HEIGHT,
+  WINDOW_MIN_WIDTH,
+  alreadyHasNoSandbox,
+  appearance,
+  attachRendererConsoleCapture,
+  backendShutdown,
+  bindGeometryPersistence,
+  bindWindowChromeEvents,
+  buildNoSandboxRelaunchArgs,
+  chatWindowWebPreferences,
+  clearRendererReadyForDeepLink: () => {
+    _rendererReadyForDeepLink = false
+  },
+  closePetOverlay,
+  computeWindowOptions,
+  connectDesktopProfileRoute,
+  desktopProfilePreferences,
+  exitAfterBackendShutdown,
+  fallbackMarker,
+  firstRunBoot,
+  getAppIconPath,
+  getIsQuittingForHandoff: () => isQuittingForHandoff,
+  getMainWindow: () => mainWindow,
+  getStreamThrottle: () => streamThrottle,
+  installWindowRendererLifecycle,
+  introRevealController,
+  loadRendererLoadErrorPage,
+  loadWindowUrl,
+  markerAfterSuccessfulBoot,
+  minimizeToTray,
+  notifyLauncherWindowRevealed,
+  readWindowState,
+  recordWindowConnectionRoute,
+  rememberLog,
+  rendererReloadTimesRef,
+  resolveRendererIndex,
+  resolveRendererIndexWithMissing,
+  sandboxState: {
+    get fallbackActive() {
+      return windowsSandboxFallbackActive
     },
-    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
-    reloadMax: RENDERER_RELOAD_MAX,
-    recentReloadTimesRef: rendererReloadTimesRef,
-    reloadOnFailedLoad: true
-  })
+    set fallbackActive(value) {
+      windowsSandboxFallbackActive = value
+    },
+    get fallbackSticky() {
+      return windowsSandboxFallbackSticky
+    },
+    set fallbackSticky(value) {
+      windowsSandboxFallbackSticky = value
+    },
+    get fallbackReason() {
+      return windowsSandboxFallbackReason
+    },
+    set fallbackReason(value: SandboxFallbackReason) {
+      windowsSandboxFallbackReason = value
+    },
+    get noSandboxRelaunchAttempted() {
+      return windowsNoSandboxRelaunchAttempted
+    },
+    set noSandboxRelaunchAttempted(value) {
+      windowsNoSandboxRelaunchAttempted = value
+    }
+  },
+  schedulePersistWindowState,
+  sendWindowStateChanged,
+  setMainWindow: window => {
+    mainWindow = window
+  },
+  shouldRelaunchForRendererSandboxCrashLoop,
+  startHermes,
+  wakeIndicatorController,
+  wireCommonWindowHandlers,
+  wireWindowReveal,
+  writeSandboxMarker,
+  zoomWiringForWindowKind
+})
 
-  // Electron always passes the event first. The canonical (Electron 36+) shape
-  // is (event, messageDetails); the deprecated positional shape is
-  // (event, level, message, line, sourceId). Handled in renderer-log.ts, which
-  // every renderer-content window shares (#79428: crashes in secondary/HUD/
-  // quick-entry windows used to vanish without a trace).
-  attachRendererConsoleCapture(mainWindow, 'main', rememberLog)
-
-  // #95575: a torn renderer bundle (update replaced the app while its files
-  // were locked) loads fine and then dies on the first lazy import — a white
-  // screen with no error surface. resolveRendererIndex already logs the torn
-  // copies; here we refuse to load one into the PRIMARY window and put the
-  // visible repair page in it instead. The Reload button re-attempts the
-  // bundle in case the file lock cleared since boot.
-  const resolvedRenderer = DEV_SERVER ? null : resolveRendererIndexWithMissing()
-  const rendererIndex = resolvedRenderer?.index ?? null
-  const tornAssets = resolvedRenderer?.missing ?? []
-
-  if (!DEV_SERVER && rendererIndex && tornAssets.length > 0) {
-    rememberLog(
-      `[renderer] primary window: chosen renderer bundle ${rendererIndex} is incomplete ` +
-        `(${tornAssets.length} missing asset(s)); loading visible repair page instead of a white screen`
-    )
-    void loadRendererLoadErrorPage(mainWindow, {
-      errorCode: 'ERR_FILE_NOT_FOUND',
-      errorDescription: `The desktop renderer bundle is incomplete after the last update (${tornAssets.length} missing file(s)).`,
-      missingAssets: tornAssets,
-      repairHint: 'hermes desktop --force-build',
-      reloadUrl: pathToFileURL(rendererIndex).toString()
-    })
-  } else {
-    loadWindowUrl(
-      mainWindow,
-      DEV_SERVER || pathToFileURL(rendererIndex || resolveRendererIndex()).toString(),
-      'Renderer'
-    )
-  }
-
-  // Start the Python backend NOW, in parallel with the renderer load — not on
-  // did-finish-load. The backend cold boot (spawn → port announce → /api/status)
-  // is the dominant startup cost, and serializing it behind Chromium's load
-  // added the whole renderer load time to first-usable-composer. The promise is
-  // shared (backendConnectionState), so the renderer's getConnection() joins
-  // this in-flight boot instead of duplicating it; early boot-progress events
-  // the renderer misses are recovered by its getBootProgress() pull on mount.
-  const startup = defaultRoute ? connectDesktopProfileRoute(defaultRoute) : startHermes()
-  startup.catch(error => rememberLog(error.stack || error.message))
-
-  mainWindow.webContents.once('did-finish-load', () => {
-    // Zoom restore is handled by wireCommonWindowHandlers (shared with session
-    // windows); no need to reapply it here.
-    broadcastBootProgress()
-    sendWindowStateChanged()
-  })
+// The secondary-window runtime receives this declaration before the primary
+// runtime is initialized; the callback is invoked only after app startup.
+function createWindow() {
+  return primaryWindowRuntime.createWindow()
 }
 
 ipcMain.handle('hermes:connection', async (event, profile, extra) => {
@@ -15735,7 +12606,7 @@ registerPetOverlayIpc({
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
 const hudIpc = registerHudIpc({
   isMac: IS_MAC,
-  getTranslucencyState: () => translucencyState,
+  getTranslucencyState: appearance.getTranslucencyState,
   getHudWindow: () => hudWindow,
   openHudWindow,
   closeHudWindow,
@@ -15769,8 +12640,8 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
-  getFirstRunSetupGate().resetForRetry()
-  resetBootstrapSnapshot()
+  firstRunBoot.getFirstRunSetupGate().resetForRetry()
+  firstRunBoot.resetBootstrapSnapshot()
 
   return { ok: true }
 })
@@ -15821,14 +12692,14 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
-  getFirstRunSetupGate().resetForRepair()
+  firstRunBoot.getFirstRunSetupGate().resetForRepair()
   resetHermesConnection()
 
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
-  continueFirstRunLocalBootstrap()
+  firstRunBoot.continueFirstRunLocalBootstrap()
 
   return { ok: true }
 })
@@ -15848,8 +12719,8 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 
   return { ok: false, cancelled: false }
 })
-ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
-ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
+ipcMain.handle('hermes:boot-progress:get', async () => firstRunBoot.getBootProgressState())
+ipcMain.handle('hermes:bootstrap:get', async () => firstRunBoot.getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
@@ -16769,7 +13640,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
             },
             mode: config.mode,
             notifyConnectionApplied: sendConnectionApplied,
-            resumeFirstRunRemote: abandonFirstRunSetupChoiceForRemoteApply,
+            resumeFirstRunRemote: firstRunBoot.abandonFirstRunSetupChoiceForRemoteApply,
             teardownPrimaryBackend: teardownPrimaryBackendAndWait
           }),
         scope,
@@ -17352,301 +14223,25 @@ ipcMain.handle('hermes:ambient:claim', (_event, key) => ownsAmbientCue(String(ke
 
 const nativeNotifications = registerNativeNotifications({ getMainWindow: () => mainWindow, focusWindow })
 
-// Data-URL file load cap (composer attach + local previews). Main owns the
-// persisted MB value so every IPC read honours Settings → Chat without the
-// renderer having to pass maxBytes on each call. Default is 16 MB; clamp
-// lives in hardening.ts.
-const DATA_URL_READ_MAX_CONFIG_PATH = path.join(app.getPath('userData'), 'data-url-read-max.json')
-
-function readPersistedDataUrlReadMaxMb() {
-  try {
-    return clampDataUrlReadMaxMb(JSON.parse(fs.readFileSync(DATA_URL_READ_MAX_CONFIG_PATH, 'utf8')).maxMb)
-  } catch {
-    return DATA_URL_READ_DEFAULT_MAX_MB
-  }
-}
-
-let dataUrlReadMaxMb = readPersistedDataUrlReadMaxMb()
-
-function persistDataUrlReadMaxMb(maxMb) {
-  const next = clampDataUrlReadMaxMb(maxMb)
-  dataUrlReadMaxMb = next
-
-  try {
-    fs.mkdirSync(path.dirname(DATA_URL_READ_MAX_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(DATA_URL_READ_MAX_CONFIG_PATH, JSON.stringify({ maxMb: next }, null, 2), 'utf8')
-  } catch (error) {
-    rememberLog(`[data-url-read-max] write failed: ${error.message}`)
-  }
-
-  return next
-}
-
-ipcMain.handle('hermes:data-url-read-max:get', () => ({
-  maxMb: dataUrlReadMaxMb,
-  // Keep the default bytes constant visible for tests / diagnostics.
-  defaultMaxMb: DATA_URL_READ_DEFAULT_MAX_MB,
-  maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb)
-}))
-
-ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
-  const next = persistDataUrlReadMaxMb(maxMb)
-
-  return {
-    maxMb: next,
-    defaultMaxMb: DATA_URL_READ_DEFAULT_MAX_MB,
-    maxBytes: dataUrlReadMaxBytesFromMb(next)
-  }
+registerDesktopFileIpc({
+  app,
+  clipboard,
+  dialog,
+  electronWebContents,
+  getMainWindow: () => mainWindow,
+  HERMES_HOME,
+  ipcMain,
+  IS_WINDOWS,
+  IS_WSL,
+  lastContextMenuPoint,
+  mimeTypeForPath,
+  rememberLog,
+  saveGatewayFile,
+  saveImageFromUrl,
+  writeComposerImage
 })
 
-ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
-  return readFileDataUrlForIpc(filePath, {
-    maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'File preview' })),
-    purpose: 'File preview'
-  })
-})
-
-// Remote attachment transfer is independent of the preview / Settings path.
-// Keep a finite cap so Electron + base64 memory stays bounded while archives
-// can exceed the default 16 MiB preview ceiling (and still fit the gateway
-// WebSocket frame limit after base64 expansion).
-ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
-  return readFileDataUrlForIpc(filePath, {
-    maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'Attachment upload' })),
-    purpose: 'Attachment upload'
-  })
-})
-
-ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
-  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
-    maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
-    purpose: 'Text preview'
-  })
-
-  const ext = path.extname(resolvedPath).toLowerCase()
-  const handle = await fs.promises.open(resolvedPath, 'r')
-  const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
-
-  try {
-    const buffer = Buffer.alloc(bytesToRead)
-    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
-
-    return {
-      binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
-      byteSize: stat.size,
-      language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
-      mimeType: mimeTypeForPath(resolvedPath),
-      path: resolvedPath,
-      text: buffer.subarray(0, bytesRead).toString('utf8'),
-      truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
-    }
-  } finally {
-    await handle.close()
-  }
-})
-
-// Runtime desktop plugins load their FULL source through this door.
-// `hermes:readFileText` is the *preview* read and silently truncates at
-// TEXT_PREVIEW_MAX_BYTES (512 KiB) — for a plugin that means evaluating half a
-// file. Dedicated generous cap, full read, and a hard EFBIG (via maxBytes)
-// instead of truncation when the source exceeds it.
-const PLUGIN_SOURCE_MAX_BYTES = 16 * 1024 * 1024
-
-ipcMain.handle('hermes:readPluginSource', async (_event: unknown, filePath: unknown) => {
-  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
-    maxBytes: PLUGIN_SOURCE_MAX_BYTES,
-    purpose: 'Plugin source'
-  })
-
-  return {
-    byteSize: stat.size,
-    path: resolvedPath,
-    text: await fs.promises.readFile(resolvedPath, 'utf8'),
-    truncated: false
-  }
-})
-
-ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
-  const properties = options?.directories ? ['openDirectory'] : ['openFile']
-
-  if (options?.multiple !== false) {
-    properties.push('multiSelections')
-  }
-
-  let resolvedDefaultPath
-
-  if (options?.defaultPath) {
-    try {
-      // On a Windows host with a WSL backend the cwd may be a POSIX/WSL path;
-      // bridge it to a UNC/drive form the native dialog can actually open.
-      const bridged = IS_WINDOWS
-        ? resolvePickerDefaultPath(String(options.defaultPath), undefined, options?.profile)
-        : String(options.defaultPath)
-
-      resolvedDefaultPath = bridged ? path.resolve(bridged) : undefined
-    } catch {
-      resolvedDefaultPath = undefined
-    }
-  }
-
-  const result = await dialog.showOpenDialog(mainWindow, {
-    title: options?.title || 'Add context',
-    defaultPath: resolvedDefaultPath,
-    properties: properties as any,
-    filters: Array.isArray(options?.filters) ? options.filters : undefined
-  })
-
-  if (result.canceled) {
-    return []
-  }
-
-  return result.filePaths
-})
-
-ipcMain.handle('hermes:writeClipboard', (_event, text) => {
-  clipboard.writeText(String(text || ''))
-
-  return true
-})
-
-// Native save-location picker (profile export etc.) — the write itself happens
-// elsewhere (the backend, for profile archives); this only picks the path.
-ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: options?.title || 'Save',
-    defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
-    filters: Array.isArray(options?.filters) ? options.filters : undefined
-  })
-
-  if (result.canceled || !result.filePath) {
-    return null
-  }
-
-  return result.filePath
-})
-
-// Paired reader for the GUI terminal's paste chord: the renderer's
-// navigator.clipboard.readText() throws "Document is not focused" whenever a
-// portaled overlay has focus, and there's no way to route a read through the
-// canvas. The main process has no such gate.
-ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
-
-ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
-
-ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
-
-// The custom context menu's edit verbs. They act on the SENDER's focused
-// element, so the renderer restores focus to the editable before invoking.
-ipcMain.handle('hermes:context-menu:edit', (event, command) => {
-  const contents = event.sender
-
-  if (command === 'copy') {
-    contents.copy()
-  } else if (command === 'cut') {
-    contents.cut()
-  } else if (command === 'paste') {
-    contents.paste()
-  } else if (command === 'selectAll') {
-    contents.selectAll()
-  }
-})
-
-// Copy the image under the sender's LAST context-menu gesture. Chromium only
-// exposes image bytes through copyImageAt, and only main saw the coordinates.
-ipcMain.handle('hermes:context-menu:copy-image', event => {
-  const point = lastContextMenuPoint.get(event.sender.id)
-
-  if (point) {
-    event.sender.copyImageAt(point.x, point.y)
-  }
-})
-
-ipcMain.handle('hermes:context-menu:spellcheck', (event, action) => {
-  const kind = action?.kind
-  const word = String(action?.word || '')
-
-  if (!word) {
-    return
-  }
-
-  if (kind === 'replace') {
-    event.sender.replaceMisspelling(word)
-  } else if (kind === 'add') {
-    event.sender.session.addWordToSpellCheckerDictionary(word)
-  }
-})
-
-// Guest dictionary add: the webview TAG exposes replaceMisspelling but no
-// session API, so the renderer names the guest by webContents id.
-ipcMain.handle('hermes:context-menu:guest-add-word', (_event, payload) => {
-  const word = String(payload?.word || '')
-  const guest = electronWebContents.fromId(Number(payload?.webContentsId))
-
-  if (word && guest && !guest.isDestroyed()) {
-    guest.session.addWordToSpellCheckerDictionary(word)
-  }
-})
-
-ipcMain.handle('hermes:capturePreview', async (_event, payload) => {
-  const guest = electronWebContents.fromId(Number(payload?.webContentsId))
-
-  return capturePreviewContents(guest, payload?.rect, payload?.viewport)
-})
-
-ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
-  const data = payload?.data
-
-  if (!data) {
-    throw new Error('saveImageBuffer: missing data')
-  }
-
-  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
-
-  return writeComposerImage(buffer, payload?.ext || '.png', payload?.name)
-})
-
-ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
-  const text = typeof payload?.text === 'string' ? payload.text : ''
-
-  if (!text) {
-    throw new Error('savePastedText: missing text')
-  }
-
-  return writeComposerPaste(HERMES_HOME, text)
-})
-
-ipcMain.handle('hermes:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
-
-  if (image && !image.isEmpty()) {
-    return writeComposerImage(image.toPNG(), '.png')
-  }
-
-  // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the
-  // Linux clipboard Electron reads, so a host screenshot looks empty above.
-  // Pull it straight off the Windows clipboard via PowerShell as a fallback.
-  if (IS_WSL) {
-    const png = readWslWindowsClipboardImage()
-
-    if (png) {
-      return writeComposerImage(png, '.png')
-    }
-  }
-
-  return ''
-})
-
-ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
-  normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '')
-)
-
-ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(String(url || '')))
-
-ipcMain.handle('hermes:watchDirectory', (_event, dir) => watchDirectory(String(dir || '')))
-
-ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
+registerPreviewTargetIpc(ipcMain, previewTargetRuntime)
 
 // Each renderer reports the turns it has in flight; the quit guard reads the
 // merged picture. Keyed by webContents id so a closed window stops counting.
@@ -17675,68 +14270,9 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   updateStreamThrottleFromActiveWork()
 })
 
-ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
-  if (!payload || !isHexColor(payload.background) || !isHexColor(payload.foreground)) {
-    return
-  }
-
-  rendererTitleBarTheme = {
-    background: payload.background,
-    foreground: payload.foreground
-  }
-
-  // Repaint the native (Windows/Linux) titlebar overlay on every open chat
-  // window, not just the primary — instance peers and session windows share the
-  // one app theme. applyTitleBarOverlay no-ops on the frameless pet overlay.
-  for (const win of BrowserWindow.getAllWindows()) {
-    applyTitleBarOverlay(win)
-  }
-})
-
-// Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).
-ipcMain.on('hermes:native-theme', (_event, mode) => {
-  if (!THEME_SOURCES.has(mode)) {
-    return
-  }
-
-  if (nativeTheme.themeSource !== mode) {
-    nativeTheme.themeSource = mode
-    writePersistedThemeSource(mode)
-  }
-})
-
-// See-through window translucency. Persist + re-apply to every open window at
-// runtime (no recreation, so caching/sessions are untouched).
-//
-// The intensity slider is a HOT path: ~100 updates per drag. Two things make
-// that cheap. Native work is diffed, so an intensity-only change under glass
-// touches nothing (it's painted by the renderer). And the disk write is
-// coalesced onto a trailing timer, because writePersistedTranslucency is a
-// synchronous writeFileSync and doing one per tick blocks the main process
-// mid-drag. Only a cold launch reads that file, so it just has to be correct
-// once the hand comes off the slider.
-let translucencyWriteTimer = null
-
-function scheduleTranslucencyWrite() {
-  if (translucencyWriteTimer) {
-    clearTimeout(translucencyWriteTimer)
-  }
-
-  translucencyWriteTimer = setTimeout(() => {
-    translucencyWriteTimer = null
-    writePersistedTranslucency(translucencyState)
-  }, 250)
-}
-
-// Flush a pending write before the process can exit, so a quit landing inside
-// the debounce window doesn't lose the setting.
-app.on('before-quit', () => {
-  if (translucencyWriteTimer) {
-    clearTimeout(translucencyWriteTimer)
-    translucencyWriteTimer = null
-    writePersistedTranslucency(translucencyState)
-  }
-})
+ipcMain.on('hermes:titlebar-theme', (_event, payload) => appearance.setTitleBarTheme(payload))
+ipcMain.on('hermes:native-theme', (_event, mode) => appearance.setNativeTheme(mode))
+app.on('before-quit', () => appearance.flushTranslucencyWrite())
 
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
@@ -17772,43 +14308,7 @@ ipcMain.on('hermes:launch-flags', event => {
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {
-  const next = normalizeTranslucency(payload, GLASS_SUPPORTED)
-  const previous = translucencyState
-
-  if (
-    next.intensity === previous.intensity &&
-    next.fade === previous.fade &&
-    next.mode === previous.mode &&
-    next.material === previous.material &&
-    next.scope === previous.scope
-  ) {
-    return
-  }
-
-  translucencyState = next
-
-  // Which native properties actually moved. `scope` is renderer-only (which
-  // surfaces thin), so it never appears here.
-  const changed = {
-    // The backing follows whether glass is ON, not the intensity behind it.
-    backing: glassActive(previous) !== glassActive(next),
-    material: vibrancyForTranslucency(previous) !== vibrancyForTranslucency(next),
-    opacity: windowOpacityFor(previous) !== windowOpacityFor(next)
-  }
-
-  scheduleTranslucencyWrite()
-
-  // The HUD's frost reads the same setting but answers on its own terms (see
-  // hudFrostFor) — and it is a transparent window, so it is deliberately not
-  // in the chat fan-out below. It self-diffs, so an unrelated change costs
-  // nothing native.
-  hudIpc.applyHudFrost()
-
-  if (changed.backing || changed.material || changed.opacity) {
-    for (const win of BrowserWindow.getAllWindows()) {
-      applyWindowTranslucency(win, changed)
-    }
-  }
+  appearance.setTranslucency(payload, () => hudIpc.applyHudFrost())
 })
 
 // Keep-awake: hold the machine awake for long/overnight runs. Main owns the one
@@ -18135,380 +14635,19 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
-// Resolve the canonical Hermes version (the one `release.py` bumps in
-// hermes_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
-// real Hermes version instead of the Electron app's own package.json version,
-// which historically drifted (stuck at 0.0.2). Falls back to app.getVersion()
-// when the source tree can't be read (e.g. a packaged build without the repo).
-function resolveHermesVersion() {
-  try {
-    const root = resolveUpdateRoot()
-    const initPath = path.join(root, 'hermes_cli', '__init__.py')
-
-    if (fileExists(initPath)) {
-      const raw = fs.readFileSync(initPath, 'utf8')
-      const match = raw.match(/__version__\s*=\s*["']([^"']+)["']/)
-
-      if (match) {
-        return match[1]
-      }
-    }
-  } catch {
-    // Fall through to the Electron app version below.
-  }
-
-  return app.getVersion()
-}
-
-// Renderer-bundle skew: `hermes update` moves the SOURCE TREE, but the UI
-// (including bundled plugins like Bot Mode) is compiled into this binary at
-// build time. A terminal-side update — or an in-app update whose bundle-swap
-// leg failed — leaves the new runtime running under an old renderer, so About
-// shows the new version while the sidebar is missing that version's desktop
-// features. Compare the build stamp's commit against the tree, scoped to
-// apps/desktop/, and warn when the running renderer is provably behind.
-// Fail-quiet: dev runs (no stamp), non-git builds, and shallow-clone gaps all
-// report in-sync rather than risk a false "your install is torn" warning.
-async function detectRendererSkew() {
-  return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
-}
-
-// Re-resolve the live Hermes version and push it into the native About panel
-// just before showing it, so an in-place `hermes update` is reflected without
-// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
-// other platforms don't use this menu item.
+// Keep this callback hoisted for native chrome, which captures it earlier.
 function showAboutPanelFresh() {
-  void detectRendererSkew().then(skew => {
-    app.setAboutPanelOptions({
-      applicationName: APP_NAME,
-      applicationVersion: skew.outOfSync
-        ? `${resolveHermesVersion()} — app build out of date, update the desktop app`
-        : resolveHermesVersion(),
-      copyright: 'Copyright © 2026 Nous Research'
-    })
-    app.showAboutPanel()
-  })
+  return desktopShellRuntime.showAboutPanelFresh()
 }
 
-ipcMain.handle('hermes:version', async () => {
-  const skew = await detectRendererSkew()
-
-  return {
-    appVersion: resolveHermesVersion(),
-    electronVersion: process.versions.electron,
-    nodeVersion: process.versions.node,
-    platform: process.platform,
-    hermesRoot: resolveUpdateRoot(),
-    bundleOutOfSync: skew.outOfSync,
-    bundleCommitsBehind: skew.desktopCommitsBehind,
-    // True when the bundle on disk is not the one this process loaded — a
-    // plain app restart (no rebuild, no installer) clears the skew above.
-    // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
-    // under a running `npm start`, which is a rebuild the developer asked for,
-    // not a torn install to offer a restart for.
-    bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, loadInstallStamp())
-  }
-})
-
-// The About page's "Restart Hermes" button (shown when bundleSwapPending):
-// load the already-swapped bundle without asking the user to quit manually.
-// app.relaunch() re-executes by path, so the fresh process picks up whatever
-// bundle now lives there.
-ipcMain.handle('hermes:app:relaunch', async () => {
-  rememberLog('[updates] renderer requested an app relaunch (swapped bundle pending)')
-  app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-  void exitAfterBackendShutdown(0)
-})
-
-// Host facts the guided first run asks for once, to decide whether "set this
-// machine up" is the likeliest first task or just one option among several.
-// Age is the birthtime of the user's home directory — when the OS created this
-// account, the closest thing to "when did this machine become theirs" that
-// costs a single stat. Filesystems that keep no birthtime report null, and the
-// flow reads unknown as not-new.
-ipcMain.handle('hermes:machine:profile', async () => {
-  let ageDays: null | number = null
-
-  try {
-    const { birthtimeMs } = fs.statSync(os.homedir())
-
-    if (birthtimeMs > 0) {
-      ageDays = Math.max(0, Math.floor((Date.now() - birthtimeMs) / 86_400_000))
-    }
-  } catch {
-    // Unknown age — the option still shows, it just doesn't lead.
-  }
-
-  // The OS login name powers a first-name SUGGESTION in the guided chat ("or
-  // I can just call you akp"). Best-effort: an unidentifiable user just gets
-  // no suggestion.
-  let username = ''
-
-  try {
-    username = os.userInfo().username
-  } catch {
-    // No account name to suggest — the guide simply asks.
-  }
-
-  return {
-    ageDays,
-    arch: process.arch,
-    // What the OS is set to, so a first run can open in the user's own
-    // language instead of asking them to go and find the setting. Chromium
-    // resolves this from the real OS preference (not the app's own bundle),
-    // so it is the honest answer even though every UI string is English
-    // until a translation exists.
-    locale: app.getLocale() || '',
-    model: readHardwareModel(),
-    nvidia: await hasNvidiaGpu(),
-    platform: process.platform,
-    release: os.release(),
-    username
-  }
-})
-
-/** The board's own name for itself. Firmware writes it to the device tree on
- *  ARM systems (`NVIDIA_DGX_Spark`), which is how the first run can greet a
- *  DGX Spark as a Spark instead of "a Linux box". Empty everywhere else,
- *  Windows included — the RTX Spark is identified from the GPU instead. */
-function readHardwareModel(): string {
-  try {
-    return fs.readFileSync('/proc/device-tree/model', 'utf8').replace(/\0/g, '').trim()
-  } catch {
-    return ''
-  }
-}
-
-const NVIDIA_PCI_VENDOR_ID = 0x10de
-
-/** Chromium already enumerated the GPUs to decide how to composite, so this is
- *  a lookup rather than a probe — no subprocess, no vendor tooling that a
- *  just-unboxed machine may not have yet. Paired with Windows-on-Arm it is what
- *  names an RTX Spark. */
-async function hasNvidiaGpu(): Promise<boolean> {
-  try {
-    // SAFETY: Electron's basic GPU info is Chromium's GPU record; each gpuDevice has a numeric PCI vendorId.
-    const info = (await app.getGPUInfo('basic')) as { gpuDevice?: { vendorId?: number }[] }
-
-    return (info.gpuDevice ?? []).some(device => device.vendorId === NVIDIA_PCI_VENDOR_ID)
-  } catch {
-    return false
-  }
-}
-
-// ===========================================================================
-// Uninstall — remove the Chat GUI (and optionally the agent / user data).
-// ===========================================================================
-//
-// The renderer's About → Danger Zone surfaces three options that mirror the
-// CLI exactly: GUI only, Lite (keep user data), Full. We ask the agent to do
-// the actual removal via `hermes uninstall …` so the cross-platform PATH /
-// registry / service / node-symlink cleanup all lives in one place
-// (hermes_cli/uninstall.py + hermes_cli/gui_uninstall.py).
-//
-// getUninstallSummary() shells out to `--gui-summary` (a fast, no-side-effect
-// JSON probe) so the UI can gate options on what's actually installed — and
-// detect a missing agent (a future "lite client" that ships without the
-// bundled agent), hiding the agent/full options when there's nothing to remove.
-
-function uninstallVenvPython() {
-  return getVenvPython(VENV_ROOT)
-}
-
-async function getUninstallSummary() {
-  const py = uninstallVenvPython()
-  const agentRoot = ACTIVE_HERMES_ROOT
-
-  // Fast JS-side fallback used when the agent venv is gone (lite client) or the
-  // probe fails — the renderer still needs *something* to render options from.
-  const fallback = () => ({
-    hermes_home: HERMES_HOME,
-    agent_installed: isHermesSourceRoot(agentRoot) && fileExists(py),
-    gui_installed: true,
-    source_built_artifacts: [],
-    packaged_app_paths: [],
-    userdata_dir: app.getPath('userData'),
-    userdata_exists: true,
-    platform: process.platform,
-    probe: 'fallback'
-  })
-
-  if (!fileExists(py)) {
-    return fallback()
-  }
-
-  return new Promise(resolve => {
-    let stdout = ''
-    let settled = false
-
-    const done = value => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-      resolve(value)
-    }
-
-    try {
-      const child = spawn(
-        py,
-        ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'],
-        hiddenWindowsChildOptions({
-          cwd: agentRoot,
-          env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
-          stdio: ['ignore', 'pipe', 'ignore']
-        })
-      )
-
-      child.stdout.on('data', chunk => {
-        stdout += chunk.toString()
-      })
-      child.on('error', () => done(fallback()))
-      child.on('exit', code => {
-        if (code !== 0) {
-          return done(fallback())
-        }
-
-        try {
-          const line = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
-          const parsed = JSON.parse(line)
-          // The app bundle the renderer would be removing on *this* machine,
-          // resolved from the running exe (the Python probe only knows the
-          // standard locations, not where THIS build actually runs from).
-          parsed.running_app_path = resolveRemovableAppPath(process.execPath, process.platform, process.env)
-          done(parsed)
-        } catch {
-          done(fallback())
-        }
-      })
-      setTimeout(() => done(fallback()), 8000)
-    } catch {
-      done(fallback())
-    }
-  })
-}
-
-async function runDesktopUninstall(mode) {
-  let uninstallArgs
-
-  try {
-    uninstallArgs = uninstallArgsForMode(mode)
-  } catch (error) {
-    return { ok: false, error: 'invalid-mode', message: error.message }
-  }
-
-  const venvPy = uninstallVenvPython()
-
-  if (!fileExists(venvPy)) {
-    return {
-      ok: false,
-      error: 'agent-missing',
-      message: `Can't run the uninstaller: no Hermes agent venv at ${VENV_ROOT}.`
-    }
-  }
-
-  // Interpreter choice (Finding 3): lite/full rmtree the venv that holds the
-  // running python.exe. On Windows a running .exe is mandatory-locked, so the
-  // rmtree must NOT be driven by the venv's own interpreter — use a system
-  // Python with PYTHONPATH=<agentRoot> so `import hermes_cli` resolves from
-  // source while the venv is torn down. gui-only doesn't touch the venv, so the
-  // venv python is fine there. If no system Python exists (the Windows edge
-  // case), fall back to the venv python — gui-only is unaffected; lite/full may
-  // leave venv remnants the user can delete, which we log.
-  let py = venvPy
-  let pythonPath = null
-
-  if (modeRemovesAgent(mode)) {
-    const sysPy = await findSystemPython()
-
-    if (sysPy) {
-      py = sysPy
-      pythonPath = ACTIVE_HERMES_ROOT
-    } else if (IS_WINDOWS) {
-      rememberLog(
-        '[uninstall] no system Python found for lite/full on Windows; falling back ' +
-          'to the venv python — venv files locked by the running interpreter may ' +
-          'remain and need manual deletion.'
-      )
-    }
-  }
-
-  const appPath = resolveRemovableAppPath(process.execPath, process.platform, process.env)
-  const removeBundle = shouldRemoveAppBundle(IS_PACKAGED, appPath) ? appPath : null
-
-  // CRITICAL (Windows): tear down every backend the desktop owns and wait for
-  // the venv shim to unlock BEFORE the cleanup script runs. lite/full delete
-  // the venv, and even gui-only removes the install tree's GUI artifacts — a
-  // live backend grandchild (gateway / pty / REPL) holding a mandatory file
-  // lock would make the script's rmdir half-fail (#37532 for the update path).
-  // Reuses the incident-hardened update teardown; no-op on macOS/Linux.
-  try {
-    await releaseBackendLock(ACTIVE_HERMES_ROOT, 'uninstall')
-  } catch (error) {
-    rememberLog(`[uninstall] backend teardown errored (continuing): ${error.message}`)
-  }
-
-  const scriptArgs = {
-    desktopPid: process.pid,
-    pythonExe: py,
-    pythonPath,
-    agentRoot: ACTIVE_HERMES_ROOT,
-    uninstallArgs,
-    appPath: removeBundle,
-    hermesHome: HERMES_HOME
-  }
-
-  let scriptPath
-  let runner
-  let runnerArgs
-
-  try {
-    if (IS_WINDOWS) {
-      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.cmd`)
-      fs.writeFileSync(scriptPath, buildWindowsCleanupScript(scriptArgs))
-      runner = process.env.ComSpec || 'cmd.exe'
-      runnerArgs = ['/c', scriptPath]
-    } else {
-      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.sh`)
-      fs.writeFileSync(scriptPath, buildPosixCleanupScript(scriptArgs), { mode: 0o755 })
-      runner = '/bin/bash'
-      runnerArgs = [scriptPath]
-    }
-  } catch (error) {
-    return { ok: false, error: 'script-write-failed', message: error.message }
-  }
-
-  try {
-    const child = spawn(runner, runnerArgs, {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    })
-
-    child.unref()
-  } catch (error) {
-    return { ok: false, error: 'spawn-failed', message: error.message }
-  }
-
-  rememberLog(
-    `[uninstall] launched detached cleanup (${mode}): ${scriptPath} ` +
-      `(removesAgent=${modeRemovesAgent(mode)} removesUserData=${modeRemovesUserData(mode)} bundle=${removeBundle || 'none'})`
-  )
-
-  // Give the renderer a beat to show its "uninstalling…" state, then quit so
-  // the venv python shim + app bundle unlock and the cleanup script can run.
-  isQuittingForHandoff = true
-  setTimeout(() => app.quit(), 800)
-
-  return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
-}
-
-ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
+ipcMain.handle('hermes:version', async () => desktopShellRuntime.getVersionInfo())
+ipcMain.handle('hermes:app:relaunch', async () => desktopShellRuntime.relaunchAfterBundleSwap())
+ipcMain.handle('hermes:machine:profile', async () => desktopShellRuntime.getMachineProfile())
+ipcMain.handle('hermes:uninstall:summary', async () => desktopShellRuntime.getUninstallSummary())
 ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
   const mode = payload && typeof payload === 'object' ? payload.mode : payload
 
-  return runDesktopUninstall(String(mode || ''))
+  return desktopShellRuntime.runDesktopUninstall(String(mode || ''))
 })
 
 // Download a VS Code Marketplace extension and return the raw color-theme JSON
@@ -18518,297 +14657,83 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 // Search the Marketplace for color-theme extensions (empty query = top installs).
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
-// ---------------------------------------------------------------------------
-// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00,
-// hermes://mcp/install?name=NAME&config=B64 — the vendor "Add to Hermes"
-// button, or hermes://plugin/install?repo=owner/repo). Dev
-// (`HERMES_DESKTOP_DEV_SERVER`) registers hermes-dev:// instead — bare
-// Electron or a stale OS handler often owns hermes:// on dev machines.
-// Parsing is generic ({kind, name, params}); the renderer routes per kind
-// and anything install-shaped requires explicit user confirmation there.
-// A docs/dashboard "Send to App" button opens this URL; we route it into the
-// running app. Three delivery paths: macOS 'open-url',
-// Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
-// ---------------------------------------------------------------------------
 const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
-/** Schemes accepted when parsing inbound URLs (dev accepts both). */
-const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
-let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 // Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
 let _pendingOpenUpdates = false
 
-function _extractDeepLink(argv) {
-  if (!Array.isArray(argv)) {
-    return null
-  }
-
-  return argv.find(a => typeof a === 'string' && DEEPLINK_SCHEMES.some(s => a.startsWith(`${s}://`))) || null
-}
-
 function handleDeepLink(url) {
-  if (!url || typeof url !== 'string') {
-    return
-  }
-
-  let parsed
-
-  try {
-    parsed = new URL(url)
-  } catch {
-    rememberLog(`[deeplink] ignoring malformed url: ${url}`)
-
-    return
-  }
-
-  const scheme = parsed.protocol.replace(/:$/, '')
-
-  if (!DEEPLINK_SCHEMES.includes(scheme)) {
-    rememberLog(`[deeplink] ignoring scheme ${scheme} (expected ${DEEPLINK_SCHEMES.join(' or ')})`)
-
-    return
-  }
-
-  // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
-  const kind = parsed.hostname || ''
-  const name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
-  const params = {}
-  parsed.searchParams.forEach((v, k) => {
-    params[k] = v
-  })
-  const payload = { kind, name, params }
-
-  if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
-    _pendingDeepLink = payload
-
-    return
-  }
-
-  try {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore()
-    }
-
-    mainWindow.focus()
-    mainWindow.webContents.send('hermes:deep-link', payload)
-    rememberLog(`[deeplink] delivered ${kind}/${name}`)
-  } catch (err) {
-    rememberLog(`[deeplink] delivery failed: ${err.message}`)
-  }
+  desktopAppLifecycle.handleDeepLink(url)
 }
 
-// Renderer calls this (via IPC) once it has mounted its deep-link listener, so
-// a link that arrived during boot/install is flushed exactly once.
-ipcMain.handle('hermes:deep-link-ready', () => {
-  _rendererReadyForDeepLink = true
-
-  if (_pendingOpenUpdates) {
-    _pendingOpenUpdates = false
-    sendOpenUpdatesRequested()
-  }
-
-  if (_pendingDeepLink) {
-    const queued = _pendingDeepLink
-    _pendingDeepLink = null
-    handleDeepLink(
-      `${HERMES_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
-        (Object.keys(queued.params).length ? '?' + new URLSearchParams(queued.params).toString() : '')
-    )
-  }
-
-  return { ok: true }
+const desktopAppLifecycle = createDesktopAppLifecycleRuntime({
+  app,
+  ipcMain,
+  Menu,
+  screen,
+  session,
+  safeStorage,
+  path,
+  tls,
+  pathToFileURL,
+  CHROMIUM_LOG_PATH,
+  CRASH_DIAGNOSTICS,
+  DEV_SERVER,
+  HERMES_PROTOCOL,
+  IS_MAC,
+  backendShutdown,
+  buildApplicationMenu,
+  createWindow,
+  ensureLoginShellPath,
+  ensureMainWindow,
+  ensureWslWindowsFonts,
+  enableBasicPasswordStoreEncryption,
+  focusWindow,
+  getIsQuittingForHandoff: () => isQuittingForHandoff,
+  getMainWindow: () => mainWindow,
+  getPendingOpenUpdates: () => _pendingOpenUpdates,
+  getRendererReadyForDeepLink: () => _rendererReadyForDeepLink,
+  installDownloadHandling,
+  installApplicationMenuAfterFirstWindow,
+  installCommandScreenshot,
+  installEmbedReferer,
+  installHudModifierTap,
+  installMediaPermissions,
+  installPreviewGuestPreload,
+  installRemoteHeaderRules,
+  installWindowsSystemCaTrust,
+  keepAwake,
+  migrateLegacyEncryptedSecretsOnce,
+  minimizeToTray,
+  openHudWindow,
+  primaryBackendIsRemote,
+  primaryProfileKey,
+  readPersistedDisableF12,
+  readPersistedKeepAwake,
+  readQuickEntrySettings,
+  registerMediaProtocol,
+  registerPowerResumeListeners,
+  rememberLog,
+  resolveRendererIndex,
+  resumeManagedSshRecoveries,
+  sendOpenUpdatesRequested,
+  setActiveGatewayProfile,
+  setF12Blocked: blocked => {
+    f12Blocked = blocked
+  },
+  setPendingOpenUpdates: pending => {
+    _pendingOpenUpdates = pending
+  },
+  setRendererReadyForDeepLink: ready => {
+    _rendererReadyForDeepLink = ready
+  },
+  setWslBridgeProfileState,
+  startChromiumLogWatcher,
+  wakeIndicatorController,
+  applyQuickEntrySettings
 })
 
-function registerDeepLinkProtocol() {
-  try {
-    if (process.defaultApp && process.argv.length >= 2) {
-      // Dev: register with the electron exec path + entry script so the OS can
-      // relaunch us with the URL. argv[1] is usually "." when launched via
-      // `electron .` from apps/desktop — resolve against cwd.
-      const entry = path.resolve(process.argv[1])
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [entry])
-    } else {
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
-    }
-
-    rememberLog(`[deeplink] registered ${HERMES_PROTOCOL}:// handler`)
-  } catch (err) {
-    rememberLog(`[deeplink] protocol registration failed: ${err.message}`)
-  }
-}
-
-// Single-instance lock: deep links on a running app (Win/Linux) arrive as a
-// second-instance argv. Without the lock a second `hermes://` launch spawns a
-// whole new app instead of routing into the running one.
-const _gotSingleInstanceLock = app.requestSingleInstanceLock()
-const isPrimaryInstance = _gotSingleInstanceLock
-
-if (!isPrimaryInstance) {
-  // Hard-exit, not app.quit(): the before-quit teardown coordinator defers a
-  // plain quit (event.preventDefault + async backend shutdown), and in that
-  // window `ready` still fires — the lock-losing instance then runs the full
-  // startup (shortcut registration, createWindow → startHermes), whose
-  // reapOrphans() SIGTERMs the running instance's live backend (#87295).
-  // app.exit() terminates immediately, before `ready`, so a second launch
-  // routes into the running window and never touches backend machinery.
-  app.exit(0)
-} else {
-  app.on('second-instance', (_event, argv) => {
-    const url = _extractDeepLink(argv)
-
-    if (url) {
-      handleDeepLink(url)
-    }
-
-    ensureMainWindow(mainWindow, {
-      isReady: app.isReady(),
-      createWindow,
-      focusWindow,
-      // deep-link delivery focuses a live window after its renderer is ready.
-      focusExisting: !url
-    })
-  })
-}
-
-// macOS delivers deep links via 'open-url' — register early (can fire before
-// whenReady; handleDeepLink queues until the renderer is ready).
-app.on('open-url', (event, url) => {
-  event.preventDefault()
-  handleDeepLink(url)
-})
-
-app.whenReady().then(() => {
-  // Warm the login-shell PATH resolution immediately so it usually completes
-  // before the backend start path awaits the same single-flight promise.
-  void ensureLoginShellPath()
-
-  if (CRASH_DIAGNOSTICS) {
-    startChromiumLogWatcher(CHROMIUM_LOG_PATH)
-  }
-
-  const systemCa = installWindowsSystemCaTrust(tls)
-
-  if (systemCa.applied) {
-    rememberLog(
-      `[tls] trusting ${systemCa.systemCertificateCount} Windows system CA certificate(s) for backend connections`
-    )
-  } else if (systemCa.error) {
-    rememberLog(`[tls] could not load Windows system CA certificates: ${systemCa.error}`)
-  }
-
-  // Keyring-less Linux `--password-store=basic` support. This must run before
-  // createWindow() and anything that could touch safeStorage; the narrow
-  // platform/switch/guard semantics live in the extracted helper.
-  enableBasicPasswordStoreEncryption({
-    platform: process.platform,
-    passwordStoreSwitch: app.commandLine.getSwitchValue('password-store'),
-    safeStorageApi: safeStorage
-  })
-
-  // Keychain encryption is opt-in (default OFF). One-shot: rewrite any
-  // legacy safeStorage-encrypted secrets as plain so no later launch ever
-  // touches the OS keychain unless the user turns encryption on in
-  // Settings → Gateway. Must run before createWindow() and the first
-  // connection resolution.
-  migrateLegacyEncryptedSecretsOnce()
-
-  installMediaPermissions()
-  installDownloadHandling()
-  registerMediaProtocol()
-  installEmbedReferer()
-  installRemoteHeaderRules()
-  registerDeepLinkProtocol()
-  installPreviewGuestPreload()
-
-  ensureWslWindowsFonts()
-  configureSpellChecker()
-  registerPowerResumeListeners()
-  keepAwake.set(readPersistedKeepAwake())
-  void minimizeToTray.start()
-  f12Blocked = readPersistedDisableF12()
-  // Seed this before the first window exists: a picker can open before
-  // startHermes() finishes resolving the configured backend.
-  const primaryProfile = primaryProfileKey()
-
-  setActiveGatewayProfile(primaryProfile)
-  setWslBridgeProfileState(primaryProfile, !primaryBackendIsRemote())
-  // Quick Entry's global chord — registered on ready so a cold launch restores
-  // it without the renderer visiting Settings. A failed registration is logged
-  // here and surfaced in Settings via the IPC state (never silent).
-  applyQuickEntrySettings(readQuickEntrySettings())
-  installCommandScreenshot({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
-  installHudModifierTap({
-    rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
-    summon: () => {
-      if (!isQuittingForHandoff && !backendShutdown.hasStarted()) {
-        openHudWindow(null, null)
-      }
-    }
-  })
-
-  if (IS_MAC) {
-    const reposition = () => wakeIndicatorController.reposition()
-
-    screen.on('display-added', reposition)
-
-    screen.on('display-metrics-changed', reposition)
-
-    screen.on('display-removed', reposition)
-  }
-
-  // A hard crash can interrupt the in-memory restore loop after exact remote
-  // serves were drained. The owner-only recovery journal survives that crash;
-  // its worker waits for the install marker to clear, then reopens every scope
-  // captured by the original transaction before removing the journal entry.
-  void resumeManagedSshRecoveries()
-  installApplicationMenuAfterFirstWindow({
-    isMac: IS_MAC,
-    buildMenu: buildApplicationMenu,
-    setApplicationMenu: menu => Menu.setApplicationMenu(menu),
-    createWindow
-  })
-
-  // Win/Linux cold start: the launching hermes:// URL is in our own argv.
-  const _coldStartLink = _extractDeepLink(process.argv)
-
-  if (_coldStartLink) {
-    handleDeepLink(_coldStartLink)
-  }
-
-  app.on('activate', () => {
-    // Recreate the primary window if it's gone. Guard on mainWindow directly
-    // (not just total window count) so a dock click still restores the main
-    // window when only secondary session windows remain open.
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      createWindow()
-    } else {
-      focusWindow(mainWindow)
-    }
-  })
-})
-
-// Seed Chromium's spellchecker with the system locale (falling back to en-US).
-// On macOS Electron uses the native spellchecker which ignores this list, but
-// on Windows/Linux Chromium downloads Hunspell dictionaries on demand and
-// won't enable any without an explicit language.
-function configureSpellChecker() {
-  try {
-    const defaultSession = session.defaultSession
-
-    if (!defaultSession || typeof defaultSession.setSpellCheckerLanguages !== 'function') {
-      return
-    }
-
-    const available = defaultSession.availableSpellCheckerLanguages || []
-    const locale = (app.getLocale && app.getLocale()) || 'en-US'
-    const candidates = [locale, locale.split('-')[0], 'en-US', 'en']
-    const chosen = candidates.find(lang => available.includes(lang)) || 'en-US'
-
-    defaultSession.setSpellCheckerLanguages([chosen])
-  } catch (error) {
-    rememberLog(`Spellchecker setup failed: ${error.message}`)
-  }
-}
+const isPrimaryInstance = desktopAppLifecycle.isPrimaryInstance
 
 // Ask before a quit kills a turn in flight. True when the quit was intercepted
 // and the confirmation is on screen; "Quit Anyway" re-enters before-quit with
@@ -18974,13 +14899,9 @@ app.on('before-quit', event => {
     }
   }
 
-  if (desktopLogFlushTimer) {
-    clearTimeout(desktopLogFlushTimer)
-    desktopLogFlushTimer = null
-  }
-
+  stopDesktopLogFlushTimer()
   flushDesktopLogBufferSync()
-  closePreviewWatchers()
+  previewTargetRuntime.closePreviewWatchers()
 
   // Kill open PTYs before environment teardown to avoid the node-pty#904
   // ThreadSafeFunction SIGABRT race.

@@ -163,8 +163,10 @@ The agent only loads the full skill content when it actually needs it.
 ```markdown
 ---
 name: my-skill
-description: Brief description of what this skill does
+description: Use when <trigger>. One line on what it does.
 version: 1.0.0
+author: Your Name
+license: MIT
 platforms: [macos, linux]     # Optional — restrict to specific OS platforms
 metadata:
   hermes:
@@ -931,7 +933,7 @@ owner/repo
 Rules:
 - Each skill lives in its own directory under the tap's root path (default `skills/`).
 - The directory name becomes the skill's install slug.
-- Each skill directory must contain a `SKILL.md` with standard [SKILL.md frontmatter](#skillmd-format) (`name`, `description`, plus optional `metadata.hermes.tags`, `version`, `author`, `platforms`, `metadata.hermes.config`).
+- Each skill directory must contain a `SKILL.md` with standard [SKILL.md frontmatter](#skillmd-format) (`name`, `description`, `version`, `author`, `license`, plus optional `metadata.hermes.tags`, `platforms`, `metadata.hermes.config`).
 - Subdirectories like `references/`, `templates/`, `scripts/`, `assets/` are downloaded alongside `SKILL.md` at install time.
 - Skills whose directory name starts with `.` or `_` are ignored.
 
@@ -951,15 +953,19 @@ my-org/hermes-skills
 ```markdown
 ---
 name: deploy-runbook
-description: Our deployment runbook — services, rollback, Slack channels
+description: Use when running the team's deploy runbook.
 version: 1.0.0
 author: My Org Platform Team
+license: MIT
 metadata:
   hermes:
     tags: [deployment, runbook, internal]
 ---
 
 # Deploy Runbook
+
+## When to Use
+Deploying, rolling back, or checking the state of a service through the team runbook.
 
 Step 1: ...
 ```

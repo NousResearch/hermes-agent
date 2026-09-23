@@ -309,7 +309,9 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
     return values
 
 
-def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:
+def noninteractive_git_env(
+    base: "Mapping[str, str] | None" = None, *, preserve_windows_crlf: bool = False,
+) -> dict[str, str]:
     """Environment for *internal* git invocations that must never prompt.
 
     Copy of ``base`` (default ``os.environ``) with ``GIT_TERMINAL_PROMPT=0`` (fail instead of
@@ -353,6 +355,10 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     env["PAGER"] = "cat"
     env["GIT_EDITOR"] = "true"
     overrides = list(_GIT_CONFIG_OVERRIDES.items())
+    if preserve_windows_crlf:
+        # Git for Windows normally supplies this effective default through config that hardened
+        # probes deliberately ignore. Preserve normalization explicitly without consulting it.
+        overrides.append(("core.autocrlf", "true"))
     # safe.directory is honoured ONLY from global/system config (git rejects it from repo-level
     # config so a hostile repo cannot self-authorise), and both are blanked just above. Without
     # re-injection every internal git call fails "detected dubious ownership" on any repo whose
@@ -583,7 +589,11 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout, env=noninteractive_git_env())
+    result = bounded_probe_run(
+        argv,
+        timeout=timeout,
+        env=noninteractive_git_env(preserve_windows_crlf=IS_WINDOWS),
+    )
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()

@@ -1,6 +1,7 @@
 """Runtime tests for tool-call loop guardrails."""
 
 import json
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -551,3 +552,186 @@ def test_policy_hook_unavailable_does_not_reclassify_normal_denial():
     handler.assert_not_called()
     assert agent._tool_guardrail_halt_decision is None
     assert json.loads(messages[-1]["content"])["error"] == "Explicit policy denial"
+
+
+# ── C5: no-retry behavior across the full conversation loop ───────────────────
+
+
+def _hang_policy_fixture():
+    """Return (release_event, hung pre_tool_call callback) for outage fixtures."""
+    import threading
+
+    release = threading.Event()
+
+    def hung_policy(**_kwargs):
+        release.wait(timeout=30.0)
+        return None
+
+    return release, hung_policy
+
+
+def _install_hook_manager(monkeypatch, hook_callback):
+    """Install a PluginManager carrying *hook_callback* for pre_tool_call."""
+    from hermes_cli.plugins import PluginManager
+    import hermes_cli.plugins as plugins_mod
+
+    mgr = PluginManager()
+    mgr._discovered = True
+    mgr._hooks["pre_tool_call"] = [hook_callback]
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+    return mgr
+
+
+def test_hook_outage_halts_turn_without_second_model_round(monkeypatch):
+    """C5 boundary proof: with a hung pre_tool_call policy hook, a turn whose model
+    would issue a second numbered terminal probe must (a) execute zero tool
+    handlers, (b) end with guardrail.code == 'policy_hook_unavailable' before any
+    further model tool round, (c) pair tool-call IDs, (d) inject no synthetic
+    user message, and (e) not leave the fixture worker behind after release.
+    """
+    import threading
+
+    from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+
+    release, hung_policy = _hang_policy_fixture()
+    _install_hook_manager(monkeypatch, hung_policy)
+    monkeypatch.setattr(
+        "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05
+    )
+
+    agent = _make_agent("terminal", max_iterations=10, config=_hard_stop_config())
+    # The model would offer probe-2 if asked again: a hung hook must never get there.
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("terminal", json.dumps({"command": "printf probe-1"}), "outage-call-1")],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("terminal", json.dumps({"command": "printf probe-2"}), "outage-call-2")],
+        ),
+    ]
+    responses.append(_mock_response(content="unreachable", finish_reason="stop", tool_calls=None))
+    agent.client.chat.completions.create.side_effect = responses
+    agent._disable_streaming = True
+
+    worker_threads_before = threading.active_count()
+    with (
+        patch("model_tools.handle_function_call", return_value="MUST NOT EXECUTE") as handler,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("run the first terminal probe")
+
+    # (a) no tool ever dispatched
+    handler.assert_not_called()
+
+    # (b) turn ended with the controlled halt before another model tool round
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "policy_hook_unavailable"
+    assert result["guardrail"]["action"] in ("block", "halt")
+    assert "policy hook" in result["final_response"] or "hook" in result["final_response"]
+    model_calls = agent.client.chat.completions.create.call_count
+    assert model_calls == 1, f"expected exactly one model round, got {model_calls}"
+
+    # (c) tool-call IDs still pair; the blocked result lands on outage-call-1
+    tool_rows = [m for m in result["messages"] if m.get("role") == "tool"]
+    assert [row["tool_call_id"] for row in tool_rows] == ["outage-call-1"]
+    payload = json.loads(tool_rows[0]["content"])
+    assert payload["error_type"] == "policy_hook_unavailable"
+    assert _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE in payload["error"]
+
+    # (d) no synthetic user message was injected after the original prompt:
+    # exactly one user row whose content is the original prompt verbatim
+    # (metadata like timestamp is fine; an injected nudge/repair row is not).
+    user_rows = [m for m in result["messages"] if m.get("role") == "user"]
+    assert len(user_rows) == 1, user_rows
+    assert user_rows[0]["content"] == "run the first terminal probe"
+
+    # (e) releasing the fixture event cleans up its worker
+    release.set()
+    deadline = time.monotonic() + 5.0
+    while threading.active_count() > worker_threads_before and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert threading.active_count() <= worker_threads_before, "hung hook worker leaked"
+
+
+def test_hook_outage_execute_code_gets_same_controlled_outcome(monkeypatch):
+    """execute_code under an unavailable policy hook gets the identical controlled
+    halt (not a dispatch, not a free pass)."""
+    from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+
+    release, hung_policy = _hang_policy_fixture()
+    _install_hook_manager(monkeypatch, hung_policy)
+    monkeypatch.setattr(
+        "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05
+    )
+
+    agent = _make_agent("execute_code", max_iterations=10, config=_hard_stop_config())
+    call = _mock_tool_call("execute_code", json.dumps({"code": "print('probe')"}), "outage-code-1")
+    message = SimpleNamespace(content="", tool_calls=[call])
+    messages = []
+    with (
+        patch("model_tools.handle_function_call", return_value="MUST NOT EXECUTE") as handler,
+    ):
+        agent._execute_tool_calls_sequential(message, messages, "outage-code-fixture")
+
+    handler.assert_not_called()
+    decision = agent._tool_guardrail_halt_decision
+    assert decision is not None and decision.code == "policy_hook_unavailable"
+    payload = json.loads(messages[-1]["content"])
+    assert payload["error_type"] == "policy_hook_unavailable"
+    assert _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE in payload["error"]
+    release.set()
+
+
+def test_normal_policy_denial_stays_denied_and_dispatches_nothing():
+    """An explicit (non-timeout) policy denial keeps the plain block path: no halt,
+    no dispatch — distinct from the controlled outage halt."""
+    agent = _make_agent("terminal", config=_hard_stop_config())
+    args = {"command": "printf denied"}
+    call = _mock_tool_call("terminal", json.dumps(args), "denial-2")
+    message = SimpleNamespace(content="", tool_calls=[call])
+    messages = []
+    with (
+        patch("agent.tool_executor._pre_tool_block", return_value=("Policy forbids this", args)),
+        patch("model_tools.handle_function_call", return_value="MUST NOT EXECUTE") as handler,
+    ):
+        agent._execute_tool_calls_concurrent(message, messages, "denial-2-fixture")
+    handler.assert_not_called()
+    assert agent._tool_guardrail_halt_decision is None
+    assert json.loads(messages[-1]["content"])["error"] == "Policy forbids this"
+
+
+def test_fresh_agent_with_healthy_hooks_runs_tool_after_outage():
+    """After the outage fixture releases, a SEPARATE fresh agent with healthy hooks
+    runs a harmless tool successfully — recovery is a new process, not a retry."""
+    agent = _make_agent("terminal", max_iterations=10, config=_hard_stop_config())
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("terminal", json.dumps({"command": "printf fresh-ok"}), "fresh-call-1")],
+        ),
+        _mock_response(content="done", finish_reason="stop", tool_calls=None),
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+    agent._disable_streaming = True
+
+    with (
+        patch("hermes_cli.lifecycle.invoke_hook", return_value=[]),
+        patch("model_tools.handle_function_call", return_value=json.dumps({"output": "fresh-ok", "exit_code": 0})) as handler,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("run the harmless tool")
+
+    assert handler.call_count == 1
+    assert result["final_response"] == "done"
+    assert "guardrail" not in result
+    tool_rows = [m for m in result["messages"] if m.get("role") == "tool"]
+    assert [row["tool_call_id"] for row in tool_rows] == ["fresh-call-1"]

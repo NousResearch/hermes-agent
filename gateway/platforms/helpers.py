@@ -604,6 +604,11 @@ def _chunk_newline_preferred(text, limit, len_fn):
         split_at = remaining.rfind("\n", 0, budget)
         if split_at < budget // 2:
             split_at = budget
+        # A positive custom-unit limit can still be smaller than the first
+        # code point (for example, one UTF-16 unit before an emoji).  Preserve
+        # progress by emitting that indivisible code point as an oversize chunk.
+        if split_at == 0:
+            split_at = 1
         chunks.append(remaining[:split_at])
         remaining = remaining[split_at:].lstrip("\n")
     if remaining:

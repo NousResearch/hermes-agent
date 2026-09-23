@@ -3228,7 +3228,39 @@ export const en: Translations = {
       working: 'Working',
       done: 'Done'
     },
-    markAllRead: 'Mark all as read'
+    markAllRead: 'Mark all as read',
+    filterMenu: {
+      grouping: 'Grouping',
+      ordering: 'Ordering',
+      show: 'Show',
+      filters: 'Filters',
+      status: 'Status',
+      pullRequest: 'Pull request',
+      profile: 'Profile',
+      project: 'Project',
+      resetToDefaults: 'Reset to defaults',
+      expandAll: 'Expand all',
+      collapseAll: 'Collapse all',
+      updated: 'Updated',
+      created: 'Created',
+      tokens: 'Tokens',
+      cost: 'Cost',
+      manual: 'Manual',
+      preview: 'Preview',
+      pr: 'PR',
+      open: 'Open',
+      draft: 'Draft',
+      merged: 'Merged',
+      closed: 'Closed',
+      noPr: 'No PR',
+      needsInput: 'Needs input',
+      workingStatus: 'Working',
+      unread: 'Unread',
+      draftStatus: 'Draft',
+      idle: 'Idle',
+      archived: 'Archived',
+      inboxStyle: 'Inbox style'
+    }
   },
 
   composer: {
@@ -4746,7 +4778,8 @@ export const en: Translations = {
       'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
     sudoCommandUnavailable:
       'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
-    sudoInstallDesc: 'Hermes needs your sudo password to install the Bot Screen packages (TigerVNC + Xfce) on the gateway host. It is sent only to that host.',
+    sudoInstallDesc:
+      'Hermes needs your sudo password to install the Bot Screen packages (TigerVNC + Xfce) on the gateway host. It is sent only to that host.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',

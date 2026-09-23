@@ -2714,7 +2714,39 @@ export const ru = defineLocale({
       working: 'Работает',
       done: 'Готово'
     },
-    markAllRead: 'Отметить все как прочитанные'
+    markAllRead: 'Отметить все как прочитанные',
+    filterMenu: {
+      grouping: 'Группировка',
+      ordering: 'Сортировка',
+      show: 'Показать',
+      filters: 'Фильтры',
+      status: 'Статус',
+      pullRequest: 'Пул-запрос',
+      profile: 'Профиль',
+      project: 'Проект',
+      resetToDefaults: 'Сбросить по умолчанию',
+      expandAll: 'Развернуть все',
+      collapseAll: 'Свернуть все',
+      updated: 'Дата изменения',
+      created: 'Дата создания',
+      tokens: 'Токены',
+      cost: 'Стоимость',
+      manual: 'Вручную',
+      preview: 'Предпросмотр',
+      pr: 'PR',
+      open: 'Вкл.',
+      draft: 'Черновик',
+      merged: 'Слито',
+      closed: 'Закрыт',
+      noPr: 'Нет PR',
+      needsInput: 'Нужен ввод',
+      workingStatus: 'Выполняется',
+      unread: 'Не прочитано',
+      draftStatus: 'Черновик',
+      idle: 'Ожидание',
+      archived: 'В архиве',
+      inboxStyle: 'Режим входящих'
+    }
   },
   composer: {
     message: 'Сообщение',
@@ -3912,7 +3944,8 @@ export const ru = defineLocale({
     sudoDesc:
       'Проверьте команду перед вводом пароля sudo. Пароль отправляется агенту, который её выполняет, и кэшируется на время сеанса.',
     sudoCommandUnavailable: 'Агент не предоставил команду. Отмените запрос, если не можете проверить её в разговоре.',
-    sudoInstallDesc: 'Hermes нужен ваш пароль sudo, чтобы установить пакеты Bot Screen (TigerVNC + Xfce) на хосте шлюза. Он отправляется только на этот хост.',
+    sudoInstallDesc:
+      'Hermes нужен ваш пароль sudo, чтобы установить пакеты Bot Screen (TigerVNC + Xfce) на хосте шлюза. Он отправляется только на этот хост.',
     sudoPlaceholder: 'пароль sudo',
     secretTitle: 'Требуется секрет',
     secretDesc: 'Hermes нужны учётные данные, чтобы продолжить.',

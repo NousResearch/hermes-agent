@@ -217,6 +217,15 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     }),
     ("minimax", None, "minimax-pricing-2026-04", {"minimax-m2.7": ("0.30", "1.20")}),
     ("minimax-cn", None, "minimax-pricing-2026-04", {"minimax-m2.7": ("0.30", "1.20")}),
+    # MiniMax-M3 on the DIRECT providers. The ("fireworks", "minimax-m3") row below
+    # covers Fireworks-routed traffic; these cover provider: minimax / minimax-cn,
+    # which is what the live lookup keys off. MiniMax bills cache WRITES at
+    # input-equivalent (1.0x), unlike Anthropic's 1.25x convention.
+    # Cache-write rate verified against the live API 2026-08-19.
+    ("minimax", "https://platform.minimax.io/docs/guides/pricing-token-plan",
+     "minimax-pricing-2026-08", {"minimax-m3": ("0.30", "1.20", "0.06", "0.30")}),
+    ("minimax-cn", "https://platform.minimax.io/docs/guides/pricing-token-plan",
+     "minimax-pricing-2026-08", {"minimax-m3": ("0.30", "1.20", "0.06", "0.30")}),
     # Fireworks AI serverless (Standard tier) publishes a per-model cached_input
     # rate (→ cache_read) but no separate cache_write rate. Fast/turbo tiers are
     # exposed as accounts/fireworks/routers/<name>, so rsplit("/", 1) yields

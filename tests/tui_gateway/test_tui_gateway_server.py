@@ -16930,6 +16930,10 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda _slug: False,
     )
+    monkeypatch.setattr(
+        "hermes_cli.inventory._anthropic_oauth_credentials_present",
+        lambda: False,
+    )
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)
 
@@ -22917,8 +22921,6 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
 def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, tmp_path):
     """#111105: the raw-config cache must not serve (and later write back) a stale document after a
     same-size replacement that keeps the old mtime."""
-    import shutil
-
     cfg = tmp_path / "config.yaml"
     cfg.write_text("model:\n  default: bbbb-route\n", encoding="utf-8")
     monkeypatch.setattr(server, "_active_config_path", lambda: cfg)
@@ -22929,6 +22931,10 @@ def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, t
     st = cfg.stat()
     other = tmp_path / "other.yaml"
     other.write_text("model:\n  default: aaaa-route\n", encoding="utf-8")
-    shutil.copy2(other, cfg)
-    os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
+    # Replace the inode rather than depending on ctime advancing within one
+    # filesystem clock tick (or on Windows treating ctime as modification time).
+    os.utime(other, ns=(st.st_atime_ns, st.st_mtime_ns))
+    other.replace(cfg)
+    assert cfg.stat().st_mtime_ns == st.st_mtime_ns
+    assert cfg.stat().st_size == st.st_size
     assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"

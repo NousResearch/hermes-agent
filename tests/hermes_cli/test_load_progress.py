@@ -12,10 +12,18 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 import hermes_cli.local_runtime.load_progress as lp
 
 
-def setup_function(_fn):
+@pytest.fixture(autouse=True)
+def isolate_load_progress_watcher(monkeypatch):
+    """Keep unit snapshots independent of the process-wide SSE watcher."""
+    monkeypatch.setattr(lp, "_ensure_watcher", lambda: None)
+    with lp._lock:
+        lp._snapshot.clear()
+    yield
     with lp._lock:
         lp._snapshot.clear()
 

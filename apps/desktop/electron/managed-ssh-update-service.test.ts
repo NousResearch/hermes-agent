@@ -65,7 +65,7 @@ function deps(
     openTransport: async () => ({ target: target(), close: async () => {} }),
     targetFromState: () => target(),
     executeRemoteUpdate: async (_target, correlation, context) => {
-      await context.onLaunchProved()
+      await context.beforeLaunchDispatch()
 
       return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
     },
@@ -94,7 +94,7 @@ test('service admission deduplicates duplicate claims and refuses foreign source
       executeRemoteUpdate: async (_target, correlation, context) => {
         executions += 1
         await pending
-        await context.onLaunchProved()
+        await context.beforeLaunchDispatch()
 
         return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
       }
@@ -148,6 +148,43 @@ test('fleet service uses the exact legacy gate and operation maps for admission'
   gate.release('homelab', CORRELATION)
 })
 
+test('coordinator never reuses an active scope SSH socket for a reviewed source', async () => {
+  const staleTarget = target()
+  const selectedTarget = target()
+  let opened = 0
+  let inspected: RemoteUpdateTarget | null = null
+  let mutated: RemoteUpdateTarget | null = null
+  const service = createManagedSshUpdateService(deps({
+    captureScopes: async () => [{ key: 'primary', profile: 'default', state: { ssh: staleTarget.ssh } }],
+    targetFromState: () => staleTarget,
+    openTransport: async () => {
+      opened += 1
+
+      return { target: selectedTarget, close: async () => {} }
+    },
+    verifyCoordinatorSource: async (_source, selected) => {inspected = selected},
+    executeRemoteUpdate: async (selected, correlation, context) => {
+      mutated = selected
+      await context.beforeLaunchDispatch()
+
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+  const admission = service.requestCoordinator('homelab', {
+    correlationId: CORRELATION,
+    intent: PINNED_INTENT,
+    expectedSource: EXPECTED_SOURCE,
+    launchCapability: capability
+  })
+
+  assert.equal(admission.admitted, true)
+  assert.equal((await admission.operation).ok, true)
+  assert.equal(opened, 1)
+  assert.strictEqual(inspected, selectedTarget)
+  assert.strictEqual(mutated, selectedTarget)
+})
+
 test('durable ownership fences new admission and only the exact owner can release it', () => {
   const service = createManagedSshUpdateService(
     deps({
@@ -181,7 +218,7 @@ test('coordinator forwarding requires a capability bound to one exact pinned mut
       executeRemoteUpdate: async (_target, correlation, context) => {
         mutations += 1
         forwarded = context.intent
-        await context.onLaunchProved()
+        await context.beforeLaunchDispatch()
 
         return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
       }
@@ -221,7 +258,7 @@ test('a coordinator update cannot reach mutation transport without its matching 
       verifyCoordinatorSource: async () => {},
       executeRemoteUpdate: async (_target, correlation, context) => {
         mutations += 1
-        await context.onLaunchProved()
+        await context.beforeLaunchDispatch()
 
         return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
       }
@@ -351,7 +388,7 @@ test('preparation shares admission with updates, records its receipt, and does n
     deps({
       executeRemoteUpdate: async (_target, correlation, context) => {
         launched += 1
-        await context.onLaunchProved()
+        await context.beforeLaunchDispatch()
 
         return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
       },
@@ -440,7 +477,7 @@ test('service captures, restores, closes owned transport, and releases admission
       drainScope: async scope => events.push(`drain:${scope.profile}`),
       executeRemoteUpdate: async (_target, correlation, context) => {
         events.push('launch')
-        await context.onLaunchProved()
+        await context.beforeLaunchDispatch()
 
         return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
       },

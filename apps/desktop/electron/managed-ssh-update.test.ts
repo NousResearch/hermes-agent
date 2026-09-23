@@ -11,6 +11,7 @@ import {
   buildPosixManagedUpdateLaunch,
   buildRemoteUpdateObservationCommand,
   buildWindowsManagedUpdateLaunch,
+  executeManagedRemoteUpdate,
   fenceManagedSshBootstrapPublication,
   ManagedConnectionUpdateGate,
   managedSshRecoveryScopes,
@@ -58,6 +59,30 @@ function observation(over: Record<string, unknown> = {}) {
     ...over
   })
 }
+
+test('durable launch phase is written before SSH can dispatch the updater', async () => {
+  let launchCommands = 0
+  const target = {
+    ssh: { exec: async (command: string) => {
+      if (command.includes('setsid sh -c')) {
+        launchCommands += 1
+
+        return 'MANAGED_UPDATE_STARTED'
+      }
+
+      return observation()
+    } },
+    platform: 'Linux' as const,
+    hermesPath: '/srv/hermes/.venv/bin/hermes',
+    hermesHome: '/srv/hermes-home'
+  }
+
+  await assert.rejects(
+    executeManagedRemoteUpdate(target, CORRELATION, {}, async () => {throw new Error('durable-intent-write-failed')}),
+    /durable-intent-write-failed/
+  )
+  assert.equal(launchCommands, 0)
+})
 
 test('pinned update launch forwards the exact canonical reviewed-source binding', () => {
   const target = {

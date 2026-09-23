@@ -88,7 +88,7 @@ function service(counters: { transports: number; mutations: number }) {
     },
     executeRemoteUpdate: async (_target, correlationId, context) => {
       counters.mutations += 1
-      await context.onLaunchProved()
+      await context.beforeLaunchDispatch()
 
       return { exitCode: 0, receipt: { correlationId, outcome: 'success' } }
     },

@@ -557,7 +557,7 @@ export function createManagedSshLifecycleRuntime(deps: any) {
     executeRemoteUpdate: (target, correlationId, context) =>
       executeManagedRemoteUpdate(target, correlationId, {}, async () => {
         markManagedSshRecoveryLaunching(context.connectionId, correlationId)
-        await context.onLaunchProved()
+        await context.beforeLaunchDispatch()
       }, context.intent),
     preflightRemote: assertManagedUpdatePreflightClear,
     awaitRestoreClearance: waitForManagedRemoteClearance,

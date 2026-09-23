@@ -111,7 +111,7 @@ export interface ManagedSshUpdateServiceDependencies<
   executeRemoteUpdate: (
     target: RemoteUpdateTarget,
     correlationId: string,
-    context: { connectionId: string; intent?: ManagedSshUpdateIntent; onLaunchProved: () => Promise<void> }
+    context: { connectionId: string; intent?: ManagedSshUpdateIntent; beforeLaunchDispatch: () => Promise<void> }
   ) => Promise<RemoteUpdateProof>
   /** Probe the selected transport, live registry route, installation, and host key before mutation. */
   verifyCoordinatorSource?: (
@@ -289,7 +289,9 @@ export function createManagedSshUpdateService<
     let launchAttempted = false
     const firstState = scopes.find(scope => scope.state !== undefined && scope.state !== null)?.state
 
-    const target = firstState
+    // An active scope may still hold a socket to the prior registry route.
+    // Fleet mutation must use a fresh connection from the reviewed snapshot.
+    const target = options.mode !== 'coordinator' && firstState
       ? deps.targetFromState(firstState)
       : (ephemeral = await deps.openTransport(sourceSnapshot)).target
 
@@ -314,7 +316,7 @@ export function createManagedSshUpdateService<
         return deps.executeRemoteUpdate(target, correlationId, {
           connectionId,
           intent,
-          onLaunchProved: async () => {
+          beforeLaunchDispatch: async () => {
             launchAttempted = true
           }
         })

@@ -839,13 +839,16 @@ async function executeManagedRemoteUpdate(
   target: RemoteUpdateTarget,
   correlationId: string,
   options: Parameters<typeof waitForManagedRemoteUpdate>[2] = {},
-  onLaunchProved: () => Promise<void> = async () => {},
+  beforeLaunchDispatch: () => Promise<void> = async () => {},
   intent?: ManagedSshUpdateIntent | null
 ): Promise<RemoteUpdateProof> {
   const pinnedIntent = validateManagedSshUpdateIntent(intent)
   await assertManagedUpdatePreflightClear(target, correlationId)
+  // Persist the uncertain launch phase before SSH can spawn a remote child.
+  // A lost acknowledgement must never leave a genuinely launched update in
+  // the prelaunch recovery state.
+  await beforeLaunchDispatch()
   await launchManagedRemoteUpdate(target, correlationId, pinnedIntent)
-  await onLaunchProved()
 
   return waitForManagedRemoteUpdate(target, correlationId, options)
 }

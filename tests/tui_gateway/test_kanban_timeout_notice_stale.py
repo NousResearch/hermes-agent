@@ -86,3 +86,49 @@ def test_other_kinds_are_untouched(tmp_path, monkeypatch):
         assert text is not None and "done" in text, text
     finally:
         conn.close()
+
+
+def _crash_event(conn, tid):
+    """The exact event ``detect_crashed_workers`` appends for one lost worker."""
+    kb._append_event(conn, tid, "crashed", {"pid": 4242, "claimer": "host:1", "retry_status": "ready"})
+
+
+def test_finished_card_gets_no_crash_notice(tmp_path, monkeypatch):
+    """Sibling kind, same defect: the crash notice predicts the same retry."""
+    conn, tid = _board(tmp_path, monkeypatch)
+    try:
+        _crash_event(conn, tid)
+        assert kb.complete_task(conn, tid, summary="finished anyway") is True
+        task = kb.get_task(conn, tid)
+        assert _format_kanban_event_text(
+            {"task_id": tid, "platform": "tui", "chat_id": "sess-1"}, task,
+            _Ev("crashed", {"pid": 4242}), "default",
+        ) is None
+    finally:
+        conn.close()
+
+
+def test_queued_retry_still_says_crash_retry(tmp_path, monkeypatch):
+    """Companion case: the retry really is queued, so the crash claim stands."""
+    conn, tid = _board(tmp_path, monkeypatch)
+    try:
+        _crash_event(conn, tid)
+        text = _render(conn, tid, _Ev("crashed", {"pid": 4242}))
+        assert text is not None
+        assert text.endswith("Kanban %s worker crashed (pid gone); dispatcher will retry" % tid), text
+    finally:
+        conn.close()
+
+
+def test_crash_without_a_queued_retry_reports_the_live_status(tmp_path, monkeypatch):
+    """A blocked card claims nothing and names where it actually stands."""
+    conn, tid = _board(tmp_path, monkeypatch)
+    try:
+        _crash_event(conn, tid)
+        assert kb.block_task(conn, tid, reason="worker died for good") is True
+        text = _render(conn, tid, _Ev("crashed", {"pid": 4242}))
+        assert text is not None
+        assert "dispatcher will retry" not in text, text
+        assert "no retry is queued" in text and "blocked" in text, text
+    finally:
+        conn.close()

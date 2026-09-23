@@ -331,13 +331,30 @@ def _kb_timed_out(task, payload: dict, title: str) -> Optional[str]:
     return f" timed out (max_runtime={limit}s); {no_retry_clause(task)}"
 
 
+def _kb_crashed(task, payload: dict, title: str) -> Optional[str]:
+    """None when the card has since finished — the retry claim must come from the LIVE row.
+
+    Sibling of ``_kb_timed_out``: ``crashed`` predicts the same retry, so it carries the
+    same defect (and the gateway renderer already guards it in
+    ``gateway.kanban_watchers_notifier._fmt_crashed``). Keeping the guard here too is what
+    makes the two surfaces agree for this kind.
+    """
+    from gateway.kanban_watchers_notifier import no_retry_clause, retry_notice_claim
+    claim = retry_notice_claim(task)
+    if claim == "terminal":
+        return None  # the card's own terminal notice already told the story
+    if claim == "pending":
+        return " worker crashed (pid gone); dispatcher will retry"
+    return f" worker crashed (pid gone); {no_retry_clause(task)}"
+
+
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
 _KANBAN_EVENT_FORMATTERS = {
     "completed": ("✔", _kb_completed),
     "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
     "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
-    "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
+    "crashed": ("✖", _kb_crashed),
     "timed_out": ("⏱", _kb_timed_out),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
 }

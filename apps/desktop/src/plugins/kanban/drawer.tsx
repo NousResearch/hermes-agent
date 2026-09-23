@@ -380,6 +380,8 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           <Codicon name={editing ? 'close' : 'edit'} size="0.75rem" />
         </Button>
       }
+      collapsible
+      defaultCollapsed
       label={k.description}
     >
       {editing ? (
@@ -804,18 +806,21 @@ export function TaskDrawer({
               </Section>
             )}
 
-            <DescriptionSection body={task.body} onSave={body => void mutate(() => patchTask(task.id, { body }))()} />
+            <DescriptionSection
+              body={task.body}
+              onSave={body => void mutate(() => patchTask(task.id, { body }))()}
+            />
 
             <EstimateSection id={task.id} />
 
             {task.result && (
-              <Section label={k.result}>
+              <Section collapsible defaultCollapsed label={k.result}>
                 <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.result}</p>
               </Section>
             )}
 
             {task.latest_summary && !isAdminSummary(task.latest_summary) && (
-              <Section label={k.latestSummary}>
+              <Section collapsible defaultCollapsed label={k.latestSummary}>
                 <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.latest_summary}</p>
               </Section>
             )}
@@ -903,7 +908,7 @@ export function TaskDrawer({
             )}
 
             {detail.runs.length > 0 && (
-              <Section label={k.runs(detail.runs.length)}>
+              <Section collapsible defaultCollapsed label={k.runs(detail.runs.length)}>
                 <ScrollFade max="11rem">
                   <ul className="flex flex-col gap-1.5">
                     {detail.runs.map(run => {

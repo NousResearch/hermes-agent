@@ -233,14 +233,45 @@ export function StatusMenu({
 // create dialog's Field, and the orchestration panel all read identically.
 export const FIELD_LABEL = 'text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-quaternary)'
 
-export function Section({ action, children, label }: { action?: ReactNode; children: ReactNode; label: string }) {
+export function Section({
+  action,
+  children,
+  collapsible = false,
+  defaultCollapsed = false,
+  label
+}: {
+  action?: ReactNode
+  children: ReactNode
+  collapsible?: boolean
+  defaultCollapsed?: boolean
+  label: string
+}) {
+  const k = useKanban()
+  const [collapsed, setCollapsed] = useState(defaultCollapsed)
+
   return (
     <section className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between">
-        <div className={FIELD_LABEL}>{label}</div>
+        {collapsible ? (
+          <button
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? k.expand(label) : k.collapse(label)}
+            className={`${FIELD_LABEL} flex cursor-pointer select-none items-center gap-1 bg-transparent border-0 p-0 hover:text-(--ui-text-secondary) transition-colors`}
+            onClick={() => setCollapsed(c => !c)}
+            type="button"
+          >
+            <span
+              className="codicon codicon-chevron-right transition-transform duration-150"
+              style={{ fontSize: '0.6rem', transform: collapsed ? undefined : 'rotate(90deg)' }}
+            />
+            {label}
+          </button>
+        ) : (
+          <div className={FIELD_LABEL}>{label}</div>
+        )}
         {action}
       </div>
-      {children}
+      {!collapsed && children}
     </section>
   )
 }

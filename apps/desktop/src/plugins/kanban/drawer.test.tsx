@@ -87,6 +87,8 @@ describe('task attachment compatibility', () => {
       openDrawer()
 
       expect(await screen.findByRole('heading', { name: legacyDetail.task.title })).toBeTruthy()
+      // Description is collapsed by default — expand it first.
+      fireEvent.click(screen.getByRole('button', { name: en.expand(en.description) }))
       expect(screen.getByText(legacyDetail.task.body!)).toBeTruthy()
       expect(screen.getByText(legacyDetail.comments[0].body)).toBeTruthy()
       expect(screen.queryByRole('button', { name: en.uploadAttachment })).toBeNull()

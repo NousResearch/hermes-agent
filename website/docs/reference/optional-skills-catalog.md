@@ -97,6 +97,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**actual-setup**](../user-guide/skills/optional/devops/devops-actual-setup.md) | Set up Actual Computer (actual.inc) inference in Hermes. |
+| [**desktop-app-agent-bridge**](../user-guide/skills/optional/devops/devops-desktop-app-agent-bridge.md) | Use when a desktop app's agent must run on another host. |
 | [**docker-management**](../user-guide/skills/optional/devops/devops-docker-management.md) | Manage Docker containers, images, volumes, and Compose. |
 | [**hermes-s6-container-supervision**](../user-guide/skills/optional/devops/devops-hermes-s6-container-supervision.md) | Modify or debug s6 services in the Hermes Docker image. |
 | [**inference-sh-cli**](../user-guide/skills/optional/devops/devops-inference-sh-cli.md) | Run 150+ AI apps (image, video, LLM) via inference.sh CLI. |

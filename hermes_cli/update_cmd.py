@@ -949,9 +949,26 @@ def _apply_parked_branch_guard(
     return False, True, switch_block_reason
 
 
+def _should_prompt_for_stash_restore(
+    auto_stash_ref: str | None,
+    keep_stash: bool,
+    assume_yes: bool,
+    gateway_mode: bool,
+    stdin_isatty: bool,
+    stdout_isatty: bool,
+) -> bool:
+    """Return whether an interactive stash-restore question is meaningful."""
+    return bool(
+        auto_stash_ref is not None
+        and not keep_stash
+        and not assume_yes
+        and (gateway_mode or (stdin_isatty and stdout_isatty))
+    )
+
+
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
-    switch_branch, _windows_gateway_resume):
+    switch_branch, keep_stash, _windows_gateway_resume):
     """Parked-branch guard, land on the target, stash, count new commits. Exits when the
     checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up to
     date, -1 when tips differ but the shallow count is unrecoverable."""
@@ -976,10 +993,14 @@ def _prepare_checkout_for_update(
                 print(f"  {track_result.stderr.strip().splitlines()[0]}")
             sys.exit(1)
 
-    prompt_for_restore = (
-        auto_stash_ref is not None
-        and not assume_yes
-        and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())))
+    prompt_for_restore = _should_prompt_for_stash_restore(
+        auto_stash_ref,
+        keep_stash,
+        assume_yes,
+        gateway_mode,
+        sys.stdin.isatty(),
+        sys.stdout.isatty(),
+    )
 
     # On shallow checkouts `rev-list --count` can report the entire remote ancestry. The
     # zero/nonzero gate is still sound; treat the shallow NUMBER as unknown and recover it
@@ -1650,7 +1671,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
-            _windows_gateway_resume=_windows_gateway_resume)
+            keep_stash=opts.keep_stash, _windows_gateway_resume=_windows_gateway_resume)
         commit_count = _plan.commit_count
 
         if commit_count == 0:

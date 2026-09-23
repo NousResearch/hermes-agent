@@ -90,7 +90,14 @@ class TestApprovalCard:
         adapter.send.assert_awaited_once_with("zhangsan", "⚠️ fallback text")
 
 
-def _tap_payload(task_id, event_key, *, userid="zhangsan", chattype="single", chatid=""):
+def _tap_payload(task_id, event_key, *, userid="zhangsan", chattype="single", chatid="", selected=None):
+    """One template_card_event. ``selected`` mirrors WeCom's dropdown state on a tap:
+    {question_key: chosen option id} → selected_items.selected_item[].option_ids.option_id."""
+    tce = {"card_type": "button_interaction", "event_key": event_key, "task_id": task_id}
+    if selected:
+        tce["selected_items"] = {"selected_item": [
+            {"question_key": key, "option_ids": {"option_id": [value]}}
+            for key, value in selected.items()]}
     return {
         "cmd": "aibot_event_callback",
         "headers": {"req_id": "req-1"},
@@ -99,8 +106,7 @@ def _tap_payload(task_id, event_key, *, userid="zhangsan", chattype="single", ch
             "aibotid": "BOT", "chattype": chattype, "chatid": chatid,
             "from": {"userid": userid},
             "msgtype": "event",
-            "event": {"eventtype": "template_card_event", "template_card_event": {
-                "card_type": "button_interaction", "event_key": event_key, "task_id": task_id}},
+            "event": {"eventtype": "template_card_event", "template_card_event": tce},
         },
     }
 
@@ -129,13 +135,22 @@ class TestModelPicker:
         assert result.success is True
         card = captured["body"]
         assert card["card_type"] == "button_interaction"
-        # First page = providers, not models
-        keys = [b["key"] for b in card["button_list"]]
-        assert keys == ["p:alibaba-token-plan-cn", "p:deepseek"]
-        texts = [b["text"] for b in card["button_list"]]
-        assert texts[1].startswith("✓")  # deepseek is current provider
+        # First page = providers, not models. Buttons are only paging + Next (providers page has
+        # no Back); the names live in the dropdown.
+        assert [b["key"] for b in card["button_list"]] == ["ppg:0", "ppg:0", "pick"]
+        sel = card["button_selection"]
+        assert sel["question_key"] == "provider"
+        assert sel["title"] == "提供商"
+        assert len(sel["option_list"]) == 2
+        # Regression: dropdown options get the full row width, so names are NOT button-clipped.
+        # (Names come from the adapter's get_label mapping, which may differ from the raw fixture.)
         assert len(adapter._model_picker_state) == 1
         state = next(iter(adapter._model_picker_state.values()))
+        assert [o["text"] for o in sel["option_list"]] == [
+            adapter._option_text(p["name"]) for p in state["providers"]]
+        assert [o["id"] for o in sel["option_list"]] == ["alibaba-token-plan-cn", "deepseek"]
+        # The active provider is preselected so one tap on '下一步' keeps it.
+        assert sel["selected_id"] == "deepseek"
         assert state["stage"] == "providers"
         # Names flow through the real get_label mapping (English labels under test env);
         # pin slugs/models/flags, only require a non-empty display name.
@@ -144,7 +159,48 @@ class TestModelPicker:
         assert [p["is_current"] for p in state["providers"]] == [False, True]
         assert all(p["name"] for p in state["providers"])
 
-    def test_provider_tap_drills_into_model_page(self, monkeypatch):
+    def test_dropdown_options_carry_full_names(self):
+        """Regression: a WeCom button renders ~6 ASCII chars on a 3-per-row line (the client
+        ellipsises a name), so names go in a dropdown, whose options get the full row width.
+        Keep them inside the docs' ≤10 字 — 20 ASCII chars, cut at exactly 20."""
+        adapter = _make_adapter(None)
+        # A date stamp costs width without distinguishing anything a user picks on, so it goes
+        # first — which is what lets a real id fit at all (22 chars → 17).
+        assert adapter._option_text("deepseek-v4-flash-0731") == "deepseek-v4-flash"
+        # Anything still over 20 is cut at exactly 20 chars (no ellipsis slot).
+        assert adapter._option_text("Alibaba Token Plan (China)") == "Alibaba Token Plan ("
+        assert adapter._option_text("x" * 40) == "x" * 20
+        card = adapter._button_interaction_card(
+            title="t", desc="d", sub_title="s", task_id="mx:1",
+            buttons=[{"text": "切换", "key": "apply"}],
+            selection=adapter._selection("model", "模型", [
+                {"id": "deepseek-v4-flash-0731", "text": adapter._option_text("deepseek-v4-flash-0731")}]))
+        # The option text is the trimmed label; the id keeps the real model id for the callback.
+        option = card["button_selection"]["option_list"][0]
+        assert option["text"] == "deepseek-v4-flash" and option["id"] == "deepseek-v4-flash-0731"
+
+    def test_no_selection_key_when_absent(self):
+        adapter = _make_adapter(None)
+        card = adapter._button_interaction_card(
+            title="t", desc="d", sub_title="s", task_id="a1",
+            buttons=[{"text": "批准一次", "key": "once"}])
+        # The approval card has no dropdown; the key must be absent, not an empty object.
+        assert "button_selection" not in card
+
+    def test_parses_selected_items_payload(self):
+        """Wire shape: selected_items.selected_item[] → {question_key: option_ids.option_id[0]}.
+        The action button is '切换'/'下一步', so the chosen value must survive parsing."""
+        adapter = _make_adapter(None)
+        assert adapter._parse_selected_items({"selected_items": {"selected_item": [
+            {"question_key": "model", "option_ids": {"option_id": ["deepseek-flash"]}}]}}) == {"model": "deepseek-flash"}
+        # A lone item may arrive unwrapped, and a single id may arrive as a bare string.
+        assert adapter._parse_selected_items({"selected_items": {"selected_item": {
+            "question_key": "provider", "option_ids": {"option_id": "deepseek"}}}}) == {"provider": "deepseek"}
+        # No dropdown interaction at all (the tap only pressed a button).
+        assert adapter._parse_selected_items(None) == {}
+        assert adapter._parse_selected_items({"selected_items": {}}) == {}
+
+    def test_provider_pick_drills_into_model_page(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         adapter._update_card = AsyncMock()
         adapter._model_picker_state["mp-1"] = {
@@ -159,16 +215,60 @@ class TestModelPicker:
             "stage": "providers", "selected_provider": "", "model_page": 0,
             "on_model_selected": AsyncMock(),
         }
-        asyncio.run(adapter._handle_template_card_event(_tap_payload("mp-1", "p:deepseek")))
+        # The chosen provider arrives in the dropdown payload, not on the button key.
+        asyncio.run(adapter._handle_template_card_event(
+            _tap_payload("mp-1", "pick", selected={"provider": "deepseek"})))
         state = adapter._model_picker_state["mp-1"]
         assert state["stage"] == "models"
         assert state["selected_provider"] == "deepseek"
         adapter._update_card.assert_awaited_once()
-        # The card re-rendered for deepseek's models: 2 models + back (+next nav absent w/ 1 page)
         card = adapter._update_card.call_args[0][1]
-        assert [b["key"] for b in card["button_list"]] == ["m:0", "m:1", "back"]
+        assert [b["key"] for b in card["button_list"]] == ["back", "pg:0", "pg:0", "apply"]
+        sel = card["button_selection"]
+        assert sel["question_key"] == "model"
+        assert [o["id"] for o in sel["option_list"]] == ["deepseek-flash", "deepseek-v3"]
+        assert sel["selected_id"] == "deepseek-flash"  # the active model is preselected
         # state retained — drilling is not resolution
         assert "mp-1" in adapter._model_picker_state
+
+    def test_pick_without_a_selection_uses_the_active_provider(self, monkeypatch):
+        """Tapping '下一步' without touching the dropdown must still work (no dead end)."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._update_card = AsyncMock()
+        adapter._model_picker_state["mp-6"] = {
+            "session_key": "s", "chat_id": "zhangsan", "current_model": "m", "current_provider": "b",
+            "providers": [{"slug": "a", "name": "A", "models": ["m1"], "is_current": False},
+                          {"slug": "b", "name": "B", "models": ["m2"], "is_current": True}],
+            "stage": "providers", "selected_provider": "", "model_page": 0,
+            "on_model_selected": AsyncMock(),
+        }
+        asyncio.run(adapter._handle_template_card_event(_tap_payload("mp-6", "pick")))
+        assert adapter._model_picker_state["mp-6"]["selected_provider"] == "b"
+
+    def test_provider_page_paginates(self, monkeypatch):
+        """More than 10 providers spill to a second dropdown page (SelectionItem caps at 10)."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._update_card = AsyncMock()
+        adapter._model_picker_state["mp-5"] = {
+            "session_key": "s", "chat_id": "zhangsan", "current_model": "m", "current_provider": "a12",
+            "providers": [{"slug": f"a{i}", "name": f"Brand{i}", "models": ["m1", "m2"], "is_current": False}
+                          for i in range(12)],
+            "stage": "providers", "selected_provider": "", "model_page": 0, "provider_page": 0,
+            "on_model_selected": AsyncMock(),
+        }
+        card = adapter._build_provider_card("mp-5")
+        assert [b["key"] for b in card["button_list"]] == ["ppg:0", "ppg:1", "pick"]
+        sel = card["button_selection"]
+        assert len(sel["option_list"]) == 10  # the SelectionItem cap
+        assert [o["id"] for o in sel["option_list"]] == [f"a{i}" for i in range(10)]
+        asyncio.run(adapter._handle_template_card_event(_tap_payload("mp-5", "ppg:1")))
+        assert adapter._model_picker_state["mp-5"]["provider_page"] == 1
+        card = adapter._update_card.call_args[0][1]
+        sel = card["button_selection"]
+        assert [o["id"] for o in sel["option_list"]] == ["a10", "a11"]  # the remainder
+        # The active provider (a12) is only on page 1, so this page has no preselection
+        assert "selected_id" not in sel
+        assert "mp-5" in adapter._model_picker_state  # paging never resolves the picker
 
     def test_back_returns_to_provider_page(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -183,29 +283,31 @@ class TestModelPicker:
         state = adapter._model_picker_state["mp-2"]
         assert state["stage"] == "providers"
         assert state["selected_provider"] == ""
+        assert state["model_page"] == 0
 
     def test_model_page_paginates(self, monkeypatch):
+        """25 models ⇒ 3 dropdown pages of 10, each with 返回/上页/下页/切换 and its own options."""
         adapter = _make_adapter(monkeypatch)
         adapter._model_picker_state["mp-3"] = {
-            "session_key": "s", "chat_id": "zhangsan", "current_model": "a1", "current_provider": "a",
-            "providers": [{"slug": "a", "name": "A", "models": [f"model-{i}" for i in range(7)], "is_current": True}],
+            "session_key": "s", "chat_id": "zhangsan", "current_model": "model-21", "current_provider": "a",
+            "providers": [{"slug": "a", "name": "A", "models": [f"model-{i}" for i in range(25)], "is_current": True}],
             "stage": "models", "selected_provider": "a", "model_page": 0,
             "on_model_selected": AsyncMock(),
         }
-        # Page 0: 3 models + back + next (no prev)
         card = adapter._build_model_card("mp-3")
-        keys = [b["key"] for b in card["button_list"]]
-        assert keys == ["m:0", "m:1", "m:2", "back", "pg:1"]
-        # Page 1: 3 models + back + both navs
-        adapter._model_picker_state["mp-3"]["model_page"] = 1
-        card = adapter._build_model_card("mp-3")
-        keys = [b["key"] for b in card["button_list"]]
-        assert keys == ["m:3", "m:4", "m:5", "back", "pg:0", "pg:2"]
-        assert len(keys) <= 6
-        # Last page: leftover model + back + prev
+        assert [b["key"] for b in card["button_list"]] == ["back", "pg:0", "pg:1", "apply"]
+        sel = card["button_selection"]
+        assert [o["id"] for o in sel["option_list"]] == [f"model-{i}" for i in range(10)]
+        assert "selected_id" not in sel  # the active model is not on page 0
+        # Last page: the 5 remaining models, and the active model is now preselected
         adapter._model_picker_state["mp-3"]["model_page"] = 2
         card = adapter._build_model_card("mp-3")
-        assert [b["key"] for b in card["button_list"]] == ["m:6", "back", "pg:1"]
+        sel = card["button_selection"]
+        assert [o["id"] for o in sel["option_list"]] == [f"model-{i}" for i in range(20, 25)]
+        assert sel["selected_id"] == "model-21"
+        # Never more than 10 options, and never more than 6 buttons (both protocol caps)
+        assert len(sel["option_list"]) <= 10
+        assert len(card["button_list"]) <= CARD_BUTTON_MAX
 
     def test_model_tap_calls_callback_and_forwards_result(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -218,7 +320,9 @@ class TestModelPicker:
                            "models": ["deepseek-flash", "deepseek-v3"], "is_current": True}],
             "stage": "models", "selected_provider": "deepseek", "model_page": 0,
             "on_model_selected": callback}
-        asyncio.run(adapter._handle_template_card_event(_tap_payload("mp-9", "m:0")))
+        # The tapped button is '切换'; the model id comes from the dropdown payload.
+        asyncio.run(adapter._handle_template_card_event(
+            _tap_payload("mp-9", "apply", selected={"model": "deepseek-flash"})))
         callback.assert_awaited_once_with("zhangsan", "deepseek-flash", "deepseek")
         adapter.send.assert_awaited_once_with("zhangsan", "✅ 已切换到 deepseek-flash")
         assert "mp-9" not in adapter._model_picker_state  # popped on selection
@@ -271,7 +375,9 @@ class TestInboundTaps:
                            "models": ["deepseek-flash", "deepseek-v3"], "is_current": True}],
             "stage": "models", "selected_provider": "deepseek", "model_page": 0,
             "on_model_selected": callback}
-        asyncio.run(adapter._handle_template_card_event(_tap_payload("mp-9", "m:0")))
+        # The tapped button is '切换'; the model id comes from the dropdown payload.
+        asyncio.run(adapter._handle_template_card_event(
+            _tap_payload("mp-9", "apply", selected={"model": "deepseek-flash"})))
         callback.assert_awaited_once_with("zhangsan", "deepseek-flash", "deepseek")
         adapter.send.assert_awaited_once_with("zhangsan", "✅ 已切换到 deepseek-flash")
         assert "mp-9" not in adapter._model_picker_state

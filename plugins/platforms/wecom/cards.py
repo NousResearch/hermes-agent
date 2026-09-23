@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -39,6 +40,21 @@ APP_CMD_RESPOND_UPDATE = "aibot_respond_update_msg"
 # WeCom caps button_list at 6; keep per-chat card state (task_id → session) bounded.
 CARD_BUTTON_MAX = 6
 CARD_STATE_MAX = 500
+
+# Model-picker dropdowns: one ``button_selection`` per card page, 10 options per page (the
+# SelectionItem cap), with paging buttons for the rest. Question keys identify the dropdown in
+# the callback; button keys identify the action.
+_PROVIDER_QUESTION_KEY = "provider"
+_MODEL_QUESTION_KEY = "model"
+_PICK_PROVIDER_KEY = "pick"      # provider page → model page
+_APPLY_MODEL_KEY = "apply"       # model page → switch the selected model
+# Paging/back button labels stay 2 CJK chars: WeCom packs buttons 3-per-row in a fixed-width
+# card, so a longer label gets ellipsised on a 3-per-row line.
+_NAV_LABELS = {
+    "back": "返回",
+    "prev_page": "上页",
+    "next_page": "下页",
+}
 
 # Approval tap labels (mirrors gateway/platforms/base.py _EA_ACTION_LABELS semantics).
 _APPROVAL_TAP_LABELS = {
@@ -79,15 +95,71 @@ class WeComCardMixin:
 
     def _button_interaction_card(
         self, *, title: str, desc: str, sub_title: str, buttons: List[Dict[str, str]], task_id: str,
+        selection: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """button_interaction card: main_title (title + desc), sub_title_text, ≤6 buttons."""
-        return {
+        """button_interaction card: main_title (title + desc), sub_title_text, ≤6 buttons, and
+        optionally one ``button_selection`` dropdown.
+
+        Names live in the dropdown, never on a button: WeCom packs button text into rows of 3
+        inside a fixed-width card, so a name renders ~6 ASCII chars and the client ellipsises the
+        rest ('Alibaba Token Plan (China)' → 'Aliba…'). Dropdown options get the full row width.
+        """
+        card: Dict[str, Any] = {
             "card_type": "button_interaction",
             "main_title": {"title": (title or "")[:64], "desc": (desc or "")[:128]},
             "sub_title_text": (sub_title or "")[:112],
             "button_list": [{"text": str(b["text"])[:10], "key": str(b["key"])[:1024]} for b in buttons[:CARD_BUTTON_MAX]],
             "task_id": task_id,
         }
+        if selection:
+            card["button_selection"] = selection
+        return card
+
+    @staticmethod
+    def _selection(question_key: str, title: str, options: List[Dict[str, str]],
+                   *, selected_id: str = "") -> Dict[str, Any]:
+        """One ``button_selection`` dropdown; ``selected_id`` preselects the active entry."""
+        sel: Dict[str, Any] = {
+            "question_key": question_key,
+            "title": (title or "")[:13],
+            "option_list": options,
+        }
+        if selected_id:
+            sel["selected_id"] = selected_id
+        return sel
+
+    def _page_nav_buttons(self, page: int, total_pages: int, *, page_key: str,
+                          include_back: bool) -> List[Dict[str, str]]:
+        """Paging buttons for a dropdown page. Both buttons are always present (a dead one points
+        at the current page and merely re-renders) — a stable count keeps the layout predictable."""
+        buttons: List[Dict[str, str]] = []
+        if include_back:
+            buttons.append({"text": _NAV_LABELS["back"], "key": "back"})
+        buttons.append({"text": _NAV_LABELS["prev_page"], "key": f"{page_key}:{max(0, page - 1)}"})
+        buttons.append({"text": _NAV_LABELS["next_page"], "key": f"{page_key}:{min(total_pages - 1, page + 1)}"})
+        return buttons
+
+    @staticmethod
+    def _parse_selected_items(tce: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        """Flatten ``selected_items.selected_item[]`` to {question_key: chosen option id}.
+
+        WeCom sends the tapped button as ``event_key`` alongside the dropdown state, so the
+        action button ('下一步' / '切换') reads the selection from here.
+        """
+        out: Dict[str, str] = {}
+        items = ((tce or {}).get("selected_items") or {}).get("selected_item") or []
+        if isinstance(items, dict):  # a lone item can arrive unwrapped
+            items = [items]
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("question_key") or "").strip()
+            ids = (item.get("option_ids") or {}).get("option_id") or []
+            if isinstance(ids, str):
+                ids = [ids]
+            if key and ids:
+                out[key] = str(ids[0])
+        return out
 
     @staticmethod
     def _text_notice_card(*, title: str, desc: str, task_id: str) -> Dict[str, Any]:
@@ -176,23 +248,27 @@ class WeComCardMixin:
 
     # ── model picker (slash_commands_model.py probes for this method) ─────────────────
 
-    # WeCom caps one card at 6 buttons: model pages use 3 model buttons + Back + page nav,
-    # leaving room for the nav row on every page (first/last pages drop one nav button).
-    _MODEL_PAGE_SIZE = 3
+    # The picker uses ``button_selection`` (a dropdown) rather than a grid of name buttons.
+    # Reason, measured on device: WeCom packs button_list into rows of 3 inside a fixed-width
+    # card, so a name on a 3-per-row line renders ~6 ASCII chars and the client ellipsises it
+    # ('Alibaba Token Plan (China)' → 'Aliba…'), and nothing in the protocol controls packing.
+    # A dropdown's options get the full row width, so real names fit, and one card holds 10
+    # options instead of 6 buttons. SelectionItem caps: ≤10 options, text "建议不超过10个字"
+    # (a CJK glyph is ~2 ASCII chars wide, so ~20 ASCII chars render).
+    _MAX_OPTIONS = 10
+    _OPTION_TEXT_MAX = 20
 
-    @staticmethod
-    def _picker_model_label(model_id: str, is_current: bool = False) -> str:
-        """Short model label for a WeCom button (≈10 chars incl. the ✓ marker). The most
-        distinguishing part of a model id is usually its tail (flash/max/turbo): keep that,
-        drop the series prefix. Falls back to a head+tail ellipse when even the tail is long."""
-        raw = str(model_id or "").split("/")[-1]
-        tail = raw.rsplit("-", 1)[-1] if "-" in raw else raw
-        label = f"✓ {tail}" if is_current else tail
-        if len(label) <= 10:
-            return label
-        if len(tail) <= 8:
-            return (f"✓ {tail}" if is_current else tail)[:10]
-        return (f"✓ {tail[:6]}…" if is_current else f"{tail[:8]}…")[:10]
+    @classmethod
+    def _option_text(cls, text: str, limit: Optional[int] = None) -> str:
+        """Fit a dropdown option label to the width the client renders (docs: ≤10 字 ≈ 20 ASCII
+        chars). A trailing date stamp is dropped first — it costs width without distinguishing
+        anything a user picks on ('deepseek-v4-flash-0731' → 'deepseek-v4-flash'); anything still
+        over the limit is cut at exactly ``limit`` chars, with no ellipsis taking up a slot."""
+        limit = limit or cls._OPTION_TEXT_MAX
+        text = " ".join(str(text or "").split())
+        stripped = re.sub(r"[-_]\d{4,8}$", "", text)
+        text = stripped or text
+        return text if len(text) <= limit else text[:limit].rstrip()
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str,
@@ -230,7 +306,7 @@ class WeComCardMixin:
             "session_key": session_key, "chat_id": chat_id,
             "current_model": str(current_model or ""), "current_provider": str(current_provider or ""),
             "providers": normalized, "stage": "providers", "selected_provider": "",
-            "model_page": 0, "on_model_selected": on_model_selected,
+            "model_page": 0, "provider_page": 0, "on_model_selected": on_model_selected,
         })
         card = self._build_provider_card(task_id)
         reply_req_id = None if self._find_active_turn_for_chat(chat_id) else self._cached_reply_req_id(chat_id, None)
@@ -242,46 +318,53 @@ class WeComCardMixin:
     # ── picker card builders (pure, driven by the persistent picker state) ──────────────
 
     def _build_provider_card(self, task_id: str) -> Dict[str, Any]:
-        """Provider page: one button per provider (current flagged), up to the 6-button cap."""
+        """Provider page: one dropdown of providers + a Next button.
+
+        A dropdown (not name buttons) because the option text gets the full card row width —
+        see the constants block above for why a button cannot show a name.
+        """
         state = self._model_picker_state.get(task_id) or {}
         providers = state.get("providers") or []
         current = str(state.get("current_model") or "unknown")
         cur_provider = str(state.get("current_provider") or "")
-        buttons = [{
-            "text": self._picker_model_label(p["name"] or p["slug"], p.get("is_current", False)),
-            "key": f"p:{p['slug']}",
-        } for p in providers[:CARD_BUTTON_MAX]]
-        extra = f"（仅列前 {CARD_BUTTON_MAX} 个，可用 /model 直接输名称）" if len(providers) > CARD_BUTTON_MAX else ""
-        return self._button_interaction_card(
-            title="⚙️ 模型选择", desc=f"当前：{current}（{cur_provider}）",
-            sub_title=f"选择提供商{extra}", buttons=buttons, task_id=task_id)
-
-    def _build_model_card(self, task_id: str) -> Dict[str, Any]:
-        """Model page for the selected provider: 3 models + Back + page nav (<6 buttons)."""
-        state = self._model_picker_state.get(task_id) or {}
-        provider = next((p for p in (state.get("providers") or []) if p["slug"] == state.get("selected_provider")), None)
-        models = provider.get("models", []) if provider else []
-        page = int(state.get("model_page") or 0)
-        total_pages = max(1, (len(models) + self._MODEL_PAGE_SIZE - 1) // self._MODEL_PAGE_SIZE)
+        page = int(state.get("provider_page") or 0)
+        total_pages = max(1, -(-len(providers) // self._MAX_OPTIONS))
         page = min(page, total_pages - 1)
-        start = page * self._MODEL_PAGE_SIZE
-        page_models = models[start:start + self._MODEL_PAGE_SIZE]
-        current = str(state.get("current_model") or "")
-        buttons = [
-            {"text": self._picker_model_label(m, m == current), "key": f"m:{start + i}"}
-            for i, m in enumerate(page_models)
-        ]
-        nav: List[Dict[str, str]] = [{"text": "◀ 返回", "key": "back"}]
-        if page > 0:
-            nav.append({"text": "◀ 上一页", "key": f"pg:{page - 1}"})
-        if page < total_pages - 1:
-            nav.append({"text": "下一页 ▶", "key": f"pg:{page + 1}"})
-        buttons.extend(nav)
-        pname = provider.get("name", state.get("selected_provider") or "") if provider else ""
+        shown = providers[page * self._MAX_OPTIONS:(page + 1) * self._MAX_OPTIONS]
+        options = [{"id": str(p["slug"]), "text": self._option_text(p["name"] or p["slug"])} for p in shown]
+        # Preselect the active provider when it is on this page; else the client defaults to #1.
+        selected_id = next((p["slug"] for p in shown if p["slug"] == cur_provider), "")
+        buttons = self._page_nav_buttons(page, total_pages, page_key="ppg", include_back=False)
+        buttons.append({"text": "✅ 下一步", "key": _PICK_PROVIDER_KEY})
         page_hint = f" · 第 {page + 1}/{total_pages} 页" if total_pages > 1 else ""
         return self._button_interaction_card(
-            title="⚙️ 模型选择", desc=f"{pname} {page_hint}",
-            sub_title=f"当前：{current}", buttons=buttons, task_id=task_id)
+            title="⚙️ 模型选择", desc=f"当前：{current}（{cur_provider}）",
+            sub_title=f"选择提供商后点「下一步」{page_hint}",
+            buttons=buttons, task_id=task_id,
+            selection=self._selection(_PROVIDER_QUESTION_KEY, "提供商", options, selected_id=selected_id))
+
+    def _build_model_card(self, task_id: str) -> Dict[str, Any]:
+        """Model page for the selected provider: a dropdown page of its models + nav / Switch."""
+        state = self._model_picker_state.get(task_id) or {}
+        provider = next((p for p in (state.get("providers") or []) if p["slug"] == state.get("selected_provider")), None)
+        models = [str(m) for m in (provider.get("models", []) if provider else [])]
+        page = int(state.get("model_page") or 0)
+        total_pages = max(1, -(-len(models) // self._MAX_OPTIONS))
+        page = min(page, total_pages - 1)
+        shown = models[page * self._MAX_OPTIONS:(page + 1) * self._MAX_OPTIONS]
+        current = str(state.get("current_model") or "")
+        pname = provider.get("name", state.get("selected_provider") or "") if provider else ""
+        options = [{"id": m, "text": self._option_text(m)} for m in shown]
+        # Preselect the active model when it is on this page; otherwise the client picks #1.
+        selected_id = current if current in shown else ""
+        buttons = self._page_nav_buttons(page, total_pages, page_key="pg", include_back=True)
+        buttons.append({"text": "✅ 切换", "key": _APPLY_MODEL_KEY})
+        page_hint = f" · 第 {page + 1}/{total_pages} 页" if total_pages > 1 else ""
+        return self._button_interaction_card(
+            title="⚙️ 模型选择", desc=pname,
+            sub_title=f"当前：{current} · 选好后点「切换」{page_hint}",
+            buttons=buttons, task_id=task_id,
+            selection=self._selection(_MODEL_QUESTION_KEY, "模型", options, selected_id=selected_id))
 
     # ── inbound taps (aibot_event_callback → template_card_event) ─────────────────────
 
@@ -312,7 +395,8 @@ class WeComCardMixin:
         if task_id in self._approval_state:
             await self._resolve_approval_tap(payload, sender_id or chat_id, task_id, event_key)
         elif task_id in self._model_picker_state:
-            await self._resolve_model_picker_tap(payload, task_id, event_key, sender_id or chat_id)
+            await self._resolve_model_picker_tap(
+                payload, task_id, event_key, sender_id or chat_id, self._parse_selected_items(tce))
         else:
             logger.info("[%s] template-card tap for unknown/expired task_id=%r key=%r sender=%s",
                         self.name, task_id, event_key, sender_id)
@@ -341,25 +425,36 @@ class WeComCardMixin:
             task_id=task_id))
         logger.info("[%s] Approval card %s resolved by %s: choice=%s count=%d", self.name, task_id, user, choice, count)
 
-    async def _resolve_model_picker_tap(self, payload: Dict[str, Any], task_id: str, event_key: str, user: str) -> None:
-        """Route one model-picker tap within the two-level state machine. Provider/back/page
-        taps re-render the same card (5s window); only a model selection pops the state and
-        resolves. ``m:<idx>`` indexes into the selected provider's full model list."""
+    async def _resolve_model_picker_tap(self, payload: Dict[str, Any], task_id: str, event_key: str,
+                                        user: str, selected: Optional[Dict[str, str]] = None) -> None:
+        """Route one model-picker tap within the two-level state machine. Paging/back taps
+        re-render the same card (5s window); '下一步' moves provider → models; only '切换' pops the
+        state and resolves. The chosen value comes from the card's dropdown, not the button."""
         state = self._model_picker_state.get(task_id)
         if not state:
             logger.info("[%s] Model picker card %s already resolved", self.name, task_id)
             return
         req_id = self._payload_req_id(payload)
+        selected = selected or {}
         model: Optional[str] = None
-        if event_key.startswith("p:") and state.get("stage") == "providers":
-            slug = event_key[2:]
+        if event_key == _PICK_PROVIDER_KEY and state.get("stage") == "providers":
+            slug = selected.get(_PROVIDER_QUESTION_KEY) or str(state.get("current_provider") or "")
             provider = next((p for p in (state.get("providers") or []) if p["slug"] == slug), None)
+            if provider is None:  # dropdown untouched and the active provider is not listed: take #1
+                provider = (state.get("providers") or [None])[0]
             if provider:
-                state.update(stage="models", selected_provider=slug, model_page=0)
+                state.update(stage="models", selected_provider=str(provider["slug"]), model_page=0)
                 await self._update_card(req_id, self._build_model_card(task_id))
-                return
+            return
         if event_key == "back":
-            state.update(stage="providers", selected_provider="")
+            state.update(stage="providers", selected_provider="", provider_page=0, model_page=0)
+            await self._update_card(req_id, self._build_provider_card(task_id))
+            return
+        if event_key.startswith("ppg:") and state.get("stage") == "providers":
+            try:
+                state["provider_page"] = max(0, int(event_key[4:]))
+            except ValueError:
+                return
             await self._update_card(req_id, self._build_provider_card(task_id))
             return
         if event_key.startswith("pg:") and state.get("stage") == "models":
@@ -369,15 +464,12 @@ class WeComCardMixin:
                 return
             await self._update_card(req_id, self._build_model_card(task_id))
             return
-        if event_key.startswith("m:") and state.get("stage") == "models":
-            try:
-                idx = int(event_key[2:])
-            except ValueError:
-                return
+        if event_key == _APPLY_MODEL_KEY and state.get("stage") == "models":
+            candidate = selected.get(_MODEL_QUESTION_KEY) or ""
             provider = next((p for p in (state.get("providers") or []) if p["slug"] == state.get("selected_provider")), None)
-            models = provider.get("models", []) if provider else []
-            if 0 <= idx < len(models):
-                model = models[idx]
+            models = [str(m) for m in (provider.get("models", []) if provider else [])]
+            if candidate in models:
+                model = candidate
         if model is None:
             logger.info("[%s] Model-picker tap not actionable: key=%r stage=%r", self.name, event_key,
                         state.get("stage"))

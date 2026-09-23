@@ -126,11 +126,23 @@ replaced by a text_notice confirming the outcome after the tap.
 
 ### Model picker cards
 
-`/model` with no arguments renders a model picker card listing up to 6
-candidate models (the current provider's models first, the active model
-flagged with ✓). Tapping a model switches immediately; the card flips to a
-"switching…" notice and the result is delivered as a follow-up markdown
-message. More models than fit on one card? Type `/model <name>` directly.
+`/model` with no arguments renders a model picker card: a provider page first,
+then that provider's models. Picking a model switches immediately; the card
+flips to a "switching…" notice and the result is delivered as a follow-up
+markdown message.
+
+Both pages use a **dropdown** (`button_selection`) rather than a row of name
+buttons. WeCom packs button text into rows of three inside a fixed-width card,
+so a name on a three-per-row line renders about six ASCII characters and the
+client ellipsises the rest ("Alibaba Token Plan (China)" → "Aliba…"); a
+dropdown's options get the full row width instead, so the names stay readable.
+
+A dropdown holds at most 10 options (a protocol cap), so longer lists page via
+上页 / 下页 buttons. Option labels are trimmed to ~20 characters — the docs'
+"≤10 字" counted in CJK width — and a trailing date stamp is dropped first
+(`deepseek-v4-flash-0731` → `deepseek-v4-flash`). The model page keeps the
+active model preselected, so one tap on 切换 applies what the dropdown shows.
+To jump straight to a model that is not in the list, type `/model <name>`.
 
 ## Configuration Options
 

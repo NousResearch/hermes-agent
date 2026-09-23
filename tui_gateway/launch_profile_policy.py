@@ -169,7 +169,7 @@ def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
     home_token = secret_token = terminal_token = None
     try:
         home_token = set_hermes_home_override(str(home))
-        secret_token = set_secret_scope(launch_secret_scope(home), profile_home=str(home))
+        secret_token = set_secret_scope(launch_secret_scope(home))  # own home: no foreign stamp
         terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
         yield
     finally:

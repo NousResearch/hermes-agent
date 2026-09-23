@@ -86,13 +86,15 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
             home = Path(_hermes_home)
             secrets = launch_secret_scope(home)
-            scopes.secret = set_secret_scope(secrets, profile_home=str(home))
+            # No home stamp: this IS the process's own profile, and the stamp exists only to
+            # mark a FOREIGN home for serves_routed_profile().
+            scopes.secret = set_secret_scope(secrets)
             if not is_multiplex_active():
                 return scopes
             scopes.home = set_hermes_home_override(str(home))
             overlay = launch_terminal_env()
         if scopes.secret is None:
-            scopes.secret = set_secret_scope(secrets, profile_home=str(home))
+            scopes.secret = set_secret_scope(secrets, profile_home=str(home) if profile_home else None)
         # Same terminal policy the gateway binds per turn: a docker-configured profile
         # must never resolve the launch process's pinned env. Failure → refusal scope.
         from tools.terminal_scope import install_profile_terminal_scope

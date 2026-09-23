@@ -2,7 +2,9 @@
 names are Hermes-managed credentials. The env *builders* applying it (``_make_run_env``,
 ``_sanitize_subprocess_env``, ``hermes_subprocess_env``) live in ``tools.environments.local``."""
 
+import functools
 import os
+from typing import Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
@@ -214,10 +216,10 @@ _PROFILE_GATE_ENV_MARKERS = (
 _EXTRA_GATE_ENV_PREFIXES = frozenset({"GATEWAY", "QQ"})
 
 
-def _platform_gate_env_prefixes() -> frozenset:
-    """Upper-cased owners of authorization gates: built-in platforms, bundled platform plugins and
-    runtime-registered plugin adapters (``platform_registry``), plus :data:`_EXTRA_GATE_ENV_PREFIXES`.
-    Resolved per call — plugin registration is dynamic and profile-scoped."""
+@functools.lru_cache(maxsize=1)
+def _static_gate_env_prefixes() -> frozenset:
+    """Built-in ``Platform`` values plus bundled platform plugins (directory names and manifest
+    aliases) — fixed for the life of the process, so scanned once."""
     names = set(_EXTRA_GATE_ENV_PREFIXES)
     try:
         from gateway.config import Platform
@@ -227,15 +229,23 @@ def _platform_gate_env_prefixes() -> frozenset:
         names.update(aliases)
     except Exception:  # noqa: BLE001 — a broken gateway import must not disable the gate strip
         pass
-    try:
-        from gateway.platform_registry import platform_registry
-        names.update(platform_registry.registered_names())
-    except Exception:  # noqa: BLE001
-        pass
     return frozenset(str(n).upper().replace("-", "_") for n in names if n)
 
 
-def is_profile_gate_env(name: str) -> bool:
+def _platform_gate_env_prefixes() -> frozenset:
+    """Upper-cased owners of authorization gates: the static set plus runtime-registered plugin
+    adapters (``platform_registry``, dynamic and profile-scoped, so read per call — a cheap set
+    union under the registry lock)."""
+    names = set(_static_gate_env_prefixes())
+    try:
+        from gateway.platform_registry import platform_registry
+        names.update(str(n).upper().replace("-", "_") for n in platform_registry.registered_names() if n)
+    except Exception:  # noqa: BLE001
+        pass
+    return frozenset(names)
+
+
+def is_profile_gate_env(name: str, _prefixes: Optional[frozenset] = None) -> bool:
     """True for a platform authorization gate (``DISCORD_ALLOWED_CHANNELS``, ``TELEGRAM_ALLOW_ALL_USERS``,
     ``GATEWAY_ALLOWED_USERS``, ``WHATSAPP_GROUP_ALLOW_FROM`` ...) — profile-scoped policy a child acting
     for ANOTHER profile must never inherit. A gate is a platform prefix AND a gate-shaped suffix;
@@ -245,12 +255,14 @@ def is_profile_gate_env(name: str) -> bool:
         return False
     if not any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS):
         return False
-    return any(upper.startswith(prefix + "_") for prefix in _platform_gate_env_prefixes())
+    prefixes = _prefixes if _prefixes is not None else _platform_gate_env_prefixes()
+    return any(upper.startswith(prefix + "_") for prefix in prefixes)
 
 
 def strip_profile_gate_env(env: dict) -> dict:
     """Drop every authorization gate from *env* in place (see :func:`is_profile_gate_env`)."""
-    for key in [k for k in env if is_profile_gate_env(k)]:
+    prefixes = _platform_gate_env_prefixes()
+    for key in [k for k in env if is_profile_gate_env(k, prefixes)]:
         del env[key]
     return env
 

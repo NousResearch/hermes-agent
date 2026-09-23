@@ -2078,7 +2078,10 @@ class MatrixAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
-            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None,
+            message_id=event_id,
+            source_permalink=self._build_source_permalink(
+                room_id, thread_id or event_id, identity.server_name))
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
@@ -2752,6 +2755,22 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identities[room_id] = identity
         self._room_identity_cached_at[room_id] = time.monotonic()
         return identity
+
+    @staticmethod
+    def _build_source_permalink(
+        room_id: str, event_id: str | None, server_name: str | None = None
+    ) -> str | None:
+        """Canonical matrix.to permalink for a room/event pair.
+
+        ``event_id`` should be the thread root when the message lives in a thread (stable anchor
+        that opens the thread), else the triggering event. The ``via`` parameter carries the
+        server name, derived from the room ID when the caller has none. None when no event.
+        """
+        if not event_id:
+            return None
+        via = server_name or (room_id.rsplit(":", 1)[-1].strip() or None if ":" in room_id else None)
+        permalink = f"https://matrix.to/#/{room_id}/{event_id}"
+        return f"{permalink}?via={via}" if via else permalink
 
     async def _is_dm_room(self, room_id: str) -> bool:
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"

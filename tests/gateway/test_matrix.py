@@ -2597,6 +2597,94 @@ class TestMatrixDmAutoThread:
 
 
 # ---------------------------------------------------------------------------
+# Source permalink (matrix.to)
+# ---------------------------------------------------------------------------
+
+class TestMatrixSourcePermalink:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def test_permalink_with_explicit_server(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        url = MatrixAdapter._build_source_permalink(
+            "!room:example.org", "$root", "example.org"
+        )
+        assert url == "https://matrix.to/#/!room:example.org/$root?via=example.org"
+
+    def test_permalink_server_derived_from_room_id(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        url = MatrixAdapter._build_source_permalink("!room:example.org", "$ev1")
+        assert url == (
+            "https://matrix.to/#/!room:example.org/$ev1?via=example.org"
+        )
+
+    def test_permalink_without_via_when_no_server(self):
+        """Degenerate room ID (no ':server' suffix) and no server hint."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        url = MatrixAdapter._build_source_permalink("!room", "$ev1")
+        assert url == "https://matrix.to/#/!room/$ev1"
+
+    def test_permalink_none_without_event(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        assert MatrixAdapter._build_source_permalink("!room:ex", None, "ex") is None
+
+    @pytest.mark.asyncio
+    async def test_thread_message_links_thread_root(self):
+        """A thread reply's permalink anchors the thread root, not the reply."""
+        self.adapter._is_dm_room = AsyncMock(return_value=False)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._require_mention = False
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$reply",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={"rel_type": "m.thread", "event_id": "$root"},
+        )
+
+        assert ctx is not None
+        source = ctx[5]
+        assert source.source_permalink == (
+            "https://matrix.to/#/!room:example.org/$root"
+            "?via=example.org"
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_thread_message_links_triggering_event(self):
+        """Without a thread, the permalink anchors the triggering event."""
+        self.adapter._is_dm_room = AsyncMock(return_value=False)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._require_mention = False
+        # Keep thread_id unset for non-thread group messages (else the
+        # auto-thread default synthesizes thread_id == event_id).
+        self.adapter._matrix_session_scope = "room"
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$msg",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        source = ctx[5]
+        assert source.source_permalink == (
+            "https://matrix.to/#/!room:example.org/$msg"
+            "?via=example.org"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Proxy configuration
 # ---------------------------------------------------------------------------
 

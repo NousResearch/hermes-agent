@@ -19,12 +19,22 @@ raised ``sqlite3.OperationalError: disk I/O error``.
     :command:`lsof` sees NO process holding it (rc 1). On POSIX an unlink under
     a live sqlite connection would technically be safe (the fd keeps working),
     but "connected" is not "abandoned", so a live DB is left alone on purpose.
-    If :command:`lsof` is missing or errors, the mtime guard below is the only
-    protection and the file is skipped.
+    The binary is resolved portably (``shutil.which``, then the macOS/Linux
+    default absolute paths) — the first draft hard-coded ``/usr/sbin/lsof``
+    and silently never swept on Linux. If :command:`lsof` is missing, the
+    sweep warns once per pass and removes nothing (the mtime guard alone is
+    not proof enough); at most ``SWEEP_MAX_LSOF_CHECKS`` lsof subprocesses are
+    spawned per pass so a crowded temp root cannot stall the tick.
   - **mtime grace** — files modified within ``SWEEP_GRACE_SECONDS`` (10 min)
     are skipped; a process may legitimately hold a >1 GiB temp DB without
     lsof noticing (e.g. mmap without fd, other-user fd, or a transient lsof
     failure). Fresh files are presumed live.
+  - **ownership gate** — files owned by another uid are never touched: an
+    unprivileged lsof cannot see other users' fds, so for them rc 1 is not
+    proof of abandonment, and the temp root is shared ground anyway.
+  - **sidecar consistency** — a ``-wal``/``-shm`` sidecar is only removed when
+    its main ``.db`` is removed too (or already gone); a surviving main DB
+    never loses its sidecars mid-pass.
 
   Symlinks, directories and everything else (other names, other suffixes, other
   sizes) are never touched.
@@ -40,6 +50,7 @@ raise into the housekeeping loop.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import stat as stat_module
 import subprocess
@@ -74,7 +85,30 @@ FREE_CRITICAL_BYTES = 1 * _GIB
 # quiet enough not to spam the log every 60 s tick.
 REWARN_SECONDS = 30 * 60.0
 
+# Upper bound of lsof invocations per sweep pass: one subprocess per candidate
+# on the housekeeping thread — an operator temp root full of large DBs must not
+# hold a tick open for seconds per file. Extra candidates retry next tick.
+SWEEP_MAX_LSOF_CHECKS = 16
+
 _WARN_STATE: Dict[str, Any] = {"level": "ok", "last_warn_monotonic": 0.0}
+
+
+def _resolve_lsof() -> Optional[str]:
+    """Locate the lsof binary portably; None when it is not installed.
+
+    The first implementation hard-coded ``/usr/sbin/lsof`` — macOS's path — so
+    on Debian/Ubuntu/Fedora (``/usr/bin/lsof``) the sweep silently removed
+    nothing. Resolve via PATH first, keep the macOS absolute paths as fallback
+    (lsof lives outside PATH there for ordinary users), and let callers warn
+    once when nothing is found, because "no lsof" must not read as "all fine".
+    """
+    found = shutil.which("lsof")
+    if found:
+        return found
+    for candidate in ("/usr/sbin/lsof", "/usr/bin/lsof"):
+        if os.path.exists(candidate):
+            return candidate
+    return None
 
 
 def _has_open_handle(path: Path) -> Optional[bool]:
@@ -85,9 +119,12 @@ def _has_open_handle(path: Path) -> Optional[bool]:
     treat None as "cannot prove it is abandoned" and fall back to the mtime
     grace guard.
     """
+    binary = _resolve_lsof()
+    if binary is None:
+        return None
     try:
         proc = subprocess.run(
-            ["/usr/sbin/lsof", "-w", "--", str(path)],
+            [binary, "-w", "--", str(path)],
             capture_output=True,
             timeout=15,
         )
@@ -129,8 +166,18 @@ def sweep_abandoned_db_copies(
     root = Path(directory) if directory is not None else Path(tempfile.gettempdir())
     lsof_check = _has_open_handle if lsof == "auto" else lsof
     now = time.time() if _now is None else float(_now)
+    if lsof_check is _has_open_handle and _resolve_lsof() is None:
+        # "No lsof" silently meant "never sweep" when the binary path was
+        # hard-coded; say so once per pass instead of failing quiet.
+        log.warning(
+            "Disk guard: lsof binary not found (PATH, /usr/sbin/lsof, /usr/bin/lsof) — "
+            "the sweep cannot prove any temp-root DB abandoned and will remove nothing "
+            "until lsof is installed."
+        )
 
     seen: set[Path] = set()
+    removed_paths: set[Path] = set()
+    lsof_budget = SWEEP_MAX_LSOF_CHECKS
     removed = 0
     for pattern in patterns:
         try:
@@ -152,16 +199,39 @@ def sweep_abandoned_db_copies(
                 continue
             if now - st.st_mtime < grace_seconds:
                 continue  # fresh: presume a live writer, retry next tick
+            if hasattr(st, "st_uid") and st.st_uid != os.getuid():
+                # Another user's file: an unprivileged lsof cannot see their
+                # fds (rc 1 does NOT prove abandonment), and the sweep has no
+                # business reaching into other workloads' temp files anyway.
+                log.debug(
+                    "Disk guard: %s is owned by uid %d (not us) — not sweeping",
+                    victim,
+                    st.st_uid,
+                )
+                continue
+            name = victim.name
+            sidecar_suffix = next(
+                (s for s in ("-wal", "-shm") if name.endswith(s) and name != s), None
+            )
+            if sidecar_suffix is not None:
+                main_db = victim.with_name(name[: -len(sidecar_suffix)])
+                if main_db.exists() and main_db not in removed_paths:
+                    continue  # main DB survived (held/fresh): keep its sidecar consistent
             if lsof_check is not None:
+                if lsof_budget <= 0:
+                    continue  # cap per-pass subprocess cost; retry next tick
+                lsof_budget -= 1
                 held = lsof_check(victim)
                 if held is None:
                     log.debug(
-                        "Disk guard: lsof inconclusive on %s — skipping this tick", victim
+                        "Disk guard: lsof inconclusive on %s — skipping this tick",
+                        victim,
                     )
                     continue
                 if held:
                     log.debug(
-                        "Disk guard: %s is held open by a live process — not sweeping", victim
+                        "Disk guard: %s is held open by a live process — not sweeping",
+                        victim,
                     )
                     continue
             try:
@@ -173,14 +243,21 @@ def sweep_abandoned_db_copies(
                 log.debug("Disk guard: could not remove %s: %s", victim, exc)
                 continue
             removed += 1
+            removed_paths.add(victim)
             log.warning(
                 "Disk guard: removed abandoned DB copy %s (%.2f GiB, mtime %s) — "
                 "closed-set sweep of stale handle-free *.db files, incidents "
                 "2026-09-19/2026-09-20.",
-                victim, st.st_size / _GIB, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
+                victim,
+                st.st_size / _GIB,
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
             )
     if removed:
-        log.warning("Disk guard: swept %d abandoned DB copy file(s) >1 GiB from %s", removed, root)
+        log.warning(
+            "Disk guard: swept %d abandoned DB copy file(s) >1 GiB from %s",
+            removed,
+            root,
+        )
     return removed
 
 
@@ -237,34 +314,44 @@ def check_free_disk_warning(
         return False
 
     free, worst_path = min(samples, key=lambda item: item[0])
-    level = "critical" if free < critical_bytes else ("warn" if free < warn_bytes else "ok")
+    level = (
+        "critical" if free < critical_bytes else ("warn" if free < warn_bytes else "ok")
+    )
     previous = st_.get("level", "ok")
 
     if level == "ok":
         if previous != "ok":
             log.info(
                 "Disk guard: free space recovered to %.2f GiB on %s (warning floor is %.0f GiB).",
-                free / _GIB, worst_path, warn_bytes / _GIB,
+                free / _GIB,
+                worst_path,
+                warn_bytes / _GIB,
             )
         st_.update(level="ok", last_warn_monotonic=0.0)
         return False
 
     escalated = previous != level
-    rewarn_due = escalated or (now - float(st_.get("last_warn_monotonic", 0.0)) >= REWARN_SECONDS)
+    rewarn_due = escalated or (
+        now - float(st_.get("last_warn_monotonic", 0.0)) >= REWARN_SECONDS
+    )
     if rewarn_due:
         if level == "critical":
             log.error(
                 "Disk guard: only %.2f GiB free on %s (below %.0f GiB) — SQLite writes and the "
                 "gateway are at imminent risk; free space now. Known cause: abandoned *.db "
                 "copies in the temp root (swept automatically each minute).",
-                free / _GIB, worst_path, critical_bytes / _GIB,
+                free / _GIB,
+                worst_path,
+                critical_bytes / _GIB,
             )
         else:
             log.warning(
                 "Disk guard: %.2f GiB free on %s is below the %.0f GiB early-warning floor — "
                 "disk is filling up; investigate before SQLite writes start failing. Known "
                 "cause: abandoned *.db copies in the temp root.",
-                free / _GIB, worst_path, warn_bytes / _GIB,
+                free / _GIB,
+                worst_path,
+                warn_bytes / _GIB,
             )
         st_.update(level=level, last_warn_monotonic=now)
     return True

@@ -22,6 +22,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -50,9 +51,9 @@ class TestSweepAbandonedDbCopies:
     def test_leaked_copies_are_removed(self, tmp_path):
         """(a) one pass removes every >1 GiB leftover of the 2026-09-19 set."""
         leak = [
-            tmp_path / "tmpabc123.db",          # the incident's shape: cp to $TMPDIR
+            tmp_path / "tmpabc123.db",  # the incident's shape: cp to $TMPDIR
             tmp_path / "tmp987654-0.db",
-            tmp_path / "statedb_ro_20260919",   # read-only verification copy
+            tmp_path / "statedb_ro_20260919",  # read-only verification copy
             tmp_path / "statedb_ro_copy_2",
         ]
         for f in leak:
@@ -112,9 +113,12 @@ class TestSweepAbandonedDbCopies:
         the seen-set must keep the count (and unlink) at one."""
         victim = tmp_path / "statedb_ro_1.db"
         victim.write_bytes(b"\0" * 16)
-        assert sweep_abandoned_db_copies(
-            tmp_path, min_bytes=0, grace_seconds=0.0, lsof=_stale_lsof
-        ) == 1
+        assert (
+            sweep_abandoned_db_copies(
+                tmp_path, min_bytes=0, grace_seconds=0.0, lsof=_stale_lsof
+            )
+            == 1
+        )
 
     def test_small_copies_are_left_alone(self, tmp_path):
         """(c) size-bound: a 4 KB tmp.db is not sweep material (kept in case a
@@ -142,8 +146,11 @@ class TestSweepLivenessGuards:
 
     def test_open_file_survives_real_lsof(self, tmp_path):
         """True acceptance shape (AC 3): a sparse >1 GiB file with a REAL open
-        handle stays; its handle-free twin goes. Runs the actual lsof binary."""
-        if not os.path.exists("/usr/sbin/lsof"):
+        handle stays; its handle-free twin goes. Runs the actual lsof binary,
+        resolved the same way production resolves it (PATH + platform paths) —
+        the first draft gated this on the hard-coded macOS path and skipped on
+        Linux, leaving the guard dead in CI."""
+        if disk_guard._resolve_lsof() is None:
             pytest.skip("lsof binary not available")
         live = tmp_path / "sess_state.db"
         gone = tmp_path / "state_check9.db"
@@ -178,9 +185,12 @@ class TestSweepLivenessGuards:
         transiently-unseen handles)."""
         fresh = tmp_path / "tmpfresh.db"
         fresh.write_bytes(b"\0" * 16)
-        assert sweep_abandoned_db_copies(
-            tmp_path, min_bytes=0, grace_seconds=600.0, lsof=_stale_lsof
-        ) == 0
+        assert (
+            sweep_abandoned_db_copies(
+                tmp_path, min_bytes=0, grace_seconds=600.0, lsof=_stale_lsof
+            )
+            == 0
+        )
         assert fresh.exists()
 
     def test_stale_file_past_grace_is_swept(self, tmp_path):
@@ -190,9 +200,12 @@ class TestSweepLivenessGuards:
         victim.write_bytes(b"\0" * 16)
         now = 1_000_000.0
         os.utime(victim, (now - 600, now - 600))  # exactly grace_seconds old
-        assert sweep_abandoned_db_copies(
-            tmp_path, min_bytes=0, grace_seconds=600.0, lsof=_stale_lsof, _now=now
-        ) == 1
+        assert (
+            sweep_abandoned_db_copies(
+                tmp_path, min_bytes=0, grace_seconds=600.0, lsof=_stale_lsof, _now=now
+            )
+            == 1
+        )
         assert not victim.exists()
 
 
@@ -200,9 +213,9 @@ class TestSweepSafetyBounds:
     def test_foreign_temp_files_are_never_touched(self, tmp_path):
         """(c) shape-bound: big non-sqlite files and non-.db backups survive."""
         foreign = [
-            tmp_path / "keepme.db.bak",                  # user backup idiom
-            tmp_path / "tmpbuild.bin",                   # tmp prefix, no db suffix
-            tmp_path / "tmpboard-export.sqlite",         # .sqlite, not .db
+            tmp_path / "keepme.db.bak",  # user backup idiom
+            tmp_path / "tmpbuild.bin",  # tmp prefix, no db suffix
+            tmp_path / "tmpboard-export.sqlite",  # .sqlite, not .db
             tmp_path / "other_ro_notes.txt",
         ]
         for f in foreign:
@@ -213,7 +226,10 @@ class TestSweepSafetyBounds:
         assert removed == 0
         assert all(f.exists() for f in foreign)
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks require elevated privileges on Windows",
+    )
     def test_symlinks_and_directories_are_never_touched(self, tmp_path):
         """(c) a *.db symlink must not be unlinked (nor its target harmed);
         directories named *.db never match either."""
@@ -222,12 +238,17 @@ class TestSweepSafetyBounds:
         link = tmp_path / "tmpattack.db"
         link.symlink_to(target)
         (tmp_path / "tmpdir.db").mkdir()
-        assert sweep_abandoned_db_copies(
-            tmp_path, min_bytes=0, grace_seconds=0.0, lsof=_stale_lsof
-        ) == 0
+        assert (
+            sweep_abandoned_db_copies(
+                tmp_path, min_bytes=0, grace_seconds=0.0, lsof=_stale_lsof
+            )
+            == 0
+        )
         assert link.is_symlink() and target.exists()
 
-    def test_open_file_failure_is_skipped_not_raised(self, tmp_path, monkeypatch, caplog):
+    def test_open_file_failure_is_skipped_not_raised(
+        self, tmp_path, monkeypatch, caplog
+    ):
         """Windows-shaped: unlink fails on an open file — skip, retry next tick."""
         victim = tmp_path / "tmplocked.db"
         victim.write_bytes(b"\0" * 4096)
@@ -238,7 +259,10 @@ class TestSweepSafetyBounds:
         monkeypatch.setattr(__import__("pathlib").Path, "unlink", _raise)
         with caplog.at_level(logging.DEBUG):
             removed = sweep_abandoned_db_copies(
-                tmp_path, min_bytes=0, grace_seconds=0.0, lsof=_stale_lsof,
+                tmp_path,
+                min_bytes=0,
+                grace_seconds=0.0,
+                lsof=_stale_lsof,
                 logger_=disk_guard.logger,
             )
         assert removed == 0
@@ -256,9 +280,12 @@ class TestSweepSafetyBounds:
             return found
 
         with patch.object(__import__("pathlib").Path, "glob", _glob_then_delete):
-            assert sweep_abandoned_db_copies(
-                tmp_path, min_bytes=0, grace_seconds=0.0, lsof=_stale_lsof
-            ) == 0
+            assert (
+                sweep_abandoned_db_copies(
+                    tmp_path, min_bytes=0, grace_seconds=0.0, lsof=_stale_lsof
+                )
+                == 0
+            )
 
     def test_unreadable_root_never_raises(self, tmp_path):
         def _boom(_self, _pattern):
@@ -288,24 +315,46 @@ class TestCheckFreeDiskWarning:
 
     def test_warns_below_5gib(self, tmp_path, caplog):
         """(b) 4.5 GiB free → WARNING naming the floor."""
-        with patch.object(disk_guard.shutil, "disk_usage", lambda _p: _usage(500 * _GIB, int(4.5 * _GIB))), \
-                caplog.at_level(logging.WARNING):
+        with (
+            patch.object(
+                disk_guard.shutil,
+                "disk_usage",
+                lambda _p: _usage(500 * _GIB, int(4.5 * _GIB)),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
             low = check_free_disk_warning([tmp_path], state=self._state())
         assert low is True
-        assert any(r.levelno == logging.WARNING and "early-warning floor" in r.getMessage()
-                   for r in caplog.records)
+        assert any(
+            r.levelno == logging.WARNING and "early-warning floor" in r.getMessage()
+            for r in caplog.records
+        )
 
     def test_error_below_1gib(self, tmp_path, caplog):
         """(b) the incident's terminal band (<1 GiB) escalates to ERROR."""
-        with patch.object(disk_guard.shutil, "disk_usage", lambda _p: _usage(500 * _GIB, int(0.3 * _GIB))), \
-                caplog.at_level(logging.ERROR):
+        with (
+            patch.object(
+                disk_guard.shutil,
+                "disk_usage",
+                lambda _p: _usage(500 * _GIB, int(0.3 * _GIB)),
+            ),
+            caplog.at_level(logging.ERROR),
+        ):
             check_free_disk_warning([tmp_path], state=self._state())
-        assert any(r.levelno == logging.ERROR and "imminent risk" in r.getMessage()
-                   for r in caplog.records)
+        assert any(
+            r.levelno == logging.ERROR and "imminent risk" in r.getMessage()
+            for r in caplog.records
+        )
 
     def test_no_warning_when_plentiful(self, tmp_path, caplog):
-        with patch.object(disk_guard.shutil, "disk_usage", lambda _p: _usage(500 * _GIB, 200 * _GIB)), \
-                caplog.at_level(logging.WARNING):
+        with (
+            patch.object(
+                disk_guard.shutil,
+                "disk_usage",
+                lambda _p: _usage(500 * _GIB, 200 * _GIB),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
             low = check_free_disk_warning([tmp_path], state=self._state())
         assert low is False
         assert not caplog.records
@@ -316,8 +365,10 @@ class TestCheckFreeDiskWarning:
         ok_usage = _usage(500 * _GIB, 200 * _GIB)
         with patch.object(disk_guard.shutil, "disk_usage", lambda _p: low_usage):
             check_free_disk_warning([tmp_path], state=state, _now=100.0)
-        with patch.object(disk_guard.shutil, "disk_usage", lambda _p: ok_usage), \
-                caplog.at_level(logging.INFO):
+        with (
+            patch.object(disk_guard.shutil, "disk_usage", lambda _p: ok_usage),
+            caplog.at_level(logging.INFO),
+        ):
             check_free_disk_warning([tmp_path], state=state, _now=200.0)
             check_free_disk_warning([tmp_path], state=state, _now=300.0)
         assert sum("recovered" in r.getMessage() for r in caplog.records) == 1
@@ -326,8 +377,10 @@ class TestCheckFreeDiskWarning:
         """While low: one warning, quiet for 30 min, then warns again."""
         state = self._state()
         low_usage = _usage(500 * _GIB, int(4.5 * _GIB))
-        with patch.object(disk_guard.shutil, "disk_usage", lambda _p: low_usage), \
-                caplog.at_level(logging.WARNING):
+        with (
+            patch.object(disk_guard.shutil, "disk_usage", lambda _p: low_usage),
+            caplog.at_level(logging.WARNING),
+        ):
             check_free_disk_warning([tmp_path], state=state, _now=1000.0)
             assert len(caplog.records) == 1
             check_free_disk_warning([tmp_path], state=state, _now=1000.0 + 60)
@@ -340,12 +393,18 @@ class TestCheckFreeDiskWarning:
         state = self._state()
         warn_usage = _usage(500 * _GIB, int(4.5 * _GIB))
         crit_usage = _usage(500 * _GIB, int(0.5 * _GIB))
-        with patch.object(disk_guard.shutil, "disk_usage", lambda _p: warn_usage), \
-                caplog.at_level(logging.WARNING):
+        with (
+            patch.object(disk_guard.shutil, "disk_usage", lambda _p: warn_usage),
+            caplog.at_level(logging.WARNING),
+        ):
             check_free_disk_warning([tmp_path], state=state, _now=100.0)
-        with patch.object(disk_guard.shutil, "disk_usage", lambda _p: crit_usage), \
-                caplog.at_level(logging.ERROR):
-            check_free_disk_warning([tmp_path], state=state, _now=101.0)  # band change re-warns
+        with (
+            patch.object(disk_guard.shutil, "disk_usage", lambda _p: crit_usage),
+            caplog.at_level(logging.ERROR),
+        ):
+            check_free_disk_warning(
+                [tmp_path], state=state, _now=101.0
+            )  # band change re-warns
         assert any(r.levelno == logging.ERROR for r in caplog.records)
 
     def test_multiple_paths_worst_wins_and_devices_dedupe(self, tmp_path, caplog):
@@ -353,17 +412,24 @@ class TestCheckFreeDiskWarning:
         home.mkdir()
         other = tmp_path / "other"
         other.mkdir()
-        fake = {str(home): _usage(100 * _GIB, 90 * _GIB), str(other): _usage(100 * _GIB, int(2 * _GIB))}
+        fake = {
+            str(home): _usage(100 * _GIB, 90 * _GIB),
+            str(other): _usage(100 * _GIB, int(2 * _GIB)),
+        }
         real_stat = __import__("pathlib").Path.stat
 
         def _fake_stat(self, **kw):
             st = real_stat(self, **kw)
             # distinct fake devices so the dedupe keeps both samples
-            return SimpleNamespace(st_dev=1 if self == home else 2, st_mtime=getattr(st, "st_mtime", 0))
+            return SimpleNamespace(
+                st_dev=1 if self == home else 2, st_mtime=getattr(st, "st_mtime", 0)
+            )
 
-        with patch.object(disk_guard.shutil, "disk_usage", lambda p: fake[str(p)]), \
-                patch.object(__import__("pathlib").Path, "stat", _fake_stat), \
-                caplog.at_level(logging.WARNING):
+        with (
+            patch.object(disk_guard.shutil, "disk_usage", lambda p: fake[str(p)]),
+            patch.object(__import__("pathlib").Path, "stat", _fake_stat),
+            caplog.at_level(logging.WARNING),
+        ):
             low = check_free_disk_warning([home, other], state=self._state())
         assert low is True
         assert any(str(other) in r.getMessage() for r in caplog.records)
@@ -372,8 +438,10 @@ class TestCheckFreeDiskWarning:
         def _boom(_p):
             raise OSError("statvfs failed")
 
-        with patch.object(disk_guard.shutil, "disk_usage", _boom), \
-                caplog.at_level(logging.DEBUG):
+        with (
+            patch.object(disk_guard.shutil, "disk_usage", _boom),
+            caplog.at_level(logging.DEBUG),
+        ):
             low = check_free_disk_warning([tmp_path], state=self._state())
         assert low is False
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -384,7 +452,11 @@ class TestCheckFreeDiskWarning:
         assert low is False
 
     def test_boundary_exactly_5gib_is_not_low(self, tmp_path):
-        with patch.object(disk_guard.shutil, "disk_usage", lambda _p: _usage(500 * _GIB, FREE_WARN_BYTES)):
+        with patch.object(
+            disk_guard.shutil,
+            "disk_usage",
+            lambda _p: _usage(500 * _GIB, FREE_WARN_BYTES),
+        ):
             low = check_free_disk_warning([tmp_path], state=self._state())
         assert low is False  # strictly-below gate: exactly 5 GiB is comfortable
 
@@ -396,10 +468,12 @@ class TestHousekeepingWiring:
 
         calls = []
         monkeypatch.setattr(
-            "gateway.disk_guard.sweep_abandoned_db_copies", lambda *a, **k: calls.append("sweep")
+            "gateway.disk_guard.sweep_abandoned_db_copies",
+            lambda *a, **k: calls.append("sweep"),
         )
         monkeypatch.setattr(
-            "gateway.disk_guard.check_free_disk_warning", lambda *a, **k: calls.append("warn")
+            "gateway.disk_guard.check_free_disk_warning",
+            lambda *a, **k: calls.append("warn"),
         )
 
         class _OneTick:
@@ -415,7 +489,9 @@ class TestHousekeepingWiring:
 
         from gateway import run_profile_reconcile
 
-        monkeypatch.setattr(run_profile_reconcile, "_mcp_config_reconciler", lambda runner: lambda: None)
+        monkeypatch.setattr(
+            run_profile_reconcile, "_mcp_config_reconciler", lambda runner: lambda: None
+        )
 
         gateway_run._start_gateway_housekeeping(_OneTick(), interval=0)
         assert calls.count("sweep") >= 1
@@ -431,7 +507,9 @@ class TestHousekeepingWiring:
         import inspect
 
         src = inspect.getsource(gateway_run._start_gateway_housekeeping)
-        assert '"Disk guard sweep + free-space warning", _housekeeping_disk_guard' in src
+        assert (
+            '"Disk guard sweep + free-space warning", _housekeeping_disk_guard' in src
+        )
 
 
 class TestRealIncidentShape:
@@ -441,20 +519,25 @@ class TestRealIncidentShape:
         import fnmatch
 
         names = [
-            "tmpb7f3c2a1.db", "tmpa9d4e8f2.db",           # 16 loose copies, 19.09.
-            "statedb_ro_verify_2026-09-19",               # read-only verification copy
+            "tmpb7f3c2a1.db",
+            "tmpa9d4e8f2.db",  # 16 loose copies, 19.09.
+            "statedb_ro_verify_2026-09-19",  # read-only verification copy
             "statedb_ro_board_seedscraper",
-            "sess_state.db", "sess_state2.db",            # renamed relapse, 20.09.
-            "state_check2.db", "state_check3.db",
+            "sess_state.db",
+            "sess_state2.db",  # renamed relapse, 20.09.
+            "state_check2.db",
+            "state_check3.db",
         ]
         for name in names:
-            assert any(fnmatch.fnmatch(name, pat) for pat in disk_guard.SWEEP_PATTERNS), name
+            assert any(
+                fnmatch.fnmatch(name, pat) for pat in disk_guard.SWEEP_PATTERNS
+            ), name
 
     def test_real_large_leak_files_are_swept_end_to_end(self, tmp_path, caplog):
         """True end-to-end (default min_bytes/grace, real lsof): sparse >1 GiB
         files with both incidents' name shapes, backdated past the grace
         window, are removed by one default-parameter sweep."""
-        if not os.path.exists("/usr/sbin/lsof"):
+        if disk_guard._resolve_lsof() is None:
             pytest.skip("lsof binary not available")
         leaks = [tmp_path / "tmp_e2e_incident.db", tmp_path / "sess_state.db"]
         for f in leaks:
@@ -466,3 +549,112 @@ class TestRealIncidentShape:
             removed = sweep_abandoned_db_copies(tmp_path)
         assert removed == 2
         assert not any(f.exists() for f in leaks)
+
+
+class TestPortableLsofResolution:
+    """The review's Linux blocker: the hardcoded ``/usr/sbin/lsof`` made the
+    sweep (and both real-lsof tests) silently no-op on Linux, where lsof
+    lives at ``/usr/bin/lsof``. Resolution must be portable and loud."""
+
+    def test_resolve_lsof_returns_existing_path_or_none(self):
+        binary = disk_guard._resolve_lsof()
+        if binary is not None:
+            assert os.path.exists(binary), binary
+            assert os.access(binary, os.X_OK), binary
+
+    def test_resolve_lsof_never_returns_hardcoded_missing_binary(self, monkeypatch):
+        monkeypatch.setattr(disk_guard.shutil, "which", lambda _n: None)
+        monkeypatch.setattr(disk_guard.os.path, "exists", lambda p: False)
+        assert disk_guard._resolve_lsof() is None
+
+    def test_missing_lsof_warns_and_sweeps_nothing(self, tmp_path, caplog, monkeypatch):
+        """lsof=None from resolution → one loud warning, zero removals (an
+        unprovable candidate is never deleted just because the tool is gone)."""
+        victim = tmp_path / "sess_state_nolsof.db"
+        victim.write_bytes(b"\0" * 16)
+        monkeypatch.setattr(disk_guard, "_resolve_lsof", lambda: None)
+        with caplog.at_level(logging.WARNING):
+            removed = sweep_abandoned_db_copies(
+                tmp_path, min_bytes=0, grace_seconds=0.0
+            )
+        assert removed == 0
+        assert victim.exists()
+        assert any("lsof binary not found" in r.getMessage() for r in caplog.records)
+
+
+class TestOwnershipAndBudgetGuards:
+    """(c) acceptance extensions: other users' files are untouchable, a crowded
+    temp root cannot stall the tick, and sidecars stay consistent."""
+
+    def test_foreign_uid_file_is_never_swept(self, tmp_path, caplog):
+        """st_uid != os.getuid() → skip even when lsof reports no holder
+        (unprivileged lsof cannot see another user's fds — rc 1 is not proof)."""
+        victim = tmp_path / "other_users.db"
+        victim.write_bytes(b"\0" * 16)
+        real_stat = Path.lstat
+
+        class _StaleForeign:
+            def __getattr__(self, item):  # delegate everything else
+                return getattr(real_stat(victim), item)
+
+            st_uid = 4242  # not us (CI runs as root/501; 4242 is nobody's test uid)
+
+        with (
+            patch.object(Path, "lstat", lambda self: _StaleForeign()),
+            caplog.at_level(logging.DEBUG),
+        ):
+            removed = sweep_abandoned_db_copies(
+                tmp_path, min_bytes=0, grace_seconds=0.0, lsof=_stale_lsof
+            )
+        assert removed == 0
+        assert victim.exists()
+
+    def test_lsof_calls_are_capped_per_pass(self, tmp_path):
+        """More candidates than SWEEP_MAX_LSOF_CHECKS → at most that many lsof
+        subprocesses per pass; the tail retries next tick."""
+        calls = []
+        for i in range(disk_guard.SWEEP_MAX_LSOF_CHECKS + 5):
+            (tmp_path / f"leak{i}.db").write_bytes(b"\0" * 16)
+
+        def counting_lsof(p):
+            calls.append(p)
+            return False
+
+        removed = sweep_abandoned_db_copies(
+            tmp_path, min_bytes=0, grace_seconds=0.0, lsof=counting_lsof
+        )
+        assert len(calls) == disk_guard.SWEEP_MAX_LSOF_CHECKS
+        assert removed == disk_guard.SWEEP_MAX_LSOF_CHECKS
+
+    def test_sidecar_of_surviving_main_db_is_kept(self, tmp_path):
+        """A held-open main .db keeps its stale, handle-free -wal sidecar:
+        removing the sidecar alone would corrupt the surviving pair."""
+        main = tmp_path / "live_leak.db"
+        wal = tmp_path / "live_leak.db-wal"
+        for f in (main, wal):
+            f.write_bytes(b"\0" * 16)
+            old = time.time() - 3600
+            os.utime(f, (old, old))
+
+        def holder_only_for_main(p):
+            return p == main
+
+        removed = sweep_abandoned_db_copies(
+            tmp_path, min_bytes=0, grace_seconds=0.0, lsof=holder_only_for_main
+        )
+        assert removed == 0
+        assert main.exists() and wal.exists()
+
+    def test_sidecar_is_swept_when_main_db_goes(self, tmp_path):
+        """Both stale and handle-free: main .db and its -wal sidecar go together."""
+        main = tmp_path / "dead_leak.db"
+        wal = tmp_path / "dead_leak.db-wal"
+        for f in (main, wal):
+            f.write_bytes(b"\0" * 16)
+            old = time.time() - 3600
+            os.utime(f, (old, old))
+        removed = sweep_abandoned_db_copies(
+            tmp_path, min_bytes=0, grace_seconds=0.0, lsof=_stale_lsof
+        )
+        assert removed == 2
+        assert not main.exists() and not wal.exists()

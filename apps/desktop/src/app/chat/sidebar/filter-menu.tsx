@@ -237,10 +237,11 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           className={cn(
             className,
             'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100',
-            // Active filters read as "this control is engaged", the same way the
-            // open menu does — never as an accent, which the sidebar reserves
-            // for a session that is actually doing something.
-            filtersActive && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+            // Active filters and the Inbox-style render mode read as "this
+            // control is engaged", the same way the open menu does — never as
+            // an accent, which the sidebar reserves for a session that is
+            // actually doing something.
+            (filtersActive || cardRows) && 'bg-(--ui-control-active-background) text-foreground opacity-100'
           )}
           size="icon-xs"
           type="button"

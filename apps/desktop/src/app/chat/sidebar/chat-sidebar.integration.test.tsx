@@ -7,7 +7,7 @@ import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
-import { $pinnedSessionIds, $sidebarCardRows } from '@/store/layout'
+import { $pinnedSessionIds, $sidebarCardRows, resetSidebarView } from '@/store/layout'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
 import { makeSessionInfo } from '@/test/session-info'
@@ -175,6 +175,7 @@ describe('ChatSidebar inbox style geometry', () => {
 
   beforeEach(() => {
     disposeContributions = registry.registerMany([])
+    resetSidebarView()
     $selectedStoredSessionId.set('tile-one')
     $sessions.set(sessionRows)
     $removedSessionIds.set(new Set())
@@ -206,5 +207,20 @@ describe('ChatSidebar inbox style geometry', () => {
 
     expect(row('Tile two').className).not.toContain(SIDEBAR_ROW_CARD_MIN_H)
     expect(row('Tile one').className).not.toContain(SIDEBAR_ROW_CARD_MIN_H)
+  })
+
+  it('leaves Filters inactive when Inbox style is off', () => {
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByRole('button', { name: 'Filters' }).classList).not.toContain(
+      'bg-(--ui-control-active-background)'
+    )
+  })
+
+  it('marks Filters as active when Inbox style is on', () => {
+    $sidebarCardRows.set(true)
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByRole('button', { name: 'Filters' }).classList).toContain('bg-(--ui-control-active-background)')
   })
 })

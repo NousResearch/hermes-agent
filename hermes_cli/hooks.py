@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
-def hooks_command(args) -> None:
-    """Entry point for ``hermes hooks`` — dispatches to the requested action."""
+def hooks_command(args):
+    """Entry point for ``hermes hooks`` — dispatches to the requested action; returns its exit code."""
     sub = getattr(args, "hooks_action", None)
     if not sub:
         print("Usage: hermes hooks {list|test|revoke|doctor}")
@@ -17,8 +17,8 @@ def hooks_command(args) -> None:
     handler = _ACTIONS.get(sub)
     if handler is None:
         print(f"Unknown hooks subcommand: {sub}")
-        return
-    handler(args)
+        return 1
+    return handler(args)
 
 
 # ---------------------------------------------------------------------------
@@ -268,14 +268,15 @@ def _cmd_revoke(args) -> None:
     )
 
 
-def _cmd_doctor(_args) -> None:
+def _cmd_doctor(_args) -> int:
+    """Nonzero when any check fails, so a script can gate on it (#90047)."""
     from hermes_cli.config import load_config
     from agent import shell_hooks
 
     specs = shell_hooks.iter_configured_hooks(load_config())
     if not specs:
         print("No shell hooks configured — nothing to check.")
-        return
+        return 0
     print(f"Checking {len(specs)} configured shell hook(s)...\n")
     problems = 0
     for spec in specs:
@@ -283,6 +284,11 @@ def _cmd_doctor(_args) -> None:
         problems += _doctor_one(spec, shell_hooks)
         print()
     print(f"{problems} issue(s) found.  Fix before relying on these hooks." if problems else "All shell hooks look healthy.")
+    # A gateway running as a service can see a different filesystem and HERMES_HOME, so a hook that is
+    # green here can still be unreachable, or unapproved, where it actually fires.
+    print("Checked from this shell. A gateway running as a service may resolve these paths and "
+          "approvals differently; `fail_closed: true` makes a blocking hook refuse instead of failing open.")
+    return 1 if problems else 0
 
 
 def _doctor_one(spec, shell_hooks) -> int:

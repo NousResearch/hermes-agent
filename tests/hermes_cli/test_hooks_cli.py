@@ -201,6 +201,31 @@ class TestHooksDoctor:
         assert "skipped JSON smoke test" in out
 
 
+def test_doctor_exit_status_reaches_the_process_when_a_check_fails(tmp_path):
+    """`hermes hooks doctor` is the check an operator scripts before trusting a hook (#90047). It printed
+    "N issue(s) found" and still exited 0, so automation read a missing hook script as healthy. The exit
+    status is taken through the real `hermes hooks` entry point, which is where it was dropped."""
+    from hermes_cli.main import cmd_hooks
+
+    missing = tmp_path / "gone" / "guard.py"
+    cfg = {"hooks": {"pre_tool_call": [{"matcher": "terminal", "command": str(missing)}]}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), redirect_stdout(io.StringIO()):
+        rc = cmd_hooks(SimpleNamespace(hooks_action="doctor"))
+    assert isinstance(rc, int) and rc != 0
+
+
+def test_doctor_exit_status_is_success_for_a_healthy_hook(tmp_path):
+    from hermes_cli.main import cmd_hooks
+
+    script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
+    shell_hooks._record_approval("on_session_start", str(script))
+    cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), redirect_stdout(io.StringIO()) as out:
+        rc = cmd_hooks(SimpleNamespace(hooks_action="doctor"))
+    assert "All shell hooks look healthy." in out.getvalue()
+    assert not rc
+
+
 def test_print_run_result_shows_decision_for_error_and_timeout():
     """A failing hook's decision must be printed, not hidden by early returns (#115968).
 

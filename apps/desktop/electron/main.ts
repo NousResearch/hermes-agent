@@ -295,6 +295,7 @@ import {
   waitForManagedSshBootstrapFence
 } from './managed-ssh-update'
 import { createManagedSshUpdateService } from './managed-ssh-update-service'
+import { createManagedRolloutProvider } from './managed-rollout-provider'
 import { registerManagedRolloutIpc } from './managed-rollout-ipc-runtime'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
@@ -10148,7 +10149,7 @@ const managedSshUpdateService = createManagedSshUpdateService({
     executeManagedRemoteUpdate(target, correlationId, {}, async () => {
       markManagedSshRecoveryLaunching(context.connectionId, correlationId)
       await context.onLaunchProved()
-    }),
+    }, context.intent),
   preflightRemote: (target, correlationId) => assertManagedUpdatePreflightClear(target, correlationId),
   awaitRestoreClearance: (target, correlationId, options) =>
     waitForManagedRemoteClearance(target, correlationId, options),
@@ -16328,12 +16329,14 @@ async function requestManagedSshUpdate(rawId) {
 
 ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
 
-// Managed rollout routes stay behind the main-window sender gate. The default
-// adapter is fail-closed until trusted source, inventory, and assurance readers
-// are available; it never delegates to the single-install updater.
+// The production adapter is wired at the trusted seam, but remains fail-closed
+// until main owns coherent inventory, host-key/source, assurance, and observation
+// readers. It never falls back to the legacy single-install updater.
+const managedRolloutProvider = createManagedRolloutProvider({ managedSshUpdateService })
 registerManagedRolloutIpc(
   ipcMain,
-  sender => Boolean(mainWindow && !mainWindow.isDestroyed() && sender === mainWindow.webContents)
+  sender => Boolean(mainWindow && !mainWindow.isDestroyed() && sender === mainWindow.webContents),
+  managedRolloutProvider
 )
 
 // Fan out `hermes update` to every eligible registered connection at once.

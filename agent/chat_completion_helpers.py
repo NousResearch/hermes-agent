@@ -3190,13 +3190,15 @@ class _StreamingCall(StreamingWaitMonitor):
         if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
             raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason (possible upstream error or malformed SSE response).")
-        if has_truncated_tool_args and finish_reason is None:
-            # Partial args WITH finish_reason="length" is a real output cap; with NONE the
-            # upstream dropped mid tool-call, and stamping "length" burns 3 useless retries.
+        if has_truncated_tool_args:
+            # An unrepairable argument payload must never reach dispatch as an empty object.
+            # A missing finish_reason is a stream drop; a terminal finish_reason alongside
+            # malformed arguments is equally incomplete from the tool's perspective.
             _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
             logger.warning(
-                "Stream ended with no finish_reason while a tool call's arguments were still incomplete "
-                "(tools=%s); treating as a mid-tool-call stream drop, not an output-length truncation.",
+                "Stream ended with incomplete or unrepairable tool call arguments "
+                "(finish_reason=%r, tools=%s); treating as a mid-tool-call stream drop, not an output-length truncation.",
+                finish_reason,
                 _dropped_names)
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None)

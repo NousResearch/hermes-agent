@@ -14,7 +14,7 @@ Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 | openai-codex | OAuth | `hermes auth add openai-codex` |
 | qwen-oauth | OAuth | `hermes auth add qwen-oauth` |
 | minimax-oauth | OAuth | `hermes auth add minimax-oauth` |
-| copilot | Token | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` (Copilot device flow — `gh auth login` tokens do NOT work) |
+| copilot | Token | `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` (Copilot device flow: `gh auth login` tokens do NOT work) |
 | copilot-acp | External CLI | Copilot CLI on PATH or `COPILOT_CLI_PATH` |
 | gemini | API key | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
 | xai | API key | `XAI_API_KEY` (SuperGrok OAuth also supported) |
@@ -61,7 +61,7 @@ model:
     fav: openrouter/anthropic/claude-sonnet-4.6
 ```
 
-`/model fav` — session-scoped; add `--global` to persist as default.
+`/model fav`: session-scoped; add `--global` to persist as default.
 
 An alias with its own `base_url` authenticates with its own credential
 (`api_key`, which also accepts a `"${VAR}"` reference, or `key_env`). With

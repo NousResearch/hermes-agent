@@ -4,7 +4,7 @@ How to turn a research paper into an animated explainer video.
 
 ## Why animate a paper?
 
-A research paper is optimized for precision and completeness. A video is optimized for understanding and retention. The translation is NOT "read the paper aloud with pictures" — it's "extract the core insight and make it feel obvious through visual storytelling."
+A research paper is optimized for precision and completeness. A video is optimized for understanding and retention. The translation is NOT "read the paper aloud with pictures": it's "extract the core insight and make it feel obvious through visual storytelling."
 
 The paper has one job: prove the claim is true. The video has a different job: make the viewer understand WHY the claim is true, and WHY it matters.
 
@@ -99,7 +99,7 @@ RESULT_COLOR = ACCENT      # "our result"
 
 ## First-principles equation explanation
 
-When the paper has a key equation, don't just show it — build it from intuition:
+When the paper has a key equation, don't just show it: build it from intuition:
 
 ### The "what would you do?" pattern
 
@@ -107,7 +107,7 @@ When the paper has a key equation, don't just show it — build it from intuitio
 2. Ask what the simplest solution would be
 3. Show why it doesn't work (animate the failure)
 4. Introduce the paper's solution as the fix
-5. THEN show the equation — it now feels earned
+5. THEN show the equation: it now feels earned
 
 ```python
 # Scene: Why we need attention (for a Transformer paper)

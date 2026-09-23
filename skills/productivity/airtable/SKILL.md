@@ -14,18 +14,18 @@ metadata:
     homepage: https://airtable.com/developers/web/api/introduction
 ---
 
-# Airtable — Bases, Tables & Records
+# Airtable: Bases, Tables & Records
 
-Work with Airtable's REST API directly via `curl` using the `terminal` tool. No MCP server, no OAuth flow, no Python SDK — just `curl` and a personal access token.
+Work with Airtable's REST API directly via `curl` using the `terminal` tool. No MCP server, no OAuth flow, no Python SDK: just `curl` and a personal access token.
 
 ## Prerequisites
 
 1. Create a **Personal Access Token (PAT)** at https://airtable.com/create/tokens (tokens start with `pat...`).
 2. Grant these scopes (minimum):
-   - `data.records:read` — read rows
-   - `data.records:write` — create / update / delete rows
-   - `schema.bases:read` — list bases and tables
-3. **Important:** in the same token UI, add each base you want to access to the token's **Access** list. PATs are scoped per-base — a valid token on the wrong base returns `403`.
+   - `data.records:read`: read rows
+   - `data.records:write`: create / update / delete rows
+   - `schema.bases:read`: list bases and tables
+3. **Important:** in the same token UI, add each base you want to access to the token's **Access** list. PATs are scoped per-base, a valid token on the wrong base returns `403`.
 4. Store the token in `${HERMES_HOME:-~/.hermes}/.env` (or via `hermes setup`):
    ```
    AIRTABLE_API_KEY=pat_your_token_here
@@ -47,7 +47,7 @@ curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?maxRecords=5" \
   -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
 
-`-s` suppresses curl's progress bar — keep it set for every call so the tool output stays clean for Hermes. Pipe through `python -m json.tool` (always present) or `jq` (if installed) for readable JSON.
+`-s` suppresses curl's progress bar: keep it set for every call so the tool output stays clean for Hermes. Pipe through `python -m json.tool` (always present) or `jq` (if installed) for readable JSON.
 
 ## Field Types (request body shapes)
 
@@ -81,7 +81,7 @@ curl -s "https://api.airtable.com/v0/meta/bases" \
 curl -s "https://api.airtable.com/v0/meta/bases/$BASE_ID/tables" \
   -H "Authorization: Bearer $AIRTABLE_API_KEY" | python -m json.tool
 ```
-Use this BEFORE mutating — confirms exact field names and IDs, surfaces `options.choices` for select fields, and shows primary-field names.
+Use this BEFORE mutating: confirms exact field names and IDs, surfaces `options.choices` for select fields, and shows primary-field names.
 
 ### List records (first 10)
 ```bash
@@ -96,7 +96,7 @@ curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE/$RECORD_ID" \
 ```
 
 ### Filter records (filterByFormula)
-Airtable formulas must be URL-encoded. Let Python stdlib do it — never hand-encode:
+Airtable formulas must be URL-encoded. Let Python stdlib do it: never hand-encode:
 ```bash
 FORMULA="{Status}='Todo'"
 ENC=$(python -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$FORMULA")
@@ -151,7 +151,7 @@ curl -s -X POST "https://api.airtable.com/v0/$BASE_ID/$TABLE" \
 ```
 Batch endpoints are capped at **10 records per request**. For larger inserts, loop in batches of 10 with a short sleep to respect 5 req/sec/base.
 
-### Update a record (PATCH — merges, preserves unchanged fields)
+### Update a record (PATCH: merges, preserves unchanged fields)
 ```bash
 curl -s -X PATCH "https://api.airtable.com/v0/$BASE_ID/$TABLE/$RECORD_ID" \
   -H "Authorization: Bearer $AIRTABLE_API_KEY" \
@@ -203,27 +203,27 @@ done
 
 ## Typical Hermes Workflow
 
-1. **Confirm auth.** `curl -s -o /dev/null -w "%{http_code}\n" https://api.airtable.com/v0/meta/bases -H "Authorization: Bearer $AIRTABLE_API_KEY"` — expect `200`.
+1. **Confirm auth.** `curl -s -o /dev/null -w "%{http_code}\n" https://api.airtable.com/v0/meta/bases -H "Authorization: Bearer $AIRTABLE_API_KEY"`: expect `200`.
 2. **Find the base.** List bases (step above) OR ask the user for the `app...` ID directly if the token lacks `schema.bases:read`.
-3. **Inspect the schema.** `GET /v0/meta/bases/$BASE_ID/tables` — cache the exact field names and primary-field name locally in the session before mutating anything.
+3. **Inspect the schema.** `GET /v0/meta/bases/$BASE_ID/tables`: cache the exact field names and primary-field name locally in the session before mutating anything.
 4. **Read before you write.** For "update X where Y", `filterByFormula` first to resolve the `rec...` ID, then `PATCH /v0/$BASE_ID/$TABLE/$RECORD_ID`. Never guess record IDs.
 5. **Batch writes.** Combine related creates into one 10-record POST to stay under the 5 req/sec budget.
 6. **Destructive ops.** Deletions can't be undone via API. If the user says "delete all Xs", echo back the filter + record count and confirm before firing.
 
 ## Pitfalls
 
-- **`filterByFormula` MUST be URL-encoded.** Field names with spaces or non-ASCII also need encoding (`{My Field}` → `%7BMy%20Field%7D`). Use Python stdlib (pattern above) — never hand-escape.
-- **Empty fields are omitted from responses.** A missing `"Assignee"` key doesn't mean the field doesn't exist — it means this record's value is empty. Check the schema (step 3) before concluding a field is missing.
+- **`filterByFormula` MUST be URL-encoded.** Field names with spaces or non-ASCII also need encoding (`{My Field}` → `%7BMy%20Field%7D`). Use Python stdlib (pattern above): never hand-escape.
+- **Empty fields are omitted from responses.** A missing `"Assignee"` key doesn't mean the field doesn't exist: it means this record's value is empty. Check the schema (step 3) before concluding a field is missing.
 - **PATCH vs PUT.** `PATCH` merges supplied fields into the record. `PUT` replaces the record entirely and clears any field you didn't include. Default to `PATCH`.
 - **Single-select options must exist.** Writing `"Status": "Shipping"` when `Shipping` isn't in the field's option list errors with `INVALID_MULTIPLE_CHOICE_OPTIONS` unless you pass `"typecast": true` (which auto-creates the option).
-- **Per-base token scoping.** A `403` on one base while another works means the token's Access list doesn't include that base — not a scope or auth issue. Send the user to https://airtable.com/create/tokens to grant it.
+- **Per-base token scoping.** A `403` on one base while another works means the token's Access list doesn't include that base: not a scope or auth issue. Send the user to https://airtable.com/create/tokens to grant it.
 - **Rate limits are per base, not per token.** 5 req/sec on `baseA` and 5 req/sec on `baseB` is fine; 6 req/sec on `baseA` alone will throttle. Monitor the `Retry-After` header on `429`.
 
 ## Important Notes for Hermes
 
 - **Always use the `terminal` tool with `curl`.** Do NOT use `web_extract` (it can't send auth headers) or `browser_navigate` (needs UI auth and is slow).
-- **`AIRTABLE_API_KEY` flows from `${HERMES_HOME:-~/.hermes}/.env` into the subprocess automatically** when this skill is loaded — no need to re-export it before each `curl` call.
-- **Escape curly braces in formulas carefully.** In a heredoc body, `{Status}` is literal. In a shell argument, `{Status}` is safe outside `{...}` brace-expansion context — but pass dynamic strings through `python urllib.parse.quote` before splicing into a URL.
+- **`AIRTABLE_API_KEY` flows from `${HERMES_HOME:-~/.hermes}/.env` into the subprocess automatically** when this skill is loaded: no need to re-export it before each `curl` call.
+- **Escape curly braces in formulas carefully.** In a heredoc body, `{Status}` is literal. In a shell argument, `{Status}` is safe outside `{...}` brace-expansion context: but pass dynamic strings through `python urllib.parse.quote` before splicing into a URL.
 - **Pretty-print with `python -m json.tool`** (always present) rather than `jq` (optional). Only reach for `jq` when you need filtering/projection.
 - **Pagination is per-page, not global.** Airtable's 100-record cap is a hard limit; there is no way to bump it. Loop with `offset` until the field is absent.
-- **Read the `errors` array** on non-2xx responses — Airtable returns structured error codes like `AUTHENTICATION_REQUIRED`, `INVALID_PERMISSIONS`, `MODEL_ID_NOT_FOUND`, `INVALID_MULTIPLE_CHOICE_OPTIONS` that tell you exactly what's wrong.
+- **Read the `errors` array** on non-2xx responses. Airtable returns structured error codes like `AUTHENTICATION_REQUIRED`, `INVALID_PERMISSIONS`, `MODEL_ID_NOT_FOUND`, `INVALID_MULTIPLE_CHOICE_OPTIONS` that tell you exactly what's wrong.

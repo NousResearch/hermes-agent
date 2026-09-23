@@ -8,7 +8,7 @@ Post-processing effects applied to the pixel canvas (`numpy uint8 array, shape (
 
 ## Design Philosophy
 
-The shader pipeline turns raw ASCII renders into cinematic output. The system is designed for **composability** — every shader, blend mode, and feedback transform is an independent building block. Combining them creates infinite visual variety from a small set of primitives.
+The shader pipeline turns raw ASCII renders into cinematic output. The system is designed for **composability**: every shader, blend mode, and feedback transform is an independent building block. Combining them creates infinite visual variety from a small set of primitives.
 
 Choose shaders that reinforce the mood:
 - **Retro terminal**: CRT + scanlines + grain + green/amber tint
@@ -142,7 +142,7 @@ fb_cfg = {"decay": 0.5, "blend": "add", "opacity": 0.2,
 
 ## ShaderChain
 
-Composable shader pipeline. Build chains of named shaders with parameters. Order matters — shaders are applied sequentially to the canvas.
+Composable shader pipeline. Build chains of named shaders with parameters. Order matters: shaders are applied sequentially to the canvas.
 
 ```python
 class ShaderChain:
@@ -171,9 +171,9 @@ class ShaderChain:
         return canvas
 ```
 
-### `_apply_shader_step()` — Full Dispatch Function
+### `_apply_shader_step()`: Full Dispatch Function
 
-Routes shader names to implementations. Some shaders have **audio-reactive scaling** — the dispatch function reads `f["bdecay"]` and `f["rms"]` to modulate parameters on the beat.
+Routes shader names to implementations. Some shaders have **audio-reactive scaling**: the dispatch function reads `f["bdecay"]` and `f["rms"]` to modulate parameters on the beat.
 
 ```python
 def _apply_shader_step(canvas, name, kwargs, f, t):
@@ -297,9 +297,9 @@ Three shaders scale their parameters based on audio features:
 
 | Shader | Reactive To | Effect |
 |--------|------------|--------|
-| `chromatic` | `bdecay` | `amt * (0.4 + bdecay * 0.8)` — aberration kicks on beats |
-| `color_wobble` | `rms` | `amt * (0.5 + rms * 0.8)` — wobble intensity follows energy |
-| `grain` | `rms` | `amt * (0.5 + rms * 0.8)` — grain rougher in loud sections |
+| `chromatic` | `bdecay` | `amt * (0.4 + bdecay * 0.8)`: aberration kicks on beats |
+| `color_wobble` | `rms` | `amt * (0.5 + rms * 0.8)`: wobble intensity follows energy |
+| `grain` | `rms` | `amt * (0.5 + rms * 0.8)`: grain rougher in loud sections |
 | `glitch_bands` | `bdecay`, `sub` | Number of bands and displacement scale with beat energy |
 
 To make any shader beat-reactive, scale its parameter in the dispatch: `base_val * (low + bd * range)`.
@@ -441,7 +441,7 @@ def mkc(R, G, B, rows, cols):
 ### Geometry Shaders
 
 #### CRT Barrel Distortion
-Cache the coordinate remap — it never changes per frame:
+Cache the coordinate remap: it never changes per frame:
 ```python
 _crt_cache = {}
 def sh_crt(c, strength=0.05):
@@ -836,7 +836,7 @@ def sh_vignette(c, s=0.22):
 
 #### Reverse Vignette
 
-Inverted vignette: darkens the **center** and leaves edges bright. Useful when text is centered over busy backgrounds — creates a natural dark zone for readability without a hard-edged box.
+Inverted vignette: darkens the **center** and leaves edges bright. Useful when text is centered over busy backgrounds. Creates a natural dark zone for readability without a hard-edged box.
 
 Combine with `apply_text_backdrop()` (see composition.md) for per-frame glyph-aware darkening.
 

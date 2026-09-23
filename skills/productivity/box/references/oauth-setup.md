@@ -33,7 +33,7 @@ Do not switch a same-host setup to `--code` merely because port 3000 failed. Use
 
 ## Separate-host or headless path
 
-Use this path only after the user explicitly confirms that Hermes runs on a remote host—such as a VPS, container, or cloud VM—or that it is headless and the authorization browser is on a different computer. Use the same previously resolved runner and run:
+Use this path only after the user explicitly confirms that Hermes runs on a remote host (such as a VPS, container, or cloud VM)or that it is headless and the authorization browser is on a different computer. Use the same previously resolved runner and run:
 
 ```bash
 box login --default-box-app --code --name <ENVIRONMENT_NAME>

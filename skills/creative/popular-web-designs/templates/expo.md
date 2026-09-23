@@ -1,7 +1,7 @@
 # Design System: Expo
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `JetBrains Mono`
@@ -15,16 +15,16 @@
 
 ## 1. Visual Theme & Atmosphere
 
-Expo's interface is a luminous, confidence-radiating developer platform built on the premise that tools for building apps should feel as polished as the apps themselves. The entire experience lives on a bright, airy canvas — a cool-tinted off-white (`#f0f0f3`) that gives the page a subtle technological coolness without the starkness of pure white. This is a site that breathes: enormous vertical spacing between sections creates a gallery-like pace where each feature gets its own "room."
+Expo's interface is a luminous, confidence-radiating developer platform built on the premise that tools for building apps should feel as polished as the apps themselves. The entire experience lives on a bright, airy canvas: a cool-tinted off-white (`#f0f0f3`) that gives the page a subtle technological coolness without the starkness of pure white. This is a site that breathes: enormous vertical spacing between sections creates a gallery-like pace where each feature gets its own "room."
 
-The design language is decisively monochromatic — pure black (`#000000`) headlines against the lightest possible backgrounds, with a spectrum of cool blue-grays (`#60646c`, `#b0b4ba`, `#555860`) handling all secondary communication. Color is almost entirely absent from the interface itself; when it appears, it's reserved for product screenshots, app icons, and the React universe illustration — making the actual content burst with life against the neutral canvas.
+The design language is decisively monochromatic: pure black (`#000000`) headlines against the lightest possible backgrounds, with a spectrum of cool blue-grays (`#60646c`, `#b0b4ba`, `#555860`) handling all secondary communication. Color is almost entirely absent from the interface itself; when it appears, it's reserved for product screenshots, app icons, and the React universe illustration, making the actual content burst with life against the neutral canvas.
 
-What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video containers, and even images use generously rounded or fully pill-shaped corners (24px–9999px), creating an organic, approachable feel that contradicts the typical sharp-edged developer tool aesthetic. Combined with tight letter-spacing on massive headlines (-1.6px to -3px at 64px), the result is a design that's simultaneously premium and friendly — like an Apple product page reimagined for developers.
+What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video containers, and even images use generously rounded or fully pill-shaped corners (24px–9999px), creating an organic, approachable feel that contradicts the typical sharp-edged developer tool aesthetic. Combined with tight letter-spacing on massive headlines (-1.6px to -3px at 64px), the result is a design that's simultaneously premium and friendly: like an Apple product page reimagined for developers.
 
 **Key Characteristics:**
 - Luminous cool-white canvas (`#f0f0f3`) with gallery-like vertical spacing
 - Strictly monochromatic: pure black headlines, cool blue-gray body text, no decorative color
-- Pill-shaped geometry everywhere — buttons, tabs, containers, images (24px–9999px radius)
+- Pill-shaped geometry everywhere: buttons, tabs, containers, images (24px–9999px radius)
 - Massive display headlines (64px) with extreme negative letter-spacing (-1.6px to -3px)
 - Inter as the sole typeface, used at weights 400–900 for full expressive range
 - Whisper-soft shadows that barely lift elements from the surface
@@ -33,17 +33,17 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 ## 2. Color Palette & Roles
 
 ### Primary
-- **Expo Black** (`#000000`): The absolute anchor — used for primary headlines, CTA buttons, and the brand identity. Pure black on cool white creates maximum contrast without feeling aggressive.
-- **Near Black** (`#1c2024`): The primary text color for body content — a barely perceptible blue-black that's softer than pure #000 for extended reading.
+- **Expo Black** (`#000000`): The absolute anchor. Used for primary headlines, CTA buttons, and the brand identity. Pure black on cool white creates maximum contrast without feeling aggressive.
+- **Near Black** (`#1c2024`): The primary text color for body content, a barely perceptible blue-black that's softer than pure #000 for extended reading.
 
 ### Secondary & Accent
-- **Link Cobalt** (`#0d74ce`): The standard link color — a trustworthy, saturated blue that signals interactivity without competing with the monochrome hierarchy.
-- **Legal Blue** (`#476cff`): A brighter, more saturated blue for legal/footer links — slightly more attention-grabbing than Link Cobalt.
-- **Widget Sky** (`#47c2ff`): A light, friendly cyan-blue for widget branding elements — the brightest accent in the system.
-- **Preview Purple** (`#8145b5`): A rich violet used for "preview" or beta feature indicators — creating clear visual distinction from standard content.
+- **Link Cobalt** (`#0d74ce`): The standard link color, a trustworthy, saturated blue that signals interactivity without competing with the monochrome hierarchy.
+- **Legal Blue** (`#476cff`): A brighter, more saturated blue for legal/footer links, slightly more attention-grabbing than Link Cobalt.
+- **Widget Sky** (`#47c2ff`): A light, friendly cyan-blue for widget branding elements, the brightest accent in the system.
+- **Preview Purple** (`#8145b5`): A rich violet used for "preview" or beta feature indicators, creating clear visual distinction from standard content.
 
 ### Surface & Background
-- **Cloud Gray** (`#f0f0f3`): The primary page background — a cool off-white with the faintest blue-violet tint. Not warm, not sterile — precisely technological.
+- **Cloud Gray** (`#f0f0f3`): The primary page background, a cool off-white with the faintest blue-violet tint. Not warm, not sterile, precisely technological.
 - **Pure White** (`#ffffff`): Card surfaces, button backgrounds, and elevated content containers. Creates a clear "lifted" distinction from Cloud Gray.
 - **Widget Dark** (`#1a1a1a`): Dark surface for dark-theme widgets and overlay elements.
 - **Banner Dark** (`#171717`): The darkest surface variant, used for promotional banners and high-contrast containers.
@@ -58,14 +58,14 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 - **Charcoal** (`#333333`): Dark mode switch backgrounds and deep secondary surfaces.
 
 ### Semantic & Accent
-- **Warning Amber** (`#ab6400`): A warm, deep amber for warning states — deliberately not bright yellow, conveying seriousness.
-- **Destructive Rose** (`#eb8e90`): A soft pink-coral for disabled destructive actions — gentler than typical red, reducing alarm fatigue.
-- **Border Lavender** (`#e0e1e6`): Standard card/container borders — a cool lavender-gray that's visible without being heavy.
-- **Input Border** (`#d9d9e0`): Button and form element borders — slightly warmer/darker than card borders for interactive elements.
+- **Warning Amber** (`#ab6400`): A warm, deep amber for warning states, deliberately not bright yellow, conveying seriousness.
+- **Destructive Rose** (`#eb8e90`): A soft pink-coral for disabled destructive actions, gentler than typical red, reducing alarm fatigue.
+- **Border Lavender** (`#e0e1e6`): Standard card/container borders, a cool lavender-gray that's visible without being heavy.
+- **Input Border** (`#d9d9e0`): Button and form element borders, slightly warmer/darker than card borders for interactive elements.
 - **Dark Focus Ring** (`#2547d0`): Deep blue for keyboard focus indicators in dark theme contexts.
 
 ### Gradient System
-- The design is notably **gradient-free** in the interface layer. Visual richness comes from product screenshots, the React universe illustration, and careful shadow layering rather than color gradients. This absence IS the design decision — gradients would undermine the clinical precision.
+- The design is notably **gradient-free** in the interface layer. Visual richness comes from product screenshots, the React universe illustration, and careful shadow layering rather than color gradients. This absence IS the design decision: gradients would undermine the clinical precision.
 
 ## 3. Typography Rules
 
@@ -92,7 +92,7 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 ### Principles
 - **One typeface, full expression**: Inter is the only sans-serif, used from weight 400 (regular) through 900 (black). This gives the design a unified voice while still achieving dramatic contrast between whisper-light body text and thundering display headlines.
 - **Extreme negative tracking at scale**: Headlines at 64px use -1.6px to -3px letter-spacing, creating ultra-dense text blocks that feel like logotypes. This aggressive compression is the signature typographic move.
-- **Weight as hierarchy**: 700–900 for display, 600 for headings, 500 for emphasis, 400 for body. The jumps are decisive — no ambiguous in-between weights.
+- **Weight as hierarchy**: 700–900 for display, 600 for headings, 500 for emphasis, 400 for body. The jumps are decisive, no ambiguous in-between weights.
 - **Consistent 1.40 body line-height**: Nearly all body and UI text shares 1.40 line-height, creating a rhythmic vertical consistency.
 
 ## 4. Component Stylings
@@ -106,7 +106,7 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 - Border: thin solid Input Border (`1px solid #d9d9e0`)
 - Radius: subtly rounded (6px)
 - Shadow: subtle combined shadow on hover
-- The understated default — clean, professional, unheroic
+- The understated default: clean, professional, unheroic
 
 **Primary Pill**
 - Same as Primary but with pill-shaped radius (9999px)
@@ -118,14 +118,14 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 - Text: Pure White (`#ffffff`)
 - Pill-shaped (9999px) or generously rounded (32–36px)
 - No border (black IS the border)
-- The maximum-emphasis CTA — reserved for primary conversion actions
+- The maximum-emphasis CTA: reserved for primary conversion actions
 
 ### Cards & Containers
-- Background: Pure White (`#ffffff`) — clearly lifted from Cloud Gray page
+- Background: Pure White (`#ffffff`), clearly lifted from Cloud Gray page
 - Border: thin solid Border Lavender (`1px solid #e0e1e6`) for standard cards
 - Radius: comfortably rounded (8px) for standard cards; generously rounded (16–24px) for featured containers
-- Shadow Level 1: Whisper (`rgba(0,0,0,0.08) 0px 3px 6px, rgba(0,0,0,0.07) 0px 2px 4px`) — barely perceptible lift
-- Shadow Level 2: Standard (`rgba(0,0,0,0.1) 0px 10px 20px, rgba(0,0,0,0.05) 0px 3px 6px`) — clear floating elevation
+- Shadow Level 1: Whisper (`rgba(0,0,0,0.08) 0px 3px 6px, rgba(0,0,0,0.07) 0px 2px 4px`), barely perceptible lift
+- Shadow Level 2: Standard (`rgba(0,0,0,0.1) 0px 10px 20px, rgba(0,0,0,0.05) 0px 3px 6px`), clear floating elevation
 - Hover: likely subtle shadow deepening or background shift
 
 ### Inputs & Forms
@@ -165,7 +165,7 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 
 **Status Badge**
 - "All Systems Operational" pill in the nav
-- Green dot + text — compact trust signal
+- Green dot + text: compact trust signal
 - Pill-shaped (36px radius)
 
 ## 5. Layout Principles
@@ -173,7 +173,7 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 ### Spacing System
 - Base unit: 8px
 - Scale: 1px, 2px, 4px, 8px, 12px, 16px, 24px, 32px, 40px, 48px, 64px, 80px, 96px, 144px
-- Button padding: 0px 12px (unusually compact — height driven by line-height)
+- Button padding: 0px 12px (unusually compact, height driven by line-height)
 - Card internal padding: approximately 24–32px
 - Section vertical spacing: enormous (estimated 96–144px between major sections)
 - Component gap: 16–24px between sibling elements
@@ -187,17 +187,17 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 
 ### Whitespace Philosophy
 - **Gallery-like pacing**: Each section feels like its own exhibit, surrounded by vast empty space. This creates a premium, unhurried browsing experience.
-- **Breathing room is the design**: The generous whitespace IS the primary design element — it communicates confidence, quality, and that each feature deserves individual attention.
+- **Breathing room is the design**: The generous whitespace IS the primary design element, it communicates confidence, quality, and that each feature deserves individual attention.
 - **Content islands**: Sections float as isolated "islands" in the white space, connected by scrolling rather than visual continuation.
 
 ### Border Radius Scale
 - Nearly squared (4px): Small inline elements, tags
-- Subtly rounded (6px): Buttons, form inputs, combo boxes — the functional interactive radius
+- Subtly rounded (6px): Buttons, form inputs, combo boxes, the functional interactive radius
 - Comfortably rounded (8px): Standard content cards, containers
 - Generously rounded (16px): Feature tabs, content panels
-- Very rounded (24px): Buttons, video/image containers, tabpanels — the signature softness
+- Very rounded (24px): Buttons, video/image containers, tabpanels, the signature softness
 - Highly rounded (32–36px): Hero CTAs, status badges, nav buttons
-- Pill-shaped (9999px): Primary action buttons, tags, avatars — maximum friendliness
+- Pill-shaped (9999px): Primary action buttons, tags, avatars, maximum friendliness
 
 ## 6. Depth & Elevation
 
@@ -209,30 +209,30 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 | Elevated (Level 3) | `rgba(0,0,0,0.1) 0px 10px 20px` + `rgba(0,0,0,0.05) 0px 3px 6px` | Feature showcases, product screenshots |
 | Modal (Level 4) | Dark overlay (`--dialog-overlay-background-color`) + heavy shadow | Dialogs, overlays |
 
-**Shadow Philosophy**: Expo uses shadows as gentle whispers rather than architectural statements. The primary depth mechanism is **background color contrast** — white cards floating on Cloud Gray — rather than shadow casting. When shadows appear, they're soft, diffused, and directional (downward), creating the feeling of paper hovering millimeters above a desk.
+**Shadow Philosophy**: Expo uses shadows as gentle whispers rather than architectural statements. The primary depth mechanism is **background color contrast** (white cards floating on Cloud Gray) rather than shadow casting. When shadows appear, they're soft, diffused, and directional (downward), creating the feeling of paper hovering millimeters above a desk.
 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use Cloud Gray (`#f0f0f3`) as the page background and Pure White (`#ffffff`) for elevated cards — the two-tone light system is essential
+- Use Cloud Gray (`#f0f0f3`) as the page background and Pure White (`#ffffff`) for elevated cards: the two-tone light system is essential
 - Keep display headlines at extreme negative letter-spacing (-1.6px to -3px at 64px) for the signature compressed look
-- Use pill-shaped (9999px) radius for primary CTA buttons — the organic shape is core to the identity
-- Reserve black (`#000000`) for headlines and primary CTAs — it carries maximum authority on the light canvas
-- Use Slate Gray (`#60646c`) for secondary text — it's the precise balance between readable and receded
-- Maintain enormous vertical spacing between sections (96px+) — the gallery pacing defines the premium feel
-- Use product screenshots as the primary visual content — the interface stays monochrome, the products bring color
-- Apply Inter at the full weight range (400–900) — weight contrast IS the hierarchy
+- Use pill-shaped (9999px) radius for primary CTA buttons: the organic shape is core to the identity
+- Reserve black (`#000000`) for headlines and primary CTAs: it carries maximum authority on the light canvas
+- Use Slate Gray (`#60646c`) for secondary text: it's the precise balance between readable and receded
+- Maintain enormous vertical spacing between sections (96px+): the gallery pacing defines the premium feel
+- Use product screenshots as the primary visual content: the interface stays monochrome, the products bring color
+- Apply Inter at the full weight range (400–900): weight contrast IS the hierarchy
 
 ### Don't
-- Don't introduce decorative colors into the interface chrome — the monochromatic palette is intentional
-- Don't use sharp corners (border-radius < 6px) on interactive elements — the pill/rounded geometry is the signature
-- Don't reduce section spacing below 64px — the breathing room is the design
-- Don't use heavy drop shadows — depth comes from background contrast and whisper-soft shadows
-- Don't mix in additional typefaces — Inter handles everything from display to caption
-- Don't use letter-spacing wider than -0.25px on body text — extreme tracking is reserved for display only
-- Don't use borders heavier than 2px — containment is subtle, achieved through background color and gentle borders
-- Don't add gradients to the interface — visual richness comes from content, not decoration
-- Don't use saturated colors outside of semantic contexts — the palette is strictly grayscale + functional blue
+- Don't introduce decorative colors into the interface chrome: the monochromatic palette is intentional
+- Don't use sharp corners (border-radius < 6px) on interactive elements: the pill/rounded geometry is the signature
+- Don't reduce section spacing below 64px: the breathing room is the design
+- Don't use heavy drop shadows: depth comes from background contrast and whisper-soft shadows
+- Don't mix in additional typefaces: Inter handles everything from display to caption
+- Don't use letter-spacing wider than -0.25px on body text: extreme tracking is reserved for display only
+- Don't use borders heavier than 2px: containment is subtle, achieved through background color and gentle borders
+- Don't add gradients to the interface: visual richness comes from content, not decoration
+- Don't use saturated colors outside of semantic contexts: the palette is strictly grayscale + functional blue
 
 ## 8. Responsive Behavior
 
@@ -286,9 +286,9 @@ What makes Expo distinctive is its pill-shaped geometry. Buttons, tabs, video co
 
 ### Iteration Guide
 1. Focus on ONE component at a time
-2. Reference specific color names and hex codes — "use Slate Gray (#60646c)" not "make it gray"
-3. Use radius values deliberately — 6px for buttons, 8px for cards, 24px for images, 9999px for pills
-4. Describe the "feel" alongside measurements — "enormous breathing room with 96px section spacing"
-5. Always specify Inter and the exact weight — weight contrast IS the hierarchy
+2. Reference specific color names and hex codes: "use Slate Gray (#60646c)" not "make it gray"
+3. Use radius values deliberately: 6px for buttons, 8px for cards, 24px for images, 9999px for pills
+4. Describe the "feel" alongside measurements: "enormous breathing room with 96px section spacing"
+5. Always specify Inter and the exact weight: weight contrast IS the hierarchy
 6. For shadows, specify "whisper shadow" or "standard elevation" from the elevation table
-7. Keep the interface monochrome — let product content be the color
+7. Keep the interface monochrome: let product content be the color

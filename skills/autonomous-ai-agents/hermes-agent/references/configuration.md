@@ -56,7 +56,7 @@ Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the 
 | `safe` | Minimal low-risk toolset for locked-down sessions |
 | `spotify`, `homeassistant`, `discord`, `discord_admin`, `feishu_doc`, `feishu_drive`, `yuanbao` | Service integrations (gated on their credentials) |
 
-Tool changes take effect on `/reset` (new session) — never mid-conversation, to preserve prompt caching.
+Tool changes take effect on `/reset` (new session): never mid-conversation, to preserve prompt caching.
 
 ## Voice
 

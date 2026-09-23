@@ -73,7 +73,7 @@ self.play(Rotate(square, angle=PI / 2, about_point=ORIGIN), run_time=1.5)
 self.play(Rotating(gear, angle=TAU, run_time=4, rate_func=linear))
 ```
 
-`MoveAlongPath` takes any `VMobject` as the path — use `Arc`, `CubicBezier`, `Line`, or a custom `VMobject`. Position is computed via `path.point_from_proportion()`.
+`MoveAlongPath` takes any `VMobject` as the path: use `Arc`, `CubicBezier`, `Line`, or a custom `VMobject`. Position is computed via `path.point_from_proportion()`.
 
 ## Emphasis Animations
 
@@ -148,7 +148,7 @@ self.wait(0.3)
 
 ## Reactive Mobjects: always_redraw()
 
-Rebuild a mobject from scratch every frame — essential when its geometry depends on other animated objects:
+Rebuild a mobject from scratch every frame: essential when its geometry depends on other animated objects:
 
 ```python
 # Brace that follows a resizing square
@@ -168,7 +168,7 @@ Note: `always_redraw` recreates the mobject every frame. For simple property tra
 label.add_updater(lambda m: m.next_to(dot, UP))
 ```
 
-## TracedPath — Trajectory Tracing
+## TracedPath: Trajectory Tracing
 
 Draw the path a point has traveled:
 
@@ -185,9 +185,9 @@ path = TracedPath(dot.get_center, dissipating_time=0.5, stroke_opacity=[0, 1])
 
 Use cases: gradient descent paths, planetary orbits, function tracing, particle trajectories.
 
-## FadeTransform — Smoother Cross-Fades
+## FadeTransform: Smoother Cross-Fades
 
-`Transform` morphs shapes through ugly intermediate warping. `FadeTransform` cross-fades with position matching — use it when source and target look different:
+`Transform` morphs shapes through ugly intermediate warping. `FadeTransform` cross-fades with position matching: use it when source and target look different:
 
 ```python
 # UGLY: Transform warps circle into square through a blob
@@ -206,7 +206,7 @@ self.play(TransformFromCopy(source, target))
 
 **Recommendation:** Use `FadeTransform` as default for dissimilar shapes. Use `Transform`/`ReplacementTransform` only for similar shapes (circle→ellipse, equation→equation).
 
-## ApplyMatrix — Linear Transformation Visualization
+## ApplyMatrix: Linear Transformation Visualization
 
 Animate a matrix transformation on mobjects:
 
@@ -219,9 +219,9 @@ self.play(ApplyMatrix(matrix, number_plane), run_time=2)
 self.play(ApplyMatrix([[0, -1], [1, 0]], square))  # 90-degree rotation
 ```
 
-Pairs with `LinearTransformationScene` — see `camera-and-3d.md`.
+Pairs with `LinearTransformationScene`: see `camera-and-3d.md`.
 
-## squish_rate_func — Time-Window Staggering
+## squish_rate_func: Time-Window Staggering
 
 Compress any rate function into a time window within an animation. Enables overlapping stagger without `LaggedStart`:
 
@@ -259,7 +259,7 @@ self.play(FadeIn(mob, rate_func=not_quite_there(0.7)))
 
 ## ShowIncreasingSubsets / ShowSubmobjectsOneByOne
 
-Reveal group members progressively — ideal for algorithm visualization:
+Reveal group members progressively: ideal for algorithm visualization:
 
 ```python
 # Reveal array elements one at a time

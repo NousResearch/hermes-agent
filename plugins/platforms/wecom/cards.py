@@ -75,6 +75,14 @@ _APPROVAL_CHOICE_LABELS = {
     "deny": "拒绝",
 }
 
+# Slash-command confirmations (/new, /reset, /undo) get the same treatment. The gateway's prompt
+# offers "Approve Once / Always Approve / Cancel"; three CJK chars is what a WeCom button fits.
+_SLASH_CONFIRM_LABELS = {
+    "once": "仅一次",
+    "always": "永久",
+    "cancel": "取消",
+}
+
 
 class WeComCardMixin:
     """Template-card interactivity for WeComAdapter (DM-only; groups keep text flows)."""
@@ -85,6 +93,7 @@ class WeComCardMixin:
         """Per-chat interactive-card registries: task_id → state dict."""
         self._approval_state: Dict[str, Dict[str, Any]] = {}  # task_id → {session_key, chat_id, desc}
         self._model_picker_state: Dict[str, Dict[str, Any]] = {}  # task_id → picker state
+        self._slash_confirm_state: Dict[str, Dict[str, Any]] = {}  # task_id → {session_key, confirm_id, chat_id}
 
     @staticmethod
     def _new_card_task_id(prefix: str) -> str:
@@ -260,13 +269,93 @@ class WeComCardMixin:
         result = await self._send_card(chat_id, card, reply_req_id=reply_req_id, is_control=True)
         if not result.success:
             self._approval_state.pop(task_id, None)  # don't leave a resolvable dud behind
-            # Never lose the approval: fall back to the plain-text prompt.
+            # Never lose the approval — and never deliver it twice: the text fallback IS the
+            # delivery, so report that outcome. Returning the card failure makes the gateway
+            # re-send the same prompt as text ("Button-based approval failed ... falling back").
             fallback = await self.send(chat_id, prompt.text)
-            if not fallback.success:
-                return result
+            return fallback if fallback.success else result
         return result
 
-    # ── model picker (slash_commands_model.py probes for this method) ─────────────────
+    # ── slash-command confirmation (/new, /reset, /undo) ───────────────────────────────
+
+    async def send_slash_confirm(
+        self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render the destructive-slash confirmation as a three-button card (DM only).
+
+        The gateway falls back to a plain-text prompt whenever an adapter does not render these
+        (``base.send_slash_confirm`` returns "Not supported"), which is how /new arrived in WeCom
+        before this existed — text with a ``/approve`` fallback and no buttons. Taps resolve through
+        ``tools.slash_confirm.resolve`` so the gateway's own gate runs the same code path as a typed
+        reply. Group chats keep the text prompt (WeCom template cards are DM-only).
+        """
+        chat_id = str(chat_id or "").strip()
+        if not chat_id:
+            return SendResult(success=False, error="chat_id is required")
+        if chat_id in self._group_chat_ids:
+            return await self.send(chat_id, message)
+        task_id = self._new_card_task_id("sc")
+        self._remember_card_state(self._slash_confirm_state, task_id, {
+            "session_key": session_key, "confirm_id": confirm_id, "chat_id": chat_id,
+        })
+        buttons = [{"text": label, "key": f"sc:{choice}:{confirm_id}"}
+                   for choice, label in _SLASH_CONFIRM_LABELS.items()]
+        card = self._button_interaction_card(
+            title=f"⚠️ 确认 {title}", desc=self._confirm_detail(message),
+            sub_title="选择「仅一次」、「永久」或「取消」", buttons=buttons, task_id=task_id)
+        reply_req_id = None if self._find_active_turn_for_chat(chat_id) else self._cached_reply_req_id(chat_id, None)
+        result = await self._send_card(chat_id, card, reply_req_id=reply_req_id, is_control=True)
+        if not result.success:
+            self._slash_confirm_state.pop(task_id, None)  # don't leave an unresolvable card behind
+            # Never lose the prompt — and never send it twice: the text fallback IS the delivery,
+            # so report it as the outcome. Returning the card failure would make the gateway
+            # re-send `message` itself, duplicating a prompt the user already has.
+            fallback = await self.send(chat_id, message)
+            return fallback if fallback.success else result
+        return result
+
+    @staticmethod
+    def _confirm_detail(message: str) -> str:
+        """Keep only the human-readable detail of the gateway's prompt text.
+
+        The prompt is ``⚠️ **Confirm /new**\\n\\n<detail>\\n\\nChoose:\\n• **Approve Once** …\\n\\n
+        _Text fallback: …_``. The card carries the title itself and the choices live on buttons,
+        so the leading title line and everything from "Choose:" on are dropped.
+        """
+        plain = str(message or "").replace("**", "").replace("_", "")
+        head = plain.split("Choose:")[0]
+        lines = [line.strip() for line in head.splitlines() if line.strip()]
+        detail = " ".join(lines[1:]) if len(lines) > 1 else (lines[0] if lines else "")
+        return detail[:128]
+
+    async def _resolve_slash_confirm_tap(self, payload: Dict[str, Any], task_id: str, event_key: str,
+                                         user: str) -> None:
+        """Resolve a slash-confirm tap: ``once`` runs it, ``always`` persists the opt-out, ``cancel``
+        skips. Pop-first so a repeat tap cannot run the command twice."""
+        state = self._slash_confirm_state.pop(task_id, None)
+        if not state:
+            logger.info("[%s] Slash-confirm card %s already resolved", self.name, task_id)
+            return
+        parts = event_key.split(":", 2)
+        choice = parts[1] if len(parts) == 3 else "cancel"
+        label = _SLASH_CONFIRM_LABELS.get(choice, "已处理")
+        result_text = ""
+        try:
+            from tools import slash_confirm as slash_confirm_mod
+            result_text = await slash_confirm_mod.resolve(
+                str(state.get("session_key") or ""), str(state.get("confirm_id") or ""), choice) or ""
+        except Exception as exc:
+            logger.error("[%s] Slash-confirm tap resolution failed: %s", self.name, exc)
+            result_text = f"⚠️ 处理失败：{exc}"
+        await self._update_card(self._payload_req_id(payload), self._text_notice_card(
+            title=label, desc=f"决策人：{user}", task_id=task_id))
+        chat_id = str(state.get("chat_id") or "")
+        if result_text and chat_id:
+            await self.send(chat_id, str(result_text))
+        logger.info("[%s] Slash-confirm card %s resolved by %s: choice=%s", self.name, task_id, user, choice)
+
+    # ── model picker (slash_commands_model.py probes for this method) ─────────────────────
 
     # The picker uses ``button_selection`` (a dropdown) rather than a grid of name buttons.
     # Reason, measured on device: WeCom packs button_list into rows of 3 inside a fixed-width
@@ -414,6 +503,8 @@ class WeComCardMixin:
             return
         if task_id in self._approval_state:
             await self._resolve_approval_tap(payload, sender_id or chat_id, task_id, event_key)
+        elif task_id in self._slash_confirm_state:
+            await self._resolve_slash_confirm_tap(payload, task_id, event_key, sender_id or chat_id)
         elif task_id in self._model_picker_state:
             await self._resolve_model_picker_tap(
                 payload, task_id, event_key, sender_id or chat_id, self._parse_selected_items(tce))

@@ -95,11 +95,17 @@ hermes gateway
 
 ## 交互卡片（仅私聊）
 
-适配器将两种交互界面渲染为原生企微**模板卡片**（`card_type: button_interaction`）。卡片按设计**仅支持私聊**：企微模板卡片协议仅限单聊，群聊保留纯文本流程（审批仍用 `/approve`，`/model` 回退文本列表）。用户点击卡片按钮后，企微通过同一条 WebSocket 推送 `template_card_event`；适配器先在 DM 白名单中校验发送者，再在企微 5 秒回复窗口内通过 `aibot_respond_update_msg` 原地更新卡片。
+适配器将三种交互界面渲染为原生企微**模板卡片**（`card_type: button_interaction`）。卡片按设计**仅支持私聊**：企微模板卡片协议仅限单聊，群聊保留纯文本流程（审批仍用 `/approve`，`/model` 回退文本列表）。用户点击卡片按钮后，企微通过同一条 WebSocket 推送 `template_card_event`；适配器先在 DM 白名单中校验发送者，再在企微 5 秒回复窗口内通过 `aibot_respond_update_msg` 原地更新卡片。
 
 ### 命令审批卡片
 
 危险命令审批（`send_exec_approval`）渲染为一张卡片，每个选项一个按钮——仅允许一次 / 允许本次会话 / 永久允许 / 拒绝（智能拒绝变体只提供"仅允许一次"和"拒绝"）。点击后走与文本 `/approve` 完全相同的 `tools.approval.resolve_gateway_approval` 链路，审批语义不变，只是换成了按钮。点击后卡片替换为 text_notice 确认结果。
+
+### 破坏性命令确认卡片
+
+`/new`、`/reset`、`/undo` 受 `approvals.destructive_slash_confirm` 管控，以三按钮卡片（仅一次 / 永久 / 取消）呈现，而不再是带 `/approve` 兜底的纯文本提示。点击走 `tools.slash_confirm.resolve`，与文本路径同一入口。适配器若不实现 `send_slash_confirm`，网关就回落到文本——这正是这些提示此前在企微的形态。
+
+按钮文案刻意使用中文短形式（确认卡为 仅一次 / 永久 / 取消，审批卡为 仅一次 / 本会话 / 永久 / 拒绝）：企微在固定卡宽下按每行 3 个排按钮，一个按钮约渲染 3 个中文字，网关自带的描述性文案（`Always Approve`）会被截成无法区分的残段。若卡片发送失败，适配器回落到纯文本提示并把该次投递上报为结果，避免网关重复发送同一提示。
 
 ### 模型选择卡片
 

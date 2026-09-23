@@ -23,6 +23,8 @@ const TARGET_SHA = 'abcdef0123456789abcdef0123456789abcdef01'
 
 const INTENT: ManagedSshUpdateIntent = {
   targetSha: TARGET_SHA,
+  expectedInstallId: 'a'.repeat(32),
+  expectedCurrentSha: 'b'.repeat(40),
   source: {
     repositoryRoot: '/srv/disposable-fixture',
     originUrl: 'https://example.test/disposable-fixture.git',
@@ -37,7 +39,8 @@ const INTENT: ManagedSshUpdateIntent = {
 const EXPECTED_SOURCE = {
   installId: 'a'.repeat(32),
   installationFingerprint: 'b'.repeat(64),
-  sourceFingerprint: 'c'.repeat(64)
+  sourceFingerprint: 'c'.repeat(64),
+  expectedCurrentSha: INTENT.expectedCurrentSha
 }
 
 function required(name: string): string {
@@ -75,6 +78,7 @@ function target(): RemoteUpdateTarget {
 function service(counters: { transports: number; mutations: number }) {
   return createManagedSshUpdateService({
     resolveSource: id => id === 'fixture-ssh' ? { id: 'fixture-ssh', kind: 'ssh' as const } : null,
+    resolveInstallationId: async () => INTENT.expectedInstallId,
     readRecoveryRecords: () => [],
     captureScopes: async () => [],
     openTransport: async () => {

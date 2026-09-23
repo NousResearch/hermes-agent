@@ -38,3 +38,27 @@ test('a managed SSH recovery journal keeps the connection gated across runtime r
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('a recovery record retains the canonical installation fence across runtime recreation', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-ssh-recovery-'))
+  const journalPath = path.join(directory, 'recovery.json')
+  const correlationId = '12345678-1234-4678-9234-567812345678'
+  const installationId = 'a'.repeat(32)
+  const source = { id: 'alias-a', kind: 'ssh', label: 'Alias A' }
+
+  try {
+    createManagedSshRecoveryJournal(journalPath).persistManagedSshRecovery(
+      source, correlationId, [], installationId
+    )
+
+    assert.deepEqual(
+      createManagedSshRecoveryJournal(journalPath).readManagedSshRecoveryRecords().map(record => ({
+        connectionId: record.connectionId,
+        installationId: record.installationId
+      })),
+      [{ connectionId: source.id, installationId }]
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

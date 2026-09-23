@@ -146,7 +146,7 @@ function rolloutState(rows: ManagedRolloutAttempt[], currentWave = 0): ManagedRo
 function seedJournal(
   integration: ReturnType<typeof createManagedRolloutMainIntegration>,
   state: ManagedRolloutState,
-  options: { priorHealthy?: boolean; fencePrior?: boolean; requiredScopeIds?: string[] } = {}
+  options: { priorHealthy?: boolean; fencePrior?: boolean; requiredScopeIds?: string[]; admittedSha?: string } = {}
 ): void {
   integration.journal.create({
     schemaVersion: 1,
@@ -160,7 +160,7 @@ function seedJournal(
         installId: row.installId,
         installationFingerprint: row.installationFingerprint,
         sourceFingerprint: row.sourceFingerprint,
-        admittedSha: TARGET_SHA
+        admittedSha: options.admittedSha ?? TARGET_SHA
       },
       correlationId: row.correlationId,
       wave: row.wave,
@@ -193,7 +193,8 @@ function seedJournal(
 async function reprobeFixture(
   headSha = TARGET_SHA,
   extra: Record<string, unknown> = {},
-  requiredScopeIds: string[] = []
+  requiredScopeIds: string[] = [],
+  admittedSha = TARGET_SHA
 ) {
   const fixture = makeIntegration(headSha, { readRecoveryRecord: () => null, ...extra })
   const inventory = await fixture.integration.adapters.inventoryReader.capture()
@@ -205,7 +206,7 @@ async function reprobeFixture(
   row.state = 'unverified'
   const state = rolloutState([row])
   state.phase = 'attention-required'
-  seedJournal(fixture.integration, state, { requiredScopeIds })
+  seedJournal(fixture.integration, state, { requiredScopeIds, admittedSha })
 
   return {
     ...fixture,
@@ -291,7 +292,8 @@ describe('managed rollout main integration', () => {
     const expected = {
       installId: INSTALL_ID,
       installationFingerprint: expectedInstallation,
-      sourceFingerprint: sourceFingerprint({ ...observed.source, installationFingerprint: expectedInstallation })
+      sourceFingerprint: sourceFingerprint({ ...observed.source, installationFingerprint: expectedInstallation }),
+      expectedCurrentSha: TARGET_SHA
     }
     const openTransport = vi.spyOn(options, 'openTransport')
 
@@ -303,6 +305,12 @@ describe('managed rollout main integration', () => {
     }
 
     await expect(verifyManagedRolloutSelectedTarget(options, source, { ...target, ssh: otherSsh }, expected))
+      .rejects.toThrow('managed-rollout-source-binding-changed')
+    const movedHead = 'd'.repeat(40)
+    const driftedSsh = {
+      exec: vi.fn(async (command: string) => command.includes("'rev-parse' 'HEAD'") ? movedHead : target.ssh.exec(command))
+    }
+    await expect(verifyManagedRolloutSelectedTarget(options, source, { ...target, ssh: driftedSsh }, expected))
       .rejects.toThrow('managed-rollout-source-binding-changed')
     expect(openTransport).not.toHaveBeenCalled()
   })
@@ -338,7 +346,7 @@ describe('managed rollout main integration', () => {
     const proof = await integration.evidence.sweep(state)
 
     expect(proof.valid).toBe(false)
-    expect(proof.reason).toBe('health-evidence-not-proven')
+    expect(proof.reason).toBe('observed-target-head-mismatch')
   })
 
   test('sweeps the settled wave and immediate successor without probing a later wave', async () => {
@@ -474,6 +482,38 @@ describe('managed rollout main integration', () => {
       outcome: 'updated',
       receipt,
       health: { receiptSucceeded: true, receiptCorrelated: true, dependencyReady: true }
+    })
+  })
+
+  test('Recheck can clear a real B-to-C update after the original admitted SHA differs from the target', async () => {
+    const admittedSha = 'f'.repeat(40)
+    const { integration, authorization } = await reprobeFixture(TARGET_SHA, { readRecoveryRecord: () => null }, [], admittedSha)
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA },
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    await expect((integration.observe as any).reprobe(authorization)).resolves.toMatchObject({
+      outcome: 'updated', terminal: true, recoveryRecordClear: true,
+      health: { checkoutSha: TARGET_SHA }
+    })
+  })
+
+  test('normal settlement refuses a success receipt when the selected checkout moved afterward', async () => {
+    const movedHead = 'd'.repeat(40)
+    const { integration, authorization } = await reprobeFixture(movedHead)
+    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent', receipt,
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    await expect((integration.observe as any).observe({
+      authorization,
+      update: { ok: true, updateOk: true, restoreOk: true, receipt, scopes: [] }
+    })).resolves.toMatchObject({
+      outcome: 'unverified'
     })
   })
 

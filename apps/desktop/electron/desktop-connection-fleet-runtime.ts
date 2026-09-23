@@ -371,24 +371,7 @@ export function registerDesktopConnectionFleetIpc(deps: any) {
       )
     }
 
-    if (!managedConnectionUpdateGate.claim(connectionId, correlationId)) {
-      return refusedManagedSshUpdate(connectionId, correlationId, 'A managed update is already in progress.')
-    }
-
-    const operation = (async () => {
-      try {
-        return await updateManagedSshConnection(source, correlationId)
-      } catch (error: any) {
-        return refusedManagedSshUpdate(connectionId, correlationId, String(error?.message || error))
-      } finally {
-        managedConnectionUpdateGate.release(connectionId, correlationId)
-        managedConnectionUpdates.delete(connectionId)
-      }
-    })()
-
-    managedConnectionUpdates.set(connectionId, operation)
-
-    return operation
+    return updateManagedSshConnection(source, correlationId)
   }
 
   ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))

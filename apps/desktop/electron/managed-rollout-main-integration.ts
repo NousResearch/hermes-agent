@@ -99,7 +99,7 @@ async function windowsInstallId(target: any, runtime: any): Promise<string> {
   return String(await target.ssh.exec(windowsRemote.powerShellCommand(script))).trim().split(/\r?\n/).pop() || ''
 }
 
-async function readInstallId(target: any): Promise<string> {
+export async function readInstallId(target: any): Promise<string> {
   if (target.platform !== 'Windows') {return remoteLifecycle.readRemoteInstallId(target.ssh)}
   const runtime = await windowsRemote.probeWindowsRemote(target.ssh, target.hermesPath)
 
@@ -180,7 +180,7 @@ export async function verifyManagedRolloutSelectedTarget(
   options: SourceInspectionOptions,
   source: any,
   target: any,
-  expected: { installId: string; installationFingerprint: string; sourceFingerprint: string }
+  expected: { installId: string; installationFingerprint: string; sourceFingerprint: string; expectedCurrentSha: string }
 ): Promise<void> {
   const inspection = await inspectConnectedSource(options, source, target)
 
@@ -188,7 +188,9 @@ export async function verifyManagedRolloutSelectedTarget(
   const installation = installationFingerprint(inspection)
   const fingerprint = sourceFingerprint({ ...inspection.source, installationFingerprint: installation })
 
-  if (inspection.installId !== expected.installId || installation !== expected.installationFingerprint ||
+  if (!/^[0-9a-f]{40}$/.test(expected.expectedCurrentSha) ||
+      inspection.headSha !== expected.expectedCurrentSha ||
+      inspection.installId !== expected.installId || installation !== expected.installationFingerprint ||
       fingerprint !== expected.sourceFingerprint) {
     throw new Error('managed-rollout-source-binding-changed')
   }
@@ -482,7 +484,18 @@ async function observeHealth(
   try {
     const target = boundedTarget(selected?.target ?? transport!.target, options, context)
     const raw: any = selected?.observed ?? await observeManagedRemoteUpdate(target, authorization.correlationId)
-    const installId = await readInstallId(target)
+    const inspection = await inspectConnectedSource(options, source, target)
+
+    if (!inspection) {throw new Error('observed-source-inspection-unavailable')}
+    const observedInstallation = installationFingerprint(inspection)
+    const observedSource = sourceFingerprint({ ...inspection.source, installationFingerprint: observedInstallation })
+
+    if (inspection.installId !== authorization.installId ||
+        observedInstallation !== authorization.installationFingerprint ||
+        observedSource !== authorization.sourceFingerprint) {
+      throw new Error('observed-source-binding-changed')
+    }
+
     const scopes = await options.captureScopes(source)
     const receipt = expectedReceipt || raw.receipt
 
@@ -495,6 +508,10 @@ async function observeHealth(
       raw.receipt && ['success', 'updated', 'already-current'].includes(raw.receipt.outcome) &&
       (!expectedReceipt || expectedReceipt.outcome === raw.receipt.outcome)
     )
+
+    if (receiptSucceeded && (receipt?.postSha !== authorization.targetSha || inspection.headSha !== authorization.targetSha)) {
+      throw new Error('observed-target-head-mismatch')
+    }
 
     const markerClear = raw.marker === 'absent' || raw.marker === 'dead'
     const recoveryClear = markerClear && ['absent', 'dead'].includes(raw.launchIntent)
@@ -518,7 +535,8 @@ async function observeHealth(
         profile: String(scope.profile),
         restored,
         ready: restored && processIdentityVerified,
-        codeSha: receipt?.postSha || raw.receipt?.postSha || null,
+        codeSha: restored && processIdentityVerified && state?.hermesPath === target.hermesPath
+          ? inspection.headSha : null,
         processIdentityVerified
       })
     }
@@ -526,9 +544,9 @@ async function observeHealth(
     const health = buildHealthEvidence({
       observationId,
       observedAt: new Date().toISOString(),
-      installId: installId || null,
-      checkoutSha: receipt?.postSha || raw.receipt?.postSha || null,
-      installReady: receiptSucceeded && markerClear,
+      installId: inspection.installId,
+      checkoutSha: inspection.headSha,
+      installReady: receiptSucceeded && markerClear && inspection.headSha === authorization.targetSha,
       markerClear,
       receiptCorrelated,
       receiptSucceeded,
@@ -574,7 +592,7 @@ function requiredReprobeScopes(journal: ManagedRolloutJournal, authorization: an
   if (!row || record.snapshot.id !== authorization.rolloutId ||
       row.identity.installationFingerprint !== authorization.installationFingerprint ||
       row.identity.sourceFingerprint !== authorization.sourceFingerprint ||
-      row.identity.admittedSha !== authorization.targetSha ||
+      !/^[a-f0-9]{40}$/.test(row.identity.admittedSha) ||
       row.correlationId !== authorization.correlationId ||
       !Array.isArray(row.requiredScopeIds) ||
       !row.requiredScopeIds.every((id: unknown) => typeof id === 'string') ||

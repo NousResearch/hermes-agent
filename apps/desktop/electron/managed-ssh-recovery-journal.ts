@@ -29,6 +29,8 @@ export function createManagedSshRecoveryJournal(recoveryPath: string) {
           typeof record.connectionId !== 'string' ||
           record.source?.kind !== 'ssh' ||
           record.source?.id !== record.connectionId ||
+          (record.installationId !== undefined &&
+            (typeof record.installationId !== 'string' || !/^[0-9a-f]{32}$/.test(record.installationId))) ||
           !['prepared', 'launching'].includes(record.phase) ||
           !Array.isArray(record.scopes) ||
           record.scopes.length > 256
@@ -92,7 +94,10 @@ export function createManagedSshRecoveryJournal(recoveryPath: string) {
     )
   }
 
-  function persistManagedSshRecovery(source, correlationId, scopes) {
+  function persistManagedSshRecovery(source, correlationId, scopes, installationId?: string) {
+    if (installationId !== undefined && !/^[0-9a-f]{32}$/.test(installationId)) {
+      throw new Error('Managed SSH recovery installation identity is invalid.')
+    }
     const prefix = backendScopePrefix(source.id)
     const recoveryScopes = managedSshRecoveryScopes(scopes, prefix)
 
@@ -100,6 +105,7 @@ export function createManagedSshRecoveryJournal(recoveryPath: string) {
     records.push({
       connectionId: source.id,
       correlationId: validateCorrelationId(correlationId),
+      ...(installationId ? { installationId } : {}),
       createdAt: new Date().toISOString(),
       phase: 'prepared',
       scopes: recoveryScopes,

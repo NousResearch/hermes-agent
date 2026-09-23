@@ -40,6 +40,8 @@ export interface ManagedSshUpdateScope {
 export interface ManagedSshRecoveryRecord {
   connectionId: string
   correlationId: string
+  /** Canonical remote install_id, persisted before a remote mutation. */
+  installationId?: string
   phase: string
   scopes: ManagedSshRecoveryScope[]
   source: ManagedSshUpdateSource
@@ -99,6 +101,8 @@ export interface ManagedSshUpdateServiceDependencies<
   TRecord extends ManagedSshRecoveryRecord = ManagedSshRecoveryRecord
 > {
   resolveSource: (connectionId: string) => TSource | null | undefined
+  /** Read the selected remote target's install_id without mutating it. */
+  resolveInstallationId: (source: TSource, target: RemoteUpdateTarget) => Promise<string | null>
   readRecoveryRecords: () => TRecord[]
   /** Reuse the Desktop-owned admission gate and operation maps across every update entry point. */
   gate?: ManagedConnectionUpdateGate
@@ -117,7 +121,7 @@ export interface ManagedSshUpdateServiceDependencies<
   verifyCoordinatorSource?: (
     source: TSource,
     target: RemoteUpdateTarget,
-    expected: ManagedSshCoordinatorSourceBinding
+    expected: ManagedSshCoordinatorSourceBinding & { expectedCurrentSha: string }
   ) => Promise<void>
   preflightRemote: (target: RemoteUpdateTarget, correlationId: string) => Promise<unknown>
   awaitRestoreClearance: (
@@ -128,7 +132,7 @@ export interface ManagedSshUpdateServiceDependencies<
   drainScope: (scope: TScope) => Promise<unknown>
   closeTransports: (scopes: TScope[], ephemeral: ManagedSshUpdateTransport | null) => Promise<unknown>
   restoreScope: (scope: TScope, source: TSource, correlationId: string) => Promise<unknown>
-  prepareRecovery: (source: TSource, correlationId: string, scopes: TScope[]) => Promise<unknown>
+  prepareRecovery: (source: TSource, correlationId: string, scopes: TScope[], installationId: string) => Promise<unknown>
   completeRecovery: (source: TSource, correlationId: string) => Promise<unknown>
   restoreRecoveryScope: (record: TRecord, scope: ManagedSshRecoveryScope, correlationId: string) => Promise<unknown>
   prepareRemote?: (source: TSource, correlationId: string) => Promise<ManagedSshPreparationReceipt>
@@ -197,6 +201,8 @@ const launchCapabilityRecords = new WeakMap<object, LaunchCapabilityRecord>()
 function sameIntent(left: ManagedSshUpdateIntent, right: ManagedSshUpdateIntent): boolean {
   return (
     left.targetSha === right.targetSha &&
+    left.expectedInstallId === right.expectedInstallId &&
+    left.expectedCurrentSha === right.expectedCurrentSha &&
     left.source.repositoryRoot === right.source.repositoryRoot &&
     left.source.originUrl === right.source.originUrl &&
     left.source.resolvedRef === right.source.resolvedRef &&
@@ -269,6 +275,35 @@ export function createManagedSshUpdateService<
   const activePreparations = new Map<string, Promise<ManagedSshPreparationResult>>()
   const activeRecoveries = deps.activeRecoveries ?? new Map<string, Promise<void>>()
   const primaryRestoreOwners = deps.primaryRestoreOwners ?? new Map<string, { correlationId: string; profile: string; source: TSource }>()
+  const installationOwners = new Map<string, { connectionId: string; correlationId: string }>()
+
+  const validInstallationId = (value: unknown): value is string =>
+    typeof value === 'string' && /^[0-9a-f]{32}$/.test(value)
+
+  const claimInstallation = (installationId: string, connectionId: string, correlationId: string): boolean => {
+    if (!validInstallationId(installationId) || installationOwners.has(installationId)) {return false}
+
+    // Older recovery records without a canonical identity cannot safely be
+    // excluded from this installation. Keep the fence until recovery clears it.
+    try {
+      if (deps.readRecoveryRecords().some(record =>
+        !validInstallationId(record.installationId) || record.installationId === installationId
+      )) {return false}
+    } catch {
+      return false
+    }
+
+    installationOwners.set(installationId, { connectionId, correlationId })
+    return true
+  }
+
+  const releaseInstallation = (installationId: string | null, connectionId: string, correlationId: string): void => {
+    if (!installationId) {return}
+    const owner = installationOwners.get(installationId)
+    if (owner?.connectionId === connectionId && owner.correlationId === correlationId) {
+      installationOwners.delete(installationId)
+    }
+  }
 
   const gate = deps.gate ?? new ManagedConnectionUpdateGate(connectionId => {
     const record = deps.readRecoveryRecords().find(item => item.connectionId === connectionId)
@@ -279,7 +314,8 @@ export function createManagedSshUpdateService<
   const execute = async (
     source: TSource,
     correlationId: string,
-    options: ManagedSshUpdateRequestOptions = {}
+    options: ManagedSshUpdateRequestOptions = {},
+    installationClaim: { id: string | null }
   ): Promise<ManagedConnectionUpdateResult> => {
     const connectionId = sourceId(source)
     const intent = validateManagedSshUpdateIntent(options.intent)
@@ -295,6 +331,25 @@ export function createManagedSshUpdateService<
       ? deps.targetFromState(firstState)
       : (ephemeral = await deps.openTransport(sourceSnapshot)).target
 
+    try {
+      const observedInstallId = await deps.resolveInstallationId(sourceSnapshot, target)
+      if (!validInstallationId(observedInstallId)) {
+        throw new Error('The selected SSH target has no valid installation identity.')
+      }
+      if (options.mode === 'coordinator' && observedInstallId !== options.expectedSource?.installId) {
+        throw new Error('The selected SSH target no longer matches the reviewed installation.')
+      }
+      if (!installationClaim.id) {
+        if (!claimInstallation(observedInstallId, connectionId, correlationId)) {
+          throw new Error('A managed update or recovery for this installation is already in progress.')
+        }
+        installationClaim.id = observedInstallId
+      }
+    } catch (error) {
+      if (ephemeral) {await ephemeral.close().catch(() => undefined)}
+      throw error
+    }
+
     return runManagedSshUpdate({
       connectionId,
       correlationId,
@@ -309,7 +364,9 @@ export function createManagedSshUpdateService<
         // Consume only at the mutation edge. A preflight or drain failure has
         // not dispatched a remote update and therefore must not burn approval.
         if (options.mode === 'coordinator') {
-          await deps.verifyCoordinatorSource!(sourceSnapshot, target, options.expectedSource!)
+          await deps.verifyCoordinatorSource!(sourceSnapshot, target, {
+            ...options.expectedSource!, expectedCurrentSha: intent!.expectedCurrentSha
+          })
           consumeLaunchCapability(options.launchCapability, connectionId, correlationId, intent, options.expectedSource)
         }
 
@@ -331,7 +388,7 @@ export function createManagedSshUpdateService<
         await deps.restoreScope(scope, sourceSnapshot, correlationId)
       },
       prepareRecovery: async () => {
-        await deps.prepareRecovery(sourceSnapshot, correlationId, scopes)
+        await deps.prepareRecovery(sourceSnapshot, correlationId, scopes, installationClaim.id!)
       },
       completeRecovery: async () => {
         await deps.completeRecovery(sourceSnapshot, correlationId)
@@ -389,6 +446,9 @@ export function createManagedSshUpdateService<
     if (options.mode === 'coordinator') {
       try {
         validateSourceBinding(options.expectedSource)
+        if (intent!.expectedInstallId !== options.expectedSource!.installId) {
+          throw new Error('Coordinator update intent does not match the reviewed installation.')
+        }
       } catch (error) {
         return refuse(correlationId, errorMessage(error))
       }
@@ -414,13 +474,24 @@ export function createManagedSshUpdateService<
       return refuse(correlationId, 'A managed update is already in progress.')
     }
 
+    const installationClaim: { id: string | null } = { id: null }
+    if (options.mode === 'coordinator') {
+      const installationId = options.expectedSource!.installId
+      if (!claimInstallation(installationId, connectionId, correlationId)) {
+        gate.release(connectionId, correlationId)
+        return refuse(correlationId, 'A managed update or recovery for this installation is already in progress.')
+      }
+      installationClaim.id = installationId
+    }
+
     const operation = (async () => {
       try {
-        return await execute(source, correlationId, { ...options, intent })
+        return await execute(source, correlationId, { ...options, intent }, installationClaim)
       } catch (error) {
         return refusedManagedSshUpdate(connectionId, correlationId, errorMessage(error))
       } finally {
         gate.release(connectionId, correlationId)
+        releaseInstallation(installationClaim.id, connectionId, correlationId)
         activeUpdates.delete(connectionId)
       }
     })()
@@ -514,12 +585,28 @@ export function createManagedSshUpdateService<
 
     const operation = (async (): Promise<ManagedSshPreparationResult> => {
       let receipt: ManagedSshPreparationReceipt | null = null
+      let transport: ManagedSshUpdateTransport | null = null
+      let installationId: string | null = null
+      let preparationBegan = false
 
       try {
         if (!deps.prepareRemote) {
           throw new Error('Managed SSH preparation is not configured for this service.')
         }
 
+        transport = await deps.openTransport(source)
+        const observedInstallId = await deps.resolveInstallationId(source, transport.target)
+        if (!validInstallationId(observedInstallId)) {
+          throw new Error('The selected SSH target has no valid installation identity.')
+        }
+        if (!claimInstallation(observedInstallId, connectionId, correlationId)) {
+          throw new Error('A managed update or recovery for this installation is already in progress.')
+        }
+        installationId = observedInstallId
+        await transport.close()
+        transport = null
+
+        preparationBegan = true
         receipt = await deps.prepareRemote(source, correlationId)
 
         if (receipt.kind !== 'preparation' || receipt.correlationId !== correlationId) {
@@ -537,12 +624,14 @@ export function createManagedSshUpdateService<
           connectionId,
           correlationId,
           ok: false,
-          outcome: 'preparation-failed',
+          outcome: preparationBegan ? 'preparation-failed' : 'refused',
           receipt,
           error: errorMessage(error)
         }
       } finally {
+        if (transport) {await transport.close().catch(() => undefined)}
         gate.release(connectionId, correlationId)
+        releaseInstallation(installationId, connectionId, correlationId)
         activePreparations.delete(connectionId)
       }
     })()

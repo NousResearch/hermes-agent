@@ -26,6 +26,7 @@ test('production composition registers only for the owner and shares legacy admi
     activeUpdates,
     activeRecoveries,
     resolveSource: () => null,
+    resolveInstallationId: async () => null,
     readRecoveryRecords: () => [],
     captureScopes: async () => [],
     openTransport: async () => {remoteEffects += 1; throw new Error('unexpected-remote-transport')},

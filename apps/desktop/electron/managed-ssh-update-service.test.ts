@@ -15,6 +15,8 @@ const OTHER_CORRELATION = '22345678-1234-4678-9234-567812345678'
 
 const PINNED_INTENT: ManagedSshUpdateIntent = {
   targetSha: 'abcdef0123456789abcdef0123456789abcdef01',
+  expectedInstallId: 'a'.repeat(32),
+  expectedCurrentSha: '0123456789abcdef0123456789abcdef01234567',
   source: {
     repositoryRoot: '/srv/hermes-agent',
     originUrl: 'https://github.com/NousResearch/hermes-agent.git',
@@ -60,6 +62,7 @@ function deps(
 
   return {
     resolveSource: id => (id === defaultSource.id ? defaultSource : null),
+    resolveInstallationId: async () => EXPECTED_SOURCE.installId,
     readRecoveryRecords: () => [],
     captureScopes: async () => [],
     openTransport: async () => ({ target: target(), close: async () => {} }),
@@ -80,6 +83,176 @@ function deps(
     ...overrides
   }
 }
+
+test('two connection aliases cannot launch concurrent updates against one installation', async () => {
+  let release!: () => void
+  let launched = 0
+  let preparations = 0
+  const pending = new Promise<void>(resolve => {release = resolve})
+  const service = createManagedSshUpdateService(deps({
+    resolveSource: id => ['homelab', 'alias'].includes(id) ? source(id) : null,
+    verifyCoordinatorSource: async () => {},
+    prepareRemote: async (_source, correlationId) => {
+      preparations += 1
+      return { kind: 'preparation', correlationId }
+    },
+    executeRemoteUpdate: async (_target, correlation, context) => {
+      launched += 1
+      await context.beforeLaunchDispatch()
+      await pending
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+
+  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+  const first = service.requestCoordinator('homelab', {
+    correlationId: CORRELATION, intent: PINNED_INTENT,
+    expectedSource: EXPECTED_SOURCE, launchCapability: capability
+  })
+  assert.equal(first.admitted, true)
+
+  const aliasCapability = service.issueLaunchCapability('alias', OTHER_CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+  const alias = service.requestCoordinator('alias', {
+    correlationId: OTHER_CORRELATION, intent: PINNED_INTENT,
+    expectedSource: EXPECTED_SOURCE, launchCapability: aliasCapability
+  })
+  assert.equal(alias.admitted, false)
+  assert.match(alias.reason, /installation.*in progress/i)
+  assert.equal((await alias.operation).outcome, 'refused')
+  assert.equal((await service.request('alias', { correlationId: OTHER_CORRELATION })).outcome, 'refused')
+  assert.equal((await service.prepare('alias', { correlationId: OTHER_CORRELATION })).outcome, 'refused')
+  assert.equal(preparations, 0)
+
+  release()
+  assert.equal((await first.operation).ok, true)
+  assert.equal(launched, 1)
+})
+
+test('a legacy update owns its installation before a coordinator alias can enter', async () => {
+  let release!: () => void
+  let started!: () => void
+  let launched = 0
+  const pending = new Promise<void>(resolve => {release = resolve})
+  const entered = new Promise<void>(resolve => {started = resolve})
+  const service = createManagedSshUpdateService(deps({
+    resolveSource: id => ['homelab', 'alias'].includes(id) ? source(id) : null,
+    verifyCoordinatorSource: async () => {},
+    executeRemoteUpdate: async (_target, correlation, context) => {
+      launched += 1
+      await context.beforeLaunchDispatch()
+      started()
+      await pending
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+
+  const first = service.request('homelab', { correlationId: CORRELATION })
+  await entered
+  try {
+    const capability = service.issueLaunchCapability('alias', OTHER_CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+    const alias = service.requestCoordinator('alias', {
+      correlationId: OTHER_CORRELATION, intent: PINNED_INTENT,
+      expectedSource: EXPECTED_SOURCE, launchCapability: capability
+    })
+    assert.equal(alias.admitted, false)
+    assert.equal((await alias.operation).outcome, 'refused')
+    assert.equal(launched, 1)
+  } finally {
+    release()
+    await first
+  }
+})
+
+test('durable recovery under one alias fences another alias of the same installation', async () => {
+  let launched = 0
+  const service = createManagedSshUpdateService(deps({
+    resolveSource: id => ['homelab', 'alias'].includes(id) ? source(id) : null,
+    readRecoveryRecords: () => [{
+      connectionId: 'homelab', correlationId: CORRELATION, installationId: EXPECTED_SOURCE.installId,
+      phase: 'launching', scopes: [], source: source('homelab')
+    }],
+    verifyCoordinatorSource: async () => {},
+    executeRemoteUpdate: async (_target, correlation) => {
+      launched += 1
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+
+  const capability = service.issueLaunchCapability('alias', OTHER_CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+  const coordinator = service.requestCoordinator('alias', {
+    correlationId: OTHER_CORRELATION, intent: PINNED_INTENT,
+    expectedSource: EXPECTED_SOURCE, launchCapability: capability
+  })
+  assert.equal(coordinator.admitted, false)
+  assert.equal((await coordinator.operation).outcome, 'refused')
+  assert.equal((await service.request('alias', { correlationId: OTHER_CORRELATION })).outcome, 'refused')
+  assert.equal(launched, 0)
+})
+
+test('a recovery record without proven installation identity fences new aliases', async () => {
+  let launched = 0
+  const service = createManagedSshUpdateService(deps({
+    resolveSource: id => ['homelab', 'alias'].includes(id) ? source(id) : null,
+    readRecoveryRecords: () => [{
+      connectionId: 'homelab', correlationId: CORRELATION,
+      phase: 'launching', scopes: [], source: source('homelab')
+    }],
+    executeRemoteUpdate: async (_target, correlation) => {
+      launched += 1
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+
+  assert.equal((await service.request('alias', { correlationId: OTHER_CORRELATION })).outcome, 'refused')
+  assert.equal(launched, 0)
+})
+
+test('missing or malformed remote installation identity refuses update and preparation before mutation', async () => {
+  let updates = 0
+  let preparations = 0
+  const service = createManagedSshUpdateService(deps({
+    resolveInstallationId: async () => null,
+    prepareRemote: async (_source, correlationId) => {
+      preparations += 1
+      return { kind: 'preparation', correlationId }
+    },
+    executeRemoteUpdate: async (_target, correlation) => {
+      updates += 1
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+
+  assert.equal((await service.request('homelab', { correlationId: CORRELATION })).outcome, 'refused')
+  assert.equal((await service.prepare('homelab', { correlationId: OTHER_CORRELATION })).outcome, 'refused')
+  assert.equal(updates, 0)
+  assert.equal(preparations, 0)
+  assert.equal(service.gate.owner('homelab'), null)
+})
+
+test('coordinator refuses a changed remote installation before transport mutation', async () => {
+  let mutations = 0
+  const service = createManagedSshUpdateService(deps({
+    resolveInstallationId: async () => 'd'.repeat(32),
+    verifyCoordinatorSource: async () => {},
+    executeRemoteUpdate: async (_target, correlation) => {
+      mutations += 1
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+
+  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+  const admission = service.requestCoordinator('homelab', {
+    correlationId: CORRELATION, intent: PINNED_INTENT,
+    expectedSource: EXPECTED_SOURCE, launchCapability: capability
+  })
+
+  assert.equal(admission.admitted, true)
+  const result = await admission.operation
+  assert.equal(result.outcome, 'refused')
+  assert.match(result.error || '', /reviewed installation/)
+  assert.equal(mutations, 0)
+  assert.equal(service.gate.owner('homelab'), null)
+})
 
 test('service admission deduplicates duplicate claims and refuses foreign sources', async () => {
   let release!: () => void
@@ -294,7 +467,7 @@ test('a route edit after rollout start cannot dispatch to the newly selected ins
   }), {
     verifyCoordinatorSource: async (resolved: TestSource, actualTarget: RemoteUpdateTarget, expected: typeof EXPECTED_SOURCE) => {
       verificationCalls += 1
-      assert.deepEqual(expected, EXPECTED_SOURCE)
+      assert.deepEqual(expected, { ...EXPECTED_SOURCE, expectedCurrentSha: PINNED_INTENT.expectedCurrentSha })
       assert.strictEqual(actualTarget, selectedTarget)
 
       if (resolved.label !== 'reviewed-route') {throw new Error('coordinator-source-binding-mismatch')}
@@ -372,6 +545,30 @@ test('coordinator capability cannot authorize a different source binding', async
   assert.equal(admission.admitted, true)
   assert.equal(result.ok, false)
   assert.match(result.error || '', /different update transaction/)
+  assert.equal(mutations, 0)
+})
+
+test('coordinator capability cannot authorize a different reviewed current commit', async () => {
+  let mutations = 0
+  const service = createManagedSshUpdateService(deps({
+    verifyCoordinatorSource: async () => {},
+    executeRemoteUpdate: async (_target, correlation) => {
+      mutations += 1
+      return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+    }
+  }))
+
+  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT, EXPECTED_SOURCE)
+  const changedIntent = { ...PINNED_INTENT, expectedCurrentSha: 'f'.repeat(40) }
+  const admission = service.requestCoordinator('homelab', {
+    correlationId: CORRELATION,
+    intent: changedIntent,
+    launchCapability: capability,
+    expectedSource: EXPECTED_SOURCE
+  })
+
+  assert.equal(admission.admitted, true)
+  assert.equal((await admission.operation).outcome, 'update-failed')
   assert.equal(mutations, 0)
 })
 
@@ -458,6 +655,7 @@ test('recovery wins admission over a duplicate update and releases only its own 
 
 test('service captures, restores, closes owned transport, and releases admission in order', async () => {
   const events: string[] = []
+  let persistedInstallationId: string | null = null
 
   const scopes: TestScope[] = [
     { key: 'primary', profile: 'default', primary: true, state: {} },
@@ -473,7 +671,10 @@ test('service captures, restores, closes owned transport, and releases admission
         return scopes
       },
       preflightRemote: async () => events.push('preflight'),
-      prepareRecovery: async () => events.push('prepare-recovery'),
+      prepareRecovery: async (_source, _correlation, _scopes, installationId) => {
+        persistedInstallationId = installationId
+        events.push('prepare-recovery')
+      },
       drainScope: async scope => events.push(`drain:${scope.profile}`),
       executeRemoteUpdate: async (_target, correlation, context) => {
         events.push('launch')
@@ -491,6 +692,7 @@ test('service captures, restores, closes owned transport, and releases admission
   const result = await service.request('homelab')
 
   assert.equal(result.ok, true)
+  assert.equal(persistedInstallationId, EXPECTED_SOURCE.installId)
   assert.deepEqual(events, [
     'capture',
     'preflight',

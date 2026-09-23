@@ -22,6 +22,14 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('RU-RU')).toBe('ru')
     expect(normalizeLocale(' ru_ru ')).toBe('ru')
     expect(normalizeLocale('Русский')).toBe('ru')
+    expect(normalizeLocale('pt-BR')).toBe('pt-BR')
+    expect(normalizeLocale('PT-BR')).toBe('pt-BR')
+    expect(normalizeLocale(' pt_br ')).toBe('pt-BR')
+    // `pt` and `pt-PT` resolve here because this is the only Portuguese
+    // catalogue: Brazilian is closer than English for a European speaker.
+    expect(normalizeLocale('pt')).toBe('pt-BR')
+    expect(normalizeLocale('pt-PT')).toBe('pt-BR')
+    expect(normalizeLocale('Português')).toBe('pt-BR')
   })
 
   it('falls back to English for empty or unsupported values', () => {
@@ -42,10 +50,12 @@ describe('desktop i18n languages', () => {
     expect(isLocale('ja')).toBe(true)
     expect(isLocale('ar')).toBe(true)
     expect(isLocale('ru')).toBe(true)
+    expect(isLocale('pt-BR')).toBe(true)
   })
 
   it('returns the persisted config value for supported locales', () => {
     expect(localeConfigValue('en')).toBe('en')
+    expect(localeConfigValue('pt-BR')).toBe('pt-BR')
     expect(localeConfigValue('zh')).toBe('zh')
     expect(localeConfigValue('zh-hant')).toBe('zh-hant')
     expect(localeConfigValue('ja')).toBe('ja')

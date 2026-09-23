@@ -8,17 +8,26 @@ import { Chip, EmptyState, GlassCard, GlassPanel, SectionHeader, StatusPill } fr
 import { Hint, InfoDot } from "@/components/tooltip";
 import { PanelBody } from "@/components/panel";
 import { TaskDetailPanel } from "./task-detail";
+import { TaskActions, TaskProblem } from "./task-actions";
+import { CapabilityList } from "@/components/capabilities";
 import { plural } from "@/lib/api";
 import {
   absolute, absoluteIso, channelLabel, channelState, dayLabel, decisionLabel, decisionState,
   objectiveLabel, objectiveState, since, sinceIso, taskLabel, taskState,
 } from "@/lib/state";
 import type { Loaded } from "@/lib/api";
-import type { Budget, Channel, Decision, KnowledgeSource, Objective, Policy, Task } from "./types";
+import type {
+  Budget, Channel, Decision, KnowledgeSource, ModelStatus, Objective, Policy, Task,
+} from "./types";
 
 /* ── Work ─────────────────────────────────────────────────────────────────── */
 
-export function WorkScreen({ tasks }: { tasks: Loaded<{ tasks: Task[]; counts?: Record<string, number> }> }) {
+export function WorkScreen({
+  tasks, model, onChanged,
+}: {
+  tasks: Loaded<{ tasks: Task[]; counts?: Record<string, number> }>;
+  model?: ModelStatus; onChanged: () => void;
+}) {
   // The open record is local to this screen: it is a view of one row, not navigation.
   const [openTask, setOpenTask] = React.useState<string | null>(null);
   return (
@@ -28,32 +37,40 @@ export function WorkScreen({ tasks }: { tasks: Loaded<{ tasks: Task[]; counts?: 
       hint: "nova objective submit <bundle> <id>",
     }}>
       {(data) => {
-        const attention = data.tasks.filter((t) => t.needs_attention);
-        const rest = data.tasks.filter((t) => !t.needs_attention);
+        // Three different asks, so three lists: a failure wants a fix and a retry, a held
+        // or review item wants a decision, and everything else wants nothing.
+        const failed = data.tasks.filter((t) => t.attention_kind === "failed");
+        const decisions = data.tasks.filter((t) => t.attention_kind === "decision");
+        const rest = data.tasks.filter((t) => !t.attention_kind);
+        const row = (t: Task) => (
+          <TaskRow key={t.task_id} task={t} model={model} onChanged={onChanged}
+                   onOpen={() => setOpenTask(t.task_id)} />
+        );
         return (
-          <div className="space-y-5">
+          <div className="space-y-6">
             {openTask ? (
               <TaskDetailPanel taskId={openTask} onClose={() => setOpenTask(null)} />
             ) : null}
-            {attention.length ? (
-              <div>
-                <SectionHeader title="Needs a human"
-                  detail="Held or awaiting review. These are the rows to act on." icon={CircleCheck} />
-                <div className="space-y-2">
-                  {attention.map((t) => (
-                    <TaskRow key={t.task_id} task={t} onOpen={() => setOpenTask(t.task_id)} />
-                  ))}
-                </div>
-              </div>
+            {failed.length ? (
+              <section>
+                <SectionHeader title="Failed — needs a fix"
+                  detail="These stopped on an error. Fix the cause, then retry." icon={ListChecks} />
+                <div className="space-y-2">{failed.map(row)}</div>
+              </section>
             ) : null}
-            <div>
-              {attention.length ? <SectionHeader title="Everything else" /> : null}
-              <div className="space-y-2">
-                {rest.map((t) => (
-                  <TaskRow key={t.task_id} task={t} onOpen={() => setOpenTask(t.task_id)} />
-                ))}
-              </div>
-            </div>
+            {decisions.length ? (
+              <section>
+                <SectionHeader title="Waiting on a decision"
+                  detail="Held or awaiting review. A person decides what happens next." icon={CircleCheck} />
+                <div className="space-y-2">{decisions.map(row)}</div>
+              </section>
+            ) : null}
+            {rest.length ? (
+              <section>
+                {failed.length || decisions.length ? <SectionHeader title="Everything else" /> : null}
+                <div className="space-y-2">{rest.map(row)}</div>
+              </section>
+            ) : null}
           </div>
         );
       }}
@@ -61,33 +78,40 @@ export function WorkScreen({ tasks }: { tasks: Loaded<{ tasks: Task[]; counts?: 
   );
 }
 
-function TaskRow({ task, onOpen }: { task: Task; onOpen?: () => void }) {
+function TaskRow({
+  task, onOpen, model, onChanged,
+}: { task: Task; onOpen?: () => void; model?: ModelStatus; onChanged?: () => void }) {
   return (
     <GlassCard
-      className="flex w-full items-start gap-3 p-3 text-left"
+      className="w-full p-3.5 text-left"
       interactive={Boolean(onOpen)}
       {...(onOpen ? {
         role: "button", tabIndex: 0, onClick: onOpen,
         "aria-label": `Open the record for ${task.title}`,
         onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.target !== e.currentTarget) return;
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); }
         },
       } : {})}
     >
-      <StatusPill state={taskState(task.runtime_status)} className="mt-0.5 w-[158px] shrink-0 justify-start">
-        {taskLabel(task.runtime_status)}
-      </StatusPill>
-      <div className="min-w-0 flex-1">
-        <p className="text-ink text-[13px] leading-snug">{task.title}</p>
-        <p className="text-ink-faint mt-0.5 text-[11.5px]">
-          {task.agent_id ?? "unassigned"}
-          {task.consecutive_failures ? ` · ${plural(task.consecutive_failures, "failure")}` : ""}
-        </p>
-        {task.last_error ? <p className="text-blocked mt-1 text-[11.5px]">{task.last_error}</p> : null}
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
+        <StatusPill state={task.attention_kind === "failed" ? "blocked" : taskState(task.runtime_status)}
+                    className="mt-0.5 shrink-0">
+          {task.attention_kind === "failed" ? "Failed" : taskLabel(task.runtime_status)}
+        </StatusPill>
+        <div className="min-w-0 flex-1 basis-64">
+          <p className="text-ink text-[13.5px] leading-snug font-medium">{task.title}</p>
+          <p className="text-ink-faint mt-0.5 text-[12px]">
+            {task.agent_id ?? "unassigned"}
+            {task.consecutive_failures ? ` · ${plural(task.consecutive_failures, "failed attempt")}` : ""}
+          </p>
+          <TaskProblem task={task} />
+        </div>
+        <Hint text={absolute(task.created_at)}>
+          <span className="text-ink-faint shrink-0 text-[12px]">{since(task.created_at)}</span>
+        </Hint>
       </div>
-      <Hint text={absolute(task.created_at)}>
-        <span className="text-ink-faint shrink-0 text-[11.5px]">{since(task.created_at)}</span>
-      </Hint>
+      {onChanged ? <TaskActions task={task} model={model} onDone={onChanged} /> : null}
     </GlassCard>
   );
 }
@@ -99,13 +123,16 @@ function TaskRow({ task, onOpen }: { task: Task; onOpen?: () => void }) {
    It must never look like an inbox of live requests that does not exist. */
 
 export function ApprovalsScreen({
-  tasks, decisions, agents, channels, canSeeDecisions,
+  tasks, decisions, agents, channels, canSeeDecisions, model, onChanged, onOpenWork,
 }: {
   tasks: Task[]; decisions: Decision[]; canSeeDecisions: boolean;
   agents: Array<{ id: string; display_name?: string; approval_required_for?: string[] }>;
-  channels: Channel[];
+  channels: Channel[]; model?: ModelStatus; onChanged: () => void; onOpenWork: () => void;
 }) {
-  const held = tasks.filter((t) => t.needs_attention);
+  // Only what genuinely waits on a person. A crashed task is not an approval request, and
+  // listing one here sent operators to approve something there was nothing to approve.
+  const held = tasks.filter((t) => t.attention_kind === "decision");
+  const failedCount = tasks.filter((t) => t.attention_kind === "failed").length;
   const escalations = decisions.filter(
     (d) => ["escalate", "require_approval"].includes(String(d.effect)),
   );
@@ -120,18 +147,35 @@ export function ApprovalsScreen({
     })),
   ];
 
+  const failedNote = failedCount ? (
+    <GlassPanel solid className="flex flex-wrap items-center gap-3 p-4">
+      <StatusPill state="blocked">{plural(failedCount, "failed task")}</StatusPill>
+      <span className="text-ink-muted min-w-0 flex-1 basis-60 text-[12.5px]">
+        Failures need a fix and a retry, not an approval, so they are listed on the Work screen.
+      </span>
+      <button type="button" onClick={onOpenWork}
+        className="glass-solid text-ink rounded-lg px-3 py-1.5 text-[12.5px] font-medium">
+        Open Work
+      </button>
+    </GlassPanel>
+  ) : null;
+
   if (!held.length && !escalations.length && !standing.length) {
     return (
-      <EmptyState
-        icon={CircleCheck}
-        title="Nothing is waiting on a person"
-        detail="Your workforce is operating inside its permitted actions, and no standing approval requirement is declared."
-      />
+      <div className="space-y-6">
+        {failedNote}
+        <EmptyState
+          icon={CircleCheck}
+          title="Nothing is waiting on a person"
+          detail="Your workforce is operating inside its permitted actions, and no standing approval requirement is declared."
+        />
+      </div>
     );
   }
 
   return (
     <div className="space-y-6">
+      {failedNote}
       <GlassPanel className="p-5">
         <SectionHeader
           title="Work held for a human"
@@ -141,37 +185,12 @@ export function ApprovalsScreen({
         {held.length ? (
           <div className="space-y-2.5">
             {held.map((task) => (
-              <GlassCard key={task.task_id} className="p-4" interactive={false}>
-                <div className="flex flex-wrap items-start gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                      <StatusPill state={taskState(task.runtime_status)}>
-                        {taskLabel(task.runtime_status)}
-                      </StatusPill>
-                      <span className="text-ink-faint text-[11.5px]">{task.agent_id}</span>
-                    </div>
-                    <p className="text-ink text-[13.5px] leading-snug font-medium">{task.title}</p>
-                    {task.last_error ? (
-                      <p className="text-blocked mt-1 text-[12px]">{task.last_error}</p>
-                    ) : null}
-                    <p className="text-ink-faint mt-1.5 text-[11.5px]">
-                      Waiting since {since(task.created_at)} · <span className="font-mono">{task.task_id}</span>
-                    </p>
-                  </div>
-                </div>
-                {/* Deliberately not buttons. The write path exists (POST /work/{id}/decide)
-                    but wiring a one-click approve here without a confirmation design would
-                    make an irreversible action a hover away. The CLI is the deliberate route
-                    until that design exists. */}
-                <p className="text-ink-faint border-glass-border mt-3 border-t pt-2.5 font-mono text-[11px]">
-                  nova work release &lt;bundle&gt; {task.task_id}
-                </p>
-              </GlassCard>
+              <TaskRow key={task.task_id} task={task} model={model} onChanged={onChanged} />
             ))}
           </div>
         ) : (
-          <EmptyState icon={CircleCheck} title="No work is held"
-            detail="Nothing has been stopped for review or blocked." />
+          <EmptyState icon={CircleCheck} title="Nothing is waiting on a decision"
+            detail="No work is held for review or paused for a person." />
         )}
       </GlassPanel>
 
@@ -356,7 +375,7 @@ export function ObjectivesScreen({ objectives }: { objectives: Loaded<{ objectiv
       hint: "objectives/ in the tenant bundle",
     }}>
       {(data) => (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))]">
           {data.objectives.map((objective) => {
             const done = Number(objective.done ?? 0);
             const total = Number(objective.total ?? (objective.steps ?? []).length) || 1;
@@ -553,14 +572,21 @@ export function ChannelsScreen({
                       <h3 className="text-ink text-[14.5px] font-semibold">
                         {channel.display_name ?? channel.id}
                       </h3>
-                      <StatusPill state={channelState(channel.status)}>
-                        {channelLabel(channel.status)}
-                      </StatusPill>
-                      {channel.verification && channel.verification !== "field_validated" ? (
-                        <Hint text="How this provider's support was established. 'Source read' means the implementation was read, not connected to a live provider — a tick that means 'a plugin exists' is the tick a customer signs a contract on.">
-                          <Chip>{String(channel.verification).replace(/_/g, " ")}</Chip>
-                        </Hint>
-                      ) : null}
+                      <Hint text={
+                        channel.live?.state === "connected"
+                          ? `The gateway reports this connection up${channel.live.since ? ` since ${absoluteIso(channel.live.since)}` : ""}.`
+                          : channel.live?.state === "disconnected"
+                            ? `Credentials are in place but the gateway is not connected: ${channel.live.detail ?? "no detail"}. Restart the gateway after adding or changing a credential.`
+                            : channel.status === "needs_credentials"
+                              ? "A credential this provider needs is missing. See below."
+                              : "Credentials are in place; this runtime does not report whether the connection is up."
+                      }>
+                        <span>
+                          <StatusPill state={channelState(channel.status, channel.live?.state)}>
+                            {channelLabel(channel.status, channel.live?.state)}
+                          </StatusPill>
+                        </span>
+                      </Hint>
                     </div>
                     <p className="text-ink-faint mt-1 text-[12px]">
                       {channel.provider_label} · {channel.transport}
@@ -570,6 +596,12 @@ export function ChannelsScreen({
                     </p>
                   </div>
                 </div>
+
+                {channel.capabilities ? (
+                  <div className="mt-3">
+                    <CapabilityList capabilities={channel.capabilities} />
+                  </div>
+                ) : null}
 
                 {/* The flow, because a routing table is a worse explanation than an arrow. */}
                 <div className="border-glass-border mt-4 space-y-2 border-t pt-4">
@@ -610,9 +642,9 @@ export function ChannelsScreen({
                         <span className="font-mono">{agent}</span>: {(names as string[]).join(", ")}
                       </p>
                     ))}
-                    <p className="text-ink-faint mt-1.5 text-[11.5px]">
-                      NOVA writes the name of a credential and never its value. Add it to that
-                      agent&rsquo;s <span className="font-mono">.env</span>.
+                    <p className="text-ink-faint mt-1.5 text-[12px]">
+                      Add it under Agents → that agent → Credentials. The value is written to the
+                      agent&rsquo;s own <span className="font-mono">.env</span>; NOVA keeps only the name.
                     </p>
                   </div>
                 ) : null}
@@ -676,17 +708,23 @@ function ChannelCatalogue({
               >
                 <div className="flex items-center gap-2">
                   <span className="text-ink truncate text-[13px] font-medium">{provider.label}</span>
-                  {live ? <StatusPill state="running">Declared</StatusPill> : null}
+                  {live ? <StatusPill state="info" dot={false}>In use</StatusPill> : null}
                 </div>
                 <p className="text-ink-faint mt-1 font-mono text-[11px]">{provider.id}</p>
-                <p className="text-ink-faint mt-1.5 text-[11.5px]">
+                <p className="text-ink-faint mt-1.5 text-[12px]">
                   {required.length
                     ? `${plural(required.length, "credential")} required`
                     : "no credentials declared"}
                 </p>
+                {provider.capabilities ? (
+                  <p className="text-ink-muted mt-1 text-[12px]">
+                    {nativeSummary(provider.capabilities)}
+                  </p>
+                ) : null}
 
                 {expanded ? (
                   <div className="border-glass-border mt-2.5 space-y-2 border-t pt-2.5">
+                    <CapabilityList capabilities={provider.capabilities} />
                     {provider.description ? (
                       <p className="text-ink-muted text-[12px] leading-relaxed">
                         {provider.description}
@@ -760,7 +798,7 @@ export function PoliciesScreen({ policy }: { policy: Loaded<Policy> }) {
             </span>
           </GlassPanel>
 
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr))]">
             {(data.agents ?? []).map((agent) => (
               <GlassCard key={agent.id} className="p-4" interactive={false}>
                 <div className="flex items-center gap-2">
@@ -793,7 +831,7 @@ function Tally({ label, value, tone }: { label: string; value: number; tone: "ru
   return (
     <div className="glass-solid rounded-lg py-2">
       <div className={`text-base font-semibold ${colour}`}>{value}</div>
-      <div className="text-ink-faint text-[10.5px]">{label}</div>
+      <div className="text-ink-muted text-[11.5px]">{label}</div>
     </div>
   );
 }
@@ -885,4 +923,13 @@ function Headline({ label, value }: { label: string; value: string }) {
       <div className="text-ink mt-1.5 text-2xl font-semibold">{value}</div>
     </GlassCard>
   );
+}
+
+/** "8 of 10 features native" — a catalogue of twenty-two platforms is scanned, and a wall of
+ *  chips on every card hides the one comparison that matters. The detail opens on click. */
+function nativeSummary(capabilities: Record<string, { supported: boolean | null }>): string {
+  const known = Object.values(capabilities).filter((c) => c.supported !== null);
+  if (!known.length) return "capabilities not read";
+  const native = known.filter((c) => c.supported).length;
+  return `${native} of ${known.length} features native`;
 }

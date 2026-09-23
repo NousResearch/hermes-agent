@@ -15,8 +15,12 @@ import {
 } from "@/screens/misc";
 import type {
   Agent, AutomationsPayload, Budget, Channel, Decision, Health, Identity, KnowledgeSource,
-  Objective, Policy, Task,
+  ModelStatus, Objective, Policy, Task,
 } from "@/screens/types";
+import { ModelAccessPanel } from "@/screens/model";
+import {
+  channelLabel, channelState, isPlaceholderContact, modelLabel, modelState, since,
+} from "@/lib/state";
 import { AutomationsScreen } from "@/screens/automations";
 import { plural } from "@/lib/api";
 import { usePanel, useRoute, useTheme } from "@/lib/hooks";
@@ -59,7 +63,10 @@ export default function App() {
   const identity = usePanel<Identity>("/identity", 60000, identityNonce);
   const health = usePanel<Health>("/health");
   const agents = usePanel<{ agents: Agent[] }>("/agents", 15000, agentNonce);
-  const tasks = usePanel<{ tasks: Task[]; counts?: Record<string, number> }>("/tasks?limit=200");
+  // Bumped after a retry or release so the board reflects the decision at once.
+  const [taskNonce, setTaskNonce] = React.useState(0);
+  const tasks = usePanel<{ tasks: Task[]; counts?: Record<string, number> }>("/tasks?limit=200", 15000, taskNonce);
+  const model = usePanel<ModelStatus>("/model", 30000, taskNonce);
   const objectives = usePanel<{ objectives: Objective[]; detail?: string }>("/objectives");
   const knowledge = usePanel<{
     retrieval_enabled: boolean; sources: KnowledgeSource[]; undeclared_in_index?: string[];
@@ -85,9 +92,12 @@ export default function App() {
   const objectiveRows = objectives.state === "ok" ? objectives.data.objectives : [];
   const decisionRows = decisions.state === "ok" ? decisions.data.decisions : [];
 
-  const attention = taskRows.filter((t) => t.needs_attention);
+  const failedTasks = taskRows.filter((t) => t.attention_kind === "failed");
+  const decisionTasks = taskRows.filter((t) => t.attention_kind === "decision");
   const running = taskRows.filter((t) => ["running", "ready"].includes(String(t.runtime_status)));
-  const connected = channelRows.filter((c) => c.status === "connected");
+  const live = channelRows.filter((c) => c.status === "connected" && c.live?.state === "connected");
+  const modelData = model.state === "ok" ? model.data : undefined;
+  const placeholderContacts = [brand?.support?.email, brand?.support?.url].filter(isPlaceholderContact);
 
   React.useEffect(() => {
     if (brand?.product_name) document.title = `${brand.product_name} — Control Center`;
@@ -154,9 +164,9 @@ export default function App() {
   ], [agentRows, objectiveRows, channelRows]);
 
   const nav = NAV.map((item) =>
-    item.id === "approvals" ? { ...item, count: attention.length, urgent: attention.length > 0 }
+    item.id === "approvals" ? { ...item, count: decisionTasks.length, urgent: decisionTasks.length > 0 }
     : item.id === "agents" ? { ...item, count: agentRows.length }
-    : item.id === "work" ? { ...item, count: taskRows.length }
+    : item.id === "work" ? { ...item, count: taskRows.length, urgent: failedTasks.length > 0 }
     : item);
 
   const openAgent = route.startsWith("agents/") ? route.slice("agents/".length) : null;
@@ -187,6 +197,16 @@ export default function App() {
             subtitle={activeAgent ? "Agent workspace" : meta.subtitle}
             runtime={health.state === "ok" ? String(health.data.runtime?.runtime ?? "") : undefined}
             healthy={health.state === "ok" ? health.data.runtime?.reachable !== false : undefined}
+            model={modelData ? {
+              state: modelState(modelData.state),
+              label: modelLabel(modelData.state),
+              detail: modelData.state === "failing" && modelData.last_failure
+                ? `${modelData.last_failure.error.headline} (${since(modelData.last_failure.at)}). Open the overview for what to do.`
+                : modelData.state === "working"
+                  ? `The last model call succeeded ${since(modelData.last_success?.at)}.`
+                  : "No model call recorded yet, so nothing to judge.",
+              onClick: () => go("overview"),
+            } : undefined}
             theme={theme} onToggleTheme={toggle} onOpenCommand={() => setCommandOpen(true)}
           />
 
@@ -236,39 +256,62 @@ export default function App() {
               </GlassPanel>
             ) : route === "overview" ? (
               <div className="space-y-6">
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {/* The blocker every other number depends on, first and full width — but
+                    only while it is a blocker. A working model is one quiet line below. */}
+                {modelData?.state === "failing" ? <ModelAccessPanel model={model} /> : null}
+
+                {placeholderContacts.length ? (
+                  <GlassPanel solid className="flex flex-wrap items-center gap-3 p-4">
+                    <StatusPill state="waiting">Setup</StatusPill>
+                    <span className="text-ink-muted min-w-0 flex-1 basis-60 text-[12.5px] break-words">
+                      The support contact is still a template placeholder
+                      ({placeholderContacts.join(", ")}). Customers would see it.
+                    </span>
+                    <button type="button" onClick={() => go("settings")}
+                      className="glass-solid text-ink rounded-lg px-3 py-1.5 text-[12.5px] font-medium">
+                      Set contact details
+                    </button>
+                  </GlassPanel>
+                ) : null}
+
+                <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr))]">
                   <MetricCard label="Working now" value={running.length} tone="running"
                     source={tasks.state}
                     caption={running.length ? "items running or ready to start" : "nothing running"}
                     onClick={() => go("work")}
                     hint="Items a worker is running or ready to pick up." />
-                  <MetricCard label="Needs a human" value={attention.length}
+                  <MetricCard label="Failed" value={failedTasks.length}
                     source={tasks.state}
-                    tone={attention.length ? "waiting" : "neutral"}
-                    caption={attention.length ? "held until someone decides" : "nothing is held"}
+                    tone={failedTasks.length ? "blocked" : "neutral"}
+                    caption={failedTasks.length ? "need a fix, then a retry" : "no failures"}
+                    onClick={() => go("work")}
+                    hint="Work that stopped on an error. It needs its cause fixed, not an approval." />
+                  <MetricCard label="Needs a decision" value={decisionTasks.length}
+                    source={tasks.state}
+                    tone={decisionTasks.length ? "waiting" : "neutral"}
+                    caption={decisionTasks.length ? "held for a person" : "nothing is held"}
                     onClick={() => go("approvals")}
-                    hint="Work the runtime stopped and will not resume without a decision." />
+                    hint="Work held for review or paused until a person decides." />
                   <MetricCard label="Agents" value={agentRows.length} onClick={() => go("agents")}
                     source={agents.state}
                     caption={`${agentRows.filter((a) => a.in_sync !== false).length} in sync with the bundle`}
                     hint="Declared in the tenant bundle and materialized into the runtime." />
-                  <MetricCard label="Channels live" value={connected.length} onClick={() => go("channels")}
+                  <MetricCard label="Channels live" value={live.length} onClick={() => go("channels")}
                     source={channels.state}
-                    caption={channelRows.length ? `of ${plural(channelRows.length, "connection")}` : "none connected"}
-                    hint="Connected and holding every credential the provider needs." />
+                    caption={channelRows.length ? `of ${plural(channelRows.length, "connection")}` : "none declared"}
+                    hint="Connections the gateway itself reports as up — not just configured." />
                 </div>
 
                 <div className="grid gap-5 xl:grid-cols-3">
-                  <div className="xl:col-span-2">
-                    {/* h-full: the grid row is as tall as the right-hand column, and a
-                        panel that stops short of it reads as a rendering fault rather
-                        than a deliberate edge. */}
-                    <GlassPanel className="h-full p-5">
+                  {/* Two stacks that balance, rather than one panel stretched to match the
+                      other column's height and left mostly empty. */}
+                  <div className="space-y-5 xl:col-span-2">
+                    <GlassPanel className="p-5">
                       <SectionHeader title="The workforce" icon={Boxes}
                         detail="Every agent, what it is doing, and what it may reach."
                         action={
                           <button type="button" onClick={() => go("agents")}
-                            className="text-ink-faint hover:text-ink text-[12px] transition-colors">
+                            className="text-ink-muted hover:text-ink text-[12.5px] transition-colors">
                             {agentRows.length > OVERVIEW_AGENTS
                               ? `View all ${agentRows.length}`
                               : "View all"}
@@ -278,33 +321,79 @@ export default function App() {
                                     limit={OVERVIEW_AGENTS}
                                     onOpen={(id) => go(`agents/${id}`)} />
                     </GlassPanel>
+                    <Panel title="Needs attention" icon={CircleCheck} state={tasks}
+                           detail="Failures to fix, then decisions to make."
+                           empty={(d) => d.tasks.some((t) => t.attention_kind) ? null : {
+                             title: "Nothing needs you",
+                             detail: "No failures, and nothing is held for a decision.",
+                           }}>
+                      {(data) => (
+                        <ul className="divide-glass-border divide-y">
+                          {[...data.tasks.filter((t) => t.attention_kind === "failed"),
+                            ...data.tasks.filter((t) => t.attention_kind === "decision")]
+                            .slice(0, 5).map((task) => (
+                            <li key={task.task_id} className="py-2.5 first:pt-0 last:pb-0">
+                              <button type="button" className="w-full text-left"
+                                onClick={() => go(task.attention_kind === "failed" ? "work" : "approvals")}>
+                                <div className="flex items-start gap-2">
+                                  <StatusPill state={task.attention_kind === "failed" ? "blocked" : "waiting"}
+                                              className="mt-px shrink-0">
+                                    {task.attention_kind === "failed" ? "Failed" : "Decide"}
+                                  </StatusPill>
+                                  <p className="text-ink line-clamp-2 text-[13px] leading-snug">{task.title}</p>
+                                </div>
+                                <p className="text-ink-faint mt-1 text-[12px]">
+                                  {task.agent_id}
+                                  {task.error_summary?.cause ? ` · ${task.error_summary.cause.headline}` : ""}
+                                </p>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Panel>
+
                   </div>
 
                   <div className="space-y-5">
                     <Panel title="Platform" icon={LayoutDashboard} state={health}
                            detail="What the platform and the runtime each say.">
                       {(data) => (
-                        <dl className="space-y-2.5 text-[13px]">
-                          <Row label="Platform" value={`v${data.platform.version}`} />
-                          <Row label="Runtime" value={String(data.runtime?.runtime ?? "—")} />
-                          <Row label="Agents in runtime" value={String(data.runtime?.agent_count ?? "—")} />
-                          <Row label="Bundle" value={data.bundle.digest.replace("sha256:", "").slice(0, 12)} mono />
-                        </dl>
+                        <div className="space-y-3">
+                          <dl className="space-y-2.5 text-[13px]">
+                            <Row label="Platform" value={`v${data.platform.version}`} />
+                            <Row label="Runtime" value={String(data.runtime?.runtime ?? "—")} />
+                            <Row label="Agents in runtime" value={String(data.runtime?.agent_count ?? "—")} />
+                            <Row label="Bundle" value={data.bundle.digest.replace("sha256:", "").slice(0, 12)} mono />
+                          </dl>
+                          {modelData && modelData.state !== "failing" ? (
+                            <div className="border-glass-border border-t pt-3">
+                              <ModelAccessPanel model={model} compact />
+                            </div>
+                          ) : null}
+                        </div>
                       )}
                     </Panel>
 
-                    <Panel title="Needs a human" icon={CircleCheck} state={tasks}
-                           detail="Held until someone decides."
-                           empty={(d) => d.tasks.some((t) => t.needs_attention) ? null : {
-                             title: "Nothing is waiting",
-                             detail: "Your workforce is operating inside its permitted actions.",
+                    <Panel title="Channels" icon={Blocks} state={channels}
+                           detail="Live means the gateway reports it connected."
+                           empty={(d) => d.channels.length ? null : {
+                             title: "No channels declared",
+                             detail: "Declare one in channels.yaml to reach customers where they talk.",
                            }}>
                       {(data) => (
                         <ul className="divide-glass-border divide-y">
-                          {data.tasks.filter((t) => t.needs_attention).slice(0, 5).map((task) => (
-                            <li key={task.task_id} className="py-2 first:pt-0 last:pb-0">
-                              <p className="text-ink line-clamp-2 text-[12.5px] leading-snug">{task.title}</p>
-                              <p className="text-ink-faint mt-0.5 text-[11px]">{task.agent_id}</p>
+                          {data.channels.map((c) => (
+                            <li key={c.id}>
+                              <button type="button" onClick={() => go("channels")}
+                                className="flex w-full items-center gap-2 py-2 text-left first:pt-0">
+                                <span className="text-ink min-w-0 flex-1 truncate text-[13px]">
+                                  {c.display_name ?? c.id}
+                                </span>
+                                <StatusPill state={channelState(c.status, c.live?.state)}>
+                                  {channelLabel(c.status, c.live?.state)}
+                                </StatusPill>
+                              </button>
                             </li>
                           ))}
                         </ul>
@@ -312,12 +401,6 @@ export default function App() {
                     </Panel>
                   </div>
                 </div>
-
-                <GlassPanel className="p-5">
-                  <SectionHeader title="Channels" icon={Blocks}
-                    detail="Where the workforce can be reached, and by whom." />
-                  <ChannelsScreen channels={channels} />
-                </GlassPanel>
               </div>
             ) : route === "agents" ? (
               <div className="space-y-4">
@@ -340,10 +423,14 @@ export default function App() {
               // so a saved colour or logo appears without a reload.
               <SettingsScreen onChanged={() => setIdentityNonce((n) => n + 1)} />
             ) : route === "objectives" ? <ObjectivesScreen objectives={objectives} />
-            : route === "work" ? <WorkScreen tasks={tasks} />
+            : route === "work" ? (
+              <WorkScreen tasks={tasks} model={modelData} onChanged={() => setTaskNonce((n) => n + 1)} />
+            )
             : route === "approvals" ? (
               <ApprovalsScreen tasks={taskRows} decisions={decisionRows} agents={agentRows}
-                               channels={channelRows} canSeeDecisions={decisions.state === "ok"} />
+                               channels={channelRows} canSeeDecisions={decisions.state === "ok"}
+                               model={modelData} onChanged={() => setTaskNonce((n) => n + 1)}
+                               onOpenWork={() => go("work")} />
             )
             : route === "automations" ? (
               <AutomationsScreen
@@ -363,7 +450,9 @@ export default function App() {
           <footer className="text-ink-faint mx-auto w-full max-w-[1400px] px-6 pt-2 pb-8 text-[11.5px]">
             <div className="border-glass-border flex flex-wrap items-center gap-x-4 gap-y-1 border-t pt-4">
               <span>{brand?.company_name ?? "NOVA"}</span>
-              {brand?.support?.email ? <span>{brand.support.email}</span> : null}
+              {/* A template placeholder is not shown as the support address. */}
+              {brand?.support?.email && !isPlaceholderContact(brand.support.email)
+                ? <span>{brand.support.email}</span> : null}
               <span className="ml-auto">Read-only surfaces refresh every 15 seconds.</span>
             </div>
           </footer>

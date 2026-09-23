@@ -792,6 +792,24 @@ class AgentRuntime(ABC):
         customer data such as credentials or conversation history.
         """
 
+    def channel_live_status(self) -> Optional[dict[str, Any]]:
+        """Which messaging platforms the runtime's gateway reports as actually connected.
+
+        ``{"gateway": state, "platforms": {platform: {"state": ..., "error": ...}}}``, or
+        None when this runtime cannot say — in which case a channel shows its credential
+        readiness only, and never claims to be live.
+        """
+        return None
+
+    def model_status(self) -> dict[str, Any]:
+        """Whether agents' model calls are succeeding, from the runtime's own records.
+
+        ``state`` is ``working``, ``failing`` or ``unknown``. The default is ``unknown``: a
+        runtime that keeps no such record must not be shown as healthy.
+        """
+        return {"state": "unknown", "last_success": None, "last_failure": None,
+                "detail": f"runtime {self.name!r} does not report model outcomes"}
+
     def toolset_tools(self, names: Sequence[str]) -> Optional[dict[str, tuple[str, ...]]]:
         """The tools in each named toolset, as this runtime resolves them. None: cannot say.
 

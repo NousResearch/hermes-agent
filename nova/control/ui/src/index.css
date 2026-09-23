@@ -28,8 +28,8 @@
      (4.5:1) against the *glass* surfaces they sit on, not just against the canvas —
      glass is the lighter of the two, so it is the binding case. Measured, not guessed:
      at oklch L 0.62 the faint tier came out at 3.34:1 on light glass. */
-  --ink-muted: oklch(0.42 0.02 258);
-  --ink-faint: oklch(0.53 0.015 258);
+  --ink-muted: oklch(0.39 0.02 258);
+  --ink-faint: oklch(0.47 0.016 258);
 
   /* Glass */
   --glass-1: oklch(1 0 0 / 62%);
@@ -46,8 +46,8 @@
      stepped down until it clears 4.5:1 there — amber was the worst at 2.71:1. The dark
      values below have the opposite constraint and are left alone. */
   --running: oklch(0.52 0.15 155);
-  --waiting: oklch(0.54 0.13 72);
-  --blocked: oklch(0.55 0.2 22);
+  --waiting: oklch(0.49 0.12 70);
+  --blocked: oklch(0.51 0.19 22);
   --info: oklch(0.53 0.16 256);
   --neutral: oklch(0.53 0.015 258);
 
@@ -65,7 +65,7 @@
   --ink: oklch(0.97 0.003 260);
   /* Same rule inverted: at L 0.56 the faint tier measured 3.72:1 on dark glass. */
   --ink-muted: oklch(0.78 0.018 258);
-  --ink-faint: oklch(0.63 0.018 258);
+  --ink-faint: oklch(0.68 0.018 258);
 
   --glass-1: oklch(0.28 0.018 264 / 42%);
   --glass-2: oklch(0.32 0.02 264 / 62%);

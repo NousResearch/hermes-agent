@@ -45,6 +45,9 @@ ROLES = ("viewer", "admin")
 #: everyone because someone forgot this file existed.
 ROUTE_ROLES: Mapping[str, str] = {
     "/health": "viewer",
+    # Whether the model is reachable, with the provider's own error. Operational state a
+    # viewer needs to understand why work is failing; it carries no credential.
+    "/model": "viewer",
     "/identity": "viewer",
     "/agents": "viewer",
     "/tasks": "viewer",

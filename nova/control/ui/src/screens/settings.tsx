@@ -20,6 +20,7 @@ import { TextArea, TextInput } from "@/components/form";
 import { post } from "@/lib/api";
 import { SaveBar, SaveResult, type SaveState, useEditable } from "@/lib/editing";
 import { usePanel } from "@/lib/hooks";
+import { isPlaceholderContact } from "@/lib/state";
 
 type Settings = {
   organization: {
@@ -95,7 +96,7 @@ function Company({ settings, onSaved }: { settings: Settings; onSaved: () => voi
           hint="The registered name, as it should appear on anything official." />
         <TextInput id="org-contact" label="Contact email" value={v.contact_email}
           onChange={(contact_email) => editor.edit((c) => ({ ...c, contact_email }))}
-          hint="Where an operator is reached about this deployment." />
+          hint={contactHint(v.contact_email, "Where an operator is reached about this deployment.")} />
         <TextInput id="org-region" label="Region" value={v.region} mono
           onChange={(region) => editor.edit((c) => ({ ...c, region }))}
           hint="Where this tenant runs. Used when rendering infrastructure." />
@@ -233,9 +234,10 @@ function Branding({ settings, onSaved }: { settings: Settings; onSaved: () => vo
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         <TextInput id="brand-support-email" label="Support email" value={v.support.email}
           onChange={(email) => editor.edit((c) => ({ ...c, support: { ...c.support, email } }))}
-          hint="Where a user of the branded product goes for a human." />
+          hint={contactHint(v.support.email, "Where a user of the branded product goes for a human.")} />
         <TextInput id="brand-support-url" label="Support link" value={v.support.url}
-          onChange={(url) => editor.edit((c) => ({ ...c, support: { ...c.support, url } }))} />
+          onChange={(url) => editor.edit((c) => ({ ...c, support: { ...c.support, url } }))}
+          hint={contactHint(v.support.url, "Where the product sends someone looking for help.")} />
       </div>
 
       <div className="mt-4">
@@ -378,4 +380,12 @@ function LogoPanel({ settings, onSaved }: { settings: Settings; onSaved: () => v
       ) : null}
     </GlassPanel>
   );
+}
+
+/** A contact on a reserved example domain is a template placeholder. Said at the field,
+ *  in the warning colour, because it is shown to customers as a real address. */
+function contactHint(value: string, normal: string): React.ReactNode {
+  return isPlaceholderContact(value)
+    ? <span className="text-waiting">This is a template placeholder. Customers would see it — replace it with a real contact.</span>
+    : normal;
 }

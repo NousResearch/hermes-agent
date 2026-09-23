@@ -292,6 +292,8 @@ class ControlAPI:
 
         if tail == "/health":
             return self.health()
+        if tail == "/model":
+            return self.model()
         if tail == "/identity":
             return self.identity()
         if tail == "/agents":
@@ -743,10 +745,26 @@ class ControlAPI:
             row["id"]: row
             for row in self.runtime.channel_readiness(self.bundle.channels, derivations)
         }
+        live_status = self.runtime.channel_live_status()
         rows = []
         for channel in self.bundle.channels:
             ready = readiness.get(channel.id, {})
             provider = channel.catalogue
+            # Credential readiness says a connection *could* work; the gateway's own record
+            # says whether it *does*. Both are reported, never merged into one tick.
+            if live_status is None:
+                live = {"state": "unknown", "detail": "this runtime does not report connections"}
+            elif live_status["gateway"] != "running":
+                live = {"state": "disconnected",
+                        "detail": f"the gateway is {live_status['gateway']}"}
+            else:
+                entry = live_status["platforms"].get(channel.provider)
+                live = (
+                    {"state": "disconnected", "detail": "the gateway has not connected it"}
+                    if entry is None else
+                    {"state": "connected" if entry["state"] == "connected" else "disconnected",
+                     "detail": entry["error"] or entry["state"], "since": entry["updated_at"]}
+                )
             rows.append(
                 {
                     "id": channel.id,
@@ -770,6 +788,10 @@ class ControlAPI:
                         "disabled" if not channel.enabled
                         else "connected" if ready.get("ready") else "needs_credentials"
                     ),
+                    "live": live,
+                    "capabilities": {
+                        key: cap.to_dict() for key, cap in sorted(provider.capabilities.items())
+                    },
                 }
             )
         return Response(
@@ -779,6 +801,40 @@ class ControlAPI:
                 "channel_delivery": self.runtime.capabilities.channel_delivery,
                 "channels": rows,
                 "catalogue": [p.to_dict() for p in catalogue()],
+            },
+        )
+
+    def model(self) -> Response:
+        """Which model the workforce is configured to call, and whether calls are succeeding.
+
+        The verdict comes from the runtime's own record of recent calls, not from a probe:
+        the control plane holds no model credential and spends no tokens on a status page.
+        A failure carries the provider's raw message and a plain-language reading of it,
+        including who can fix it — the account admin, for instance, when the cloud account
+        has not been granted the model, which no change to NOVA will fix.
+        """
+        from nova.runtime.model_errors import ModelError  # noqa: F401 — shape documented there
+
+        declared = self.bundle.deployment.provider
+        agents = []
+        for spec in self.bundle.agents:
+            resolved = self.bundle.provider_for(spec.id)
+            agents.append({
+                "id": spec.id,
+                "display_name": self.bundle.identity.display_name_for(spec.id, spec.name),
+                "provider": resolved.provider, "model": resolved.model,
+            })
+        return Response(
+            200,
+            {
+                "configured": {
+                    "declared": declared.declared,
+                    "provider": declared.provider,
+                    "model": declared.model,
+                    "region": declared.region,
+                },
+                "agents": agents,
+                **self.runtime.model_status(),
             },
         )
 
@@ -885,10 +941,35 @@ class ControlAPI:
         for view in views:
             counts[view.state] = counts.get(view.state, 0) + 1
 
+        from nova.runtime.model_errors import summarize_task_error
+
+        # One reading of the model record for the whole page. A failed task whose run
+        # overlaps the newest model failure is explained by it: the runtime's own error for
+        # such a task only says the worker ended without reporting, which is the symptom.
+        model_failure = self.runtime.model_status().get("last_failure") if any(
+            view.last_error for view in views
+        ) else None
+        rows = []
+        for view in views:
+            row = view.to_dict()
+            failed = bool(view.last_error) or bool(view.consecutive_failures)
+            # A failure asks for a fix and a retry; a held or review item asks for a
+            # decision. Mixing them made every crash look like an approval request.
+            row["attention_kind"] = (
+                "failed" if view.needs_attention and failed
+                else "decision" if view.needs_attention else ""
+            )
+            if view.last_error:
+                summary = summarize_task_error(view.last_error)
+                if model_failure and view.started_at and model_failure["at"] >= view.started_at:
+                    summary["cause"] = model_failure["error"]
+                row["error_summary"] = summary
+            rows.append(row)
+
         return Response(
             200,
             {
-                "tasks": [view.to_dict() for view in views],
+                "tasks": rows,
                 "counts": counts,
                 "needs_attention": sum(1 for view in views if view.needs_attention),
                 "filtered_by_agent": agent_id,

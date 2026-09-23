@@ -25,8 +25,9 @@ export function AgentCard({
 }) {
   const mine = tasks.filter((t) => t.agent_id === agent.id);
   const running = mine.filter((t) => ["running", "ready"].includes(String(t.runtime_status)));
-  const attention = mine.filter((t) => t.needs_attention);
-  const current = running[0] ?? mine[0];
+  const failed = mine.filter((t) => t.attention_kind === "failed");
+  const deciding = mine.filter((t) => t.attention_kind === "decision");
+  const current = failed[0] ?? deciding[0] ?? running[0] ?? mine[0];
 
   const reaching = channels.filter(
     (c) => (c.allowed_agents ?? []).includes(agent.id)
@@ -34,12 +35,14 @@ export function AgentCard({
   );
 
   const state = agent.enabled === false ? "neutral"
-    : attention.length ? "waiting"
+    : failed.length ? "blocked"
+    : deciding.length ? "waiting"
     : running.length ? "running"
     : "neutral";
 
   const label = agent.enabled === false ? "Not in service"
-    : attention.length ? `${attention.length} need${attention.length === 1 ? "s" : ""} a human`
+    : failed.length ? plural(failed.length, "failed task")
+    : deciding.length ? `${deciding.length} waiting on a decision`
     : running.length ? `Working · ${plural(running.length, "task")}`
     : "Idle";
 
@@ -57,7 +60,7 @@ export function AgentCard({
           {initials(agent.display_name ?? agent.id)}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-ink truncate text-[14px] leading-tight font-semibold">
+          <div className="text-ink line-clamp-2 text-[14px] leading-tight font-semibold break-words">
             {agent.display_name ?? agent.id}
           </div>
           <div className="text-ink-faint truncate font-mono text-[11px]">{agent.id}</div>
@@ -90,7 +93,8 @@ export function AgentCard({
         ) : null}
         {(agent.approval_required_for ?? []).length ? (
           <Chip className="text-waiting border-waiting/25 bg-waiting/10">
-            {agent.approval_required_for!.length} needs approval
+            {plural(agent.approval_required_for!.length, "action")}{" "}
+            {agent.approval_required_for!.length === 1 ? "needs" : "need"} sign-off
           </Chip>
         ) : null}
         {!reaching.length && !(agent.knowledge_sources ?? []).length ? (
@@ -121,7 +125,9 @@ export function AgentsScreen({
       }}
     >
       {(data) => (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        // auto-fit, not fixed columns: two agents fill the row instead of leaving a third
+        // of the screen empty, and a tenant with ten still gets a tidy grid.
+        <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))]">
           {(limit ? data.agents.slice(0, limit) : data.agents).map((agent) => (
             <AgentCard key={agent.id} agent={agent} tasks={tasks} channels={channels}
                        onOpen={() => onOpen(agent.id)} />
@@ -210,8 +216,12 @@ export function AgentDetail({
               <StatusPill state="neutral">Disabled</StatusPill>
             ) : agent.materialized === false ? (
               <StatusPill state="waiting">Not yet applied</StatusPill>
+            ) : attention.some((t) => t.attention_kind === "failed") ? (
+              <StatusPill state="blocked">
+                {plural(attention.filter((t) => t.attention_kind === "failed").length, "failed task")}
+              </StatusPill>
             ) : attention.length ? (
-              <StatusPill state="waiting">{attention.length} awaiting a human</StatusPill>
+              <StatusPill state="waiting">{attention.length} waiting on a decision</StatusPill>
             ) : running.length ? (
               <StatusPill state="running">Working · {plural(running.length, "task")}</StatusPill>
             ) : (

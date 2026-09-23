@@ -30,7 +30,24 @@ export type Task = {
   agent_id?: string; created_at?: number; started_at?: number | null;
   completed_at?: number | null; priority?: number; consecutive_failures?: number;
   last_error?: string; needs_attention?: boolean;
+  /** "failed" needs a fix and a retry; "decision" needs a person to decide. Empty otherwise. */
+  attention_kind?: "failed" | "decision" | "";
+  /** The runtime's error in operator language, and — where the model record explains it —
+   *  the model failure behind it. The raw text stays in `last_error`. */
+  error_summary?: { headline: string; detail: string; cause?: ModelError };
 };
+export type ModelError = {
+  category: string; headline: string; remedy: string; owner: string; raw: string;
+};
+export type ModelStatus = {
+  state: "working" | "failing" | "unknown";
+  configured: { declared: boolean; provider: string; model: string; region?: string };
+  agents: Array<{ id: string; display_name?: string; provider: string; model: string }>;
+  last_success: { at: number; profile: string; model: string } | null;
+  last_failure: { at: number; profile: string; provider: string; model: string; error: ModelError } | null;
+  detail?: string;
+};
+export type Capability = { supported: boolean | null; verification?: string; note?: string };
 export type Objective = {
   id: string; title?: string; owner?: string; owner_display_name?: string;
   description?: string; acceptance?: string; enabled?: boolean;
@@ -49,6 +66,9 @@ export type Channel = {
   verification?: string; caveat?: string; status: string;
   allowed_agents?: string[]; routes?: any[]; approval_required_for?: string[];
   derived_agents?: any[]; required_env?: string[]; missing_by_agent?: Record<string, string[]>;
+  /** What the gateway itself reports — `status` only says the credentials are in place. */
+  live?: { state: "connected" | "disconnected" | "unknown"; detail?: string; since?: string };
+  capabilities?: Record<string, Capability>;
 };
 export type Policy = {
   declared?: boolean; enforced?: boolean;

@@ -51,6 +51,12 @@ class RecordingRuntime:
             for c in channels
         ]
 
+    def channel_live_status(self):
+        return None  # a runtime that cannot say whether a connection is up
+
+    def model_status(self):
+        return {"state": "unknown", "last_success": None, "last_failure": None}
+
     def decide_work(self, task_id, action, *, actor, audit, correlation_id, reason="", note=""):
         self.calls.append(
             {"task_id": task_id, "action": action, "actor": actor, "reason": reason, "note": note}

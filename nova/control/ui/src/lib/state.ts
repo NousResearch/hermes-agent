@@ -45,17 +45,40 @@ export function taskLabel(runtimeStatus: string): string {
   return TASK_LABEL[key] ?? key.replace(/_/g, " ");
 }
 
-export function channelState(status: string): State {
-  return status === "connected" ? "running"
-    : status === "needs_credentials" ? "waiting"
-    : "neutral";
+/** A channel's state from two sources that must not be merged into one tick: whether its
+ *  credentials are in place (`status`) and whether the gateway reports it connected
+ *  (`live`). "Connected" used to mean only the first, so a bot that never came up read as
+ *  working. */
+export function channelState(status: string, live?: string): State {
+  if (status === "disabled") return "neutral";
+  if (status === "needs_credentials") return "waiting";
+  return live === "connected" ? "running" : live === "disconnected" ? "blocked" : "info";
 }
 
-export function channelLabel(status: string): string {
-  return status === "connected" ? "Connected"
-    : status === "needs_credentials" ? "Credential required"
-    : status === "disabled" ? "Not in service"
-    : String(status).replace(/_/g, " ");
+export function channelLabel(status: string, live?: string): string {
+  if (status === "disabled") return "Not in service";
+  if (status === "needs_credentials") return "Credential required";
+  return live === "connected" ? "Live"
+    : live === "disconnected" ? "Not connected"
+    : "Credentials set";
+}
+
+/** Reserved example domains (RFC 2606 / 6761). A contact on one of these is a template
+ *  placeholder, and showing it to a customer as the support address is a broken promise. */
+export function isPlaceholderContact(value?: string | null): boolean {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return false;
+  const host = text.includes("@") ? text.split("@").pop()! : text.replace(/^https?:\/\//, "").split(/[/:?#]/)[0];
+  return /(^|\.)(example(\.(com|net|org))?|test|invalid|localhost)$/.test(host);
+}
+
+/** Model access, for the top bar and the overview. */
+export function modelState(state?: string): State {
+  return state === "working" ? "running" : state === "failing" ? "blocked" : "neutral";
+}
+
+export function modelLabel(state?: string): string {
+  return state === "working" ? "Model working" : state === "failing" ? "Model failing" : "Model untested";
 }
 
 export function objectiveState(state: string): State {

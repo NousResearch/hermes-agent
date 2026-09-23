@@ -8,7 +8,7 @@ import * as React from "react";
 import {
   Activity, Blocks, BookOpen, CalendarClock, Boxes, CircleCheck, Command, Gauge,
   LayoutDashboard, ListChecks, Moon, ScrollText, ShieldCheck, Sun, Target, X, Settings2 } from "lucide-react";
-import { GlassPanel, StatusDot } from "@/components/glass";
+import { GlassPanel, StatusDot, type State } from "@/components/glass";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/tooltip";
 import { cn } from "@/lib/utils";
 
@@ -138,9 +138,12 @@ export function Sidebar({
 }
 
 export function TopBar({
-  title, subtitle, runtime, healthy, theme, onToggleTheme, onOpenCommand,
+  title, subtitle, runtime, healthy, model, theme, onToggleTheme, onOpenCommand,
 }: {
   title: string; subtitle?: string; runtime?: string; healthy?: boolean;
+  /** Whether model calls are succeeding. Shown beside the runtime pill because a reachable
+   *  runtime whose every model call is refused is not a healthy deployment. */
+  model?: { state: State; label: string; detail: string; onClick: () => void };
   theme: "dark" | "light"; onToggleTheme: () => void; onOpenCommand: () => void;
 }) {
   return (
@@ -178,6 +181,21 @@ export function TopBar({
                 ? "The platform cannot reach the runtime. Agents will not start."
                 : "The runtime is reachable and serving this tenant."}
             </TooltipContent>
+          </Tooltip>
+        ) : null}
+
+        {model ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" onClick={model.onClick}
+                className="glass flex items-center gap-2 rounded-full px-2.5 py-1 text-[12px]">
+                <StatusDot state={model.state} />
+                <span className={model.state === "blocked" ? "text-blocked font-medium" : "text-ink-muted"}>
+                  {model.label}
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{model.detail}</TooltipContent>
           </Tooltip>
         ) : null}
 

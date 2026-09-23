@@ -585,6 +585,45 @@ class HermesRuntime(AgentRuntime):
 
         return _observe.write_credentials(self.paths.profile_dir(agent_id), values)
 
+    def channel_live_status(self) -> Optional[dict[str, Any]]:
+        """Read from the gateway's own ``gateway_state.json``, which it rewrites on every
+        platform connect and disconnect. Keys are ``<profile>:<platform>`` for a platform a
+        secondary profile serves, and the bare platform for the default profile's own."""
+        import json
+
+        path = self.paths.home / "gateway_state.json"
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(state, Mapping):
+            return None
+        # Keyed by NOVA provider id, not the runtime's platform name, so the control plane
+        # never needs the runtime's vocabulary to look a channel up.
+        provider_of = {platform: provider for provider, platform in _channels.PLATFORM_NAMES.items()}
+        platforms: dict[str, dict[str, Any]] = {}
+        for key, entry in (state.get("platforms") or {}).items():
+            if not isinstance(entry, Mapping):
+                continue
+            profile, _, runtime_platform = str(key).rpartition(":")
+            platform = provider_of.get(runtime_platform, runtime_platform)
+            current = platforms.get(platform)
+            row = {
+                "state": str(entry.get("state") or "unknown"),
+                "error": entry.get("error_message") or "",
+                "profile": profile or "default",
+                "updated_at": entry.get("updated_at") or "",
+            }
+            # One platform can be served by several profiles; any connected one means live.
+            if current is None or (row["state"] == "connected" and current["state"] != "connected"):
+                platforms[platform] = row
+        return {"gateway": str(state.get("gateway_state") or "unknown"), "platforms": platforms}
+
+    def model_status(self) -> dict[str, Any]:
+        from nova.runtime.hermes.model_status import model_status
+
+        return model_status(self.paths.home)
+
     def toolset_tools(self, names: Sequence[str]) -> Optional[dict[str, tuple[str, ...]]]:
         """Each named toolset's tools, from the runtime's own resolver (includes expanded).
 

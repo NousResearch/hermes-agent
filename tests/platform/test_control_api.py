@@ -498,3 +498,16 @@ def test_objectives_says_plainly_when_none_are_declared(api, bundle, runtime):
     ).body
     assert body["declared"] is False
     assert body["objectives"] == []
+
+
+def test_a_failure_is_not_presented_as_a_decision(api, home):
+    """A task that crashed needs a fix and a retry; one held for review needs a decision.
+    Counting both as approvals sent operators to an inbox with nothing to approve."""
+    seed_tasks(home, [
+        ("t_fail", "Crashed", "operations", "blocked", 2),
+        ("t_ok", "Fine", "operations", "todo", 0),
+    ])
+    rows = {t["task_id"]: t for t in api.handle("/platform/v1/tasks").body["tasks"]}
+    assert rows["t_fail"]["attention_kind"] == "failed"
+    assert rows["t_fail"]["error_summary"]["headline"]
+    assert rows["t_ok"]["attention_kind"] == ""

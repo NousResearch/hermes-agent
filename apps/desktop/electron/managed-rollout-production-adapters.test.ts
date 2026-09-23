@@ -54,7 +54,7 @@ function plan(revision: string): RolloutPlan {
     target: { repositoryId: REPOSITORY, branch: 'main', sha: TARGET_SHA, protocol: 1 },
     inventoryRevision: revision,
     waves: [[INSTALL_A, INSTALL_B]],
-    concurrency: 2,
+    concurrency: 1,
     promotionPolicy: 'auto-if-healthy',
     rows: [
       {

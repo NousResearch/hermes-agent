@@ -7,6 +7,7 @@ import re
 
 from .method_ctx import bind_module
 from agent.prompt_builder import STEER_DISPLAY_KIND
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 
 # Discord routing note (gateway/run_inbound.py::discord_triggering_note) persisted as user
 # ``content`` by gateways before the authored-text fix; presentation-only heal for those rows.
@@ -179,6 +180,8 @@ _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted m
 def _legacy_display_kind(role: str, text: str) -> str | None:
     """Display type of a synthetic row persisted untyped: new rows are typed at turn start (``persist_user_display_kind``);
     this prefix sniff migrates rows already on disk (a turn killed mid-run never reached the stamp)."""
+    if role == "assistant" and text.strip() in (FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE):
+        return FAILED_TURN_DISPLAY_KIND  # failed-turn boundary written before it was typed
     return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
 
 

@@ -2518,6 +2518,25 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
+def test_history_to_messages_types_the_failed_turn_boundary_for_resume():
+    """Desktop keys the failed-turn boundary on ``display_kind`` (a room poller must not post it
+    as the member's reply); rows written before the closer typed it are typed on read."""
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+
+    history = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": FAILED_TURN_NOTICE, "display_kind": FAILED_TURN_DISPLAY_KIND},
+        {"role": "user", "content": "b"},
+        {"role": "assistant", "content": PARTIAL_FAILED_TURN_NOTICE},  # legacy untyped row
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": f"Quoting Hermes: {FAILED_TURN_NOTICE}"},  # a real reply
+    ]
+
+    assert [m.get("display_kind") for m in server._history_to_messages(history)] == [
+        None, FAILED_TURN_DISPLAY_KIND, None, FAILED_TURN_DISPLAY_KIND, None, None,
+    ]
+
+
 def test_history_to_messages_drops_pure_compaction_scaffolding():
     from agent.context_compressor import (
         HISTORICAL_TASK_HEADING,

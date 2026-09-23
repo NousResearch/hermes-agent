@@ -43,6 +43,9 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
 )
+# ``messages.display_kind`` of that row: display-only (stripped before every provider request),
+# so renderers show a Hermes notice and room pollers never read it as the model's reply.
+FAILED_TURN_DISPLAY_KIND = "failed_turn"
 
 
 def failed_turn_notice(turn_messages: Any) -> str:

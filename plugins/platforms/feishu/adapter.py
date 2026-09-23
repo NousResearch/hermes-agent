@@ -3719,7 +3719,12 @@ class FeishuAdapter(BasePlatformAdapter):
         elif chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:
-            receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"
+            if chat_id.startswith("ou_"):
+                receive_id, receive_id_type = chat_id, "open_id"
+            elif chat_id.startswith("on_"):
+                receive_id, receive_id_type = chat_id, "union_id"
+            else:
+                receive_id, receive_id_type = chat_id, "chat_id"
         body = self._build_create_message_body(
             receive_id=receive_id, msg_type=msg_type, content=payload, uuid_value=str(uuid.uuid4()),
         )

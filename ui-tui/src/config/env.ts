@@ -65,6 +65,11 @@ const inlineOverride = parseToggle(process.env.HERMES_TUI_INLINE)
 // Skip AlternateScreen — TUI renders into the primary buffer so the host
 // terminal's native scrollback captures whatever scrolls off the top.
 //
+// Tradeoff: without AlternateScreen's height={rows} bound, the transcript
+// ScrollBox grows to full content height and internal scroll (PageUp, wheel)
+// is unavailable — history review depends on the host terminal's scrollback.
+// The dashboard PTY must NOT set HERMES_TUI_INLINE for this reason.
+//
 // On Termux we default this on: users often background/foreground the app,
 // and primary-buffer rendering makes long-thread review and copy/paste much
 // less fragile. Override explicitly with HERMES_TUI_INLINE=0/1.

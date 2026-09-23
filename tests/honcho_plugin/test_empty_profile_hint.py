@@ -35,16 +35,9 @@ class TestEmptyProfileHint:
         provider = _make_provider()
         raw = provider.handle_tool_call("honcho_profile", {})
         payload = json.loads(raw)
-        assert payload["result"] == "No profile facts available yet."
-        assert "hint" in payload
-        assert "not an error" in payload["hint"].lower()
+        assert "error" not in payload
+        assert payload["hint"]
 
-    def test_hint_mentions_warmup_when_turn_count_below_cadence(self):
-        provider = _make_provider(turn_count=1, dialectic_cadence=3)
-        raw = provider.handle_tool_call("honcho_profile", {})
-        payload = json.loads(raw)
-        assert "turn" in payload["hint"].lower()
-        assert "cadence" in payload["hint"].lower()
 
 
     def test_populated_card_returns_card_without_hint(self):

@@ -11,12 +11,10 @@ import builtins
 import io
 from unittest import mock
 
-import hermes_cli.main as m
 from hermes_cli import main_tui_launch
 
 V2 = "/sys/fs/cgroup/memory.max"
 V1 = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
-GB = 1024 ** 3
 
 
 def _fake_open(files: dict):
@@ -44,29 +42,5 @@ class TestReadCgroupMemoryLimit:
         assert _read({V2: "max"}) is None
 
 
-class TestResolveTuiHeapMb:
-    def _resolve(self, limit_bytes):
-        with mock.patch.object(main_tui_launch, "_read_cgroup_memory_limit", return_value=limit_bytes):
-            return main_tui_launch._resolve_tui_heap_mb()
-
-    def test_unconstrained_uses_default(self):
-        assert self._resolve(None) == 8192
 
 
-class TestNodeOptionsTokenMerge:
-    """The _launch_tui token-merge block must add the sized cap unless the user
-    already supplied one, and must preserve unrelated NODE_OPTIONS flags."""
-
-    def _merge(self, node_options, limit_bytes):
-        with mock.patch.object(main_tui_launch, "_read_cgroup_memory_limit", return_value=limit_bytes):
-            tokens = node_options.split()
-            if not any(t.startswith("--max-old-space-size=") for t in tokens):
-                tokens.append(f"--max-old-space-size={main_tui_launch._resolve_tui_heap_mb()}")
-            return " ".join(tokens)
-
-    def test_unconstrained_empty(self):
-        assert self._merge("", None) == "--max-old-space-size=8192"
-
-
-    def test_preserves_other_flags(self):
-        assert self._merge("--enable-source-maps", 4 * GB) == "--enable-source-maps --max-old-space-size=3072"

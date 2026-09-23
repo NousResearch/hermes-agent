@@ -585,9 +585,11 @@ class A2AAdapter(BasePlatformAdapter):
                 profile, "SELECT id FROM sessions WHERE title = ? ORDER BY started_at DESC LIMIT 1",
                 (session_title,), "A2A: could not lookup forwarded session")
             cmd = ["hermes", "chat", "-q", framed_text, "-Q", "--source", "a2a"] + (["--resume", session_id] if session_id else [])
-            env = {**os.environ, "HERMES_A2A_PEER": peer}
-            if home := _profile_home(profile):
-                env["HERMES_HOME"] = home
+            # The child IS the target profile's turn: build its env for that home (launch .env /
+            # TERMINAL_* residue dropped, the target's own secrets overlaid), not the gateway's raw environ.
+            from tools.environments.local import served_profile_child_env
+            env = served_profile_child_env(target_home=_profile_home(profile), inherit_credentials=True)
+            env["HERMES_A2A_PEER"] = peer
             start = time.time()
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -841,10 +843,18 @@ class A2AAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Resolve the task future when processing ends without a reply send (failures,
-        cancellations, empty runs) so the HTTP thread returns promptly."""
+        cancellations, empty runs, or a reply the gateway already streamed to the user) so the
+        HTTP thread returns promptly."""
         task_id = str(getattr(event, "message_id", "") or "")
         if task_id:
+            # A streamed turn never calls send() with notify=True (the gateway suppresses the
+            # normal final send once streaming delivered the body), so the SUCCESS default must
+            # not resolve with "" — that strands every A2A streaming reply as an empty completed
+            # task (#116944). _streamed_final_response is the same stash _final_text_for_post_turn_hooks
+            # reads for /goal and /loop.
+            _streamed = getattr(event, "_streamed_final_response", "")
+            default = (protocol.STATE_COMPLETED, _streamed if isinstance(_streamed, str) else "")
             self._resolve_task(task_id, *{
                 ProcessingOutcome.FAILURE: (protocol.STATE_FAILED, "[agent processing failed]"),
                 ProcessingOutcome.CANCELLED: (protocol.STATE_CANCELED, ""),
-            }.get(outcome, (protocol.STATE_COMPLETED, "")))
+            }.get(outcome, default))

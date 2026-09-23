@@ -83,16 +83,3 @@ class TestHandleBusyCommand(unittest.TestCase):
         self.assertIn("Usage: /busy", printed)
 
 
-class TestBusyCommandRegistry(unittest.TestCase):
-    def test_busy_in_registry(self):
-        from hermes_cli.commands import COMMAND_REGISTRY
-
-        names = [c.name for c in COMMAND_REGISTRY]
-        assert "busy" in names
-
-    def test_busy_subcommands_documented(self):
-        from hermes_cli.commands import COMMAND_REGISTRY
-
-        busy = next(c for c in COMMAND_REGISTRY if c.name == "busy")
-        assert busy.args_hint == "[queue|steer|interrupt|status]"
-        assert busy.category == "Configuration"

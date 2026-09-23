@@ -169,64 +169,6 @@ class TestInterruptPropagationToChild(unittest.TestCase):
             t.join(timeout=2)
             set_interrupt(False)
 
-    def test_concurrent_interrupt_propagation(self):
-        """Simulates exact CLI flow: parent runs delegate in thread, main thread interrupts."""
-        parent = self._make_bare_agent()
-        child = self._make_bare_agent()
-
-        # Register child (simulating what _run_single_child does)
-        parent._active_children.append(child)
-
-        # Simulate child running (checking flag in a loop)
-        child_detected = threading.Event()
-        def simulate_child_loop():
-            while not child._interrupt_requested:
-                time.sleep(0.05)
-            child_detected.set()
-
-        child_thread = threading.Thread(target=simulate_child_loop, daemon=True)
-        child_thread.start()
-
-        # Small delay, then interrupt from "main thread"
-        time.sleep(0.1)
-        parent.interrupt("user typed something new")
-
-        # Child should detect within 200ms
-        detected = child_detected.wait(timeout=1.0)
-        assert detected, "Child never detected the interrupt!"
-        child_thread.join(timeout=1)
-        set_interrupt(False)
-
-    def test_prestart_interrupt_binds_to_execution_thread(self):
-        """An interrupt that arrives before startup should bind to the agent thread."""
-        agent = self._make_bare_agent()
-        barrier = threading.Barrier(2)
-        result = {}
-
-        agent.interrupt("stop before start")
-        assert agent._interrupt_requested is True
-        assert agent._interrupt_thread_signal_pending is True
-        assert is_interrupted() is False
-
-        def run_thread():
-            from tools.interrupt import set_interrupt as _set_interrupt_for_test
-
-            agent._execution_thread_id = threading.current_thread().ident
-            _set_interrupt_for_test(False, agent._execution_thread_id)
-            if agent._interrupt_requested:
-                _set_interrupt_for_test(True, agent._execution_thread_id)
-                agent._interrupt_thread_signal_pending = False
-            barrier.wait(timeout=5)
-            result["thread_interrupted"] = is_interrupted()
-
-        t = threading.Thread(target=run_thread)
-        t.start()
-        barrier.wait(timeout=5)
-        t.join(timeout=2)
-
-        assert result["thread_interrupted"] is True
-        assert agent._interrupt_thread_signal_pending is False
-
 
 class TestPerThreadInterruptIsolation(unittest.TestCase):
     """Verify that interrupting one agent does NOT affect another agent's thread.

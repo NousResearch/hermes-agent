@@ -1,3 +1,5 @@
+import type { WaitableChild } from './backend-child'
+
 export type ReleaseLocalBackendSlot = () => void
 
 export type LocalBackendSpawnPriority = 'foreground' | 'background'
@@ -42,6 +44,90 @@ export function isBackgroundSlotWaitTimeout(error: unknown): boolean {
   return error instanceof LocalBackendSlotWaitTimeoutError && error.silent
 }
 
+/** A retry deferment is expected background control flow, not a start failure. */
+export class BackgroundSlotRetryDeferredError extends Error {
+  constructor(key: string) {
+    super(`Local backend start for "${key}" is backing off after slot saturation.`)
+    this.name = 'BackgroundSlotRetryDeferredError'
+  }
+}
+
+export function isBackgroundSlotRetryDeferred(error: unknown): boolean {
+  return error instanceof BackgroundSlotRetryDeferredError
+}
+
+/**
+ * Per-profile cooldown for background hydration after a pool-slot timeout.
+ *
+ * A full local pool is commonly structural (more profiles than the configured
+ * cap), so retrying every roster refresh creates a permanent timeout and log
+ * storm. Foreground opens bypass this guard; a successful slot acquisition
+ * clears it. Keeping this state outside the coordinator preserves its role as
+ * a fair slot allocator rather than teaching it about hydration policy.
+ */
+export class BackgroundSlotRetryBackoff {
+  #failures = new Map<string, { nextRetryAt: number; attempts: number }>()
+  readonly #baseDelayMs: number
+  readonly #maxDelayMs: number
+
+  constructor({ baseDelayMs = 60_000, maxDelayMs = 15 * 60_000 } = {}) {
+    if (!Number.isFinite(baseDelayMs) || baseDelayMs < 1 || !Number.isFinite(maxDelayMs) || maxDelayMs < baseDelayMs) {
+      throw new RangeError('Background slot retry delays must be positive and ordered.')
+    }
+
+    this.#baseDelayMs = baseDelayMs
+    this.#maxDelayMs = maxDelayMs
+  }
+
+  canAttempt(key: string, now = Date.now()): boolean {
+    return (this.#failures.get(key)?.nextRetryAt ?? 0) <= now
+  }
+
+  recordFailure(key: string, now = Date.now()): number {
+    const attempts = (this.#failures.get(key)?.attempts ?? 0) + 1
+    const delay = Math.min(this.#baseDelayMs * 2 ** (attempts - 1), this.#maxDelayMs)
+    this.#failures.set(key, { attempts, nextRetryAt: now + delay })
+
+    return delay
+  }
+
+  clear(key: string): void {
+    this.#failures.delete(key)
+  }
+}
+
+/** Register at spawn, before claiming ownership or awaiting readiness. */
+export function registerLocalBackendExitFinalizer<Entry extends { process: WaitableChild | null }>(
+  pool: Map<string, Entry>,
+  key: string,
+  entry: Entry,
+  release: ReleaseLocalBackendSlot
+): void {
+  const child = entry.process
+
+  const finalize = () => {
+    child?.removeListener('exit', finalize)
+    child?.removeListener('error', spawnFailed)
+
+    if (pool.get(key) === entry) {
+      pool.delete(key)
+    }
+
+    release()
+  }
+
+  const spawnFailed = () => {
+    // Failed spawn has no PID and emits error, but never exit. A signal error
+    // against an existing child is not evidence of exit and must keep its slot.
+    if (!child?.pid) {
+      finalize()
+    }
+  }
+
+  child?.once('exit', finalize)
+  child?.once('error', spawnFailed)
+}
+
 export async function releaseLocalBackendSlotAfterExit(
   release: ReleaseLocalBackendSlot,
   waitForExit: () => Promise<void>
@@ -65,6 +151,25 @@ export class LocalBackendSpawnCoordinator {
   #activeForeground = 0
   #activeBackground = 0
   #queue: Waiter[] = []
+  #listeners = new Set<() => void>()
+
+  get foregroundWaiters(): ReadonlySet<string> {
+    return new Set(this.#queue.filter(waiter => waiter.priority === 'foreground').map(waiter => waiter.key))
+  }
+
+  onChange(listener: () => void): () => void {
+    this.#listeners.add(listener)
+
+    return () => {
+      this.#listeners.delete(listener)
+    }
+  }
+
+  #changed(): void {
+    for (const listener of this.#listeners) {
+      listener()
+    }
+  }
 
   constructor(limit: number) {
     if (!Number.isInteger(limit) || limit < 1) {
@@ -198,6 +303,7 @@ export class LocalBackendSpawnCoordinator {
     this.#queue.splice(index, 1)
     this.#clearTimer(waiter)
     waiter.reject(error)
+    this.#changed()
 
     return true
   }
@@ -268,5 +374,7 @@ export class LocalBackendSpawnCoordinator {
       this.#clearTimer(next)
       next.resolve(this.#grant('background'))
     }
+
+    this.#changed()
   }
 }

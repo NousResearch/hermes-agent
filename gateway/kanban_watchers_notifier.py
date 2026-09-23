@@ -7,6 +7,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import re
 from functools import partial
@@ -17,6 +18,7 @@ from typing import Any, Callable, Optional
 from agent.i18n import t
 
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
+from gateway.wake import session_owned_by_profile
 
 
 def _kbc():
@@ -35,6 +37,15 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+
+
+def diagnostic_event(ev) -> bool:
+    """Infrastructure attention is distinct from an explicit owner decision."""
+    if ev.kind in {"crashed", "timed_out", "gave_up"}:
+        return True
+    if ev.kind in {"blocked", "block_loop_detected"}:
+        return (ev.payload or {}).get("kind") != "needs_input"
+    return ev.kind == "status" and (ev.payload or {}).get("status") in {"blocked", "triage"}
 # Consecutive send failures (adapter raised OR reported SendResult(success=False))
 # before a sub is dropped as a dead chat. 12 ≈ 60s at the 5s cadence: a transient
 # API outage must not permanently unsubscribe a live review-gate channel.
@@ -93,6 +104,45 @@ def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
     return str(resolved) if resolved else None
 
 
+_ANCHORLESS_WARNED: set[tuple] = set()
+
+
+def _warn_anchorless_thread_sub_once(sub: dict, platform: str) -> None:
+    """A thread-shaped subscription without ``parent_chat_id`` cannot match a channel-level
+    ``profile_routes`` entry, so the fail-closed route gate skips it on every tick. Say so ONCE per
+    row at WARNING — a subscription that can never deliver was invisible below DEBUG (#110919)."""
+    metadata = sub.get("delivery_metadata") or {}
+    thread_like = bool(sub.get("thread_id")) or (sub.get("chat_type") or metadata.get("chat_type")) in {
+        "thread", "forum", "forum_post", "forum-post", "topic"}
+    if not thread_like or metadata.get("parent_chat_id"):
+        return
+    key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "")
+    if key in _ANCHORLESS_WARNED:
+        return
+    _ANCHORLESS_WARNED.add(key)
+    logger.warning(
+        "kanban notifier: subscription for %s on %s thread %s has no parent_chat_id anchor and matched no "
+        "profile route; it will not be delivered. Re-subscribe with `hermes kanban notify-subscribe ... "
+        "--parent-chat-id <channel id> [--guild-id <guild id>]`.",
+        sub.get("task_id"), platform, sub.get("chat_id"),
+    )
+
+
+_UNROUTABLE_WARNED: set[tuple] = set()
+
+
+def _warn_unroutable_sub_once(sub: dict, platform: Any, message: str, *extra_args: Any) -> None:
+    """A routed subscription the credential gate fail-closes is a permanent dead-end: delivery
+    rewinds every tick with only a DEBUG line. Say so ONCE per row at WARNING, mirroring
+    ``_warn_anchorless_thread_sub_once`` (#115460)."""
+    key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "")
+    if key in _UNROUTABLE_WARNED:
+        return
+    _UNROUTABLE_WARNED.add(key)
+    logger.warning(message, sub.get("task_id"), getattr(platform, "value", platform),
+                   sub.get("chat_id"), *extra_args)
+
+
 def _platform_names(mapping: Any) -> set[str]:
     """Lower-cased platform names of an adapters mapping (Platform enums or strings)."""
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
@@ -110,14 +160,18 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     profile = owner_profile or getattr(runner, "_kanban_notifier_profile", None)
     primary_profile = getattr(runner, "_primary_profile_name", None) or runner._active_profile_name()
     profile = profile or primary_profile
-    # Empty maps are startup placeholders for route-only profiles; a connected
-    # secondary on ANY platform establishes an independent credential boundary.
-    if (getattr(runner, "_profile_adapters", {}) or {}).get(profile):
+    # A profile holding its OWN adapter for this platform is an independent credential boundary —
+    # ``_authorization_adapter`` already answered for it, so the primary never stands in. Adapters
+    # on OTHER platforms do not gate this one: the primary bot is the only credential serving the
+    # pinned chat, for inbound turns and for these notifications alike (#115460).
+    own_adapters = (getattr(runner, "_profile_adapters", {}) or {}).get(profile) or {}
+    if getattr(platform, "value", str(platform)).lower() in _platform_names(own_adapters):
         return None
     metadata = sub.get("delivery_metadata") or {}
     guild = metadata.get("scope_id") or metadata.get("guild_id")
     parent = metadata.get("parent_chat_id")
     chat, thread = sub.get("chat_id"), sub.get("thread_id") or None
+    user_id = sub.get("user_id") or None
     thread_like = bool(thread) or (sub.get("chat_type") or metadata.get("chat_type")) in {
         "thread", "forum", "forum_post", "forum-post", "topic",
     }
@@ -127,15 +181,31 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     # hand-maintained equality implementation.
     for route in getattr(config, "profile_routes", None) or []:
         if route.matches(platform.value, guild_id=guild, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent):
+                         thread_id=thread, parent_chat_id=parent, user_id=user_id):
             if route.profile != profile:
+                _warn_unroutable_sub_once(
+                    sub, platform,
+                    "kanban notifier: subscription for %s on %s chat %s is stamped with profile %s but a "
+                    "profile_routes entry pins that chat to profile %s; it will not be delivered. "
+                    "Re-subscribe with `hermes kanban notify-subscribe ... --notifier-profile %s`.",
+                    profile, route.profile, route.profile)
                 return None
             from gateway.run import _multiplex_profile_homes
             served = {name for name, _home in _multiplex_profile_homes(config)}
             return primary if profile in served else None
         if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None)):
+                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None),
+                         user_id=user_id or route.user_id):
             return None
+    # A stateless (api_server) subscription carries a RAW session id, not a routable chat, so no
+    # profile_routes entry can anchor it — and a platform-wide api_server route would deny the
+    # default profile's own api_server destinations. The shared listener mirrors /p/<profile>/ for
+    # every served profile, so the owner's own session store is the proof: authorize exactly the
+    # session that lives in the served profile's state.db, never the platform. The default profile
+    # keeps the historical fallthrough below (no store read).
+    if profile != primary_profile and getattr(platform, "value", platform) == "api_server" \
+            and session_owned_by_profile(config, profile, chat):
+        return primary
     return primary if profile == primary_profile else None
 
 
@@ -225,6 +295,7 @@ class _Collector:
             return None
         from gateway.config import Platform
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
+            _warn_anchorless_thread_sub_once(sub, platform)
             return None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
@@ -342,29 +413,61 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_block_loop_detected(ev, n) -> tuple:
+    """Re-blocked for the same cause past the limit and routed to `triage`.
+
+    It emits no blocked/status event, so ping loudly here. A repeated-block
+    circuit breaker establishes that orchestration attention is needed; it
+    does NOT establish that a human decision or owner input exists. Use
+    neutral orchestration wording unless the block was typed as a genuine
+    owner-input request (`needs_input`, the only kind that carries a concrete
+    question for the owner).
+    """
+    kind = _payload(ev, "kind")
+    decision = kind == "needs_input"
+    msg = (
+        f"🛑 {n.head} routed to TRIAGE — "
+        f"{'needs a human decision' if decision else 'for orchestration attention'}"
+        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
+    )
+    return msg, None, None
+
+
+def _fmt_gave_up(ev, n) -> tuple:
+    # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
+    # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
+    failures = _payload(ev, "failures")
+    count = f"it failed {int(failures)} times in a row" if failures else "it kept failing"
+    last = _clip(ev, "error", " (last: {})", 160)
+    return (
+        f"⛔ {n.head} is now blocked: {count}{last}. Fix the cause, then `hermes kanban unblock "
+        f"{n.task_id}` (or `hermes kanban reassign {n.task_id}`). Logs: `hermes kanban log {n.task_id}`.",
+        None, None,
+    )
+
+
+def _fmt_timed_out(ev, n) -> tuple:
+    limit = int(_payload(ev, "limit_seconds") or 0)
+    minutes = max(1, round(limit / 60)) if limit else 0
+    span = f"its {minutes}-minute limit" if minutes else "its time limit"
+    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
-    "gave_up": lambda ev, n: (
-        f"✖ {n.head} gave up after repeated spawn failures{_clip(ev, 'error', _NL, 200)}", None, None,
+    "gave_up": _fmt_gave_up,
+    "crashed": lambda ev, n: (
+        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
     ),
-    "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); dispatcher will retry", None, None),
-    "timed_out": lambda ev, n: (
-        f"⏱ {n.head} timed out (max_runtime={int(_payload(ev, 'limit_seconds') or 0)}s); will retry", None, None,
-    ),
+    "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
-    # Re-blocked for the same cause past the limit and routed to `triage` for a
-    # human. It emits no blocked/status event, so ping loudly here.
-    "block_loop_detected": lambda ev, n: (
-        f"🛑 {n.head} routed to TRIAGE — needs a human decision"
-        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}",
-        None, None,
-    ),
+    "block_loop_detected": _fmt_block_loop_detected,
 }
 
 
@@ -458,6 +561,7 @@ class _KanbanNotification:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
         self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
             return
         if self.is_push_adapter:
@@ -487,14 +591,27 @@ class _KanbanNotification:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                     self.task_id, self.platform_str, self.sub["chat_id"], self.sub_profile or "default", self.wake_kinds)
 
+    def _served_wake_profile(self) -> Optional[str]:
+        """The subscription's profile when THIS gateway is a multiplexer serving it, else ``None``.
+
+        ``None`` keeps the historical path: a standalone ``hermes -p <name>`` gateway owns its own
+        listener and key, so its api_server wakes keep using the HTTP self-post.
+        """
+        if not self.sub_profile:
+            return None
+        if not getattr(getattr(self.runner, "config", None), "multiplex_profiles", False):
+            return None
+        return self.sub_profile
+
     def _owner_scope(self):
         """Runtime scope of the subscription's profile under multiplex, else a no-op context."""
         runner = self.runner
-        if not (self.sub_profile and getattr(getattr(runner, "config", None), "multiplex_profiles", False)):
+        served_profile = self._served_wake_profile()
+        if not served_profile:
             return contextlib.nullcontext()
         from gateway.run import _async_profile_runtime_scope
         from gateway.session import SessionSource
-        source = SessionSource(platform=self.plat, chat_id=self.sub["chat_id"], profile=self.sub_profile)
+        source = SessionSource(platform=self.plat, chat_id=self.sub["chat_id"], profile=served_profile)
         return _async_profile_runtime_scope(runner._resolve_profile_home_for_source(source))
 
     async def wake(self) -> None:
@@ -502,7 +619,14 @@ class _KanbanNotification:
         from gateway.wake import deliver_wake
         sub = self.sub
         if not self.is_push_adapter:
-            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key)
+            # A served profile's raw-session wake runs in THAT profile's scope, in-process: the
+            # shared listener's /p/<profile>/ self-post would need the profile's own
+            # API_SERVER_KEY, which a route-only profile legitimately does not have, and an
+            # unprefixed self-post would resume the session in the DEFAULT profile's store.
+            async with self._owner_scope():
+                await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
+                                   profile=self._served_wake_profile(),
+                                   notification_category="diagnostic" if self.wake_diagnostic else "result")
             self._log_woke()
             return
         from gateway.session import SessionSource
@@ -530,17 +654,24 @@ class _KanbanNotification:
             if not profile_exists(self.sub_profile):
                 raise RuntimeError(f"Kanban wake profile {self.sub_profile!r} no longer exists")
         async with _async_profile_runtime_scope(self.runner._resolve_profile_home_for_source(_source)):
-            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source)
+            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source,
+                               notification_category="diagnostic" if self.wake_diagnostic else "result")
         self._log_woke()
 
-    async def _send_event(self, ev: Any, msg: str) -> None:
+    async def _send_event(self, ev: Any, msg: str) -> bool:
         """Send one text ping; raises on adapter exception or SendResult(success=False)."""
+        from gateway.warning_notifications import present_notification
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
-        _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
+        _send_res = None
+        async def send_ping():
+            nonlocal _send_res
+            _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
+        if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
+            return False
         # SendResult(success=False) without an exception is a FAILED delivery
         # (else the event is lost); None / non-SendResult keeps the
         # "no exception == delivered" contract.
@@ -561,6 +692,7 @@ class _KanbanNotification:
                 )
             except Exception as art_exc:
                 logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)
+        return True
 
     async def _send_pings(self) -> bool:
         """Send every text ping; False when a send failed (claim already rewound/dropped)."""
@@ -584,7 +716,8 @@ class _KanbanNotification:
             if ev.id <= self.sub.get("last_ping_event_id", 0):
                 continue
             try:
-                await self._send_event(ev, msg)
+                if await self._send_event(ev, msg) is False:
+                    continue
                 await _to_thread_process_service(partial(
                     self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
                     event_id=ev.id,
@@ -604,8 +737,11 @@ class _KanbanNotification:
         except ValueError:
             await self.advance()
             return
-        # Recheck the exact route after claiming: config/adapters can change between ticks.
-        adapter = _adapter_for_subscription(self.runner, self.plat, self.sub, self.sub_profile or None)
+        # Recheck the exact route after claiming: config/adapters can change between ticks. The
+        # recheck reads the served profile's session store for a stateless destination, so it runs
+        # off the event loop (the claim path already collects in a worker thread).
+        adapter = await asyncio.to_thread(
+            _adapter_for_subscription, self.runner, self.plat, self.sub, self.sub_profile or None)
         if adapter is None:
             logger.debug("kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
                          self.platform_str, self.task_id)
@@ -621,14 +757,33 @@ class _KanbanNotification:
             if not await self._send_pings():
                 return
             # All text pings delivered (or skipped for non-push / wake-only).
-            self.build_wake_text()
+            original_events = self.d["events"]
+            from gateway.warning_notifications import warning_notifications_enabled
+            split = not warning_notifications_enabled(self.platform_str)
+            wake_groups = ([original_events] if not split else [
+                [ev for ev in original_events if diagnostic_event(ev)],
+                [ev for ev in original_events if not diagnostic_event(ev)],
+            ])
+            wake_payloads = []
+            for events in wake_groups:
+                if not events:
+                    continue
+                self.d = {**self.d, "events": events}
+                self.wake_handoff = self.wake_review_detail = ""
+                for ev in events:
+                    self.format_event(ev)
+                self.build_wake_text()
+                if self.wake_kinds:
+                    wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))
+            self.d = {**self.d, "events": original_events}
         wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
         from gateway.wake import WakeNotAccepted
 
         # A requested wake is required even when its passive ping already landed.
-        if wake_kinds:
+        if wake_payloads:
             try:
-                await self.wake()
+                for self.synth, self.wake_diagnostic, self.wake_kinds in wake_payloads:
+                    await self.wake()
                 self.clear_failures()
             except WakeNotAccepted:
                 # Startup / full queue is not a dead destination. Keep the durable

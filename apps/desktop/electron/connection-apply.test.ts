@@ -18,37 +18,34 @@ function deferred() {
 }
 
 describe('applyConnectionChange', () => {
-  it.each([['SSH A to SSH B'], ['SSH to Cloud'], ['Cloud to SSH']])(
-    'serializes %s behind bootstrap rollback before teardown and apply',
-    async () => {
-      const gate = deferred()
-      const events: string[] = []
+  it('serializes a connection switch behind bootstrap rollback before teardown and apply', async () => {
+    const gate = deferred()
+    const events: string[] = []
 
-      const run = applyConnectionChange({
-        cancelAndWait: async () => {
-          events.push('cancel')
-          await gate.promise
-          events.push('drained')
-        },
-        isPrimary: true,
-        scope: '',
-        sendApplied: () => events.push('applied'),
-        stopPool: vi.fn(),
-        teardownPrimary: async () => {
-          events.push('primary')
-        },
-        teardownSsh: async () => {
-          events.push('ssh')
-        }
-      })
+    const run = applyConnectionChange({
+      cancelAndWait: async () => {
+        events.push('cancel')
+        await gate.promise
+        events.push('drained')
+      },
+      isPrimary: true,
+      scope: '',
+      sendApplied: () => events.push('applied'),
+      stopPool: vi.fn(),
+      teardownPrimary: async () => {
+        events.push('primary')
+      },
+      teardownSsh: async () => {
+        events.push('ssh')
+      }
+    })
 
-      await Promise.resolve()
-      expect(events).toEqual(['cancel'])
-      gate.resolve()
-      await run
-      expect(events).toEqual(['cancel', 'drained', 'ssh', 'primary', 'applied'])
-    }
-  )
+    await Promise.resolve()
+    expect(events).toEqual(['cancel'])
+    gate.resolve()
+    await run
+    expect(events).toEqual(['cancel', 'drained', 'ssh', 'primary', 'applied'])
+  })
 
   it('tears down only a non-primary scope without applying the primary connection', async () => {
     const events: string[] = []

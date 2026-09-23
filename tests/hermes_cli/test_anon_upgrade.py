@@ -30,7 +30,7 @@ def _jwt(**claims) -> str:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
     payload = {"sub": "nas_user:1", "client_id": "nas-anonymous", "account_tier": "anonymous",
-               "scope": "inference:invoke tool:invoke", "exp": int(time.time()) + 900, **claims}
+               "scope": "inference:invoke", "exp": int(time.time()) + 900, **claims}
     return f"{seg({'alg': 'RS256'})}.{seg(payload)}.sig"
 
 
@@ -89,7 +89,7 @@ class FakePortal:
             return httpx.Response(200, json={
                 "access_token": _jwt(sub="nas_user:9", client_id="hermes-cli", account_tier="free"),
                 "refresh_token": REFRESH_TOKEN, "token_type": "Bearer", "expires_in": 900,
-                "scope": "inference:invoke tool:invoke", "inference_base_url": INFERENCE})
+                "scope": "inference:invoke", "inference_base_url": INFERENCE})
         return httpx.Response(500, json={"error": f"unexpected {path}"})
 
 
@@ -115,7 +115,7 @@ def portal(monkeypatch, tmp_path):
             kw["transport"] = httpx.MockTransport(fake.handler)
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
-    anon_auth._mint_failed = False
+    anon_auth.reset_mint_memo_for_tests()
     return fake
 
 
@@ -145,11 +145,11 @@ class TestUpgrade:
         anon_auth.ensure_portal_identity(explicit=True)
         before = _auth_file_path().read_bytes()
         shared_before = _shared_store(tmp_path)
-        portal.status_sequence = [{"status": "pending"}, {"status": "voided", "reason": "user_declined"}]
+        portal.status_sequence = [{"status": "voided", "reason": "user_declined"}]
         code = anon_auth.upgrade_guest(_args())
         out = capsys.readouterr().out
         assert code == 1
-        assert "Sign-in was rejected in the browser." in out
+        assert anon_auth.UPGRADE_REASON_COPY["user_declined"] in out
         assert portal.token_grants == 0
         assert _auth_file_path().read_bytes() == before
         assert _shared_store(tmp_path) == shared_before

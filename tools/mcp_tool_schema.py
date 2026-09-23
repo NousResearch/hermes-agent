@@ -66,29 +66,52 @@ def _rewrite_local_refs(node):
     return normalized
 
 
-def _repair_object_shape(node):
+# Mapping-valued JSON Schema keywords: the value maps entry NAMES to schemas and is never a
+# schema node itself. Repair must recurse into the map's values only (#110530).
+_SCHEMA_MAP_KEYS = ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas")
+
+
+def _repair_object_shape(node, *, _object_root=False):
     """Recursively fill a missing object ``type``, ensure ``properties`` (so ``required``
     can't dangle) and prune ``required`` to names present in ``properties`` (Gemini 400s
-    otherwise)."""
+    otherwise).
+
+    A dict carrying ``required`` but declaring no ``properties`` and no ``type`` is NOT an
+    object declaration — it is a *constraint fragment*, the JSON Schema idiom for "at least
+    one of these keys must be present" (``allOf``/``oneOf``/``anyOf``/``if`` branches).
+    Synthesising ``properties: {}`` for it prunes every name out of ``required``, so sibling
+    branches collapse into identical always-true schemas; the enclosing ``oneOf`` then has
+    two matches and can never be satisfied, making the tool permanently un-dispatchable while
+    the server-side tool itself is fine. Only the parameters-schema ROOT still gets the
+    dangling-``required`` repair (``_object_root``), because that is the single node handed
+    to providers as the function's argument object.
+    """
     if isinstance(node, list):
         return [_repair_object_shape(item) for item in node]
     if not isinstance(node, dict):
         return node
-    repaired = {k: _repair_object_shape(v) for k, v in node.items()}
-    if not repaired.get("type") and ("properties" in repaired or "required" in repaired):
-        repaired["type"] = "object"
-    if repaired.get("type") == "object":
-        if not isinstance(repaired.get("properties"), dict):
-            repaired["properties"] = {}
-        required = repaired.get("required")
-        if isinstance(required, list):
+    repaired = {}
+    for key, value in node.items():
+        if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            # A schema map (entry name -> schema), never a schema node itself: recursing over
+            # the whole map would inject a bogus ``"type": "object"`` *entry* when one of its
+            # keys is literally named ``properties``/``required`` (#110530).
+            repaired[key] = {name: _repair_object_shape(schema) for name, schema in value.items()}
+        else:
+            repaired[key] = _repair_object_shape(value)
+    # Constraint fragments are returned untouched: repairing them is what destroys them.
+    if _object_root or "properties" in repaired or "type" in node:
+        if not repaired.get("type") and ("properties" in repaired or "required" in repaired):
+            repaired["type"] = "object"
+        if repaired.get("type") == "object":
+            if not isinstance(repaired.get("properties"), dict):
+                repaired["properties"] = {}
+            # Always a list: a missing/non-list ``required`` reads as ``null`` on strict
+            # OpenAI-compatible backends (#56123); ``[]`` is valid everywhere (Gemini included).
+            required = repaired.get("required")
             props = repaired.get("properties") or {}
-            valid = [r for r in required if isinstance(r, str) and r in props]
-            if len(valid) != len(required):
-                if valid:
-                    repaired["required"] = valid
-                else:
-                    repaired.pop("required", None)
+            repaired["required"] = ([r for r in required if isinstance(r, str) and r in props]
+                                    if isinstance(required, list) else [])
     return repaired
 
 
@@ -113,7 +136,7 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     normalized = _rewrite_local_refs(schema)
     normalized = strip_nullable_unions(normalized, keep_nullable_hint=True)
     normalized = collapse_const_unions(normalized)
-    normalized = _repair_object_shape(normalized)
+    normalized = _repair_object_shape(normalized, _object_root=True)
     if not isinstance(normalized, dict):
         return dict(_EMPTY_OBJECT_SCHEMA)
     if normalized.get("type") == "object" and "properties" not in normalized:

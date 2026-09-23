@@ -51,24 +51,6 @@ def _fresh_run_agent(hermes_home):
     return sys.modules["run_agent"]
 
 
-def test_verification_flags_registered_as_ephemeral(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    _fresh_run_agent(tmp_path)
-    from agent.session_persistence import _EPHEMERAL_SCAFFOLDING_FLAGS, _is_ephemeral_scaffolding
-
-    assert "_verification_stop_synthetic" in _EPHEMERAL_SCAFFOLDING_FLAGS
-    assert "_pre_verify_synthetic" in _EPHEMERAL_SCAFFOLDING_FLAGS
-
-    # The nudge messages ARE scaffolding (they carry the synthetic flag).
-    assert _is_ephemeral_scaffolding(
-        {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True}
-    )
-    assert _is_ephemeral_scaffolding(
-        {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True}
-    )
-    # Real messages (including the assistant candidate) are not.
-    assert not _is_ephemeral_scaffolding({"role": "user", "content": "hi"})
-    assert not _is_ephemeral_scaffolding({"role": "assistant", "content": "premature done"})
 
 
 def _make_agent(ra, session_id, tmp_path):

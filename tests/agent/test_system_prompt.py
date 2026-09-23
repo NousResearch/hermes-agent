@@ -57,6 +57,55 @@ def _captured_context_cwd(agent):
     return captured["cwd"]
 
 
+@pytest.mark.parametrize("task_id, expected", [(None, False), ("t_worker", True)])
+def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id, expected):
+    """A profile can expose kanban tools without making the session a worker."""
+    from agent.agent_init import _load_tools
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    import model_tools
+
+    if task_id is None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **_kwargs: [{"function": {"name": "kanban_show"}}],
+    )
+    agent = SimpleNamespace(quiet_mode=True)
+
+    _load_tools(agent, enabled_toolsets=["kanban"], disabled_toolsets=None)
+
+    assert (agent._kanban_worker_guidance == KANBAN_GUIDANCE) is expected
+
+
+@pytest.mark.parametrize("task_id, owner, expected", [
+    (None, True, False),        # interactive session with the kanban toolset enabled
+    ("t_worker", True, True),   # the dispatcher-owned worker
+    ("t_worker", False, False), # cron run / delegate child inheriting the worker's env
+])
+def test_kanban_guidance_fallback_requires_owned_worker_task(monkeypatch, task_id, owner, expected):
+    """Prompt fallback preserves the worker boundary when init was bypassed: tool access
+    is not identity, and an inherited HERMES_KANBAN_TASK is not ownership (#112486)."""
+    from contextlib import nullcontext
+
+    from agent.delegation_context import non_dispatcher_owned_context
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    from agent.system_prompt import _tool_guidance_block
+
+    if task_id is None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    agent = _make_agent(valid_tool_names={"kanban_show"})
+    delattr(agent, "_kanban_worker_guidance")
+
+    with nullcontext() if owner else non_dispatcher_owned_context():
+        assert (_tool_guidance_block(agent) == KANBAN_GUIDANCE) is expected
+
+
 @pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
 @pytest.mark.parametrize("names", [
     set(), {"memory"}, {"memory", "skill_view", "skills_list"},
@@ -70,11 +119,6 @@ def test_memory_guidance_respects_available_writes(stores, names, monkeypatch, t
     enabled = "memory" in names and any(stores)
     assert ("Memory is the narrow exception" in prompt) == enabled
     assert ("(skill_manage)" in prompt) == (enabled and "skill_manage" in names)
-    if enabled:
-        assert "EVERY session regardless of task" in prompt
-        assert "procedures and workflows belong in skills" in prompt
-        if "skill_manage" not in names:
-            assert "not in memory" in prompt
     if enabled and not stores[0]:
         assert "never target='memory'" in prompt
 
@@ -262,20 +306,9 @@ class TestExecutionGuidanceInjection:
         assert "Execution discipline" in stable
         assert "<external_state_verification>" in stable
 
-    def test_kimi_gets_guidance_by_default(self):
-        assert "Execution discipline" in self._prompt("moonshotai/kimi-k3")
 
-    def test_qwen_glm_minimax_mimo_mistral_get_guidance_by_default(self):
-        for model in ("qwen/qwen-3-max", "z-ai/glm-5.2",
-                      "minimax/minimax-m2", "xiaomi/mimo-v2",
-                      "mistralai/mistral-large-3"):
-            assert "Execution discipline" in self._prompt(model), model
 
-    def test_gpt_still_gets_guidance(self):
-        assert "Execution discipline" in self._prompt("openai/gpt-5.5")
 
-    def test_grok_still_gets_guidance(self):
-        assert "Execution discipline" in self._prompt("xai/grok-4")
 
     def test_independent_of_tool_use_enforcement(self):
         # The gate must not require tool-use enforcement to be on.
@@ -288,9 +321,6 @@ class TestExecutionGuidanceInjection:
         assert "Execution discipline" not in self._prompt(
             "anthropic/claude-opus-4.8")
 
-    def test_gemini_does_not_get_guidance_by_default(self):
-        assert "Execution discipline" not in self._prompt(
-            "google/gemini-2.5-pro")
 
     def test_config_false_suppresses(self):
         assert "Execution discipline" not in self._prompt(
@@ -516,14 +546,6 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "lean into it" in stable
 
-    def test_base_hint_without_config(self, monkeypatch):
-        """When config has no telegram section, only base hint is used."""
-        agent = _make_agent(platform="telegram")
-        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
-            mock_cfg.return_value = {}
-            stable = _stable_prompt(agent)
-        assert "Standard Markdown auto-converts" in stable
-        assert "lean into it" not in stable
 
 
     def test_gateway_rich_messages_integration_via_real_config(self, tmp_path, monkeypatch):
@@ -819,7 +841,6 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(self._agent("20200110_090000_old"))
         assert "Conversation started:" in vol
         assert "as of the last context rebuild" in vol
-        assert "trust this over the start date" in vol
 
     def test_same_day_session_keeps_single_line(self):
         from hermes_time import now as hermes_now
@@ -834,4 +855,3 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
-

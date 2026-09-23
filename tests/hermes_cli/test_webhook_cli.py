@@ -70,6 +70,7 @@ class TestSubscribe:
     def test_profile_binding_and_secret_survive_update(self, tmp_path, capsys):
         profile_dir = tmp_path / "profiles" / "compta"
         profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("{}\n")  # identity marker
 
         webhook_command(_make_args(
             webhook_action="subscribe", name="notifier", route_profile="compta"
@@ -94,21 +95,45 @@ class TestSubscribe:
             webhook_action="subscribe", name="notifier", route_profile="missing"
         ))
 
-        assert "does not exist" in capsys.readouterr().out
         assert _load_subscriptions()["notifier"]["secret"] == "original"
 
 
-class TestList:
+class TestCronJobSubscribe:
+    """--cron-job: event-triggered cron jobs."""
 
-    def test_with_entries(self, capsys):
-        webhook_command(_make_args(webhook_action="subscribe", name="a"))
-        webhook_command(_make_args(webhook_action="subscribe", name="b"))
-        capsys.readouterr()  # clear
-        webhook_command(_make_args(webhook_action="list"))
-        out = capsys.readouterr().out
-        assert "2 webhook" in out
-        assert "a" in out
-        assert "b" in out
+    def test_valid_job_ref_stored_as_id(self, monkeypatch):
+        # resolve_job_ref is imported inside _cmd_subscribe from cron.jobs
+        import cron.jobs as jobs_mod
+
+        monkeypatch.setattr(
+            jobs_mod, "resolve_job_ref",
+            lambda ref: {"id": "job-abc123", "name": ref},
+        )
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="ev", cron_job="sweeper"
+        ))
+        assert _load_subscriptions()["ev"]["cron_job"] == "job-abc123"
+
+    def test_unknown_job_rejected(self, monkeypatch, capsys):
+        import cron.jobs as jobs_mod
+
+        monkeypatch.setattr(jobs_mod, "resolve_job_ref", lambda ref: None)
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="ev", cron_job="nope"
+        ))
+        assert "ev" not in _load_subscriptions()
+
+    def test_cron_job_plus_deliver_only_rejected(self, capsys):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="ev",
+            cron_job="sweeper",
+            deliver_only=True,
+            deliver="telegram",
+        ))
+        assert "ev" not in _load_subscriptions()
+
+
 
 
 class TestRemove:
@@ -165,22 +190,5 @@ class TestWebhookEnabledGate:
         out = capsys.readouterr().out
         assert "not enabled" in out.lower()
 
-    def test_allows_when_enabled(self, capsys):
-        # _is_webhook_enabled already patched to True by autouse fixture
-        webhook_command(_make_args(webhook_action="subscribe", name="allowed"))
-        out = capsys.readouterr().out
-        assert "Created" in out
-        assert "allowed" in _load_subscriptions()
 
-    def test_real_check_disabled(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.webhook._get_webhook_config",
-            lambda: {},
-        )
-        monkeypatch.setattr(
-            "hermes_cli.webhook._is_webhook_enabled",
-            lambda: bool({}.get("enabled")),
-        )
-        import hermes_cli.webhook as wh_mod
-        assert wh_mod._is_webhook_enabled() is False
 

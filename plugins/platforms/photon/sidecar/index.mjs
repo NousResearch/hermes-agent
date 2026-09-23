@@ -74,6 +74,7 @@ import { chooseSendFormat } from "./send-format.mjs";
 import { supportsProviderCapability } from "./provider-capabilities.mjs";
 import {
   classifyProbeRejection,
+  createProbeMessageId,
   shouldProbe,
   isZombieSuspect,
   silenceProbeThreshold,
@@ -277,7 +278,7 @@ console.log = (...args) => {
 // half-open ("zombie") one. `space.get` is purely local in shared/dedicated
 // mode (no chat is created or messaged); only the message read hits the wire.
 const PROBE_SPACE_ID = process.env.PHOTON_PROBE_SPACE_ID || "any;-;+10000000000";
-const PROBE_MSG_PREFIX = "hermes-liveness-probe-";
+
 
 if (!sharedToken || (!localMode && (!projectId || !projectSecret))) {
   console.error(
@@ -737,8 +738,7 @@ async function probeUpstream() {
   if (typeof app?.stop !== "function") {
     return { alive: false, hung: false, reason: "spectrum app not constructed" };
   }
-  const probeId =
-    PROBE_MSG_PREFIX + Date.now() + "-" + Math.random().toString(36).slice(2);
+  const probeId = createProbeMessageId();
   let timer = null;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(

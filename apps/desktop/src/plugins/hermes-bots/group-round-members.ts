@@ -1,5 +1,5 @@
 import { clearBotAttention, noteBotAttention } from './data'
-import { recordGroupActivity } from './group-activity'
+import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   appendGroupChatEntry,
@@ -11,8 +11,8 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { groupMemberKey } from './group-membership'
-import { buildGroupChatTurnPrompt, formatGroupChatLine } from './group-round-prompt'
+import { groupMemberAuthor, groupMemberKey } from './group-membership'
+import { buildGroupChatTurnPrompt, formatGroupDeltaLines, isGroupChatSelf } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -23,6 +23,7 @@ export interface GroupRoundMemberContext {
   startEpoch: number
   binding: { isLive(): boolean }
   isCurrent(): boolean
+  failedMembers?: Set<string>
 }
 
 /** #93129: a held member's skip must consume its delta exactly once —
@@ -30,6 +31,20 @@ export interface GroupRoundMemberContext {
  *  re-trigger the skip. Null = nothing to consume (no write, no spin). */
 export function heldMemberWatermarkAdvance(seen: number | undefined, logLength: number): null | number {
   return logLength > (seen || 0) ? logLength : null
+}
+
+/** Remember held entries after their watermarks advance. Keep the first entry
+ *  (the hold-triggering instruction) plus the newest bounded tail, and dedupe
+ *  by id so repeated held passes remain idempotent. */
+export function heldMemberMessageIds(existing: string[] | undefined, delta: GroupMessage[]): string[] {
+  const ids = [...(existing || []), ...delta.map(entry => entry.id).filter((id): id is string => Boolean(id))]
+  const unique = [...new Set(ids)]
+
+  if (unique.length <= GROUP_CHAT_HISTORY_LIMIT) {
+    return unique
+  }
+
+  return [unique[0], ...unique.slice(-(GROUP_CHAT_HISTORY_LIMIT - 1))]
 }
 
 function prepareGroupRoundMember(context: GroupRoundMemberContext, member: GroupMember) {
@@ -65,6 +80,11 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
         r.watermarks[markKey] = advance
       }
 
+      r.heldMessages = {
+        ...(r.heldMessages || {}),
+        [memberKey]: heldMemberMessageIds(r.heldMessages?.[memberKey], delta)
+      }
+
       if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
         r.holds = {
           ...r.holds,
@@ -81,7 +101,7 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
     if (!heldEntry.noted) {
       recordGroupActivity(context.group, {
         kind: 'held',
-        member: member.name,
+        member: groupMemberKey(member),
         thread
       })
     }
@@ -89,20 +109,30 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
     return null
   }
 
+  const heldIds = room.heldMessages?.[memberKey] || []
+  const heldSet = new Set(heldIds)
+  const delivered = room.log.filter((entry: GroupMessage) => Boolean(entry.id && heldSet.has(entry.id)))
+  const deliveredIds = new Set(delivered.map((entry: GroupMessage) => entry.id).filter(Boolean))
+
+  const visibleDelta = [
+    ...delivered,
+    ...delta.filter((entry: GroupMessage) => !entry.id || !deliveredIds.has(entry.id))
+  ].sort((left, right) => Number(left.at || 0) - Number(right.at || 0))
+
   const prompt = buildGroupChatTurnPrompt({
     groupName: context.group,
     members,
     viewer: member,
-    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member))
+    deltaLines: formatGroupDeltaLines(visibleDelta, member, context.group)
   })
 
   // Images riding this delta (user attachments — member entries don't
   // carry images today, but flatMap keeps this future-proof) get staged
   // into the member's session so the model sees the pixels, not just
   // the transcript's [attached image: …] marker.
-  const deltaImages = delta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
+  const deltaImages = visibleDelta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
 
-  return { room, memberKey, markKey, prompt, deltaImages }
+  return { room, memberKey, markKey, prompt, deltaImages, heldIds }
 }
 
 /** Each invocation owns its descriptor, so an old completion cannot clear a newer turn. */
@@ -129,17 +159,25 @@ export async function runGroupRoundMember(
   member: GroupMember
 ): Promise<boolean | null> {
   const { thread, startEpoch, binding } = context
+
+  if (context.failedMembers?.has(groupMemberKey(member))) {
+    return false
+  }
+
   const prepared = prepareGroupRoundMember(context, member)
 
   if (!prepared) {
     return false
   }
 
-  const { room, markKey, prompt, deltaImages } = prepared
+  const { room, memberKey, markKey, prompt, deltaImages, heldIds } = prepared
+  const anchorId = room.log.at(-1)?.id ?? null
   let reply: null | string = null
+  let accepted = false
 
   try {
     reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
+    accepted = true
 
     // Needs-attention hook (#93091 item 3): a turn that produced a real
     // reply (or an explicit pass) is a good turn — clear the badge.
@@ -153,10 +191,10 @@ export async function runGroupRoundMember(
       return null
     }
 
-    const reason = String(error?.data?.reason || '').trim()
+    const reason = groupFailureReason(error)
     recordGroupActivity(context.group, {
       kind: 'failed',
-      member: member.name,
+      member: groupMemberKey(member),
       thread,
       ...(reason
         ? {
@@ -165,6 +203,7 @@ export async function runGroupRoundMember(
         : {})
     })
     noteBotAttention(groupMemberKey(member), reason || error?.message || error)
+    context.failedMembers?.add(groupMemberKey(member))
     reply = null // a failed turn is a pass, never a room error
   }
 
@@ -188,7 +227,6 @@ export async function runGroupRoundMember(
   }
 
   const epochNow = roomNow.epoch || 0
-  const anchorId = room.log.length ? room.log[room.log.length - 1].id : null
   const anchorIdx = anchorId === null ? -1 : roomNow.log.findIndex((e: GroupMessage) => e.id === anchorId)
   // Anchor trimmed away ⇒ every pre-turn entry was dropped, so every
   // surviving entry is newer — scanning the whole log stays exact.
@@ -198,147 +236,73 @@ export async function runGroupRoundMember(
     (e: GroupMessage) => e.from?.kind === 'user' && groupThreadOf(e) === thread
   )
 
-  if (!shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)) {
+  if (
+    (roomNow.stoppedEpoch || 0) > startEpoch ||
+    !shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)
+  ) {
     recordGroupActivity(context.group, {
       kind: 'cancelled',
-      member: member.name,
+      member: groupMemberKey(member),
       thread
     })
 
     return null
   }
 
-  // The member has now seen everything up to the pre-reply log length.
+  // Resolve the frozen submit boundary against the retained log. If it was
+  // trimmed away, every surviving entry is still unseen. Throws do not
+  // acknowledge input, and a timed-out turn keeps its submitted boundary.
+  if (accepted) {
+    updateGroupChat(context.group, (r: GroupChatRoom) => {
+      r.watermarks[markKey] = anchorIdx + 1
+
+      if (heldIds.length) {
+        const deliveredIds = new Set(heldIds)
+        const remaining = (r.heldMessages?.[memberKey] || []).filter(id => !deliveredIds.has(id))
+        r.heldMessages = {
+          ...(r.heldMessages || {})
+        }
+
+        if (remaining.length) {
+          r.heldMessages[memberKey] = remaining
+        } else {
+          delete r.heldMessages[memberKey]
+        }
+      }
+
+      return r
+    })
+  }
+
+  const spoke = reply !== null && !isGroupPassText(reply)
+
+  if (reply !== null && spoke) {
+    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread)
+  }
+
+  // A member's own entries — its reply, and the rows group-external-writes.ts
+  // mirrored out of its own session — are never news to their author, so the
+  // watermark steps over them. A user entry that arrived during inference
+  // stops the walk: a reply cannot acknowledge what it never saw.
   updateGroupChat(context.group, (r: GroupChatRoom) => {
-    r.watermarks[markKey] = r.log.length
+    let mark = r.watermarks[markKey] || 0
+
+    while (mark < r.log.length && authoredByMember(r.log[mark], member)) {
+      mark += 1
+    }
+
+    if (mark !== (r.watermarks[markKey] || 0)) {
+      r.watermarks[markKey] = mark
+    }
 
     return r
   })
 
-  if (reply !== null && !isGroupPassText(reply)) {
-    appendGroupChatEntry(
-      context.group,
-      {
-        kind: 'member',
-        name: member.name,
-        ...(member.remoteSource
-          ? {
-              source: member.connectionLabel || member.connectionId
-            }
-          : {})
-      },
-      reply,
-      thread
-    )
-    // Its own message counts as seen too.
-    updateGroupChat(context.group, (r: GroupChatRoom) => {
-      r.watermarks[markKey] = r.log.length
-
-      return r
-    })
-
-    return true
-  }
-
-  return false
+  return spoke
 }
 
-async function runGroupContinuationMember(
-  context: GroupRoundMemberContext,
-  member: GroupMember
-): Promise<boolean | null> {
-  const { members, thread, binding, isCurrent } = context
-
-  const room = $groupChats.get()[context.group] || {
-    log: [],
-    watermarks: {}
-  }
-
-  const memberKey = groupMemberKey(member)
-  const markKey = `${thread}::${memberKey}`
-  const seen = room.watermarks[markKey] || 0
-  const delta = room.log.slice(seen).filter((e: GroupMessage) => groupThreadOf(e) === thread)
-
-  // A cited member always has delta here (the citing reply IS in
-  // its tail); skip defensively anyway so an empty prompt never
-  // fires.
-  if (!delta.length) {
-    return false
-  }
-
-  const heldEntry = (room.holds || {})[memberKey]
-
-  if (heldEntry) {
-    return false // holds still apply to continuation turns (#93129)
-  }
-
-  const prompt = buildGroupChatTurnPrompt({
-    groupName: context.group,
-    members,
-    viewer: member,
-    // The continuation prompt centers on what the member missed:
-    // everything since its watermark, which includes the reply
-    // that cites it.
-    deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member))
-  })
-
-  let continuationReply: null | string = null
-
-  try {
-    continuationReply = await runVisibleMemberTurn(context, member, prompt)
-
-    if (continuationReply !== null) {
-      clearBotAttention(memberKey)
-    }
-  } catch (error: any) {
-    if (!binding.isLive()) {
-      return null
-    }
-
-    recordGroupActivity(context.group, {
-      kind: 'failed',
-      member: member.name,
-      thread
-    })
-    noteBotAttention(memberKey, error?.message || error)
-    continuationReply = null
-  }
-
-  if (!isCurrent()) {
-    return null
-  }
-
-  updateGroupChat(context.group, (r: GroupChatRoom) => {
-    r.watermarks[markKey] = r.log.length
-
-    return r
-  })
-
-  if (continuationReply !== null && !isGroupPassText(continuationReply)) {
-    appendGroupChatEntry(
-      context.group,
-      {
-        kind: 'member',
-        name: member.name,
-        ...(member.remoteSource
-          ? {
-              source: member.connectionLabel || member.connectionId
-            }
-          : {})
-      },
-      continuationReply,
-      thread
-    )
-    updateGroupChat(context.group, (r: GroupChatRoom) => {
-      r.watermarks[markKey] = r.log.length
-
-      return r
-    })
-
-    return true
-  }
-
-  return false
+function authoredByMember(entry: GroupMessage, member: GroupMember): boolean {
+  return entry?.from?.kind === 'member' && isGroupChatSelf(entry.from, member)
 }
 
 export async function runGroupContinuationMembers(
@@ -365,7 +329,7 @@ export async function runGroupContinuationMembers(
           break
         }
 
-        const result = await runGroupContinuationMember(context, member)
+        const result = await runGroupRoundMember(context, member)
 
         if (result === null) {
           return null

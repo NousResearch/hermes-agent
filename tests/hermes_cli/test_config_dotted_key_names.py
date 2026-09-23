@@ -29,8 +29,6 @@ import yaml
 from hermes_cli.config import (
     _MISSING,
     _get_nested,
-    _greedy_literal_match,
-    _phantom_sibling,
     _set_nested,
     _unset_nested,
     config_command,
@@ -73,22 +71,6 @@ PROVIDER_CONFIG = {
 # ---------------------------------------------------------------------------
 # Unit level: helpers
 # ---------------------------------------------------------------------------
-
-class TestGreedyLiteralMatch:
-    def test_longest_match_wins(self):
-        d = {"grok-4.6": 1, "grok-4": 2}
-        assert _greedy_literal_match(d, ["grok-4", "6"]) == ("grok-4.6", 2)
-
-    def test_single_segment_fallback(self):
-        assert _greedy_literal_match({"a": 1}, ["a", "b"]) == ("a", 1)
-
-    def test_no_match(self):
-        assert _greedy_literal_match({"a": 1}, ["x", "y"]) is None
-
-    def test_phantom_sibling_detection(self):
-        assert _phantom_sibling({"grok-4.6": {}}, "grok-4") == "grok-4.6"
-        assert _phantom_sibling({"grok-4.6": {}}, "other") is None
-        assert _phantom_sibling({"plain": {}}, "plain") is None
 
 
 # ---------------------------------------------------------------------------
@@ -342,18 +324,3 @@ class TestBackwardCompatibility:
         cfg = {"custom_providers": [{"name": "p1"}]}
         _set_nested(cfg, "custom_providers.0.name", "p2")
         assert cfg["custom_providers"][0]["name"] == "p2"
-
-    def test_deep_creation_without_siblings_unchanged(self, _isolated_hermes_home):
-        set_config_value("agent.max_iterations", "50")
-        saved = _read_config(_isolated_hermes_home)
-        assert saved["agent"]["max_iterations"] == 50
-
-    def test_greedy_never_beats_exact_nested_structure(self):
-        """A literal dotted key never shadows the plain-split path when the
-        plain path ALSO fully exists — longest literal match only consumes
-        segments when the literal dotted key is present; nested dicts still
-        resolve segment-by-segment."""
-        cfg = {"a": {"b": {"c": 1}}}
-        assert _get_nested(cfg, "a.b.c") == 1
-        _set_nested(cfg, "a.b.c", 2)
-        assert cfg == {"a": {"b": {"c": 2}}}

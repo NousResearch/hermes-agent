@@ -37,11 +37,34 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
-    harnesses stub the ``tools`` package)."""
-    from tools.environments.local import hermes_subprocess_env
+    harnesses stub the ``tools`` package). The passthrough keys are re-added from the active
+    profile's secret scope, never ``os.environ``: under multiplex that holds the LAUNCH profile's
+    Browserbase/Firecrawl keys, and a served profile's browser must run on its own (or none)."""
+    from agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
+    from tools.environments.local import served_profile_child_env
 
-    env = hermes_subprocess_env(inherit_credentials=False)
-    env.update({k: os.environ[k] for k in _BROWSER_PASSTHROUGH_KEYS if k in os.environ})
+    from agent.proxy_bypass import add_loopback_no_proxy
+
+    env = served_profile_child_env(inherit_credentials=False)
+    # A routed profile (multiplex, or a Desktop/dashboard backend serving ``?profile=B`` with the
+    # flag off) resolves from its bound scope only — a miss is "no key", never the launch profile's
+    # ``os.environ`` value that ``get_secret`` falls through to while multiplexing is inactive.
+    routed = serves_routed_profile()
+    scope = (current_secret_scope() or {}) if routed else None
+    for key in _BROWSER_PASSTHROUGH_KEYS:
+        value = scope.get(key) if routed else get_secret(key)
+        if value is not None:
+            env[key] = value
+    # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
+    # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
+    # Headed Chromium opens on this profile's Bot Desktop when one is running (human can take it over). Pure: this
+    # builder also serves the npx cache warmer, the Chromium auto-installer and the Lightpanda engine, none of which
+    # may bring a screen up — the auto-start hook lives at the headed Chromium spawn sites (browser_tool_session).
+    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
+    env = add_loopback_no_proxy(_bot_desktop_env(env))
+    # Chrome puts its SingletonSocket under $TMPDIR; a deep scratch dir overflows the AF_UNIX
+    # path cap and Chrome dies at startup ("Socket path too long"), so browsers get the short root.
+    env["TMPDIR"] = _socket_safe_tmpdir()
     return env
 
 
@@ -52,11 +75,13 @@ except Exception:
 
 try:
     from tools.url_safety import (
+        _is_declared_fake_ip,
         is_safe_url as _is_safe_url,
         is_always_blocked_url as _is_always_blocked_url,
         normalize_url_for_request as _normalize_url_for_request,
     )
 except Exception:
+    _is_declared_fake_ip = lambda ip: False  # noqa: E731 — no declaration known: keep the private verdict
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
     _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
@@ -248,7 +273,9 @@ _PRIVATE_HOST_SUFFIXES = (".localhost", ".local", ".lan", ".internal")
 def _url_is_private(url: str) -> bool:
     """True when the URL's host is (or resolves to) a private/LAN/loopback/CGNAT address.
     Routing oracle only: DNS failures are NOT private (the configured backend surfaces the
-    error); obvious names short-circuit the DNS hop."""
+    error); obvious names short-circuit the DNS hop. A local proxy's declared fake-ip sentinel
+    (``security.fake_ip_ranges``) is not private: the name is public, the cloud browser resolves
+    it itself, so routing it to the local sidecar would send every URL local on such a host."""
     import ipaddress
     import socket
     from urllib.parse import urlparse
@@ -258,6 +285,8 @@ def _url_is_private(url: str) -> bool:
             ip = ipaddress.ip_address(host)
         except ValueError:
             return None
+        if _is_declared_fake_ip(ip):
+            return False
         return ip.is_private or ip.is_loopback or ip.is_link_local or ip in ipaddress.ip_network("100.64.0.0/10")
 
     try:
@@ -331,9 +360,10 @@ def _last_session_key(task_id: str) -> str:
 
 
 def _socket_safe_tmpdir() -> str:
-    """Short temp dir for Unix sockets: macOS ``TMPDIR`` + ``agent-browser-hermes_…``
-    exceeds the 104-byte AF_UNIX limit (silent screenshot failures), so use /tmp there."""
-    return "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+    """Temp root short enough for the agent-browser socket dir and Chrome's SingletonSocket
+    (``hermes_constants.socket_safe_tmpdir``)."""
+    from hermes_constants import socket_safe_tmpdir
+    return socket_safe_tmpdir()
 
 
 # Active sessions keyed by "session key": the bare task_id, or f"{task_id}::local"
@@ -437,7 +467,7 @@ atexit.register(_lifecycle._stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer a lightweight retrieval tool when one is available (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer an available text-extraction or terminal-fetch tool; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -817,7 +847,9 @@ def _json_with_fallback(response: Dict[str, Any], result: Dict[str, Any]) -> str
 
 
 def _failed_response(result: Dict[str, Any], default_error: str) -> str:
-    return _json_with_fallback(_err(result.get("error", default_error)), result)
+    # ``code`` = machine-readable refusal (human_has_control), same shape as computer_use's.
+    extra = {"code": result["code"]} if result.get("code") else {}
+    return _json_with_fallback(_err(result.get("error", default_error), **extra), result)
 
 
 def _tool_response(result: Dict[str, Any], ok: Dict[str, Any], default_error: str) -> str:
@@ -1063,9 +1095,15 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
-    fast = _eval_supervisor_fast_path(effective_task_id, expression)
-    if fast is not None:
-        return fast
+    # The supervisor answers over its own WebSocket and never reaches _run_browser_command, so the Bot
+    # Desktop lease fence has to bracket it here too — otherwise the one command that reads arbitrary
+    # page state is the one a human's takeover does not stop. Same fence, same session identity.
+    fenced = _session.run_fenced(_active_sessions.get(effective_task_id) or {},
+                                 lambda: {"fast": _eval_supervisor_fast_path(effective_task_id, expression)})
+    if fenced.get("code") == "human_has_control":
+        return _dumps(fenced)
+    if fenced["fast"] is not None:
+        return fenced["fast"]
 
     result = _session._run_browser_command(effective_task_id, "eval", [expression])
     if not result.get("success"):
@@ -1137,11 +1175,7 @@ def _maybe_stop_recording(task_id: str):
             _recording_sessions.discard(task_id)
 
 
-_GET_IMAGES_JS = """JSON.stringify(
-        [...document.images].map(img => ({
-            src: img.src, alt: img.alt || '', width: img.naturalWidth, height: img.naturalHeight
-        })).filter(img => img.src && !img.src.startsWith('data:'))
-    )"""
+_GET_IMAGES_JS = "JSON.stringify([...document.images].map(img => ({src: img.src, alt: img.alt || '', width: img.naturalWidth, height: img.naturalHeight})).filter(img => img.src && !img.src.startsWith('data:')))"
 
 
 def browser_get_images(task_id: Optional[str] = None) -> str:

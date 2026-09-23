@@ -22,13 +22,14 @@ occurs.
 """
 from __future__ import annotations
 
-import asyncio
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
 import pytest
+
 
 from gateway.config import PlatformConfig
 from plugins.platforms.photon.adapter import PhotonAdapter
@@ -47,7 +48,8 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
 
 def _run_staleness_harness(script: str) -> Dict[str, Any]:
     harness = (
-        "import { classifyProbeRejection, shouldProbe, isZombieSuspect } "
+        "import { classifyProbeRejection, shouldProbe, isZombieSuspect, "
+        "createProbeMessageId } "
         f"from {json.dumps(_MODULE.as_uri())};\n"
         + script
     )
@@ -60,6 +62,20 @@ def _run_staleness_harness(script: str) -> Dict[str, Any]:
     )
     assert run.returncode == 0, run.stderr
     return json.loads(run.stdout)
+
+
+def test_probe_message_id_is_guid_shaped_and_unique() -> None:
+    out = _run_staleness_harness(
+        """
+        const first = createProbeMessageId();
+        const second = createProbeMessageId();
+        process.stdout.write(JSON.stringify({ first, second }));
+        """
+    )
+    guid_re = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    assert re.fullmatch(guid_re, out["first"])
+    assert re.fullmatch(guid_re, out["second"])
+    assert out["first"] != out["second"]
 
 
 def test_probe_rejection_classification_is_strict() -> None:
@@ -228,3 +244,5 @@ async def test_inconclusive_probes_never_accumulate_toward_respawn(
             adapter._probe_failures += 1
 
     assert adapter._probe_failures == 0
+
+

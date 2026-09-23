@@ -5,8 +5,8 @@ so each gateway user gets their own memory bucket instead of sharing a static on
 """
 
 import json
-import os
 from unittest.mock import MagicMock, patch
+
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
@@ -99,6 +99,49 @@ class TestMemoryManagerUserIdThreading:
         assert p2._init_kwargs.get("user_id") == "slack_U12345"
         assert p2._init_kwargs.get("platform") == "slack"
 
+    def test_session_title_provenance_and_cwd_reach_provider(self, tmp_path):
+        from run_agent import AIAgent
+
+        provider = RecordingProvider()
+        session_db = MagicMock()
+        session_db.get_session_title.return_value = "Generated title"
+        session_db.get_session_title_source.return_value = "llm"
+
+        with patch(
+            "model_tools.get_tool_definitions",
+            return_value=[],
+        ), patch(
+            "model_tools.check_toolset_requirements",
+            return_value={},
+        ), patch(
+            "agent.process_bootstrap.OpenAI",
+        ), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"memory": {"provider": "recording"}},
+        ), patch(
+            "plugins.memory.load_memory_provider",
+            return_value=provider,
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                platform="telegram",
+                session_id="session-with-title",
+                session_db=session_db,
+                gateway_session_key="agent:main:telegram:dm:42",
+                cwd=str(tmp_path),
+            )
+
+        assert provider._init_kwargs["session_title"] == "Generated title"
+        assert provider._init_kwargs["session_title_source"] == "llm"
+        assert (
+            provider._init_kwargs["gateway_session_key"]
+            == "agent:main:telegram:dm:42"
+        )
+        assert provider._init_kwargs["cwd"] == str(tmp_path)
+        agent.close()
 
 # ---------------------------------------------------------------------------
 # Mem0 provider user_id tests
@@ -259,23 +302,4 @@ class TestHonchoUserIdScoping:
 # ---------------------------------------------------------------------------
 
 
-class TestAIAgentUserIdPropagation:
-    """Verify AIAgent stores user_id and passes it to memory init kwargs."""
-
-    def test_user_id_stored_on_agent(self):
-        """AIAgent should store user_id as instance attribute."""
-        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
-            agent = object.__new__(AIAgent)
-            # Manually set the attribute as __init__ does
-            agent._user_id = "test_user_42"
-            assert agent._user_id == "test_user_42"
-
-    def test_user_id_none_by_default(self):
-        """AIAgent should have None user_id when not provided (CLI mode)."""
-        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
-            agent = object.__new__(AIAgent)
-            agent._user_id = None
-            assert agent._user_id is None
 

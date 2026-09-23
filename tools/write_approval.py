@@ -93,7 +93,10 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     for p in _pending_files(subsystem):
         try:
-            records.append(json.loads(p.read_text(encoding="utf-8")))
+            record = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                raise ValueError(f"expected a JSON object, got {type(record).__name__}")
+            records.append(record)
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
     records.sort(key=lambda r: r.get("created_at", 0))
@@ -106,7 +109,8 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     with suppress(Exception):
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
     return None
 
 
@@ -199,7 +203,9 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
         return None
     header = summary.strip() or "Save to memory?"
     try:
-        choice = callback(detail.strip() or header, f"Save to memory: {header}", allow_permanent=False)
+        from tools.approval_prompt import callback_accepts
+        extra = {"title": "Save to memory?"} if callback_accepts(callback, "title") else {}
+        choice = callback(detail.strip() or header, f"Save to memory: {header}", allow_permanent=False, **extra)
     except Exception as e:
         logger.error("Inline memory approval prompt failed: %s", e)
         return None

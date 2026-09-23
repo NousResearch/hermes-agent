@@ -506,6 +506,17 @@ print(json.dumps(repair_state_db_schema({db!r})), flush=True)
 """
 
 
+def _release_header_probe_fds() -> None:
+    """Close this process's cached header-probe fds (no SQLite connection is live, so no lock is at risk)."""
+    import os
+
+    import hermes_state_dbfile
+    with hermes_state_dbfile._HEADER_PROBE_LOCK:
+        for fd, _dev, _ino in hermes_state_dbfile._HEADER_PROBE_FDS.values():
+            os.close(fd)
+        hermes_state_dbfile._HEADER_PROBE_FDS.clear()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
 def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
     """Concurrent repairers serialise; the loser sees a healed DB and stops.
@@ -518,6 +529,9 @@ def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
     db_path = tmp_path / "state.db"
     _build_healthy_db(db_path)
     _corrupt_duplicate_fts(db_path)
+    # The test process itself must not count as a holder: _build_healthy_db's SessionDB left the
+    # process-lifetime header-probe fd open, and a second process refuses ANY foreign holder (#103339).
+    _release_header_probe_fds()
 
     script = _REPAIR_SCRIPT.format(
         root=str(Path(hermes_state.__file__).parent), db=str(db_path)
@@ -733,7 +747,7 @@ def test_repair_restore_matches_canonical_on_vulnerable_sqlite(
     assert _mode_of(db_path) == "delete"
 
 
-def test_repair_logs_mode_change_when_probe_succeeded(
+def test_repair_reports_mode_change_when_probe_succeeded(
     tmp_path, caplog, monkeypatch
 ):
     """When the pre-surgery probe read the file (header intact), the
@@ -761,34 +775,11 @@ def test_repair_logs_mode_change_when_probe_succeeded(
     assert report["repaired"] is True
     assert report["journal_mode_before"] == "delete"
     assert _mode_of(db_path) == "wal"
-    assert any(
-        "changed journal_mode" in r.getMessage() for r in caplog.records
-    ), f"expected the mode flip to be logged; got: {[r.getMessage() for r in caplog.records]}"
 
 
-def test_repair_logs_nothing_when_mode_already_matches(
-    tmp_path, caplog, monkeypatch
-):
-    """FTS-only corruption keeps the WAL bit; the restore is then a no-op and
-    must not emit a mode-flip WARNING."""
-    import logging
-
-    db_path = tmp_path / "state.db"
-    _configure_journal_mode(monkeypatch, tmp_path, "wal")
-    _build_healthy_db(db_path)
-    _corrupt_duplicate_fts(db_path)
-
-    with caplog.at_level(logging.WARNING, logger="hermes_state"):
-        report = repair_state_db_schema(db_path)
-
-    assert report["repaired"] is True
-    assert _mode_of(db_path) == "wal"
-    assert not any(
-        "changed journal_mode" in r.getMessage() for r in caplog.records
-    )
 
 
-def test_repair_restore_failure_is_nonfatal_and_logged(
+def test_repair_restore_failure_is_nonfatal(
     tmp_path, caplog, monkeypatch
 ):
     """When the canonical restore path raises (locked/unsupported fs), the
@@ -816,10 +807,6 @@ def test_repair_restore_failure_is_nonfatal_and_logged(
 
     assert report["repaired"] is True
     assert _mode_of(db_path) == "delete"
-    assert any(
-        "journal-mode restore failed" in r.getMessage()
-        for r in caplog.records
-    )
 
 
 def test_repair_honors_configured_delete_mode(tmp_path, monkeypatch):

@@ -1,12 +1,14 @@
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import type { DesktopConnectionsRegistry } from '@/global'
 
 import { deferred } from '../test/deferred'
 
 const $activeGatewayProfile = atom('default')
 const $newChatProfile = atom<null | string>(null)
+const $freshSessionRequest = atom(0)
 const $showAllProfiles = atom(false)
 
 const $connection = atom<null | {
@@ -58,7 +60,7 @@ const endGatewaySwitch = vi.fn((token?: number) => {
 
 const recoverActiveSourceAfterFailedGatewaySwitch = vi.fn()
 
-vi.mock('@/store/session', () => ({ $connection }))
+vi.mock('@/store/session', () => ({ $connection, $activeSessionId, $selectedStoredSessionId: atom(null) }))
 vi.mock('@/store/gateway-switch', () => ({
   $gatewaySwitching,
   beginGatewaySwitch,
@@ -68,6 +70,7 @@ vi.mock('@/store/gateway-switch', () => ({
 }))
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile,
+  $freshSessionRequest,
   $newChatProfile,
   $showAllProfiles,
   captureNewChatSource: vi.fn(),
@@ -101,6 +104,7 @@ const registry: DesktopConnectionsRegistry = {
 }
 
 const list = vi.fn(async () => registry)
+const api = vi.fn(async () => ({ profiles: [] }))
 const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...registry, lastUsed: id } }))
 
 beforeEach(() => {
@@ -122,7 +126,10 @@ beforeEach(() => {
     $connection.set({
       connectionId: connectionId ?? undefined,
       mode: connectionId === 'local' ? 'local' : 'remote',
-      profile,
+      // The primary local descriptor from startHermes() historically carried
+      // no profile key at all (see the switch-back regression test at the
+      // bottom of this file); every other route publishes its profile.
+      ...(connectionId === 'local' ? {} : { profile }),
       registryScoped: true
     })
   })
@@ -139,7 +146,15 @@ beforeEach(() => {
   $gatewaySwitching.set(false)
   list.mockClear()
   setLastUsed.mockClear()
-  vi.stubGlobal('window', { hermesDesktop: { connections: { list, setLastUsed } }, localStorage })
+  api.mockReset()
+  api.mockResolvedValue({ profiles: [] })
+  setApiRequestConnection(null)
+  setApiRequestProfile(null)
+  vi.stubGlobal('window', {
+    hermesDesktop: { api, connections: { list, setLastUsed } },
+    localStorage,
+    location: window.location
+  })
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -151,6 +166,24 @@ describe('connection registry cache', () => {
     expect(list).toHaveBeenCalledTimes(1)
     expect($connectionsRegistry.get()).toEqual(registry)
     expect($activeConnectionId.get()).toBeNull()
+
+    // A stuck IPC read must release the lifecycle's retry loop and preserve
+    // the last good cache, even if the timed-out snapshot eventually arrives.
+    vi.useFakeTimers()
+    const stuck = deferred<DesktopConnectionsRegistry>()
+    list.mockImplementationOnce(() => stuck.promise)
+
+    try {
+      const refresh = refreshConnectionsRegistry()
+      const rejected = expect(refresh).rejects.toThrow('Timed out reading the connection registry')
+      await vi.advanceTimersByTimeAsync(5_000)
+      await rejected
+      stuck.resolve({ ...registry, connections: [] })
+      await Promise.resolve()
+      expect($connectionsRegistry.get()).toEqual(registry)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('restores the last-used source once when that launch mode is enabled', async () => {
@@ -225,6 +258,7 @@ describe('selectConnection', () => {
 
     expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+    expect(api).not.toHaveBeenCalled()
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
     expect(wipeSessionListsForGatewaySwitch).toHaveBeenCalledTimes(1)
@@ -250,6 +284,7 @@ describe('selectConnection', () => {
     await selectConnection('local')
 
     expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'default', expect.anything())
+    expect(api).not.toHaveBeenCalled()
   })
 
   it('lets a later source choice win while an earlier dial is still pending', async () => {
@@ -360,6 +395,72 @@ describe('selectConnection', () => {
     expect(setLastUsed).not.toHaveBeenCalled()
     expect($connection.get()?.connectionId).toBe('local')
   })
+
+  it.each(['remote', 'cloud'] as const)(
+    'requires protected REST auth on a warm %s socket before discarding the current workspace',
+    async kind => {
+      const oauthRegistry: DesktopConnectionsRegistry = {
+        ...registry,
+        connections: registry.connections.map(connection =>
+          connection.id === 'homelab' ? { ...connection, kind, authMode: 'oauth' } : connection
+        )
+      }
+
+      setConnectionsRegistry(oauthRegistry)
+      const source = { connectionId: 'work-vps', mode: 'remote' as const, profile: 'research', registryScoped: true }
+      $connection.set(source)
+      $activeGatewayProfile.set('research')
+      $activeSessionId.set('source-runtime')
+      $newChatProfile.set('research')
+      $showAllProfiles.set(true)
+      setApiRequestConnection('work-vps')
+      setApiRequestProfile('research')
+      setLastUsed.mockImplementationOnce(async id => ({ ok: true, registry: { ...oauthRegistry, lastUsed: id } }))
+
+      // A retained socket already passed its handshake; opening it succeeds
+      // even though fresh REST requests no longer authenticate. Connectivity
+      // errors must also preserve the workspace, without being called sign-in.
+      const expired = new Error(kind === 'remote' ? '401 Unauthorized: no_cookie' : '403 Forbidden: session expired')
+      const offline = new Error('net::ERR_CONNECTION_RESET')
+      api.mockRejectedValueOnce(expired).mockRejectedValueOnce(offline)
+
+      for (const error of [expired, offline]) {
+        await expect(selectConnection('homelab', { profile: 'scout' })).rejects.toBe(error)
+        expect($connection.get()).toBe(source)
+        expect($activeConnectionId.get()).toBe('work-vps')
+        expect($activeGatewayProfile.get()).toBe('research')
+        expect($activeSessionId.get()).toBe('source-runtime')
+        expect($newChatProfile.get()).toBe('research')
+        expect($showAllProfiles.get()).toBe(true)
+        expect($pendingConnectionId.get()).toBeNull()
+        expect($gatewaySwitching.get()).toBe(false)
+        expect(ensureGatewayAgent).not.toHaveBeenCalled()
+        expect(beginGatewaySwitch).not.toHaveBeenCalled()
+        expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
+        expect(requestFreshSession).not.toHaveBeenCalled()
+        expect(refreshActiveProfile).not.toHaveBeenCalled()
+        expect(setLastUsed).not.toHaveBeenCalled()
+      }
+
+      // Auth is refreshed externally; the very next click must work with the
+      // same module and warm socket, without a cached failed readiness result.
+      await selectConnection('homelab', { profile: 'scout' })
+      expect(api.mock.calls.map(call => (call as unknown[])[0])).toEqual(
+        Array.from({ length: 3 }, () =>
+          expect.objectContaining({ connectionId: 'homelab', profile: 'scout', path: '/api/profiles' })
+        )
+      )
+      expect(openGatewayAgent.mock.calls).toEqual(Array.from({ length: 3 }, () => ['homelab', 'scout']))
+      expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+      expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
+      expect(api.mock.invocationCallOrder[2]).toBeLessThan(beginGatewaySwitch.mock.invocationCallOrder[0])
+      expect($activeConnectionId.get()).toBe('homelab')
+      expect($newChatProfile.get()).toBe('scout')
+      expect($showAllProfiles.get()).toBe(false)
+      expect($activeSessionId.get()).toBeNull()
+      expect(setLastUsed).toHaveBeenCalledWith('homelab')
+    }
+  )
 
   it('an activation that does not land after the wipe lowers the barrier and repaints the still-active source', async () => {
     setConnectionsRegistry(registry)
@@ -812,6 +913,31 @@ describe('selectConnection', () => {
 
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
     expect($showAllProfiles.get()).toBe(false)
+  })
+
+  it('restores the last-used profile on switch-back even when the primary local descriptor is profile-less', async () => {
+    // The pair is remembered while the primary local descriptor is honest
+    // about its profile (boot publication).
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local', profile: 'mac', registryScoped: true })
+    $activeGatewayProfile.set('mac')
+
+    expect(JSON.parse(localStorage.getItem('hermes.desktop.lastProfileByConnection') || '{}')).toEqual({
+      local: 'mac'
+    })
+
+    // A later resync republishes a profile-less primary descriptor (the
+    // startHermes shape). The remembered pair is the authority for "what was
+    // last used here" — switching away and back must still restore 'mac',
+    // and the commit must not die in targetIsActive() on the descriptor gap.
+    await selectConnection('homelab')
+    expect(ensureGatewayAgent).toHaveBeenLastCalledWith('homelab', 'default', expect.anything())
+
+    await selectConnection('local')
+
+    expect(openGatewayAgent).toHaveBeenLastCalledWith('local', 'mac')
+    expect(ensureGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.anything())
+    expect($newChatProfile.get()).toBe('mac')
   })
 
   it('never re-homes a live connection the registry cannot name', async () => {

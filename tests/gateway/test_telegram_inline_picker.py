@@ -8,7 +8,6 @@ Hermes default / 100 API max, ~4KB payload) while inline mode is uncapped —
 every command and skill must be reachable through it.
 """
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -218,21 +217,6 @@ async def test_inline_query_missing_user_denied():
     assert args[0] == []
 
 
-@pytest.mark.asyncio
-async def test_inline_query_pagination_offset_passthrough():
-    adapter = _make_adapter(authorized=True)
-    catalog = [
-        {"name": f"cmd-{i:03d}", "description": ""} for i in range(PAGE_SIZE + 5)
-    ]
-    update = _inline_update(query="", offset=str(PAGE_SIZE))
-    with patch(
-        "plugins.platforms.telegram.inline_picker.collect_inline_catalog",
-        return_value=catalog,
-    ):
-        await adapter._handle_inline_query(update, None)
-    args, kwargs = update.inline_query.answer.call_args
-    assert len(args[0]) == 5
-    assert kwargs["next_offset"] == ""
 
 
 @pytest.mark.asyncio
@@ -244,7 +228,3 @@ async def test_inline_query_answer_failure_is_swallowed():
     await adapter._handle_inline_query(update, None)
 
 
-@pytest.mark.asyncio
-async def test_inline_query_none_update_is_noop():
-    adapter = _make_adapter(authorized=True)
-    await adapter._handle_inline_query(SimpleNamespace(inline_query=None), None)

@@ -134,12 +134,12 @@ def describe_holder(holder: UpdateHolder) -> str:
     minutes, seconds = divmod(int(max(holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
     return (
-        f"✗ Another Hermes update is already running (PID {holder.pid}, "
-        f"started {elapsed} ago).\n"
+        f"✗ Another Hermes update is already running (started {elapsed} ago, "
+        f"process {holder.pid}).\n"
         "\n"
-        "  Two updates mutating the same checkout corrupt it: one rewrites\n"
-        "  source while the other is mid-install. Wait for it to finish, or\n"
-        "  close the window/dashboard tab that started it, then retry."
+        "  Running two at once would corrupt the install. Wait for it to finish\n"
+        "  (watch `hermes logs`), or close the Desktop/dashboard window that\n"
+        "  started it, then run `hermes update` again."
     )
 
 
@@ -165,7 +165,12 @@ class UpdateLock:
         release. The ancestry path covers staged updaters older than the env-var export.
         """
         existing = read_live_update(path=self.path)
-        if existing is not None:
+        # A live claim naming our own pid is a killed update's marker whose pid this retry
+        # inherited (containers restart pid numbering): no other live process has our pid, and
+        # nothing pre-writes a marker for `hermes update` (it always runs under a parent's claim).
+        # It is a new attempt, so it is claimed fresh like a dead holder's. Keeping the old
+        # started_at would let the ceiling expire mid-run and admit a second updater.
+        if existing is not None and existing.pid != os.getpid():
             if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
                 return True
             self.holder = existing

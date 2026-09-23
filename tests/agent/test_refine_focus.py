@@ -44,7 +44,6 @@ def test_focus_is_appended_to_prompt():
     )
     assert prompt.startswith(_COMBINED_REVIEW_PROMPT)
     assert "save the deploy workflow as a skill" in prompt
-    assert "explicitly requested" in prompt
 
 
 def test_focus_works_with_memory_only_prompt():

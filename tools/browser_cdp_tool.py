@@ -96,8 +96,9 @@ def _run_async(coro):
         loop = None
     if loop and loop.is_running():
         import concurrent.futures
+        import contextvars
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
+            return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
     return asyncio.run(coro)
 
 
@@ -169,10 +170,11 @@ async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id:
     """Make a single CDP call. With ``target_id``, ``Target.attachToTarget(flatten=True)`` multiplexes a
     page-level session over the browser-level WebSocket; without it ``method`` runs at browser level."""
     assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
+    from agent.proxy_bypass import loopback_connect_kwargs
     # max_size=None: CDP responses (e.g. DOM.getDocument) can be large; ping_interval=None: CDP
     # servers don't expect pings.
     async with websockets.connect(ws_url, max_size=None, open_timeout=timeout, close_timeout=5,
-                                  ping_interval=None) as ws:
+                                  ping_interval=None, **loopback_connect_kwargs(ws_url)) as ws:
         next_id = 1
 
         async def _send(req: Dict[str, Any], what: str) -> Dict[str, Any]:
@@ -329,8 +331,9 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "config.yaml. Not currently wired up for cloud backends (Browserbase, Browser Use, Firecrawl) — "
         "those expose CDP per session but live-session routing is a follow-up. Camofox is REST-only and "
         "will never support CDP. If the tool is in your toolset at all, a CDP endpoint is already reachable.\n\n"
-        f"**CDP method reference:** {CDP_DOCS_URL} — use web_extract on a method's URL "
-        "(e.g. '/tot/Page/#method-handleJavaScriptDialog') to look up parameters and return shape.\n\n"
+        f"**CDP method reference:** {CDP_DOCS_URL} — use an available documentation lookup or extraction "
+        "tool on a method's URL (e.g. '/tot/Page/#method-handleJavaScriptDialog') to look up parameters and "
+        "return shape.\n\n"
         "**Common patterns:**\n"
         "- List tabs: method='Target.getTargets', params={}\n"
         "- Handle a native JS dialog: method='Page.handleJavaScriptDialog', "

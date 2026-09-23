@@ -11,7 +11,7 @@ class _FakeDB:
     def resolve_session_id(self, session_id):
         return "sess-123"
 
-    def export_session(self, session_id):
+    def export_session(self, session_id, include_compacted=False):
         return {"id": "sess-123", "source": "cli", "messages": [{"role": "user", "content": "hi"}]}
 
     def close(self):
@@ -19,7 +19,7 @@ class _FakeDB:
 
 
 def _export(monkeypatch, *argv):
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: _FakeDB())
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: _FakeDB())
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "export", "--session-id", "sess", *argv])
     main_mod.main()
 

@@ -9,9 +9,10 @@ editing drives.json cannot widen them. Change them here (in the repo) and redepl
 MIN_WAKE_INTERVAL_H = 0.5
 MAX_WAKE_INTERVAL_H = 24.0
 
-# Daily token budget for autonomous (cron) runs, counted from cron/usage_audit.jsonl
-# over the current UTC day. When exceeded the pulse forces a sleep.
-DAILY_TOKEN_BUDGET = 250_000
+# Daily token budget for everything Wintermute spends (conversations and wakes), counted
+# over the current UTC day. When exceeded, autonomous wakes stop (forced sleep); he still
+# answers messages, and knows he is spent.
+DAILY_TOKEN_BUDGET = 600_000
 BUDGET_SLEEP_H = 6.0
 
 # Active-wait window after an outreach (minutes).

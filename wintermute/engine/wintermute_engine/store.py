@@ -63,8 +63,8 @@ def events_path() -> Path:
     return state_dir() / "events.jsonl"
 
 
-def usage_audit_path() -> Path:
-    return hermes_home() / "cron" / "usage_audit.jsonl"
+def usage_path() -> Path:
+    return state_dir() / "usage.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -291,14 +291,29 @@ def events_since(since: Optional[datetime], limit: int = 12) -> List[Dict[str, A
 
 
 # ---------------------------------------------------------------------------
-# Token usage (cron runs only)
+# Token usage: every model call Wintermute makes (conversations, wakes, Hermes' own
+# auxiliary calls), recorded by the plugin's post_api_request / post_auxiliary_call hooks.
 # ---------------------------------------------------------------------------
 
+def record_usage(tokens: int, source: str) -> None:
+    if _dry_run or tokens <= 0:
+        return
+    path = usage_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        if path.exists() and path.stat().st_size > EVENTS_MAX_BYTES:
+            os.replace(path, path.with_suffix(".jsonl.1"))
+    record = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+              "tokens": int(tokens), "src": source}
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
 def tokens_used_on(day_utc: str) -> int:
-    """Sum ``total_tokens`` of every cron fire recorded on ``day_utc`` (YYYY-MM-DD, UTC)."""
+    """Sum of recorded tokens on ``day_utc`` (YYYY-MM-DD, UTC)."""
     total = 0
     try:
-        with open(usage_audit_path(), encoding="utf-8") as fh:
+        with open(usage_path(), encoding="utf-8") as fh:
             for line in fh:
                 if day_utc not in line[:40]:
                     continue
@@ -307,7 +322,11 @@ def tokens_used_on(day_utc: str) -> int:
                 except ValueError:
                     continue
                 if str(record.get("ts", "")).startswith(day_utc):
-                    total += int(record.get("total_tokens") or 0)
+                    total += int(record.get("tokens") or 0)
     except OSError:
         return 0
     return total
+
+
+def tokens_used_today() -> int:
+    return tokens_used_on(datetime.now(timezone.utc).date().isoformat())

@@ -92,9 +92,8 @@ def test_minimum_interval_holds_even_for_a_closed_reply_window(home):
 
 def test_budget_exhaustion_forces_sleep(home):
     pulse.tick(T0)
-    audit = home / "cron" / "usage_audit.jsonl"
-    audit.parent.mkdir()
-    audit.write_text(json.dumps({"ts": "2026-09-23T13:00:00.000Z", "total_tokens": limits.DAILY_TOKEN_BUDGET}) + "\n")
+    store.usage_path().write_text(json.dumps(
+        {"ts": "2026-09-23T13:00:00+00:00", "tokens": limits.DAILY_TOKEN_BUDGET, "src": "telegram"}) + "\n")
 
     woke, out = pulse.tick(T0 + timedelta(hours=5))
     assert not woke and _gate_says_sleep(out)
@@ -378,3 +377,18 @@ def test_plugin_send_reaches_a_peer_and_opens_a_window(plugin, monkeypatch):
                         lambda args, **_: json.dumps({"success": False, "error": "chat not found"}))
     failed = json.loads(plugin.tools["wintermute_send"]({"peer": "telegram:43", "text": "x"}))
     assert not failed["success"] and "telegram:43" not in _peers()
+
+
+def test_every_model_call_counts_and_credits_show(plugin):
+    plugin.hooks["post_api_request"](usage={"total_tokens": 1200}, platform="telegram")
+    plugin.hooks["post_api_request"](usage={"total_tokens": 800}, platform="cron")
+    plugin.hooks["post_auxiliary_call"](usage={"total_tokens": 50}, aux_task="compression")
+    plugin.hooks["post_auxiliary_call"](usage=None, aux_task="title")
+    assert store.tokens_used_today() == 2050
+
+    with store.locked_state() as (drives, _):
+        drives["meta"]["credits"] = {"total": 5.0, "used": 0.46, "remaining": 4.54}
+    context = plugin.hooks["pre_llm_call"](
+        session_id="s9", user_message="hi", platform="telegram", sender_id="7375758021")["context"]
+    assert f"Token budget remaining today: {limits.DAILY_TOKEN_BUDGET - 2050:,}" in context
+    assert "Credits: $4.54 left of $5.00" in context

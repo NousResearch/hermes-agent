@@ -163,9 +163,12 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
 ## Réglages
 
 - **Budget tokens** : `DAILY_TOKEN_BUDGET` dans `engine/wintermute_engine/limits.py`,
-  250 000 par jour. Mesuré avec `hermes prompt-size` : ~9–10 k tokens par appel API, et un
-  éveil fait souvent 2–4 appels, soit environ 6 à 10 éveils par jour. Seuls les runs cron
-  comptent ; les conversations Telegram ne sont pas plafonnées.
+  600 000 par jour (UTC). **Tout compte** : conversations, éveils, et les appels secondaires
+  de Hermes (compression, titres), relevés par le plugin après chaque appel au modèle dans
+  `~/.hermes/wintermute/usage.jsonl`. Épuisé → plus d'éveils autonomes (sommeil forcé) ; il
+  répond encore aux messages, et le sait (« spent » dans son état).
+- **Crédits OpenRouter** : le plugin lit le solde du compte (au plus toutes les 10 min, en
+  arrière-plan) et l'affiche dans son état : « Credits: $4.54 left of $5.00 ».
 - **Outils du pulse** : `WINTERMUTE_TOOLSETS=wintermute,memory,web bash install.sh`. Moins
   d'outils = moins de tokens par éveil.
 - **Taille de MEMORY.md** : 8 000 caractères (réglé par `install.sh` ; 2 200 par défaut dans

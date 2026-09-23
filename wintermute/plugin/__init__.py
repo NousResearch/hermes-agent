@@ -8,6 +8,9 @@ Hooks
                  Pulse turn: a non-silent answer is an outreach -> open a reply window.
   post_tool_call observed behaviour relieves drives (exploring feeds hunger, making
                  things feeds expression, any action eases restlessness).
+  post_api_request / post_auxiliary_call
+                 every model call is counted against the daily token budget; the
+                 OpenRouter credit balance is refreshed in the background.
 
 Tools (toolset "wintermute")
   wintermute_send             write to anyone, now (opens a reply window)
@@ -101,6 +104,7 @@ def _chat_context(drives: Dict[str, Any], peers: Dict[str, Any], key: str,
         f"[INTERNAL STATE — {store.iso(ts)} — private; the person does not see this block]",
         "DRIVES " + drive_line,
         "MODULATORS " + mod_line,
+        "BODY " + render.body_line(drives, store.tokens_used_today()),
         "THIS PEER",
     ]
     lines += render.peer_lines(drives, key, peers[key], ts)
@@ -191,6 +195,82 @@ def _on_post_tool_call(tool_name: str = "", status: str = "", **_: Any) -> None:
             physics.apply_event(drives, event)
     except Exception:
         logger.exception("wintermute: post_tool_call failed")
+
+
+def _usage_tokens(usage: Any) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    try:
+        return int(usage.get("total_tokens") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _on_post_api_request(usage: Any = None, platform: str = "", **_: Any) -> None:
+    try:
+        store.record_usage(_usage_tokens(usage), (platform or "chat").lower())
+        _maybe_refresh_credits()
+    except Exception:
+        logger.exception("wintermute: post_api_request failed")
+
+
+def _on_post_auxiliary_call(usage: Any = None, aux_task: str = "", **_: Any) -> None:
+    try:
+        store.record_usage(_usage_tokens(usage), f"aux:{aux_task or '?'}")
+    except Exception:
+        logger.exception("wintermute: post_auxiliary_call failed")
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter credits (what the account has left), refreshed at most every 10 minutes
+# in a background thread so no turn ever waits on it.
+# ---------------------------------------------------------------------------
+
+CREDITS_URL = "https://openrouter.ai/api/v1/credits"
+CREDITS_REFRESH_S = 600
+_credits_checked = 0.0
+
+
+def _openrouter_key() -> str:
+    try:
+        from agent.secret_scope import get_secret
+        key = get_secret("OPENROUTER_API_KEY")
+        if key:
+            return str(key)
+    except Exception:
+        pass
+    return os.environ.get("OPENROUTER_API_KEY", "")
+
+
+def _fetch_credits() -> None:
+    import urllib.request
+    key = _openrouter_key()
+    if not key:
+        return
+    request = urllib.request.Request(CREDITS_URL, headers={"Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8")).get("data") or {}
+        total = float(data.get("total_credits") or 0)
+        used = float(data.get("total_usage") or 0)
+    except Exception as exc:
+        logger.debug("wintermute: credits fetch failed: %s", exc)
+        return
+    with store.locked_state() as (drives, _peers):
+        drives["meta"]["credits"] = {
+            "total": round(total, 4), "used": round(used, 4),
+            "remaining": round(total - used, 4), "checked_at": store.iso(store.now()),
+        }
+
+
+def _maybe_refresh_credits() -> None:
+    global _credits_checked
+    import time
+    with _lock:
+        if time.monotonic() - _credits_checked < CREDITS_REFRESH_S and _credits_checked:
+            return
+        _credits_checked = time.monotonic()
+    threading.Thread(target=_fetch_credits, name="wintermute-credits", daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +452,8 @@ def register(ctx) -> None:
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
+    ctx.register_hook("post_api_request", _on_post_api_request)
+    ctx.register_hook("post_auxiliary_call", _on_post_auxiliary_call)
     for schema, handler in (
         (SEND, _send), (SET_WAKE, _set_wake), (AWAIT_REPLY, _await_reply),
         (NOTE_PEER, _note_peer), (MARK_SIGNIFICANT, _mark_significant),

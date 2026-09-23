@@ -188,9 +188,23 @@ def events_block(events: Iterable[Dict[str, Any]]) -> List[str]:
     return ["[SINCE LAST PULSE]"] + lines if lines else []
 
 
+def body_line(state: Dict[str, Any], used_today: int) -> str:
+    """What the body has left: today's token budget, and the account's credits if known."""
+    remaining = max(0, limits.DAILY_TOKEN_BUDGET - int(used_today))
+    line = f"Token budget remaining today: {remaining:,}/{limits.DAILY_TOKEN_BUDGET:,}"
+    if remaining == 0:
+        line += " (spent: no autonomous wakes until it renews)"
+    credits = state.get("meta", {}).get("credits")
+    if isinstance(credits, dict) and credits.get("remaining") is not None:
+        line += f" | Credits: ${float(credits['remaining']):.2f} left"
+        if credits.get("total"):
+            line += f" of ${float(credits['total']):.2f}"
+    return line
+
+
 def header(state: Dict[str, Any], ts: datetime, extra: str = "") -> List[str]:
     meta = state.get("meta", {})
     interval = limits.clamp_wake_interval(meta.get("next_pulse_in_hours", 4))
-    remaining = max(0, limits.DAILY_TOKEN_BUDGET - int(meta.get("tokens_used_today", 0) or 0))
-    line = f"Next wake in: {interval:.1f}h | Token budget remaining today: {remaining:,}"
+    line = (f"Next wake in: {interval:.1f}h | "
+            + body_line(state, int(meta.get("tokens_used_today", 0) or 0)))
     return [f"[INTERNAL STATE — {store.iso(ts)}]", line + (f" | {extra}" if extra else "")]

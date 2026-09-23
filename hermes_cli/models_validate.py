@@ -299,6 +299,11 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
 
     requested = (model_name or "").strip()
     normalized = _m.normalize_provider(provider)
+    # copilot-acp's only static "model" is the provider-default sentinel (the ACP client treats the
+    # id "copilot-acp" as "use the session default"). Its real catalog is discovered live from the
+    # ACP subprocess, so there is no offline list to judge against — stay permissive here.
+    if normalized == "copilot-acp":
+        return None
     catalog = list(_m._PROVIDER_MODELS.get(normalized, ()))
     if not requested or not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
         return None

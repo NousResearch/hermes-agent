@@ -52,16 +52,52 @@ class TestSentenceChunker:
         # 。！？ come with no trailing space, so the English "terminator +
         # whitespace" rule never fired and a whole Chinese reply synthesized
         # as one block (#78477). The terminator stays attached to its sentence.
-        c = ts.SentenceChunker(min_len=4)
+        c = ts.SentenceChunker(cjk_min_len=4)
         assert c.feed("你好世界。再见朋友！") == ["你好世界。", "再见朋友！"]
         assert c.flush() == []
 
 
     def test_cjk_ellipsis_run_is_a_single_boundary(self):
         # A run of ellipsis chars (……) is one boundary, kept with the sentence.
-        c = ts.SentenceChunker(min_len=3)
+        c = ts.SentenceChunker(cjk_min_len=3)
         assert c.feed("怎么办……好的？") == ["怎么办……", "好的？"]
         assert c.flush() == []
+
+
+    def test_short_cjk_sentence_cuts_at_the_cjk_floor(self):
+        # A complete 8-char Chinese sentence is already done, but the 20-char
+        # Latin floor would merge it forward and delay speech by a whole clause
+        # (#78477). The per-head CJK floor (default 6) lets it cut now, so both
+        # short sentences are spoken as they arrive instead of as one late blob.
+        c = ts.SentenceChunker()  # defaults: min_len=20, cjk_min_len=6
+        assert c.feed("我先看一下情况。然后再告诉你结果。") == [
+            "我先看一下情况。",
+            "然后再告诉你结果。",
+        ]
+        assert c.flush() == []
+
+
+    def test_tiny_cjk_fragment_below_the_floor_still_merges(self):
+        # Below the CJK floor a fragment still rides along with the next
+        # sentence, so "好。" is not synthesized as a lone 2-char clip.
+        c = ts.SentenceChunker()  # cjk_min_len=6
+        assert c.feed("好。") == []
+        assert c.feed("我这就帮你查一下。") == ["好。我这就帮你查一下。"]
+
+
+    def test_short_latin_fragment_still_uses_the_latin_floor(self):
+        # A CJK-free head keeps the Latin floor: a short English clause stays
+        # merged until the 20-char floor is met (unchanged behavior).
+        c = ts.SentenceChunker()  # min_len=20
+        assert c.feed("Ok. ") == []
+        assert c.feed("Here is the full detailed answer for you. ") == [
+            "Ok. Here is the full detailed answer for you. "
+        ]
+
+
+    def test_cjk_floor_is_overridable(self):
+        c = ts.SentenceChunker(cjk_min_len=3)
+        assert c.feed("好的。") == ["好的。"]
 
 
 # ── Interruption latch ───────────────────────────────────────────────────

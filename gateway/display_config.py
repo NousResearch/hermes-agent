@@ -78,6 +78,17 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "api_server": {**_TIER_HIGH, "tool_preview_length": 0},
 }
 
+def agent_display_name() -> str:
+    """``display.agent_name``: the name gateway notices use for the agent (default "Hermes")."""
+    try:
+        from gateway.run import _load_gateway_config
+        display = (_load_gateway_config() or {}).get("display") or {}
+        name = str(display.get("agent_name") or "").strip() if isinstance(display, dict) else ""
+    except Exception:
+        name = ""
+    return name or "Hermes"
+
+
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 

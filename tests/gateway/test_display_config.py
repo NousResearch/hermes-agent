@@ -378,3 +378,19 @@ class TestAllowSilentReplies:
         monkeypatch.setattr(
             gateway_run, "_load_gateway_config", lambda: {"display": {"allow_silent_replies": True}})
         assert GatewayTurnMixin._silent_replies_allowed(source) is True
+
+
+class TestAgentDisplayName:
+    """display.agent_name names the agent in gateway notices."""
+
+    def test_default_and_override(self, monkeypatch):
+        import gateway.run as gateway_run
+        from gateway.display_config import agent_display_name
+
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        assert agent_display_name() == "Hermes"
+        monkeypatch.setattr(
+            gateway_run, "_load_gateway_config", lambda: {"display": {"agent_name": " Wintermute "}})
+        assert agent_display_name() == "Wintermute"
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {"agent_name": ""}})
+        assert agent_display_name() == "Hermes"

@@ -849,6 +849,8 @@ DEFAULT_CONFIG = {
         # Gateway: a bare [SILENT]/NO_REPLY answering a human message is honoured as a deliberate
         # non-reply instead of the "try again" notice. Per-platform via display.platforms.<platform>.
         "allow_silent_replies": False,
+        # Name used in gateway notices ("♻️ Gateway online — <name> is back and ready.").
+        "agent_name": "Hermes",
         # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
         # emulator misbehaves with replayed scrollback.
         "persistent_output": True,

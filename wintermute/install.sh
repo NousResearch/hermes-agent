@@ -98,8 +98,7 @@ hermes config set cron.allow_agent_scheduling true  # it may create / edit / del
 hermes config set --force agent.host_identity_guidance false  # drop "You run on Hermes Agent"
 hermes config set --force display.allow_silent_replies true   # it may ignore a message
 hermes config set memory.memory_char_limit 8000     # MEMORY.md: room for a journal (default 2200)
-# No "Hermes is restarting / Gateway online" notices in Telegram: they are not Wintermute speaking.
-hermes config set platforms.telegram.gateway_restart_notification false
+hermes config set --force display.agent_name Wintermute  # "Wintermute is restarting", not "Hermes"
 
 echo "==> Cron job"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$REPO_DIR/setup_cron.py" "$TARGET"

@@ -281,7 +281,8 @@ Final agent responses are recorded in a durable **delivery ledger**
 (`state.db`) around each platform send. If the gateway crashes or restarts
 between producing a response and the platform confirming receipt, the next
 boot redelivers the stored response instead of losing it — or re-running the
-whole turn.
+whole turn. The ledger lives in the home the gateway was started from; a
+multiplexed gateway keeps every served profile's replies there too.
 
 Semantics are honest at-least-once:
 

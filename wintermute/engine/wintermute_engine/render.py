@@ -196,9 +196,9 @@ def body_line(state: Dict[str, Any], used_today: int) -> str:
         line += " (spent: no autonomous wakes until it renews)"
     credits = state.get("meta", {}).get("credits")
     if isinstance(credits, dict) and credits.get("remaining") is not None:
-        line += f" | Credits: ${float(credits['remaining']):.2f} left"
-        if credits.get("total"):
-            line += f" of ${float(credits['total']):.2f}"
+        line += f" | Credits: ${max(0.0, physics.safe_float(credits['remaining'])):.2f} left"
+        if physics.safe_float(credits.get("total")) > 0:
+            line += f" of ${physics.safe_float(credits['total']):.2f}"
     return line
 
 

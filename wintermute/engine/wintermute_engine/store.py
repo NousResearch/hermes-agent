@@ -166,10 +166,19 @@ def new_peer(ts: datetime) -> Dict[str, Any]:
     return peer
 
 
+_PEER_NUMBERS = ("affinity", "trust", "disappointment", "curiosity", "oxytocin")
+
+
 def normalize_peer(peer: Any) -> Dict[str, Any]:
+    from .physics import safe_float
     merged = _merge_defaults(peer, DEFAULT_PEER)
     if not isinstance(merged.get("known_facts"), list):
         merged["known_facts"] = []
+    for name in _PEER_NUMBERS:
+        merged[name] = round(limits.clamp(safe_float(merged.get(name), DEFAULT_PEER[name]), 0, 100), 1)
+    merged["no_response_streak"] = max(0, int(safe_float(merged.get("no_response_streak"))))
+    if merged.get("outreach") is not None and not isinstance(merged["outreach"], dict):
+        merged["outreach"] = None
     return merged
 
 
@@ -213,8 +222,12 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def load_drives() -> Dict[str, Any]:
+    from .physics import sanitize  # late import: physics imports store's defaults
     data, _ = _read_json(drives_path())
-    return _merge_defaults(data, DEFAULT_DRIVES)
+    merged = _merge_defaults(data, DEFAULT_DRIVES)
+    if not isinstance(merged.get("meta"), dict):
+        merged["meta"] = copy.deepcopy(DEFAULT_DRIVES["meta"])
+    return sanitize(merged)
 
 
 def load_interlocutors() -> Dict[str, Any]:

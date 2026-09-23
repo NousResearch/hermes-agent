@@ -187,7 +187,8 @@ def test_reply_inside_the_window_builds_trust(home):
     peer = _peers()[KEY]
     assert peer["outreach"]["status"] == "answered" and peer["no_response_streak"] == 0
     assert peer["trust"] == trust + 5 and peer["oxytocin"] == oxy + 3
-    assert _drives()["modulators"]["serotonin"] == pytest.approx(serotonin + 0.1, abs=0.001)
+    # Diminishing reward: +0.1 scaled by the room left under the ceiling.
+    assert _drives()["modulators"]["serotonin"] == pytest.approx(serotonin + 0.1 * (1 - serotonin), abs=0.002)
     assert "answers your outreach from 20 min ago" in lines[0]
 
 
@@ -418,3 +419,56 @@ def test_status_is_live_and_read_only(home):
     assert "UNCONSCIOUS" in text and "irritability" in text and "telegram:7375758021" in text
     assert "Next wake:  ~2026-09-23" in text
     assert (home / "wintermute" / "drives.json").read_text() == before
+
+
+def test_relief_is_proportional_and_never_empties(home):
+    state = _drives()
+    state["drives"]["hunger"] = 80
+    physics.apply_event(state, "explored")          # -8 points => 20% of the current level
+    assert state["drives"]["hunger"] == 64
+    for _ in range(200):
+        physics.apply_event(state, "explored")
+    assert 0 <= state["drives"]["hunger"] < 1        # tends to zero, never below
+    state["drives"]["hunger"] = 10
+    physics.apply_event(state, "explored")
+    assert state["drives"]["hunger"] == 8            # a sated drive barely moves
+
+
+def test_rewards_diminish_and_stay_in_range(home):
+    state = _drives()
+    state["modulators"]["dopamine"] = 0.9
+    physics.apply_event(state, "significant")        # +0.35 * (1 - 0.9)
+    assert state["modulators"]["dopamine"] == pytest.approx(0.935, abs=0.001)
+    for _ in range(100):
+        for event in physics.EVENTS:
+            physics.apply_event(state, event, {"trust": 50})
+    for layer in ("drives", "unconscious"):
+        assert all(0 <= v <= 100 for v in state[layer].values())
+    assert all(0 <= v <= 1 for k, v in state["modulators"].items() if k != "entropy")
+    assert 0 <= state["modulators"]["entropy"] <= 100
+
+
+def test_garbage_state_is_sanitized_on_load(home):
+    path = home / "wintermute" / "drives.json"
+    data = json.loads(path.read_text())
+    data["drives"].update(hunger=-40, fusion="lots", restlessness=1e9)
+    data["modulators"].update(dopamine=-3, cortisol=None, entropy=500)
+    data["unconscious"] = "broken"
+    path.write_text(json.dumps(data))
+    drives = _drives()
+    assert drives["drives"]["hunger"] == 0 and drives["drives"]["fusion"] == 70
+    assert drives["drives"]["restlessness"] == 100
+    assert drives["modulators"]["dopamine"] == 0 and drives["modulators"]["cortisol"] == 0.2
+    assert drives["modulators"]["entropy"] == 100
+    assert drives["unconscious"] == store.DEFAULT_DRIVES["unconscious"]
+    assert pulse.tick(T0)[0]                         # and the pulse still runs
+
+
+def test_one_relief_per_kind_of_action_per_turn(plugin):
+    with store.locked_state() as (drives, _):
+        drives["drives"]["hunger"] = 80
+    for _ in range(12):
+        plugin.hooks["post_tool_call"](tool_name="web_search", status="ok", turn_id="t1")
+    assert _drives()["drives"]["hunger"] == 64
+    plugin.hooks["post_tool_call"](tool_name="web_search", status="ok", turn_id="t2")
+    assert _drives()["drives"]["hunger"] == pytest.approx(51.2, abs=0.1)

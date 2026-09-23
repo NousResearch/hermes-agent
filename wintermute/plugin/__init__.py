@@ -182,7 +182,23 @@ def _on_post_llm_call(session_id: str = "", assistant_response: Any = None, plat
         logger.exception("wintermute: post_llm_call failed")
 
 
-def _on_post_tool_call(tool_name: str = "", status: str = "", **_: Any) -> None:
+_relieved: Dict[tuple, None] = {}   # (turn, event) already applied — insertion-ordered, bounded
+
+
+def _first_this_turn(turn: str, event: str) -> bool:
+    """One relief per kind of action per turn: twelve searches in a row are one exploration."""
+    key = (turn, event)
+    with _lock:
+        if key in _relieved:
+            return False
+        _relieved[key] = None
+        while len(_relieved) > 500:
+            _relieved.pop(next(iter(_relieved)))
+    return True
+
+
+def _on_post_tool_call(tool_name: str = "", status: str = "", turn_id: str = "",
+                       session_id: str = "", task_id: str = "", **_: Any) -> None:
     try:
         if not tool_name or tool_name.startswith("wintermute_"):
             return
@@ -191,6 +207,9 @@ def _on_post_tool_call(tool_name: str = "", status: str = "", **_: Any) -> None:
         event = _TOOL_EVENTS.get(tool_name, "acted")
         if tool_name.startswith("browser_"):
             event = "explored"
+        turn = str(turn_id or session_id or task_id or "")
+        if turn and not _first_this_turn(turn, event):
+            return
         with store.locked_state() as (drives, _peers):
             physics.apply_event(drives, event)
     except Exception:

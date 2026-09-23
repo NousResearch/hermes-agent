@@ -96,6 +96,22 @@ EVENTS: Dict[str, Dict[str, float]] = {
 ENTROPY_AMPLIFIED = ("anxiety", "melancholy")
 
 
+# Relief is proportional to the need: a relief of N points removes N/RELIEF_SCALE of the
+# current level (hunger -8 -> 20% of what is left). Drives never hit zero from repetition,
+# and the hungrier he is, the more an action satisfies. Capped so one event never empties.
+RELIEF_SCALE = 40.0
+MAX_RELIEF_FRACTION = 0.6
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    """float() that never raises and never lets NaN/inf through."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
 def _clamp_layer(layer: str, name: str, value: float) -> float:
     if layer == "modulators":
         return limits.clamp(value, 0.0, 100.0) if name == "entropy" else limits.clamp(value, 0.0, 1.0)
@@ -112,14 +128,28 @@ def nudge(state: Dict[str, Any], layer: str, name: str, delta: float) -> None:
     """Add ``delta`` to one value, honouring clamps and entropy amplification."""
     section = state.setdefault(layer, {})
     if (layer == "unconscious" and name in ENTROPY_AMPLIFIED and delta > 0
-            and float(state.get("modulators", {}).get("entropy", 0)) > 80):
+            and safe_float(state.get("modulators", {}).get("entropy", 0)) > 80):
         delta *= 2
-    current = float(section.get(name, 0) or 0)
-    section[name] = _round(layer, name, _clamp_layer(layer, name, current + delta))
+    current = safe_float(section.get(name, 0))
+    section[name] = _round(layer, name, _clamp_layer(layer, name, current + safe_float(delta)))
+
+
+def _relieve(state: Dict[str, Any], layer: str, name: str, points: float) -> None:
+    """Proportional decrease of a drive or unconscious state (see RELIEF_SCALE)."""
+    section = state.setdefault(layer, {})
+    current = safe_float(section.get(name, 0))
+    fraction = min(MAX_RELIEF_FRACTION, abs(points) / RELIEF_SCALE)
+    section[name] = _round(layer, name, _clamp_layer(layer, name, current * (1 - fraction)))
+
+
+def _reward(state: Dict[str, Any], name: str, delta: float) -> None:
+    """Diminishing increase of a 0-1 hormone: the closer to the ceiling, the smaller the gain."""
+    current = safe_float(state.setdefault("modulators", {}).get(name, 0))
+    nudge(state, "modulators", name, delta * max(0.0, 1.0 - current))
 
 
 def nudge_peer(peer: Dict[str, Any], name: str, delta: float) -> None:
-    current = float(peer.get(name, 0) or 0)
+    current = safe_float(peer.get(name, 0))
     if name == "no_response_streak":
         peer[name] = max(0, int(current + delta))
     else:
@@ -130,11 +160,33 @@ def apply_event(state: Dict[str, Any], event: str, peer: Optional[Dict[str, Any]
                 scale: float = 1.0) -> None:
     for key, delta in EVENTS.get(event, {}).items():
         layer, name = key.split(".", 1)
+        delta *= scale
         if layer == "peer":
             if peer is not None:
-                nudge_peer(peer, name, delta * scale)
+                nudge_peer(peer, name, delta)
+        elif layer in ("drives", "unconscious") and delta < 0:
+            _relieve(state, layer, name, delta)
+        elif layer == "modulators" and name != "entropy" and delta > 0:
+            _reward(state, name, delta)
         else:
-            nudge(state, layer, name, delta * scale)
+            nudge(state, layer, name, delta)
+
+
+def sanitize(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce every drive, hormone and unconscious value to a finite number in its range.
+
+    State files are plain JSON that Wintermute (or a crash) can leave odd; anything
+    missing or unreadable falls back to ``defaults``."""
+    from .store import DEFAULT_DRIVES  # late import: store imports limits only
+    for layer in ("drives", "modulators", "unconscious"):
+        defaults = DEFAULT_DRIVES[layer]
+        section = state.get(layer)
+        if not isinstance(section, dict):
+            section = state[layer] = dict(defaults)
+        for name, default in defaults.items():
+            value = safe_float(section.get(name, default), float(default))
+            section[name] = _round(layer, name, _clamp_layer(layer, name, value))
+    return state
 
 
 def refresh_oxytocin_global(state: Dict[str, Any], peers: Dict[str, Any]) -> None:

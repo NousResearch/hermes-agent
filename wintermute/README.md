@@ -176,7 +176,10 @@ en contexte. Pour vérifier que le plugin est chargé : `hermes plugins list`, e
   lui-même condenser ou retirer des entrées. Les conversations restent toutes dans
   `state.db`, qu'il peut fouiller avec `session_search`.
 - **Dynamique** : taux de montée, coefficients hormonaux et table d'événements en tête de
-  `physics.py`.
+  `physics.py`. Le soulagement est proportionnel au besoin (une action retire N/40 du
+  niveau restant, 60 % max), les hormones gagnent moins près de leur plafond, et une même
+  sorte d'action ne compte qu'une fois par message. Toutes les valeurs sont validées au
+  chargement : jamais négatives, jamais au-dessus du maximum, jamais illisibles.
 
 ## Limites connues
 

@@ -62,3 +62,54 @@ def test_switch_model_allows_openai_codex_model_missing_from_listing():
     assert result.target_provider == "openai-codex"
     assert result.warning_message
     assert "OpenAI Codex model listing" in result.warning_message
+
+
+def test_settings_only_provider_block_keeps_builtin_validation():
+    """A ``providers.<built-in-slug>`` block that carries settings only (no
+    base_url/url/api of its own) must not reroute model validation through the
+    custom-endpoint branch (#120020). The Codex backend exposes no ``/models``
+    listing, so the custom branch hard-rejects any model while the built-in
+    catalog path soft-accepts it.
+    """
+    with patch(
+        "hermes_cli.models.provider_model_ids",
+        return_value=["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"],
+    ):
+        result = switch_model(
+            "gpt-5.3-codex-spark",
+            current_provider="openai-codex",
+            current_model="gpt-5.4",
+            current_base_url="",
+            current_api_key="",
+            user_providers={"openai-codex": {"request_timeout_seconds": 3600}},
+            custom_providers=[],
+        )
+
+    assert result.success is True
+    assert result.target_provider == "openai-codex"
+
+
+def test_provider_block_with_own_endpoint_still_validates_as_custom():
+    """A ``providers.<slug>`` entry that declares an endpoint of its own is the
+    user's own endpoint and must keep the custom-endpoint validation branch
+    (#120020 — the fix must not swallow real custom endpoints).
+    """
+    with patch(
+        "hermes_cli.models_validate.validate_requested_model",
+        return_value={"accepted": True, "persist": True, "recognized": True, "message": "ok"},
+    ) as mock_validate:
+        switch_model(
+            "my-model",
+            current_provider="myprov",
+            current_model="my-model",
+            current_base_url="",
+            current_api_key="",
+            explicit_provider="myprov",
+            user_providers={"myprov": {"base_url": "https://example.invalid/v1"}},
+            custom_providers=[],
+        )
+
+    assert mock_validate.called
+    args, kwargs = mock_validate.call_args
+    validate_as = args[1] if len(args) > 1 else kwargs.get("validate_as")
+    assert validate_as == "custom:myprov"

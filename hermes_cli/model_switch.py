@@ -1596,7 +1596,10 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     validate_as = st.target_provider
     if not validate_as.lower().startswith("custom"):
         pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
-        if pdef is not None and pdef.source == "user-config":
+        # Only a user entry that declares an endpoint of its own is the user's own
+        # endpoint. A ``providers.<built-in-slug>`` block carrying settings only
+        # (timeouts, headers, ...) must keep the built-in catalog validation path.
+        if pdef is not None and pdef.source == "user-config" and (pdef.base_url or ""):
             validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(

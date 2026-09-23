@@ -765,6 +765,95 @@ def test_every_vault_tool_is_in_the_browser_toolset():
 
 
 class TestTwoFactor:
+    @staticmethod
+    def _code_page(monkeypatch, origin="https://acme.test"):
+        """Install a supervised OTP page and return the secret-eval expressions."""
+        from tools import browser_vault_tool
+
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Verification code",
+                     "autocomplete": "one-time-code"}]
+        expressions = []
+        monkeypatch.setattr(browser_vault_tool, "_focus_bound_origin", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            browser_vault_tool,
+            "_eval_js",
+            lambda task_id, expression: {"success": True, "result": json.dumps(controls)
+                                         if "querySelectorAll" in expression else origin},
+        )
+        monkeypatch.setattr(
+            browser_vault_tool,
+            "_eval_js_secret",
+            lambda task_id, expression: expressions.append(expression) or {"success": True, "result": '{"filled": 1}'},
+        )
+        return expressions
+
+    def test_trusted_code_handoff_fills_without_exposing_the_code(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        expressions = self._code_page(monkeypatch)
+        code_handle = browser_vault_tool.register_browser_vault_code(
+            "246810", task_id="handoff-task", origin="https://acme.test"
+        )
+
+        raw = browser_vault_tool.browser_vault_enter_code(code_handle=code_handle, task_id="handoff-task")
+        out = json.loads(raw)
+
+        assert out["success"] and out["source"] == "trusted_handoff"
+        assert "246810" not in raw
+        assert re.search(r'"value": "246810"', expressions[0])
+
+    def test_trusted_code_handoff_rejects_wrong_task_or_origin(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        self._code_page(monkeypatch)
+        task_bound = browser_vault_tool.register_browser_vault_code("246810", task_id="right-task")
+        wrong_task = json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=task_bound, task_id="wrong-task"))
+        assert wrong_task["error_type"] == "handoff_task_mismatch"
+
+        self._code_page(monkeypatch, origin="https://other.test")
+        origin_bound = browser_vault_tool.register_browser_vault_code(
+            "246810", task_id="right-task", origin="https://acme.test"
+        )
+        wrong_origin = json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=origin_bound, task_id="right-task"))
+        assert wrong_origin["error_type"] == "handoff_origin_mismatch"
+
+    def test_trusted_code_handoff_rejects_expired_handle(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        self._code_page(monkeypatch)
+        clock = [100.0]
+        monkeypatch.setattr(browser_vault_tool.time, "monotonic", lambda: clock[0])
+        code_handle = browser_vault_tool.register_browser_vault_code("246810", task_id="handoff-task", ttl_seconds=1)
+        clock[0] = 102.0
+
+        out = json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=code_handle, task_id="handoff-task"))
+        assert out["error_type"] == "handoff_expired"
+
+    def test_trusted_code_handoff_is_single_use(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        self._code_page(monkeypatch)
+        code_handle = browser_vault_tool.register_browser_vault_code("246810", task_id="handoff-task")
+        assert json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=code_handle, task_id="handoff-task"))["success"]
+
+        replay = json.loads(browser_vault_tool.browser_vault_enter_code(code_handle=code_handle, task_id="handoff-task"))
+        assert replay["error_type"] == "handoff_replayed"
+
+    def test_no_handoff_preserves_the_user_prompt_fallback(self, monkeypatch):
+        from tools import browser_vault_tool
+        from agent.vault_backends import unlock as unlock_mod
+
+        expressions = self._code_page(monkeypatch)
+        unlock_mod.set_code_prompt_callback(lambda site, hint: "246810")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="handoff-task"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+
+        assert out["success"] and out["source"] == "user"
+        assert re.search(r'"value": "246810"', expressions[0])
+
     def test_totp_matches_rfc6238_vector_and_seed_normalisation(self):
         from agent.vault_store import VaultError, normalize_otp_secret, totp_now
 

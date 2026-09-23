@@ -78,18 +78,7 @@ JOURNEYS: dict[str, list[Hop]] = {
     ],
 }
 
-KNOWN_BROKEN = {
-    "surface_switch": (
-        "PRODUCTION BUGS (C17): the tools array differs per entrypoint for one durable session, so "
-        "every TUI<->oneshot hop is a full prompt-cache miss: (1) tool_search's deferred catalog is "
-        "rebuilt per process from that surface's toolsets (gateway defers the GUI-only project tool: "
-        "'6 additional tools' vs '5') while the session pin stores names only "
-        "(tools/tool_search.py, tools/mcp_tool_agent.py restore_agent_tool_prefix); (2) a pinned tool "
-        "re-materialized from the registry skips dynamic_schema_overrides, so skill_manage's "
-        "description changes (tools/mcp_tool_agent.py vs tools/registry.py get_definitions); "
-        "(3) `-q --resume` prunes skill_manage (agent/oneshot_footprint.py) whenever the stored "
-        "prompt is rebuilt, and persists the pruned pin."),
-}
+KNOWN_BROKEN: dict[str, str] = {}
 
 
 class ToolsArrayDrift(Exception):

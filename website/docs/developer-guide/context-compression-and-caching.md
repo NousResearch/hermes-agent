@@ -204,6 +204,25 @@ attempt anyway:
   compaction rebinds the compressor and resets the ladder count, so each
   compaction cycle grants the LLM route one stall before escalating; the
   persisted cooldown row still paces attempts across turns and restarts.
+- **Ceiling expired after recent output → best-effort reasoning-off retry.**
+  When `compression.context_total_ceiling_seconds` expires and the summary
+  had produced output within the last inactivity window (`producing_at_cut`,
+  read before the cancel/join), recent progress suggests a slow rather than a
+  silent route — it does not prove reasoning was the bottleneck. If
+  `auxiliary.compression` sets no reasoning control of its own
+  (`_compression_reasoning_configured()`), the host offers this ladder: the
+  configured `fallback_chain` entry, then the same route once with reasoning
+  off (`REASONING_OFF_SUMMARY_ROUTE` pin, one inactivity budget), then the
+  `DETERMINISTIC_SUMMARY_ROUTE` rung — in the same attempt, instead of
+  re-running the summary next turn (#107516). Each rung runs only if the
+  previous one committed nothing, and still passes the `/stop` check, the
+  compression lease (a cancelled worker that has not exited keeps it, so the
+  rung returns unchanged) and `abort_on_summary_failure`. The disable is best
+  effort: a route that rejects it takes the aux client's strip/floor retry,
+  one that ignores it is cut after the rung's window, and the aux client's own
+  exception-path fallback carries the same override. With an explicit
+  reasoning setting, on the over-window path (single-window bound, #116472),
+  and on an idle stall, the ladder is unchanged.
 - **Summary provider overloaded → abort, transcript kept.** When the summary
   call fails with a provider-overload error (`overloaded`, `at capacity`,
   HTTP 529) and the one-shot main-model retry also fails, compress() aborts

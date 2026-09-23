@@ -84,8 +84,11 @@ configurable; per-model overrides; failure cooldown after provider-proven overfl
 prunes old tool results first (no LLM call), then picks boundaries, then generates a structured
 summary with the `auxiliary` compression model. In-place compaction keeps a single stable session
 id; native Responses/Codex compaction paths are provider-specific. A stalled summary stream retries
-once on `auxiliary.compression.fallback_chain`, and a repeated stall (a stall-class failure already on
-the cooldown ladder) ends with the deterministic fallback summary through the same pipeline — never a
+once on `auxiliary.compression.fallback_chain`; a summary whose total ceiling expired after recent
+output is then offered one retry of the same route with reasoning off (only when compression sets no
+reasoning control of its own); and a repeated stall (a stall-class failure already on the cooldown
+ladder) — or that reasoning-off retry failing too — is offered the deterministic fallback summary
+through the same pipeline (subject to `/stop`, the lease and `abort_on_summary_failure`) — never a
 prune committed outside the lease/fence. Compression is the sanctioned
 cache break — keep it the only one. Full detail:
 `website/docs/developer-guide/context-compression-and-caching.md`.

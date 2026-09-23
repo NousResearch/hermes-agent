@@ -69,8 +69,11 @@ _SUMMARY_ROUTE_PIN: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("hermes_summary_route_pin", default=None)
 )
 
-# ``timeout`` is included so a fallback entry keeps its own deadline.
-_PINNED_ROUTE_FIELDS: tuple[str, ...] = ("provider", "model", "base_url", "api_key", "api_mode", "timeout")
+# ``timeout`` is included so a fallback entry keeps its own deadline; ``reasoning_config`` lets a pin that names
+# no destination switch the summary model's thinking off for one call (REASONING_OFF_SUMMARY_ROUTE).
+_PINNED_ROUTE_FIELDS: tuple[str, ...] = (
+    "provider", "model", "base_url", "api_key", "api_mode", "timeout", "reasoning_config",
+)
 
 
 @contextlib.contextmanager
@@ -96,6 +99,19 @@ def take_pinned_summary_route() -> Optional[Dict[str, Any]]:
 # route stalls again after a stall-class backoff already burned one idle window (#112420), so a provably
 # unhealthy route degrades once instead of re-entering the same silent stream every turn.
 DETERMINISTIC_SUMMARY_ROUTE: Dict[str, Any] = {"label": "deterministic fallback summary", "deterministic": True}
+
+# Pinned route that names NO destination — task routing (and ``summary_model``) still pick the backend — but
+# runs the summary call with reasoning switched off: a best-effort retry the host offers when the total ceiling
+# expired while the summary was still producing output and ``auxiliary.compression`` sets no reasoning control
+# of its own (#107516: a thinking summariser that was cut at 600s finished the same-size prompt in ~90s with
+# reasoning off). ``_merge_aux_extra_body``'s caller-disabled path projects the disable per wire; a route that
+# rejects it takes the aux client's floor/strip retry (#112781), and one that ignores it (or thinks anyway) is
+# cut after the rung's single inactivity window (``ceiling_is_idle_window``). The aux client's own
+# exception-path fallback, if it fires during this call, carries the same override to its destination.
+REASONING_OFF_SUMMARY_ROUTE: Dict[str, Any] = {
+    "label": "same summary route without reasoning", "reasoning_config": {"enabled": False},
+    "ceiling_is_idle_window": True,
+}
 
 
 def take_deterministic_summary_pin() -> bool:

@@ -366,11 +366,12 @@ class TestBomHandling:
 
 
     def test_v4a_update_keeps_terminal_escape_bytes_on_untouched_lines(self, ops, tmp_path: Path):
-        # read_file_raw feeds the V4A write-back; its leak cleanup must not eat the file's own
-        # OSC title escapes and BEL bytes on lines the patch never touched.
+        # read_file_raw feeds the V4A write-back: every byte on a line the patch never touched
+        # survives, including OSC escapes, BEL and literal fence-marker text.
         target = tmp_path / "prompt.sh"
         original = (b'set_title() { printf "\x1b]0;%s\x07" "$1"; }\n'
                     b'beep() { printf "\x07"; }\n'
+                    b'SENTINEL = "__HERMES_FENCE_a9f7b3__\x07"  # marker text is file content too\n'
                     b'VERSION=1\n')
         target.write_bytes(original)
         patch = (
@@ -384,6 +385,26 @@ class TestBomHandling:
         res = ops.patch_v4a(patch)
         assert res.success, res.error
         assert target.read_bytes() == original.replace(b"VERSION=1", b"VERSION=2")
+
+    @pytest.mark.parametrize("mode", ["replace", "v4a"])
+    def test_edit_keeps_bytes_utf8_cannot_decode_on_untouched_lines(self, ops, tmp_path: Path, mode):
+        # Both edit paths write back every line they did not touch, so their source read must be
+        # byte-exact: the text transport decodes with errors="replace", which turned this legacy
+        # latin-1 byte into U+FFFD on disk. (Past the 1000-byte sample, where V4A reads it as text.)
+        target = tmp_path / "legacy.py"
+        original = (b"# -*- coding: latin-1 -*-\n" + b"# " + b"x" * 1100 + b"\n"
+                    b"name = 'caf\xe9'\n"
+                    b"x = 1\n")
+        target.write_bytes(original)
+        if mode == "replace":
+            res = ops.patch_replace(str(target), "x = 1", "x = 2")
+        else:
+            res = ops.patch_v4a(f"*** Begin Patch\n*** Update File: {target}\n@@\n-x = 1\n+x = 2\n*** End Patch")
+        assert res.success, res.error
+        assert target.read_bytes() == original.replace(b"x = 1", b"x = 2")
+        # The file declares its encoding, so it is valid Python and lints clean.
+        lints = res.lint.values() if mode == "v4a" else [res.lint]
+        assert [lint["status"] for lint in lints] == ["ok"], res.lint
 
 
 class TestProtectedInstructionFiles:

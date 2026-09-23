@@ -1,5 +1,6 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
+import base64
 import os
 import pytest
 import subprocess
@@ -296,29 +297,6 @@ class TestShellFileOpsHelpers:
         assert "\x07" not in result.content
         assert "1|print('ok')" in result.content
 
-    def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
-        leaked = (
-            "__HERMES_FENCE_a9f7b3__\x07'\n"
-            "alpha\n"
-            "\x1b]0;cat '/tmp/test/a.txt'\x07__HERMES_FENCE_a9f7b3__\n"
-        )
-
-        def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": "6\n", "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "alpha\n", "returncode": 0}
-            if command.startswith("cat "):
-                return {"output": leaked, "returncode": 0}
-            return {"output": "", "returncode": 0}
-
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.read_file_raw("/tmp/test/a.txt")
-
-        assert result.error is None
-        assert result.content == "alpha\n"
-
     def test_newline_terminated_content_has_no_phantom_line(self, file_ops):
         # A file ending in a newline (the normal, well-formed case) has its
         # last line terminated, NOT followed by an empty line. The gutter must
@@ -457,12 +435,11 @@ class TestPatchReplacePostWriteVerification:
         file_contents = {"/tmp/test/a.py": "hello world\n"}
 
         def side_effect(command, **kwargs):
-            # cat reads the file — both the initial read and the verify read
-            if command.startswith("cat "):
-                # Extract path from cat command (strip quotes)
+            # the byte-exact read (base64 over the transport) — both the initial read and the verify read
+            if command.startswith("base64 < "):
                 for path in file_contents:
                     if path in command:
-                        return {"output": file_contents[path], "returncode": 0}
+                        return {"output": base64.b64encode(file_contents[path].encode()).decode(), "returncode": 0}
                 return {"output": "", "returncode": 1}
             # mkdir for parent dir
             if command.startswith("mkdir "):
@@ -490,18 +467,18 @@ class TestPatchReplacePostWriteVerification:
 
     def test_patch_replace_fails_when_verify_read_errors(self, mock_env):
         """If the verify-read step itself fails (exit code != 0), return an error."""
-        call_count = {"cat": 0}
+        call_count = {"read": 0}
         state = {"content": "hello world\n"}
 
         def side_effect(command, stdin_data=None, **kwargs):
             if stdin_data is not None:  # write (atomic temp-file + mv script)
                 state["content"] = stdin_data
                 return {"output": "", "returncode": 0}
-            if command.startswith("cat "):  # read
-                call_count["cat"] += 1
+            if command.startswith("base64 < "):  # byte-exact read
+                call_count["read"] += 1
                 # First read (initial fetch) succeeds; second read (verify) fails
-                if call_count["cat"] == 1:
-                    return {"output": state["content"], "returncode": 0}
+                if call_count["read"] == 1:
+                    return {"output": base64.b64encode(state["content"].encode()).decode(), "returncode": 0}
                 return {"output": "", "returncode": 1}
             if command.startswith("mkdir "):
                 return {"output": "", "returncode": 0}

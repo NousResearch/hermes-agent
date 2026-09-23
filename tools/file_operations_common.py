@@ -204,20 +204,13 @@ def count_conflict_blocks(formatted_content: str) -> int:
     return min(opens, len(_CONFLICT_CLOSE.findall(formatted_content))) if opens else 0
 
 
-def _strip_terminal_fence_leaks(text: str, *, fenced_lines_only: bool = False) -> str:
+def _strip_terminal_fence_leaks(text: str) -> str:
     """Strip leaked terminal fence wrappers (OSC sequences, fence markers) from
-    command output; drops lines that were nothing but wrapper.
-
-    ``fenced_lines_only`` is for file content that gets written back: a leak always carries the
-    fence marker, so a line without one is the file's own bytes (a prompt script's ``\x1b]0;``
-    title escape, a BEL) and is kept verbatim."""
+    command output; drops lines that were nothing but wrapper."""
     if not text:
         return text
     cleaned_lines: List[str] = []
     for line in text.splitlines(keepends=True):
-        if fenced_lines_only and "__HERMES_FENCE_" not in line:
-            cleaned_lines.append(line)
-            continue
         had_terminal_wrapper = "__HERMES_FENCE_" in line or "\x1b]" in line
         cleaned = _FENCE_MARKER_RE.sub("", _OSC_SEQUENCE_RE.sub("", line)).replace("\x07", "")
         if had_terminal_wrapper and cleaned.strip("'\r\n\t ") == "":

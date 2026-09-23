@@ -263,11 +263,37 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return None
         return self._decode_base64_sample(result.stdout)
 
+    def _read_exact_bytes(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+        """The file's bytes exactly, for the edit paths that write back every line they did not touch.
+
+        The text transport cannot carry them: it decodes with errors="replace", so a byte UTF-8 cannot
+        decode comes back as U+FFFD and the edit then persists it. A native read on the local POSIX host,
+        else base64 over the transport; ``(None, result)`` hands back the failed shell read for the
+        caller's message. Only a regular file gets a native open (a FIFO would block this thread); the
+        rest take the shell path and its timeout, as before."""
+        if self._native_read_enabled():
+            import stat as _stat
+            full = path if os.path.isabs(path) else os.path.join(
+                getattr(self.env, "cwd", None) or self.cwd, path)
+            try:
+                if _stat.S_ISREG(os.stat(full).st_mode):
+                    with open(full, "rb") as fh:
+                        return fh.read(), None
+            except OSError:
+                pass  # missing/unreadable: the shell read below reports it the usual way
+        result = self._exec(f"base64 < {self._escape_shell_arg(path)}")
+        if result.exit_code != 0:
+            return None, result
+        data = self._decode_base64_sample(result.stdout)
+        if data is None:  # stray output in the payload: refuse rather than guess (never echo it back)
+            return None, ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read", exit_code=1)
+        return data, None
+
     @staticmethod
     def _decode_base64_sample(text: str) -> Optional[bytes]:
-        """Decode one ``head -c N | base64`` sample. Whitespace-joins the whole text
-        first (``base64`` wraps at 76 columns), so callers hand over exactly one
-        segment; anything else fails validation → None (legacy text heuristic)."""
+        """Decode one ``base64`` transport reply (a ``head -c N`` sample or a whole file). Whitespace-joins
+        the whole text first (``base64`` wraps at 76 columns), so callers hand over exactly one
+        segment; anything else fails validation → None."""
         encoded = "".join(_strip_terminal_fence_leaks(text).split())
         if not encoded:
             return b""
@@ -1027,13 +1053,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         is_binary, sample_bytes = self._detect_binary(path)
         if is_binary:
             return ReadResult(is_binary=True, file_size=file_size, error=describe_binary_file(sample_bytes, file_size))
-        cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
-        if cat_result.exit_code != 0:
-            return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        data, failed = self._read_exact_bytes(path)
+        if data is None:
+            return ReadResult(error=f"Failed to read file: {failed.stdout}")
+        # V4A writes this back, so no display cleanup (nothing has emitted the __HERMES_FENCE_ wrapper it
+        # targets since d684d7ee7e; it can only eat the file's own escape bytes), and surrogateescape
+        # so write_file's encode restores any byte past the sample that UTF-8 cannot decode (#79178).
         # Strip a leading BOM (a phantom U+FEFF defeats an exact first-line match);
         # write_file re-probes disk and restores it.
-        # V4A writes this back, so only lines carrying a leaked fence are cleaned.
-        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout, fenced_lines_only=True))
+        raw_content, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
         return ReadResult(content=raw_content, file_size=file_size)
 
     def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
@@ -1340,10 +1368,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         Line endings are normalized first (Windows text-mode ``open()`` writes LF as
         CRLF) and the re-read's BOM stripped (``new_content`` is the BOM-less
         string we matched against)."""
-        verify_result = self._cat(path)
-        if verify_result.exit_code != 0:
+        data, _failed = self._read_exact_bytes(path)
+        if data is None:
             return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
-        bomless, _ = _strip_bom(verify_result.stdout)
+        bomless, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
         on_disk = bomless.replace("\r\n", "\n").replace("\r", "\n")
         intended = new_content.replace("\r\n", "\n").replace("\r", "\n")
         if on_disk != intended:
@@ -1363,12 +1391,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         denied = get_write_denied_error(path)
         if denied:
             return PatchResult(error=denied)
-        read_result = self._cat(path)
-        if read_result.exit_code != 0:
-            return PatchResult(error=read_result.cwd_error or f"Failed to read file: {path}")
+        data, failed = self._read_exact_bytes(path)
+        if data is None:
+            return PatchResult(error=failed.cwd_error or f"Failed to read file: {path}")
+        # Every line the replacement does not touch is written back, so read the exact bytes;
+        # surrogateescape lets write_file restore any byte UTF-8 cannot decode (#79178).
         # Match and diff on BOM-stripped content (a phantom U+FEFF defeats an exact
         # first-line match); the raw read becomes write_file's pre_content.
-        raw_content = read_result.stdout
+        raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
         from tools.fuzzy_match import fuzzy_find_and_replace

@@ -140,3 +140,91 @@ def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeyp
     # duplicate the entry.
     env2 = build_subprocess_env(env, scrub_secrets=True)
     assert env2["PATH"].split(os.pathsep).count(bin_dir) == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression: the SESSION's profile id reaches the child env as HERMES_PROFILE
+# (a child had only the CLI/Kanban author fallback, which named the DEFAULT home)
+# ---------------------------------------------------------------------------
+
+
+def _clear_identity_env(monkeypatch):
+    for name in ("HERMES_PROFILE", "HERMES_PROFILE_NAME", "HERMES_SESSION_PROFILE"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_session_profile_is_exported_as_hermes_profile(monkeypatch):
+    """A gateway-served session exports no HERMES_PROFILE: the served profile lives in
+    the session ContextVar (the gateway's own HERMES_HOME is the DEFAULT root), so a child
+    running ``hermes kanban comment``/``hermes peer dm`` could not name its profile."""
+    from gateway.session_context import (
+        clear_session_vars, reset_session_vars, set_session_vars)
+
+    _clear_identity_env(monkeypatch)
+    tokens = set_session_vars(profile="ops-coder")
+    try:
+        env = build_subprocess_env()
+    finally:
+        clear_session_vars(tokens)
+        reset_session_vars()  # leave the ContextVars _UNSET for later tests
+    assert env["HERMES_PROFILE"] == "ops-coder"
+
+
+def test_profile_scoped_home_alone_still_names_the_profile(tmp_path, monkeypatch):
+    """``hermes -p X <cmd>`` scopes only HERMES_HOME: no env export, no bound session.
+    The child must still be able to name X instead of the home-derived fallback."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    _clear_identity_env(monkeypatch)
+    home = tmp_path / ".hermes" / "profiles" / "ops-coder"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("hermes_constants._default_hermes_root_memo", None)
+
+    token = set_hermes_home_override(str(home))
+    try:
+        env = build_subprocess_env()
+    finally:
+        reset_hermes_home_override(token)
+    assert env["HERMES_PROFILE"] == "ops-coder"
+
+
+def test_dispatcher_profile_pin_is_preserved_without_a_session(monkeypatch, tmp_path):
+    """The kanban dispatcher pins HERMES_PROFILE on the workers it spawns; a worker
+    spawning a child with no session bound must keep that pin (no clobbering)."""
+    _clear_identity_env(monkeypatch)
+    monkeypatch.setenv("HERMES_PROFILE", "platform-coder")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    env = build_subprocess_env()
+    assert env["HERMES_PROFILE"] == "platform-coder"
+
+
+def test_e2e_child_cli_author_names_the_served_session_profile(tmp_path, monkeypatch):
+    """Cross-surface: a real child spawned through the factory resolves the CLI author
+    for the gateway-served session (``HERMES_HOME`` = the DEFAULT root, no env export)."""
+    from gateway.session_context import (
+        clear_session_vars, reset_session_vars, set_session_vars)
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    _clear_identity_env(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    tokens = set_session_vars(profile="ops-coder")
+    try:
+        env = build_subprocess_env()
+    finally:
+        clear_session_vars(tokens)
+        reset_session_vars()
+    assert env["HERMES_PROFILE"] == "ops-coder"  # what the child inherits
+
+    code = (
+        "from hermes_cli.kanban import _profile_author; "
+        "from hermes_cli.profiles import resolve_acting_profile_name; "
+        "print(_profile_author(), resolve_acting_profile_name('user'))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env, capture_output=True, text=True, timeout=120, check=True,
+    )
+    assert out.stdout.split() == ["ops-coder", "ops-coder"]

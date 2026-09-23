@@ -221,6 +221,41 @@ def _apply_profile_home(env: dict) -> None:
     apply_subprocess_home_env(env)
 
 
+def _export_session_profile_env(env: dict) -> None:
+    """Publish the SESSION's profile id as ``HERMES_PROFILE`` beside the profile-scoped
+    ``HERMES_HOME`` from :func:`_apply_profile_home`.
+
+    Why: a child that has to *name* the profile it is acting for — ``hermes kanban
+    comment`` (author), ``hermes peer dm`` (``X-Hermes-Sender-Profile``), a repo script —
+    reads ``HERMES_PROFILE`` (see ``hermes_cli.profiles.resolve_acting_profile_name``).
+    The multiplexed gateway exports neither it nor a profile-scoped ``HERMES_HOME``: the
+    served profile lives in the per-session ContextVar, so such a child fell back to the
+    home-derived name — the gateway's DEFAULT root — and attributed the work to
+    ``default``. Bridge the bound session profile here; when only a home override exists
+    (``hermes -p X <cmd>``) derive the name from that home. A bound session profile wins
+    over an inherited ``HERMES_PROFILE`` (the turn's identity, not the process launch
+    profile); with no session profile bound the inherited value is left untouched, which
+    keeps the kanban dispatcher's ``HERMES_PROFILE`` pin on spawned workers.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        profile = (get_session_env("HERMES_SESSION_PROFILE", "") or "").strip()
+    except Exception:
+        profile = ""
+    if not profile:
+        try:
+            from hermes_constants import get_hermes_home_override
+            if get_hermes_home_override():
+                from hermes_cli.profiles import get_active_profile_name
+                name = (get_active_profile_name() or "").strip()
+                # "custom" is a non-profile home (a plain HERMES_HOME path), not an identity.
+                profile = "" if name == "custom" else name
+        except Exception:
+            profile = ""
+    if profile:
+        env["HERMES_PROFILE"] = profile
+
+
 def _inject_session_context_env(env: dict) -> None:
     """Bridge gateway session ContextVars (HERMES_SESSION_*) into a child env.
     Cross-session leak guard: the vars' last-writer-wins ``os.environ`` mirror may
@@ -279,6 +314,7 @@ def _finalize_child_env(env: dict) -> dict:
     Kanban scrub. Returns the (possibly new) dict."""
     _apply_profile_home(env)
     _inject_session_context_env(env)
+    _export_session_profile_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env

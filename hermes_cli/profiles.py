@@ -1880,6 +1880,51 @@ def get_active_profile_name() -> str:
     return "custom"
 
 
+def resolve_acting_profile_name(default: str = "user") -> str:
+    """Best-effort name of the profile the CALLER is acting as.
+
+    A child process (``hermes kanban comment``, ``hermes peer dm``, a repo script) rarely
+    knows whose session it is serving: the gateway's ``os.environ`` carries the LAUNCH
+    profile (usually absent, and its ``HERMES_HOME`` is the DEFAULT root), while the
+    SERVED profile is bound per session. Order:
+
+    1. ``HERMES_PROFILE_NAME`` — the lane/launch name, most explicit.
+    2. ``HERMES_PROFILE`` — an explicit identity export (the kanban dispatcher pins it on
+       every spawned worker, and ``tools.environments.local`` mirrors the bound session
+       profile into it for every child it spawns). When present it agrees with (3) by
+       construction.
+    3. ``HERMES_SESSION_PROFILE`` — the bound session profile: the ContextVar first, then
+       its ``os.environ`` mirror, so this reads the profile a multiplexed gateway is
+       serving rather than the launch profile. This is the step a session-scoped caller
+       (and any spawn surface that does not go through the child-env factory) needs.
+    4. the profile id derived from the active ``HERMES_HOME`` (:func:`get_active_profile_name`)
+       — covers ``hermes -p X <cmd>``, where only the home is profile-scoped.
+    5. *default*.
+
+    Attribution only: never raises, never mutates. Do NOT use it for routing or secret
+    scoping — those need a value that fails CLOSED.
+    """
+    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        try:
+            value = (os.environ.get(env_name) or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            return value
+    try:
+        from gateway.session_context import get_session_env
+        value = (get_session_env("HERMES_SESSION_PROFILE", "") or "").strip()
+    except Exception:
+        value = ""
+    if value:
+        return value
+    try:
+        value = (get_active_profile_name() or "").strip()
+    except Exception:
+        value = ""
+    return value or default
+
+
 # Export / Import
 
 def _inside_git_checkout(path: Path) -> bool:

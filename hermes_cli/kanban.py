@@ -199,14 +199,19 @@ def kanban_command(args: argparse.Namespace) -> int:
 # --- Handlers ---
 
 def _profile_author() -> str:
-    """Best-effort author name for an interactive CLI call."""
-    for env in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
-        v = os.environ.get(env)
-        if v:
-            return v
+    """Best-effort author name for an interactive CLI call.
+
+    Order (see :func:`hermes_cli.profiles.resolve_acting_profile_name`):
+    ``HERMES_PROFILE_NAME`` -> ``HERMES_PROFILE`` -> the bound session profile
+    (``HERMES_SESSION_PROFILE``) -> the profile id derived from the active ``HERMES_HOME``
+    -> ``"user"``. A caller-supplied ``--author`` always wins (checked before this call).
+    The session step is what a gateway-hosted ``hermes kanban comment`` needs: its
+    ``HERMES_HOME`` is the DEFAULT root, so the home-derived name alone said
+    ``default`` for every served profile.
+    """
     try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "user"
+        from hermes_cli.profiles import resolve_acting_profile_name
+        return resolve_acting_profile_name("user")
     except Exception:
         return "user"
 

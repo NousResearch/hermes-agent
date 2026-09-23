@@ -593,7 +593,16 @@ class PluginDispatchMixin:
         results: List[Any] = []
         for cb in self._middleware.get(kind, []):
             try:
-                ret = cb(**kwargs)
+                callback_kwargs = kwargs
+                if kind == "turn_route":
+                    # Turn-route callbacks receive a mutable decision draft. A callback that
+                    # mutates it and then raises must not leak that failed decision into the
+                    # caller or into later callbacks.
+                    callback_kwargs = dict(kwargs)
+                    for key in ("route", "original_route"):
+                        if key in kwargs:
+                            callback_kwargs[key] = copy.deepcopy(kwargs[key])
+                ret = cb(**callback_kwargs)
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:

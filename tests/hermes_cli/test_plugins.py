@@ -27,6 +27,7 @@ from hermes_cli.plugins import (
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
 from hermes_cli.middleware import (
     apply_llm_request_middleware,
+    apply_turn_route_middleware,
     apply_tool_request_middleware,
     run_llm_execution_middleware,
     run_tool_execution_middleware,
@@ -1365,6 +1366,33 @@ class TestForceReloadSymmetry:
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
             assert mgr.invoke_middleware("tool_call") == ["survived"]
         assert "middleware requested process exit" in caplog.text
+
+    @pytest.mark.parametrize("followed_by_noop", [False, True])
+    def test_failed_turn_route_middleware_mutation_is_discarded(self, monkeypatch, followed_by_noop):
+        """A failed route callback cannot change the effective route or poison later callbacks."""
+        route = {"model": "configured-model", "provider": "configured-provider", "runtime": {}}
+        seen_by_noop = []
+
+        def mutates_then_raises(route, **_kwargs):
+            route["model"] = "wrong-model"
+            raise RuntimeError("route callback failed")
+
+        def noop(route, **_kwargs):
+            seen_by_noop.append(route.copy())
+
+        manager = PluginManager()
+        manager._middleware["turn_route"] = [mutates_then_raises]
+        if followed_by_noop:
+            manager._middleware["turn_route"].append(noop)
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = apply_turn_route_middleware(route)
+
+        assert result.payload == route
+        assert result.changed is False
+        assert result.trace == []
+        assert route["model"] == "configured-model"
+        assert seen_by_noop == ([route] if followed_by_noop else [])
 
     def test_hung_callback_suppresses_repeat_fires(self, monkeypatch):
         """A still-running timed-out callback must not spawn another worker."""

@@ -347,7 +347,24 @@ def oauth_relogin_command(provider: Any) -> str:
     slug = str(provider or "").strip().lower()
     if slug == "nous":
         return f"hermes {profile_cli_selector()}portal"
+    if _login_owned_by_external_cli(slug):
+        # `hermes auth add <slug>` would fail loud (plugin_missing_auth_handler_error); the model
+        # picker's external-process flow runs the CLI's own login instead.
+        return f"hermes {profile_cli_selector()}model"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def _login_owned_by_external_cli(slug: str) -> bool:
+    """True for an ``external_process`` provider without an ``auth_handler``: its sign-in belongs
+    to the vendor CLI it drives, so ``hermes auth add`` cannot perform it."""
+    try:
+        from hermes_cli.auth_plugin_providers import plugin_auth_handler, plugin_profile
+
+        profile = plugin_profile(slug)
+        return (profile is not None and getattr(profile, "auth_type", "") == "external_process"
+                and plugin_auth_handler(slug) is None)
+    except Exception:  # pragma: no cover — advisory copy only
+        return False
 
 
 def relogin_command_hint(provider: Any) -> str:
@@ -362,7 +379,7 @@ def relogin_command_hint(provider: Any) -> str:
         return f"hermes {profile_cli_selector()}auth add <provider>"
     from agent.error_surface import auth_kind
 
-    if auth_kind(slug) == "oauth":
+    if _login_owned_by_external_cli(slug) or auth_kind(slug) == "oauth":
         return oauth_relogin_command(slug)
     return f"hermes {profile_cli_selector()}auth add {slug}"
 

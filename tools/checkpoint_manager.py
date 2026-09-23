@@ -246,7 +246,11 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
     if not wd.is_dir():
         msg = (f"working directory not found: {wd}" if not wd.exists()
                else f"working directory is not a directory: {wd}")
-        logger.error("Git command skipped: %s (%s)", " ".join(cmd), msg)
+        # A missing work directory is a skip, not a failure: snapshots are best-effort, the
+        # workdir is often populated later in the same turn, and every caller acts on the
+        # returned ok=False. Logging ERROR here produced false alarms in errors.log (and in
+        # anything monitoring it) for a condition that is expected and already handled.
+        logger.warning("Git command skipped: %s (%s)", " ".join(cmd), msg)
         return False, "", msg
 
     try:
@@ -260,7 +264,9 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
             logger.error("Git executable not found: %s", " ".join(cmd), exc_info=True)
             return False, "", "git not found"
         msg = f"working directory not found: {wd}"
-        logger.error("Git command failed before execution: %s (%s)", " ".join(cmd), msg, exc_info=True)
+        # Same condition as the skip above, hit when the directory vanishes between the
+        # is_dir() guard and the spawn — still a skip, not a git failure.
+        logger.warning("Git command failed before execution: %s (%s)", " ".join(cmd), msg, exc_info=True)
         return False, "", msg
     except Exception as exc:
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)

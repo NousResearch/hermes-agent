@@ -19,7 +19,11 @@ export const HOTKEYS: [string, string][] = [
   ...copyHotkeys,
   [action + '+D', 'exit'],
   [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
-  [action + '+L', 'redraw / repaint'],
+  [action + '+L', 'redraw / repaint (in place; tmux-scroll-safe)'],
+  [
+    action + '+T / /hardreset',
+    'hard-reset screen buffer (shortcut: terminal/desktop only; /hardreset: browser fallback)'
+  ],
   [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
   ['Esc Esc', 'discard draft (recall with ↑)'],
   ['Tab', 'apply completion'],

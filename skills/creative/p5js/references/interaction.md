@@ -177,7 +177,7 @@ SHIFT, CONTROL, OPTION, ALT
 ## Touch Events
 
 ```javascript
-touches   // array of { x, y, id } — all current touches
+touches   // array of { x, y, id }: all current touches
 
 function touchStarted() {
   // fires on first touch
@@ -283,7 +283,7 @@ let mic, fft, amplitude;
 
 function setup() {
   createCanvas(800, 800);
-  userStartAudio();  // required — user gesture to enable audio
+  userStartAudio();  // required: user gesture to enable audio
 
   mic = new p5.AudioIn();
   mic.start();

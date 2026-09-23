@@ -16,7 +16,7 @@ Spawn a subagent with an isolated context + terminal session.
   re-enters the conversation as a new turn when it finishes.
 - **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`
   (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
-- **Not durable.** A backgrounded child is still process-local — if the
+- **Not durable.** A backgrounded child is still process-local: if the
   parent process exits, the child is lost. For work that must outlive
   the process, use `cronjob` or
   `terminal(background=True, notify_on_complete=True)`.
@@ -25,7 +25,7 @@ Config: `delegation.*` in `config.yaml`.
 
 ### Cron (scheduled jobs)
 
-Durable scheduler — `cron/jobs.py` + `cron/scheduler.py`. Drive it via
+Durable scheduler: `cron/jobs.py` + `cron/scheduler.py`. Drive it via
 the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
 `pause`, `resume`, `run`, `remove`), or the `/cron` slash command.
 
@@ -50,17 +50,17 @@ Background maintenance for agent-created skills. Tracks usage, marks
 idle skills stale, archives stale ones, keeps a pre-run tar.gz backup
 so nothing is lost.
 
-- **CLI:** `hermes curator <verb>` — `status`, `usage`, `run`, `pause`,
+- **CLI:** `hermes curator <verb>`, `status`, `usage`, `run`, `pause`,
   `resume`, `pin`, `unpin`, `archive`, `restore`, `list-archived`, `prune`,
   `backup`, `rollback`.
 - **Slash:** `/curator <subcommand>` mirrors the CLI.
 - **Scope:** only touches skills with `created_by: "agent"` provenance.
-  Bundled + hub-installed skills are off-limits. **Never deletes** —
+  Bundled + hub-installed skills are off-limits. **Never deletes**:
   max destructive action is archive. Pinned skills are exempt from
   every auto-transition and every LLM review pass.
 - **Cost:** the deterministic inactivity/prune sweep runs for free. The
   aux-model "consolidate overlapping skills into umbrellas" pass is
-  **off by default** — opt in with `curator.consolidate: true` or
+  **off by default**: opt in with `curator.consolidate: true` or
   `hermes curator run --consolidate`. Routine background curation costs
   zero tokens.
 - **Telemetry:** sidecar at `~/.hermes/skills/.usage.json` holds
@@ -89,7 +89,7 @@ sessions still have zero `kanban_*` schema footprint unless configured.
   outside a dispatcher-spawned task also get `kanban_list` and
   `kanban_unblock` for board routing.
 - **Dispatcher** runs inside the gateway by default
-  (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
+  (`kanban.dispatch_in_gateway: true`): reclaims stale claims,
   promotes ready tasks, atomically claims, spawns assigned profiles.
   Auto-blocks a task after `failure_limit` consecutive spawn failures
   (default 2; configurable via `kanban.failure_limit` or per-task

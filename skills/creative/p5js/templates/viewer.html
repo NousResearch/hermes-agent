@@ -227,7 +227,7 @@
     <!-- === END PARAMETER CONTROLS === -->
   </div>
 
-  <!-- VARIABLE: Colors (optional — include if art needs adjustable palette) -->
+  <!-- VARIABLE: Colors (optional: include if art needs adjustable palette) -->
   <!--
   <div>
     <div class="section-title">Colors</div>
@@ -258,7 +258,7 @@
 
 <script>
 // ====================================================================
-// CONFIGURATION — REPLACE FOR EACH PROJECT
+// CONFIGURATION: REPLACE FOR EACH PROJECT
 // ====================================================================
 const DEFAULTS = {
   seed: 42,
@@ -271,7 +271,7 @@ const DEFAULTS = {
 let PARAMS = { ...DEFAULTS };
 
 // ====================================================================
-// SEED NAVIGATION — FIXED (do not modify)
+// SEED NAVIGATION: FIXED (do not modify)
 // ====================================================================
 function changeSeed(delta) {
   PARAMS.seed = Math.max(0, PARAMS.seed + delta);
@@ -296,7 +296,7 @@ function jumpToSeed() {
 }
 
 // ====================================================================
-// PARAMETER UPDATES — CUSTOMIZE updateParam body as needed
+// PARAMETER UPDATES: CUSTOMIZE updateParam body as needed
 // ====================================================================
 function updateParam(name, value) {
   PARAMS[name] = value;
@@ -332,7 +332,7 @@ function downloadPNG() {
 }
 
 // ====================================================================
-// P5.JS SKETCH — REPLACE ENTIRELY FOR EACH PROJECT
+// P5.JS SKETCH: REPLACE ENTIRELY FOR EACH PROJECT
 // ====================================================================
 
 // Your state variables

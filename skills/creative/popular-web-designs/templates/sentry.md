@@ -1,7 +1,7 @@
 # Design System: Sentry
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Rubik` | **Mono:** `JetBrains Mono`
@@ -17,12 +17,12 @@
 
 Sentry's website is a dark-mode-first developer tool interface that speaks the language of code editors and terminal windows. The entire aesthetic is rooted in deep purple-black backgrounds (`#1f1633`, `#150f23`) that evoke the late-night debugging sessions Sentry was built for. Against this inky canvas, a carefully curated set of purples, pinks, and a distinctive lime-green accent (`#c2ef4e`) create a visual system that feels simultaneously technical and vibrant.
 
-The typography pairing is deliberate: "Dammit Sans" appears at hero scale (88px, weight 700) as a display font with personality and attitude that matches Sentry's irreverent brand voice ("Code breaks. Fix it faster."), while Rubik serves as the workhorse UI font across all functional text — headings, body, buttons, captions, and navigation. Monaco provides the monospace layer for code snippets and technical content, completing the developer-tool trinity.
+The typography pairing is deliberate: "Dammit Sans" appears at hero scale (88px, weight 700) as a display font with personality and attitude that matches Sentry's irreverent brand voice ("Code breaks. Fix it faster."), while Rubik serves as the workhorse UI font across all functional text, headings, body, buttons, captions, and navigation. Monaco provides the monospace layer for code snippets and technical content, completing the developer-tool trinity.
 
-What makes Sentry distinctive is its embrace of the "dark IDE" aesthetic without feeling cold or sterile. Warm purple tones replace the typical cool grays of developer tools, and bold illustrative elements (3D characters, colorful product screenshots) punctuate the dark canvas. The button system uses a signature muted purple (`#79628c`) with inset shadows that creates a tactile, almost physical quality — buttons feel like they could be pressed into the surface.
+What makes Sentry distinctive is its embrace of the "dark IDE" aesthetic without feeling cold or sterile. Warm purple tones replace the typical cool grays of developer tools, and bold illustrative elements (3D characters, colorful product screenshots) punctuate the dark canvas. The button system uses a signature muted purple (`#79628c`) with inset shadows that creates a tactile, almost physical quality: buttons feel like they could be pressed into the surface.
 
 **Key Characteristics:**
-- Dark purple-black backgrounds (`#1f1633`, `#150f23`) — never pure black
+- Dark purple-black backgrounds (`#1f1633`, `#150f23`): never pure black
 - Warm purple accent spectrum: from deep (`#362d59`) through mid (`#79628c`, `#6a5fc1`) to vibrant (`#422082`)
 - Lime-green accent (`#c2ef4e`) for high-visibility CTAs and highlights
 - Pink/coral accents (`#ffb287`, `#fa7faa`) for focus states and secondary highlights
@@ -40,7 +40,7 @@ What makes Sentry distinctive is its embrace of the "dark IDE" aesthetic without
 - **Border Purple** (`#362d59`): Borders, dividers, subtle structural lines
 
 ### Accent Colors
-- **Sentry Purple** (`#6a5fc1`): Primary interactive color — links, hover states, focus rings
+- **Sentry Purple** (`#6a5fc1`): Primary interactive color, links, hover states, focus rings
 - **Muted Purple** (`#79628c`): Button backgrounds, secondary interactive elements
 - **Deep Violet** (`#422082`): Select dropdowns, active states, high-emphasis surfaces
 - **Lime Green** (`#c2ef4e`): High-visibility accent, special links, badge highlights
@@ -67,7 +67,7 @@ What makes Sentry distinctive is its embrace of the "dark IDE" aesthetic without
 ## 3. Typography Rules
 
 ### Font Families
-- **Display**: `Dammit Sans` — brand personality font for hero headings
+- **Display**: `Dammit Sans`, brand personality font for hero headings
 - **Primary UI**: `Rubik`, with fallbacks: `-apple-system, system-ui, Segoe UI, Helvetica, Arial`
 - **Monospace**: `Monaco`, with fallbacks: `Menlo, Ubuntu Mono`
 
@@ -94,7 +94,7 @@ What makes Sentry distinctive is its embrace of the "dark IDE" aesthetic without
 ### Principles
 - **Dual personality**: Dammit Sans brings irreverent brand character at display scale; Rubik provides clean professionalism for everything functional.
 - **Uppercase as system**: Buttons, captions, labels, and micro-text all use `text-transform: uppercase` with subtle letter-spacing (0.2px–0.25px), creating a systematic "technical label" pattern throughout.
-- **Weight stratification**: Rubik uses 400 (body), 500 (emphasis/nav), 600 (titles/strong), 700 (buttons/CTAs) — a clean four-tier weight system.
+- **Weight stratification**: Rubik uses 400 (body), 500 (emphasis/nav), 600 (titles/strong), 700 (buttons/CTAs), a clean four-tier weight system.
 - **Tight headings, relaxed body**: All headings use 1.10–1.25 line-height; body uses 1.50; small captions expand to 2.00 for readability at tiny sizes.
 
 ## 4. Component Stylings
@@ -208,29 +208,29 @@ What makes Sentry distinctive is its embrace of the "dark IDE" aesthetic without
 | Prominent (Level 3) | `rgba(0, 0, 0, 0.18) 0px 0.5rem 1.5rem` | Hover states, modals |
 | Ambient (Level 4) | `rgba(22, 15, 36, 0.9) 0px 4px 4px 9px` | Deep purple ambient glow around hero |
 
-**Shadow Philosophy**: Sentry uses a unique combination of inset shadows (buttons feel pressed INTO the surface) and ambient glows (content radiates from the dark background). The deep purple ambient shadow (`rgba(22, 15, 36, 0.9)`) is the signature — it creates a bioluminescent quality where content seems to emit its own purple-tinted light.
+**Shadow Philosophy**: Sentry uses a unique combination of inset shadows (buttons feel pressed INTO the surface) and ambient glows (content radiates from the dark background). The deep purple ambient shadow (`rgba(22, 15, 36, 0.9)`) is the signature. It creates a bioluminescent quality where content seems to emit its own purple-tinted light.
 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use deep purple backgrounds (`#1f1633`, `#150f23`) — never pure black (`#000000`)
+- Use deep purple backgrounds (`#1f1633`, `#150f23`): never pure black (`#000000`)
 - Apply inset shadows on primary buttons for the tactile pressed effect
-- Use Dammit Sans ONLY for hero/display headings — Rubik for everything else
+- Use Dammit Sans ONLY for hero/display headings. Rubik for everything else
 - Apply `text-transform: uppercase` with `letter-spacing: 0.2px` on buttons and labels
 - Use the lime-green accent (`#c2ef4e`) sparingly for maximum impact
 - Employ frosted glass effects (`blur(18px) saturate(180%)`) for layered surfaces
-- Maintain the warm purple shadow tones — shadows should feel purple-tinted, not neutral gray
+- Maintain the warm purple shadow tones: shadows should feel purple-tinted, not neutral gray
 - Use Rubik's 4-tier weight system: 400 (body), 500 (nav/emphasis), 600 (titles), 700 (CTAs)
 
 ### Don't
-- Don't use pure black (`#000000`) for backgrounds — always use the warm purple-blacks
-- Don't apply Dammit Sans to body text or UI elements — it's display-only
-- Don't use standard gray (`#666`, `#999`) for borders — use purple-tinted grays (`#362d59`, `#584674`)
-- Don't drop the uppercase treatment on buttons — it's a system-wide pattern
-- Don't use sharp corners (0px radius) — minimum 6px for all interactive elements
+- Don't use pure black (`#000000`) for backgrounds: always use the warm purple-blacks
+- Don't apply Dammit Sans to body text or UI elements: it's display-only
+- Don't use standard gray (`#666`, `#999`) for borders: use purple-tinted grays (`#362d59`, `#584674`)
+- Don't drop the uppercase treatment on buttons: it's a system-wide pattern
+- Don't use sharp corners (0px radius): minimum 6px for all interactive elements
 - Don't mix the lime-green accent with the coral/pink accents in the same component
-- Don't use flat (non-inset) shadows on primary buttons — the tactile quality is signature
-- Don't forget letter-spacing on uppercase text — 0.2px minimum
+- Don't use flat (non-inset) shadows on primary buttons: the tactile quality is signature
+- Don't forget letter-spacing on uppercase text: 0.2px minimum
 
 ## 8. Responsive Behavior
 
@@ -267,9 +267,9 @@ What makes Sentry distinctive is its embrace of the "dark IDE" aesthetic without
 - "Design a feature section: #150f23 background, 24px Rubik weight 500 heading, 16px Rubik weight 400 body text. 14px uppercase lime-green (#c2ef4e) label above heading."
 
 ### Iteration Guide
-1. Always start with the dark purple background — the color palette is built FOR dark mode
+1. Always start with the dark purple background: the color palette is built FOR dark mode
 2. Use inset shadows on buttons, ambient purple glows on hero sections
 3. Uppercase + letter-spacing is the systematic pattern for labels, buttons, and captions
-4. Lime green (#c2ef4e) is the "pop" color — use once per section maximum
+4. Lime green (#c2ef4e) is the "pop" color: use once per section maximum
 5. Frosted glass for overlaid panels, solid purple for primary surfaces
-6. Rubik handles 90% of typography — Dammit Sans is hero-only
+6. Rubik handles 90% of typography: Dammit Sans is hero-only

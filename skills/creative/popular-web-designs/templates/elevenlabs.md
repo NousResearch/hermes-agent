@@ -1,7 +1,7 @@
 # Design System: ElevenLabs
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `JetBrains Mono`
@@ -15,20 +15,20 @@
 
 ## 1. Visual Theme & Atmosphere
 
-ElevenLabs' website is a study in restrained elegance — a near-white canvas (`#ffffff`, `#f5f5f5`) where typography and subtle shadows do all the heavy lifting. The design feels like a premium audio product brochure: clean, spacious, and confident enough to let the content speak (literally, given ElevenLabs makes voice AI). There's an almost Apple-like quality to the whitespace strategy, but warmer — the occasional warm stone tint (`#f5f2ef`, `#777169`) prevents the purity from feeling clinical.
+ElevenLabs' website is a study in restrained elegance: a near-white canvas (`#ffffff`, `#f5f5f5`) where typography and subtle shadows do all the heavy lifting. The design feels like a premium audio product brochure: clean, spacious, and confident enough to let the content speak (literally, given ElevenLabs makes voice AI). There's an almost Apple-like quality to the whitespace strategy, but warmer, the occasional warm stone tint (`#f5f2ef`, `#777169`) prevents the purity from feeling clinical.
 
-The typography system is built on a fascinating duality: Waldenburg at weight 300 (light) for display headings creates ethereal, whisper-thin titles that feel like sound waves rendered in type — delicate, precise, and surprisingly impactful at large sizes. This light-weight display approach is the design's signature — where most sites use bold headings to grab attention, ElevenLabs uses lightness to create intrigue. Inter handles all body and UI text with workmanlike reliability, using slight positive letter-spacing (0.14px–0.18px) that gives body text an airy, well-spaced quality. WaldenburgFH appears as a bold uppercase variant for specific button labels.
+The typography system is built on a fascinating duality: Waldenburg at weight 300 (light) for display headings creates ethereal, whisper-thin titles that feel like sound waves rendered in type, delicate, precise, and surprisingly impactful at large sizes. This light-weight display approach is the design's signature, where most sites use bold headings to grab attention, ElevenLabs uses lightness to create intrigue. Inter handles all body and UI text with workmanlike reliability, using slight positive letter-spacing (0.14px–0.18px) that gives body text an airy, well-spaced quality. WaldenburgFH appears as a bold uppercase variant for specific button labels.
 
-What makes ElevenLabs distinctive is its multi-layered shadow system. Rather than simple box-shadows, elements use complex stacks: inset border-shadows (`rgba(0,0,0,0.075) 0px 0px 0px 0.5px inset`), outline shadows (`rgba(0,0,0,0.06) 0px 0px 0px 1px`), and soft elevation shadows (`rgba(0,0,0,0.04) 0px 4px 4px`) — all at remarkably low opacities. The result is a design where surfaces seem to barely exist, floating just above the page with the lightest possible touch. Pill-shaped buttons (9999px) with warm-tinted backgrounds (`rgba(245,242,239,0.8)`) and warm shadows (`rgba(78,50,23,0.04)`) add a tactile, physical quality.
+What makes ElevenLabs distinctive is its multi-layered shadow system. Rather than simple box-shadows, elements use complex stacks: inset border-shadows (`rgba(0,0,0,0.075) 0px 0px 0px 0.5px inset`), outline shadows (`rgba(0,0,0,0.06) 0px 0px 0px 1px`), and soft elevation shadows (`rgba(0,0,0,0.04) 0px 4px 4px`), all at remarkably low opacities. The result is a design where surfaces seem to barely exist, floating just above the page with the lightest possible touch. Pill-shaped buttons (9999px) with warm-tinted backgrounds (`rgba(245,242,239,0.8)`) and warm shadows (`rgba(78,50,23,0.04)`) add a tactile, physical quality.
 
 **Key Characteristics:**
 - Near-white canvas with warm undertones (`#f5f5f5`, `#f5f2ef`)
-- Waldenburg weight 300 (light) for display — ethereal, whisper-thin headings
-- Inter with positive letter-spacing (0.14–0.18px) for body — airy readability
-- Multi-layered shadow stacks at sub-0.1 opacity — surfaces barely exist
+- Waldenburg weight 300 (light) for display: ethereal, whisper-thin headings
+- Inter with positive letter-spacing (0.14–0.18px) for body: airy readability
+- Multi-layered shadow stacks at sub-0.1 opacity: surfaces barely exist
 - Pill buttons (9999px) with warm stone-tinted backgrounds
 - WaldenburgFH bold uppercase for specific CTA labels
-- Warm shadow tints: `rgba(78, 50, 23, 0.04)` — shadows have color, not just darkness
+- Warm shadow tints: `rgba(78, 50, 23, 0.04)`, shadows have color, not just darkness
 - Geist Mono / ui-monospace for code snippets
 
 ## 2. Color Palette & Roles
@@ -36,7 +36,7 @@ What makes ElevenLabs distinctive is its multi-layered shadow system. Rather tha
 ### Primary
 - **Pure White** (`#ffffff`): Primary background, card surfaces, button backgrounds
 - **Light Gray** (`#f5f5f5`): Secondary surface, subtle section differentiation
-- **Warm Stone** (`#f5f2ef`): Button background (at 80% opacity) — the warm signature
+- **Warm Stone** (`#f5f2ef`): Button background (at 80% opacity), the warm signature
 - **Black** (`#000000`): Primary text, headings, dark buttons
 
 ### Neutral Scale
@@ -45,7 +45,7 @@ What makes ElevenLabs distinctive is its multi-layered shadow system. Rather tha
 - **Near White** (`#f6f6f6`): Alternate light surface
 
 ### Interactive
-- **Grid Cyan** (`#7fffff`): `--grid-column-bg`, at 25% opacity — decorative grid overlay
+- **Grid Cyan** (`#7fffff`): `--grid-column-bg`, at 25% opacity, decorative grid overlay
 - **Ring Blue** (`rgb(147 197 253 / 0.5)`): `--tw-ring-color`, focus ring
 - **Border Light** (`#e5e5e5`): Explicit borders
 - **Border Subtle** (`rgba(0, 0, 0, 0.05)`): Ultra-subtle bottom borders
@@ -89,9 +89,9 @@ What makes ElevenLabs distinctive is its multi-layered shadow system. Rather tha
 | Tiny | Inter | 10px (0.63rem) | 400 | 1.60 (relaxed) | normal | Fine print |
 
 ### Principles
-- **Light as the hero weight**: Waldenburg at 300 is the defining typographic choice. Where other design systems use bold for impact, ElevenLabs uses lightness — thin strokes that feel like audio waveforms, creating intrigue through restraint.
+- **Light as the hero weight**: Waldenburg at 300 is the defining typographic choice. Where other design systems use bold for impact, ElevenLabs uses lightness, thin strokes that feel like audio waveforms, creating intrigue through restraint.
 - **Positive letter-spacing on body**: Inter uses +0.14px to +0.18px tracking across body text, creating an airy, well-spaced reading rhythm that contrasts with the tight display tracking (-0.96px).
-- **WaldenburgFH for emphasis**: A bold (700) uppercase variant of Waldenburg appears only in specific CTA button labels with 0.7px letter-spacing — the one place where the type system gets loud.
+- **WaldenburgFH for emphasis**: A bold (700) uppercase variant of Waldenburg appears only in specific CTA button labels with 0.7px letter-spacing, the one place where the type system gets loud.
 - **Monospace as ambient**: Geist Mono at relaxed line-height (1.85) for code blocks feels unhurried and readable.
 
 ## 4. Component Stylings
@@ -118,7 +118,7 @@ What makes ElevenLabs distinctive is its multi-layered shadow system. Rather tha
 - Padding: 12px 20px 12px 14px (asymmetric)
 - Radius: 30px
 - Shadow: `rgba(78, 50, 23, 0.04) 0px 6px 16px` (warm-tinted)
-- Use: Featured CTA, hero action — the signature warm button
+- Use: Featured CTA, hero action, the signature warm button
 
 **Uppercase Waldenburg Button**
 - Font: WaldenburgFH 14px weight 700
@@ -177,7 +177,7 @@ What makes ElevenLabs distinctive is its multi-layered shadow system. Rather tha
 
 ### Whitespace Philosophy
 - **Apple-like generosity**: Massive vertical spacing between sections creates a premium, unhurried pace. Each section is an exhibit.
-- **Warm emptiness**: The whitespace isn't cold — the warm stone undertones and warm shadows give empty space a tactile, physical quality.
+- **Warm emptiness**: The whitespace isn't cold, the warm stone undertones and warm shadows give empty space a tactile, physical quality.
 - **Typography-led rhythm**: The light-weight Waldenburg headings create visual "whispers" that draw the eye through vast white space.
 
 ### Border Radius Scale
@@ -199,32 +199,32 @@ What makes ElevenLabs distinctive is its multi-layered shadow system. Rather tha
 | Inset Edge (Level 0.5) | `rgba(0,0,0,0.075) 0px 0px 0px 0.5px inset, #fff 0px 0px 0px 0px inset` | Internal border definition |
 | Outline Ring (Level 1) | `rgba(0,0,0,0.06) 0px 0px 0px 1px` + `rgba(0,0,0,0.04) 0px 1px 2px` + `rgba(0,0,0,0.04) 0px 2px 4px` | Shadow-as-border for cards |
 | Card (Level 2) | `rgba(0,0,0,0.4) 0px 0px 1px, rgba(0,0,0,0.04) 0px 4px 4px` | Button elevation, prominent cards |
-| Warm Lift (Level 3) | `rgba(78,50,23,0.04) 0px 6px 16px` | Featured CTAs — warm-tinted |
+| Warm Lift (Level 3) | `rgba(78,50,23,0.04) 0px 6px 16px` | Featured CTAs: warm-tinted |
 | Focus (Accessibility) | `var(--tw-ring-offset-shadow)` blue ring | Keyboard focus |
 
-**Shadow Philosophy**: ElevenLabs uses the most refined shadow system of any design system analyzed. Every shadow is at sub-0.1 opacity, many include both outward cast AND inward inset components, and the warm CTA shadows use an actual warm color (`rgba(78,50,23,...)`) rather than neutral black. The inset half-pixel borders (`0px 0px 0px 0.5px inset`) create edges so subtle they're felt rather than seen — surfaces define themselves through the lightest possible touch.
+**Shadow Philosophy**: ElevenLabs uses the most refined shadow system of any design system analyzed. Every shadow is at sub-0.1 opacity, many include both outward cast AND inward inset components, and the warm CTA shadows use an actual warm color (`rgba(78,50,23,...)`) rather than neutral black. The inset half-pixel borders (`0px 0px 0px 0.5px inset`) create edges so subtle they're felt rather than seen. Surfaces define themselves through the lightest possible touch.
 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use Waldenburg weight 300 for all display headings — the lightness IS the brand
+- Use Waldenburg weight 300 for all display headings: the lightness IS the brand
 - Apply multi-layer shadows (inset + outline + elevation) at sub-0.1 opacity
 - Use warm stone tints (`#f5f2ef`, `rgba(245,242,239,0.8)`) for featured elements
 - Apply positive letter-spacing (+0.14px to +0.18px) on Inter body text
-- Use 9999px radius for primary buttons — pill shape is standard
+- Use 9999px radius for primary buttons: pill shape is standard
 - Use warm-tinted shadows (`rgba(78,50,23,0.04)`) on featured CTAs
 - Keep the page predominantly white with subtle gray section differentiation
 - Use WaldenburgFH bold uppercase ONLY for specific CTA button labels
 
 ### Don't
-- Don't use bold (700) Waldenburg for headings — weight 300 is non-negotiable
-- Don't use heavy shadows (>0.1 opacity) — the ethereal quality requires whisper-level depth
-- Don't use cool gray borders — the system is warm-tinted throughout
-- Don't skip the inset shadow component — half-pixel inset borders define edges
-- Don't apply negative letter-spacing to body text — Inter uses positive tracking
-- Don't use sharp corners (<8px) on cards — the generous radius is structural
-- Don't introduce brand colors — the palette is intentionally achromatic with warm undertones
-- Don't make buttons opaque and heavy — the warm translucent stone treatment is the signature
+- Don't use bold (700) Waldenburg for headings: weight 300 is non-negotiable
+- Don't use heavy shadows (>0.1 opacity): the ethereal quality requires whisper-level depth
+- Don't use cool gray borders: the system is warm-tinted throughout
+- Don't skip the inset shadow component: half-pixel inset borders define edges
+- Don't apply negative letter-spacing to body text: Inter uses positive tracking
+- Don't use sharp corners (<8px) on cards: the generous radius is structural
+- Don't introduce brand colors: the palette is intentionally achromatic with warm undertones
+- Don't make buttons opaque and heavy: the warm translucent stone treatment is the signature
 
 ## 8. Responsive Behavior
 
@@ -270,9 +270,9 @@ What makes ElevenLabs distinctive is its multi-layered shadow system. Rather tha
 - "Design navigation: white sticky header. Inter 15px weight 500. Black pill CTA right-aligned. Border-bottom: rgba(0,0,0,0.05)."
 
 ### Iteration Guide
-1. Start with white — the warm undertone comes from shadows and stone surfaces, not backgrounds
-2. Waldenburg 300 for headings — never bold, the lightness is the identity
+1. Start with white: the warm undertone comes from shadows and stone surfaces, not backgrounds
+2. Waldenburg 300 for headings: never bold, the lightness is the identity
 3. Multi-layer shadows: always include inset + outline + elevation at sub-0.1 opacity
-4. Positive letter-spacing on Inter body (+0.14px to +0.18px) — the airy reading quality
-5. Warm stone CTA is the signature — `rgba(245,242,239,0.8)` with `rgba(78,50,23,0.04)` shadow
+4. Positive letter-spacing on Inter body (+0.14px to +0.18px): the airy reading quality
+5. Warm stone CTA is the signature: `rgba(245,242,239,0.8)` with `rgba(78,50,23,0.04)` shadow
 6. Pill (9999px) for buttons, generous radius (16px–24px) for cards

@@ -326,6 +326,21 @@ class TestRefreshActiveFeatures:
 
 
 class TestInstallSpecs:
+    def test_live_venv_hazard_is_blocked_before_an_installer_command(self, monkeypatch):
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(ld, "_live_venv_install_refusal", lambda _specs: "package directory is a symlink")
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *_a, **_kw: pytest.fail("install_specs reached the installer for a live-venv hazard"),
+        )
+
+        result = ld.install_specs(["somepkg==1.2.3"])
+
+        assert result.blocked is True
+        assert result.reason == "package directory is a symlink"
+        assert result.command == ""
+
     def test_uv_tier_runs_from_the_checkout_so_exclude_newer_applies(self, monkeypatch, tmp_path):
         """uv reads ``[tool.uv] exclude-newer`` from the cwd project only; a plugin-dep install launched from
         $HOME or a gateway service must still run under the checkout's quarantine, so the uv invocation
@@ -341,7 +356,7 @@ class TestInstallSpecs:
 
         monkeypatch.setattr(ld, "_run_installer", fake_run)
         monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
-        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: tmp_path / "lazy-packages")
         monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **kw: None)
         monkeypatch.chdir(tmp_path)
         project_root = Path(ld.__file__).resolve().parent.parent
@@ -474,10 +489,11 @@ class TestInstallWarmsBytecode:
     """The warm runs on install success, and only on success."""
 
     @staticmethod
-    def _install(monkeypatch, returncode):
+    def _install(monkeypatch, tmp_path, returncode):
         calls = []
         cmds = []
-        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        target = tmp_path / "lazy-packages"
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: target)
         monkeypatch.setattr(ld.shutil, "which", lambda name: "uv" if name == "uv" else None)
         monkeypatch.setattr(
             "hermes_cli.managed_uv.resolve_uv", lambda *a, **kw: "uv", raising=False
@@ -499,13 +515,12 @@ class TestInstallWarmsBytecode:
             lambda specs, target: calls.append((specs, target)),
         )
         result = ld._venv_pip_install(("zzzfake==1.0",))
-        return result, calls, cmds
+        return result, calls, cmds, target
 
-
-    def test_uv_tier_compiles_bytecode_for_the_whole_install(self, monkeypatch):
+    def test_uv_tier_compiles_bytecode_for_the_whole_install(self, monkeypatch, tmp_path):
         # uv does not write __pycache__ unless asked (pip does). The flag
         # covers transitive deps too, which the per-spec warm never sees.
-        _, _, cmds = self._install(monkeypatch, 0)
+        _, _, cmds, _ = self._install(monkeypatch, tmp_path, 0)
         uv_cmds = [c for c in cmds if c[:3] == ["uv", "pip", "install"]]
         assert len(uv_cmds) == 1
         cmd = uv_cmds[0]
@@ -541,6 +556,7 @@ class TestPipConfIndexBridge:
         monkeypatch.setattr(ld, "_run_installer", fake_run)
         monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
         monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **k: None)
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: tmp_path / "lazy-packages")
         result = ld._venv_pip_install(("somepkg==1.0",))
         assert result.success
         return captured["env"]

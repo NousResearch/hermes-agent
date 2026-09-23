@@ -153,26 +153,148 @@ class TestInstallArgConstruction:
         # ...and the spec is last.
         assert cmd[-1] == "somepkg==1.2.3"
 
-    def test_no_target_args_in_venv_scoped_mode(self, monkeypatch):
-        # Env unset → plain venv-scoped install, no --target / --constraint.
+    def test_no_target_allows_safe_local_venv_install(self, monkeypatch, tmp_path):
+        """A normal local venv remains a supported install destination."""
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
-        monkeypatch.setattr(ld.shutil, "which", lambda _: None)
-        captured = {}
+        purelib = tmp_path / "site-packages"
+        purelib.mkdir()
+        monkeypatch.setattr(ld.sysconfig, "get_paths", lambda: {"purelib": str(purelib)})
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "uv")
+        monkeypatch.setattr(ld, "_after_successful_install", lambda *_a: None)
+        calls = []
 
-        def fake_run(cmd, *a, **k):
-            if "--version" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, "pip 24.0", "")
-            captured["cmd"] = cmd
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
             return subprocess.CompletedProcess(cmd, 0, "ok", "")
 
-        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        monkeypatch.setattr(ld, "_run_installer", fake_run)
         result = ld._venv_pip_install(("somepkg==1.2.3",))
         assert result.success
-        assert "--target" not in captured["cmd"]
-        assert "--constraint" not in captured["cmd"]
+        assert calls == [["uv", "pip", "install", "--compile-bytecode", "somepkg==1.2.3"]]
 
-    def test_uv_resolution_failure_does_not_fall_through_to_pip(self, monkeypatch):
+    def test_no_target_refuses_symlinked_dist_info(self, monkeypatch, tmp_path):
+        purelib = tmp_path / "site-packages"
+        purelib.mkdir()
+        (purelib / "somepkg-1.2.3.dist-info").symlink_to(tmp_path / "elsewhere")
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(ld.sysconfig, "get_paths", lambda: {"purelib": str(purelib)})
+        monkeypatch.setattr(
+            ld, "_run_installer",
+            lambda *_a, **_kw: pytest.fail("hazardous live-venv install reached the installer"),
+        )
+
+        result = ld._venv_pip_install(("somepkg==1.2.3",))
+
+        assert not result.success
+        assert "dist-info is a symlink" in result.stderr
+
+    def test_no_target_matches_underscore_dist_info_for_hyphenated_spec(self, monkeypatch, tmp_path):
+        purelib = tmp_path / "site-packages"
+        purelib.mkdir()
+        (purelib / "some_pkg-1.2.3.dist-info").symlink_to(tmp_path / "elsewhere")
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(ld.sysconfig, "get_paths", lambda: {"purelib": str(purelib)})
+        monkeypatch.setattr(
+            ld, "_run_installer",
+            lambda *_a, **_kw: pytest.fail("hyphenated hazardous install reached the installer"),
+        )
+
+        result = ld._venv_pip_install(("some-pkg==1.2.3",))
+
+        assert not result.success
+        assert "dist-info is a symlink" in result.stderr
+
+    def test_no_target_ignores_another_distribution_with_the_same_prefix(self, monkeypatch, tmp_path):
+        purelib = tmp_path / "site-packages"
+        purelib.mkdir()
+        (purelib / "foo-1.0.dist-info").mkdir()
+        (purelib / "foo-1.0.dist-info" / "METADATA").write_text("Name: foo\n", encoding="utf-8")
+        (purelib / "foo-bar-1.0.dist-info").symlink_to(tmp_path / "elsewhere")
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(ld.sysconfig, "get_paths", lambda: {"purelib": str(purelib)})
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "uv")
+        monkeypatch.setattr(ld, "_after_successful_install", lambda *_a: None)
+        calls = []
+        monkeypatch.setattr(
+            ld, "_run_installer",
+            lambda cmd, **_kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "ok", ""),
+        )
+
+        result = ld._venv_pip_install(("foo==1.0",))
+
+        assert result.success
+        assert calls
+
+    def test_no_target_refuses_duplicate_dist_info(self, monkeypatch, tmp_path):
+        purelib = tmp_path / "site-packages"
+        purelib.mkdir()
+        (purelib / "somepkg-1.2.2.dist-info").mkdir()
+        (purelib / "somepkg-1.2.3.dist-info").mkdir()
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(ld.sysconfig, "get_paths", lambda: {"purelib": str(purelib)})
+
+        result = ld._venv_pip_install(("somepkg==1.2.3",))
+
+        assert not result.success
+        assert "multiple dist-info directories" in result.stderr
+
+    def test_no_target_refuses_an_imported_package(self, monkeypatch, tmp_path):
+        purelib = tmp_path / "site-packages"
+        package = purelib / "somepkg"
+        package.mkdir(parents=True)
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(ld.sysconfig, "get_paths", lambda: {"purelib": str(purelib)})
+        monkeypatch.setattr(ld, "_installed_dist_roots", lambda *_a: {package})
+        monkeypatch.setattr(ld, "_installed_import_names", lambda *_a: {"somepkg"})
+        monkeypatch.setitem(ld.sys.modules, "somepkg.client", object())
+        monkeypatch.setattr(
+            ld, "_run_installer",
+            lambda *_a, **_kw: pytest.fail("imported package reached the installer"),
+        )
+
+        result = ld._venv_pip_install(("somepkg==1.2.3",))
+
+        assert not result.success
+        assert "already imported by this process" in result.stderr
+
+    def test_no_target_refuses_an_imported_single_file_module(self, monkeypatch, tmp_path):
+        purelib = tmp_path / "site-packages"
+        purelib.mkdir()
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(ld.sysconfig, "get_paths", lambda: {"purelib": str(purelib)})
+        monkeypatch.setattr(ld, "_installed_dist_roots", lambda *_a: set())
+        monkeypatch.setattr(ld, "_installed_import_names", lambda *_a: {"somepkg"})
+        monkeypatch.setitem(ld.sys.modules, "somepkg", object())
+        monkeypatch.setattr(
+            ld, "_run_installer",
+            lambda *_a, **_kw: pytest.fail("imported single-file module reached the installer"),
+        )
+
+        result = ld._venv_pip_install(("somepkg==1.2.3",))
+
+        assert not result.success
+        assert "already imported by this process" in result.stderr
+
+    def test_no_target_hazard_does_not_block_dry_run(self, monkeypatch, tmp_path):
+        purelib = tmp_path / "site-packages"
+        purelib.mkdir()
+        (purelib / "somepkg-1.2.3.dist-info").symlink_to(tmp_path / "elsewhere")
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(ld.sysconfig, "get_paths", lambda: {"purelib": str(purelib)})
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "uv")
+        calls = []
+        monkeypatch.setattr(
+            ld, "_run_installer",
+            lambda cmd, **_kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "ok", ""),
+        )
+
+        result = ld._venv_pip_install(("somepkg==1.2.3",), dry_run=True)
+
+        assert result.success
+        assert "--dry-run" in calls[0]
+
+    def test_uv_resolution_failure_does_not_fall_through_to_pip(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path / "lazy-packages"))
         monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: "uv")
         calls = []
 

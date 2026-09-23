@@ -53,12 +53,17 @@ def test_nixos_install_fails_fast_without_touching_the_installer(monkeypatch):
 def test_unmanaged_install_is_not_blocked_by_the_guard(monkeypatch):
     """On a normal pip install the guard must be transparent."""
     monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: None)
+    called = []
+    monkeypatch.setattr(
+        lazy_deps, "_venv_pip_install",
+        lambda specs: called.append(specs) or lazy_deps._InstallResult(False, "", "installer ran"),
+    )
 
     with pytest.raises(FeatureUnavailable) as excinfo:
         lazy_deps.ensure(FEATURE, prompt=False)
 
-    # Whatever stops the install here, it must NOT be the managed guard.
-    assert "managed installs" not in excinfo.value.reason
+    assert called == [("some-pkg==1.0",)]
+    assert "installer ran" in excinfo.value.reason
 
 
 def test_durable_install_target_overrides_the_guard(monkeypatch, tmp_path):

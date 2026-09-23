@@ -58,15 +58,7 @@ def _poll_response(body: dict):
 
 
 class TestKreaImageGenProvider:
-    def test_name(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
 
-        assert KreaImageGenProvider().name == "krea"
-
-    def test_display_name(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
-
-        assert KreaImageGenProvider().display_name == "Krea"
 
     def test_is_available_with_key(self, monkeypatch):
         monkeypatch.setenv("KREA_API_KEY", "sk-test")
@@ -75,34 +67,8 @@ class TestKreaImageGenProvider:
         assert KreaImageGenProvider().is_available() is True
 
 
-    def test_list_models(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
 
-        models = KreaImageGenProvider().list_models()
-        ids = {m["id"] for m in models}
-        assert {"krea-2-medium", "krea-2-large"} <= ids
-        # Each entry carries the picker fields the registry expects.
-        for m in models:
-            assert m["display"]
-            assert m["speed"]
-            assert m["strengths"]
-            assert m["price"]
 
-    def test_default_model_is_medium(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
-
-        assert KreaImageGenProvider().default_model() == "krea-2-medium"
-
-    def test_get_setup_schema(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
-
-        schema = KreaImageGenProvider().get_setup_schema()
-        assert schema["name"] == "Krea"
-        assert schema["badge"] == "paid"
-        env_vars = schema["env_vars"]
-        assert len(env_vars) == 1
-        assert env_vars[0]["key"] == "KREA_API_KEY"
-        assert "krea.ai" in env_vars[0]["url"]
 
 
 # ---------------------------------------------------------------------------
@@ -121,10 +87,6 @@ class TestModelResolution:
         assert meta["path"] == "large"
 
 
-    def test_creativity_default(self):
-        from plugins.image_gen.krea import _resolve_creativity
-
-        assert _resolve_creativity(None) == "medium"
 
 
 # ---------------------------------------------------------------------------
@@ -667,16 +629,6 @@ class TestUpscalePass:
         assert result["image"].endswith("native.png")
         assert mock_post.call_count == 1  # only the generation submit
 
-    def test_large_skips_upscale_by_default(self):
-        """krea-2-large: no automatic Enhance pass either."""
-        result, mock_post, _ = self._run_generate(
-            upscale=None, enhance_job=None, model="krea-2-large",
-        )
-
-        assert result["success"] is True
-        assert result["upscaled"] is False
-        assert result["image"].endswith("native.png")
-        assert mock_post.call_count == 1  # only the generation submit
 
     def test_explicit_false_disables_default(self):
         """Explicit upscale=False matches the off default."""

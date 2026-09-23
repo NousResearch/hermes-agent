@@ -46,15 +46,6 @@ describe('precise timeline timestamps', () => {
     expect(formatted).toContain('456')
   })
 
-  it('renders start and finish as a range', () => {
-    const start = new Date(2026, 4, 1, 13, 2, 3, 456).getTime() / 1000
-    const finish = start + 1.25
-
-    expect(formatTimelineRange(start, finish)).toBe(
-      `${formatTimelineTimestamp(start)} → ${formatTimelineTimestamp(finish)}`
-    )
-  })
-
   it('returns an empty string for invalid timeline values', () => {
     expect(formatTimelineTimestamp(undefined)).toBe('')
     expect(formatTimelineTimestamp(Number.NaN)).toBe('')

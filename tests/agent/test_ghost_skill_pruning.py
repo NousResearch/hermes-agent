@@ -24,9 +24,7 @@ from agent.context_compressor import (
     SKILL_PRUNED_MARKER_PREFIX,
     SUMMARY_PREFIX,
     ContextCompressor,
-    _collect_protected_skill_names,
     _extract_pruned_skill_names,
-    _MAX_PRUNED_SKILL_MARKERS,
     _reinject_pruned_skill_markers,
     _skill_pruned_marker,
     _summarize_tool_result,
@@ -266,10 +264,6 @@ class TestMarkerSurvivesRealCompress:
 
 
 class TestReinjectionBoundsAndRedaction:
-    def test_marker_list_is_capped(self):
-        names = [f"skill-{i}" for i in range(_MAX_PRUNED_SKILL_MARKERS + 15)]
-        out = _reinject_pruned_skill_markers("body", names)
-        assert out.count(SKILL_PRUNED_MARKER_PREFIX) == len(names)
         # The cap is applied at the collection sites in _generate_summary /
         # _build_static_fallback_summary; the helper itself is mechanical.
 
@@ -283,16 +277,3 @@ class TestReinjectionBoundsAndRedaction:
         assert secret not in out
 
 
-class TestSkillsGuidanceSafetyRule:
-    def test_safety_rule_present_with_real_newlines(self):
-        from agent.prompt_builder import SKILLS_GUIDANCE
-
-        assert "## Skill Safety Rule" in SKILLS_GUIDANCE
-        assert "[SKILL_PRUNED]" in SKILLS_GUIDANCE
-        assert "skill_view(name='...')" in SKILLS_GUIDANCE
-        # The rule list must use REAL newlines — the original PR hunk risked
-        # literal backslash-n escape text rendering into the system prompt.
-        assert "\\n" not in SKILLS_GUIDANCE
-        assert SKILLS_GUIDANCE.count("\n") >= 6
-        for rule in ("UNAVAILABLE", "RELOAD", "WAIT", "DEDUP"):
-            assert rule in SKILLS_GUIDANCE

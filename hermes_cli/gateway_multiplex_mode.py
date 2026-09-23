@@ -26,6 +26,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 SINGLE_PROFILE_REASON = "only one profile exists (nothing to multiplex)"
+STANDALONE_PROFILE_REASON = "this profile is standalone (gateway.standalone: true); it serves only itself"
 
 #: ``gateway.multiplex_profiles: false`` is no longer an opt-out from the one-gateway-per-host
 #: topology; it parses, it is reported, and it is ignored.
@@ -90,6 +91,22 @@ class MultiplexDecision:
     reason: str = ""
 
 
+def _standalone_launcher() -> bool:
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    from hermes_cli.profiles import profile_is_standalone
+
+    home = get_hermes_home()
+    return profile_name_for_home(home) not in (None, "default") and profile_is_standalone(home)
+
+
+def standalone_launcher_decision(config) -> Optional[MultiplexDecision]:
+    """The per-profile opt-out also binds callers supplying an explicit GatewayConfig."""
+    if not _standalone_launcher():
+        return None
+    config.multiplex_profiles = False
+    return MultiplexDecision(False, "guard", STANDALONE_PROFILE_REASON)
+
+
 def implicit_multiplex_blocker() -> Optional[str]:
     """Why THIS process must not multiplex right now, or None when it may.
 
@@ -109,6 +126,8 @@ def implicit_multiplex_blocker() -> Optional[str]:
     verb built on "the default's multiplexer" blind to the process actually serving the host.
     """
     from hermes_cli.profiles import profiles_to_serve
+    if _standalone_launcher():
+        return STANDALONE_PROFILE_REASON
     # Cheap and first: a single-profile install has nothing to multiplex, and the fail-closed secret
     # scope the multiplexer arms buys it nothing. (Also keeps every embedded/test runner off the
     # service-manager probes below.) Create a second profile and restart to start serving it.
@@ -141,6 +160,9 @@ def resolve_multiplex_mode(config) -> MultiplexDecision:
     says why, and it converges by itself once ``hermes gateway migrate --multiplex`` has run.
     """
     current = getattr(config, "multiplex_profiles", None)
+    standalone = standalone_launcher_decision(config)
+    if standalone is not None:
+        return standalone
     if current:
         return MultiplexDecision(True, "config")
     retired_opt_out = current is False
@@ -177,8 +199,7 @@ def log_multiplex_decision(decision: MultiplexDecision) -> None:
         logger.info("Single-profile install: gateway.multiplex_profiles unset, serving the default profile only.")
     elif decision.source == "guard":
         logger.warning(
-            "This gateway stays standalone: %s. It serves the default profile only; the host "
-            "converges once that is resolved.",
+            "This gateway stays standalone: %s. It serves only the launching profile.",
             decision.reason)
     elif decision.source == "default":
         logger.info("Serving every profile on this host (gateway.multiplex_profiles unset; default on).")

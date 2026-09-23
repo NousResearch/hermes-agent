@@ -114,6 +114,9 @@ class MigrationPlan:
     interrupted: bool = False
     blockers: list[str] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
+    # Profiles that authored `gateway.standalone: true`: they keep their own gateway and are neither
+    # a blocker nor a fold target — the plan names them so the operator knows they were left alone.
+    standalone_by_config: tuple[str, ...] = ()
 
     @property
     def secondaries(self) -> list[ProfileGateway]:
@@ -160,6 +163,7 @@ class MigrationPlan:
         return {
             "default_home": str(self.default_home),
             "profiles": [p.to_dict() for p in self.profiles],
+            "standalone_by_config": list(self.standalone_by_config),
             "multiplex_flag_on": self.multiplex_flag_on,
             "live_served": self.live_served,
             "already_multiplexed": self.already_multiplexed,
@@ -557,6 +561,11 @@ def build_migration_plan() -> MigrationPlan:
         live_served=recorded_served_profiles(default_home),
         manifest=_read_manifest(default_home),
     )
+    from hermes_cli.profiles import profiles_to_serve
+    foldable = {name for name, _home in _profile_homes()}
+    plan.standalone_by_config = tuple(
+        name for name, _home in profiles_to_serve(True, include_standalone=True)
+        if name != "default" and name not in foldable)
     plan.interrupted = plan.multiplex_flag_on and _manifest_not_yet_served(plan.manifest, plan.live_served)
     if len(plan.profiles) < 2:
         plan.notices.append("Only one profile exists: nothing to multiplex.")
@@ -609,6 +618,9 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     lines = [head, f"  default home: {plan.default_home}", "", "  profile      gateway pid   service"]
     for p in plan.profiles:
         lines.append(f"  {p.name:<12} {str(p.pid or '-'):<13} {p.service_label()}")
+    if plan.standalone_by_config:
+        lines.append(f"  Standalone by config (gateway.standalone: true), left alone: "
+                     f"{', '.join(plan.standalone_by_config)}")
     lines.append("")
     if plan.already_multiplexed:
         lines.append("  ✓ The default gateway is already multiplexing"

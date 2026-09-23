@@ -1198,6 +1198,8 @@ function Resolve-HermesVenvDir([string]$Root) {
 }
 
 $finalCode = 1
+$manualAction = $false
+$manualMsg = ""
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
 
@@ -1688,10 +1690,13 @@ try {
     if ($res.Code -eq 0 -and -not $desktopBuildFailed -and -not $NoGateway) {
         $gatewayRestart = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "gateway", "start", "--all") "gateway restart"
         if ($gatewayRestart.Code -ne 0) {
-            $finalCode = 9
-            $finalMsg = "Update completed, but Hermes could not restart every messaging gateway. Reopen Hermes and run `hermes gateway start --all` in a terminal."
-            Write-HandoffLog $finalMsg
-            exit $finalCode
+            # The update itself succeeded; a restart miss is a manual follow-up
+            # (Write-Result's manual flag -> Desktop boot dialog), never a failed
+            # update: a non-zero exit here would run the error finale and hide
+            # the fact that the new runtime is installed and verified.
+            $manualAction = $true
+            $manualMsg = "Update complete, but Hermes could not restart every messaging gateway. Run `hermes gateway start --all` in a terminal."
+            Write-HandoffLog $manualMsg
         }
     }
 
@@ -1726,7 +1731,8 @@ try {
         Show-ErrorFinale $finalMsg
         Close-ProgressWindow
     } else {
-        Write-Result ($finalCode -eq 0) $finalCode $finalMsg
+        if ($finalCode -eq 0 -and $manualAction) { $finalMsg = $manualMsg }
+        Write-Result ($finalCode -eq 0) $finalCode $finalMsg ($finalCode -eq 0 -and $manualAction)
         Remove-MarkerIfOwned
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg

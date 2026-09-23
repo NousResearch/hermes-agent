@@ -58,3 +58,16 @@ def test_successful_local_update_restarts_all_gateways_after_verification() -> N
         "-NoGateway must keep remote-served Desktop from starting a local "
         "messaging gateway"
     )
+
+    # The update has already succeeded when the restart runs: a restart
+    # failure surfaces as a manual follow-up (Write-Result's manual flag, the
+    # Desktop's boot dialog), never as a non-zero exit that reads as a failed
+    # update and triggers the error finale.
+    after_restart = source[source.index(restart):]
+    # The failure branch is the `if ($gatewayRestart.Code -ne 0) { ... }` block right
+    # after the step; the normal success finale that follows it is out of scope.
+    failure_branch = after_restart[: after_restart.index("if ($res.Code -eq 0 -and -not $desktopBuildFailed) {")]
+    assert "$manualAction = $true" in failure_branch
+    assert "$finalCode =" not in failure_branch, (
+        "a gateway restart failure must not rewrite the update's exit code"
+    )

@@ -9,6 +9,8 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
+import sys
+from types import ModuleType
 from typing import get_args
 
 from agent.transports.hermes_tools_mcp_server import (
@@ -106,6 +108,56 @@ class TestModuleSurface:
             f"these tools must NOT be exposed via the codex callback "
             f"because codex has built-in equivalents: {leaked}"
         )
+
+    def test_server_instructions_match_exposed_tool_surface(self, monkeypatch):
+        """MCP instructions must not advertise agent-loop-only tools."""
+        from agent.transports import hermes_tools_mcp_server as module
+
+        captured = {}
+
+        class FakeMCPServer:
+            def __init__(self, name, instructions):
+                captured["name"] = name
+                captured["instructions"] = instructions
+
+            def add_tool(self, *args, **kwargs):
+                return None
+
+        mcp_module = ModuleType("mcp")
+        mcp_module.__path__ = []
+        server_module = ModuleType("mcp.server")
+        server_module.MCPServer = FakeMCPServer
+        mcp_module.server = server_module
+
+        model_tools_module = ModuleType("model_tools")
+        model_tools_module.get_tool_definitions = (
+            lambda quiet_mode=True: []
+        )
+        model_tools_module.handle_function_call = lambda *args, **kwargs: ""
+
+        monkeypatch.setitem(sys.modules, "mcp", mcp_module)
+        monkeypatch.setitem(sys.modules, "mcp.server", server_module)
+        monkeypatch.setitem(sys.modules, "model_tools", model_tools_module)
+
+        module._build_server()
+
+        instructions = captured["instructions"].lower()
+        for unavailable in (
+            "subagent delegation",
+            "persistent memory",
+            "cross-session search",
+        ):
+            assert unavailable not in instructions
+        for available in (
+            "web search",
+            "browser automation",
+            "vision analysis",
+            "image generation",
+            "skills",
+            "text-to-speech",
+            "kanban task handoff",
+        ):
+            assert available in instructions
 
 
 

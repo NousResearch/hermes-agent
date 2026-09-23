@@ -5,7 +5,7 @@ Tests for the subagent delegation tool.
 Uses mock AIAgent instances to test the delegation logic without
 requiring API keys or real LLM calls.
 
-Run with:  python -m pytest tests/test_delegate.py -v
+Run with:  python -m pytest tests/tools/test_delegate.py -v
    or:     python tests/test_delegate.py
 """
 

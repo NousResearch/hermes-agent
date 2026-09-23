@@ -9,13 +9,13 @@ This script simulates batch processing with intentional failures to test:
 
 Usage:
     # Test current implementation
-    python tests/test_checkpoint_resumption.py --test_current
+    python tests/integration/test_checkpoint_resumption.py --test_current
 
     # Test after fix is applied
-    python tests/test_checkpoint_resumption.py --test_fixed
+    python tests/integration/test_checkpoint_resumption.py --test_fixed
 
     # Run full comparison
-    python tests/test_checkpoint_resumption.py --compare
+    python tests/integration/test_checkpoint_resumption.py --compare
 """
 
 import pytest
@@ -436,4 +436,3 @@ def main(
 if __name__ == "__main__":
     import fire
     fire.Fire(main)
-

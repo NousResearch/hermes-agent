@@ -803,3 +803,31 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+
+class TestMoveFileNeverOverwrites:
+    """``move_file`` refuses anything already at ``dst``. Regression: a plain ``mv``
+    replaced an existing file or symlink, and moved the source INTO an existing
+    directory (clobbering ``dir/<name>``), then reported success."""
+
+    @pytest.mark.parametrize("kind", ["file", "directory", "dangling_symlink"])
+    def test_existing_destination_is_refused_and_left_intact(self, tmp_path, kind):
+        src, dst = tmp_path / "notes.txt", tmp_path / "dst"
+        src.write_text("scratch\n")
+        if kind == "file":
+            dst.write_text("precious\n")
+        elif kind == "directory":
+            dst.mkdir()
+            (dst / "notes.txt").write_text("precious\n")
+        else:
+            dst.symlink_to(tmp_path / "absent")
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        result = ops.move_file(str(src), str(dst))
+
+        assert "already exists" in (result.error or "")
+        assert src.read_text() == "scratch\n"
+        if kind == "dangling_symlink":
+            assert dst.is_symlink() and not dst.exists()
+        else:
+            assert (dst / "notes.txt" if kind == "directory" else dst).read_text() == "precious\n"

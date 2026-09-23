@@ -123,7 +123,8 @@ class FileOperations(ABC):
 
     @abstractmethod
     def move_file(self, src: str, dst: str) -> WriteResult:
-        """Move/rename a file. Returns WriteResult with .error set on failure."""
+        """Move/rename a file, never over anything already at ``dst`` (file,
+        directory or symlink). Returns WriteResult with .error set on failure."""
 
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
@@ -146,6 +147,9 @@ NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
 # compound command only reports its *last* exit status, so the missing-file
 # signal that ``_probe_regular_file`` carries in ``exit 1`` travels in-band.
 MISSING_SENTINEL = "__hermes_missing__"
+
+# Echoed by the lexists probe (``path_exists``, ``move_file``) when anything is at the path.
+EXISTS_SENTINEL = "__hermes_exists__"
 
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
@@ -1285,6 +1289,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
         return WriteResult()
 
+    def path_exists(self, path: str) -> Optional[bool]:
+        """``lexists`` on the backend: True for a file, directory or symlink (dangling
+        included — ``-e`` follows links, hence ``-L``); None when the probe did not run.
+        V4A Move asks this because a ``read_file_raw`` error is not absence: it also
+        refuses binaries, non-UTF-8 text and directories."""
+        arg = self._escape_shell_arg(self._expand_path(path))
+        output = self._exec(f"if [ -e {arg} ] || [ -L {arg} ]; then echo {EXISTS_SENTINEL}; "
+                            f"else echo {MISSING_SENTINEL}; fi").stdout or ""
+        if EXISTS_SENTINEL in output:
+            return True
+        return False if MISSING_SENTINEL in output else None
+
     def move_file(self, src: str, dst: str) -> WriteResult:
         src = self._expand_path(src)
         dst = self._expand_path(dst)
@@ -1292,7 +1308,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             denied = get_write_denied_error(p, verb="Move")
             if denied:
                 return WriteResult(error=denied)
-        result = self._exec(f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}")
+        # Test and ``mv`` in ONE command: ``mv`` replaces a file or symlink and moves
+        # INTO a directory (clobbering ``dir/<name>``), and a caller's own check is
+        # stale by the time an earlier op of the same patch has applied.
+        d = self._escape_shell_arg(dst)
+        result = self._exec(f"if [ -e {d} ] || [ -L {d} ]; then echo {EXISTS_SENTINEL}; "
+                            f"else mv {self._escape_shell_arg(src)} {d}; fi")
+        if EXISTS_SENTINEL in (result.stdout or ""):
+            return WriteResult(error=f"Failed to move {src} -> {dst}: destination already exists")
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")
         return WriteResult()

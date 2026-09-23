@@ -185,8 +185,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_set_journal_mode.add_argument("--db", default=None, metavar="PATH",
         help="Convert another Hermes SQLite store (e.g. kanban.db) instead of the profile's state.db")
     _flag(sessions_set_journal_mode, "--force",
-        help="Windows only: proceed without the holder scan (which does not exist there) after stopping "
-            "every Hermes process yourself")
+        help="Accepted for compatibility: the holder scan covers Windows too, so this flag no longer "
+            "waives any check — stop every Hermes process and the scan clears on its own")
 
     sessions_repair_routing = sessions_subparsers.add_parser(
         "repair-routing", help="Re-stamp gateway sessions that lost their routing identity",

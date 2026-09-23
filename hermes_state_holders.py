@@ -29,7 +29,6 @@ def read_only_db_uri(db_path) -> str:
 
 logger = logging.getLogger(__name__)
 
-_IS_WINDOWS = sys.platform == "win32"
 _HERMES_EXECUTABLES = frozenset({"hermes", "hermes-agent", "hermes-acp"})
 _HERMES_PYTHON_MODULES = frozenset({"acp_adapter", "hermes_cli.main"})
 _HERMES_PYTHON_SCRIPTS = frozenset({"hermes_cli/main.py", "run_agent.py"})
@@ -325,10 +324,12 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     A scan failure is represented as an unknown holder. Structural maintenance
     must not assume quiescence when an old, unlinked SQLite generation may
     still be open by another process.
-    """
-    if _IS_WINDOWS:
-        return []
 
+    Windows has no /proc, so it shares the psutil open-files scan macOS uses:
+    same-user holders are enumerated (psutil's Windows handle walk needs no
+    admin rights), and a missing psutil degrades to the unknown-holder sentinel
+    instead of an all-clear.
+    """
     # realpath, not abspath: psutil/libproc report the kernel-resolved pathname, so a symlinked
     # HERMES_HOME would otherwise make every holder invisible and let maintenance proceed.
     db_path_str = os.path.realpath(os.fspath(db_path))
@@ -436,6 +437,9 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
             holders.append((-1, f"open-file scan failed: {exc}"))
         return holders
 
+    # macOS and Windows: the psutil open-files scan (same-user processes; psutil's Windows
+    # handle walk needs no admin rights, and per-process access failures surface as a
+    # None attr the ``or ()`` below skips rather than an abort).
     if psutil is None:
         return [(-1, "open-file scan unavailable")]
     try:

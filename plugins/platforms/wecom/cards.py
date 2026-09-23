@@ -130,13 +130,21 @@ class WeComCardMixin:
 
     def _page_nav_buttons(self, page: int, total_pages: int, *, page_key: str,
                           include_back: bool) -> List[Dict[str, str]]:
-        """Paging buttons for a dropdown page. Both buttons are always present (a dead one points
-        at the current page and merely re-renders) — a stable count keeps the layout predictable."""
+        """Paging buttons for a dropdown page, added only when the move exists.
+
+        WeCom rejects a card whose ``button_list.key`` values repeat (errcode 42039
+        "key Missing or Invalid"), so the earlier trick of always rendering both nav buttons —
+        the impossible one pointing at the current page — is not allowed: on page 0 both would
+        carry ``<page_key>:0``. A variable button count costs nothing here because the dropdown,
+        not the buttons, carries the content width.
+        """
         buttons: List[Dict[str, str]] = []
         if include_back:
             buttons.append({"text": _NAV_LABELS["back"], "key": "back"})
-        buttons.append({"text": _NAV_LABELS["prev_page"], "key": f"{page_key}:{max(0, page - 1)}"})
-        buttons.append({"text": _NAV_LABELS["next_page"], "key": f"{page_key}:{min(total_pages - 1, page + 1)}"})
+        if page > 0:
+            buttons.append({"text": _NAV_LABELS["prev_page"], "key": f"{page_key}:{page - 1}"})
+        if page < total_pages - 1:
+            buttons.append({"text": _NAV_LABELS["next_page"], "key": f"{page_key}:{page + 1}"})
         return buttons
 
     @staticmethod

@@ -136,8 +136,8 @@ class TestModelPicker:
         card = captured["body"]
         assert card["card_type"] == "button_interaction"
         # First page = providers, not models. Buttons are only paging + Next (providers page has
-        # no Back); the names live in the dropdown.
-        assert [b["key"] for b in card["button_list"]] == ["ppg:0", "ppg:0", "pick"]
+        # no Back, and a single page has no paging); the names live in the dropdown.
+        assert [b["key"] for b in card["button_list"]] == ["pick"]
         sel = card["button_selection"]
         assert sel["question_key"] == "provider"
         assert sel["title"] == "提供商"
@@ -158,6 +158,33 @@ class TestModelPicker:
         assert [p["models"] for p in state["providers"]] == [["qwen3.8-flash", "qwen3-max"], ["deepseek-flash", "deepseek-v3"]]
         assert [p["is_current"] for p in state["providers"]] == [False, True]
         assert all(p["name"] for p in state["providers"])
+
+    def test_card_button_keys_are_unique_and_non_empty(self, monkeypatch):
+        """Regression: WeCom refuses a card whose ``button_list.key`` repeats or is empty
+        (errcode 42039 "Template_Card button_list.key Missing or Invalid"). The card then never
+        renders and the picker silently falls back to a plain-text list — so every page of both
+        pages levels must emit unique, non-empty keys, including first/last pages where one nav
+        direction does not exist."""
+        adapter = _make_adapter(monkeypatch)
+        for count in (1, 12):  # single page, and a two-page dropdown
+            adapter._model_picker_state["mp-u"] = {
+                "session_key": "s", "chat_id": "u", "current_model": "m1", "current_provider": "a0",
+                "providers": [{"slug": f"a{i}", "name": f"A{i}", "models": ["m1"], "is_current": False}
+                              for i in range(count)],
+                "stage": "providers", "selected_provider": "", "model_page": 0, "provider_page": 0,
+                "on_model_selected": AsyncMock()}
+            for page in range(max(1, -(-count // 10))):
+                adapter._model_picker_state["mp-u"]["provider_page"] = page
+                keys = [b["key"] for b in adapter._build_provider_card("mp-u")["button_list"]]
+                assert keys and all(keys) and len(keys) == len(set(keys)), f"provider page {page}: {keys}"
+        adapter._model_picker_state["mp-u2"] = {
+            "session_key": "s", "chat_id": "u", "current_model": "m20", "current_provider": "a",
+            "providers": [{"slug": "a", "name": "A", "models": [f"m{i}" for i in range(25)], "is_current": True}],
+            "stage": "models", "selected_provider": "a", "model_page": 0, "on_model_selected": AsyncMock()}
+        for page in (0, 1, 2):
+            adapter._model_picker_state["mp-u2"]["model_page"] = page
+            keys = [b["key"] for b in adapter._build_model_card("mp-u2")["button_list"]]
+            assert keys and all(keys) and len(keys) == len(set(keys)), f"model page {page}: {keys}"
 
     def test_dropdown_options_carry_full_names(self):
         """Regression: a WeCom button renders ~6 ASCII chars on a 3-per-row line (the client
@@ -223,7 +250,7 @@ class TestModelPicker:
         assert state["selected_provider"] == "deepseek"
         adapter._update_card.assert_awaited_once()
         card = adapter._update_card.call_args[0][1]
-        assert [b["key"] for b in card["button_list"]] == ["back", "pg:0", "pg:0", "apply"]
+        assert [b["key"] for b in card["button_list"]] == ["back", "apply"]
         sel = card["button_selection"]
         assert sel["question_key"] == "model"
         assert [o["id"] for o in sel["option_list"]] == ["deepseek-flash", "deepseek-v3"]
@@ -257,7 +284,7 @@ class TestModelPicker:
             "on_model_selected": AsyncMock(),
         }
         card = adapter._build_provider_card("mp-5")
-        assert [b["key"] for b in card["button_list"]] == ["ppg:0", "ppg:1", "pick"]
+        assert [b["key"] for b in card["button_list"]] == ["ppg:1", "pick"]
         sel = card["button_selection"]
         assert len(sel["option_list"]) == 10  # the SelectionItem cap
         assert [o["id"] for o in sel["option_list"]] == [f"a{i}" for i in range(10)]
@@ -295,7 +322,7 @@ class TestModelPicker:
             "on_model_selected": AsyncMock(),
         }
         card = adapter._build_model_card("mp-3")
-        assert [b["key"] for b in card["button_list"]] == ["back", "pg:0", "pg:1", "apply"]
+        assert [b["key"] for b in card["button_list"]] == ["back", "pg:1", "apply"]
         sel = card["button_selection"]
         assert [o["id"] for o in sel["option_list"]] == [f"model-{i}" for i in range(10)]
         assert "selected_id" not in sel  # the active model is not on page 0

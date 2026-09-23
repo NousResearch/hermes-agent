@@ -138,18 +138,15 @@ def _fast_scope_timeout(monkeypatch):
 def _default_config(monkeypatch):
     """No config on disk by default; tests override _segments_config directly."""
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config", lambda: {}
+        "hermes_cli.config_effective.load_user_config_effective", lambda *_a, **_k: {}
     )
     relay_runtime._reset_segments_config_for_tests()
 
 
 def _set_segments(monkeypatch, *, on_compaction=False, max_turns=0):
-    # _segments_config() reads via read_raw_config() (+ managed overlay)
-    # instead of importing gateway.run (whose module top-level setenv
-    # pollutes the calling process's environment, see #87183).
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config",
-        lambda: {
+        "hermes_cli.config_effective.load_user_config_effective",
+        lambda *_a, **_k: {
             "gateway": {
                 "telemetry": {
                     "session_segments": {
@@ -516,36 +513,29 @@ class TestRotationSafety:
 class TestGatewayRunStaysUnimported:
     """Guard against re-importing gateway.run from a non-gateway host.
 
-    relay_runtime._segments_config() must NEVER trigger ``gateway.run`` —
-    its module top level sets _HERMES_GATEWAY / HERMES_QUIET / HERMES_EXEC_ASK,
-    which flips a CLI/TUI/desktop/cron process onto the gateway path and hangs
-    dangerous commands in pending_approval (#87183). A plain monkeypatch of
-    read_raw_config wouldn't catch a future refactor that adds the import, so
-    this runs the real path in a fresh subprocess and asserts gateway.run never
-    enters sys.modules.
+    relay_runtime._segments_config() must NEVER trigger ``gateway.run`` — its
+    import-time env setup (_HERMES_GATEWAY, HERMES_QUIET, TERMINAL_CWD := home)
+    hangs CLI approvals (#87183) and runs ``hermes -z`` in $HOME (#95577). A
+    monkeypatch can't catch a refactor re-adding the import, so this runs the
+    real path in a fresh process with those vars unset.
     """
 
-    def test_relay_runtime_never_imports_gateway_run(self) -> None:
+    def test_relay_runtime_never_imports_gateway_run(self, monkeypatch) -> None:
+        for var in ("TERMINAL_CWD", "HERMES_QUIET", "_HERMES_GATEWAY"):
+            monkeypatch.delenv(var, raising=False)
         result = _run_isolated(
             """
+import os
 import sys
 
 import agent.relay_runtime as rr
 
-# _segments_config() is the only relay path that used to import gateway.run.
 rr._segments_config()
 rr._segments_config()  # cached path too
 
-if "gateway.run" in sys.modules:
-    print("FAIL: gateway.run was imported by a non-gateway host")
-    sys.exit(1)
-print("PASS: gateway.run stays out of sys.modules")
-sys.exit(0)
+leaked = {v: os.environ[v] for v in ("TERMINAL_CWD", "HERMES_QUIET", "_HERMES_GATEWAY") if v in os.environ}
+print("gateway.run imported:", "gateway.run" in sys.modules, "leaked env:", leaked)
+sys.exit(1 if "gateway.run" in sys.modules or leaked else 0)
 """
         )
-        assert result.returncode == 0, (
-            f"relay_runtime imported gateway.run:\\n"
-            f"stdout: {result.stdout}\\n"
-            f"stderr: {result.stderr}"
-        )
-        assert "PASS" in result.stdout
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

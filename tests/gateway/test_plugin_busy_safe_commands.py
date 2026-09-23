@@ -8,7 +8,13 @@ import pytest
 
 from gateway.config import Platform
 from gateway.session import SessionSource
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import (
+    LoadedPlugin,
+    PluginContext,
+    PluginManager,
+    PluginManifest,
+    get_plugin_command_entry,
+)
 from plugins.context_engine import _EngineCollector
 from tests.gateway.test_run_cleanup_progress import CleanupCaptureAdapter, _make_runner
 from tests.gateway.test_slash_access_dispatch import (
@@ -66,6 +72,18 @@ def test_plugin_command_rejects_multitoken_busy_safe_entry():
         )
 
 
+def test_plugin_command_rejects_string_busy_safe_collection():
+    manager = _plugin_manager()
+    context = PluginContext(PluginManifest(name="plug"), manager)
+
+    with pytest.raises(TypeError, match="not a string"):
+        context.register_command(
+            "control",
+            lambda _raw: "ok",
+            busy_safe_subcommands="status",
+        )
+
+
 def test_busy_safe_subcommands_is_keyword_only():
     manager = _plugin_manager()
     context = PluginContext(PluginManifest(name="plug"), manager)
@@ -79,6 +97,18 @@ def test_busy_safe_subcommands_is_keyword_only():
             None,
             ("",),
         )
+
+
+def test_policy_skipped_plugin_does_not_mark_command_discovery_degraded():
+    manager = _plugin_manager()
+    manager._plugins["disabled"] = LoadedPlugin(
+        manifest=PluginManifest(name="disabled"),
+        enabled=False,
+        error="disabled via config",
+    )
+
+    with patch("hermes_cli.plugins._plugin_manager", manager):
+        assert get_plugin_command_entry("unknown", fail_on_degraded=True) is None
 
 
 def test_context_engine_collector_forwards_busy_safe_metadata():
@@ -156,6 +186,80 @@ async def test_cold_plugin_command_keeps_unrestricted_back_compat():
         )
 
     assert result == "cold:status"
+
+
+@pytest.mark.asyncio
+async def test_cold_plugin_command_authorizes_final_normalized_name():
+    runner = _make_access_runner()
+    checks = []
+    setattr(
+        runner,
+        "_check_slash_access",
+        lambda _source, command: (
+            checks.append(command) or ("denied" if command == "my-control" else None)
+        ),
+    )
+    manager = _plugin_manager()
+    context = PluginContext(PluginManifest(name="plug"), manager)
+    called = []
+    context.register_command(
+        "my-control",
+        lambda raw: called.append(raw) or "secret",
+    )
+
+    with patch("hermes_cli.plugins._plugin_manager", manager):
+        result = await runner._handle_message(
+            _make_access_event(
+                "/my_control status",
+                _make_access_source(user_id="999"),
+            )
+        )
+
+    assert result == "denied"
+    assert called == []
+    assert checks == ["my-control"]
+
+
+@pytest.mark.asyncio
+async def test_cold_hook_rewrite_reauthorizes_final_plugin_command():
+    runner = _make_access_runner()
+    checks = []
+    setattr(
+        runner,
+        "_check_slash_access",
+        lambda _source, command: (
+            checks.append(command)
+            or ("denied" if command == "admin-control" else None)
+        ),
+    )
+    runner.hooks.emit_collect = AsyncMock(
+        return_value=[
+            {
+                "decision": "rewrite",
+                "command_name": "admin-control",
+                "raw_args": "destroy",
+            }
+        ]
+    )
+    manager = _plugin_manager()
+    context = PluginContext(PluginManifest(name="plug"), manager)
+    called = []
+    context.register_command(
+        "admin-control",
+        lambda raw: called.append(raw) or "secret",
+    )
+
+    with patch("hermes_cli.plugins._plugin_manager", manager):
+        result = await runner._handle_message(
+            _make_access_event(
+                "/status",
+                _make_access_source(user_id="999"),
+            )
+        )
+
+    assert result == "denied"
+    assert called == []
+    assert checks == ["status", "admin-control"]
 
 
 @pytest.mark.asyncio
@@ -460,5 +564,128 @@ async def test_busy_plugin_metadata_failure_is_consumed_without_argument_routing
     assert [item["content"] for item in adapter.sent] == [
         "Plugin command unavailable."
     ]
+    assert adapter._pending_messages == {}
+    cast(AsyncMock, adapter._message_handler).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_busy_plugin_invalid_metadata_is_consumed_without_argument_routing():
+    gateway_run = importlib.import_module("gateway.run")
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        user_id="111",
+        chat_type="dm",
+    )
+    _active_adapter(runner, adapter, source)
+    manager = _plugin_manager()
+    manager._plugin_commands["control"] = {
+        "handler": lambda _raw: "must not execute",
+        "busy_safe_subcommands": object(),
+    }
+
+    with patch("hermes_cli.plugins._plugin_manager", manager):
+        await adapter.handle_message(
+            gateway_run.MessageEvent(
+                text="/control sensitive-argument",
+                message_type=gateway_run.MessageType.TEXT,
+                source=source,
+            )
+        )
+
+    assert [item["content"] for item in adapter.sent] == [
+        "Plugin command unavailable."
+    ]
+    assert adapter._pending_messages == {}
+    cast(AsyncMock, adapter._message_handler).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_real_plugin_load_failure_makes_unknown_busy_slash_fail_closed(tmp_path):
+    gateway_run = importlib.import_module("gateway.run")
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        user_id="111",
+        chat_type="dm",
+    )
+    _active_adapter(runner, adapter, source)
+    plugin_dir = tmp_path / "broken-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "__init__.py").write_text(
+        "def register(ctx):\n    raise RuntimeError('broken registration')\n",
+        encoding="utf-8",
+    )
+    manager = _plugin_manager()
+    manager._load_plugin(
+        PluginManifest(
+            name="broken-plugin",
+            key="broken-plugin",
+            source="user",
+            path=str(plugin_dir),
+        )
+    )
+    assert manager._plugins["broken-plugin"].load_failed is True
+
+    with patch("hermes_cli.plugins._plugin_manager", manager):
+        await adapter.handle_message(
+            gateway_run.MessageEvent(
+                text="/formerly-known sensitive-argument",
+                message_type=gateway_run.MessageType.TEXT,
+                source=source,
+            )
+        )
+
+    assert [item["content"] for item in adapter.sent] == [
+        "Plugin command unavailable."
+    ]
+    assert adapter._pending_messages == {}
+    cast(AsyncMock, adapter._message_handler).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_busy_plugin_result_conversion_failure_is_consumed_after_one_execution():
+    gateway_run = importlib.import_module("gateway.run")
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        user_id="111",
+        chat_type="dm",
+    )
+    _active_adapter(runner, adapter, source)
+    manager = _plugin_manager()
+    context = PluginContext(PluginManifest(name="plug"), manager)
+    calls = []
+
+    class BadResult:
+        def __bool__(self):
+            return True
+
+        def __str__(self):
+            raise RuntimeError("conversion failed")
+
+    context.register_command(
+        "control",
+        lambda raw: calls.append(raw) or BadResult(),
+        busy_safe_subcommands=("status",),
+    )
+
+    with patch("hermes_cli.plugins._plugin_manager", manager):
+        await adapter.handle_message(
+            gateway_run.MessageEvent(
+                text="/control status sensitive-argument",
+                message_type=gateway_run.MessageType.TEXT,
+                source=source,
+            )
+        )
+
+    assert calls == ["status sensitive-argument"]
+    assert [item["content"] for item in adapter.sent] == ["Plugin command failed."]
     assert adapter._pending_messages == {}
     cast(AsyncMock, adapter._message_handler).assert_not_awaited()

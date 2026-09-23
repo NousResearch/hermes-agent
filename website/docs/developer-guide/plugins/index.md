@@ -1306,7 +1306,7 @@ ctx.register_command(
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
 | `args_hint` | `str` | Optional argument hint shown by native command pickers |
 | `argument_mode` | `str \| None` | Desktop composer behavior: `options`, `text`, or `mixed` |
-| `busy_safe_subcommands` | `Iterable[str]` | First argument tokens allowed while an agent is running; `""` means the bare command |
+| `busy_safe_subcommands` | `Iterable[str]` | First argument tokens allowed while an agent is running; `""` means the bare command. Pass a tuple/list; a top-level string is rejected. |
 
 #### Busy-safe control commands
 

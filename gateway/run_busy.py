@@ -789,7 +789,21 @@ class GatewayBusySessionMixin:
         try:
             from hermes_cli.plugins import get_plugin_command_entry
 
-            plugin_entry = get_plugin_command_entry(plugin_name)
+            plugin_entry = get_plugin_command_entry(
+                plugin_name, fail_on_degraded=True
+            )
+            if plugin_entry is None:
+                return False, None
+            if not isinstance(plugin_entry, dict):
+                raise TypeError("plugin command metadata is not a mapping")
+            raw_busy_safe = plugin_entry.get("busy_safe_subcommands")
+            if not raw_busy_safe:
+                return False, None
+            if not isinstance(raw_busy_safe, tuple) or not all(
+                isinstance(item, str) for item in raw_busy_safe
+            ):
+                raise TypeError("plugin busy-safe metadata is invalid")
+            busy_safe = set(raw_busy_safe)
         except Exception:
             logger.warning(
                 "Plugin command metadata lookup failed for /%s",
@@ -797,10 +811,6 @@ class GatewayBusySessionMixin:
                 exc_info=True,
             )
             return True, "Plugin command unavailable."
-
-        busy_safe = tuple((plugin_entry or {}).get("busy_safe_subcommands") or ())
-        if not plugin_entry or not busy_safe:
-            return False, None
 
         denied = self._check_slash_access(source, plugin_name)
         if denied is not None:
@@ -826,6 +836,7 @@ class GatewayBusySessionMixin:
                 result = await asyncio.to_thread(ctx.run, handler, plugin_args)
                 if inspect.isawaitable(result):
                     result = await result
+            response = str(result) if result else None
         except Exception:
             logger.warning(
                 "Busy-safe plugin command dispatch failed for /%s",
@@ -833,7 +844,7 @@ class GatewayBusySessionMixin:
                 exc_info=True,
             )
             return True, "Plugin command failed."
-        return True, str(result) if result else None
+        return True, response
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval

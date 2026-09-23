@@ -223,6 +223,9 @@ class LoadedPlugin:
     commands_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
+    # True only when an enabled candidate failed to load/register. Policy skips
+    # (disabled, opt-in not selected, exclusive kind) are not discovery failures.
+    load_failed: bool = False
     # Bundled platform recorded as a not-yet-imported loader (see _register_deferred_platform).
     deferred: bool = False
 
@@ -658,6 +661,8 @@ class PluginContext:
     @staticmethod
     def _normalize_busy_safe_subcommands(values: Iterable[str]) -> Tuple[str, ...]:
         """Normalize the public busy-safe verb list once for every registrar."""
+        if isinstance(values, str):
+            raise TypeError("busy_safe_subcommands must be an iterable of strings, not a string")
         normalized: List[str] = []
         for raw_subcommand in values or ():
             if not isinstance(raw_subcommand, str):
@@ -2096,12 +2101,20 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     return entry["handler"] if entry else None
 
 
-def get_plugin_command_entry(name: str) -> Optional[dict]:
+def get_plugin_command_entry(
+    name: str, *, fail_on_degraded: bool = False
+) -> Optional[dict]:
     """Return normalized metadata for a plugin slash command, if registered."""
     clean = (name or "").lower().strip().lstrip("/").replace("_", "-")
     if not clean:
         return None
-    return _ensure_plugins_discovered()._plugin_commands.get(clean)
+    manager = _ensure_plugins_discovered()
+    entry = manager._plugin_commands.get(clean)
+    if entry is not None:
+        return entry
+    if fail_on_degraded and any(plugin.load_failed for plugin in manager._plugins.values()):
+        raise RuntimeError("plugin discovery degraded")
+    return None
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

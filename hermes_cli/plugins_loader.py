@@ -432,6 +432,7 @@ class PluginLoaderMixin:
         reason = requires_hermes_error(manifest)
         if reason:
             loaded.error = reason
+            loaded.load_failed = True
             logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
             self._plugins[plugin_key] = loaded
             return
@@ -441,6 +442,7 @@ class PluginLoaderMixin:
         reason = disable_reason(manifest)
         if reason:
             loaded.error = reason
+            loaded.load_failed = True
             logger.warning("Plugin '%s' not loaded: %s", manifest.name, reason)
             self._plugins[plugin_key] = loaded
             return
@@ -469,6 +471,7 @@ class PluginLoaderMixin:
                 register_fn = getattr(module, "register", None)
             if register_fn is None:
                 loaded.error = "no register() function"
+                loaded.load_failed = True
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
                 return False
             register_fn(ctx)
@@ -490,6 +493,7 @@ class PluginLoaderMixin:
             self._dispose_registrations(owned)
             self._forget_registrations(owned)
             loaded.error = _load_error_text(exc)
+            loaded.load_failed = True
             # register() may have subscribed before raising; a failed plugin must leave no callable reachable
             # from later event dispatch.
             self._remove_plugin_subscriptions(plugin_key)
@@ -599,6 +603,7 @@ class PluginLoaderMixin:
                 raise
         except (Exception, SystemExit) as exc:
             loaded.error = _load_error_text(exc)
+            loaded.load_failed = True
             logger.warning("Agent Plugin '%s' disabled: %s", lookup_key, loaded.error)
         self._plugins[lookup_key] = loaded
 

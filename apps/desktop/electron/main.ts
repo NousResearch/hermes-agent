@@ -989,47 +989,6 @@ if (IS_WINDOWS) {
   app.setAppUserModelId('com.nousresearch.hermes')
 }
 
-const desktopShellRuntime = createDesktopShellRuntime({
-  ACTIVE_HERMES_ROOT,
-  APP_NAME,
-  HERMES_HOME,
-  INSTALL_STAMP,
-  IS_PACKAGED,
-  IS_WINDOWS,
-  VENV_ROOT,
-  app,
-  buildNoSandboxRelaunchArgs,
-  exitAfterBackendShutdown,
-  fileExists,
-  findSystemPython,
-  fs,
-  getVenvPython,
-  hiddenWindowsChildOptions,
-  isHermesSourceRoot,
-  loadInstallStamp,
-  os,
-  path,
-  process,
-  releaseBackendLock,
-  rememberLog,
-  resolveUpdateRoot,
-  runGit,
-  setQuittingForHandoff: () => {
-    isQuittingForHandoff = true
-  },
-  spawn
-})
-
-// Seed the native About panel with the live Hermes version. This is refreshed
-// on every open via the explicit "About" menu handler (refreshAboutPanel), so
-// an in-place `hermes update` mid-session is reflected without an app restart;
-// the seed here just covers the first open and any non-menu invocation path.
-app.setAboutPanelOptions({
-  applicationName: APP_NAME,
-  applicationVersion: desktopShellRuntime.resolveHermesVersion(),
-  copyright: 'Copyright © 2026 Nous Research'
-})
-
 // Custom scheme for streaming audio/video into the renderer. Local paths read
 // from this machine; remote paths are proxied through the configured gateway
 // with main-process authentication. This avoids whole-file data URLs and keeps
@@ -2129,6 +2088,47 @@ const updateHandoffRuntime = createUpdateHandoffRuntime({
 })
 
 const { forceKillProcessTree, releaseBackendLock, applyUpdates, handOffWindowsBootstrapRecovery } = updateHandoffRuntime
+
+const desktopShellRuntime = createDesktopShellRuntime({
+  ACTIVE_HERMES_ROOT,
+  APP_NAME,
+  HERMES_HOME,
+  INSTALL_STAMP,
+  IS_PACKAGED,
+  IS_WINDOWS,
+  VENV_ROOT,
+  app,
+  buildNoSandboxRelaunchArgs,
+  exitAfterBackendShutdown,
+  fileExists,
+  findSystemPython,
+  fs,
+  getVenvPython,
+  hiddenWindowsChildOptions,
+  isHermesSourceRoot,
+  loadInstallStamp,
+  os,
+  path,
+  process,
+  releaseBackendLock,
+  rememberLog,
+  resolveUpdateRoot,
+  runGit,
+  setQuittingForHandoff: () => {
+    isQuittingForHandoff = true
+  },
+  spawn
+})
+
+// Seed the native About panel with the live Hermes version. This is refreshed
+// on every open via the explicit "About" menu handler (refreshAboutPanel), so
+// an in-place `hermes update` mid-session is reflected without an app restart;
+// the seed here just covers the first open and any non-menu invocation path.
+app.setAboutPanelOptions({
+  applicationName: APP_NAME,
+  applicationVersion: desktopShellRuntime.resolveHermesVersion(),
+  copyright: 'Copyright © 2026 Nous Research'
+})
 
 function writeBackendOwnership(contents) {
   fs.mkdirSync(path.dirname(DESKTOP_BACKEND_OWNERSHIP_PATH), { recursive: true })

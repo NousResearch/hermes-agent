@@ -426,6 +426,50 @@ class TestStatusBarFieldConfig:
             text = cli_obj._build_status_bar_text(width=width)
         return text
 
+    def test_status_bar_shows_working_directory(self, monkeypatch, tmp_path):
+        cli_obj = _make_cli()
+        worktree = tmp_path / "statusbar-worktree"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "⌂ statusbar-worktree" in text
+
+    def test_status_bar_shows_codex_usage_windows(self, monkeypatch):
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+        cli_obj = _make_cli(model="gpt-5-codex")
+        cli_obj.provider = "openai-codex"
+        snapshot = AccountUsageSnapshot(
+            provider="openai-codex", source="test", fetched_at=datetime.now(),
+            windows=(
+                AccountUsageWindow(label="Session", used_percent=25.0),
+                AccountUsageWindow(label="Weekly", used_percent=40.0),
+            ),
+        )
+        monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *a, **kw: snapshot)
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "5h 75%" in text
+        assert "wk 60%" in text
+
+    def test_status_bar_does_not_fetch_usage_for_other_providers(self, monkeypatch):
+        cli_obj = _make_cli()
+        cli_obj.provider = "openai"
+        called = False
+
+        def fetch(*args, **kwargs):
+            nonlocal called
+            called = True
+            return None
+
+        monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch)
+        cli_obj._build_status_bar_text(width=120)
+
+        assert called is False
+
     def test_default_fields_show_all(self):
         """With no config, all default fields appear."""
         cli_obj = _attach_agent(

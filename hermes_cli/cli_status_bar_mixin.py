@@ -8,6 +8,7 @@ inside each method (``from cli import ...``) — never at module load time (impo
 from __future__ import annotations
 
 import errno
+import os
 import shutil
 import threading
 import time
@@ -228,6 +229,8 @@ class CLIStatusBarMixin:
             "battery_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
             "git_branch": "",
+            "working_dir": os.path.basename(os.getcwd()) or os.getcwd(),
+            "account_usage": None,
             "goal_active": False,
             "goal_turns_used": 0,
             "goal_max_turns": 0}
@@ -292,6 +295,34 @@ class CLIStatusBarMixin:
                 snapshot["goal_max_turns"] = int(getattr(goal_state, "max_turns", 0) or 0)
         except Exception:
             pass
+
+        # Account windows are provider-backed and intentionally fetched only for Codex/Claude.
+        # Fetch off the render path: a provider or auth endpoint must never freeze the status bar.
+        provider = str(getattr(self, "provider", None) or getattr(agent, "provider", None) or "").lower()
+        if provider in {"openai-codex", "anthropic"}:
+            try:
+                now = time.monotonic()
+                checked_at = float(getattr(self, "_status_bar_usage_checked_at", 0.0) or 0.0)
+                if now - checked_at >= 30.0 and not getattr(self, "_status_bar_usage_fetching", False):
+                    self._status_bar_usage_fetching = True
+                    base_url = getattr(agent or self, "base_url", None)
+                    api_key = getattr(agent or self, "api_key", None)
+
+                    def _fetch_usage():
+                        try:
+                            from agent.account_usage import fetch_account_usage
+                            self._status_bar_usage_cache = fetch_account_usage(
+                                provider, base_url=base_url, api_key=api_key)
+                            self._status_bar_usage_checked_at = time.monotonic()
+                        except Exception:
+                            self._status_bar_usage_checked_at = time.monotonic()
+                        finally:
+                            self._status_bar_usage_fetching = False
+
+                    threading.Thread(target=_fetch_usage, name="status-bar-usage", daemon=True).start()
+                snapshot["account_usage"] = getattr(self, "_status_bar_usage_cache", None)
+            except Exception:
+                pass
 
         if not agent:
             return snapshot
@@ -989,9 +1020,9 @@ class CLIStatusBarMixin:
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
-        prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
-        (opt-in only). Order is fixed; the config controls visibility only.
+        bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), working_dir,
+        usage, duration, prompt_elapsed, idle_since, focus, yolo, stash, battery, title,
+        total_tokens (opt-in only). Order is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1081,6 +1112,17 @@ class CLIStatusBarMixin:
         git_branch = snapshot.get("git_branch") or ""
         if git_branch:
             add("git_branch", _DIM, f"⎇ {git_branch}")
+        working_dir = snapshot.get("working_dir") or ""
+        if working_dir:
+            add("working_dir", _DIM, f"⌂ {working_dir}")
+        usage = snapshot.get("account_usage")
+        if usage and _ok("usage"):
+            for window in getattr(usage, "windows", ()):
+                remaining = max(0, round(100 - float(window.used_percent))) if window.used_percent is not None else None
+                if remaining is None:
+                    continue
+                label = "5h" if "session" in window.label.lower() else "wk" if "week" in window.label.lower() else window.label
+                add("usage", _DIM, f"{label} {remaining}%")
         if not narrow:
             add("duration", _DIM, duration_label)
         if wide:

@@ -319,8 +319,7 @@ class TestCronTimezone:
 
         # The UTC equivalent must match what we'd get by correctly interpreting
         # the naive dt as system-local time first, then converting
-        system_tz = datetime.now().astimezone().tzinfo
-        expected_utc = naive_dt.replace(tzinfo=system_tz).astimezone(timezone.utc)
+        expected_utc = naive_dt.astimezone(timezone.utc)
         actual_utc = result.astimezone(timezone.utc)
         assert actual_utc == expected_utc, (
             f"Absolute time shifted: expected {expected_utc}, got {actual_utc}"

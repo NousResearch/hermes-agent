@@ -25,7 +25,7 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
@@ -810,13 +810,13 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             # never become due and recurring jobs fire at the wrong time. Using the configured zone makes
             # "20:07" mean 20:07 on the same clock the scheduler checks against (#51021).
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_hermes_now().tzinfo)
+                dt = _wall_clock_readings(dt, get_timezone())[0]
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
                 "display": f"once at {dt.strftime('%Y-%m-%d %H:%M')}"
             }
-        except ValueError as e:
+        except (ValueError, OverflowError) as e:  # Overflow: a wall clock at datetime.min/max
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
 
     # "in 30m"/"in 2h" is the explicit one-shot-by-duration form; a bare duration ("30m") is a
@@ -845,13 +845,28 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     )
 
 
+def _wall_clock_readings(wall: datetime, zone: Optional[tzinfo]) -> List[datetime]:
+    """Aware readings of naive *wall*, fold=0 first, in *zone* or (``None``) the host's local zone.
+
+    With no zone configured the clock is ``datetime.now().astimezone()``, whose fixed UTC offset
+    is only right on today's side of a DST change. So a host reading takes the offset in force a
+    day either side of *wall* and is kept when the host agrees with it at that instant. A
+    spring-forward gap agrees with neither and keeps both, earlier offset first, as zoneinfo
+    orders them, so a configured zone and the same zone on the host resolve every wall clock alike."""
+    if zone is not None:
+        return [wall.replace(tzinfo=zone, fold=fold) for fold in (0, 1)]
+    around = wall.replace(tzinfo=timezone.utc)
+    readings = [wall.replace(tzinfo=(around + timedelta(days=d)).astimezone().tzinfo) for d in (-1, 1)]
+    return [r for r in readings if r.astimezone().utcoffset() == r.utcoffset()] or readings
+
+
 def _ensure_aware(dt: datetime) -> datetime:
     """Aware datetime in the configured Hermes timezone. Legacy naive values are read as
     *system-local* wall time (what created them) then converted, preserving ordering across
     timezone changes and avoiding false not-due results."""
     target_tz = _hermes_now().tzinfo
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=datetime.now().astimezone().tzinfo).astimezone(target_tz)
+        return _wall_clock_readings(dt, None)[0].astimezone(target_tz)
     return dt.astimezone(target_tz)
 
 
@@ -1172,8 +1187,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         # wall clock for croniter, then re-attach the zone to the result, so
         # the wall-clock hour stays correct every calendar day, including DST
         # boundaries (morning-routine 09:00 America/Toronto).
-        # Fall back to the base's own zone only when nothing is configured.
-        zone = get_timezone() or base_time.tzinfo
+        # With nothing configured the zone is the host's, never the fixed offset
+        # ``base_time`` carries: that offset is wrong on the far side of a DST change.
+        zone = get_timezone()
         base_wall = base_time.astimezone(zone).replace(tzinfo=None)
         it = croniter(expr, base_wall)
         # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
@@ -1186,12 +1202,11 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         base_ts = base_time.timestamp()
         next_wall = it.get_next(datetime)
         for _ in range(2):
-            for fold in (0, 1):
-                candidate = next_wall.replace(tzinfo=zone, fold=fold)
+            for candidate in _wall_clock_readings(next_wall, zone):
                 if candidate.timestamp() > base_ts:
                     return candidate.isoformat()
             next_wall = it.get_next(datetime)
-        return next_wall.replace(tzinfo=zone).isoformat()
+        return _wall_clock_readings(next_wall, zone)[0].isoformat()
     return None
 
 

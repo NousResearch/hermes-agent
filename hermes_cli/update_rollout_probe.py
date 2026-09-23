@@ -202,15 +202,18 @@ def _read_runtime_evidence() -> dict[str, Any]:
     root = Path(get_default_hermes_root())
     candidates = [root / "gateway_state.json"]
     profiles = root / "profiles"
+    profile_listing_complete = True
     try:
         if profiles.is_dir():
             candidates.extend(path / "gateway_state.json" for path in profiles.iterdir() if path.is_dir())
     except OSError:
-        pass
+        profile_listing_complete = False
     processes: list[dict[str, Any]] = []
     generations: set[Any] = set()
     required_scopes: set[str] = set()
-    required_scopes_known = False
+    # The gateway status writer does not currently assert required scopes. Keep
+    # that absence unknown; never infer an empty or complete set from PID/profile data.
+    required_scopes_known = profile_listing_complete
     try:
         from gateway.status import read_runtime_status
     except Exception:
@@ -220,17 +223,19 @@ def _read_runtime_evidence() -> dict[str, Any]:
             payload = (read_runtime_status(path) if read_runtime_status else
                        json.loads(path.read_text(encoding="utf-8")))
         except (FileNotFoundError, OSError, ValueError, UnicodeError):
+            required_scopes_known = False
             continue
         if not isinstance(payload, dict):
+            required_scopes_known = False
             continue
         generation = payload.get("generation", payload.get("process_generation"))
         if generation is not None:
             generations.add(generation)
         scopes = payload.get("requiredScopes", payload.get("required_scopes"))
-        if scopes is not None:
-            required_scopes_known = isinstance(scopes, list)
-            if required_scopes_known:
-                required_scopes.update(str(scope) for scope in scopes)
+        if isinstance(scopes, list) and all(isinstance(scope, str) and scope for scope in scopes):
+            required_scopes.update(scopes)
+        else:
+            required_scopes_known = False
         processes.append({
             "pid": payload.get("pid"), "generation": generation,
             "startTime": payload.get("start_time", payload.get("process_start_time")),

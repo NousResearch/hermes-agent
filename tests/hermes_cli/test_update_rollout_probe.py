@@ -138,6 +138,102 @@ def test_marker_states_and_runtime_evidence_are_distinct(tmp_path, monkeypatch):
     assert observation["runtime"]["generation"] is None
 
 
+@pytest.mark.parametrize("second_scopes", [
+    None, "missing", "missing-field", "malformed-json", ["work"], [], [23], "work",
+])
+def test_scope_inventory_is_known_only_when_every_profile_reports_valid_scopes(
+    tmp_path, monkeypatch, second_scopes,
+):
+    root = tmp_path / "home"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    (root / "gateway_state.json").write_text(
+        json.dumps({"generation": 7, "requiredScopes": ["default"]}), encoding="utf-8",
+    )
+    if second_scopes == "missing-field":
+        (profile / "gateway_state.json").write_text(
+            json.dumps({"generation": 7}), encoding="utf-8",
+        )
+    elif second_scopes == "malformed-json":
+        (profile / "gateway_state.json").write_text("{broken", encoding="utf-8")
+    elif second_scopes != "missing":
+        (profile / "gateway_state.json").write_text(
+            json.dumps({"generation": 7, "requiredScopes": second_scopes}), encoding="utf-8",
+        )
+    monkeypatch.setattr(probe, "get_default_hermes_root", lambda: root)
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: type("Inventory", (), {"to_dict": lambda self: {"runtimes": []}})(),
+    )
+
+    runtime = probe._read_runtime_evidence()
+    expected = (
+        ["default", "work"] if second_scopes == ["work"] else
+        ["default"] if second_scopes == [] else None
+    )
+    assert runtime["requiredScopes"] == expected
+
+
+def test_unreadable_profile_listing_keeps_scope_inventory_unknown(tmp_path, monkeypatch):
+    root = tmp_path / "home"
+    profiles = root / "profiles"
+    profiles.mkdir(parents=True)
+    (root / "gateway_state.json").write_text(
+        json.dumps({"generation": 7, "requiredScopes": ["default"]}), encoding="utf-8",
+    )
+    monkeypatch.setattr(probe, "get_default_hermes_root", lambda: root)
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: type("Inventory", (), {"to_dict": lambda self: {"runtimes": []}})(),
+    )
+    original_iterdir = Path.iterdir
+
+    def refuse_profile_listing(path):
+        if path == profiles:
+            raise OSError("profile listing unavailable")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", refuse_profile_listing)
+
+    assert probe._read_runtime_evidence()["requiredScopes"] is None
+
+
+def test_valid_empty_scope_inventory_is_known_empty(tmp_path, monkeypatch):
+    root = tmp_path / "home"
+    root.mkdir()
+    (root / "gateway_state.json").write_text(
+        json.dumps({"generation": 7, "requiredScopes": []}), encoding="utf-8",
+    )
+    monkeypatch.setattr(probe, "get_default_hermes_root", lambda: root)
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: type("Inventory", (), {"to_dict": lambda self: {"runtimes": []}})(),
+    )
+
+    assert probe._read_runtime_evidence()["requiredScopes"] == []
+
+
+def test_production_runtime_status_without_scope_and_generation_fields_stays_unknown(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "home"
+    root.mkdir()
+    (root / "gateway_state.json").write_text(
+        json.dumps({"pid": 123, "start_time": 42, "served_profiles": ["default"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(probe, "get_default_hermes_root", lambda: root)
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: type("Inventory", (), {"to_dict": lambda self: {"runtimes": []}})(),
+    )
+
+    runtime = probe._read_runtime_evidence()
+    assert runtime["generation"] is None
+    assert runtime["requiredScopes"] is None
+    assert runtime["processGeneration"]["state"] == "unknown"
+
+
 def test_stdout_is_one_json_object_and_diagnostics_use_stderr(tmp_path, monkeypatch, capsys):
     _patch_common(monkeypatch, tmp_path, identity_text=INSTALL_ID)
     assert probe.main(["--mode", "health", "--correlation-id", "test-1"]) == 0

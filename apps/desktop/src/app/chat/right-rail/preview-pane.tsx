@@ -243,6 +243,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   // The console store belongs to the TAB, not this render: the toggles live on
   // the tab and must read the same logs this pane appends to.
   const consoleState = previewConsoleState(tabId ?? target.url)
+  const consoleStateRef = useRef(consoleState)
+  consoleStateRef.current = consoleState
   const consoleBodyRef = useRef<HTMLDivElement | null>(null)
   const consoleShouldStickRef = useRef(true)
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -250,6 +252,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const lastRestartEventRef = useRef('')
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
+  const targetUrlRef = useRef(target.url)
+  const lastTargetUrlRef = useRef(target.url)
+  targetUrlRef.current = target.url
   const previewServerRestart = useStore($previewServerRestart)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
@@ -454,10 +459,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   }, [annotateGuest])
 
   // Not an atom mirror: the ref records the last conversation the annotate
-  // stack was reset for, so the reset runs once per switch. Extracted into a
-  // callback so the effect body carries no `.current` writes (lint contract).
-  const resetAnnotateForConversation = useCallback(
-    (sessionId: typeof selectedStoredSessionId) => {
+  // stack was reset for, so the reset runs once per switch. Navigation uses
+  // the same reset because pins and a draft describe a specific page.
+  const resetAnnotate = useCallback(
+    (sessionId = annotateConversationRef.current) => {
       annotateConversationRef.current = sessionId
       annotateLoopRef.current += 1
       setDraftNote('')
@@ -474,9 +479,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
   useEffect(() => {
     if (annotateConversationRef.current !== selectedStoredSessionId) {
-      resetAnnotateForConversation(selectedStoredSessionId)
+      resetAnnotate(selectedStoredSessionId)
     }
-  }, [resetAnnotateForConversation, selectedStoredSessionId])
+  }, [resetAnnotate, selectedStoredSessionId])
 
   const saveAnnotateDraft = useCallback(async () => {
     const session = annotateRef.current
@@ -641,9 +646,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const appendConsoleEntry = useCallback(
     (entry: Omit<ConsoleEntry, 'id'>) => {
       consoleShouldStickRef.current = isNearConsoleBottom(consoleBodyRef.current)
-      consoleState.append(entry)
+      consoleStateRef.current.append(entry)
     },
-    [consoleState]
+    []
   )
 
   const restartServer = useCallback(async () => {
@@ -726,6 +731,26 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     },
     [copy.unreachableDescription]
   )
+
+  // A target URL update is navigation within the same tab, not a new guest.
+  // Keeping the element alive preserves the session and the script/input
+  // channels used by drive_preview. Page-specific annotate state must not
+  // follow that navigation into the next document.
+  // eslint-disable-next-line no-restricted-syntax -- records the URL last navigated by this guest, not reactive UI state
+  useEffect(() => {
+    if (lastTargetUrlRef.current === target.url) {
+      return
+    }
+
+    lastTargetUrlRef.current = target.url
+
+    if (!isWebPreview || isRemoteHtml) {
+      return
+    }
+
+    resetAnnotate()
+    navigateTo(target.url)
+  }, [isRemoteHtml, isWebPreview, navigateTo, resetAnnotate, target.url])
 
   const goBack = useCallback(() => {
     const webview = webviewRef.current
@@ -1028,11 +1053,13 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     host.replaceChildren()
     webviewRef.current = null
-    setCurrentUrl(target.url)
+    const initialUrl = targetUrlRef.current
+    lastTargetUrlRef.current = initialUrl
+    setCurrentUrl(initialUrl)
     setDevtoolsOpen(false)
     setHistory({ back: false, forward: false })
     setLoadError(null)
-    consoleState.reset()
+    consoleStateRef.current.reset()
     setLoading(true)
 
     if (!isWebPreview || isRemoteHtml) {
@@ -1044,7 +1071,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     const webview = document.createElement('webview') as PreviewWebview
     webview.className = 'flex h-full w-full flex-1 bg-transparent'
     webview.setAttribute('partition', 'persist:hermes-preview')
-    webview.setAttribute('src', target.url)
+    webview.setAttribute('src', initialUrl)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 
     // The guest preload (main.ts installs it on this partition) forwards a
@@ -1086,7 +1113,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       if ((detail.level ?? 0) >= 3 && isModuleMimeError(message)) {
         setLoadError({
           description: copy.moduleMimeDescription,
-          url: guestPage(webview, target.url).url
+          url: guestPage(webview, targetUrlRef.current).url
         })
         setLoading(false)
       }
@@ -1109,7 +1136,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         return
       }
 
-      noteBrowserPage(tabId, guestPage(webview, target.url))
+      noteBrowserPage(tabId, guestPage(webview, targetUrlRef.current))
     }
 
     const onNavigate = (event: Event) => {
@@ -1119,6 +1146,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         setLoadError(null)
         setCurrentUrl(detail.url)
       }
+
+      resetAnnotate()
 
       notePage()
 
@@ -1149,7 +1178,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       setLoadError({
         code: errorCode,
         description: detail.errorDescription || copy.unreachableDescription,
-        url: detail.validatedURL || guestPage(webview, target.url).url
+        url: detail.validatedURL || guestPage(webview, targetUrlRef.current).url
       })
       setLoading(false)
     }
@@ -1277,7 +1306,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
+  }, [appendConsoleEntry, copy, isRemoteHtml, isWebPreview, resetAnnotate, tabId, target.kind])
 
   return (
     <aside

@@ -64,7 +64,12 @@ import {
 import { dashboardFallbackArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
-import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
+import {
+  buildDesktopBackendEnv,
+  buildDesktopBackendPath,
+  hermesManagedNodePathEntries,
+  normalizeHermesHomeRoot
+} from './backend-env'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
@@ -2669,7 +2674,12 @@ function findOnPath(command) {
     return command
   }
 
-  const pathEntries = String(process.env.PATH || '')
+  const pathEntries = buildDesktopBackendPath({
+    hermesHome: HERMES_HOME,
+    venvRoot: VENV_ROOT,
+    currentPath: process.env.PATH || '',
+    platform: process.platform
+  })
     .split(path.delimiter)
     .filter(Boolean)
 

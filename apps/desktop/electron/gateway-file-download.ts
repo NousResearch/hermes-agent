@@ -2,9 +2,9 @@
 // main process. Extracted from main.ts so the streaming, data-URL decoding, and
 // filename derivation are unit-testable without spinning up Electron.
 //
-// The transport wrappers (token / OAuth) live in main.ts because they need
-// main-process singletons (https/http, electronNet, the OAuth session). They
-// delegate the byte-moving to `pumpStreamToFile` here, which streams the
+// The transport wrappers (token / OAuth) live in gateway-file-runtime.ts and
+// receive main-process singletons (https/http, electronNet, the OAuth session).
+// They delegate the byte-moving to `pumpStreamToFile` here, which streams the
 // response into a sibling temp file with backpressure and renames it onto the
 // user-selected destination only once the body has landed in full — so a large
 // download never has to be buffered whole in the native process, and a failed
@@ -53,8 +53,8 @@ export interface PumpDeps {
 }
 
 // Production deps: exclusive create on the real filesystem. Shared by the
-// streaming save and the data-URL fallback in main.ts, and exercised directly
-// by the real-filesystem tests so the guarantees are proven against node:fs,
+// streaming save and the data-URL fallback in gateway-file-runtime.ts. The
+// real-filesystem tests exercise them directly against node:fs,
 // not only against fakes.
 export function fsPumpDeps(): PumpDeps {
   return {

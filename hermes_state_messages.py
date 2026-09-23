@@ -855,9 +855,19 @@ class SessionMessagesMixin:
         raw keystrokes, and the turn must not append a second row for the same input."""
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
-        return self._write_rowcount(
+        updated = self._write_rowcount(
             "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
             (self._encode_content(content), row_id, session_id))
+        if updated:
+            # The content rewrite fires messages_display_identity_update, which clears display_identity
+            # and display_order for this row (and its identity peers). Nothing else reassigns them before
+            # the next display read, so an attachment turn -- the only prompt shape the prologue rewrites --
+            # would otherwise be left with a NULL sort key and collapse into the NULL page group.
+            try:
+                self._ensure_display_order(session_id)
+            except Exception:
+                logger.debug("display order backfill after user content rewrite failed", exc_info=True)
+        return updated
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
@@ -1030,7 +1040,7 @@ class SessionMessagesMixin:
                 JOIN messages AS chosen ON chosen.id = (
                     SELECT candidate.id FROM messages AS candidate
                     WHERE candidate.session_id = ?
-                      AND candidate.display_order = page.display_order
+                      AND candidate.display_order IS page.display_order
                       AND (candidate.active = 1 OR candidate.compacted = 1)
                     ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
                 )

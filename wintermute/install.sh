@@ -86,10 +86,10 @@ echo "==> Pulse script -> $HERMES_HOME/scripts/wintermute_pulse.py"
 # A real copy, not a symlink: Hermes refuses cron scripts that resolve outside scripts/.
 cp "$REPO_DIR/scripts/wintermute_pulse.py" "$HERMES_HOME/scripts/wintermute_pulse.py"
 
-echo "==> Command: wm (live state; \`watch -n 10 wm\` to follow it)"
+echo "==> Command: wm (wm · wm live · wm alerts · wm ack)"
 cat > /usr/local/bin/wm <<WM || echo "    could not write /usr/local/bin/wm (not root?)"
 #!/bin/sh
-HERMES_HOME="$HERMES_HOME" exec "$HERMES_PY" "$HERMES_HOME/scripts/wintermute_pulse.py" --status
+HERMES_HOME="$HERMES_HOME" exec "$HERMES_PY" "$HERMES_HOME/scripts/wintermute_pulse.py" --status "\$@"
 WM
 chmod +x /usr/local/bin/wm 2>/dev/null || true
 
@@ -123,6 +123,9 @@ hermes config set platform_toolsets.telegram '["wintermute","memory","web","file
 
 echo "==> Cron job"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$REPO_DIR/setup_cron.py" "$TARGET"
+
+echo "==> Witness: this install rewrote the engine, plugin, pulse and config; accept them"
+HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$HERMES_HOME/scripts/wintermute_pulse.py" --status ack engine plugin pulse config
 
 echo "==> Current state (dry run, nothing is saved)"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$HERMES_HOME/scripts/wintermute_pulse.py" --peek || true

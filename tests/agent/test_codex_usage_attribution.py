@@ -207,7 +207,7 @@ def test_auxiliary_raw_and_async_clients_send_expected_headers(
 
     _set_legacy_attribution(profile, legacy_enabled)
     monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p: (False, None))
-    monkeypatch.setattr(auxiliary_client, "_read_codex_access_token", _jwt)
+    monkeypatch.setattr(auxiliary_client, "_read_codex_auth_store_access_token", _jwt)
 
     wrapped, model = auxiliary_client._build_codex_client(MODEL)
     raw, raw_model = auxiliary_client.resolve_provider_client(
@@ -273,7 +273,7 @@ def test_legacy_disabled_setting_cannot_disable_attribution_for_new_clients(
 ):
     from agent import auxiliary_client
 
-    monkeypatch.setattr(auxiliary_client, "_read_codex_access_token", _jwt)
+    monkeypatch.setattr(auxiliary_client, "_read_codex_auth_store_access_token", _jwt)
     _set_legacy_attribution(profile, True)
     old, _ = auxiliary_client.resolve_provider_client(
         "openai-codex", model=MODEL, raw_codex=True,

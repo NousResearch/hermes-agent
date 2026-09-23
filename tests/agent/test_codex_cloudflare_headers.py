@@ -224,7 +224,7 @@ class TestAuxiliaryClientWiring:
             lambda provider: (False, None),
         )
         monkeypatch.setattr(
-            auxiliary_client, "_read_codex_access_token",
+            auxiliary_client, "_read_codex_auth_store_access_token",
             lambda: token,
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -242,7 +242,7 @@ class TestAuxiliaryClientWiring:
         from agent import auxiliary_client
         token = _make_codex_jwt("acct-aux-raw-codex")
         monkeypatch.setattr(
-            auxiliary_client, "_read_codex_access_token",
+            auxiliary_client, "_read_codex_auth_store_access_token",
             lambda: token,
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:

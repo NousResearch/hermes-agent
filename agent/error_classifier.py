@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -1010,8 +1010,22 @@ def _status_403(c: _Ctx) -> Verdict:
         return _V_BILLING
     # A WAF/CDN in front of the provider answered, not the provider: the credential never
     # reached it, so key guidance and credential rotation are wrong (#53099, #70566). Gated on
-    # 403 and on established block/challenge markers; any other 403 stays auth.
-    if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
+    # 403 and on established block/challenge markers; any other 403 stays auth. SDK exceptions
+    # do not consistently include an HTML response in str(error), so inspect the raw body/text too.
+    cf_mitigated = str(
+        (c.headers.get("cf-mitigated") or c.headers.get("Cf-Mitigated") or "")
+        if c.headers else ""
+    ).strip().lower()
+    if c.body:
+        blocked_text = " ".join(
+            str(message).lower()
+            for message in _body_message_candidates(c.body)
+            if isinstance(message, str) and message.strip()
+        )
+    else:
+        raw_body_present, raw_body_text = _unstructured_error_text(c.error)
+        blocked_text = raw_body_text if raw_body_present else c.msg
+    if cf_mitigated == "challenge" or any(p in blocked_text for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
     return _V_AUTH_FALLBACK
 
@@ -1390,6 +1404,41 @@ def _body_of(exc: Any) -> Optional[dict]:
 def _headers_of(exc: Any) -> Any:
     headers = getattr(getattr(exc, "response", None), "headers", None)
     return headers if headers and hasattr(headers, "get") else None
+
+
+def _unstructured_error_text(error: Exception) -> Tuple[bool, str]:
+    """Whether a raw body exists, plus bounded text only when that body is non-JSON."""
+    def _text_of(exc: Any) -> Optional[Tuple[bool, str]]:
+        try:
+            body = getattr(exc, "body", None)
+        except Exception:
+            body = None
+        if isinstance(body, bytes):
+            text = body.decode("utf-8", errors="replace")
+        elif isinstance(body, str):
+            text = body
+        else:
+            response = getattr(exc, "response", None)
+            try:
+                text = getattr(response, "text", None)
+            except Exception:
+                return None
+            if not isinstance(text, str):
+                return None
+            headers = getattr(response, "headers", None)
+            content_type = str(headers.get("content-type") or headers.get("Content-Type") or "") \
+                if headers and hasattr(headers, "get") else ""
+            if "json" in content_type.lower():
+                return True, ""
+        if not isinstance(text, str):
+            return None
+        try:
+            json.loads(text)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return True, text[:65536].lower()
+        return True, ""
+
+    return _from_cause_chain(error, _text_of, (False, ""))
 
 
 def _extract_status_code(error: Exception) -> Optional[int]:

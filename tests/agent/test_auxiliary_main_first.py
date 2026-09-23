@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 
 # ── Text aux tasks — _resolve_auto_route ──────────────────────────────────────────
@@ -275,6 +277,58 @@ class TestResolveVisionMainFirst:
         assert mock_resolve.call_args.args[0] == "openrouter"
         assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
         assert mock_resolve.call_args.kwargs.get("is_vision") is True
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    def test_explicit_vision_provider_fallback_uses_auto_backend_model(self, async_mode):
+        fallback_sync = MagicMock()
+        fallback_async = MagicMock()
+        fallback_model = "stepfun/step-3.7-flash:free"
+
+        def strict_backend(provider, model=None):
+            if provider == "nous":
+                return fallback_sync, fallback_model
+            return None, None
+
+        def to_async(client, model, is_vision=False):
+            assert client is fallback_sync and is_vision is True
+            return fallback_async, model
+
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"provider": "openai-codex", "model": "gpt-5.6-sol-900k"},
+        ), patch(
+            "agent.auxiliary_client._normalize_main_runtime", return_value={},
+        ), patch(
+            "agent.auxiliary_client._read_main_provider", return_value="",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="",
+        ), patch(
+            "agent.auxiliary_client._get_cached_client", return_value=(None, None),
+        ), patch(
+            "agent.auxiliary_client._resolve_strict_vision_backend", side_effect=strict_backend,
+        ), patch(
+            "agent.auxiliary_client._to_async_client", side_effect=to_async,
+        ):
+            from agent.auxiliary_client import _resolve_call_client
+
+            route = _resolve_call_client(
+                "vision",
+                provider=None,
+                model=None,
+                base_url=None,
+                api_key=None,
+                resolved_provider="openai-codex",
+                resolved_model="gpt-5.6-sol-900k",
+                resolved_base_url=None,
+                resolved_api_key=None,
+                resolved_api_mode="codex_responses",
+                main_runtime=None,
+                async_mode=async_mode,
+            )
+
+        assert route.client is (fallback_async if async_mode else fallback_sync)
+        assert route.final_model == fallback_model
+        assert route.effective_provider == "nous"
 
 
 

@@ -1160,7 +1160,10 @@ class SessionSearchMixin:
         # tokens). Gated on a miss so hits keep their ranking ("cat" may then match
         # "concatenate"). Skipped for role='tool' (both indexes exclude tool rows).
         if not matches and not is_cjk and not (bool(role_filter) and "tool" in role_filter):
-            fb_query = _quote_fts_tokens(query.strip('"').strip())
+            # Same trailing-``*`` strip as the CJK routes (#90636): quoting would make the star a literal,
+            # so a mid-token fragment like ``apability*`` (the tool schema teaches ``deploy*``) never matched.
+            fb_raw = _strip_cjk_wildcards(query).strip('"').strip()
+            fb_query = _quote_fts_tokens(fb_raw)
             # ── CJK-bigram route (messages_fts_cjk, cjk_unicode61) ────── When the bigram index is
             # available it serves EVERY CJK query shape the legacy code split between trigram (>=3
             # chars/token) and LIKE full scans (1-2 char tokens) — the whole point of the index (PR #65544).
@@ -1170,7 +1173,7 @@ class SessionSearchMixin:
             # substring semantics are broader.
             if self._fts_cjk_available:
                 matches = self._match_rows("messages_fts_cjk", fb_query, **route) or matches
-            if not matches and self._trigram_available and self._trigram_eligible_tokens(query):
+            if not matches and self._trigram_available and self._trigram_eligible_tokens(fb_raw):
                 matches = self._match_rows("messages_fts_trigram", fb_query, **route) or matches
 
         # OR-relaxed retry: the implicit AND between terms means a paraphrased multi-word query

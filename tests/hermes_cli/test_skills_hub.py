@@ -634,3 +634,33 @@ def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_
     assert "Could not download" in out
     assert "Stale index entry" not in out
     assert ("rate limit" in out) is meta_hit
+
+
+def test_do_tap_refresh_unknown_repo_errors(hub_env):
+    """refresh of a repo that is not a configured custom tap is fail-open."""
+    from hermes_cli.skills_hub import do_tap
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_tap("refresh", repo="nobody/unknown", console=console)
+    out = sink.getvalue()
+    assert "Error" in out
+    assert "nobody/unknown" in out
+
+
+def test_do_tap_refresh_configured_tap(hub_env):
+    from hermes_cli.skills_hub import do_tap
+    from tools.skills_hub import TapsManager
+
+    mgr = TapsManager()
+    mgr.add("owner/tap-a")
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    with patch(
+        "tools.skills_hub_github.GitHubSource._list_skills_in_repo",
+        side_effect=RuntimeError("gh down"),
+    ):
+        do_tap("refresh", repo="owner/tap-a", console=console)
+    out = sink.getvalue()
+    assert "Error" not in out
+    assert "owner/tap-a" in out or "Refreshed" in out

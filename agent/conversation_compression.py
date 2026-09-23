@@ -2460,86 +2460,6 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     return "placeholder_appended"
 
 
-def _ensure_compressed_keeps_last_assistant_reply(
-    original_messages: list, compressed: list,
-) -> str:
-    """Keep the latest visible assistant reply live across compaction (#118900).
-
-    A reply that just finished streaming is the row the user is reading; when an
-    engine's fold drops it into the summary region, the commit archives its row
-    (active=0) and surfaces that render it from the active set drop it on the
-    next refresh — while the content sits intact on disk. The built-in
-    compressor keeps this row in the tail (``_ensure_last_assistant_message_in_tail``),
-    but plugin engines implement their own ``compress()`` without that guard, so
-    it is enforced here, next to ``_ensure_compressed_has_user_turn``, where
-    every engine and every path (threshold preflight, engine maintenance,
-    manual /compress; in-place and rotation) routes through.
-
-    The reply is re-inserted ahead of the first surviving row that originally
-    followed it (order-preserving), else appended. Empty (reasoning-only) and
-    tool-call rows are out of scope: the former is a different bug family, the
-    latter must keep its atomic tool group.
-    """
-    from agent.context_compressor import (
-        _DB_PERSISTED_MARKER, _fresh_compaction_message_copy,
-        is_compaction_summary_message,
-    )
-
-    reply = None
-    for message in reversed(original_messages):
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            continue
-        if message.get("tool_calls") or is_compaction_summary_message(message):
-            continue
-        if not _message_text(message).strip():
-            continue
-        reply = message
-        break
-    if reply is None:
-        return "no_reply"
-    for message in compressed:
-        if (
-            isinstance(message, dict)
-            and message.get("role") == "assistant"
-            and not message.get("tool_calls")
-            and message.get("content") == reply.get("content")
-        ):
-            return "already_present"
-    anchor = _fresh_compaction_message_copy(reply)
-    # Identity scan, not list.index(): duplicate rows with identical content
-    # exist in the wild, and == would resolve to the older twin (#118900).
-    reply_pos = next(i for i, m in enumerate(original_messages) if m is reply)
-    followers = original_messages[reply_pos + 1:]
-    index = len(compressed)
-    for follower in followers:
-        if not isinstance(follower, dict):
-            continue
-        for pos, message in enumerate(compressed):
-            if (
-                isinstance(message, dict)
-                and message.get("role") == follower.get("role")
-                and message.get("content") == follower.get("content")
-            ):
-                index = pos
-                break
-        if index < len(compressed):
-            break
-    # Never sit assistant-adjacent: slide left past a kept older reply rather
-    # than breaking strict-template alternation for the reinserted row.
-    while (
-        index > 0
-        and isinstance(compressed[index - 1], dict)
-        and compressed[index - 1].get("role") == "assistant"
-    ):
-        index -= 1
-    # Post-commit contract (#98450, mirrors _insert_real_user_anchor._place):
-    # archive_and_compact durably writes every dict in `compressed` as the new
-    # active set, so stamp the copy or the next flush re-INSERTs it as a duplicate.
-    anchor[_DB_PERSISTED_MARKER] = True
-    compressed.insert(index, anchor)
-    return "reinserted"
-
-
 def _messages_match_scoped_identity(left: Any, right: Any) -> bool:
     """Compare the live turn identity we care about for rotation stamping."""
     if (
@@ -3663,7 +3583,7 @@ def _commit_compaction(
     agent: Any, messages: list, compressed: list, *, in_place: bool, lease: _CompressionLease,
     new_system_prompt: str, system_message: str, compressed_user_turn_outcome: str,
     messages_before_compression: Optional[list], made_progress: bool, attempt: _Attempt,
-    verbatim_tail: Optional[list] = None,
+    verbatim_tail: Optional[list] = None, carried_messages: Optional[list] = None,
 ) -> _CommitOutcome:
     """Persist the compacted transcript: memory extraction, anti-growth guard, then the
     in-place archive or the parent->child rotation.
@@ -3726,6 +3646,7 @@ def _commit_compaction(
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=lease.watermark, lock_holder=lease.holder, tail_count=tail_count,
+                    carried_messages=carried_messages,
                 )
                 compressed = persisted
                 split_status = "in_place_committed"
@@ -4157,17 +4078,38 @@ def compress_context(
                 )
                 return messages, _existing_sp
         _warn_summary_or_aux_fallback(agent)
+        # A just-delivered reply the engine folded away must stay live or the
+        # next render drops it from the surface (#118900). It runs FIRST: the
+        # todo fold rewrites the trailing user row (its follower would no longer
+        # match) and both later passes place themselves around the tail, so the
+        # reply has to be back in its chronological slot before they look.
+        from agent.conversation_compression_reply_anchor import _ensure_compressed_keeps_last_assistant_reply
+
+        # `/compress here N` hands only the HEAD in as `messages` and carries the kept tail
+        # separately: the head's last assistant is an OLD reply the user explicitly asked to
+        # fold, not the just-delivered one (which lives in the verbatim tail), so the guard
+        # must not undo the compression it was asked for.
+        reinserted_reply = None if verbatim_tail else _ensure_compressed_keeps_last_assistant_reply(
+            messages, compressed, session_id=agent.session_id,
+        )
+        if reinserted_reply is not None:
+            logger.info(
+                "Compression: engine folded away the just-delivered assistant reply; reinserted it into the "
+                "active set (session=%s).", agent.session_id or "none",
+            )
         _fold_todo_snapshot(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
-        # A just-delivered reply the engine folded away must stay live or the
-        # next render drops it from the surface (#118900).
-        _ensure_compressed_keeps_last_assistant_reply(messages, compressed)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
             messages_before_compression=messages_before_compression, made_progress=_compression_made_progress,
             attempt=attempt, verbatim_tail=verbatim_tail,
+            # The reinserted copy keeps the original's _row_id/timestamp (production flush stamps
+            # both); carry exactly that one row so the commit rewinds the durable original instead
+            # of archiving it compacted=1 next to a fresh twin (display would show it twice). The
+            # todo fold / user-anchor rows added above are NOT carried: they keep their own class.
+            carried_messages=[reinserted_reply] if reinserted_reply is not None else None,
         )
         if commit.refused_prompt is not None:
             return messages, commit.refused_prompt

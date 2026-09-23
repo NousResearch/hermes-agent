@@ -93,6 +93,21 @@ COPY providers/ /opt/nova/providers/
 # imports further siblings — and a partially-copied module root fails at runtime, not at
 # build time. The whole set is ~1.5 MB of source; copying it is cheaper than being wrong.
 COPY *.py /opt/nova/
+# The MCP catalogue NOVA compiles agent grants from. Without it every `extensions.mcp` grant
+# was refused as "not in this runtime's MCP catalogue" — the Control Centre offered no MCP
+# server at all. Upstream's approved entries plus NOVA's own reviewed ones
+# (nova/mcp-catalog/), composed into one directory the runtime reads through its own
+# HERMES_OPTIONAL_MCPS override. A NOVA entry may never shadow an upstream one: the build
+# fails on a name collision instead of silently replacing an approved manifest.
+COPY optional-mcps/ /opt/nova/mcp-catalog/
+RUN for entry in /opt/nova/nova/mcp-catalog/*/; do \
+      name="$(basename "$entry")"; \
+      if [ -e "/opt/nova/mcp-catalog/$name" ]; then \
+        echo "NOVA MCP catalogue entry '$name' collides with an upstream entry" >&2; exit 1; \
+      fi; \
+      cp -r "$entry" "/opt/nova/mcp-catalog/$name"; \
+    done
+ENV HERMES_OPTIONAL_MCPS=/opt/nova/mcp-catalog
 COPY deploy/docker/entrypoint.sh /usr/local/bin/nova-entrypoint
 COPY deploy/docker/healthcheck.py /usr/local/bin/nova-healthcheck
 

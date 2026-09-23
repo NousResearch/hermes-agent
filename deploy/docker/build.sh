@@ -35,7 +35,7 @@ tag="${version}-g${sha}"
 # Named file by file rather than as directories where a directory would over-reach:
 # deploy/docker also holds validate-local.sh, which tests the image and is not in it, and a
 # tag that changed when the test changed would be lying about what it identifies.
-image_paths=(nova hermes_cli cron agent tools gateway plugins providers *.py
+image_paths=(nova hermes_cli cron agent tools gateway plugins providers optional-mcps *.py
              deploy/docker/Dockerfile.nova deploy/docker/entrypoint.sh
              deploy/docker/healthcheck.py deploy/docker/build.sh .dockerignore)
 

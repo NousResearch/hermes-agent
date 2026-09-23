@@ -1,0 +1,46 @@
+# NOVA-reviewed MCP catalogue entry (not part of the upstream Nous catalogue).
+# Composed beside the upstream entries at image build; see deploy/docker/Dockerfile.nova.
+# Reviewed 2026-09-23: mcp-google-sheets==0.6.3 (PyPI) with mcp==1.30.0. Authenticates with a Google service
+# account passed as base64 JSON in CREDENTIALS_CONFIG, so no key file is written to the
+# host; reads no other secret; no telemetry calls. Bumping the pin is a reviewed change.
+manifest_version: 1
+
+name: google-sheets
+description: Read and update Google Sheets the service account has been shared on.
+source: https://pypi.org/project/mcp-google-sheets/
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    # mcp-google-sheets does not pin its `mcp` dependency, and mcp 2.x renamed the FastMCP
+    # API it imports — unpinned, it crashes on start (seen 2026-09-23). Pinned to the last
+    # 1.x release; bump both together.
+    - "--with"
+    - "mcp==1.30.0"
+    - "mcp-google-sheets@0.6.3"
+  env:
+    # References, not secrets — interpolated from the agent's own .env at load.
+    CREDENTIALS_CONFIG: "${GOOGLE_SHEETS_SERVICE_ACCOUNT_B64}"
+
+auth:
+  type: api_key
+  env:
+    - name: GOOGLE_SHEETS_SERVICE_ACCOUNT_B64
+      prompt: "Google service account key JSON, base64-encoded"
+      required: true
+      secret: true
+
+suggest:
+  keywords:
+    - google sheets
+    - spreadsheet
+    - sheets
+  hosts:
+    - docs.google.com
+
+post_install: |
+  Create a service account in a Google Cloud project with the Sheets and Drive APIs
+  enabled, download its JSON key, base64-encode it (base64 -w0 key.json) and put the result
+  in the agent's credentials as GOOGLE_SHEETS_SERVICE_ACCOUNT_B64. Then share each sheet
+  the agent may use with the service account's email — it can reach nothing else.

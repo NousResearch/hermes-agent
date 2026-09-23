@@ -1,0 +1,42 @@
+# NOVA-reviewed MCP catalogue entry (not part of the upstream Nous catalogue).
+# Composed beside the upstream entries at image build; see deploy/docker/Dockerfile.nova.
+# Reviewed 2026-09-23: @hubspot/mcp-server@0.4.0, MIT, published by HubSpot. Reads only
+# PRIVATE_APP_ACCESS_TOKEN / HUBSPOT_ACCESS_TOKEN / BASE_URL_OVERRIDE; no telemetry calls.
+# Bumping the pin is a reviewed change to this file, never a floating tag.
+manifest_version: 1
+
+name: hubspot
+description: HubSpot CRM — contacts, companies, deals, tickets, notes and associations.
+source: https://www.npmjs.com/package/@hubspot/mcp-server
+
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "@hubspot/mcp-server@0.4.0"
+  env:
+    # A reference, not a secret: Hermes interpolates ${VAR} from the agent's own .env when
+    # it loads the server, and hands the subprocess a filtered environment.
+    PRIVATE_APP_ACCESS_TOKEN: "${HUBSPOT_PRIVATE_APP_TOKEN}"
+
+auth:
+  type: api_key
+  env:
+    - name: HUBSPOT_PRIVATE_APP_TOKEN
+      prompt: "HubSpot private app access token (Settings → Integrations → Private Apps)"
+      required: true
+      secret: true
+
+suggest:
+  keywords:
+    - hubspot
+    - crm
+  hosts:
+    - hubspot.com
+
+post_install: |
+  Create a HubSpot private app with only the CRM scopes the agent needs (for example
+  crm.objects.contacts.read, crm.objects.companies.read, crm.objects.deals.read, and the
+  matching .write scopes only if the agent should change records), then put its token in
+  the agent's credentials as HUBSPOT_PRIVATE_APP_TOKEN.

@@ -560,6 +560,38 @@ describe('useModelControls', () => {
     expect($currentModel.get()).toBe('openai/gpt-5.5')
   })
 
+  it('reconciles a stale boot model from the profile default without persisting a model switch (#119664)', async () => {
+    setCurrentModel('minimax-m2.5')
+    setCurrentProvider('minimax')
+    setCurrentModelSource('manual')
+
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'kimi-k2.5',
+      provider: 'kimi-coding'
+    })
+
+    const requestGateway = vi.fn()
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway
+      })
+    )
+
+    await result.current.refreshCurrentModel(true)
+
+    expect($currentModel.get()).toBe('kimi-k2.5')
+    expect($currentProvider.get()).toBe('kimi-coding')
+    expect(getCurrentModelSource()).toBe('default')
+
+    // Boot reconciliation is read-only. It must never replay the remembered
+    // composer model through either the live-session config.set route or the
+    // profile-default persistence route.
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect(setGlobalModel).not.toHaveBeenCalled()
+  })
+
   it('reads a forced profile reseed from that concrete profile', async () => {
     $activeGatewayProfile.set('fred-work')
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'local/model', provider: 'custom:local' })

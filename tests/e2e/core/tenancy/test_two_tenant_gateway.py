@@ -155,7 +155,7 @@ def _await_cron(tenants: dict[str, H.Tenant], at_least: int) -> None:
     strict=True, raises=AssertionError,
     reason="phase 1: session-less work (cron) for a routed profile keys the shared 'default' "
            "terminal env, so alpha/beta cron tool calls inherit default's .env, cwd and shell "
-           "state (fix: fix/multiplex-terminal-env-scope)")
+           "state (fix: #120307)")
 def test_multiplexed_gateway_never_crosses_tenants(fleet) -> None:
     root, tenants, gw = fleet
     home = root / "home"

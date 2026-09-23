@@ -96,9 +96,9 @@ def _await_cron(tenants: dict[str, H.Tenant], fires: int) -> None:
 @pytest.mark.xfail(
     strict=True, raises=AssertionError,
     reason="session.create / the first state.db row use the launch profile's model and "
-           "model.save_key writes the launch profile's .env (fix: fix/tui-profile-scope-save-key-model); "
+           "model.save_key writes the launch profile's .env (fix: #120319); "
            "gateway.run's import-time config bridge writes a secondary session's terminal.* into the "
-           "process env, red ~6/7 runs (fix: fix/multiplex-terminal-env-scope). Flips once all land.")
+           "process env, red ~6/7 runs (fix: #120307). Flips once all land.")
 def test_desktop_backend_never_crosses_tenants(fleet) -> None:
     root, tenants, backends = fleet
 

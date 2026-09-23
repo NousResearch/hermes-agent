@@ -298,7 +298,7 @@ KNOWN_BUGS = {
     "bare_custom_without_base_url_fails_fast": pytest.mark.xfail(
         strict=True, raises=AssertionError,
         reason="bare `provider: custom` with no endpoint falls through to OpenRouter and ships the "
-               "OPENAI_BASE_URL-bound OPENAI_API_KEY there (fix: fix/cred-leak-foreign-hosts)"),
+               "OPENAI_BASE_URL-bound OPENAI_API_KEY there (fix: #120299)"),
 }
 
 
@@ -345,9 +345,9 @@ class Switch:
 @pytest.mark.xfail(
     strict=True, raises=AssertionError,
     reason="leg 5: `/model <id> --provider X` adopts an alias's endpoint+key for the same model "
-           "(fix: fix/model-switch-explicit-provider-alias); leg 6: the pre-request Anthropic "
+           "(fix: #120295); leg 6: the pre-request Anthropic "
            "credential refresh puts ANTHROPIC_API_KEY on an alias's foreign host "
-           "(fix: fix/cred-leak-foreign-hosts). Flips once both land.")
+           "(fix: #120299). Flips once both land.")
 def test_tui_gateway_model_switch_routing(tmp_path: Path) -> None:
     """One live session walks the switch matrix; after every switch the next turn lands on
     exactly the selected host with exactly its key, and nothing reaches any other host."""

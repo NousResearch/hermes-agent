@@ -140,6 +140,78 @@ class TestSkillsDirectoryMount:
         for excluded in (".hub", ".curator_backups", "node_modules"):
             assert not (safe_path / excluded).exists(), excluded
 
+    def test_symlinked_skill_dir_is_materialized_but_nested_links_stay_excluded(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        external = tmp_path / "external" / "archify"
+        (external / "references").mkdir(parents=True)
+        (external / "SKILL.md").write_text("# archify")
+        (external / "references" / "schema.md").write_text("schema")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (external / "references" / "secret-link").symlink_to(secret)
+        (skills_dir / "archify").symlink_to(external, target_is_directory=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            safe_path = Path(get_skills_directory_mount()[0]["host_path"])
+
+        assert (safe_path / "archify" / "SKILL.md").read_text() == "# archify"
+        assert (safe_path / "archify" / "references" / "schema.md").read_text() == "schema"
+        assert not (safe_path / "archify" / "references" / "secret-link").exists()
+
+    def test_symlinked_category_materializes_only_skill_packages(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        category = tmp_path / "external" / "linked"
+        skill = category / "knowledge-brain"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# knowledge")
+        (category / "unrelated.txt").write_text("do not expose")
+        (skills_dir / "linked").symlink_to(category, target_is_directory=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            safe_path = Path(get_skills_directory_mount()[0]["host_path"])
+
+        assert (safe_path / "linked" / "knowledge-brain" / "SKILL.md").exists()
+        assert not (safe_path / "linked" / "unrelated.txt").exists()
+
+    def test_symlink_snapshot_reuse_fingerprint_tracks_target_content(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        external = tmp_path / "external" / "demo"
+        external.mkdir(parents=True)
+        skill_md = external / "SKILL.md"
+        skill_md.write_text("v1")
+        (skills_dir / "demo").symlink_to(external, target_is_directory=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            first = get_skills_directory_mount()[0]["reuse_fingerprint"]
+            second = get_skills_directory_mount()[0]["reuse_fingerprint"]
+            skill_md.write_text("v2 changed")
+            third = get_skills_directory_mount()[0]["reuse_fingerprint"]
+
+        assert first.startswith("snapshot:")
+        assert second == first
+        assert third != first
+
+    def test_direct_skill_mount_reuse_fingerprint_is_live_source_identity(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        skill = hermes_home / "skills" / "demo"
+        skill.mkdir(parents=True)
+        skill_md = skill / "SKILL.md"
+        skill_md.write_text("v1")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            first = get_skills_directory_mount()[0]["reuse_fingerprint"]
+            skill_md.write_text("v2 changed in live bind")
+            second = get_skills_directory_mount()[0]["reuse_fingerprint"]
+
+        assert first.startswith("live:")
+        assert second == first
+
     def test_no_symlinks_returns_original_dir(self, tmp_path):
         """When no symlinks exist, the original dir is returned (no copy)."""
         hermes_home = tmp_path / ".hermes"

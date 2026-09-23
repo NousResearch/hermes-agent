@@ -34,6 +34,8 @@ from tools.environments.remote_common import (
 
 logger = logging.getLogger(__name__)
 
+_SKILLS_LABEL_KEY = "hermes-skills-fingerprint"
+
 # Docker Desktop install paths checked when 'docker' is not in PATH
 # (macOS Intel / Apple Silicon Homebrew / app bundle).
 _DOCKER_SEARCH_PATHS = [
@@ -469,12 +471,10 @@ _RO_MOUNT_SOURCES = (
     ("get_cache_directory_mounts", False, "cache dir"))
 
 
-def _readonly_skill_mount_args() -> list[str]:
-    """``-v host:container:ro`` args for credential files, skill dirs and cache dirs. Read-only so the
-    container can authenticate/read but never modify host state. Missing or wrong-kind sources are
-    skipped with a warning (Docker-in-Docker auto-creates a missing file source as a directory,
-    which would exit 125)."""
+def _readonly_skill_mount_plan() -> tuple[list[str], str]:
+    """Read-only mount args plus the skill capability fingerprint used for reuse."""
     args: list[str] = []
+    skill_tokens: list[tuple[str, str]] = []
     try:
         import tools.credential_files as cf
         for getter, expects_file, noun in _RO_MOUNT_SOURCES:
@@ -489,10 +489,25 @@ def _readonly_skill_mount_args() -> list[str]:
                     logger.warning("Docker: skipping %s mount — %s: %s", noun.split()[0], problem, src)
                     continue
                 args.extend(["-v", f"{entry['host_path']}:{entry['container_path']}:ro"])
+                if getter == "get_skills_directory_mount":
+                    token = entry.get("reuse_fingerprint") or f"live:{src.resolve()}"
+                    skill_tokens.append((entry["container_path"], token))
                 logger.info("Docker: mounting %s %s -> %s", noun, entry["host_path"], entry["container_path"])
     except Exception as e:
         logger.debug("Docker: could not load credential file mounts: %s", e)
-    return args
+
+    digest = hashlib.sha256()
+    for container_path, token in sorted(skill_tokens):
+        digest.update(container_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(token.encode("utf-8", "surrogateescape"))
+        digest.update(b"\0")
+    return args, digest.hexdigest()
+
+
+def _readonly_skill_mount_args() -> list[str]:
+    """Backward-compatible argv-only view of :func:`_readonly_skill_mount_plan`."""
+    return _readonly_skill_mount_plan()[0]
 
 
 def _host_user_args(run_as_host_user: bool) -> list[str]:
@@ -569,7 +584,8 @@ class DockerEnvironment(BaseEnvironment):
 
         resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
         volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
-        volume_args.extend(_readonly_skill_mount_args())
+        skill_mount_args, skills_fingerprint = _readonly_skill_mount_plan()
+        volume_args.extend(skill_mount_args)
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)
@@ -614,14 +630,15 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
-            _EGRESS_LABEL_KEY: egress_label}
+            _EGRESS_LABEL_KEY: egress_label,
+            _SKILLS_LABEL_KEY: skills_fingerprint}
         # Saved for container recreation on "No such container" recovery.
         self._image = image
         self._image_uses_s6_init = image_uses_s6_init
         self._all_run_args = all_run_args
 
         reused = persist_across_processes and self._attach_existing_container(
-            task_label, profile_name, egress_label, network)
+            task_label, profile_name, egress_label, skills_fingerprint, network)
         if not reused:
             self._container_id = self._docker_run(cwd)
 
@@ -747,13 +764,13 @@ class DockerEnvironment(BaseEnvironment):
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
         return volume_args, writable_args
 
-    def _attach_existing_container(self, task_label, profile_name, egress_label, network: bool) -> bool:
+    def _attach_existing_container(self, task_label, profile_name, egress_label, skills_fingerprint, network: bool) -> bool:
         """Attach to a prior process's labeled container ("ONE long-lived container shared
         across sessions"; opt out via ``docker_persist_across_processes: false``).
         Network guard is lockdown-only: a bridge container under ``docker_network: false``
         is removed and recreated, but a ``none`` container under default config is kept so
         ``--network=none`` in extra args doesn't churn containers every startup."""
-        existing = self._find_reusable_container(task_label, profile_name, egress_label)
+        existing = self._find_reusable_container(task_label, profile_name, egress_label, skills_fingerprint)
         if existing is None:
             return False
         container_id, state = existing
@@ -916,7 +933,8 @@ class DockerEnvironment(BaseEnvironment):
         existing = self._find_reusable_container(
             self._labels.get("hermes-task-id", ""),
             self._labels.get("hermes-profile", ""),
-            self._labels.get(_EGRESS_LABEL_KEY, "off"))
+            self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_SKILLS_LABEL_KEY, ""))
         if existing is not None:
             cid, state = existing
             if state == "running":
@@ -1006,7 +1024,8 @@ class DockerEnvironment(BaseEnvironment):
         return (result.stdout.strip() or None) if result is not None else None
 
     def _find_reusable_container(
-        self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
+        self, task_label: str, profile_label: str, egress_label: str,
+        skills_fingerprint: str) -> Optional[tuple[str, str]]:
         """``(container_id, state)`` of an existing container labeled for this task/profile/
         egress posture, or ``None`` on miss or any failure. The egress posture is a label
         FILTER for every posture, "off" included: a container built with egress on must not be
@@ -1017,7 +1036,8 @@ class DockerEnvironment(BaseEnvironment):
             "--filter", "label=hermes-agent=1",
             "--filter", f"label=hermes-task-id={task_label}",
             "--filter", f"label=hermes-profile={profile_label}",
-            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
+            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}",
+            "--filter", f"label={_SKILLS_LABEL_KEY}={skills_fingerprint}"]
         result = _docker_query(
             [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",

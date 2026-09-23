@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import type { CustomEndpointsResponse } from '@/types/hermes'
 
 const getCustomEndpoints = vi.fn()
@@ -229,5 +230,33 @@ describe('CustomEndpointsSettings', () => {
     // Save stores form.baseUrl verbatim and chat POSTs {base_url}/chat/completions, so the
     // typed bare root would 404 every request even though the test looked green.
     expect(urlInput.value).toBe('http://h.test/v1')
+  })
+
+  it('translates its own copy in Korean while leaving protocol and identifier values alone', async () => {
+    getCustomEndpoints.mockResolvedValue(savedResponse)
+    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
+
+    render(
+      <I18nProvider configClient={null} initialLocale="ko">
+        <CustomEndpointsSettings />
+      </I18nProvider>
+    )
+
+    await screen.findByText('사용 중')
+
+    expect(screen.getByText('자동 감지')).toBeTruthy()
+    expect(screen.getByText('연결 테스트')).toBeTruthy()
+    expect(screen.getByText('엔드포인트 URL')).toBeTruthy()
+    expect(screen.getByText('새 대화에 사용')).toBeTruthy()
+    expect(screen.getByText('모델 자동 검색')).toBeTruthy()
+
+    // Wire-protocol names identify a transport rather than describing one, so they read
+    // the same in every locale — as do the values the user typed and the samples we show.
+    expect(screen.getByText('Chat Completions')).toBeTruthy()
+    expect(screen.getByText('Responses API')).toBeTruthy()
+    expect(screen.getByText('Anthropic Messages')).toBeTruthy()
+    expect(screen.getByDisplayValue('http://profile-a.test/v1')).toBeTruthy()
+    expect(screen.getByDisplayValue('model-a')).toBeTruthy()
+    expect(screen.getByPlaceholderText('axet-proxy')).toBeTruthy()
   })
 })

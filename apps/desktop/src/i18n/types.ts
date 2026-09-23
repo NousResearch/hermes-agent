@@ -59,6 +59,12 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  folderLinks: {
+    localConnectionRequired: string
+    unavailable: string
+    openFailed: string
+    openFailedWithMessage: (message: string) => string
+  }
   connectors: {
     title: string
     connect: string

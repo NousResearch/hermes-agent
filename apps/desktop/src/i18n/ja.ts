@@ -3,6 +3,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const ja = defineLocale({
+  folderLinks: {
+    localConnectionRequired: 'フォルダーリンクには、このセッションの現在のローカル接続が必要です。',
+    unavailable: 'システムでフォルダーを開く機能は利用できません。',
+    openFailed: 'フォルダーを開けませんでした。',
+    openFailedWithMessage: message => `フォルダーを開けませんでした：${message}`
+  },
   sessionImport: {
     title: '別のアプリから続ける',
     subtitle: '会話をHermesに取り込み、続きを始めましょう。',

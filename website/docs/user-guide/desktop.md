@@ -60,6 +60,19 @@ The center of the app. You get:
 
 Async cron and delegation completions appear as collapsed timeline disclosures. Open the completion label to read the result body (including job output) as Markdown; long reports scroll within the disclosure. Task instructions and delivery envelopes are not shown as report content.
 
+#### Opening a folder in the system file manager
+
+An explicit folder link in a chat message opens an **existing local directory** in Explorer, Finder, or the system file manager, without a preview pane or helper server:
+
+```markdown
+[Open folder](#folder/C%3A%2FReports)
+[Open folder](#folder/%2Fhome%2Fuser%2Freports)
+```
+
+The `#folder/` prefix identifies the action; the label can be any text. Encode the absolute path once using percent encoding, including spaces, `#`, `%`, and parentheses. For example, `C:/Reports/Run (1)` becomes `C%3A%2FReports%2FRun%20%281%29`. This is a directory action, not a general-purpose file launcher: files, `.app` application bundles, missing directories, relative paths, paths with leading or trailing whitespace, file URLs, UNC network-share paths, and device paths are rejected. Clicking a link never creates the directory. A network volume already mounted under an ordinary local path is not detected as remote.
+
+The action is available only when Desktop can establish that the originating chat belongs to the current local connection and profile. Remote or unresolved connections do not fall back to an identically named directory on the Desktop computer. Ordinary file links and `MEDIA:` attachments keep their existing preview/download behavior. Inline error explanations follow the app language; diagnostic details returned by the native filesystem or IPC are preserved verbatim.
+
 #### Status bar
 
 The bar along the bottom of the chat shows live session state and exposes quick controls without opening Settings:

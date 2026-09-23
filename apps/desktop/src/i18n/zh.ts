@@ -3,6 +3,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zh = defineLocale({
+  folderLinks: {
+    localConnectionRequired: '文件夹链接需要此会话当前的本地连接。',
+    unavailable: '无法使用系统的文件夹打开功能。',
+    openFailed: '无法打开文件夹。',
+    openFailedWithMessage: message => `无法打开文件夹：${message}`
+  },
   connectors: {
     title: '连接你的应用',
     connect: '连接',

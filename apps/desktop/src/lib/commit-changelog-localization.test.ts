@@ -17,7 +17,9 @@ describe('changelog display copy', () => {
     const fallback = { label: '本次更新', item: '改进与修复' }
 
     for (const commits of [undefined, [], [{ summary: 'chore: internal' }]]) {
-      expect(buildCommitChangelog(commits, { fallback })).toEqual([{ id: 'other', label: fallback.label, items: [fallback.item] }])
+      expect(buildCommitChangelog(commits, { fallback })).toEqual([
+        { id: 'other', label: fallback.label, items: [fallback.item] }
+      ])
     }
 
     expect(buildCommitChangelog([{ summary: 'fix: real change' }], { fallback })[0].items).toEqual(['Real change'])

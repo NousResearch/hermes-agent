@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-QQBOT_VERSION = "1.1.0"  # bump on functional changes to the adapter package
+QQBOT_VERSION = "1.1.1"  # bump on functional changes to the adapter package
 # Portal domain is overridable (QQ_PORTAL_HOST) for corporate proxies / test environments.
 PORTAL_HOST = os.getenv("QQ_PORTAL_HOST", "q.qq.com")
 
@@ -27,7 +27,7 @@ ONBOARD_POLL_INTERVAL = 2.0  # seconds between poll_bind_result calls
 ONBOARD_API_TIMEOUT = 10.0
 
 MAX_MESSAGE_LENGTH = 4000
-DEDUP_WINDOW_SECONDS = 300
+DEDUP_WINDOW_SECONDS = 24 * 60 * 60
 DEDUP_MAX_SIZE = 1000
 
 # QQ Bot message types / file media types

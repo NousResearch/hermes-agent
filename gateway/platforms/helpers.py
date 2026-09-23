@@ -6,10 +6,11 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import re
 import time
 from pathlib import Path
-from typing import Any, MutableMapping, Optional
+from typing import Any, Mapping, MutableMapping, Optional
 from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
@@ -41,6 +42,30 @@ class MessageDeduplicator:
                 # All entries still fresh: keep the newest so max_size holds under load.
                 self._seen = dict(sorted(self._seen.items(), key=lambda item: item[1])[-self._max_size:])
         return False
+
+    def restore(self, entries: Mapping[str, Any]) -> None:
+        """Replace the cache with live timestamped entries, newest first up to the size cap."""
+        now = time.time()
+        live: list[tuple[str, float]] = []
+        for msg_id, raw_seen_at in entries.items():
+            if not isinstance(msg_id, str) or not msg_id:
+                continue
+            try:
+                seen_at = float(raw_seen_at)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(seen_at) and now - seen_at < self._ttl:
+                live.append((msg_id, seen_at))
+        self._seen = dict(sorted(live, key=lambda item: item[1])[-self._max_size:])
+
+    def snapshot(self) -> dict[str, float]:
+        """Return a copy of live entries suitable for durable persistence."""
+        now = time.time()
+        self._seen = {
+            msg_id: seen_at for msg_id, seen_at in self._seen.items()
+            if now - seen_at < self._ttl
+        }
+        return dict(self._seen)
 
     def contains(self, msg_id: str) -> bool:
         """Return whether *msg_id* is live in the cache without inserting it."""

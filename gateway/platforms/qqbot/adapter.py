@@ -47,6 +47,8 @@ from gateway.platforms.helpers import strip_markdown
 from gateway.platforms.helpers import MessageDeduplicator, cancel_task
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.media_cache import ext_for_mime
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +166,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
+        self._dedup_state_path = get_hermes_home() / "qqbot_seen_message_ids.json"
+        self._dedup_persist_lock = asyncio.Lock()
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: Dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
         self._access_token: Optional[str] = None
@@ -175,6 +179,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # dispatcher; override via set_interaction_callback() (None drops clicks).
         self._interaction_callback: Optional[Callable[[InteractionEvent], Awaitable[None]]] = (
             self._default_interaction_dispatch)
+        self._load_seen_message_ids()
 
     # ── Properties ──
 
@@ -578,7 +583,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not isinstance(d, dict):
             return
         msg_id = str(d.get("id", ""))
-        if not msg_id or self._dedup.is_duplicate(msg_id):
+        if not msg_id or await self._is_duplicate(msg_id):
             logger.debug("[%s] Duplicate or missing message id: %s", self._log_tag, msg_id)
             return
         handler = self._INBOUND_HANDLERS.get(event_type)
@@ -586,6 +591,37 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             author = d.get("author") if isinstance(d.get("author"), dict) else {}
             await getattr(self, handler)(
                 d, msg_id, str(d.get("content", "")).strip(), author, str(d.get("timestamp", "")))
+
+    def _load_seen_message_ids(self) -> None:
+        try:
+            payload = json.loads(self._dedup_state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[%s] Failed to load persisted dedup state from %s",
+                self._log_tag, self._dedup_state_path, exc_info=True)
+            return
+        entries = payload.get("message_ids", {}) if isinstance(payload, dict) else {}
+        if isinstance(entries, dict):
+            self._dedup.restore(entries)
+
+    def _persist_seen_message_ids(self, entries: Dict[str, float]) -> None:
+        try:
+            mkdir_under_hermes_home(self._dedup_state_path.parent)
+            atomic_json_write(self._dedup_state_path, {"message_ids": entries}, indent=None)
+        except OSError:
+            logger.warning(
+                "[%s] Failed to persist dedup state to %s",
+                self._log_tag, self._dedup_state_path, exc_info=True)
+
+    async def _is_duplicate(self, msg_id: str) -> bool:
+        if self._dedup.is_duplicate(msg_id):
+            return True
+        snapshot = self._dedup.snapshot()
+        async with self._dedup_persist_lock:
+            await asyncio.to_thread(self._persist_seen_message_ids, snapshot)
+        return False
 
     # ── Inline-keyboard interactions (INTERACTION_CREATE) ──
 

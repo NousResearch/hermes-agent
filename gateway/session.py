@@ -504,6 +504,18 @@ def sanitize_reasoning_override(
     }
 
 
+# /fast tiers stored as-is. "normal" is the explicit-normal choice (live ``None``); an absent
+# field means "inherit agent.service_tier", so the two must stay distinct on disk.
+PERSISTABLE_SERVICE_TIERS = frozenset({"priority", "auto", "cold"})
+
+
+def sanitize_service_tier_override(value: Any) -> Optional[str]:
+    """``"normal"`` or a persistable tier, else ``None`` (inherit); drops unknown values."""
+    if value == "normal" or value in PERSISTABLE_SERVICE_TIERS:
+        return str(value)
+    return None
+
+
 @dataclass
 class SessionEntry:
     """Routing-index entry: maps a session key to its current session ID and metadata."""
@@ -559,6 +571,9 @@ class SessionEntry:
     # Session-scoped /reasoning override. Only ``enabled`` and a canonical
     # effort are persisted; arbitrary runtime/provider fields are discarded.
     reasoning_override: Optional[Dict[str, Any]] = None
+    # Session-scoped /fast tier: "normal" (explicit normal), "priority", "auto" or "cold";
+    # None = inherit the configured tier (see sanitize_service_tier_override).
+    service_tier_override: Optional[str] = None
     # Profile owning the bot that received this lane's traffic (``RoutingIdentity.transport_profile``,
     # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
     # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
@@ -596,6 +611,9 @@ class SessionEntry:
             result["reasoning_override"] = sanitize_reasoning_override(
                 self.reasoning_override
             )
+        tier = sanitize_service_tier_override(self.service_tier_override)
+        if tier is not None:
+            result["service_tier_override"] = tier
         if self.transport_profile:
             result["transport_profile"] = self.transport_profile
         if self.origin:
@@ -641,6 +659,7 @@ class SessionEntry:
             reasoning_override=sanitize_reasoning_override(
                 data.get("reasoning_override")
             ),
+            service_tier_override=sanitize_service_tier_override(data.get("service_tier_override")),
             transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
             **plain,
         )
@@ -1123,54 +1142,14 @@ class SessionStore(
 
     def set_model_override(self, session_key: str, override: Optional[Dict[str, Any]]) -> None:
         """Persist (or clear, with ``None``) the /model override; non-secret keys only."""
-        from dataclasses import replace
-
-        cleaned = sanitize_model_override(override)
-
-        with self._lock:
-            entry = self._entry_locked(session_key)
-            if entry is None or entry.model_override == cleaned:
-                return
-            # Publish only after persistence so a failed clear remains retryable.
-            data, generation = self._snapshot_routing_locked()
-            # Snapshot reconciliation may replace the entry after database recovery.
-            entry = self._entries[session_key]
-            data[session_key] = replace(entry, model_override=cleaned).to_dict()
-            self._persist_routing_data(data, generation)
-            entry.model_override = cleaned
+        # Publish only after persistence so a failed clear remains retryable.
+        self._replace_entry_fields(session_key, {"model_override": sanitize_model_override(override)})
 
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""
         with self._lock:
             entry = self._entry_locked(session_key)
             return dict(entry.model_override) if entry and entry.model_override else None
-
-    def set_reasoning_override(
-        self, session_key: str, override: Optional[Dict[str, Any]]
-    ) -> None:
-        """Persist or clear the sanitized session-scoped /reasoning override."""
-        from dataclasses import replace
-
-        cleaned = sanitize_reasoning_override(override)
-
-        with self._lock:
-            entry = self._entry_locked(session_key)
-            if entry is None or entry.reasoning_override == cleaned:
-                return
-            # Publish only after persistence so a failed save leaves memory untouched.
-            data, generation = self._snapshot_routing_locked()
-            entry = self._entries[session_key]
-            data[session_key] = replace(entry, reasoning_override=cleaned).to_dict()
-            self._persist_routing_data(data, generation)
-            entry.reasoning_override = cleaned
-
-    def get_reasoning_override(self, session_key: str) -> Optional[Dict[str, Any]]:
-        """Return the persisted /reasoning override for *session_key*."""
-        with self._lock:
-            entry = self._entry_locked(session_key)
-            if entry is None or entry.reasoning_override is None:
-                return None
-            return dict(entry.reasoning_override)
 
     def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""

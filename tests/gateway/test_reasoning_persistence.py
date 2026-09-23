@@ -7,6 +7,13 @@ from gateway.session import SessionSource, SessionStore, sanitize_reasoning_over
 def _source():
     return SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1", chat_type="dm")
 
+# The reasoning setter is merged into the shared runtime-options write.
+def _set_reasoning(store, session_key, override):
+    return store.set_runtime_options(session_key, reasoning_override=override)
+
+def _get_reasoning(store, session_key):
+    return (store.get_runtime_options(session_key) or {}).get("reasoning_override")
+
 @pytest.fixture
 def store_factory(tmp_path, monkeypatch):
     import hermes_state
@@ -18,17 +25,17 @@ def test_round_trips_full_effort_ladder(store_factory):
     from hermes_constants import VALID_REASONING_EFFORTS
     store = store_factory(); entry = store.get_or_create_session(_source())
     for effort in VALID_REASONING_EFFORTS:
-        store.set_reasoning_override(entry.session_key, {"enabled": True, "effort": effort, "unexpected": "discard"})
-        assert store_factory().get_reasoning_override(entry.session_key) == {"enabled": True, "effort": effort}
+        _set_reasoning(store, entry.session_key, {"enabled": True, "effort": effort, "unexpected": "discard"})
+        assert _get_reasoning(store_factory(), entry.session_key) == {"enabled": True, "effort": effort}
 
 def test_clear_and_reset_survive_restart(store_factory):
     store = store_factory(); entry = store.get_or_create_session(_source())
-    store.set_reasoning_override(entry.session_key, {"enabled": True, "effort": "ultra"})
-    store.set_reasoning_override(entry.session_key, None)
-    assert store_factory().get_reasoning_override(entry.session_key) is None
-    store.set_reasoning_override(entry.session_key, {"enabled": True, "effort": "max"})
+    _set_reasoning(store, entry.session_key, {"enabled": True, "effort": "ultra"})
+    _set_reasoning(store, entry.session_key, None)
+    assert _get_reasoning(store_factory(), entry.session_key) is None
+    _set_reasoning(store, entry.session_key, {"enabled": True, "effort": "max"})
     store.reset_session(entry.session_key)
-    assert store_factory().get_reasoning_override(entry.session_key) is None
+    assert _get_reasoning(store_factory(), entry.session_key) is None
 
 def test_state_db_round_trip_without_json_mirror(tmp_path, monkeypatch):
     import hermes_state
@@ -46,14 +53,14 @@ def test_state_db_round_trip_without_json_mirror(tmp_path, monkeypatch):
 
     store = SessionStore(sessions_dir=sessions_dir, config=config)
     entry = store.get_or_create_session(_source())
-    store.set_reasoning_override(
-        entry.session_key, {"enabled": True, "effort": "ultra"}
+    _set_reasoning(
+        store, entry.session_key, {"enabled": True, "effort": "ultra"}
     )
     store._db.close()
 
     restored = SessionStore(sessions_dir=sessions_dir, config=config)
     try:
-        assert restored.get_reasoning_override(entry.session_key) == {
+        assert _get_reasoning(restored, entry.session_key) == {
             "enabled": True,
             "effort": "ultra",
         }
@@ -79,7 +86,7 @@ async def test_command_persists_through_async_store():
     runner._evict_cached_agent = lambda _key: None
     runner._save_gateway_config_key = lambda *_args: True
     assert await runner._apply_reasoning_selection("agent:main:telegram:dm:u1", "telegram", "ultra")
-    runner._async_session_store.set_reasoning_override.assert_awaited_once_with("agent:main:telegram:dm:u1", {"enabled": True, "effort": "ultra"})
+    runner._async_session_store.set_runtime_options.assert_awaited_once_with("agent:main:telegram:dm:u1", reasoning_override={"enabled": True, "effort": "ultra"})
 
 def test_rehydrate_copies_durable_override():
     import gateway.run as gateway_run

@@ -651,8 +651,8 @@ class GatewayModelCommandsMixin:
         if getattr(self, "session_store", None) is None:
             return
         try:
-            await self.async_session_store.set_reasoning_override(
-                session_key, reasoning_config
+            await self.async_session_store.set_runtime_options(
+                session_key, reasoning_override=reasoning_config
             )
         except Exception:
             logger.debug(

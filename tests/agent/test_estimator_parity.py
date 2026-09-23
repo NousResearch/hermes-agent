@@ -236,6 +236,24 @@ class TestEstimatorParity:
         # And the echo route genuinely charges the stale thinking bulk.
         assert walk_echo > 3 * walk_codex
 
+    def test_walk_charges_native_replay_sidecars(self):
+        """Anthropic and Bedrock native replay blocks survive matching-route
+        sanitization, so the protected-tail walk must charge their wire size
+        just as the preflight estimator does."""
+        base = {"role": "assistant", "content": "x"}
+        base_walk = _estimate_msg_budget_tokens(base)
+        for key in ("anthropic_content_blocks", "bedrock_content_blocks"):
+            msg = {
+                **base,
+                key: [{"type": "thinking", "thinking": "y" * 4000}],
+            }
+            trigger_increment = estimate_messages_tokens_rough([msg]) - estimate_messages_tokens_rough([base])
+            walk_increment = _estimate_msg_budget_tokens(msg) - base_walk
+
+            assert walk_increment > 500
+            assert walk_increment <= trigger_increment * 2
+            assert trigger_increment <= walk_increment * 2
+
 class TestReasoningDoubleCount:
     """``reasoning`` and ``reasoning_content`` carrying the same text must be
     charged once — the wire ships at most one of them."""

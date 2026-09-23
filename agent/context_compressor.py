@@ -1294,12 +1294,24 @@ def _serialized_length_for_budget(value: Any) -> int:
 
 # Replay/metadata fields invisible to content/tool_calls accounting but shipped
 # on the wire. ``reasoning_details`` is handled by _reasoning_details_text_chars.
-_REPLAY_BUDGET_KEYS = "reasoning", "reasoning_content", "codex_reasoning_items", "codex_message_items"
+_REPLAY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "anthropic_content_blocks",
+    "bedrock_content_blocks",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
 
-# Keys replayed on EVERY retained assistant turn: Codex items ride every request and message items are needed
-# for prefix-cache continuity. Generic thinking keys ship for the newest turn only elsewhere (Anthropic strips
-# older, Bedrock never replays, strict chat-completions reject or pad the field); charging them everywhere overcut.
-_ALWAYS_REPLAYED_BUDGET_KEYS = "codex_reasoning_items", "codex_message_items"
+# Native provider sidecars ride every matching-route replay request; Codex message
+# items are also needed for prefix-cache continuity. Generic thinking keys ship
+# for the newest turn only on non-echo routes, so charging them everywhere overcuts.
+_ALWAYS_REPLAYED_BUDGET_KEYS = (
+    "anthropic_content_blocks",
+    "bedrock_content_blocks",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
 _NEWEST_TURN_ONLY_BUDGET_KEYS = "reasoning", "reasoning_content"
 
 # Safe to strip from stale assistant turns: only the current turn's replay needs

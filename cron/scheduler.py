@@ -1469,14 +1469,34 @@ def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
     )
 
 
+class CronJobWorkdirUnavailable(RuntimeError):
+    """A persisted cron workdir disappeared or stopped being a directory."""
+
+
+def _workdir_unavailable_result(
+    job_name: str, job_id: str, error: CronJobWorkdirUnavailable,
+) -> tuple[bool, str, str, str]:
+    """Return a visible failed run instead of silently choosing another cwd."""
+    message = f"Configured workdir is unavailable: {error}"
+    output = (
+        _job_doc_header(job_name, job_id, _hermes_now().strftime("%Y-%m-%d %H:%M:%S"), "failed")
+        + f"**Status:** FAILED\\n\\n{message}\\n"
+    )
+    return False, output, "", message
+
+
 def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
-    """Configured job workdir, or None when unset / no longer a directory (logged)."""
+    """Configured job workdir, or None when it was never configured.
+
+    A configured path that has disappeared is unsafe to treat as unset: script execution would
+    otherwise fall back to the profile scripts directory and relative paths could affect the
+    wrong project.
+    """
     workdir = (job.get("workdir") or "").strip() or None
     if workdir and not Path(workdir).is_dir():
-        logger.warning(
-            "Job '%s': configured workdir %r no longer exists — running without it",
-            job_id, workdir)
-        return None
+        raise CronJobWorkdirUnavailable(
+            f"job '{job_id}' workdir {workdir!r} no longer exists or is not a directory"
+        )
     return workdir
 
 
@@ -1503,10 +1523,12 @@ def _run_no_agent_job(
         return _block_and_pause_job(job_id, job_name, NO_AGENT_WITHOUT_SCRIPT_ERROR)
 
     # Pass workdir as subprocess cwd; never os.chdir() (leaks into concurrent gateway sessions).
-    _job_workdir = _resolve_job_workdir(job, job_id)
     try:
+        _job_workdir = _resolve_job_workdir(job, job_id)
         ok, output = _run_job_script_with_claim_heartbeat(
             job, script_path, workdir=_job_workdir, cancel_event=cancel_event)
+    except CronJobWorkdirUnavailable as exc:
+        return _workdir_unavailable_result(job_name, job_id, exc)
     except Exception as exc:
         logger.exception("Job '%s': script execution raised unexpectedly", job_id)
         ok, output = False, f"Script execution failed: {exc}"
@@ -2207,12 +2229,15 @@ def _prepare_job_prompt(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(
-            job,
-            script_path,
-            workdir=_resolve_job_workdir(job, job_id),
-            cancel_event=cancel_event,
-        )
+        try:
+            prerun_script = _run_job_script_with_claim_heartbeat(
+                job,
+                script_path,
+                workdir=_resolve_job_workdir(job, job_id),
+                cancel_event=cancel_event,
+            )
+        except CronJobWorkdirUnavailable as exc:
+            return _workdir_unavailable_result(job_name, job_id, exc), None
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
@@ -2502,7 +2527,10 @@ def run_job(
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
-    scope = _CronRunScope(job, job_id, execution_id)
+    try:
+        scope = _CronRunScope(job, job_id, execution_id)
+    except CronJobWorkdirUnavailable as exc:
+        return _workdir_unavailable_result(job_name, job_id, exc)
     try:
         scope.enter()
         if scope.workdir:

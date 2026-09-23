@@ -1110,6 +1110,37 @@ describe('preserveLocalPendingTurnMessages', () => {
     ])
   })
 
+  it('does not append an unidentifiable settled old turn after a newer committed reply', () => {
+    const priorTurn = {
+      id: '431-assistant',
+      role: 'assistant' as const,
+      rowId: 431,
+      parts: [
+        { type: 'tool-call' as const, toolCallId: 'old-call', toolName: 'terminal', result: 'old result' },
+        { type: 'text' as const, text: 'The long previous-turn answer.' }
+      ]
+    }
+
+    const next = [
+      msg('430-user', 'user', 'first request', { rowId: 430 }),
+      priorTurn,
+      msg('436-user', 'user', 'short follow-up', { rowId: 436 }),
+      msg('439-assistant', 'assistant', 'Short new answer.', { rowId: 439 })
+    ]
+
+    const staleBackgroundTail = {
+      id: 'assistant-stream-background-review',
+      role: 'assistant' as const,
+      pending: false,
+      parts: [
+        { type: 'tool-call' as const, toolCallId: 'old-call', toolName: 'terminal', result: 'old result' },
+        { type: 'text' as const, text: 'The long previous-turn answer.' }
+      ]
+    }
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, staleBackgroundTail])).toBe(next)
+  })
+
   it('does not keep a settled final-answer bubble already folded into the tool-round message', () => {
     const folded = {
       id: '1790016993.1043298-1-assistant',

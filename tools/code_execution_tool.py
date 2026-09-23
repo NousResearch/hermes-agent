@@ -118,25 +118,25 @@ def check_sandbox_requirements() -> bool:
 # Per-tool stub templates: (signature, docstring, args_dict_expr — the JSON payload sent over RPC).
 _TOOL_STUBS = {
     "web_search": ("query: str, limit: int = 5",
-        '"""Search the web. Returns dict with data.web list of {url, title, description}."""',
+        '"""Search the web. Success: {"success": true, "data": {"web": [{"url", "title", "description"}, ...]}}. Failure: {"success": false, "error": str}."""',
         '{"query": query, "limit": limit}'),
     "web_extract": ("urls: list, char_limit: int = None",
-        '"""Extract content from URLs (no LLM summarization). Returns dict with results list of {url, title, content, error}. Pages over char_limit (default 15000) are head+tail truncated with the full text stored on disk; the content footer gives the path. content is markdown."""',
+        '"""Extract content from URLs (no LLM summarization). Success: {"results": [{"url", "title", "content", "error"}, ...]}; failure: {"error": str}. Pages over char_limit (default 15000) are head+tail truncated with the full text stored on disk; the content footer gives the path. content is markdown."""',
         '{"urls": urls, "char_limit": char_limit}'),
     "read_file": ("path: str, offset: int = 1, limit: int = 2000",
-        '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
+        '"""Read a file (1-indexed lines). Successful in-cell reads, including repeats, return {"content": str, "total_lines": int, ...}; failures return {"error": str, ...}."""',
         '{"path": path, "offset": offset, "limit": limit}'),
     "write_file": ("path: str, content: str, cross_profile: bool = False",
-        '"""Write content to a file (always overwrites). Returns dict with status."""',
+        '"""Write content to a file (always overwrites). Returns {"bytes_written": int, "verified": bool?, ...} or {"error": str, ...}; verified may be omitted. No status key is guaranteed."""',
         '{"path": path, "content": content, "cross_profile": cross_profile}'),
     "search_files": ('pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0, order: str = "discovery"',
-        '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
+        '"""Search content or filenames. Successful searches return {"total_count": int}; content hits use "matches" (list of {path,line,content}) OR "matches_text" (dense string with "matches_format"); filename hits use "files"; output_mode="count" uses "counts". Empty keys are omitted; use .get(). Failures include "error"."""',
         '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context, "order": order}'),
     "patch": ('path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
-        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
+        '"""Targeted replacement or V4A patch. Returns {"success": bool, "diff": str?, "files_modified": list?, "error": str?}; empty optional keys are omitted."""',
         '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}'),
     "terminal": ("command: str, timeout: int = None, workdir: str = None",
-        '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
+        '"""Run a shell command (foreground only). Returns {"output": str, "exit_code": int, ...}; failures also include "error"."""',
         '{"command": command, "timeout": timeout, "workdir": workdir}'),
 }
 
@@ -795,17 +795,20 @@ _TOOL_DOC_LINES = [
     ("web_search", "  web_search(query: str, limit: int = 5) -> dict\n"
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
     ("web_extract", "  web_extract(urls: list[str], char_limit: int = None) -> dict\n"
-     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"
+     "    Success: {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]}; failure: {\"error\": str}. Content is markdown.\n"
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file", "  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n"
-     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
-    ("write_file", "  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file."),
+     "    Lines are 1-indexed. Successful in-cell reads, including repeats: {\"content\": str, \"total_lines\": int, ...}; failure: {\"error\": str, ...}."),
+    ("write_file", "  write_file(path: str, content: str) -> dict\n"
+     "    Overwrites the file. Returns {\"bytes_written\": int, optional \"verified\": bool, ...} or {\"error\": str, ...}; no status key is guaranteed."),
     ("search_files", "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n"
-     "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
+     "    Success always has \"total_count\"; content hits use \"matches\" (list of {path,line,content}) OR \"matches_text\" (dense string with \"matches_format\"). "
+     "target=\"files\" uses \"files\"; output_mode=\"count\" uses \"counts\". Empty keys are omitted: use .get(). Failures include \"error\"."),
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
-     "    Replaces old_string with new_string in the file."),
+     "    Replaces old_string with new_string in the file. "
+     "Returns {\"success\": bool, \"diff\": str?, \"files_modified\": list?, \"error\": str?}; empty optional keys are omitted."),
     ("terminal", "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+     "    Foreground only (no background/pty). Returns {\"output\": str, \"exit_code\": int, ...}; failures also include \"error\"."),
 ]
 
 

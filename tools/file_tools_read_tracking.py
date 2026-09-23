@@ -16,6 +16,8 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from tools.file_state import _evict_oldest
 from tools.file_tools_paths import _authoritative_workspace_root, _resolve_path_for_task
@@ -24,6 +26,20 @@ logger = logging.getLogger("tools.file_tools")
 
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
+
+# A Python cell consumes read_file data locally. Its full result is not added to
+# the conversation, so it must neither receive a conversational dedup stub nor
+# count as content served to the conversation.
+_programmatic_read: ContextVar[bool] = ContextVar("programmatic_read", default=False)
+
+
+@contextmanager
+def programmatic_file_read():
+    token = _programmatic_read.set(True)
+    try:
+        yield
+    finally:
+        _programmatic_read.reset(token)
 
 # Consecutive patch failures per (task_id, resolved_path); escalates the hint
 # when the model keeps failing the same file. Reset on a successful patch.

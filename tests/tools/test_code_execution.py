@@ -83,6 +83,59 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
     return json.dumps({"error": f"Unknown tool in mock: {function_name}"})
 
 
+def test_programmatic_reads_keep_content_without_advancing_direct_dedup(tmp_path):
+    """Exercise the real registry and session-kernel RPC against local files."""
+    from model_tools import handle_function_call
+    from tools.file_tools_read_tracking import _read_tracker
+
+    _read_tracker.clear()
+    task_id = "programmatic-read-contract"
+    first_path = tmp_path / "first.txt"
+    second_path = tmp_path / "second.txt"
+    first_path.write_text("first line\n", encoding="utf-8")
+    second_path.write_text("second line\n", encoding="utf-8")
+
+    first_direct = json.loads(handle_function_call("read_file", {"path": str(first_path)}, task_id=task_id))
+    assert "first line" in first_direct["content"]
+
+    code = (
+        "import json\n"
+        "from hermes_tools import read_file\n"
+        f"paths = {[str(first_path), str(second_path)]!r}\n"
+        "results = [[read_file(path) for _ in range(3)] for path in paths]\n"
+        "print(json.dumps([[r['content'] for r in group] for group in results]))\n"
+    )
+    executed = json.loads(execute_code(code, task_id=task_id, enabled_tools=["read_file"]))
+    assert executed["status"] == "success", executed
+    groups = json.loads(executed["output"].strip())
+    assert all("first line" in content for content in groups[0])
+    assert all("second line" in content for content in groups[1])
+    assert len(set(groups[0])) == len(set(groups[1])) == 1
+
+    direct_repeat = json.loads(handle_function_call("read_file", {"path": str(first_path)}, task_id=task_id))
+    assert direct_repeat["status"] == "unchanged"
+    assert "content" not in direct_repeat
+    direct_first = json.loads(handle_function_call("read_file", {"path": str(second_path)}, task_id=task_id))
+    assert "second line" in direct_first["content"]
+
+
+def test_search_contract_describes_each_emitted_result_shape():
+    from tools.file_operations_common import SearchMatch, SearchResult
+
+    description = build_execute_code_schema({"search_files"})["description"]
+    match = SearchMatch(path="file.py", line_number=1, content="needle")
+    examples = (
+        SearchResult(matches=[match], total_count=1),
+        SearchResult(matches=[match] * 5, total_count=5),
+        SearchResult(files=["file.py"], total_count=1),
+        SearchResult(counts={"file.py": 1}, total_count=1),
+        SearchResult(total_count=0),
+    )
+    for result in examples:
+        for key in result.to_dict(densify=True):
+            assert f'"{key}"' in description
+
+
 class TestSandboxRequirements(unittest.TestCase):
     def test_available_on_posix(self):
         if sys.platform != "win32":

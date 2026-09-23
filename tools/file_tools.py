@@ -36,7 +36,7 @@ from tools.file_tools_read_tracking import (
     _mark_verification_stale, _patch_failure_lock, _patch_failure_tracker, _read_tracker,
     _in_spans, _read_tracker_lock, _record_not_found, _record_patch_failure, _record_seen_span,
     _reset_patch_failures, _returned_line_span, _task_data, _unchanged_seen_spans,
-    _update_read_timestamp)
+    _update_read_timestamp, _programmatic_read)
 
 logger = logging.getLogger(__name__)
 
@@ -525,30 +525,36 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str, *, overla
 
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
-                            returned_span: tuple | None = None) -> int:
+                            returned_span: tuple | None = None, programmatic: bool = False) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
-    Per-task tracker under the lock (stub counters, history, consecutive count,
-    mtime for dedup + staleness, lines actually returned). Then OUTSIDE our lock
-    (no nested locking): the cross-agent registry, and the background-review read-mark (a FULL read of a
-    skill file counts like skill_view so a follow-up skill_manage(patch) is accepted).
+    Programmatic reads skip conversational counters and dedup state because
+    their content has not entered the transcript.
     """
-    with _read_tracker_lock:
-        task_data["dedup_hits"].pop(dedup_key, None)
-        task_data["dedup_hits"].pop((resolved_str, "seen_lines"), None)
-        task_data["dedup_generation_reads"].add(dedup_key)
-        task_data["read_history"].add((path, offset, limit))
-        count = _bump_consecutive(task_data, ("read", path, offset, limit))
-        try:
-            _mtime_now = os.path.getmtime(resolved_str)
-            task_data["dedup"][dedup_key] = _mtime_now
-            task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            if returned_span:
-                _record_seen_span(task_data, resolved_str, _mtime_now, returned_span)
-        except OSError:
-            pass
-        _cap_read_tracker_data(task_data)
 
+    count = 0
+    if not programmatic:
+        # Per-task tracker under the lock: stub counter, history, consecutive
+        # count, and mtime for dedup + staleness.
+        with _read_tracker_lock:
+            task_data["dedup_hits"].pop(dedup_key, None)
+            task_data["dedup_hits"].pop((resolved_str, "seen_lines"), None)
+            task_data["dedup_generation_reads"].add(dedup_key)
+            task_data["read_history"].add((path, offset, limit))
+            count = _bump_consecutive(task_data, ("read", path, offset, limit))
+            try:
+                _mtime_now = os.path.getmtime(resolved_str)
+                task_data["dedup"][dedup_key] = _mtime_now
+                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                if returned_span:
+                    _record_seen_span(task_data, resolved_str, _mtime_now, returned_span)
+            except OSError:
+                pass
+            _cap_read_tracker_data(task_data)
+
+    # OUTSIDE our lock (no nested locking): the cross-agent registry and the
+    # background-review read mark. A full skill read counts like skill_view so
+    # a follow-up skill_manage(patch) is accepted on either read path.
     try:
         file_state.record_read(task_id, resolved_str, partial=partial)
     except Exception:
@@ -631,7 +637,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
-        if cached_mtime is not None:
+        programmatic = _programmatic_read.get()
+        if cached_mtime is not None and not programmatic:
             try:
                 if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
                     return _dedup_stub_or_block(task_data, dedup_key, path)
@@ -639,7 +646,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 pass  # stat failed — fall through to full read
         # A different window over lines already returned (file unchanged) only
         # gets its unseen lines; see _omit_seen_lines.
-        seen_spans = _unchanged_seen_spans(task_data, resolved_str)
+        seen_spans = [] if programmatic else _unchanged_seen_spans(task_data, resolved_str)
 
         result = _get_file_ops(task_id).read_file(path, offset, limit)
         result_dict = result.to_dict()
@@ -684,7 +691,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        returned_span=returned_span)
+                                        returned_span=returned_span, programmatic=programmatic)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "

@@ -27,7 +27,17 @@ _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete",
 
 def _default_dispatch(task_id):
     from model_tools import handle_function_call
-    return lambda tool_name, tool_args: handle_function_call(tool_name, tool_args, task_id=task_id)
+    from tools.file_tools_read_tracking import programmatic_file_read
+
+    def dispatch(tool_name, tool_args):
+        if tool_name == "read_file":
+            # A Python cell consumes the result programmatically, so a repeated read still
+            # needs content and must not count as content shown in the transcript.
+            with programmatic_file_read():
+                return handle_function_call(tool_name, tool_args, task_id=task_id)
+        return handle_function_call(tool_name, tool_args, task_id=task_id)
+
+    return dispatch
 
 
 def _rpc_token_ok(request: dict, rpc_token: str) -> bool:

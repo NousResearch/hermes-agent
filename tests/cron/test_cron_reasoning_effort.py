@@ -145,6 +145,32 @@ class TestSchedulerJobReasoningPrecedence:
         assert result == resolve_reasoning_config(self.CFG, "gpt-5")
         assert any("turbo" in r.message for r in caplog.records)
 
+    def test_garbage_warning_points_at_the_cli_lane(self, caplog):
+        """The remedy named in the warning must be a lane that actually works.
+
+        ``reasoning_effort`` is intentionally absent from the model-facing
+        ``cronjob`` schema and its dispatch (models don't pick their own
+        spend), so the previous hint — ``cronjob action=update job_id=...
+        reasoning_effort=<level>`` — described a silent no-op: an agent
+        fixing the pin from that message would resend a field the dispatch
+        drops, and the operator/agent loop never converges. The operator lane
+        (``hermes cron edit``) is the surface that persists the pin.
+        """
+        import logging
+
+        from cron.scheduler import _resolve_job_reasoning_config
+
+        job = {"id": "abc123", "reasoning_effort": "turbo"}
+        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            _resolve_job_reasoning_config(job, self.CFG, "gpt-5")
+        remedy = " ".join(str(r.message) for r in caplog.records)
+        # Names the working command, its flag, and which job to fix.
+        assert "hermes cron edit" in remedy
+        assert "--reasoning-effort" in remedy
+        assert "abc123" in remedy
+        # And must NOT re-advertise the model-facing lane it cannot use.
+        assert "action=update" not in remedy
+
     def test_job_effort_is_model_independent(self):
         """Pinned effort governs whichever model actually runs (auth fallback
         can swap the model after resolution) — the job pins intent, the

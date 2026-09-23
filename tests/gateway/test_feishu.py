@@ -1328,6 +1328,50 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_reply_in_thread_config_controls_reply_and_topic_fallback_routing(self):
+        """#112907: false keeps replies and fallback sends out of Feishu topics."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"reply_in_thread": False}))
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["reply"] = request
+                return SimpleNamespace(success=lambda: True)
+
+            def create(self, request):
+                captured["create"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        metadata = {"thread_id": "omt-thread", "reply_to_message_id": "om-parent"}
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            asyncio.run(
+                adapter._send_raw_message(
+                    chat_id="oc_chat", msg_type="text", payload='{"text":"reply"}',
+                    reply_to=None, metadata=metadata,
+                )
+            )
+            asyncio.run(
+                adapter._send_raw_message(
+                    chat_id="oc_chat", msg_type="text", payload='{"text":"fallback"}',
+                    reply_to=None, metadata={"thread_id": "omt-thread"},
+                )
+            )
+
+        self.assertFalse(captured["reply"].request_body.reply_in_thread)
+        self.assertEqual(captured["create"].receive_id_type, "chat_id")
+        self.assertEqual(captured["create"].request_body.receive_id, "oc_chat")
+
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
@@ -2749,4 +2793,3 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-

@@ -316,6 +316,7 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    reply_in_thread: bool = True
 
 
 @dataclass
@@ -1410,6 +1411,7 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            reply_in_thread=_to_boolean(extra.get("reply_in_thread", True)),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -3709,11 +3711,12 @@ class FeishuAdapter(BasePlatformAdapter):
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
         if effective_reply_to:
             body = self._build_reply_message_body(
-                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
+                content=payload, msg_type=msg_type,
+                reply_in_thread=bool(thread_id) and self._reply_in_thread, uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
-        if thread_id:
+        if thread_id and self._reply_in_thread:
             # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
             receive_id, receive_id_type = thread_id, "thread_id"
         elif chat_id.startswith("feishu_user_id:"):

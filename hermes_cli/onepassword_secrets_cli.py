@@ -77,7 +77,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
             arg("env_var", "Environment variable name to unmap"),
         )),
         ("sync", "Resolve references now and report what changed", cmd_sync, (
-            flag("--apply", "Actually export resolved values into the current shell (default: dry-run)"),
+            flag("--apply", "Actually export resolved values into this process/shell env (visible to this process and children; not the password-blind vault) (default: dry-run)"),
         )),
         ("disable", "Turn off the 1Password integration", cmd_disable, ()),
     ))

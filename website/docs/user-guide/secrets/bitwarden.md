@@ -71,9 +71,11 @@ From now on, every `hermes` invocation pulls fresh secrets at startup. You'll se
 | `hermes secrets bitwarden status` | Show config + binary version + token presence/validation |
 | `hermes secrets bitwarden token` | Rotate the access token: validate the new token against Bitwarden, then store it in `.env` |
 | `hermes secrets bitwarden sync` | Dry-run: pull secrets now and show what would be applied |
-| `hermes secrets bitwarden sync --apply` | Pull and export into the current shell's environment |
+| `hermes secrets bitwarden sync --apply` | Pull and export into this shell's environment (hydrates this shell now, not only the next `hermes` start) |
 | `hermes secrets bitwarden install` | Just download the pinned `bws` binary (no auth required) |
 | `hermes secrets bitwarden disable` | Flip `enabled: false`; leaves token + project id in place |
+
+`sync --apply` hydrates **this shell** immediately — not only the next `hermes` start. Values land in this process `os.environ` and are visible to children. Do not put site passwords or identity data on this path; use [Passwords & Logins](/user-guide/features/credential-vault) (`hermes vault`).
 
 ## Rotating an expired or revoked token
 

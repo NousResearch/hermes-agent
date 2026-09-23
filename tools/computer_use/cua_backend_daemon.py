@@ -125,6 +125,7 @@ class _EmbeddedCuaDaemon:
         self._process: Any = None
         self._owns_runtime = self._running = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
+        self._registry_session_id: Optional[str] = None
         token = uuid.uuid4().hex[:12]
         self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
                             else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
@@ -138,6 +139,14 @@ class _EmbeddedCuaDaemon:
     def _sanitized_env(self) -> Dict[str, str]:
         from tools.environments.local import _sanitize_subprocess_env
         return _sanitize_subprocess_env(self.child_env())
+
+    def _drain_stdout(self, process: Any) -> None:
+        """Fallback stdout drainer for when process_registry adoption is skipped or fails.
+        stdout is a real pipe (see start()), so someone MUST keep reading it or a chatty
+        daemon blocks once the pipe buffer fills."""
+        with contextlib.suppress(Exception):
+            for _ in getattr(process, "stdout", None) or ():
+                pass
 
     def _drain_stderr(self, process: Any) -> None:
         with contextlib.suppress(Exception):
@@ -166,10 +175,50 @@ class _EmbeddedCuaDaemon:
         self._command, self._mcp_args = _driver._resolve_mcp_invocation(self._driver_cmd)
         env = self._sanitized_env()
         command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
-        self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        # stdout is a real pipe (not DEVNULL) so process_registry's adopted reader thread can follow
+        # this long-lived daemon to its REAL exit: a DEVNULL fd reads EOF immediately, which made the
+        # registry's reader thread finish right away and mark the still-running daemon "exited" after
+        # its wait(timeout=5) grace lapsed (observed empirically — see #104953 card). The reader drains
+        # this pipe continuously, so a chatty daemon can never block on a full stdout buffer either.
+        self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                          stderr=subprocess.PIPE, text=True, env=env)
         self._owns_runtime = True
         threading.Thread(target=self._drain_stderr, args=(self._process,), name="hermes-cua-daemon-stderr", daemon=True).start()
+        # Register with process_registry (#104953): this cua-driver subprocess previously had zero
+        # references to the registry, so a hard crash/SIGKILL of the parent Hermes process (atexit
+        # below never runs) left it running forever, invisible to `/stop`, `process list`, and crash
+        # recovery. adopt_local() takes over the already-started Popen: it persists pid+host_start_time
+        # to the crash-recovery checkpoint (tools/process_registry.py:_write_checkpoint), so a restarted
+        # gateway's `recover_from_checkpoint()` re-discovers and can kill it, and `kill_all()` at normal
+        # shutdown now tree-kills it as an extra safety net alongside the existing atexit hook. It
+        # inherits this worker's own systemd-scope MemoryMax cgroup cap (subprocess children share their
+        # parent's cgroup — confirmed empirically, see #104953) rather than getting a second cap of its
+        # own. notify_on_complete=False: nothing should chat-notify when an internal daemon exits.
+        # Skipped on macOS: there ``self._process`` is ``/usr/bin/open`` (see
+        # _embedded_daemon_spawn_command), a short-lived launch helper that exits once it hands the
+        # request to LaunchServices, NOT the actual cua-driver daemon — adopting it would checkpoint
+        # and later "recover" the wrong, already-exited PID while the real daemon keeps running
+        # untracked (coderabbit finding, #104953). Registering the true daemon PID on macOS needs its
+        # own resolution path (e.g. from CuaDriver.app's process list); out of scope here.
+        # isinstance-gated: test suites patch subprocess.Popen with a Mock() (no real stdout pipe/fd,
+        # and even replace the ``subprocess.Popen`` class itself), so isinstance() and the adoption both
+        # go inside the broad suppress — a mocked process must never spin a real reader thread against
+        # fake stream attributes, but a mocking failure here must never break daemon startup either.
+        registered = False
+        if sys.platform != "darwin":
+            with contextlib.suppress(Exception):
+                if isinstance(self._process, subprocess.Popen):
+                    from tools.process_registry import process_registry
+                    session = process_registry.adopt_local(
+                        self._process, command=" ".join(command), cwd=None, notify_on_complete=False)
+                    self._registry_session_id = session.id
+                    registered = True
+        if not registered:
+            # Registry adoption owns draining stdout via its reader thread; without it (macOS, or a
+            # failed/suppressed adoption above) something must still drain the real pipe or a chatty
+            # daemon blocks once the OS pipe buffer fills.
+            threading.Thread(target=self._drain_stdout, args=(self._process,),
+                             name="hermes-cua-daemon-stdout", daemon=True).start()
         deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             return_code = self._process.poll()
@@ -202,6 +251,18 @@ class _EmbeddedCuaDaemon:
         if owns_runtime:
             _cb()._run_quiet([self._command, "stop", "--socket", self.socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
+        # Deregister from process_registry FIRST (#104953): `cua-driver stop` above already asked the
+        # daemon to exit gracefully, so by the time _wait_or_kill's tree-kill fallback would fire the
+        # registry's own reader thread may already have observed EOF and moved the session to
+        # "finished" on its own -- kill_process() on an already-exited session is a no-op status
+        # lookup, never an error. Never let a stale registry entry outlive the Popen this class still
+        # owns and is about to _wait_or_kill directly.
+        if self._registry_session_id is not None:
+            with contextlib.suppress(Exception):
+                from tools.process_registry import process_registry
+                process_registry.kill_process(self._registry_session_id, source="cua_backend_daemon.stop",
+                                               consume_output=False)
+            self._registry_session_id = None
         if process is not None:
             _wait_or_kill(process)
         if sys.platform != "win32" and os.path.exists(self.socket_path):

@@ -195,3 +195,48 @@ async def test_status_bookkeeping_is_serialized_and_bounded(adapter, mode):
     assert adapter.send.await_count == 2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evict", [False, True])
+async def test_overlapping_status_edits_do_not_resurrect_evicted_entries(adapter, evict):
+    adapter._STATUS_MESSAGE_IDS_MAX = 4
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id=str(index)) for index in range(6)
+    ]
+    for index in range(4):
+        await adapter.send_or_update_status("chat-1", f"turn-{index}", "starting")
+
+    started = [asyncio.Event(), asyncio.Event()]
+    release = asyncio.Event()
+
+    async def delayed_edit(chat_id, message_id, content, **kwargs):
+        started[int(message_id)].set()
+        await release.wait()
+        return SendResult(success=True, message_id=f"updated-{message_id}")
+
+    adapter.edit_message.side_effect = delayed_edit
+    tasks = [
+        asyncio.create_task(adapter.send_or_update_status("chat-1", f"turn-{index}", "editing"))
+        for index in range(2)
+    ]
+    try:
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), 5)
+        if evict:
+            for index in range(4, 6):
+                await adapter.send_or_update_status("chat-1", f"turn-{index}", "starting")
+            assert ("chat-1", "turn-0") not in adapter._status_message_ids
+            assert ("chat-1", "turn-1") not in adapter._status_message_ids
+        assert len(adapter._status_message_ids) <= adapter._STATUS_MESSAGE_IDS_MAX
+    finally:
+        release.set()
+        results = await asyncio.gather(*tasks)
+
+    assert all(result.success for result in results)
+    assert len(adapter._status_message_ids) <= adapter._STATUS_MESSAGE_IDS_MAX
+    for index in range(2):
+        key = ("chat-1", f"turn-{index}")
+        if evict:
+            assert key not in adapter._status_message_ids
+        else:
+            assert adapter._status_message_ids[key] == f"updated-{index}"
+
+

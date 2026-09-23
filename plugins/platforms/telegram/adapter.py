@@ -3815,7 +3815,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id, cached_id, content, finalize=True, metadata=metadata
                 )
                 if result.success:
-                    if result.message_id:
+                    # Another key may have evicted this entry while the edit awaited.
+                    if result.message_id and key in self._status_message_ids:
                         self._status_message_ids[key] = str(result.message_id)
                     return result
                 self._status_message_ids.pop(key, None)

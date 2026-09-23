@@ -452,17 +452,23 @@ def _render_entries(entries: List[PluginCatalogEntry], console) -> None:
     console.print("[dim]Details:[/dim] hermes plugins info <name>    [dim]Install:[/dim] hermes plugins install <name>")
 
 
-def cmd_search(term: str = "", *, json_output: bool = False) -> None:
-    """Search the curated catalog (name/description/declared tools); empty term = browse everything."""
+def cmd_search(term: str = "", *, json_output: bool = False, category: Optional[str] = None) -> None:
+    """Search name/description/tools, optionally restricted to a catalog category."""
     from hermes_cli.plugins_cmd import _console
     matches = filter_entries(load_catalog_live(), term)
+    if category is not None:
+        matches = [entry for entry in matches if entry.category == category]
     if json_output:
         print(json.dumps({"query": term, "results": [e.to_dict() for e in matches]}, indent=2))
         return
     console = _console()
     if not matches:
-        console.print(f"[yellow]No catalog entries matched '{term}'[/yellow]" if term
-                      else "[dim]No catalog entries available.[/dim]")
+        if category is not None:
+            query_hint = f" matching '{term}'" if term else ""
+            console.print(f"[yellow]No catalog entries in category '{category}'{query_hint}.[/yellow]")
+        else:
+            console.print(f"[yellow]No catalog entries matched '{term}'[/yellow]" if term
+                          else "[dim]No catalog entries available.[/dim]")
         return
     _render_entries(matches, console)
 

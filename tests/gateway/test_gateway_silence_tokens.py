@@ -311,3 +311,34 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_shared_route_keeps_current_actor_through_turn_runner(monkeypatch, tmp_path):
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    runner = _runner(monkeypatch, tmp_path)
+    source = _source()
+    source.user_id = source.user_name = None
+    event = MessageEvent(text="hello", source=source, user_id="participant", user_name="Alice")
+    seen = []
+
+    class Agent:
+        def run_conversation(self, message, **kwargs):
+            seen.append(kwargs["turn_author"])
+            return {"final_response": "Hello", "messages": [], "api_calls": 1}
+
+    async def run_agent(**kwargs):
+        assert kwargs["source"] is source
+        assert kwargs["session_key"] == key
+        kwargs.pop("message_type", None)
+        ctx = TurnContext(**kwargs)
+        return TurnRunner(runner, ctx)._run_conversation_with_approval(Agent(), [], [], None, None)
+
+    key = runner._session_key_for_source(source)
+    runner.session_store.get_or_create_session.return_value.session_key = key
+    runner._run_agent = run_agent
+    await runner._handle_message_with_agent(event, source, key, 1)
+    assert seen == [{"id": event.user_id, "name": event.user_name, "is_bot": False}]
+    assert source.user_id is None

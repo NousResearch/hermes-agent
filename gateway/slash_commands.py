@@ -4,6 +4,7 @@ mixins (``slash_commands_model/_session/_status/_goals``); this module keeps the
 the one-off commands.  run.py helpers are imported lazily."""
 
 from __future__ import annotations
+from gateway.message_actor import event_actor_identity, source_for_event_actor
 
 import asyncio
 import contextlib
@@ -317,8 +318,11 @@ class GatewaySlashCommandsMixin(
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""
         from gateway.slash_access import policy_for_source
-        source = event.source
-        policy = policy_for_source(self.config, source)
+        source = source_for_event_actor(event)
+        policy_cfg, resolved = self._effective_gateway_config_for_source(source)
+        if not resolved:
+            return "⛔ /whoami is unavailable without profile policy context."
+        policy = policy_for_source(policy_cfg, source)
         platform = source.platform.value if source and source.platform else "?"
         chat_type = ((source.chat_type if source else "") or "dm").lower()
         scope = "DM" if chat_type in {"dm", "direct", "private", ""} else "group/channel"
@@ -451,7 +455,7 @@ class GatewaySlashCommandsMixin(
             if fallback_keys == sibling_keys
             else "stop_command_chat_scope"
         )
-        if fallback_keys and self._is_user_authorized_for_source(source):
+        if fallback_keys and self._is_user_authorized_for_source(source_for_event_actor(event)):
             for fallback_key in fallback_keys:
                 await _stop(fallback_key, reason)
             logger.info("STOP (%s) by %s — interrupted %d run(s): %s",
@@ -586,14 +590,17 @@ class GatewaySlashCommandsMixin(
         return _execute("version").text
 
     def _catalog_options(self, event: MessageEvent) -> dict:
-        """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
-        the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
-        never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
-        from gateway.slash_access import policy_for_source
-        source = event.source
-        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
-        # no ``config``; policy_for_source treats None as ungated.
-        policy = policy_for_source(getattr(self, "config", None), source)
+        """Keep catalogs within the event actor's serving-profile and identity gates."""
+        from gateway.slash_access import IDENTITY_FREE_FLOOR_COMMANDS, policy_for_source
+        source = source_for_event_actor(event)
+        policy_cfg, resolved = self._effective_gateway_config_for_source(source)
+        if not resolved:
+            return {"allowed_commands": set()}
+        policy = policy_for_source(policy_cfg, source)
+        if not getattr(source, "user_id", None):
+            return {"allowed_commands": {
+                name for name in IDENTITY_FREE_FLOOR_COMMANDS if policy.can_run(None, name)
+            }}
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
             return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
         return {}
@@ -931,8 +938,10 @@ class GatewaySlashCommandsMixin(
         # This mutates profile-wide security policy. The central slash gate can allow selected
         # commands to non-admin users, so enforce admin again at this side-effect boundary.
         # Unconfigured policies remain unrestricted.
-        policy = policy_for_source(self.config, event.source)
-        if requested and not policy.is_admin(event.source.user_id):
+        policy_cfg, resolved = self._effective_gateway_config_for_source(event.source)
+        policy = policy_for_source(policy_cfg, event.source)
+        actor_user_id, _ = event_actor_identity(event)
+        if requested and (not resolved or not actor_user_id or not policy.is_admin(actor_user_id)):
             return "Only gateway admins can change the persistent approval mode."
         # Approval checks load config dynamically; do not evict the cached agent or alter its
         # system prompt/tool schema (prompt-cache prefix is sacred).

@@ -27,6 +27,9 @@ _SCOPE_KEYS = {
 }
 
 
+IDENTITY_FREE_FLOOR_COMMANDS: FrozenSet[str] = frozenset({"help", "status", "whoami"})
+
+
 @dataclass(frozen=True)
 class SlashAccessPolicy:
     """Resolved access policy for one (platform, scope) pair; scope is ``"dm"`` or ``"group"``."""

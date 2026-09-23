@@ -8,6 +8,7 @@ memory→skill links are derived from lexical overlap.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import Counter
@@ -126,6 +127,23 @@ def density_stats(nodes: dict[str, SkillNode], edges: list[tuple[str, str]]) -> 
     }
 
 
+def memory_fingerprint(entry: str) -> str:
+    """Short stable digest of a memory entry's TEXT, carried in the node id.
+
+    A journey card is identified by what it says, not by where it sat: the list can be
+    prepended to (an agent ``memory_tool`` add mid-turn) between the graph being drawn and the
+    user submitting an edit, and a bare index then names somebody else's card (#119668).
+    Both producers of an entry — this module's chunking and ``MemoryStore._parse_entries`` —
+    strip and split on the same delimiter, so the same entry digests the same on both sides.
+    """
+    return hashlib.sha256(entry.strip().encode("utf-8")).hexdigest()[:12]
+
+
+def memory_node_id(card: dict[str, Any], index: int) -> str:
+    """``memory:<source>:<index>:<fingerprint>`` — position for the occurrence, text for identity."""
+    return f"memory:{card['source']}:{index}:{card['fingerprint']}"
+
+
 def _memory_cards() -> list[dict[str, Any]]:
     """``MEMORY.md`` / ``USER.md`` prose split on bare ``§`` separators; every
     non-empty chunk becomes one card (MEMORY.md cards first, then USER.md)."""
@@ -143,6 +161,8 @@ def _memory_cards() -> list[dict[str, Any]]:
                 cards.append({
                     "source": source, "timestamp": file_ts + chunk_idx if file_ts is not None else None,
                     "title": (first[:80] + "…") if len(first) > 80 else first, "body": chunk[:1200],
+                    # Digest the WHOLE chunk, not the truncated ``body`` a long memory renders with.
+                    "fingerprint": memory_fingerprint(chunk),
                 })
     return cards
 
@@ -162,7 +182,7 @@ def _memory_skill_edges(memory_cards: list[dict[str, Any]], skills: list[SkillNo
             ((score, name) for name, tokens, name_lower in skill_meta if (score := (6 if name_lower in text else 0) + len(tokens & text_tokens)) > 0),
             key=lambda x: (-x[0], x[1]),
         )
-        edges.extend((f"memory:{card['source']}:{idx}", name) for _, name in scored[:4])
+        edges.extend((memory_node_id(card, idx), name) for _, name in scored[:4])
     return edges
 
 
@@ -197,7 +217,7 @@ def build_learning_graph() -> dict[str, Any]:
         for n in learned_skills.values()
     ] + [
         {
-            "id": f"memory:{card['source']}:{i}", "label": card["title"], "kind": "memory",
+            "id": memory_node_id(card, i), "label": card["title"], "kind": "memory",
             "memorySource": card["source"], "timestamp": card.get("timestamp"), "category": "memory",
             "useCount": 0, "state": "active", "createdBy": "memory", "pinned": False,
         }

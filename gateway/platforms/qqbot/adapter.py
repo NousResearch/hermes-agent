@@ -63,6 +63,7 @@ class QQCloseError(Exception):
 from gateway.platforms.qqbot.constants import (
     API_BASE, TOKEN_URL, GATEWAY_URL_PATH, DEFAULT_API_TIMEOUT, FILE_UPLOAD_TIMEOUT,
     CONNECT_TIMEOUT_SECONDS, RECONNECT_BACKOFF, MAX_RECONNECT_ATTEMPTS, RATE_LIMIT_DELAY,
+    PARKED_PROBE_INTERVAL_SECONDS,
     QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
     MSG_TYPE_INPUT_NOTIFY, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
@@ -163,6 +164,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
+        # parked-revival state (see _park_for_revival)
+        self._parked: bool = False
+        self._parked_since: Optional[float] = None
+        self._first_failure_at: Optional[float] = None
+        self._revival_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: Dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
@@ -227,10 +233,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
+        self._parked = False  # stop the revival probe loop too
         self._mark_disconnected()
         await cancel_task(self._listen_task)
         await cancel_task(self._heartbeat_task)
-        self._listen_task = self._heartbeat_task = None
+        await cancel_task(self._revival_task)
+        self._listen_task = self._heartbeat_task = self._revival_task = None
         await self._cleanup()
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self._log_tag)
@@ -376,7 +384,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 if code == 4008:
                     logger.info("[%s] Rate limited (4008), waiting %ds", self._log_tag, RATE_LIMIT_DELAY)
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        self._mark_disconnected()
+                        await self._park_for_revival("rate-limited")
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     await reconnect()
@@ -394,8 +402,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
                 await reconnect()
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                    self._mark_disconnected()
+                    await self._park_for_revival("QQCloseError")
                     return
 
             except Exception as exc:
@@ -406,10 +413,77 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 self._fail_pending("Connection interrupted")
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
+                    await self._park_for_revival("generic")
                     return
                 await reconnect()
+
+    # ------------------------------------------------------------------
+    # Parked revival path. After the reconnect ladder tops out (60s x 100 ≈
+    # 1.7h of backoff), the adapter previously went terminally silent
+    # in-process — zero reconnect action, zero typed alert, inbound messages
+    # unreachable — and only a NEW process revived it. Borrowing the MCP
+    # server pattern (connecting → parked → connected, revived on demand), the
+    # adapter now parks instead of giving up:
+    #   * runtime status flips to ``parked`` (typed, observable);
+    #   * a typed event line names the platform, attempt count, and first
+    #     failure moment so dashboards/logs surface it instead of one ERROR
+    #     followed by silence;
+    #   * a slow revival loop keeps probing every PARKED_PROBE_INTERVAL until
+    #     the platform is reachable again — bounded, low-frequency, and
+    #     cancelled cleanly on disconnect().
+    # ------------------------------------------------------------------
+    async def _park_for_revival(self, cause: str) -> None:
+        """Top of the reconnect ladder: park with a typed event + slow probe loop."""
+        self._parked = True
+        self._parked_since = time.time()
+        first_failure_at = getattr(self, "_first_failure_at", None) or self._parked_since
+        self._first_failure_at = first_failure_at
+        logger.error(
+            "[%s] PLATFORM_ADAPTER_PARKED platform=qqbot cause=%s attempts=%d "
+            "first_failure_at=%s revival_probe_interval=%ds — inbound unreachable "
+            "until platform recovers or the process restarts",
+            self._log_tag, cause, MAX_RECONNECT_ATTEMPTS,
+            time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(first_failure_at)),
+            PARKED_PROBE_INTERVAL_SECONDS,
+        )
+        self._write_runtime_status_safe(
+            "parked",
+            platform_state="parked",
+            error_code="PLATFORM_ADAPTER_PARKED",
+            error_message=f"qqbot reconnect ladder exhausted ({cause}); slow revival probe every {PARKED_PROBE_INTERVAL_SECONDS}s",
+        )
+        if self._revival_task is None or self._revival_task.done():
+            self._revival_task = asyncio.create_task(self._revival_probe_loop())
+
+    async def _revival_probe_loop(self) -> None:
+        """Bounded slow probe: try a full reconnect every interval until it works.
+
+        Probe failures log at debug (no storm); success flips the adapter back
+        to connected state and restarts the normal listen/heartbeat tasks the
+        same way ``start()`` wires them, minus lock re-acquisition.
+        """
+        try:
+            while self._running and self._parked:
+                await asyncio.sleep(PARKED_PROBE_INTERVAL_SECONDS)
+                if not self._running or not self._parked:
+                    return
+                try:
+                    await self._open_gateway_ws()
+                except Exception as exc:
+                    logger.debug("[%s] Revival probe failed: %s", self._log_tag, exc)
+                    continue
+                self._parked = False
+                self._mark_connected()
+                logger.error(
+                    "[%s] PLATFORM_ADAPTER_REVIVED platform=qqbot parked_duration=%.0fs — "
+                    "revived by probe without process restart",
+                    self._log_tag, time.time() - (self._parked_since or time.time()),
+                )
+                self._listen_task = asyncio.create_task(self._listen_loop())
+                self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+                return
+        except asyncio.CancelledError:
+            return
 
     async def _reconnect(self, backoff_idx: int) -> bool:
         delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]

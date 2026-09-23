@@ -125,8 +125,21 @@ describe('mergeOlderTranscriptPage', () => {
   it('keeps newer rows after an old tail when a drifting offset returns both overlap and subsequent turns', () => {
     // A page initially ending at row 6 was cached. New turns persisted before
     // the older-page request, so its offset now lands across rows 4–8.
-    const existing = [chat('one', 1), chat('two', 2), chat('three', 3), chat('four', 4), chat('five', 5), chat('six', 6)]
-    const fetched = [chat('four-refetched', 4), chat('five-refetched', 5), chat('six-refetched', 6), chat('seven', 7), chat('eight', 8)]
+    const existing = [
+      chat('one', 1),
+      chat('two', 2),
+      chat('three', 3),
+      chat('four', 4),
+      chat('five', 5),
+      chat('six', 6)
+    ]
+    const fetched = [
+      chat('four-refetched', 4),
+      chat('five-refetched', 5),
+      chat('six-refetched', 6),
+      chat('seven', 7),
+      chat('eight', 8)
+    ]
 
     const merged = mergeOlderTranscriptPage(existing, fetched)
 

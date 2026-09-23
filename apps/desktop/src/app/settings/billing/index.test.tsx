@@ -542,7 +542,9 @@ describe('BillingSettings', () => {
     })
 
     await waitFor(() =>
-      expect(screen.getByText(`${formatMoney(25)} added. Balance is refreshing.`, { collapseWhitespace: false })).toBeTruthy()
+      expect(
+        screen.getByText(`${formatMoney(25)} added. Balance is refreshing.`, { collapseWhitespace: false })
+      ).toBeTruthy()
     )
   })
 

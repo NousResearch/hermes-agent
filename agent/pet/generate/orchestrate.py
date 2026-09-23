@@ -168,17 +168,28 @@ def _humanize_image_error(error: str) -> str:
     return hint or error.splitlines()[0].strip()[:200]  # first line, sans provider envelope
 
 
-def _generate_row(spec: tuple[str, int, int], *, base: Path, label: str, style: str, slug: str, sprite, cancelled) -> tuple[str, list | None]:
+def _generate_row(
+    spec: tuple[str, int, int], *, base: Path, label: str, style: str, slug: str, sprite, cancelled,
+    reference_size: tuple[int, int] | None = None,
+) -> tuple[str, list | None]:
     """Generate + slice one animation row, retrying up to ``_ROW_GEN_ATTEMPTS`` times.
 
     Self-healing: a roll whose poses touch (no gutters) slices badly, so
     ``components`` (raises on touching poses) drives regeneration and only the
-    final attempt uses lenient ``auto`` slicing. Returns ``(state, None)`` when
-    cancelled or every attempt failed.
+    final attempt uses lenient ``auto`` slicing. A
+    :class:`~agent.pet.generate.atlas.UnsegmentableStripError` skips the
+    remaining strict retries — the defect is in the art, and each strict retry
+    is a paid image call that will fail the same way (#87739). Sliced frames are
+    then checked against the base silhouette *before* compose: a collapsed row
+    is retried (or dropped) here, instead of poisoning every other state through
+    normalize's shared scale and failing the whole hatch after all rows are paid
+    for. Returns ``(state, None)`` when cancelled or every attempt failed.
     """
     state, _row, count = spec
     t0 = time.monotonic()
     last_exc: Exception | None = None
+    if reference_size is None:
+        reference_size = atlas.silhouette_box(base)
     for attempt in range(_ROW_GEN_ATTEMPTS):
         if cancelled():
             return state, None
@@ -190,8 +201,21 @@ def _generate_row(spec: tuple[str, int, int], *, base: Path, label: str, style: 
                 provider=sprite, prefix=f"pet_row_{state}", aspect_ratio="landscape",
             )
             # fit=False keeps raw columns so normalize_cells registers the whole pet at once.
-            method = "components" if attempt < _ROW_GEN_ATTEMPTS - 1 else "auto"
-            frames = atlas.extract_strip_frames(strips[0], count, method=method, fit=False)
+            strict = attempt < _ROW_GEN_ATTEMPTS - 1
+            try:
+                frames = atlas.extract_strip_frames(strips[0], count, method="components" if strict else "auto", fit=False)
+            except atlas.UnsegmentableStripError as exc:
+                # Only strict mode raises this. The art itself is unsegmentable
+                # (merged poses), so a strict re-roll would fail identically and
+                # cost another image call: salvage the SAME strip leniently.
+                logger.warning("pet hatch %r: row %r unsegmentable (attempt %d/%d) — skipping strict retries: %s", slug, state, attempt + 1, _ROW_GEN_ATTEMPTS, exc)
+                frames = atlas.extract_strip_frames(strips[0], count, method="auto", fit=False)
+            if collapsed := atlas.row_frames_collapsed(frames, reference_size):
+                # Lenient slicing can "succeed" with slivers of the body; those
+                # pass relative frame checks but sink the atlas later. A
+                # distinct type keeps the normal retry ladder (a fresh roll can
+                # still segment cleanly) instead of the skip-strict shortcut.
+                raise atlas.CollapsedRowError(f"row {state} collapsed: {collapsed}")
             logger.info("pet hatch %r: row %r ready in %.1fs (attempt %d)", slug, state, time.monotonic() - t0, attempt + 1)
             return state, frames
         except Exception as exc:  # noqa: BLE001 - retried; one bad row is tolerated
@@ -233,10 +257,12 @@ def hatch_pet(
     label = concept or display_name or slug
     frames_by_state: dict[str, list] = {}
     total_rows = len(atlas.ROW_SPECS)
+    # Decode the identity anchor's proportions once, not per row per attempt.
+    reference_size = atlas.silhouette_box(base)
     logger.info("pet hatch %r: generating %d animation rows", slug, total_rows)
 
     def _gen_row(spec: tuple[str, int, int]) -> tuple[str, list | None]:
-        return _generate_row(spec, base=base, label=label, style=style, slug=slug, sprite=sprite, cancelled=cancelled)
+        return _generate_row(spec, base=base, label=label, style=style, slug=slug, sprite=sprite, cancelled=cancelled, reference_size=reference_size)
 
     # running-left is mirrored from running-right (consistent, one fewer generation).
     generated_specs = [spec for spec in atlas.ROW_SPECS if spec[0] != "running-left"]

@@ -733,6 +733,48 @@ class TestMicroCompaction:
             "micro-compaction gate must check agent._persist_disabled"
         )
 
+    def test_db_sync_passes_exact_carried_messages(self):
+        """Micro-compaction carries a prefix and suffix around its summary marker.
+
+        The persistence layer must receive exact durable ids, not len(result)-1:
+        a tail count reaches backward across the removed assistant/tool exchange and
+        turns summarized rows into rewind-only active=0, compacted=0 debris
+        (#118481).
+        """
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        cc = _compressor()
+        captured = {}
+
+        class _DB:
+            def archive_and_compact(self, session_id, messages, **kwargs):
+                captured["session_id"] = session_id
+                captured["messages"] = messages
+                captured["kwargs"] = kwargs
+                return len(messages)
+
+        cc._session_db = _DB()
+        cc._session_id = "sess"
+        compacted = [
+            {"role": "user", "content": "prefix", "_row_id": 11, _DB_PERSISTED_MARKER: True},
+            {
+                "role": "assistant",
+                "content": "summary",
+                COMPRESSED_SUMMARY_METADATA_KEY: True,
+            },
+            {"role": "user", "content": "suffix", "_row_id": 15, _DB_PERSISTED_MARKER: True},
+            # Content was rewritten in-place: the mutation contract deliberately
+            # popped _DB_PERSISTED_MARKER, so its old row is NOT byte-identical.
+            {"role": "assistant", "content": "rewritten", "_row_id": 16},
+        ]
+
+        cc._sync_micro_compact_to_db(compacted)
+
+        assert captured["session_id"] == "sess"
+        carried = captured["kwargs"].get("carried_messages")
+        assert [message.get("_row_id") for message in carried] == [11, 15]
+        assert "tail_count" not in captured["kwargs"]
+
     def test_splice_preserves_db_persisted_stamps(self):
         """Surviving messages keep their _db_persisted stamps through a splice.
 

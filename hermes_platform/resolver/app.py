@@ -55,6 +55,15 @@ def _expand(path: str) -> str:
 
 
 @dataclass(frozen=True)
+class Endpoint:
+    url: str
+    token: str = ""
+
+    def __repr__(self) -> str:
+        return f"Endpoint(url={self.url!r}, token=<redacted>)"
+
+
+@dataclass(frozen=True)
 class AppResolver:
     definition: AppDef
 
@@ -99,6 +108,19 @@ class AppResolver:
         return Observation(CheckState.UNAVAILABLE, detail=f"unknown version kind {kind}")
 
     # ---- probe: fresh, never cached ------------------------------------------------------
+
+    def endpoint(self) -> Endpoint | None:
+        """Read and validate the current runtime endpoint."""
+        d = self.definition
+        if d.liveness_kind != "server_json":
+            return None
+        session = _read_server_json(_expand(d.liveness_path), d)
+        if session is None or _pid_alive(session.pid).value is not True:
+            return None
+        endpoint = _endpoint_observation(session.url, d.endpoint_path)
+        if endpoint.state is not CheckState.PRESENT or not endpoint.value:
+            return None
+        return Endpoint(endpoint.value, session.token)
 
     def probe(self, res: Resolution, *, effort: Effort, deadline_s: float = 3.0) -> Probe:
         d = self.definition

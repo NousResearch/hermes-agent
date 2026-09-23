@@ -23,7 +23,7 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { type AgentPluginLiveNow, COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
@@ -33,11 +33,23 @@ import {
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
-import { runGatewayRestart } from '@/store/system-actions'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
 type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
+
+type InstallModalCopy = ReturnType<typeof useI18n>['t']['settings']['plugins']['installModal']
+
+/** What an agent-plugin install made usable, as toast fragments ("12 tools connected", ...). */
+function installOutcome(m: InstallModalCopy, live: AgentPluginLiveNow, nextChat: boolean): string[] {
+  const tools = live.mcpServers.reduce((n, server) => n + (server.connected ? server.tools.length : 0), 0)
+
+  return [
+    ...(tools > 0 ? [m.toolsConnected(tools)] : []),
+    ...(live.skills.length > 0 ? [m.skillsReady(live.skills)] : []),
+    ...(nextChat ? [m.nextChat] : [])
+  ]
+}
 
 export function PluginInstallModal() {
   const request = useStore($pluginInstallRequest)
@@ -207,6 +219,7 @@ export function PluginInstallModal() {
     const errors: string[] = []
     const successes: string[] = []
     let agentInstalled = false
+    let live: AgentPluginLiveNow = { mcpServers: [], skills: [] }
 
     try {
       if (installAgent && probe.agent) {
@@ -220,8 +233,14 @@ export function PluginInstallModal() {
         })
 
         if (result.ok) {
-          successes.push(m.agentSuccess(result.pluginName ?? request.repo))
+          successes.push(
+            [
+              m.agentSuccess(result.pluginName ?? request.repo),
+              ...installOutcome(m, result.live, result.nextChat)
+            ].join(' · ')
+          )
           agentInstalled = true
+          live = result.live
 
           if (result.missingEnv?.length) {
             const firstVar = result.missingEnv[0]
@@ -284,14 +303,11 @@ export function PluginInstallModal() {
           notify({ kind: 'success', message })
         }
 
-        // An enabled agent plugin only takes effect after a gateway restart —
-        // offer the restart right here instead of a dim hint to run later.
+        // Open chats of the profile already have the plugin's MCP tools and skills (no click).
         if (agentInstalled && enableAgent) {
-          notify({
-            kind: 'success',
-            message: m.restartToApply,
-            action: { label: m.restartNow, onClick: () => void runGatewayRestart() }
-          })
+          for (const server of live.mcpServers.filter(s => !s.connected)) {
+            notify({ kind: 'warning', message: m.serverNotConnected(server.name, server.error || '') })
+          }
         }
 
         closePluginInstallRequest()

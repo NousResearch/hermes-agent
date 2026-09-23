@@ -170,6 +170,34 @@ def cpu_vendor() -> str:
     return ""
 
 
+def _windows_interactive_session() -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    process_id = kernel32.GetCurrentProcessId()
+    session_id = wintypes.DWORD()
+    if not kernel32.ProcessIdToSessionId(process_id, ctypes.byref(session_id)) or session_id.value == 0:
+        return False
+    active_session = kernel32.WTSGetActiveConsoleSessionId()
+    if active_session != 0xFFFFFFFF and active_session == session_id.value:
+        return True
+    return bool(kernel32.GetProcessWindowStation())
+
+
+def interactive_session() -> bool:
+    """Return whether this process can reach an interactive user session."""
+    if sys.platform == "win32":
+        try:
+            return _windows_interactive_session()
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+    if sys.platform.startswith("linux"):
+        session_id = _read_text("/proc/self/sessionid", 64).strip()
+        return bool(session_id and session_id != "4294967295" and os.path.isdir(f"/run/user/{os.getuid()}"))
+    return True
+
+
 def clear_caches() -> None:
     """Clear every cached host fact."""
     for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor):

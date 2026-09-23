@@ -126,6 +126,19 @@ function transcriptChangedDuringRead(before: ChatMessage[] | undefined, after: C
   return false
 }
 
+/** Zero persisted rows read over a populated runtime bound to the SAME stored
+ *  session. An empty page is not proof the transcript is empty — it is also
+ *  what a respawning backend (or a state.db read racing the change event)
+ *  returns. A runtime rebound to another stored id while the read was in
+ *  flight holds no evidence about the requested transcript. */
+function emptyPageOverPopulatedTranscript(
+  page: readonly unknown[],
+  current: ClientSessionState | undefined,
+  storedSessionId: string
+): boolean {
+  return page.length === 0 && Boolean(current?.messages.length) && current?.storedSessionId === storedSessionId
+}
+
 type TileTranscriptTarget = { ownerRoute?: SessionOwnerRoute; storedSessionId: string; runtimeId?: string }
 
 /** Signature key per tile — carries the owner route so two connections/profiles
@@ -216,10 +229,12 @@ export async function reconcileTileTranscripts({
       // backend or hold a pool slot (#103375); no warm backend = retry next tick.
       const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
 
+      const current = $sessionStates.get()[runtimeSessionId]
+
       if (
         requestId !== requestSequenceRef.current ||
         tileRuntimeOwnsLiveState(runtimeSessionId) ||
-        transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
+        transcriptChangedDuringRead(messagesAtRequest, current?.messages) ||
         !tileStillPresent()
       ) {
         // Tile closed or superseded mid-read — discard AND prune its
@@ -227,6 +242,12 @@ export async function reconcileTileTranscripts({
         // for the app's lifetime (#94255 review point 3).
         signatureRef.current.delete(signatureKey)
 
+        continue
+      }
+
+      // Same rule as the active pane below: a transient zero-row page must not
+      // blank a populated tile, and leaves no signature behind.
+      if (emptyPageOverPopulatedTranscript(latest.messages, current, storedSessionId)) {
         continue
       }
 
@@ -281,6 +302,10 @@ export async function hydrateStoredSessionTranscript({
     transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages)
 
   for (let index = 0; index < Math.max(1, attempts); index += 1) {
+    if (index > 0) {
+      await new Promise(resolve => window.setTimeout(resolve, 250))
+    }
+
     if (superseded()) {
       return
     }
@@ -292,6 +317,12 @@ export async function hydrateStoredSessionTranscript({
       // that ran during the read or retry delay. Its todo restore is stale too.
       if (superseded()) {
         return
+      }
+
+      // A zero-row page over the populated turn is a transient read, not the
+      // answer.
+      if (emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)) {
+        continue
       }
 
       const messages = toChatMessages(latest.messages)
@@ -318,10 +349,6 @@ export async function hydrateStoredSessionTranscript({
       return
     } catch {
       // Best-effort fallback when live stream payloads are empty.
-    }
-
-    if (index < attempts - 1) {
-      await new Promise(resolve => window.setTimeout(resolve, 250))
     }
   }
 }
@@ -359,12 +386,13 @@ export async function reconcileActiveTranscript({
     const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
+    const current = $sessionStates.get()[runtimeSessionId]
 
     if (
       requestId !== requestSequenceRef.current ||
       busyRef.current ||
       tileRuntimeOwnsLiveState(runtimeSessionId) ||
-      transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
+      transcriptChangedDuringRead(messagesAtRequest, current?.messages) ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
       activeSessionIdRef.current !== runtimeSessionId
     ) {
@@ -380,6 +408,14 @@ export async function reconcileActiveTranscript({
           storedSessionId
         ])
       : `${stored.profile ?? 'default'}:${storedSessionId}`
+
+    // Same rule as the warm-activation guard (use-session-actions/index.ts):
+    // publishing the page would blank the thread and trip the routed loading
+    // branch. Bail before the signature write so the next usable page is not
+    // deduped away.
+    if (emptyPageOverPopulatedTranscript(latest.messages, current, storedSessionId)) {
+      return
+    }
 
     const signature = sessionMessagesSignature(latest.messages)
 

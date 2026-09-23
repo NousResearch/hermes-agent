@@ -289,6 +289,44 @@ def _mcp_reload_confirm_required() -> bool:
         return True
 
 
+def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: str = "") -> None:
+    """Rebuild live sessions' cached tool snapshots from the registry and push session.info (agents
+    never re-read the registry). The MCP pool is process-global, so refreshing only the requester
+    would leave sibling sessions on stale tools until /new — and a request without a resolvable
+    session_id (desktop passes ``activeSessionId ?? undefined``) would refresh nothing while still
+    answering "reloaded". ``enabled_override`` re-resolves toolsets so a server enabled this session
+    (config or a just-installed plugin) is in the session's ``tool_call`` scope.
+
+    ``home``: only sessions of that profile home (a session with no ``profile_home`` belongs to the
+    launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``note``: queued
+    for each session's next turn on the one-shot turn-note channel (``agent/turn_context.py``)."""
+    from hermes_constants import hermes_home_key
+    want = hermes_home_key(home) if home is not None else None
+    with _sessions_lock:
+        live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None and (
+            want is None or hermes_home_key(sess.get("profile_home") or get_process_hermes_home()) == want)]
+    refresh = _tools_mod("tools.mcp_tool_agent").refresh_agent_mcp_tools
+    for sid, sess in live:
+        agent = sess["agent"]
+        try:
+            with _session_profile_runtime_scope(sess):
+                enabled = _load_enabled_toolsets(getattr(agent, "platform", None))
+                refresh(agent, enabled_override=enabled, quiet_mode=True, preserve_prefix=preserve_prefix)
+        except Exception as _exc:
+            logger.warning("Failed to refresh cached agent tools (session %s): %s", sid, _exc)
+        if note:
+            prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
+            agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
+        _emit("session.info", sid, _session_info(agent, sess))
+
+
+def refresh_plugin_sessions(home, note: str) -> None:
+    """A plugin just went live in ``home``: append its MCP tools to that profile's open chats (deferred
+    behind tool_search, so the model-facing tool array is unchanged) and queue ``note`` for their next
+    turn. Called by ``hermes_cli.plugins_activation_live``."""
+    _refresh_live_sessions(home, preserve_prefix=True, note=note)
+
+
 @_rpc("reload.mcp", 5015)
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
@@ -315,22 +353,8 @@ def _(rid, params: dict) -> dict:
     req_rev = str(params.get("rev") or "")
 
     def _refresh_session_agent() -> None:
-        """Rebuild EVERY live session's cached tool snapshot + push session.info (agents never
-        re-read the registry). The MCP pool is process-global, so refreshing only the requester
-        would leave sibling sessions on stale tools until /new — and a request without a
-        resolvable session_id (desktop passes ``activeSessionId ?? undefined``) would refresh
-        nothing while still answering "reloaded". Runs under _mcp_reload_lock so a concurrent
-        reload can't tear the registry down mid-refresh."""
-        with _sessions_lock:
-            live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None]
-        for sid, sess in live:
-            agent = sess["agent"]
-            try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
-                with _session_profile_runtime_scope(sess):
-                    _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
-            except Exception as _exc:
-                logger.warning("Failed to refresh cached agent tools after /reload-mcp (session %s): %s", sid, _exc)
-            _emit("session.info", sid, _session_info(agent, sess))
+        """Runs under _mcp_reload_lock so a concurrent reload can't tear the registry down mid-refresh."""
+        _refresh_live_sessions()
 
     def _do_full_reload() -> None:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
@@ -1472,6 +1496,40 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────
+def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) -> list[dict]:
+    if not portable or plugin_dir is None:
+        return []
+    package = _tools_mod("hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
+    namespace = package.manifest.get("extensions", {}).get("com.nousresearch.hermes", {})
+    declared = namespace.get("servers", {})
+    if not isinstance(declared, dict):
+        return []
+    server_name_for = _tools_mod("hermes_cli.plugins_manifest").portable_mcp_server_name
+    liveness = _tools_mod("tools.mcp_liveness")
+    core = _tools_mod("tools.mcp_tool_common")._core
+    resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
+    rows = []
+    for name in sorted(declared):
+        internal_name = server_name_for(key, name)
+        connection_key = resolve_key(internal_name)
+        server = core._servers.get(connection_key)
+        connected = server is not None and (server.session is not None or server._is_recycled_stdio())
+        if connected:
+            rows.append({"name": name, "state": "connected", "sentence": ""})
+            continue
+        decl = _tools_mod("hermes_platform.declaration").lookup(internal_name)
+        status = liveness.status(internal_name)
+        if decl is None or status is None:
+            rows.append({"name": name, "state": "unknown", "sentence": ""})
+            continue
+        rows.append({
+            "name": name,
+            "state": status.state,
+            "sentence": liveness.describe(decl, status.availability, status.state),
+        })
+    return rows
+
+
 def _plugin_rows() -> list[dict]:
     pc = _tools_mod("hermes_cli.plugins_cmd")
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
@@ -1489,16 +1547,50 @@ def _plugin_rows() -> list[dict]:
         # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
         # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
         _dir_path = Path(str(_dir)) if _dir else None
+        portable = pc._is_portable_plugin_dir(_dir)
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
+            "source": source, "status": status, "portable": portable,
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
+            "servers": _plugin_server_rows(_dir_path, key, portable=portable),
             **cat.catalog_row_fields(_dir, pins, versions),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
+
+
+# Latest ``on_plugin_loaded`` summaries by plugin name — the TUI server's own subscription, so an
+# install/toggle/update result reports what the load actually activated (#87770). One listener per manager.
+_plugin_activations: dict = {}
+_plugin_activation_subscribed: set = set()
+
+
+def _ensure_plugin_activation_listener() -> None:
+    from hermes_cli.plugins import get_plugin_manager
+    manager = get_plugin_manager()
+    if manager.scope_key in _plugin_activation_subscribed:
+        return
+    _plugin_activation_subscribed.add(manager.scope_key)
+
+    def _on_loaded(summaries) -> None:
+        for entry in summaries:
+            _plugin_activations[entry["name"]] = entry
+            _plugin_activations[entry["key"]] = entry
+    manager.on_plugin_loaded(_on_loaded)
+
+
+def _with_activation(result: dict, name: str) -> dict:
+    """Fill ``activation`` from this process's listener when the core returned none (the core's own
+    copy carries ``live_now``, which the listener's load-time summary cannot)."""
+    if result.get("activation"):
+        return result
+    for key in (name, result.get("plugin_name"), result.get("name")):
+        if key and key in _plugin_activations:
+            result["activation"] = _plugin_activations[key]
+            break
+    return result
 
 
 def _plugins_list(rid, params):
@@ -1512,6 +1604,7 @@ def _plugins_toggle(rid, params):
     ident = (params.get("key") or params.get("name") or "").strip()
     if not ident:
         return _err(rid, 4019, "plugins.toggle requires a 'key' or 'name'")
+    _ensure_plugin_activation_listener()
     toggle = _tools_mod("hermes_cli.plugins_cmd").dashboard_set_agent_plugin_enabled
     result = toggle(ident, enabled=bool(params.get("enable")))
     if not result.get("ok"):
@@ -1519,8 +1612,11 @@ def _plugins_toggle(rid, params):
     # The toggle resolves a bare leaf / manifest name to the canonical key it wrote; report that key.
     key = result.get("name") or ident
     row = next((r for r in _plugin_rows() if key in (r["key"], r["name"])), None)
-    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")),
-                     "restart_required": bool(result.get("restart_required")), "name": key, "plugin": row})
+    return _ok(rid, _with_activation({
+        "ok": True, "unchanged": bool(result.get("unchanged")),
+        "restart_required": bool(result.get("restart_required")),
+        "gateway_reloaded": bool(result.get("gateway_reloaded")), "activation": result.get("activation"),
+        "name": key, "plugin": row}, key))
 
 
 def _plugins_install(rid, params):
@@ -1530,10 +1626,13 @@ def _plugins_install(rid, params):
     catalog_name = str(params.get("catalog_name") or "").strip()
     if not ident and not catalog_name:
         return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', or 'catalog_name'")
+    _ensure_plugin_activation_listener()
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
         ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
         ref=str(params.get("ref") or "").strip() or None)
-    return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed")
+    if not result.get("ok"):
+        return _err(rid, 5026, result.get("error") or "install failed")
+    return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)
 
 
 def _plugins_update(rid, params):
@@ -1557,8 +1656,13 @@ def _plugins_update(rid, params):
                          "delta_lines": cat.surface_delta_lines(e.delta), "error": str(e)})
     except pc.PluginOperationError as e:
         return _err(rid, 4021, str(e))
-    return _ok(rid, {"ok": True, "unchanged": not result.changed, "sha": result.sha, "name": result.installed_name,
-                     "warnings": list(result.warnings)})
+    payload = {"ok": True, "unchanged": not result.changed, "sha": result.sha, "name": result.installed_name,
+               "warnings": list(result.warnings)}
+    if result.changed:
+        _ensure_plugin_activation_listener()
+        activate = _tools_mod("hermes_cli.plugins_activation").activate_plugin_now
+        payload = _with_activation({**payload, **activate(result.installed_name)}, result.installed_name)
+    return _ok(rid, payload)
 
 
 def _plugins_remove(rid, params):
@@ -1592,7 +1696,12 @@ def _plugins_settings(rid, params):
     return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
 
 
-_PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
+def _plugins_onboarding(rid, params):
+    """Catalog plugins curated for the onboarding card that this OS runs, each with its app state."""
+    return _ok(rid, {"onboarding": _tools_mod("hermes_cli.plugin_catalog_presence").onboarding_entries()})
+
+
+_PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "toggle": _plugins_toggle, "install": _plugins_install,
                     "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -15,12 +16,42 @@ from hermes_cli.plugins_cmd import (
     PluginOperationError,
     _copy_example_files,
     _read_manifest,
+    _refuse_unavailable_portable_plugin,
     _repo_name_from_url,
     _resolve_git_executable,
     _resolve_git_url,
     _resolve_subdir_within,
     _sanitize_plugin_name,
 )
+
+
+def _write_portable_app_plugin(root: Path, app: Path) -> None:
+    from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+    from hermes_platform.host.facts import os_family
+
+    (root / "plugin.json").write_text(json.dumps({
+        "$schema": PLUGIN_SCHEMA_V1,
+        "name": "example-plugin",
+        "extensions": {"com.nousresearch.hermes": {"servers": {"worker": {
+            "app": {os_family(): {"presence": "executable", "location": str(app)}},
+            "requires": {"app": True},
+        }}}},
+    }), encoding="utf-8")
+    (root / "mcp.json").write_text(json.dumps({
+        "$schema": MCP_SCHEMA_V1,
+        "mcpServers": {"worker": {"type": "stdio", "command": "python"}},
+    }), encoding="utf-8")
+
+
+def test_portable_install_gate_accepts_present_app_and_refuses_missing(tmp_path: Path) -> None:
+    app = tmp_path / "example-app"
+    app.write_text("", encoding="utf-8")
+    _write_portable_app_plugin(tmp_path, app)
+
+    _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
+    app.unlink()
+    with pytest.raises(PluginOperationError, match="example-plugin.*worker.*missing_app"):
+        _refuse_unavailable_portable_plugin("example-plugin", tmp_path)
 
 
 # ── _sanitize_plugin_name ─────────────────────────────────────────────────

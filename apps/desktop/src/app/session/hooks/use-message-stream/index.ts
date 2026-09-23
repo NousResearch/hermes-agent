@@ -1,3 +1,4 @@
+import type { PersistedTurn } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -606,7 +607,8 @@ export function useMessageStream({
       text: string,
       responsePreviewed?: boolean,
       failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
-      occurredAt = Date.now() / 1000
+      occurredAt = Date.now() / 1000,
+      persistedTurn?: PersistedTurn | null
     ) => {
       let shouldHydrate = false
 
@@ -655,6 +657,28 @@ export function useMessageStream({
             : mergeCurrentResponseText(parts, visibleFinalText, occurredAt)
         }
 
+        const withPersistedIdentity = (message: ChatMessage): ChatMessage => {
+          const finalRowId = persistedTurn?.final_assistant_row_id
+          const hasFinalRow = typeof finalRowId === 'number' && Number.isSafeInteger(finalRowId) && finalRowId > 0
+          const finalPartIndex = message.parts.findLastIndex(part => part.type === 'text')
+
+          return {
+            ...message,
+            durableComplete: persistedTurn?.complete === true,
+            persistedTurn: persistedTurn ?? undefined,
+            // A folded bubble can already address its first source row. Keep
+            // that address and bind the final response's exact source as well.
+            ...(hasFinalRow
+              ? {
+                  rowId: message.rowId ?? finalRowId,
+                  parts: message.parts.map((part, index) =>
+                    index === finalPartIndex ? { ...part, sourceRowId: finalRowId } : part
+                  )
+                }
+              : {})
+          }
+        }
+
         // Settling the final response onto a bubble makes it the turn's real
         // reply — clear `interim` so it regains the action footer.
         const completeMessage = (message: ChatMessage): ChatMessage => {
@@ -670,30 +694,35 @@ export function useMessageStream({
           }
 
           if (completionError && !keepFailedPartialText) {
-            return { ...settled, error: completionError, parts: settled.parts.filter(part => part.type !== 'text') }
+            return withPersistedIdentity({
+              ...settled,
+              error: completionError,
+              parts: settled.parts.filter(part => part.type !== 'text')
+            })
           }
 
-          return {
+          return withPersistedIdentity({
             ...settled,
             parts: completeOpenTimelineParts(replaceTextPart(settled.parts, Boolean(message.interim)), occurredAt),
             ...(completionError ? { error: completionError } : {})
-          }
+          })
         }
 
-        const newAssistantFromCompletion = (): ChatMessage => ({
-          id: `assistant-${Date.now()}`,
-          role: 'assistant',
-          parts:
-            completionError && !keepFailedPartialText
-              ? []
-              : [{ ...assistantTextPart(finalText, occurredAt), completedAt: occurredAt }],
-          timestamp: occurredAt,
-          completedAt: occurredAt,
-          branchGroupId: state.pendingBranchGroup ?? undefined,
-          ...(durationS !== undefined ? { durationS } : {}),
-          ...(completionError && { error: completionError }),
-          ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
-        })
+        const newAssistantFromCompletion = (): ChatMessage =>
+          withPersistedIdentity({
+            id: `assistant-${Date.now()}`,
+            role: 'assistant',
+            parts:
+              completionError && !keepFailedPartialText
+                ? []
+                : [{ ...assistantTextPart(finalText, occurredAt), completedAt: occurredAt }],
+            timestamp: occurredAt,
+            completedAt: occurredAt,
+            branchGroupId: state.pendingBranchGroup ?? undefined,
+            ...(durationS !== undefined ? { durationS } : {}),
+            ...(completionError && { error: completionError }),
+            ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
+          })
 
         const prev = state.messages
         let nextMessages = prev

@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
+import type { InterfaceTier } from '@/store/interface-mode'
 
 type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
@@ -133,6 +134,8 @@ export interface SidebarNavContribution {
   label: string
   /** Route to navigate to (usually a contributed page's path). */
   path: string
+  /** `'advanced'` keeps the row out of Simple mode; unset shows it everywhere. */
+  tier?: InterfaceTier
 }
 
 // Views that render as a full-screen modal card (OverlayView) over the shell.

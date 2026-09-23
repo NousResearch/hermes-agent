@@ -22,6 +22,7 @@ export const APPEARANCE_SETTING_IDS = {
   minimizeToTray: 'appearance.minimize-to-tray',
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',
+  interfaceMode: 'appearance.interface-mode',
   translucency: 'appearance.translucency',
   uiScale: 'appearance.ui-scale',
   userBubble: 'appearance.user-bubble'

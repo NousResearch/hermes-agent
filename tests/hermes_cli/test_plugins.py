@@ -170,8 +170,18 @@ class TestPluginDiscovery:
         plugin = home / "plugins" / "portable"
         skill = plugin / "skills" / "summarize"
         skill.mkdir(parents=True)
+        app = tmp_path / "example-app"
+        app.write_text("", encoding="utf-8")
         (plugin / "plugin.json").write_text(
-            json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"})
+            json.dumps({
+                "$schema": PLUGIN_SCHEMA_V1,
+                "name": "portable.test",
+                "extensions": {"com.nousresearch.hermes": {"servers": {"worker": {
+                    "app": {"darwin": {"presence": "executable", "location": str(app)}},
+                    "requires": {"app": True},
+                    "liveness": {"kind": "static"},
+                }}}},
+            })
         )
         (skill / "SKILL.md").write_text(
             "---\nname: summarize\ndescription: Summarize reports.\n---\nBody.\n"
@@ -207,12 +217,56 @@ class TestPluginDiscovery:
 
         [qualified] = manager.list_plugin_skill_metadata()
         assert qualified["name"].endswith(":summarize")
-        assert set(manager.get_portable_mcp_servers()) == {
-            qualified["name"].split(":", 1)[0] + "__worker"
-        }
+        # Skills keep the digest namespace (collision-free without coordination); the MCP server does
+        # not: it is named what mcp.json calls it, like a config.yaml server, so ``mcp__<server>__<tool>``
+        # fits the 64-char provider cap with the tool verb intact instead of being hash-clamped.
+        [internal_name] = manager.get_portable_mcp_servers()
+        assert internal_name == "worker"
+        from tools.mcp_tool_schema import mcp_prefixed_tool_name
+        wire = mcp_prefixed_tool_name(internal_name, "nvapp_client_get_driver_status")
+        assert wire.endswith("__nvapp_client_get_driver_status") and len(wire) <= 64
         assert manager._plugins["portable.test"].enabled is True
         assert manager._plugins["native"].enabled is True
         assert manager._plugins["native"].module is not None
+        from hermes_cli.agent_plugins import liveness_for
+        from hermes_platform import declaration
+
+        assert declaration.lookup(internal_name) is not None
+        assert liveness_for(internal_name) == {"kind": "static"}
+        manager.unload("portable.test")
+        assert declaration.lookup(internal_name) is None
+        assert liveness_for(internal_name) is None
+
+    def test_two_portable_plugins_with_the_same_server_name_do_not_both_load(self, tmp_path, monkeypatch):
+        """Readable server names can clash where the old digest could not: the second plugin's server
+        is skipped with a warning naming the first, and the first's config is the one served."""
+        from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / ".hermes"
+        # Two unrelated plugins both call their server "shared": one readable name, one owner.
+        for plugin_name, command in (("alpha-tools", "python-a"), ("beta-tools", "python-b")):
+            plugin = home / "plugins" / plugin_name
+            plugin.mkdir(parents=True)
+            (plugin / "plugin.json").write_text(json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": plugin_name}))
+            (plugin / "mcp.json").write_text(json.dumps({
+                "$schema": MCP_SCHEMA_V1,
+                "mcpServers": {"shared": {"type": "stdio", "command": command}},
+            }))
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["alpha-tools", "beta-tools"]}}))
+        empty_bundled = tmp_path / "bundled"
+        empty_bundled.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
+
+        manager = PluginManager()
+        manager.discover_and_load()
+
+        servers = manager.get_portable_mcp_servers()
+        assert list(servers) == ["shared"]
+        assert servers["shared"]["command"] in {"python-a", "python-b"}
 
     def test_disabled_portable_plugin_registers_nothing(self, tmp_path, monkeypatch):
         from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1

@@ -2337,6 +2337,55 @@ class TestCuaToolCoverageExpansion:
         assert args["session"] == "harness-1"
 
 
+class TestStartupTimeoutPhaseDetail:
+    """Issue #57025: the ready-timeout error must report which startup phase
+    wedged, so 'doctor passes but wrapper times out' reports are diagnosable."""
+
+    def test_timeout_error_reports_the_wedged_phase(self):
+        import asyncio
+        import threading
+
+        from tools.computer_use import cua_backend_session as cbs
+
+        phase_reached = threading.Event()
+
+        async def _wedged_lifecycle(self):
+            # Real lifecycle shape: shutdown event on the loop, phase marker,
+            # then block — here at MCP initialize, as a wedged driver does.
+            self._shutdown_event = asyncio.Event()
+            self._startup_phase = "mcp-initialize"
+            phase_reached.set()
+            await self._shutdown_event.wait()
+
+        class _FastReadyEvent(threading.Event):
+            """Shrinks only the 30s ready wait, and only once the lifecycle
+            coroutine has provably recorded its phase (no timing race)."""
+
+            def wait(self, timeout=None):
+                if timeout is not None:
+                    assert phase_reached.wait(10), "lifecycle coroutine never ran"
+                    timeout = min(timeout, 0.05)
+                return super().wait(timeout)
+
+        bridge = cbs._AsyncBridge()
+        session = cbs._CuaDriverSession(bridge)
+        bridge.start()  # before the Event patch, so only the ready wait sees it
+        try:
+            with patch.object(cbs._CuaDriverSession, "_lifecycle_coro", _wedged_lifecycle), \
+                 patch.object(cbs.threading, "Event", _FastReadyEvent):
+                with pytest.raises(RuntimeError) as excinfo:
+                    session.start()
+            msg = str(excinfo.value)
+            assert "stuck in phase: mcp-initialize" in msg
+            assert "computer-use doctor" in msg
+            # The timeout path signals the wedged lifecycle to shut down, and
+            # the session stays un-started so the next call rebuilds it.
+            session._lifecycle_future.result(timeout=5)
+            assert session._started is False
+        finally:
+            bridge.stop()
+
+
 class TestCapturePayloadBudget:
     """Element labels and the aux-vision branch must respect response budgets.
 

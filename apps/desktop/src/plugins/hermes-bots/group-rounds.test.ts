@@ -271,6 +271,20 @@ describe('routing', () => {
     ).not.toContain('(you)')
   })
 
+  // The watermark walk and the (you) check must agree on who wrote a line: a
+  // local member's sourced reply read as somebody else's came back to it as
+  // room news, and it answered itself until the round cap.
+  it('never re-drives a local member on its own sourced reply', async () => {
+    const room = await loadRoom({ turn: ({ n }) => `Reply ${n} from this device.` })
+    const local: GroupMember = { connectionId: 'local', connectionLabel: 'This device', name: 'default', title: '' }
+
+    room.rounds.sendToGroupChat('Core', [local], '@hermes status?')
+    await settle(room, 'Core')
+
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(log(room, 'Core').map(entry => entry.text)).toEqual(['@hermes status?', 'Reply 1 from this device.'])
+  })
+
   // Two Desktops label the same gateway differently ("Central" here, "Studio"
   // there): the reply's gateway install_id, not the label, decides `(you)`.
   it('matches self on the gateway install_id when Desktops label the connection differently', async () => {

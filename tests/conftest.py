@@ -531,6 +531,13 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # A test that pins the process home (hermes_constants.pin_process_hermes_home) must not
+    # leak that module-global into the next test's routed-profile decisions.
+    try:
+        import hermes_constants as _hc
+        monkeypatch.setattr(_hc, "_PINNED_PROCESS_HERMES_HOME", None, raising=False)
+    except Exception:
+        pass
     # Per-TEST host-rendezvous dir (see the session-level block at the top): the
     # host gateway/serve record is shared per OS user by design, so without this
     # one test's published owner makes the next test's lifecycle code attach to it.
@@ -565,6 +572,8 @@ def _hermetic_environment(tmp_path, monkeypatch):
     secret_scope_mod = sys.modules.get("agent.secret_scope")
     if secret_scope_mod is not None and hasattr(secret_scope_mod, "_MULTIPLEX_ACTIVE"):
         monkeypatch.setattr(secret_scope_mod, "_MULTIPLEX_ACTIVE", False)
+    if secret_scope_mod is not None and hasattr(secret_scope_mod, "_AUTO_PINNED_HOME"):
+        monkeypatch.setattr(secret_scope_mod, "_AUTO_PINNED_HOME", None)
     launch_policy_mod = sys.modules.get("tui_gateway.launch_profile_policy")
     if launch_policy_mod is not None and hasattr(launch_policy_mod, "_snapshot"):
         monkeypatch.setattr(launch_policy_mod, "_snapshot", None)
@@ -1477,6 +1486,23 @@ def _check_symlink_support() -> bool:
     except OSError:
         _symlink_supported_cache = False
         return False
+
+
+@pytest.hookimpl(wrapper=True, trylast=True)
+def pytest_runtest_call(item):
+    """Join the turn's auto-title threads INSIDE capture, before pytest snaps it.
+
+    A title thread that prints its failure warning while capture's
+    ``readouterr`` swaps the fd crashed the interpreter (SIGSEGV in
+    ``_pytest/capture.py::snap``). The teardown join in
+    ``_close_leaked_session_dbs`` runs after that snap, too late for this race.
+    """
+    try:
+        return (yield)
+    finally:
+        wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+        if wait is not None:
+            wait()
 
 
 def pytest_runtest_setup(item):

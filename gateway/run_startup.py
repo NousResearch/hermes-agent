@@ -478,12 +478,13 @@ class GatewayStartupMixin:
         else:
             # Startup rows preserve the historical default-adapter route.
             adapter = self.adapters.get(platform)
-        # A runtime claim whose reconnect vanished before dispatch is released without spending an
-        # attempt; startup claims keep their state (attempts cap + stale cutoff bound retries).
+        # A claim (runtime or boot) whose adapter vanished before dispatch was never sent: release it
+        # without spending an attempt so the reconnect sweep, which only takes 'failed' rows, delivers it
+        # instead of it waiting 'attempting' for the next restart.
         # Only a flood row keeps its error (the platform's wait must be honoured); any other row
         # becomes reconnect-only, or the redelivery timer would claim and release it until the
         # adapter is back.
-        if adapter is None and row.get("runtime_recovery"):
+        if adapter is None:
             from gateway.delivery_ledger import is_flood_error
 
             last_error = row.get("last_error")

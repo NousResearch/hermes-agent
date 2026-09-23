@@ -232,10 +232,12 @@ def _slack_tools_loaded() -> bool:
     if not token.strip():
         return False
     try:
-        from hermes_cli.config import load_config
+        # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
+        # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.tools_config import _get_platform_tools
         # include_default_mcp_servers defaults True so a default-enabled Slack MCP counts too.
-        return "slack" in _get_platform_tools(load_config(), "slack")
+        return "slack" in _get_platform_tools(load_config_readonly(), "slack")
     except Exception:
         return False
 
@@ -245,12 +247,14 @@ def _discord_tools_loaded() -> bool:
     toolset enabled AND `DISCORD_BOT_TOKEN` set (the tool's `check_fn` gates on it)."""
     try:
         from agent.secret_scope import get_secret
-        from hermes_cli.config import load_config
+        # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
+        # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.tools_config import _get_platform_tools
 
         if not (get_secret("DISCORD_BOT_TOKEN", "") or "").strip():
             return False
-        enabled = _get_platform_tools(load_config(), "discord", include_default_mcp_servers=False)
+        enabled = _get_platform_tools(load_config_readonly(), "discord", include_default_mcp_servers=False)
         return "discord" in enabled or "discord_admin" in enabled
     except Exception:
         return False

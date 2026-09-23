@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from gateway.dead_targets import classify_dead_error
 from hermes_cli.sqlite_util import add_column_if_missing
-from hermes_constants import get_hermes_home
+from hermes_constants import get_process_hermes_home
 
 logger = logging.getLogger(__name__)
 _DB_LOCK = threading.Lock()
@@ -169,7 +169,11 @@ def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optiona
 
 
 def _db_path():
-    return get_hermes_home() / "state.db"
+    # Launch home, not get_hermes_home(): a multiplexed gateway records a served profile's replies
+    # under that profile's home override, but the boot sweep reads from the launch context, so both
+    # must open the one shared store (adapter_profile tells the bots apart). No get_hermes_home()
+    # fallback for an unset HERMES_HOME: a default gateway run in the foreground has none.
+    return get_process_hermes_home() / "state.db"
 
 
 def _connect() -> sqlite3.Connection:
@@ -343,8 +347,9 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                       deliverable_targets: Optional[set] = None) -> List[Dict[str, Any]]:
     """Claim undelivered rows owned by dead processes; return them for redelivery.
 
-    Claiming atomically re-stamps the owner to THIS process and increments ``attempts`` (the UPDATE is
-    guarded on the previous owner stamp, so a second gateway racing the same sweep cannot double-claim).
+    Claiming atomically re-stamps the owner to THIS process, moves the row to 'attempting' and increments
+    ``attempts`` (the UPDATE is guarded on the previous owner stamp, so a second gateway racing the same
+    sweep cannot double-claim).
     Rows over the attempts cap or stale cutoff become 'abandoned'. ``deliverable_platforms`` restricts
     claiming to platforms the caller can send on this boot: ``attempts`` is the redelivery budget and
     must only be spent on a real send, else a platform that failed to connect burns one attempt per boot
@@ -397,23 +402,25 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                         "profile": adapter_profile or "default", "attempts": attempts,
                         "adopted": True, "not_before": flood_not_before(updated_at, last_error)})
                 continue
-            # A claimed flood row is resent as a fresh attempt: clear the stale refusal so an interrupted
-            # resend is seen as 'attempting' with no error by the next boot and gets the marker.
+            # Every claim starts a send, so the row leaves 'pending'/'failed' for 'attempting' in the same
+            # CAS: a boot killed inside the redelivery then leaves proof the platform may have it (next boot
+            # marks it), and the runtime sweep, which only takes 'failed', cannot re-claim it mid-send. A
+            # claimed flood row also drops its stale refusal, so an interrupted resend has no error.
             cursor = conn.execute(
                 """UPDATE delivery_obligations
                    SET owner_pid=?, owner_started_at=?, attempts=attempts+1, updated_at=?,
-                       adapter_profile=COALESCE(adapter_profile, 'default'),
-                       state=CASE WHEN ? THEN 'attempting' ELSE state END,
+                       adapter_profile=COALESCE(adapter_profile, 'default'), state='attempting',
                        last_error=CASE WHEN ? THEN NULL ELSE last_error END
                    WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
-                (pid, started, now, 1 if flood_row else 0, 1 if flood_row else 0, oid, owner_pid, owner_pid))
+                (pid, started, now, 1 if flood_row else 0, oid, owner_pid, owner_pid))
             if cursor.rowcount:
-                # pending = never started, redeliver plainly; anything else (crashed mid-await, other
-                # rejection, a flood refusal whose earlier chunks the platform may have accepted) carries
+                # A never-claimed pending row was never sent: redeliver plainly. Anything else (crashed
+                # mid-await, other rejection, a flood refusal whose earlier chunks the platform may have
+                # accepted, or a pending row an older build already claimed and may have sent) carries
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
-                                            adapter_profile or "default", needs_marker=state != "pending",
-                                            flood=flood_row))
+                                            adapter_profile or "default",
+                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row))
     return claimed
 
 

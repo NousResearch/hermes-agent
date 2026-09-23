@@ -116,6 +116,60 @@ class TestPromptCachePlan:
         assert plan.tools[-1]["cache_control"] == MARKER
         assert _count_cache_markers(plan.messages, plan.tools) == 4
 
+    def test_shares_only_unmodified_history_rows(self):
+        """Request-local planning copies marker carriers, not the entire transcript."""
+        messages = _tool_heavy_native_history() + [
+            {"role": "user", "content": "third request"},
+            {
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": "third",
+                    "function": {"name": "tool_02", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "third", "content": "third result"},
+        ]
+        tools = _tool_heavy_native_tools()
+
+        for direct_tool_cache in (False, True):
+            original = copy.deepcopy(messages)
+            plan = build_prompt_cache_plan(
+                messages,
+                tools,
+                native_anthropic=True,
+                static_system_prefix="stable prefix",
+                direct_native_tool_cache=direct_tool_cache,
+            )
+
+            assert messages == original
+            assert plan.messages is not messages
+            assert plan.messages[1] is messages[1]
+            assert plan.messages[0] is not messages[0]
+            assert plan.messages[-1] is not messages[-1]
+
+    def test_unmarked_text_parts_keep_string_equivalent_cache_plan(self):
+        """Planner cleanup preserves plain-text canonicalization without stale markers."""
+        plain = _tool_heavy_native_history()
+        part_form = copy.deepcopy(plain)
+        part_form[0]["content"] = [
+            {"type": "text", "text": "stable prefix"},
+            {"type": "text", "text": plain[0]["content"][len("stable prefix"):]},
+        ]
+        part_form[1]["content"] = [{"type": "text", "text": plain[1]["content"]}]
+        original = copy.deepcopy(part_form)
+        for native in (False, True):
+            for direct in (False, True):
+                actual = build_prompt_cache_plan(
+                    part_form, _tool_heavy_native_tools(), native_anthropic=native,
+                    direct_native_tool_cache=direct, static_system_prefix="stable prefix",
+                )
+                expected = build_prompt_cache_plan(
+                    plain, _tool_heavy_native_tools(), native_anthropic=native,
+                    direct_native_tool_cache=direct, static_system_prefix="stable prefix",
+                )
+                assert actual == expected
+                assert part_form == original
+
     def test_unmarkable_endpoint_does_not_consume_a_slot(self):
         messages = [
             {"role": "system", "content": "stable prefix\nvolatile"},

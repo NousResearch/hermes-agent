@@ -180,7 +180,7 @@ class TestAnthropicFastMode(unittest.TestCase):
     def test_anthropic_opus_supported(self):
         from hermes_cli.models import model_supports_fast_mode
 
-        # Per the live fast-mode docs: Opus 4.8 + Opus 5, Claude API only.
+        # Per the live fast-mode docs: Opus 4.8, Opus 5 and Opus 5.5, Claude API only.
         # Native Anthropic format (hyphens)
         assert model_supports_fast_mode("claude-opus-4-8") is True
         # OpenRouter format (dots)
@@ -190,15 +190,21 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert model_supports_fast_mode("anthropic/claude-opus-4.8") is True
         assert model_supports_fast_mode("claude-opus-5") is True
         assert model_supports_fast_mode("anthropic/claude-opus-5") is True
+        assert model_supports_fast_mode("claude-opus-5-5") is True
+        assert model_supports_fast_mode("claude-opus-5.5") is True
+        assert model_supports_fast_mode("anthropic/claude-opus-5.5") is True
+        # Dated snapshot ids resolve to their family
+        assert model_supports_fast_mode("claude-opus-4-8-20260601") is True
 
     def test_anthropic_unsupported_models_excluded(self):
-        """The speed=fast parameter is gated to Opus 4.8 / Opus 5.
+        """The speed=fast parameter is gated to Opus 4.8 / Opus 5 / Opus 5.5.
 
         Per https://platform.claude.com/docs/en/build-with-claude/fast-mode:
         Opus 4.6 LOST fast mode 2026-06-29 (the param is silently ignored —
         standard speed at standard billing — so a toggle would do nothing);
         Opus 4.7 hard-400s; Sonnet/Haiku never had it; dedicated ``…-fast``
         ids select fast inference via the model field, not the parameter.
+        The list is exact: an Opus the docs do not name is unsupported.
         """
         from hermes_cli.models import model_supports_fast_mode
 
@@ -210,6 +216,9 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert model_supports_fast_mode("claude-opus-4-7") is False
         assert model_supports_fast_mode("claude-opus-4-8-fast") is False
         assert model_supports_fast_mode("anthropic/claude-opus-4.8-fast") is False
+        assert model_supports_fast_mode("anthropic/claude-opus-5-fast") is False
+        assert model_supports_fast_mode("claude-opus-5-6") is False
+        assert model_supports_fast_mode("claude-fable-5") is False
         assert model_supports_fast_mode("anthropic/claude-sonnet-4.6") is False
         assert model_supports_fast_mode("anthropic/claude-opus-4-7") is False
 
@@ -221,7 +230,7 @@ class TestAnthropicFastMode(unittest.TestCase):
 
 
     def test_fast_command_hidden_for_anthropic_sonnet(self):
-        """Sonnet doesn't support fast mode (Opus 4.8/5 only) — /fast must be hidden."""
+        """Sonnet doesn't support fast mode (Opus 4.8/5/5.5 only) — /fast must be hidden."""
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             provider="anthropic", requested_provider="anthropic",
@@ -270,6 +279,20 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert "speed" not in kwargs
         assert "extra_headers" in kwargs
         assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
+
+    def test_fast_mode_on_opus_5_5_and_not_on_unlisted_opus(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        def _speed(model):
+            return build_anthropic_kwargs(
+                model=model, messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+                tools=None, max_tokens=None, reasoning_config=None, fast_mode=True,
+            ).get("extra_body", {}).get("speed")
+
+        assert _speed("claude-opus-5-5") == "fast"
+        assert _speed("claude-opus-5") == "fast"
+        # An Opus the docs don't list answers ``speed`` with an error: never send it.
+        assert _speed("claude-opus-5-6") is None
 
     def test_fast_mode_off_no_speed(self):
         from agent.anthropic_adapter import build_anthropic_kwargs

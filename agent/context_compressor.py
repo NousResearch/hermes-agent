@@ -298,6 +298,9 @@ COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
 # Only micro markers may be superseded/defragged/rehydrated: a batch marker's
 # content is NOT in the rolling micro summary, so rewriting one destroys history.
 MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
+# ``display_metadata`` flag on a row the model reads but nobody typed as one message (micro-compaction's
+# merge of adjacent user turns). Its source rows stay in display history, so display projections skip it.
+MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
 # Intrinsic marker stamped on a message dict once it has been written to the SQLite session store. Used by
 # ``_flush_messages_to_session_db`` to decide what is already durable. An object-identity (``id(msg)``)
 # dedup set cannot be trusted across turns: once a flushed message dict is dropped from the live list (e.g.

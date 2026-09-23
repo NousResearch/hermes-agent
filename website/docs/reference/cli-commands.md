@@ -34,6 +34,10 @@ hermes [global-options] <command> [subcommand/options]
 | `--cli` | Force the classic prompt_toolkit REPL. Use this to override `display.interface: tui` for a single invocation. |
 | `--dev` | With `--tui`: run the TypeScript sources directly via `tsx` instead of the prebuilt bundle (for TUI contributors). |
 
+### `hermes-agent` (legacy single-query runner)
+
+The install also ships `hermes-agent`, a minimal runner that sends one query and exits: `hermes-agent --query "summarize README.md"` (or `hermes-agent "summarize README.md"`). `hermes-agent --help` lists its options (`--model`, `--base-url`, `--max-turns`, `--enabled-toolsets`, `--disabled-toolsets`, `--list-tools`, `--save-trajectories`, …) and `hermes-agent --version` prints the version; neither starts the agent. Run with no query, it prints the same help and exits. For anything else use `hermes` (`hermes -z <prompt>` is the scripted one-shot).
+
 ## Top-level commands
 
 | Command | Purpose |

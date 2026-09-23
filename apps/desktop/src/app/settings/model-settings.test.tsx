@@ -413,6 +413,36 @@ describe('ModelSettings', () => {
     expect(screen.getByText('nous')).toBeTruthy()
   })
 
+  it.each(['zh', 'zh-hant'] as const)(
+    'localizes stale auxiliary warnings in %s without resetting assignments',
+    async locale => {
+      getAuxiliaryModels.mockResolvedValueOnce({
+        main: { provider: 'nous', model: 'hermes-4' },
+        tasks: [{ task: 'curator', provider: 'openrouter', model: 'fixture-model', base_url: '' }]
+      })
+      const { ModelSettings } = await import('./model-settings')
+      const { I18nProvider, TRANSLATIONS } = await import('@/i18n')
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      render(
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale={locale}>
+            <QueryClientProvider client={client}>
+              <ModelSettings />
+            </QueryClientProvider>
+          </I18nProvider>
+        </MemoryRouter>
+      )
+      expect(await screen.findByText(/仍由/)).toBeTruthy()
+      expect(screen.getByText('openrouter')).toBeTruthy()
+      expect(
+        screen.getAllByRole('button', { name: TRANSLATIONS[locale].settings.model.resetAllToMain }).length
+      ).toBeGreaterThan(0)
+      expect(screen.queryByText(/still run on/)).toBeNull()
+      expect(setModelAssignment).not.toHaveBeenCalled()
+      client.clear()
+    }
+  )
+
   it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },
@@ -519,6 +549,46 @@ describe('ModelSettings MoA preset editor', () => {
     getMoaModels.mockResolvedValue(moaConfig())
     saveMoaModels.mockImplementation((body: unknown) => Promise.resolve(body))
   })
+
+  it.each(['zh', 'zh-hant', 'ja'] as const)(
+    'localizes MoA preset and reference controls in %s without changing their saved identities',
+    async locale => {
+      const { ModelSettings } = await import('./model-settings')
+      const { I18nProvider, TRANSLATIONS } = await import('@/i18n')
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      const m = TRANSLATIONS[locale].settings.model
+      render(
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale={locale}>
+            <QueryClientProvider client={client}>
+              <ModelSettings subpage="moa" />
+            </QueryClientProvider>
+          </I18nProvider>
+        </MemoryRouter>
+      )
+      expect(m.moaDescription).not.toBe(TRANSLATIONS.en.settings.model.moaDescription)
+      expect(m.moaReferenceHint).not.toBe(TRANSLATIONS.en.settings.model.moaReferenceHint)
+      expect(m.moaAggregatorBilled).not.toBe(TRANSLATIONS.en.settings.model.moaAggregatorBilled)
+      await screen.findByText(m.moaDescription)
+      expect(screen.getByText(m.moaReferenceTitle(1))).toBeTruthy()
+      expect(screen.getByText(m.moaAggregator)).toBeTruthy()
+      expect(screen.getByRole('button', { name: m.moaAddReference })).toBeTruthy()
+      expect(screen.getByRole('button', { name: m.moaSetDefault })).toBeTruthy()
+      expect(screen.getByPlaceholderText(m.moaNewPresetPlaceholder)).toBeTruthy()
+      fireEvent.click(screen.getByRole('switch', { name: m.moaReferenceToggle(true, 1) }))
+      expect(screen.getByRole('switch', { name: m.moaReferenceToggle(false, 1) }).getAttribute('aria-checked')).toBe(
+        'false'
+      )
+      await waitFor(() => expect(saveMoaModels).toHaveBeenCalled())
+      const saved = saveMoaModels.mock.calls.at(-1)![0] as ReturnType<typeof moaConfig>
+      expect(saved.default_preset).toBe('default')
+      expect(saved.presets.default.reference_models[0]).toMatchObject({
+        provider: 'nous',
+        model: 'hermes-4',
+        enabled: false
+      })
+    }
+  )
 
   async function openReferenceEditor() {
     await renderModelSettings()

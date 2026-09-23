@@ -24,7 +24,9 @@ vi.mock('./routing', async importOriginal => {
   const resolveBotConnectionRoute = (bot: RosterRow): ReturnType<typeof actual.resolveBotConnectionRoute> => {
     const route = routeMock()
 
-    return route ? { status: 'resolved', route: { ...route, mode: 'remote', targetProfile: route.profile } } : actual.resolveBotConnectionRoute(bot)
+    return route
+      ? { status: 'resolved', route: { ...route, mode: 'remote', targetProfile: route.profile } }
+      : actual.resolveBotConnectionRoute(bot)
   }
 
   return {

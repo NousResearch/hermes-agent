@@ -17,15 +17,35 @@ import { useEffect, useMemo } from 'react'
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
-import { type DisplayLease, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, type ScreenViewer } from './screen-connection'
+import {
+  type DisplayLease,
+  displayRequest,
+  type DisplayStatus,
+  isDisplayUnavailable,
+  isEventForBotScreen,
+  leaseHeldBy,
+  type ScreenViewer
+} from './screen-connection'
 import { openBotScreen } from './screen-open'
-import { $screenState, beginScreenStatusRequest, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable } from './screen-state'
+import {
+  $screenState,
+  beginScreenStatusRequest,
+  screenStateFor,
+  setScreenLease,
+  setScreenStatus,
+  setScreenUnavailable
+} from './screen-state'
 import type { RosterRow } from './types'
 
 export type PortalTone = 'live' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unavailable' | 'unknown'
 
 /** Pure: map cached status + lease (+ this window's minted viewer, if attached) to what the portal says. */
-export function portalTone(status: DisplayStatus | null, lease: DisplayLease | null, viewer: ScreenViewer | null = null, unavailable = false): PortalTone {
+export function portalTone(
+  status: DisplayStatus | null,
+  lease: DisplayLease | null,
+  viewer: ScreenViewer | null = null,
+  unavailable = false
+): PortalTone {
   if (unavailable) {
     return 'unavailable'
   }
@@ -136,7 +156,11 @@ export function useScreenPortalState(bot: RosterRow) {
     [bot, profileKey]
   )
 
-  return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null, state?.unavailable) }
+  return {
+    status,
+    lease: state?.lease ?? null,
+    tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null, state?.unavailable)
+  }
 }
 
 export function ScreenPortal({ bot }: { bot: RosterRow }) {
@@ -168,7 +192,9 @@ export function ScreenPortal({ bot }: { bot: RosterRow }) {
     >
       <span className="relative grid size-7 shrink-0 place-items-center rounded bg-black/70 text-white/90">
         <Codicon name={TONE_ICON[tone]} />
-        <span className={`absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-(--ui-bg-primary) ${TONE_DOT[tone]}`} />
+        <span
+          className={`absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-(--ui-bg-primary) ${TONE_DOT[tone]}`}
+        />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs font-medium">{t.screen.portalTitle}</span>
@@ -200,7 +226,12 @@ export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }
           : row.name === profile && connectionId === null
       }) ??
       (connectionId
-        ? ({ name: profile, sourceScoped: true, connectionId, connectionKind: connectionId === 'local' ? 'local' : 'remote' } as RosterRow)
+        ? ({
+            name: profile,
+            sourceScoped: true,
+            connectionId,
+            connectionKind: connectionId === 'local' ? 'local' : 'remote'
+          } as RosterRow)
         : ({ name: profile } as RosterRow)),
     [connectionId, profile, roster]
   )

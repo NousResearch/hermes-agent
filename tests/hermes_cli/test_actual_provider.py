@@ -33,6 +33,19 @@ def _clear_actual_env(monkeypatch):
     monkeypatch.delenv("ACTUAL_API_MODE", raising=False)
 
 
+def _clear_ca_bundle_env(monkeypatch):
+    # Importing gateway.run (any earlier test in the same process) writes
+    # SSL_CERT_FILE into os.environ; an explicit CA env var disables the
+    # scoped certifi default these tests assert.
+    for key in (
+        "HERMES_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_actual_aliases_and_profile_metadata():
     profile = get_provider_profile("actual-computer")
 
@@ -422,6 +435,8 @@ def test_actual_profile_translates_explicit_reasoning_controls():
 def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
     import certifi
 
+    _clear_ca_bundle_env(monkeypatch)
+
     profile = get_provider_profile("actual")
 
     assert profile.build_client_kwargs_extras(base_url=DEFAULT_ACTUAL_BASE_URL) == {
@@ -436,6 +451,7 @@ def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
 def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch):
     from agent.agent_runtime_helpers import create_openai_client
 
+    _clear_ca_bundle_env(monkeypatch)
     captured: list[dict] = []
 
     def fake_resolve_httpx_verify(**kwargs):
@@ -537,8 +553,6 @@ def test_actual_oneshot_reasoning_override_reaches_agent(monkeypatch):
     assert captured["reasoning_config"] == {"enabled": True, "effort": "ultra"}
 
 
-
-
 def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
     from run_agent import AIAgent
 
@@ -569,8 +583,6 @@ def test_actual_agent_init_repairs_stale_responses_mode():
         )
 
     assert agent.api_mode == "chat_completions"
-
-
 
 
 def test_actual_chat_completions_wire_replays_reasoning_through_tool_turn(
@@ -752,7 +764,3 @@ def test_actual_chat_completions_wire_replays_reasoning_through_tool_turn(
     assert second.content == "ACTUAL_CHAT_OK"
     assert second.reasoning == "The tool result confirms the answer."
     assert second.reasoning_content == "The tool result confirms the answer."
-
-
-
-

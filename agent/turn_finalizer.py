@@ -322,9 +322,14 @@ def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_r
         1 for m in messages
         if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
     )
+    # Fork turns (background review, side questions) carry ``_turn_origin``; tagging the
+    # exit line keeps a fork's ``interrupted_during_api_call`` from reading as a killed
+    # foreground stream — the fork shares the parent's session_id and often its model (#118693).
+    _turn_origin = getattr(agent, "_turn_origin", None)
     _diag_msg = (
         "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
         "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
+        + (" origin=%s" if _turn_origin else "")
     )
     _diag_args = (
         _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
@@ -332,6 +337,7 @@ def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_r
         agent.iteration_budget.max_total if agent.iteration_budget else 0,
         _turn_tool_count, _last_msg_role, len(final_response) if final_response else 0,
         agent.session_id or "none",
+        *((_turn_origin,) if _turn_origin else ()),
     )
     if _last_msg_role == "tool" and not interrupted:
         logger.warning(

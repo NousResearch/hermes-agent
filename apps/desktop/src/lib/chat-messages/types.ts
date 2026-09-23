@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import { type BillingBlock, type ToolLabel } from '@hermes/shared'
+import { type BillingBlock, type PersistedTurn, type ToolLabel } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
@@ -48,6 +48,8 @@ export type ChatMessage = {
   recovered?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */
   durableComplete?: boolean
+  /** Exact gateway receipt; whole-turn coverage is never inferred from prose. */
+  persistedTurn?: PersistedTurn
   /** Whole-turn wall-clock seconds (message.start → message.complete),
    *  stamped by the desktop when it watched the turn run. Absent for
    *  messages hydrated from history — the backend doesn't persist it. */
@@ -202,6 +204,7 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string
   // message.complete with status "error" — `text` is streamed partial output

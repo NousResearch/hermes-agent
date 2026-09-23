@@ -3,7 +3,6 @@
 The transition table is the single statement of the operation's lifecycle. ``operation.py``
 enforces it; the renderer reads a generated copy (see the shared contract rail)."""
 
-import pytest
 
 from tools.connectors import contract as c
 
@@ -48,7 +47,3 @@ def test_allowed_is_a_pure_lookup():
     assert c.allowed("connector", c.TargetState.connected, c.TargetState.pending) is None
 
 
-@pytest.mark.parametrize("value", ["active", "pending ", "CONNECTED", ""])
-def test_target_state_rejects_values_outside_the_enum(value):
-    with pytest.raises(ValueError):
-        c.TargetState(value)

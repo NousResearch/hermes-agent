@@ -42,6 +42,7 @@ const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // restore should stop waiting for it. Shared constant so the boot-class
 // budgets can't drift apart (see with-timeout.ts).
 const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
+const REGISTRY_READ_TIMEOUT_MS = 5_000
 
 export { $connectionsRegistry } from '@/store/connection-registry-state'
 
@@ -127,7 +128,12 @@ export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRe
     return null
   }
 
-  const registry = await bridge.list()
+  const registry = await withTimeout(
+    bridge.list(),
+    REGISTRY_READ_TIMEOUT_MS,
+    'Timed out reading the connection registry'
+  )
+
   setConnectionsRegistry(registry)
 
   return registry

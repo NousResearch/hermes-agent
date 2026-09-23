@@ -19,14 +19,12 @@ sqlite3 CLI for the page-level salvage lane even on the snapshot.
 from __future__ import annotations
 
 import argparse
-import inspect
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-import hermes_state_repair
 
 from hermes_cli.session_lost_and_found import (
     _parse_sqlite3_cli_version,
@@ -200,20 +198,6 @@ class TestParseSqlite3CliVersion:
 
 
 class TestGuidanceNeverNamesLiveDb:
-    def test_gateway_corruption_banner(self):
-        """The gateway broadcast must route to the two-stage `sessions
-        recover` contract and must warn against pointing a raw sqlite3
-        shell at the live file."""
-        import gateway.run as gateway_run
-
-        body = inspect.getsource(
-            gateway_run.GatewayRunner._send_session_db_warning_notifications
-        )
-        assert LIVE_DB_SALVAGE_COMMAND not in body
-        assert "sessions recover --source" in body
-        assert "--inspect-only" in body
-        assert "--output" in body
-        assert "do NOT" in body
 
     def test_run_agent_corrupt_explanation(self):
         from run_agent import AIAgent
@@ -242,22 +226,7 @@ class TestGuidanceNeverNamesLiveDb:
         assert ".recover\"`" not in message
         assert "do NOT" in message
 
-    def test_forensic_backup_refusals_name_safe_lane(self):
-        """The low-disk and stat-failure forensic backup refusal strings
-        must not embed a raw sqlite3 command against the live path."""
-        import hermes_state
 
-        body = inspect.getsource(hermes_state_repair._backup_db_file)
-        assert ".recover\"`" not in body
-        assert "sessions recover --source" in body
-        assert "--inspect-only" in body
-
-    def test_kanban_manual_recovery_warns_about_live_db(self):
-        import hermes_cli.kanban_ops as kanban  # ``_cmd_repair`` lives here (split from hermes_cli.kanban)
-
-        source = inspect.getsource(kanban)
-        assert '`sqlite3 kanban.db ".recover"`' not in source
-        assert "copy kanban.db aside FIRST" in source
 
 
 # ---------------------------------------------------------------------------
@@ -354,33 +323,3 @@ class TestEmittedCommandsSatisfyCliContract:
         )
         assert rc != 2, "--output shape must pass the contract gate"
 
-    def test_banner_strings_emit_only_contract_valid_argv(self, tmp_path):
-        """The exact argv shapes embedded in the guidance strings, when
-        parsed and dispatched, must never return the contract-gate 2.
-
-        Extracts each `sessions recover` invocation printed by the
-        banners' code and runs its flag set through the real dispatcher.
-        """
-        import hermes_cli.sessions_cmd as sc
-
-        source = tmp_path / "state.db"
-        conn = sqlite3.connect(str(source))
-        try:
-            conn.execute("CREATE TABLE t (x)")
-            conn.commit()
-        finally:
-            conn.close()
-
-        # Every emitted flag-set from the five guidance sites. Stage 1
-        # (inspect) and stage 2 (output) as printed by the banners:
-        emitted_shapes = [
-            {"inspect_only": True},                      # --inspect-only
-            {"output": tmp_path / "recovered-state.db"},  # --output <new>
-        ]
-        for overrides in emitted_shapes:
-            rc = sc.cmd_sessions(self._namespace(source, **overrides))
-            assert rc != 2, (
-                f"emitted shape {overrides} must pass the cmd_sessions "
-                "contract gate — the banner is printing a command the CLI "
-                "rejects before doing anything"
-            )

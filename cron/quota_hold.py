@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from hermes_time import now as _hermes_now
@@ -56,29 +56,35 @@ def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
 
 def hold_active(job: Dict[str, Any], now: Optional[datetime] = None) -> bool:
     """True while the job is parked inside a provider window (an expired marker is inert)."""
-    from cron.jobs import _parse_aware  # late: jobs imports this module's helpers
+    from cron.jobs import _instant_after, _parse_aware  # late: jobs imports this module's helpers
 
     until = _parse_aware(job.get(STATE_KEY)) if job.get(STATE_KEY) else None
-    return until is not None and until > (now or _hermes_now())
+    return until is not None and _instant_after(until, now or _hermes_now())
 
 
 def clear_state(job: Dict[str, Any]) -> None:
     job.pop(STATE_KEY, None)
 
 
+def _window_end(hold_seconds: float) -> datetime:
+    from cron.jobs import _seconds_after
+
+    return _seconds_after(_hermes_now(), float(hold_seconds) + HOLD_SLACK_SECONDS)
+
+
 def plan_hold(job: Dict[str, Any], hold_seconds: float) -> bool:
     """Called under the jobs lock AFTER ``_advance_after_run`` computed the schedule's natural
     ``next_run_at`` for a failed run. Parks a recurring job at its first occurrence after the
     provider window when that is later than the natural one. Returns True when parked."""
-    from cron.jobs import _parse_aware, compute_next_run
+    from cron.jobs import _instant_before, _parse_aware, compute_next_run
 
     schedule = job.get("schedule") or {}
     if schedule.get("kind") not in {"cron", "interval"} or job.get("state") == "paused":
         clear_state(job)
         return False
-    window_end = _hermes_now() + timedelta(seconds=float(hold_seconds) + HOLD_SLACK_SECONDS)
+    window_end = _window_end(hold_seconds)
     natural_next = _parse_aware(job.get("next_run_at"))
-    if natural_next is not None and natural_next >= window_end:
+    if natural_next is not None and not _instant_before(natural_next, window_end):
         clear_state(job)
         return False
     if schedule.get("kind") == "interval":
@@ -100,7 +106,7 @@ def hold_notice(job: Dict[str, Any], hold_seconds: Optional[float]) -> str:
     """Line appended to the ONE failure alert delivered on entering the hold, else ""."""
     if not hold_seconds or (job.get("schedule") or {}).get("kind") not in {"cron", "interval"}:
         return ""
-    window_end = _hermes_now() + timedelta(seconds=float(hold_seconds) + HOLD_SLACK_SECONDS)
+    window_end = _window_end(hold_seconds)
     hours = float(hold_seconds) / 3600.0
     return (
         f"\nThe provider's usage window is closed for about {hours:.1f}h. This job is held "

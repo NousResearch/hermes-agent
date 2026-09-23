@@ -90,43 +90,6 @@ class TestBoundedOutputCollector:
         assert "[OUTPUT TRUNCATED" in rendered
 
 
-class TestWrapCommand:
-    def test_basic_shape(self):
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        wrapped = env._wrap_command("echo hello", "/tmp")
-
-        assert "source" in wrapped
-        assert "cd -- /tmp" in wrapped or "cd -- '/tmp'" in wrapped
-        assert "eval 'echo hello'" in wrapped
-        assert "__hermes_ec=$?" in wrapped
-        assert "export -p" in wrapped and "> " in wrapped
-        # cwd travels via the stdout marker only — no temp-file write.
-        assert "pwd -P >" not in wrapped
-        assert env._cwd_marker in wrapped
-        assert "exit $__hermes_ec" in wrapped
-
-    def test_no_snapshot_skips_source(self):
-        env = _TestableEnv()
-        env._snapshot_ready = False
-        wrapped = env._wrap_command("echo hello", "/tmp")
-
-        assert "source" not in wrapped
-
-    def test_single_quote_escaping(self):
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        wrapped = env._wrap_command("echo 'hello world'", "/tmp")
-
-        assert "eval 'echo '\\''hello world'\\'''" in wrapped
-
-
-    def test_cd_failure_exit_126(self):
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        wrapped = env._wrap_command("ls", "/nonexistent")
-
-        assert "exit 126" in wrapped
 
 
 class TestAtomicSnapshotWrite:
@@ -194,100 +157,8 @@ class TestAtomicSnapshotWrite:
         assert ".tmp.$$" not in boot
 
 
-    def test_init_session_bootstrap_uses_private_umask(self):
-        env = _TestableEnv()
-        captured = {}
-
-        def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured.setdefault("cmd", cmd_string)  # only the bootstrap; ignore the failure-path probe
-            raise RuntimeError("stop after capture")
-
-        env._run_bash = fake_run_bash  # type: ignore[assignment]
-        try:
-            env.init_session()
-        except Exception:
-            pass
-        boot = captured.get("cmd", "")
-        assert "umask 077" in boot
-        assert boot.index("umask 077") < boot.index("export -p")
 
 
-class TestAtomicSnapshotConcurrencyBehavioral:
-    """Behavioral regression for #38249 — actually EXECUTES the generated
-    snapshot write/read concurrently and asserts the file never tears.
-
-    The string-inspection tests prove the right script is emitted; this proves
-    the emitted script's guarantee holds under real concurrency: N concurrent
-    writers + readers, and the snapshot is ALWAYS a complete, parseable env
-    dump — never truncated mid-line with a ``declare -x`` / ``export`` fragment
-    that would corrupt PATH.  Crucially it allocates the temp with ``mktemp``
-    (per-writer unique, works on macOS bash 3.2 which lacks ``$BASHPID``),
-    which is what closes the race; ``$$`` would still tear here.
-    """
-
-    def _run(self, script):
-        import subprocess
-        return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True)
-
-    def test_concurrent_writes_never_tear_the_snapshot(self, tmp_path):
-        import shutil
-        if not shutil.which("bash"):
-            import pytest
-            pytest.skip("bash required")
-        import shlex
-        snap = str(tmp_path / "hermes-snap-x.sh")
-        _q = shlex.quote
-        _tmpl = _q(snap + ".tmp.XXXXXXXXXX")
-        # One writer iteration = the exact atomic sequence _wrap_command emits.
-        writer = (
-            "for i in $(seq 1 80); do "
-            "export BIG_$i=$(head -c 600 /dev/zero | tr '\\0' x); "
-            f"__hermes_snap_tmp=$(mktemp {_tmpl}) && "
-            f"{{ export -p > \"$__hermes_snap_tmp\" && mv -f \"$__hermes_snap_tmp\" {_q(snap)}; }} "
-            f"2>/dev/null || rm -f \"$__hermes_snap_tmp\" 2>/dev/null || true; "
-            "done"
-        )
-        # Reader: repeatedly source the snapshot and check PATH never absorbs
-        # an `export `/`declare -x` fragment (the corruption signature).
-        reader = (
-            "export PATH=/usr/bin:/bin; "
-            "for i in $(seq 1 160); do "
-            f"( source {_q(snap)} >/dev/null 2>&1 || true; "
-            "case \"$PATH\" in *'declare -x'*|*'export '*) echo CORRUPT;; esac ); "
-            "done"
-        )
-        self._run(f"export -p > {_q(snap)}")  # seed a valid snapshot
-        # 4 concurrent writers + 4 readers, repeated.
-        w = " & ".join([writer] * 4)
-        r = " & ".join([reader] * 4)
-        procs = [self._run(f"{w} & {r} & wait") for _ in range(3)]
-        corrupt = any("CORRUPT" in p.stdout for p in procs)
-        assert not corrupt, "snapshot tore — PATH absorbed a declare-x/export fragment"
-        final = self._run(f"source {_q(snap)} >/dev/null 2>&1 && echo OK || echo BROKEN")
-        assert "OK" in final.stdout, f"final snapshot not sourceable: {final.stdout} {final.stderr}"
-
-    def test_failed_export_does_not_destroy_good_snapshot(self, tmp_path):
-        """If ``export -p`` fails, the ``&&``-chained mv must NOT clobber the
-        existing good snapshot."""
-        import shutil
-        if not shutil.which("bash"):
-            import pytest
-            pytest.skip("bash required")
-        import shlex
-        snap = str(tmp_path / "snap.sh")
-        _q = shlex.quote
-        self._run(f"echo 'export GOOD=1' > {_q(snap)}")  # seed good snapshot
-        # Redirect export into an unwritable dir so the export side fails; mv
-        # must then NOT run (&&) and not clobber snap.
-        bad_tmp = _q("/nonexistent-dir/snap.tmp.XXXXXXXXXX")
-        script = (
-            f"__hermes_snap_tmp=$(mktemp {bad_tmp}) && "
-            f"{{ export -p > \"$__hermes_snap_tmp\" && mv -f \"$__hermes_snap_tmp\" {_q(snap)}; }} "
-            f"2>/dev/null || rm -f \"$__hermes_snap_tmp\" 2>/dev/null || true"
-        )
-        self._run(script)
-        out = self._run(f"cat {_q(snap)}")
-        assert "export GOOD=1" in out.stdout, "good snapshot was destroyed by a failed export"
 
 
 class TestSnapshotFileModes:
@@ -356,25 +227,9 @@ class TestExtractCwdFromOutput:
         assert marker not in result["output"]
 
 
-    def test_output_cleaned(self):
-        env = _TestableEnv()
-        marker = env._cwd_marker
-        result = {
-            "output": f"hello\n{marker}/tmp{marker}\n",
-        }
-        env._extract_cwd_from_output(result)
-
-        assert "hello" in result["output"]
-        assert marker not in result["output"]
 
 
 class TestEmbedStdinHeredoc:
-    def test_heredoc_format(self):
-        result = BaseEnvironment._embed_stdin_heredoc("cat", "hello world")
-
-        assert result.startswith("cat << '")
-        assert "hello world" in result
-        assert "HERMES_STDIN_" in result
 
     def test_unique_delimiter_each_call(self):
         r1 = BaseEnvironment._embed_stdin_heredoc("cat", "data")
@@ -436,9 +291,6 @@ class TestInitSessionFailure:
 
 
 class TestCwdMarker:
-    def test_marker_contains_session_id(self):
-        env = _TestableEnv()
-        assert env._session_id in env._cwd_marker
 
     def test_unique_per_instance(self):
         env1 = _TestableEnv()

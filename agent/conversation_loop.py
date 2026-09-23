@@ -656,6 +656,28 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
         logger.warning(failure_message, agent.session_id, exc)
 
 
+def _restore_pinned_tools(agent, session_row) -> list:
+    """Pin ``agent.tools`` to the session's persisted array (tools freeze); returns the names
+    this surface built BEFORE the pin merged a previous surface's tools back in."""
+    from tools.mcp_tool_agent import agent_tool_names, persist_agent_tool_names, restore_agent_tool_prefix
+    built_for_this_surface = agent_tool_names(agent)
+    saved_tools = session_row.get("tool_names") if session_row else None
+    try:
+        pin = json.loads(saved_tools) if saved_tools else None
+    except ValueError:
+        pin = None  # a pin hash whose row an older build's cleanup swept resolves to itself
+    try:
+        if pin:
+            restore_agent_tool_prefix(agent, pin)
+        elif session_row is not None and not getattr(agent, "_persist_disabled", False):
+            # No usable pin (swept row, a session from before pins): pin what this turn sends,
+            # or every later hop re-derives tools[] until the next compaction.
+            persist_agent_tool_names(agent)
+    except Exception:
+        logger.debug("tool prefix restore skipped", exc_info=True)
+    return built_for_this_surface
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -719,17 +741,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # ADDS what the new surface brought (a tui -> desktop switch pays a break no freeze can
         # avoid), and what it carries FORWARD is named in the note instead, so a tool that can
         # only answer ``tool_error("desktop only")`` here does not read as a live capability.
-        try:
-            saved_tools = session_row.get("tool_names") if session_row else None
-            if saved_tools:
-                from tools.mcp_tool_agent import agent_tool_names, restore_agent_tool_prefix
-                # Captured BEFORE the pin merges the previous surface's tools back in.
-                built_for_this_surface = agent_tool_names(agent) if announced_switch else []
-                restore_agent_tool_prefix(agent, json.loads(saved_tools))
-                if announced_switch:
-                    note_inert_pinned_tools(agent, built_for_this_surface)
-        except Exception:
-            logger.debug("tool prefix restore skipped", exc_info=True)
+        built_for_this_surface = _restore_pinned_tools(agent, session_row)
+        if announced_switch:
+            note_inert_pinned_tools(agent, built_for_this_surface)
         # Prompt-section callbacks are new-session-only; recover their frozen bytes
         # from the persisted prompt so a compression rebuild keeps them. The static
         # prefix is not persisted either; rebuild it for the early cache breakpoint or
@@ -757,7 +771,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             agent.session_id, stored_state,
         )
 
-    # First turn of a new session (or recovering from a broken stored prompt).
+    # First turn of a new session (or recovering from a broken stored prompt). Rebuilding an
+    # EXISTING session's prompt (cwd drift, model switch) still keeps its pinned tools[]: this
+    # surface's own build (the -q footprint, its tool_search catalog) would otherwise be
+    # persisted over the pin below. Pinned first, so the prompt describes the tools sent.
+    built_for_this_surface = _restore_pinned_tools(agent, session_row)
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
     # The rebuilt prompt describes the CURRENT surface, but a surface note left in the
@@ -765,6 +783,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # unrelated reason (a model switch) would leave the newest interface statement in the
     # request naming a surface the conversation has left (#104414).
     stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
+    note_inert_pinned_tools(agent, built_for_this_surface)
 
     # Persistence-disabled forks share their parent's session ID and are not real sessions.
     if not getattr(agent, "_persist_disabled", False):

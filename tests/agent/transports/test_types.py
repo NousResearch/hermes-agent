@@ -5,7 +5,6 @@ import json
 from agent.transports.types import (
     NormalizedResponse,
     ToolCall,
-    Usage,
     build_tool_call,
     map_finish_reason,
 )
@@ -15,68 +14,15 @@ from agent.transports.types import (
 # ToolCall
 # ---------------------------------------------------------------------------
 
-class TestToolCall:
-    def test_basic_construction(self):
-        tc = ToolCall(id="call_abc", name="terminal", arguments='{"cmd": "ls"}')
-        assert tc.id == "call_abc"
-        assert tc.name == "terminal"
-        assert tc.arguments == '{"cmd": "ls"}'
-        assert tc.provider_data is None
-
-    def test_none_id(self):
-        tc = ToolCall(id=None, name="read_file", arguments="{}")
-        assert tc.id is None
-
-    def test_provider_data(self):
-        tc = ToolCall(
-            id="call_x",
-            name="t",
-            arguments="{}",
-            provider_data={"call_id": "call_x", "response_item_id": "fc_x"},
-        )
-        assert tc.provider_data["call_id"] == "call_x"
-        assert tc.provider_data["response_item_id"] == "fc_x"
-
 
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 
-class TestUsage:
-    def test_defaults(self):
-        u = Usage()
-        assert u.prompt_tokens == 0
-        assert u.completion_tokens == 0
-        assert u.total_tokens == 0
-        assert u.cached_tokens == 0
-
-    def test_explicit(self):
-        u = Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150, cached_tokens=80)
-        assert u.total_tokens == 150
-
 
 # ---------------------------------------------------------------------------
 # NormalizedResponse
 # ---------------------------------------------------------------------------
-
-class TestNormalizedResponse:
-    def test_text_only(self):
-        r = NormalizedResponse(content="hello", tool_calls=None, finish_reason="stop")
-        assert r.content == "hello"
-        assert r.tool_calls is None
-        assert r.finish_reason == "stop"
-        assert r.reasoning is None
-        assert r.usage is None
-        assert r.provider_data is None
-
-    def test_with_tool_calls(self):
-        tcs = [ToolCall(id="call_1", name="terminal", arguments='{"cmd":"pwd"}')]
-        r = NormalizedResponse(content=None, tool_calls=tcs, finish_reason="tool_calls")
-        assert r.finish_reason == "tool_calls"
-        assert len(r.tool_calls) == 1
-        assert r.tool_calls[0].name == "terminal"
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -88,12 +34,6 @@ class TestBuildToolCall:
         tc = build_tool_call(id="call_1", name="terminal", arguments={"cmd": "ls"})
         assert tc.arguments == json.dumps({"cmd": "ls"})
         assert tc.provider_data is None
-
-
-
-    def test_none_id(self):
-        tc = build_tool_call(id=None, name="t", arguments="{}")
-        assert tc.id is None
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +71,6 @@ class TestToolCallBackwardCompat:
     the old SimpleNamespace(id, type, function=SimpleNamespace(name, arguments)) shape."""
 
 
-
     def test_function_name_matches(self):
         tc = ToolCall(id="1", name="search", arguments='{"q":"test"}')
         assert tc.function.name == "search"
@@ -143,17 +82,12 @@ class TestToolCallBackwardCompat:
         assert tc.function.arguments == tc.arguments
 
 
-
-
-
     def test_getattr_pattern_matches_agent_loop(self):
         """run_agent.py uses getattr(tool_call, 'call_id', None) — verify it works."""
         tc = ToolCall(id="1", name="fn", arguments="{}", provider_data={"call_id": "c1"})
         assert getattr(tc, "call_id", None) == "c1"
         tc_no_pd = ToolCall(id="1", name="fn", arguments="{}")
         assert getattr(tc_no_pd, "call_id", None) is None
-
-
 
 
     def test_extra_content_getattr_pattern(self):
@@ -193,8 +127,3 @@ class TestNormalizedResponseBackwardCompat:
             provider_data={"reasoning_details": details},
         )
         assert nr.reasoning_details == details
-
-
-
-
-

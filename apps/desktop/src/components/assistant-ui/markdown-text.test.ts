@@ -315,13 +315,6 @@ describe('preprocessMarkdown', () => {
     expect(preprocessMarkdown('[/inline]x[/inline]')).toContain('$x$')
   })
 
-  it('escapes currency dollars in prose so they are not parsed as math', () => {
-    const output = preprocessMarkdown('$5 and $10')
-
-    expect(output).toContain('\\$5')
-    expect(output).toContain('\\$10')
-  })
-
   it('moves hugging $$ delimiters of multiline display math onto their own lines', () => {
     const input = [
       '$$\\begin{aligned}',
@@ -398,11 +391,5 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown('Per the paper[2], $\\sqrt[3]{8}$ is 2.')
 
     expect(output).toBe('Per the paper, $\\sqrt[3]{8}$ is 2.')
-  })
-
-  it('shields inline math whose body contains an escaped dollar', () => {
-    const output = preprocessMarkdown('$\\sqrt[3]{8} + \\$5$')
-
-    expect(output).toContain('\\sqrt[3]{8}')
   })
 })

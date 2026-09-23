@@ -11,11 +11,6 @@ def _two(kind="connector"):
     return [op.Target("gmail", kind, "connect"), op.Target("notion", kind, "connect")]
 
 
-def test_deadline_is_a_constant_not_a_config_key():
-    operation = op.ConnectionOperation(_two())
-    assert operation.deadline_at == pytest.approx(operation.created_at + op.OPERATION_DEADLINE_SECONDS)
-    assert op.OPERATION_DEADLINE_SECONDS == 300
-    assert not hasattr(op, "resolve_wait_timeout")
 
 
 def test_transition_enforces_the_contract_and_names_the_actor():

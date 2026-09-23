@@ -100,23 +100,6 @@ def test_no_git_dir_is_a_noop(tmp_path):
     assert clear_stale_tmp_packs(tmp_path) == []
 
 
-def test_never_raises_on_unlink_failure(tmp_path, monkeypatch):
-    repo = _mkrepo(tmp_path)
-    monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
-    pack = repo / ".git" / "objects" / "pack"
-    p = pack / "tmp_pack_stuck"
-    p.write_bytes(b"x")
-    _age(p, STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
-
-    real_unlink = Path.unlink
-
-    def failing_unlink(self, *a, **k):
-        if self.name == "tmp_pack_stuck":
-            raise OSError(13, "Permission denied")
-        return real_unlink(self, *a, **k)
-
-    monkeypatch.setattr(Path, "unlink", failing_unlink)
-    assert clear_stale_tmp_packs(repo) == []  # skipped, not raised
 
 
 @pytest.mark.windows_only

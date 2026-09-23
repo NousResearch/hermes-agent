@@ -84,3 +84,21 @@ def test_served_named_profile_reports_running_without_default_pid_file(monkeypat
     beta = next(p for p in list_profiles() if p.name == "beta")
     assert beta.gateway_running is True
     assert _run_status().startswith("✓ Gateway is running via the default-profile multiplexer")
+
+
+def test_standalone_profile_status_reports_standalone_by_config(monkeypatch, tmp_path):
+    """`hermes -p X gateway status` on a standalone X says so and never claims the multiplexer."""
+    _fake_multiplexer(monkeypatch, tmp_path, multiplex=True)
+    (tmp_path / "profiles" / "beta" / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+    from hermes_cli import gateway as gw
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        gw._gateway_command_inner(
+            SimpleNamespace(gateway_command="status", deep=False, full=False, system=False)
+        )
+    out = buf.getvalue()
+    assert "standalone by config (gateway.standalone: true)" in out
+    assert "via the default-profile multiplexer" not in out
+
+

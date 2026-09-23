@@ -83,6 +83,10 @@ def _warn_profile_fallback_once() -> None:
     global _profile_fallback_warned
     if _profile_fallback_warned:
         return
+    # Latch on the FIRST check regardless of outcome (one-shot contract). Previously the latch
+    # was only set on the warning branch, so with no active_profile (or "default") the stat +
+    # read re-ran on every get_hermes_home() call (#90065).
+    _profile_fallback_warned = True
     try:
         fallback_home = _get_platform_default_hermes_home()
         active_path = fallback_home / "active_profile"
@@ -90,7 +94,6 @@ def _warn_profile_fallback_once() -> None:
     except (UnicodeDecodeError, OSError):
         active = ""
     if active and active != "default":
-        _profile_fallback_warned = True
         # Direct stderr, not logging: runs at import time (often before logging is
         # configured) and root-logger propagation would double-emit.
         msg = (
@@ -159,10 +162,45 @@ def get_process_hermes_home() -> Path:
     """Hermes home of the running process, ignoring task overrides.
 
     For process-level assets (theme YAML, dashboard plugin manifests) that must stay visible while a
-    request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
+    request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``). Follows
+    ``HERMES_HOME`` live on purpose: routed-profile DECISIONS compare against
+    :func:`get_routing_process_hermes_home` instead (#119242).
     """
     val = os.environ.get("HERMES_HOME", "").strip()
     return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
+
+
+# Host-pinned identity of the profile this process serves as its own (None: follow HERMES_HOME).
+_PINNED_PROCESS_HERMES_HOME: str | None = None
+
+
+def pin_process_hermes_home(path: str | Path | None) -> None:
+    """Pin the home this process serves as its own profile, for "is this task routed?" decisions.
+
+    An embedding host that serves several profiles and mirrors the active turn's profile into
+    ``os.environ["HERMES_HOME"]`` for legacy readers (Hermes WebUI) otherwise makes every turn's own
+    profile look like the launch profile: ``agent.secret_scope.serves_routed_profile()`` turns
+    False and that turn's MCP connections fall back to bare, cross-profile names; the sibling
+    launch-home checks (``secret_scope._is_process_home``, ``tools.environments.local._is_routed_home``,
+    ``hermes_cli.env_loader._process_hermes_home``) misjudge the same way. ``None`` clears the pin.
+
+    Process-global on purpose: it names the process's own identity, not a per-task value. It is NOT
+    folded into :func:`get_process_hermes_home`: :func:`get_hermes_home` falls back to that for
+    tasks carrying no override, and the host's mirror exists precisely so those readers see the
+    served profile. Hosts that never mutate ``HERMES_HOME`` need not call this (no-op).
+    """
+    global _PINNED_PROCESS_HERMES_HOME
+    _PINNED_PROCESS_HERMES_HOME = None if path is None else str(path)
+
+
+def process_hermes_home_is_pinned() -> bool:
+    return _PINNED_PROCESS_HERMES_HOME is not None
+
+
+def get_routing_process_hermes_home() -> Path:
+    """Launch home for routed-profile decisions: the pinned home, else :func:`get_process_hermes_home`."""
+    pinned = _PINNED_PROCESS_HERMES_HOME
+    return _expand_hermes_home(pinned) if pinned else get_process_hermes_home()
 
 
 # Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,

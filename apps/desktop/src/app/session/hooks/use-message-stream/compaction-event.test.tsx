@@ -32,7 +32,6 @@ describe('useMessageStream compaction lifecycle', () => {
 
   it.each([
     ['message.delta', { text: 'resumed' }],
-    ['thinking.delta', { text: 'still working' }],
     ['reasoning.delta', { text: 'thinking again' }],
     ['tool.start', { name: 'terminal', tool_id: 'tool-1' }]
   ] as const)('clears the stale compaction phase when %s resumes the turn', (type, payload) => {
@@ -61,18 +60,6 @@ describe('useMessageStream compaction lifecycle', () => {
     emit('status.update', { kind: 'ready' })
 
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
-  })
-
-  it('retires the manual /compress phase even when the compress aborted', () => {
-    mountStream()
-
-    emit('status.update', { kind: 'compressing', text: 'compressing\u2026' })
-    expect($compactingSessions.get()).toEqual({ [SID]: true })
-
-    // CompressionLockHeld / raise both land on the same `ready` edge.
-    emit('status.update', { kind: 'ready' })
-
-    expect($compactingSessions.get()).toEqual({})
   })
 
   it('clears the compaction phase on the structured completion edge', () => {

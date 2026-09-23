@@ -603,7 +603,7 @@ _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
 def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4/5.5/5.6, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
+    """True for gpt-5.4/5.5/5.6, gpt-6 Sol/Terra/Luna, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
 
     Other routes expose a larger window for the same slug and keep the user's threshold.
     Prefix-matched so ``-pro`` and dated snapshots track every 272K-capped family; ``-900k``
@@ -620,7 +620,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         return "900k" not in bare
     return bare == "gpt-daybreak-blue-latest" or any(
         bare == fam or bare.startswith(fam + "-") or bare.startswith(fam + ".")
-        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6"))
+        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-sol", "gpt-6-luna"))
 
 
 def _codex_route_bare_model(model: Optional[str], provider: Optional[str]) -> Optional[str]:
@@ -1115,15 +1115,17 @@ def _scoped_key_env(name: str) -> str:
     """Read a provider API key (or its paired base-URL) env var through the profile secret scope.
 
     In agent turns the scope's verdict is authoritative (a scoped miss must not borrow another
-    profile's key); unscoped startup/CLI paths fall back to os.environ.
+    profile's key); only the unscoped default-profile path (``UnscopedSecretError``) reads
+    ``os.environ`` -- any other scope failure propagates instead of borrowing the ambient env.
     """
     if not name:
         return ""
-    with contextlib.suppress(Exception):
-        from agent.secret_scope import UnscopedSecretError, get_secret
-        with contextlib.suppress(UnscopedSecretError):
-            return (get_secret(name) or "").strip()
-    return (os.getenv(name) or "").strip()
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        return (get_secret(name) or "").strip()
+    except UnscopedSecretError:
+        return (os.getenv(name) or "").strip()
 
 
 # Codex Responses → chat.completions adapter, so aux consumers need no changes.

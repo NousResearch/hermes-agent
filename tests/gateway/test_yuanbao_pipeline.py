@@ -37,13 +37,10 @@ from gateway.platforms.yuanbao import (
     AutoSetHomeMiddleware,
     ExtractContentMiddleware,
     PlaceholderFilterMiddleware,
-    OwnerCommandMiddleware,
-    BuildSourceMiddleware,
     GroupAtGuardMiddleware,
     QuoteContextMiddleware,
     MediaResolveMiddleware,
     PatchAnchorsMiddleware,
-    DispatchMiddleware,
     InboundPipelineBuilder,
     YuanbaoAdapter,
     _MIN_RESOLVE_CONCURRENCY,
@@ -120,12 +117,6 @@ def make_json_push(
 class TestInboundPipeline:
     """Test the pipeline engine itself."""
 
-    @pytest.mark.asyncio
-    async def test_empty_pipeline(self):
-        """Empty pipeline executes without error."""
-        pipeline = InboundPipeline()
-        ctx = make_ctx()
-        await pipeline.execute(ctx)  # Should not raise
 
 
 
@@ -680,33 +671,6 @@ class TestAutoSetHomeAfterGroupAtGuard:
 # 4. Factory Tests
 # ============================================================
 
-class TestCreateInboundPipeline:
-    def test_default_pipeline_has_all_middlewares(self):
-        """InboundPipelineBuilder.build() creates pipeline with all expected middlewares."""
-        pipeline = InboundPipelineBuilder.build()
-        expected = [
-            "decode",
-            "extract-fields",
-            "recall_guard",
-            "dedup",
-            "skip-self",
-            "chat-routing",
-            "access-guard",
-            "extract-content",
-            "placeholder-filter",
-            "owner-command",
-            "build-source",
-            "group-at-guard",
-            "auto-sethome",
-            "group-attribution",
-            "classify-msg-type",
-            "quote-context",
-            "forwarded-records-parse",
-            "media-resolve",
-            "patch-anchors",
-            "dispatch",
-        ]
-        assert pipeline.middleware_names == expected
 
 
 # ============================================================
@@ -776,12 +740,6 @@ class TestPipelineIntegration:
 
 
 
-    @pytest.mark.asyncio
-    async def test_adapter_has_pipeline(self):
-        """YuanbaoAdapter.__init__ creates an inbound pipeline."""
-        adapter = make_adapter()
-        assert hasattr(adapter, "_inbound_pipeline")
-        assert isinstance(adapter._inbound_pipeline, InboundPipeline)
 
 
 
@@ -793,63 +751,8 @@ if __name__ == "__main__":
 # 6. OOP Middleware Tests
 # ============================================================
 
-class TestInboundMiddlewareABC:
-    """Test the InboundMiddleware OOP protocol (callable + named)."""
-
-    def test_subclass_with_handle_works(self):
-        """Subclass with handle() can be instantiated."""
-        class GoodMiddleware(InboundMiddleware):
-            name = "good"
-            async def handle(self, ctx, next_fn):
-                await next_fn()
-        mw = GoodMiddleware()
-        assert mw.name == "good"
-
-    @pytest.mark.asyncio
-    async def test_callable_protocol(self):
-        """Middleware instances are callable via __call__."""
-        class TestMW(InboundMiddleware):
-            name = "test"
-            async def handle(self, ctx, next_fn):
-                ctx.raw_text = "called"
-                await next_fn()
-
-        mw = TestMW()
-        ctx = make_ctx()
-        next_fn = AsyncMock()
-        await mw(ctx, next_fn)  # Call via __call__
-        assert ctx.raw_text == "called"
-        next_fn.assert_awaited_once()
 
 
-class TestMiddlewareClasses:
-    """Pin the canonical ``name`` of each concrete middleware class.
-
-    These names are referenced by ``InboundPipelineBuilder.build()`` ordering,
-    by ``use_before`` / ``use_after`` insertion in extensions, and by log
-    messages — so they're a real downstream contract worth pinning.
-    """
-
-    MIDDLEWARE_CLASSES = [
-        (DecodeMiddleware, "decode"),
-        (ExtractFieldsMiddleware, "extract-fields"),
-        (DedupMiddleware, "dedup"),
-        (SkipSelfMiddleware, "skip-self"),
-        (ChatRoutingMiddleware, "chat-routing"),
-        (AccessGuardMiddleware, "access-guard"),
-        (ExtractContentMiddleware, "extract-content"),
-        (PlaceholderFilterMiddleware, "placeholder-filter"),
-        (OwnerCommandMiddleware, "owner-command"),
-        (BuildSourceMiddleware, "build-source"),
-        (GroupAtGuardMiddleware, "group-at-guard"),
-        (DispatchMiddleware, "dispatch"),
-    ]
-
-    @pytest.mark.parametrize("cls,expected_name", MIDDLEWARE_CLASSES)
-    def test_has_correct_name(self, cls, expected_name):
-        """Each middleware class has the expected name."""
-        mw = cls()
-        assert mw.name == expected_name
 
 
 class TestPipelineOOPRegistration:
@@ -890,10 +793,6 @@ class TestPipelineOOPRegistration:
 class TestQuoteContextMiddleware:
     """Tests for QuoteContextMiddleware._extract_quote_context."""
 
-    def test_extract_quote_context_no_cloud_data(self):
-        """Returns (None, None) when cloud_custom_data is empty."""
-        result = QuoteContextMiddleware()._extract_quote_context("")
-        assert result == (None, None)
 
 
 

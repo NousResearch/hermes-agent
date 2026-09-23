@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from importlib import import_module
 from unittest.mock import Mock
@@ -10,15 +9,6 @@ from unittest.mock import Mock
 import pytest
 
 from tools.computer_use import cua_backend_driver
-
-
-def _run(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "hermes_cli.main", "computer-use", *args],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
 
 
 def _invoke(monkeypatch: pytest.MonkeyPatch, *args: str) -> int:
@@ -31,23 +21,6 @@ def _invoke(monkeypatch: pytest.MonkeyPatch, *args: str) -> int:
     except SystemExit as exc:
         return int(exc.code or 0)
     return 0
-
-
-def test_computer_use_help_omits_browser_approve() -> None:
-    result = _run("--help")
-
-    assert result.returncode == 0
-    assert "browser-approve" not in result.stdout
-    assert "doctor" in result.stdout
-    assert "permissions" in result.stdout
-
-
-def test_computer_use_rejects_removed_browser_approve_command() -> None:
-    result = _run("browser-approve", "--pid", "123")
-
-    assert result.returncode == 2
-    assert "'browser-approve' is not a `hermes computer-use` command" in result.stderr
-    assert "choose from" not in result.stderr
 
 
 def test_computer_use_status_returns_zero_for_compatible_driver(

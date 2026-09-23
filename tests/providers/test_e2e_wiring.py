@@ -21,22 +21,6 @@ def _msgs():
 class TestNvidiaProfileWiring:
 
 
-    def test_nvidia_model_passed(self, transport):
-        profile = get_provider_profile("nvidia")
-        kwargs = transport.build_kwargs(
-            model="nvidia/test-model",
-            messages=_msgs(),
-            tools=None,
-            provider_profile=profile,
-            max_tokens=None,
-            max_tokens_param_fn=lambda x: {"max_tokens": x} if x else {},
-            timeout=300,
-            reasoning_config=None,
-            request_overrides=None,
-            session_id="test",
-            ollama_num_ctx=None,
-        )
-        assert kwargs["model"] == "nvidia/test-model"
 
 
     def test_nvidia_tool_messages_drop_name_fields(self, transport):

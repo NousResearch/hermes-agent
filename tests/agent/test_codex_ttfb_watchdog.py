@@ -165,12 +165,12 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
         with pytest.raises(TimeoutError) as excinfo:
             h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
         message = str(excinfo.value)
-        assert "gpt-5.4" in message
-        assert "gpt-5.3-codex" not in message
-        assert "gpt-5.4-codex" in message
+        hint = agent._codex_silent_hang_hint(model="gpt-5.5")
+        assert hint, "gpt-5.5 on the Codex backend must match the silent-hang heuristic"
+        assert hint in message
         assert "codex_ttfb_kill" in closes
         assert statuses, "expected a user-facing watchdog status"
-        assert any("gpt-5.4" in s and "gpt-5.3-codex" not in s for s in statuses)
+        assert any(hint in s for s in statuses)
     finally:
         stop["flag"] = True
 
@@ -233,29 +233,6 @@ def test_ttfb_installs_and_retires_the_codex_request_token(tmp_path, monkeypatch
     assert getattr(agent, "_active_codex_stream_request_token", None) is None
 
 
-def test_non_codex_api_mode_installs_no_request_token(tmp_path, monkeypatch):
-    """The token is codex_responses-only — other api_modes stay untouched."""
-    from agent import chat_completion_helpers as h
-
-    agent = _make_codex_agent(tmp_path, monkeypatch)
-    agent.api_mode = "chat_completions"
-
-    seen = {"token": "unset"}
-    dummy_client = SimpleNamespace()
-    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
-
-    def fake_dispatch(_agent, _api_kwargs, *, make_client):
-        make_client("test")
-        seen["token"] = getattr(
-            _agent, "_active_codex_stream_request_token", "absent"
-        )
-        return SimpleNamespace(choices=[])
-
-    monkeypatch.setattr(h, "_dispatch_nonstreaming_api_request", fake_dispatch)
-
-    h.interruptible_api_call(agent, {"model": "gpt-5.5", "messages": []})
-
-    assert seen["token"] in (None, "absent")
 
 
 

@@ -298,6 +298,9 @@ COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
 # Only micro markers may be superseded/defragged/rehydrated: a batch marker's
 # content is NOT in the rolling micro summary, so rewriting one destroys history.
 MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
+# ``display_metadata`` flag on a row the model reads but nobody typed as one message (micro-compaction's
+# merge of adjacent user turns). Its source rows stay in display history, so display projections skip it.
+MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
 # Intrinsic marker stamped on a message dict once it has been written to the SQLite session store. Used by
 # ``_flush_messages_to_session_db`` to decide what is already durable. An object-identity (``id(msg)``)
 # dedup set cannot be trusted across turns: once a flushed message dict is dropped from the live list (e.g.
@@ -2499,13 +2502,18 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         trigger math lives, shared by ``update_model`` and the switch guard's preview so the number the
         guard quotes is the number the compressor installs (#83450). Excludes the auxiliary-summariser
         ceiling, which the feasibility probe re-derives per runtime."""
-        config_percent = getattr(self, "_config_threshold_percent", self.threshold_percent)
-        base_percent = resolve_model_threshold(model, self.model_thresholds, config_percent, provider)
+        base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
         effective_percent = self._effective_threshold_percent(context_length, base_percent)
         threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
-        if self.threshold_tokens_cap is not None and self.threshold_tokens_cap > 0:
-            threshold = min(threshold, self.threshold_tokens_cap, context_length)
+        cap = self._effective_threshold_cap(context_length)
+        if cap is not None:
+            threshold = min(threshold, cap)
         return base_percent, effective_percent, threshold
+
+    def _effective_threshold_cap(self, context_length: int) -> int | None:
+        """The configured ``threshold_tokens`` cap clamped to the window; None when no cap is configured."""
+        cap = self.threshold_tokens_cap
+        return min(cap, context_length) if cap is not None and cap > 0 else None
 
     def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
         """The trigger ``update_model`` would install, without mutating state."""
@@ -2581,10 +2589,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _apply_threshold_tokens_cap(self) -> None:
         """Clamp threshold_tokens to the configured cap (itself clamped to the context length) and to the
         auxiliary summariser's window when the feasibility probe installed one."""
-        if self.threshold_tokens_cap is not None and self.threshold_tokens_cap > 0:
-            _effective_cap = min(self.threshold_tokens_cap, self.context_length)
-            if _effective_cap < self.threshold_tokens:
-                self.threshold_tokens = _effective_cap
+        cap = self._effective_threshold_cap(self.context_length)
+        if cap is not None and cap < self.threshold_tokens:
+            self.threshold_tokens = cap
         # Durable, so every recomputation honours it rather than a one-time assignment (#114707).
         _aux_ceiling = getattr(self, "_aux_context_ceiling", None)
         if isinstance(_aux_ceiling, int) and 0 < _aux_ceiling < self.threshold_tokens:

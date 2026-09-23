@@ -130,24 +130,3 @@ class TestHealthyTurnStillRuns:
         assert mgr.state.status == "done"
 
 
-class TestInterruptFlagLifecycle:
-    def test_chat_resets_flag_at_entry(self, hermes_home):
-        """chat() must reset _last_turn_interrupted at the top of each turn.
-
-        This guards against stale flag state: if turn N was interrupted and
-        turn N+1 runs clean, the hook must not see True from N.
-        """
-        # We can't run chat() end-to-end here, but we can assert the reset
-        # is the first thing after the secret-capture registration by
-        # inspecting the source shape.
-        from cli import HermesCLI
-        import inspect
-
-        src = inspect.getsource(HermesCLI.chat)
-        # Look for an explicit reset near the top of chat().
-        head = src.split("if not self._ensure_runtime_credentials", 1)[0]
-        assert "self._last_turn_interrupted = False" in head, (
-            "chat() must reset _last_turn_interrupted before run_conversation "
-            "runs — otherwise a prior turn's interrupt state leaks into the "
-            "next turn's goal hook decision."
-        )

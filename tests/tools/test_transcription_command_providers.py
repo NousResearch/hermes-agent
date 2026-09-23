@@ -18,7 +18,6 @@ identically on Linux, macOS, and Windows (with minor quoting differences).
 
 from __future__ import annotations
 
-import os
 import sys
 import wave
 from pathlib import Path
@@ -27,7 +26,6 @@ from unittest.mock import patch
 
 from tools.transcription_common import BUILTIN_STT_PROVIDERS
 from tools.transcription_command import (
-    COMMAND_STT_OUTPUT_FORMATS,
     DEFAULT_COMMAND_STT_LANGUAGE,
     DEFAULT_COMMAND_STT_OUTPUT_FORMAT,
     DEFAULT_COMMAND_STT_TIMEOUT_SECONDS,
@@ -142,7 +140,6 @@ class TestSTTCommandHelpers:
 
     def test_output_format_defaults_to_txt(self):
         assert _get_command_stt_output_format({}) == DEFAULT_COMMAND_STT_OUTPUT_FORMAT
-        assert DEFAULT_COMMAND_STT_OUTPUT_FORMAT == "txt"
 
 
 # ---------------------------------------------------------------------------

@@ -250,7 +250,15 @@ def _real_profile_cdp() -> tuple:
     from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
                                             real_profile_copy_dir, snapshot_real_profile)
 
-    with _bt._real_profile_cdp_lock:
+    if not _bt._real_profile_cdp_lock.acquire(
+        timeout=_bt._REAL_PROFILE_CDP_LOCK_TIMEOUT_S
+    ):
+        return None, (
+            _RP + "the real-profile browser is already being prepared by another "
+            "call that has not finished. Retry after that call completes, or "
+            "restart Hermes if it was abandoned."
+        )
+    try:
         cached = _bt._real_profile_cdp_cache.get("cdp")
         if cached and _cdp_http_ready(cached):
             # Re-claim the shared daemon's socket dir so the orphan reaper's idle clock sees
@@ -302,3 +310,5 @@ def _real_profile_cdp() -> tuple:
         _bt._real_profile_cdp_cache["cdp"] = cdp
         _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None
+    finally:
+        _bt._real_profile_cdp_lock.release()

@@ -501,6 +501,54 @@ def _completion_output(session: "ProcessSession") -> dict:
     return {"output": _output_tail(session, limit), **({"output_cut": cut} if cut > 0 else {})}
 
 
+_WSL_LAUNCHER_NAMES = frozenset({"wsl", "wsl.exe"})
+
+_WSL_CHAIN_NOTE = (
+    "Spawned via a wsl[.exe] launcher: the recorded host PID is the short-lived "
+    "launcher, not the Linux-side workers. Inspect them with `wsl -e ps` / "
+    "`wsl --list --running` from the host."
+)
+
+
+def _is_wsl_launcher_command(command: str) -> bool:
+    """True when *command* routes through a ``wsl[.exe]`` launcher chain (#120546).
+
+    The host PID recorded for such a spawn belongs to the short-lived launcher;
+    grandchildren inside the VM outlive it, so the entry must say so instead of
+    letting host-side hunting fail silently.
+    """
+    if not isinstance(command, str) or not command.strip():
+        return False
+    candidates = []
+    try:
+        candidates.append((shlex.split(command, posix=True) or [""])[0])
+    except ValueError:
+        pass
+    # POSIX shlex eats Windows backslashes (``C:\...\wsl.exe``), so also try
+    # the naive first token where path separators survive.
+    words = command.strip().split()
+    if words:
+        candidates.append(words[0])
+    for first in candidates:
+        base = os.path.basename(first.replace("\\", "/")).strip("'\"").lower()
+        if base in _WSL_LAUNCHER_NAMES:
+            return True
+    return False
+
+
+def _spawned_by_task(session: "ProcessSession", task_id: Optional[str]) -> bool:
+    """Ownership-chain match for task-scoped queries (#120546).
+
+    ``task_id`` on a session is the COLLAPSED container key (e.g. ``"default"``
+    on local backends) while callers query with their RAW spawning id
+    (``sa-...`` for delegate children). Matching the container key alone made a
+    delegate child's own background work invisible to list/has_active/kill/wait.
+    """
+    if not task_id:
+        return False
+    return session.task_id == task_id or (session.owner_task_id or session.task_id) == task_id
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -527,6 +575,8 @@ class ProcessSession:
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
+    wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
+                                                # launcher; Linux-side workers outlive it (#120546)
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
     # Watcher/notification routing (persisted for crash recovery)
     # systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
@@ -585,7 +635,7 @@ _WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id
 # Session fields persisted verbatim in the crash-recovery checkpoint (plus
 # ``session_id``; ``command`` is redacted and ``owner_task_id`` defaulted on write).
 _CHECKPOINT_FIELDS = (
-    "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
+    "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "wsl_chain", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
@@ -1106,6 +1156,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id or task_id, session_key=session_key, cwd=cwd,
             parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
+            wsl_chain=_is_wsl_launcher_command(command),
             started_at=time.time(), **extra)
 
     @staticmethod
@@ -1702,7 +1753,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # window would otherwise see nothing pending, drain nothing and exit without the follow-up turn.
             pending = [
                 s for store in (self._running, self._finished) for s in store.values()
-                if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
+                if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or _spawned_by_task(s, task_id))
             ]
         if not pending or timeout <= 0:
             return result
@@ -2290,7 +2341,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
-                if (task_id and s.task_id == task_id) or (session_key and s.session_key == session_key)
+                if (task_id and _spawned_by_task(s, task_id)) or (session_key and s.session_key == session_key)
             ]
         result = []
         for s in all_sessions:
@@ -2308,9 +2359,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
             }
+            if s.wsl_chain:
+                entry["wsl_chain"] = True
+                entry["wsl_note"] = _WSL_CHAIN_NOTE
             # Flag processes surfaced only because they share the gateway session (not the current task) —
             # these are the long-lived background processes a user may have forgotten about (#29177).
-            if task_id and session_key and s.task_id != task_id and s.session_key == session_key:
+            if task_id and session_key and not _spawned_by_task(s, task_id) and s.session_key == session_key:
                 entry["session_scoped"] = True
             # Trigger metadata for goal-loop judges (a watcher may never exit).
             if s.watch_patterns and not s._watch_disabled:
@@ -2340,7 +2394,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def has_active_processes(self, task_id: str) -> bool:
         """Whether any process for ``task_id`` is still running."""
-        return self._any_running(lambda s: s.task_id == task_id)
+        return self._any_running(lambda s: _spawned_by_task(s, task_id))
 
     def running_owned_by(self, owner_task_id: str) -> List[ProcessSession]:
         """Running processes whose RAW spawning owner is ``owner_task_id``."""
@@ -2391,7 +2445,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         only processes absent from the starting snapshot belong to the abandoned
         turn; older ones intentionally span turns and must survive."""
         with self._lock:
-            return frozenset(s.id for s in self._running.values() if s.task_id == task_id and not s.exited)
+            return frozenset(s.id for s in self._running.values() if _spawned_by_task(s, task_id) and not s.exited)
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is
@@ -2406,7 +2460,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and s.id not in exclude_ids and not s.exited
+                if (task_id is None or _spawned_by_task(s, task_id)) and s.id not in exclude_ids and not s.exited
             ]
         return sum(
             self.kill_process(s.id, source=source, consume_output=consume_output).get("status")

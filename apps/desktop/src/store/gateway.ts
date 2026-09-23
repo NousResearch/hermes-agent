@@ -696,12 +696,21 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 
     if (reopening) {
       try {
-        const { reconcileBusyStatesOnReconnect, resetTileRuntimeBindings } = await import('@/store/session-states')
+        const { reconcileBusyStatesOnReconnect, resetRouteOwnedTileRuntimeBindings, resetTileRuntimeBindings } =
+          await import('@/store/session-states')
 
-        resetTileRuntimeBindings({
-          connectionId: entry.connectionId || 'local',
-          profile: entry.profile
-        })
+        const scope = { connectionId: entry.connectionId || 'local', profile: entry.profile }
+
+        // Only the window's ambient gateway carries un-owned tiles and the main
+        // thread. A background route (e.g. a relay request lease that disposed
+        // its socket after the last tick) can only have minted runtimes for
+        // tiles that name it as their owner route.
+        if (g.activeKey === entry.scope) {
+          resetTileRuntimeBindings(scope)
+        } else {
+          resetRouteOwnedTileRuntimeBindings(scope)
+        }
+
         reconcileBusyAfterOpen = () => reconcileBusyStatesOnReconnect(entry.scope)
       } catch {
         // Best effort for partial test/HMR graphs. Production always loads the

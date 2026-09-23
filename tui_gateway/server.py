@@ -2095,6 +2095,21 @@ def _turn_started_at(session: dict | None) -> float | None:
     return float(inflight["started_at"]) if isinstance(inflight, dict) and inflight.get("started_at") else None
 
 
+def _live_session_identity(session: dict) -> tuple[str, str]:
+    """``(model, provider)`` the live session actually runs — the same precedence ``_session_info`` reports:
+    a switch queued mid-turn, the metadata mirror, the built agent, the composer override a deferred record
+    carries. The profile default is the LAST resort, never the answer for a chat that made its own pick."""
+    pending = session.get("pending_model_switch") or {}
+    mirror = _metadata_mirror(session)
+    agent = session.get("agent")
+    override = session.get("model_override") or {}
+    model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
+             or getattr(agent, "model", "") or override.get("model") or _resolve_model())
+    provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
+                or getattr(agent, "provider", "") or override.get("provider") or "")
+    return str(model), str(provider or "")
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)

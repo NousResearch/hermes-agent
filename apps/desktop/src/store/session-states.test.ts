@@ -43,6 +43,7 @@ import {
   recordSessionEventScope,
   releaseSessionTranscript,
   requestForOwnedSession,
+  resetRouteOwnedTileRuntimeBindings,
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
   type SessionTileDelegate,
@@ -258,6 +259,58 @@ describe('resetTileRuntimeBindings', () => {
     expect(workBot).toMatchObject({ runtimeId: 'runtime-work-live', storedSessionId: 'stored-work-bot' })
     expect(ordinarySession).not.toHaveProperty('runtimeId')
     expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-work-bot']))
+  })
+})
+
+describe('resetRouteOwnedTileRuntimeBindings', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('drops only tiles owned by the reopened route and leaves ambient tiles bound', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    const dropRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ dropRuntimeBindings, invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'writer', targetProfile: 'writer' },
+        runtimeId: 'runtime-writer-bot',
+        storedSessionId: 'stored-writer-bot',
+        workspaceMode: 'bots'
+      },
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'coder', targetProfile: 'coder' },
+        runtimeId: 'runtime-coder-bot',
+        storedSessionId: 'stored-coder-bot',
+        workspaceMode: 'bots'
+      },
+      { runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }
+    ])
+
+    resetRouteOwnedTileRuntimeBindings({ connectionId: 'local', profile: 'writer' })
+
+    const [writerBot, coderBot, ambient] = $sessionTiles.get()
+
+    expect(writerBot).toMatchObject({ storedSessionId: 'stored-writer-bot' })
+    expect(writerBot).not.toHaveProperty('runtimeId')
+    expect(coderBot).toMatchObject({ runtimeId: 'runtime-coder-bot' })
+    expect(ambient).toMatchObject({ runtimeId: 'runtime-ambient' })
+    expect(dropRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-writer-bot']))
+    expect(invalidateRuntimeBindings).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op when no open tile belongs to the reopened route', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    const dropRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ dropRuntimeBindings, invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    const tiles = [{ runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }]
+    $sessionTiles.set(tiles)
+
+    resetRouteOwnedTileRuntimeBindings({ connectionId: 'local', profile: 'writer' })
+
+    expect($sessionTiles.get()).toBe(tiles)
+    expect(dropRuntimeBindings).not.toHaveBeenCalled()
+    expect(invalidateRuntimeBindings).not.toHaveBeenCalled()
   })
 })
 

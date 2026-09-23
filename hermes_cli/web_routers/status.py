@@ -533,6 +533,7 @@ async def get_status(profile: Optional[str] = None):
         # renders the profile list over a gated bind) so they survive the auth gate; the
         # per-gateway ``gateways[]`` carries host ports and stays gated below.
         status["profiles"] = topology["profiles"]
+        status["parked_profiles"] = topology.get("parked_profiles", [])
         status["gateway_mode"] = topology["gateway_mode"]
 
         # Host paths, gateway PID, internal health URL and per-gateway ports are deployment

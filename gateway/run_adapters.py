@@ -873,10 +873,13 @@ class GatewayAdapterLifecycleMixin:
                 publish_runtime_status(served_profiles=[])
             return 0
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from hermes_cli.profiles import get_active_profile_name, profiles_to_serve, profile_is_parked
         except Exception:
             return 0
         active = get_active_profile_name() or "default"  # launch profile, pre-identity (adapter boot)
+        for name, home in profiles_to_serve(True, include_parked=True):
+            if name != "default" and profile_is_parked(home):
+                logger.info("profile '%s' is parked (gateway.parked); not served by this gateway", name)
         connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)

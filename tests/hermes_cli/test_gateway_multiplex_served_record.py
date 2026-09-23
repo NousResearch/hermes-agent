@@ -151,7 +151,7 @@ def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_ro
 
 
 @pytest.mark.parametrize("verb", ["start", "install", "restart"])
-def test_service_verbs_refuse_served_profile_with_exit_78(served_root, monkeypatch, verb):
+def test_service_verbs_do_not_start_a_second_gateway(served_root, monkeypatch, verb):
     import hermes_cli.gateway as gw
     calls: list = []
     monkeypatch.setattr(gw, "_service_backend", lambda: "systemd")
@@ -163,9 +163,19 @@ def test_service_verbs_refuse_served_profile_with_exit_78(served_root, monkeypat
     monkeypatch.setattr(gw, "is_termux", lambda: False)
     fn = getattr(gw, f"_cmd_{verb}")
     ns = argparse.Namespace(system=False, all=False, force=False, run_as_user=None)
-    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
+    if verb == "restart":
+        from gateway import control_socket
+        lifecycle = []
+        monkeypatch.setattr(control_socket, "request_unserve_profile",
+                            lambda home, name: lifecycle.append("unserve") or {"unserved": name})
+        monkeypatch.setattr(control_socket, "request_serve_profile_hot",
+                            lambda home, name: lifecycle.append("serve") or {"served": name})
         fn(ns)
-    assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE and calls == []
+        assert lifecycle == ["unserve", "serve"] and calls == []
+    else:
+        with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
+            fn(ns)
+        assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE and calls == []
 
     ns.force = True
     with contextlib.redirect_stdout(io.StringIO()):
@@ -245,13 +255,18 @@ def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypat
     assert multiplexed_profile_refusal("coder", "stop") is None
 
 
-def test_cli_stop_refuses_for_a_served_profile_without_its_own_gateway(served_root, monkeypatch):
+def test_cli_stop_parks_when_host_control_socket_is_unavailable(served_root, monkeypatch):
     import hermes_cli.gateway as gw
+    from gateway import control_socket
     monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: [])
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
-    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
+    monkeypatch.setattr(control_socket, "request_unserve_profile", lambda home, name: None)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
         gw._cmd_stop(argparse.Namespace(system=False, all=False))
-    assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE
+    assert (served_root / "profiles" / "coder" / "gateway.parked").exists()
+    assert "immediate stop was not confirmed" in output.getvalue()
+    assert "next rescan (within 30s)" in output.getvalue()
 
 
 def test_the_multiplexer_restart_names_the_root_even_under_a_sticky_active_profile(served_root, monkeypatch):

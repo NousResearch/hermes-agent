@@ -141,7 +141,8 @@ def implicit_multiplex_blocker() -> Optional[str]:
     # Cheap and first: a single-profile install has nothing to multiplex, and the fail-closed secret
     # scope the multiplexer arms buys it nothing. (Also keeps every embedded/test runner off the
     # service-manager probes below.) Create a second profile and restart to start serving it.
-    if len(profiles_to_serve(multiplex=True)) < 2:
+    # Parking is reversible without a host restart, so keep the reconcile watcher alive.
+    if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
         return SINGLE_PROFILE_REASON
     from hermes_cli.gateway_migrate import MIGRATE_COMMAND, _host_supports_migration, build_migration_plan
     host_reason = _host_supports_migration()

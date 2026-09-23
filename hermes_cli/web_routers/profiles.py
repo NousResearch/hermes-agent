@@ -215,7 +215,7 @@ def _profile_targets(log_label: str) -> List[Tuple[str, Path]]:
     fan-out that only needs name/path (#114041)."""
     from hermes_cli import profiles as profiles_mod
     try:
-        targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True))
+        targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True))
     except Exception:
         _log.exception("%s: profile enumeration failed", log_label)
         targets = []

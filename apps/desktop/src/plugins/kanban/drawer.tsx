@@ -49,6 +49,7 @@ import {
   uploadAttachment,
   useKanbanScope
 } from './api'
+import { Markdown } from './markdown'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -402,7 +403,7 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           </Button>
         </div>
       ) : body ? (
-        <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{body}</p>
+        <Markdown text={body} />
       ) : (
         <p className="text-[0.8125rem] text-(--ui-text-quaternary)">{k.noDescription}</p>
       )}
@@ -810,13 +811,13 @@ export function TaskDrawer({
 
             {task.result && (
               <Section label={k.result}>
-                <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.result}</p>
+                <Markdown text={task.result} />
               </Section>
             )}
 
             {task.latest_summary && !isAdminSummary(task.latest_summary) && (
               <Section label={k.latestSummary}>
-                <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.latest_summary}</p>
+                <Markdown text={task.latest_summary} />
               </Section>
             )}
 
@@ -862,7 +863,7 @@ export function TaskDrawer({
                       <span className="ml-2 text-[0.625rem] text-(--ui-text-quaternary)">
                         {ago(comment.created_at)}
                       </span>
-                      <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
+                      <Markdown className="text-[0.75rem] text-(--ui-text-tertiary)" text={comment.body} />
                     </li>
                   ))}
                 </ul>

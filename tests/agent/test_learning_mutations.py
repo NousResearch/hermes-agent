@@ -180,3 +180,81 @@ def test_unreadable_memory_file_is_refused_unchanged(home):
 
     assert not res["ok"] and "could not be read" in res["message"]
     assert path.read_bytes() == b"alpha note\n\xc3\x28\n\xc2\xa7\nbeta"
+
+
+# ── Node identity: the card the user clicked, not the index it sat at ────────
+
+
+def _memory_entries(home) -> list[str]:
+    from tools.memory_tool import MemoryStore
+
+    return MemoryStore._read_file(home / "memories" / "MEMORY.md")
+
+
+def _write_memory_file(home, *entries):
+    from tools.memory_tool import ENTRY_DELIMITER
+
+    (home / "memories" / "MEMORY.md").write_text(ENTRY_DELIMITER.join(entries), encoding="utf-8")
+
+
+def _journey_id(home, label: str) -> str:
+    """The node id Journey renders for the card whose text starts with *label*."""
+    from agent.learning_graph import build_learning_graph
+
+    nodes = [n for n in build_learning_graph()["nodes"] if n["kind"] == "memory"]
+    index = next(i for i, entry in enumerate(_memory_entries(home)) if entry.startswith(label))
+    return nodes[index]["id"]
+
+
+def test_the_id_journey_renders_names_the_cards_text(home):
+    from agent.learning_graph import memory_fingerprint
+
+    node_id = _journey_id(home, "beta")
+
+    assert node_id.split(":")[:3] == ["memory", "memory", "1"]
+    assert node_id.split(":")[3] == memory_fingerprint("beta note")
+
+
+def test_edit_targets_the_clicked_card_when_the_list_shifted_before_submit(home):
+    """The window a displayed-index identity cannot see: another writer prepends an entry AFTER
+    the graph is drawn and BEFORE the edit is submitted, so by the time the mutation reads the
+    file that index names somebody else's card."""
+    node_id = _journey_id(home, "beta")  # what Journey showed the user
+    _write_memory_file(home, "zeta first", "alpha note\nline two", "beta note")
+
+    assert lm.edit_node(node_id, "beta rewritten")["ok"]
+
+    assert _memory_entries(home) == ["zeta first", "alpha note\nline two", "beta rewritten"]
+
+
+def test_delete_targets_the_clicked_card_when_the_list_shifted_before_submit(home):
+    node_id = _journey_id(home, "beta")
+    _write_memory_file(home, "zeta first", "alpha note\nline two", "beta note")
+
+    assert lm.delete_node(node_id)["ok"]
+
+    assert _memory_entries(home) == ["zeta first", "alpha note\nline two"]
+
+
+def test_detail_prefills_the_clicked_card_after_a_shift(home):
+    node_id = _journey_id(home, "beta")
+    _write_memory_file(home, "zeta first", "alpha note\nline two", "beta note")
+
+    assert lm.node_detail(node_id)["content"] == "beta note"
+
+
+def test_a_clicked_card_that_is_gone_refuses_even_though_its_index_still_exists(home):
+    node_id = _journey_id(home, "beta")
+    _write_memory_file(home, "alpha note\nline two", "gamma replaced beta")
+
+    result = lm.edit_node(node_id, "beta rewritten")
+
+    assert result["ok"] is False and "stale" in result["message"]
+    assert _memory_entries(home) == ["alpha note\nline two", "gamma replaced beta"]
+
+
+def test_an_id_from_an_older_graph_still_resolves_by_position(home):
+    """Pre-fingerprint ids (a cached graph, an older shell) keep working."""
+    assert lm.edit_node("memory:memory:1", "beta rewritten")["ok"]
+
+    assert _memory_entries(home) == ["alpha note\nline two", "beta rewritten"]

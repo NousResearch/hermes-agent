@@ -3075,7 +3075,7 @@ class FeishuAdapter(BasePlatformAdapter):
             content_type = self._get_response_header(response, "Content-Type")
             filename = getattr(response, "file_name", None) or f"{image_key}.jpg"
             ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
-            cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext)
+            cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext, filename=filename)
             return cached_path, self._normalize_media_type(content_type, default=self._default_image_media_type(ext))
         except Exception:
             logger.warning("[Feishu] Failed to cache image resource %s", image_key, exc_info=True)
@@ -3111,7 +3111,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
                 if media_type.startswith("image/"):
                     ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
-                    kind, cached_path = "image", await cache_image_from_bytes_async(raw_bytes, ext=ext)
+                    kind, cached_path = "image", await cache_image_from_bytes_async(raw_bytes, ext=ext, filename=filename)
                     media_type = media_type or self._default_image_media_type(ext)
                 elif request_type == "audio" or media_type.startswith("audio/"):
                     ext = self._guess_extension(filename, content_type, ".ogg", allowed=_AUDIO_EXTENSIONS)

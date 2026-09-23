@@ -672,7 +672,7 @@ _video_item, _voice_item = partial(_media_item, ITEM_VIDEO), partial(_media_item
 # Inbound media dispatch: item type -> (item key, download timeout, cache fn, mime or None (= guess from
 # file_name), log label). Cache fns are lambdas so monkeypatching the module names takes effect at call time.
 _INBOUND_MEDIA: Dict[int, Tuple[str, float, Callable[[bytes, str], Awaitable[str]], Optional[str], str]] = {
-    ITEM_IMAGE: ("image_item", 30.0, lambda data, _name: cache_image_from_bytes_async(data, ".jpg"), "image/jpeg", "image"),
+    ITEM_IMAGE: ("image_item", 30.0, lambda data, name: cache_image_from_bytes_async(data, ".jpg", name), "image/jpeg", "image"),
     ITEM_VIDEO: ("video_item", 120.0, lambda data, _name: cache_document_from_bytes_async(data, "video.mp4"), "video/mp4", "video"),
     ITEM_FILE: ("file_item", 60.0, lambda data, name: cache_document_from_bytes_async(data, name), None, "file"),
     ITEM_VOICE: ("voice_item", 60.0, lambda data, _name: cache_audio_from_bytes_async(data, ".silk"), "audio/silk", "voice"),

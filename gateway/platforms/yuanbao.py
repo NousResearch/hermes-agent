@@ -1429,7 +1429,7 @@ class MediaResolveMiddleware(InboundMiddleware):
         if kind == "image":
             ext = cls._guess_image_ext_from_url(fetch_url)
             try:
-                local_path = await cache_image_from_bytes_async(file_bytes, ext=ext)
+                local_path = await cache_image_from_bytes_async(file_bytes, ext=ext, filename=file_name)
             except ValueError as exc:
                 logger.warning("[%s] inbound image cache rejected: %s err=%s", adapter.name, log_tag, exc)
                 return None

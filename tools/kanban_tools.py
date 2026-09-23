@@ -1053,8 +1053,14 @@ def _handle_create(args: dict, **kw) -> str:
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
+        # Creation is the cheapest place to catch an assignee no worker can be
+        # spawned for — the card would otherwise look healthy in 'ready' forever.
+        from hermes_cli.kanban_db_dispatch import assignee_advisory
+
+        advisory = assignee_advisory(str(assignee), task_id=new_tid)
         return _ok(task_id=new_tid, **landed, **gate,
-                   subscribed=_maybe_auto_subscribe(conn, new_tid))
+                   subscribed=_maybe_auto_subscribe(conn, new_tid),
+                   **({"warning": advisory} if advisory else {}))
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:

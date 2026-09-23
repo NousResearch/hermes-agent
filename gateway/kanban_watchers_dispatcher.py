@@ -235,6 +235,30 @@ class _KanbanDispatcher:
                         conn.close()
         return False
 
+    def unresolved_assignee_cards(self) -> list[tuple[str, str, str]]:
+        """``(board_slug, task_id, assignee)`` for ready cards the dispatcher can
+        never spawn for because the assignee does not resolve to a profile.
+
+        ``ready_nonempty`` deliberately reports these as "correctly idle" (a
+        control-plane lane waiting on ``claim_task`` looks identical), so this is
+        the only way health telemetry can tell an operator *which* cards are
+        unroutable instead of sending them to profile health, which is fine.
+        """
+        kbd = _kbd()
+        found: list[tuple[str, str, str]] = []
+        for slug in self._board_slugs():
+            conn = None
+            try:
+                conn = _kbc().connect(board=slug)
+                found.extend((slug, tid, who) for tid, who in kbd.unresolved_assignee_ready(conn))
+            except Exception:
+                continue
+            finally:
+                if conn is not None:
+                    with contextlib.suppress(Exception):
+                        conn.close()
+        return found
+
     def auto_decompose_tick(self, auto_decompose_per_tick: int) -> int:
         """Auto-decompose up to N triage tasks across all boards into ready workgraphs.
 
@@ -314,6 +338,23 @@ def _default_profile_secret_scope():
         yield
     finally:
         reset_secret_scope(token)
+
+
+def _warn_unresolved_assignees(cards, warned: set) -> set:
+    """Log a queue the dispatcher can never spawn for; returns the updated
+    already-warned signature set.
+
+    Fires independently of the tick counter: an unresolvable assignee reaches
+    ``skipped_nonspawnable``, and ``ready_nonempty`` reads that as "correctly
+    idle", so the stuck warning never counts one and a permanently stalled queue
+    would otherwise produce no signal at all.
+    """
+    from hermes_cli.kanban_db_dispatch import unresolved_assignee_notice
+
+    notice = unresolved_assignee_notice(cards, seen=warned)
+    if notice:
+        logger.warning("%s", notice)
+    return warned
 
 
 def _log_spawn_results(results: Optional[list]) -> bool:

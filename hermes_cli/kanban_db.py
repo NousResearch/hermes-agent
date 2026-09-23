@@ -1112,12 +1112,37 @@ def _validate_model_override(model: Optional[str], provider: Optional[str]) -> t
 
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity).
+
+    A leading ``@`` is mention-style spelling (``@default``). The dispatcher
+    resolves an assignee with :func:`hermes_cli.profiles.profile_exists`, which
+    can never match ``@default``, so an unstripped mention is accepted at create
+    time and then parks the task in ``ready`` forever with no worker and no
+    error. Strip it at the ingress every writer (create/assign/reassign/graph)
+    already shares, rather than teaching each caller.
+    """
     if assignee is None:
         return None
     from hermes_cli.profiles import normalize_profile_name
 
-    return normalize_profile_name(assignee)
+    # ``none`` / ``-`` / ``null`` / blank are the "unassigned" spellings that
+    # ``hermes kanban assign`` already accepts (``_none_profile``) — but they are
+    # not profile names. Both spellings must resolve to the ONE canonical
+    # unassigned value (NULL) at the seam every writer shares, because a stored
+    # literal is truthy: the dispatcher's ``default_assignee`` adoption skips it
+    # (``if not row_assignee``), ``profile_exists('none')`` then skips it again,
+    # and the card sits ``ready`` forever with no worker, no error and no event.
+    # ``@``-stripping happens here too so a mention-style ``@none`` is covered.
+    token = assignee.strip().lstrip("@").strip().lower()
+    if token in {"", "none", "-", "null"}:
+        return None
+
+    text = assignee.strip()
+    if text.startswith("@"):
+        mentionless = text.lstrip("@").strip()
+        if mentionless:
+            text = mentionless
+    return normalize_profile_name(text)
 
 
 def _resolve_project_link(
@@ -2650,15 +2675,94 @@ def _verify_created_cards(
     return verified, phantom
 
 
+def _conn_db_path(conn: sqlite3.Connection) -> Optional[str]:
+    """Resolved on-disk path of ``conn``'s main database; ``None`` for in-memory.
+
+    Read from SQLite rather than from the board resolver: the caller already
+    holds a connection, and *which file it opened* is the fact that decides
+    whether another board needs consulting.
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or len(row) < 3 or not row[2]:
+        return None
+    try:
+        return str(Path(row[2]).resolve())
+    except OSError:
+        return str(row[2])
+
+
+def _board_own_db_path(slug: str) -> Path:
+    """A board's OWN ``kanban.db``, ignoring ``HERMES_KANBAN_DB``.
+
+    Dispatcher-spawned workers get that env var pinned to *their* board, so the
+    ordinary resolver (:func:`kanban_db_path`) maps EVERY slug to the worker's own
+    file — which is why a path-equality dedup yields nothing from inside a worker.
+    Enumerating boards from a worker must not go through the pin.
+    """
+    return _board_path(None, slug, ("kanban.db",), "kanban.db")
+
+
+def _missing_task_ids_any_board(conn: sqlite3.Connection, ids: Iterable[str]) -> list[str]:
+    """Subset of ``ids`` (order kept) that resolve on NO live board.
+
+    The prose scan is a MENTION, not a claim of authorship: a worker naming the
+    sibling task that caused its condition is citing real adjacent work, and the
+    board-local ``tasks`` table alone calls every cross-board citation fabricated.
+
+    Mirrors ``kanban_db_dispatch.count_running_tasks_other_boards`` (boards from
+    :func:`list_boards`, archived excluded; fail open per board) with one
+    deliberate difference: each board is opened by its OWN path, because that
+    helper's ``kanban_db_path(board=slug)`` is blind to ``HERMES_KANBAN_DB`` and
+    resolves every slug to the completing worker's file. The completing board is
+    identified from the connection (SQLite's ``database_list``), not from env.
+    """
+    missing = _missing_task_ids(conn, ids)
+    if not missing:
+        return []
+    current_path = _conn_db_path(conn)
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception:
+        return missing
+    for meta in boards:
+        if not missing:
+            break
+        try:
+            slug = meta.get("slug") or DEFAULT_BOARD
+            path = _board_own_db_path(slug)
+            resolved = str(path.resolve())
+            if current_path is not None and resolved == current_path:
+                continue
+            if not path.exists():
+                continue
+            from hermes_cli.kanban_db_connect import connect as _connect
+            other = _connect(db_path=path)
+            try:
+                missing = _missing_task_ids(other, missing)
+            finally:
+                with contextlib.suppress(Exception):
+                    other.close()
+        except Exception:
+            continue
+    return missing
+
+
 # Matches ``kanban_create`` (12 hex) and ``_new_task_id`` (8 hex) ids; 8+ for forward compat.
 _TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
 
 
 def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str]:
-    """``t_<hex>`` references in ``text`` that don't resolve to a task (deduped; advisory)."""
+    """``t_<hex>`` references in ``text`` that no LIVE board resolves (deduped; advisory).
+
+    Host-scoped, not board-scoped: ``conn`` is the completing board's, but a
+    citation is legitimate wherever the task lives.
+    """
     if not text:
         return []
-    return _missing_task_ids(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
+    return _missing_task_ids_any_board(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
 
 
 class HallucinatedCardsError(ValueError):

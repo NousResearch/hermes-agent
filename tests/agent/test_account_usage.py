@@ -398,3 +398,57 @@ def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_acc
     assert snapshot is not None
     assert refresh_hints == ["pool-B-revoked"]
     assert request_calls == ["Bearer pool-B-revoked", "Bearer pool-B-fresh"]
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expect_snapshot"),
+    [
+        ("https://api.kimi.com/coding", True),
+        ("https://api.moonshot.ai/v1", False),
+    ],
+)
+def test_moonshot_alias_fetches_only_coding_plan_quota(
+    monkeypatch, base_url, expect_snapshot
+):
+    """The alias selects credentials; the resolved endpoint selects the product."""
+    from hermes_constants import get_hermes_home
+
+    payload = {
+        "user": {"membership": {"level": "LEVEL_ADVANCED"}},
+        "usage": {"limit": "100", "used": "1"},
+        "limits": [{
+            "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+            "detail": {"limit": "100", "used": "3"},
+        }],
+        "parallel": {"limit": "30"},
+    }
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, payload),
+    )
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "providers:\n"
+        "  moonshot:\n"
+        "    name: Moonshot saved runtime\n"
+        f"    api: {base_url}\n"
+        "    api_key: synthetic-test-key\n",
+        encoding="utf-8",
+    )
+
+    snapshot = account_usage.fetch_account_usage("moonshot")
+
+    if expect_snapshot:
+        assert snapshot is not None
+        assert snapshot.provider == "kimi-coding"
+        assert snapshot.plan == "Level Advanced"
+        assert [window.label for window in snapshot.windows] == ["Weekly", "5-hour"]
+        assert [window.used_percent for window in snapshot.windows] == [1.0, 3.0]
+        assert snapshot.details == ("Parallel requests: 30 max",)
+        assert calls[0]["url"] == "https://api.kimi.com/coding/v1/usages"
+    else:
+        assert snapshot is None
+        assert calls == []

@@ -902,3 +902,20 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+def test_kimi_billing_follows_the_resolved_product_endpoint():
+    coding_plan = resolve_billing_route(
+        "kimi-k3",
+        provider="moonshot",
+        base_url="https://api.kimi.com/coding/v1",
+    )
+    legacy = resolve_billing_route(
+        "kimi-k3",
+        provider="moonshot",
+        base_url="https://api.moonshot.ai/v1",
+    )
+
+    assert coding_plan.provider == "kimi-coding"
+    assert coding_plan.billing_mode == "subscription_included"
+    assert legacy.billing_mode == "unknown"

@@ -46,6 +46,24 @@ function context(type: GatewayEventName): GatewayEventContext {
 }
 
 describe('handleMessageStreamEvent session-control integration', () => {
+  it('paints an attributed relay user message before the assistant stream', () => {
+    const ctx = context('message.user')
+    ctx.payload = {
+      text: 'Message from 🤖 zara:\nhello',
+      delivery_id: 'd'.repeat(32),
+      author: { id: 'bot:zara', name: 'zara', is_bot: true }
+    }
+    const state = { messages: [], streamId: null }
+    ctx.deps.updateSessionState = vi.fn((_sid, updater) => updater(state as never) as never)
+
+    expect(handleMessageStreamEvent(ctx)).toBe(true)
+    const updater = vi.mocked(ctx.deps.updateSessionState).mock.calls[0]?.[1]
+    const next = updater?.(state as never) as { messages: Array<{ id: string; role: string; parts: unknown[] }> }
+    expect(next.messages).toMatchObject([
+      { id: `relay-${'d'.repeat(32)}`, role: 'user', parts: [{ type: 'text', text: 'Message from 🤖 zara:\nhello' }] }
+    ])
+  })
+
   it('refreshes only after message.complete, through the store seam', () => {
     expect(handleMessageStreamEvent(context('message.delta'))).toBe(true)
     expect(refreshSupportedSessionControlAfterTurn).not.toHaveBeenCalled()

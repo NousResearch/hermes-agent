@@ -4310,6 +4310,18 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
+/** A backend-originated user-side turn that the client did not optimistically paint. */
+export interface MessageUserPayload {
+  text: string
+  delivery_id: string
+  author: RelayMessageAuthor
+}
+/** Gateway-stamped peer identity for an exact-session relay turn. */
+export interface RelayMessageAuthor {
+  id: string
+  name: string
+  is_bot: boolean
+}
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
   text: string
@@ -5442,6 +5454,8 @@ export interface BackendGatewayEventMap {
   'message.reaction': MessageReactionPayload
   /** A turn began streaming; no payload. */
   'message.start': Record<string, never>
+  /** Paint a gateway-stamped peer turn before its assistant stream begins. */
+  'message.user': MessageUserPayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload
   /** MoA phase transition (currently only ``aggregator``). */
@@ -5568,6 +5582,7 @@ export const GATEWAY_EVENT_TYPES = [
   'message.interim',
   'message.reaction',
   'message.start',
+  'message.user',
   'moa.aggregating',
   'moa.phase',
   'moa.progress',

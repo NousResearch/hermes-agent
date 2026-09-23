@@ -17845,6 +17845,30 @@
         "title": "MessageReactionPayload",
         "type": "object"
       },
+      "MessageUserPayload": {
+        "additionalProperties": false,
+        "description": "A backend-originated user-side turn that the client did not optimistically paint.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "author": {
+            "$ref": "#/components/schemas/RelayMessageAuthor"
+          }
+        },
+        "required": [
+          "text",
+          "delivery_id",
+          "author"
+        ],
+        "title": "MessageUserPayload",
+        "type": "object"
+      },
       "MoaAggregatingPayload": {
         "additionalProperties": false,
         "properties": {
@@ -25727,6 +25751,31 @@
           "message"
         ],
         "title": "RelayEnvelope",
+        "type": "object"
+      },
+      "RelayMessageAuthor": {
+        "additionalProperties": false,
+        "description": "Gateway-stamped peer identity for an exact-session relay turn.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "is_bot": {
+            "title": "Is Bot",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_bot"
+        ],
+        "title": "RelayMessageAuthor",
         "type": "object"
       },
       "ReloadEnvParams": {
@@ -37693,6 +37742,18 @@
           "schema": {
             "type": "object",
             "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "message.user",
+      "summary": "Paint a gateway-stamped peer turn before its assistant stream begins.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/MessageUserPayload"
           }
         }
       ]

@@ -4,6 +4,7 @@ import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
+import { textPart } from '@/lib/chat-messages'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
@@ -81,6 +82,21 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     sessionStateByRuntimeIdRef,
     updateSessionState
   } = deps
+
+  if (event.type === 'message.user') {
+    if (!sessionId || !payload?.delivery_id || typeof payload.text !== 'string' || !payload.author?.is_bot) {
+      return true
+    }
+    const id = `relay-${payload.delivery_id}`
+    const text = payload.text
+    updateSessionState(sessionId, state => ({
+      ...state,
+      messages: state.messages.some(message => message.id === id)
+        ? state.messages
+        : [...state.messages, { id, role: 'user', parts: [textPart(text)], timestamp: occurredAt }]
+    }))
+    return true
+  }
 
   if (event.type === 'message.start') {
     if (!sessionId) {

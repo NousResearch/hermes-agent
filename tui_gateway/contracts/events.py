@@ -107,6 +107,26 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 event("message.start", None, doc="A turn began streaming; no payload.")
 
 
+class RelayMessageAuthor(Payload):
+    """Gateway-stamped peer identity for an exact-session relay turn."""
+
+    id: str
+    name: str
+    is_bot: bool
+
+
+class MessageUserPayload(Payload):
+    """A backend-originated user-side turn that the client did not optimistically paint."""
+
+    text: str
+    delivery_id: str
+    author: RelayMessageAuthor
+
+
+event("message.user", MessageUserPayload,
+      doc="Paint a gateway-stamped peer turn before its assistant stream begins.")
+
+
 class StreamDeltaPayload(Payload):
     """``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),
     ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``

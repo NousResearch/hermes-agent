@@ -77,6 +77,8 @@ export type GatewayEventPayload = {
   status?: string
   message?: string
   id?: string
+  delivery_id?: string
+  author?: { id: string; name: string; is_bot: boolean }
   name?: string
   tool_id?: string
   tool_call_id?: string

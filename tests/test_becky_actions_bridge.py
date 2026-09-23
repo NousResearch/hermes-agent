@@ -152,6 +152,79 @@ async def test_one_shot_journals_result_and_replays_without_repeating(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_failed_one_shot_is_journaled_as_failed(tmp_path: Path) -> None:
+    journal = ActionJournal(tmp_path / "actions.sqlite3", profile_key="becky")
+
+    async def executor(**kwargs: Any) -> OneShotResult:
+        del kwargs
+        return OneShotResult(
+            schema_version="1",
+            disposition="failed",
+            event=event(status="failed"),
+        )
+
+    server = BeckyLoopsBridgeServer(
+        config=config(),
+        store=Store(),
+        summarizer=Summarizer(),
+        action_journal=journal,
+        one_shot_executor=executor,
+    )
+    response = await server._dispatch(
+        request(
+            "becky.actions.execute_one_shot",
+            {
+                "title": "Dentist appointment",
+                "text": "Add a dentist appointment tomorrow at 2 PM",
+                "idempotency_key": str(KEY),
+                "note_default": "obsidian",
+                "policy_version": "1",
+            },
+        )
+    )
+    assert response["result"]["disposition"] == "failed"
+    assert journal.list(after_cursor=None).events[0].status.value == "failed"
+
+
+@pytest.mark.asyncio
+async def test_one_shot_rejects_executor_event_with_private_payload() -> None:
+    journal = ActionJournal(":memory:", profile_key="becky")
+
+    async def executor(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {
+            "schema_version": "1",
+            "disposition": "succeeded",
+            "event": {
+                **event().model_dump(mode="json"),
+                "raw_output": "credential must never cross the bridge",
+            },
+        }
+
+    server = BeckyLoopsBridgeServer(
+        config=config(),
+        store=Store(),
+        summarizer=Summarizer(),
+        action_journal=journal,
+        one_shot_executor=executor,
+    )
+    response = await server._dispatch(
+        request(
+            "becky.actions.execute_one_shot",
+            {
+                "title": "Dentist appointment",
+                "text": "Add a dentist appointment tomorrow at 2 PM",
+                "idempotency_key": str(KEY),
+                "note_default": "obsidian",
+                "policy_version": "1",
+            },
+        )
+    )
+    assert response["error"]["message"] == "protocol"
+    assert journal.list(after_cursor=None).events == []
+
+
+@pytest.mark.asyncio
 async def test_one_shot_without_executor_is_safe_remote_failure() -> None:
     server = BeckyLoopsBridgeServer(
         config=config(), store=Store(), summarizer=Summarizer()
@@ -204,4 +277,3 @@ async def test_start_loop_calls_starter_once_and_never_mutates(tmp_path: Path) -
     assert replay["result"] == first["result"]
     assert len(calls) == 1
     assert journal.list(after_cursor=None).events == []
-

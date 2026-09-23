@@ -5,6 +5,10 @@ instead of default browser tools
 """
 
 import contextlib
+import hashlib
+import weakref
+import threading
+from dataclasses import dataclass, field
 import importlib
 import json
 import logging
@@ -134,6 +138,185 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
     """Return an error if a URL literal fails the built-in navigation checks."""
     from tools.browser_tool import evaluate_url_safety
     return next((err.get("error", "Blocked: unsafe URL") for err in map(evaluate_url_safety, _URL_RE.findall(code or "")) if err), None)
+
+
+class _ClosedHarnessOwner:
+    """Lifetime gate retained by the closing agent, not a global tombstone leak."""
+
+
+@dataclass
+class _HarnessResource:
+    key: str
+    runtime: str
+    name: str
+    managed: bool
+    identity: str
+    owners: set = field(default_factory=set)
+    released: dict = field(default_factory=dict)
+    in_flight: int = 0
+    operation_lock: Any = field(default_factory=threading.Lock)
+    state: str = "ACTIVE"
+    started: bool = False
+    evidence: Any = None
+    last_error: str = ""
+
+
+def _stop_harness_resource(resource) -> bool:
+    from tools.browser_use_ipc import stop_managed_harness
+    return stop_managed_harness(resource)
+
+
+class _HarnessOwnerRegistry:
+    """Persistent task ownership, with reservations covering queued CLI calls.
+
+    Entries are never replaced while reserved, closing, or awaiting retry. A
+    closed task cannot resurrect itself, even if dispatch races hard close.
+    """
+    def __init__(self):
+        self._changed = threading.Condition(threading.RLock())
+        self._resources = {}
+        self._cleaning = set()
+        self._by_owner = {}
+        self._closed_owners = weakref.WeakValueDictionary()
+        # PID alone is reusable after a crash; don't adopt an earlier runtime.
+        self._nonce = os.urandom(4).hex()
+
+    def _owner(self, task_id):
+        from hermes_constants import hermes_home_key
+        return (hermes_home_key(), task_id or f"process:{os.getpid()}")
+
+    def _resolve(self, env, owner):
+        from tools.browser_tool import _socket_safe_tmpdir
+        name = env.get("BU_NAME") or "default"
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            raise ValueError("Invalid Harness daemon name")
+        external = "BH_RUNTIME_DIR" in env or "BH_TMP_DIR" in env
+        runtime = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
+        if external and not runtime:
+            raise ValueError("Explicit Harness runtime must not be empty")
+        if not external:
+            digest = hashlib.sha256((owner[0] + "\0" + name).encode()).hexdigest()[:12]
+            identity = f"hermes_bh_{os.getpid()}_{self._nonce}_{digest}"
+            runtime = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{identity}")
+        else:
+            identity = ""
+        runtime = os.path.normcase(os.path.realpath(os.path.expanduser(runtime)))
+        # v0.1.9: BH_TMP_DIR is a legacy runtime fallback; only RUNTIME_SHARED
+        # controls the IPC stem. BU_NAME doesn't split a bare bu endpoint.
+        stem = f"bu-{name}" if external and env.get("BH_RUNTIME_DIR_SHARED") == "1" else "bu"
+        key = os.path.join(runtime, stem + (".port" if os.name == "nt" else ".sock"))
+        return _HarnessResource(key, runtime, name, not external, identity)
+
+    @contextlib.contextmanager
+    def operation(self, task_id, *, env):
+        owner = self._owner(task_id)
+        candidate = self._resolve(env, owner)
+        with self._changed:
+            if owner in self._closed_owners:
+                raise RuntimeError("Harness task owner is closed")
+            if candidate.runtime in self._cleaning:
+                raise RuntimeError("Harness runtime cleanup pending; retry later")
+            resource = self._resources.setdefault(candidate.key, candidate)
+            if resource.state != "ACTIVE":
+                raise RuntimeError("Harness endpoint shutdown pending; retry later")
+            if resource.managed != candidate.managed:
+                raise RuntimeError("Harness endpoint ownership conflict")
+            resource.owners.add(owner)
+            self._by_owner.setdefault(owner, set()).add(resource.key)
+            resource.in_flight += 1  # BEFORE waiting for the stable operation lock
+            self._changed.notify_all()
+        try:
+            with resource.operation_lock:
+                if resource.managed:
+                    from tools.browser_tool_lifecycle import _start_browser_cleanup_thread
+                    os.makedirs(resource.runtime, mode=0o700, exist_ok=True)
+                    # Unlike the legacy best-effort writer, marker failure must
+                    # prevent spawning an unprotected managed daemon.
+                    Path(resource.runtime, resource.identity + ".owner_pid").write_text(str(os.getpid()), encoding="utf-8")
+                    env["BH_RUNTIME_DIR"] = env["BH_TMP_DIR"] = resource.runtime
+                    env.pop("BH_RUNTIME_DIR_SHARED", None)
+                    env.pop("BH_TMP_DIR_SHARED", None)
+                    _start_browser_cleanup_thread()
+                yield resource
+        finally:
+            with self._changed:
+                resource.in_flight -= 1
+                self._changed.notify_all()
+            self._drain(resource)
+
+    def release(self, task_id):
+        owner = self._owner(task_id)
+        with self._changed:
+            resources = [self._resources[k] for k in self._by_owner.get(owner, ()) if k in self._resources]
+            gate = self._closed_owners.get(owner)
+            gate = gate or _ClosedHarnessOwner()
+            self._closed_owners[owner] = gate
+            for resource in resources:
+                resource.owners.discard(owner)
+                resource.released[owner] = gate
+        for resource in resources:
+            self._drain(resource)
+        return gate
+
+    def _drain(self, resource):
+        with self._changed:
+            if (self._resources.get(resource.key) is not resource or resource.owners
+                    or resource.in_flight or resource.state == "CLOSING"):
+                return
+            resource.state = "CLOSING"
+        # CLOSING refuses acquisitions; no metadata lock held during IPC.
+        success = False
+        try:
+            with resource.operation_lock:
+                success = not resource.managed or not resource.started or _stop_harness_resource(resource)
+        except Exception as exc:
+            resource.last_error = type(exc).__name__  # never record tokens/env
+        finally:
+            with self._changed:
+                if success:
+                    del self._resources[resource.key]
+                    for owner in resource.released:
+                        keys = self._by_owner.get(owner)
+                        if keys is not None:
+                            keys.discard(resource.key)
+                            if not keys:
+                                del self._by_owner[owner]
+                    resource.state = "CLOSED"
+                else:
+                    resource.state = "RETRY_PENDING"
+                    logger.warning("Harness shutdown pending; runtime evidence retained (%s)", resource.last_error or "unconfirmed exit")
+                self._changed.notify_all()
+
+    def retry_pending(self):
+        with self._changed:
+            pending = [r for r in self._resources.values() if r.state == "RETRY_PENDING"]
+        for resource in pending:
+            self._drain(resource)
+
+    @contextlib.contextmanager
+    def guard_cleanup(self, runtime):
+        # A managed runtime belongs to this process for its entire lifetime.
+        # Fence only this runtime; process reaping must not hold metadata locks.
+        canonical = os.path.normcase(os.path.realpath(runtime))
+        with self._changed:
+            allowed = canonical not in self._cleaning and not any(
+                r.runtime == canonical for r in self._resources.values())
+            if allowed:
+                self._cleaning.add(canonical)
+        try:
+            yield allowed
+        finally:
+            if allowed:
+                with self._changed:
+                    self._cleaning.remove(canonical)
+                    self._changed.notify_all()
+
+
+_harness_owners = _HarnessOwnerRegistry()
+
+
+def release_browser_use_owner(task_id: str):
+    return _harness_owners.release(task_id)
 
 
 def _base_subprocess_env() -> dict:
@@ -581,7 +764,7 @@ def _kill_cli_process_group(proc) -> None:
         os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
 
 
-def _run_cli_killing_process_group(cmd, code, env, timeout):
+def _run_cli_killing_process_group(cmd, code, env, timeout, *, resource=None):
     """Run the CLI in its own process group and kill the whole group on timeout.
 
     ``subprocess.run`` only kills the direct child on ``TimeoutExpired``; a grandchild that
@@ -593,6 +776,8 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", env=env, **_group_popen_kwargs(),
     )
+    if resource is not None:
+        resource.started = True  # Popen succeeded; even timeout/exception can leave a daemon
     try:
         stdout, stderr = proc.communicate(input=code, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -650,12 +835,13 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
     try:
-        proc = _run_cli_killing_process_group(cmd, code, env, timeout)
+        with _harness_owners.operation(task_id, env=env) as resource:
+            proc = _run_cli_killing_process_group(cmd, code, env, timeout, resource=resource)
     except subprocess.TimeoutExpired:
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                           f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
                           "append to workspace files — anything already written to the workspace is preserved.")
-    except OSError as e:
+    except (OSError, RuntimeError, ValueError) as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
     # browser_vault_fill registers injected values with this forced model-egress

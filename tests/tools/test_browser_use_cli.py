@@ -69,6 +69,15 @@ def _fake_cli(tmp_path, body):
     script = tmp_path / "browser-use"
     script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    if os.name == "nt":
+        # Windows cannot execute a POSIX shebang (WinError 193). This is
+        # strictly a fixture launcher; still exercise the real CLI subprocess.
+        import shutil
+        bash = shutil.which("bash")
+        assert bash, "Git Bash is required for the shell CLI fixture"
+        launcher = tmp_path / "browser-use.cmd"
+        launcher.write_text(f'@"{bash}" "{script.as_posix()}" %*\n@exit /b %errorlevel%\n', encoding="utf-8")
+        return str(launcher)
     return str(script)
 
 
@@ -885,7 +894,7 @@ class TestNativeScreenshots:
         kinds = [part["type"] for part in result["content"]]
         assert kinds == ["text", "image_url"]
         assert result["meta"]["screenshot_path"] == shot
-        assert shot in result["text_summary"]
+        assert json.loads(result["text_summary"])["screenshot_path"] == shot
 
     def test_text_only_model_gets_plain_result_with_path(self, tmp_path, monkeypatch):
         shot = self._shot(tmp_path)

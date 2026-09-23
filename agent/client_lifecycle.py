@@ -129,6 +129,22 @@ class ClientLifecycleMixin:
                 if owner and owner != task_id:
                     clear_file_ops_cache(owner)
 
+        from tools.browser_use_cli import release_browser_use_owner
+        owners = set(getattr(self, "_process_owner_task_ids", ()))
+        if task_id:
+            owners.add(task_id)  # compatibility for callers predating turn ownership
+        # Keep late-dispatch gates for this agent lifetime. The process registry
+        # holds them weakly, so long-lived gateways do not accumulate tombstones.
+        if not hasattr(self, "_browser_use_closed_owners"):
+            self._browser_use_closed_owners = {}
+        def release_harness(owner):
+            gate = release_browser_use_owner(owner)
+            if gate is not None:
+                self._browser_use_closed_owners[owner] = gate
+        for owner in owners:
+            if owner:
+                _quietly(lambda owner=owner: release_harness(owner))
+
         for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
                      release_computer_use, forget_file_state):
             _quietly(step)

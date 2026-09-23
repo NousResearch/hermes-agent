@@ -208,7 +208,16 @@ CASES = [
 ]
 
 
-@pytest.mark.parametrize(("kind", "how"), CASES, ids=[f"{k}-{h}" for k, h in CASES])
+# A race, so it cannot be strict: the RPC answer can end the approval wait before the gateway attaches the
+# hook that withdraws the sent request, which then stays in ``open_requests`` (red in about 1 in 4 loaded runs;
+# deterministic with the gap widened). Drop the mark when #120374 lands.
+_RACY = {("approval_deny", "rpc"): pytest.mark.xfail(
+    strict=False, raises=AssertionError,
+    reason="#120374: an approval answered by RPC before the settle hook attaches stays in open_requests")}
+
+
+@pytest.mark.parametrize(("kind", "how"), [pytest.param(k, h, id=f"{k}-{h}", marks=_RACY.get((k, h), ()))
+                                           for k, h in CASES])
 def test_interactive_roundtrip(backend: Backend, script: Script, kind: str, how: str) -> None:
     tag = f"{kind}_{how}".lower()
     try:

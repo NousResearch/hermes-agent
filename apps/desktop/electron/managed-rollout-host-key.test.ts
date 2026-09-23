@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
+import os from 'node:os'
+import path from 'node:path'
 
 import { test, vi } from 'vitest'
 
@@ -13,7 +15,7 @@ test('host-key identity requires one accepted key from the effective SSH configu
   const firstKey = Buffer.from('disposable-key-one').toString('base64')
   const secondKey = Buffer.from('disposable-key-two').toString('base64')
   const config = { host: 'fixture.example.test', user: 'test', port: 2200 }
-  const expanded = 'hostname resolved.example.test\nport 2200\nuserknownhostsfile /disposable/known_hosts'
+  const expanded = `hostname resolved.example.test\nport 2200\nuserknownhostsfile ${path.join(process.cwd(), 'package.json')}`
 
   const expected = crypto.createHash('sha256').update(Buffer.from(firstKey, 'base64'))
     .digest('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')
@@ -43,6 +45,7 @@ test('host-key identity requires one accepted key from the effective SSH configu
 test('host-key lookup is bounded and refuses incomplete known-hosts evidence', async () => {
   const run = vi.mocked(execText)
   const config = { host: 'fixture.example.test' }
+  const expanded = `userknownhostsfile ${path.join(process.cwd(), 'package.json')}`
 
   run.mockResolvedValueOnce('userknownhostsfile /one /two /three /four /five')
   await assert.rejects(readVerifiedHostKeyFingerprint(config), /known-hosts file limit/)
@@ -50,7 +53,7 @@ test('host-key lookup is bounded and refuses incomplete known-hosts evidence', a
   run.mockReset()
 
   run.mockImplementation(async (_command, args, options) => {
-    if (args[0] === '-G') {return 'userknownhostsfile /disposable/known_hosts'}
+    if (args[0] === '-G') {return expanded}
     assert.equal(options?.timeout, 5_000)
     throw Object.assign(new Error('no matching host'), { code: 1 })
   })
@@ -58,9 +61,14 @@ test('host-key lookup is bounded and refuses incomplete known-hosts evidence', a
   run.mockReset()
 
   run.mockImplementation(async (_command, args) => {
-    if (args[0] === '-G') {return 'userknownhostsfile /disposable/known_hosts'}
+    if (args[0] === '-G') {return expanded}
     throw Object.assign(new Error('known-hosts file unreadable'), { code: 255 })
   })
   await assert.rejects(readVerifiedHostKeyFingerprint(config), /known-hosts file unreadable/)
+  run.mockReset()
+
+  run.mockResolvedValueOnce(`userknownhostsfile ${path.join(os.tmpdir(), 'managed-rollout-missing-known-hosts-test')}`)
+  await assert.rejects(readVerifiedHostKeyFingerprint(config), /ambiguous \(0 fingerprints\)/)
+  assert.equal(run.mock.calls.length, 1)
   run.mockReset()
 })

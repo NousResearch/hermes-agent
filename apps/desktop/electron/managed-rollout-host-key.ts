@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -44,11 +45,26 @@ export async function readVerifiedHostKeyFingerprint(config: ManagedRolloutSshCo
     if (fields.length < 2 || !['userknownhostsfile', 'globalknownhostsfile'].includes(fields[0])) {continue}
 
     for (const candidate of fields.slice(1)) {
-      if (!candidate || candidate === 'none' || candidate.includes('%')) {continue}
+      if (!candidate || candidate === 'none') {continue}
 
-      const resolved = candidate.startsWith('~/')
-        ? path.join(os.homedir(), candidate.slice(2))
-        : path.resolve(candidate)
+      if (candidate.includes('%')) {
+        throw new Error('Managed rollout host-key lookup cannot resolve a known-hosts path token.')
+      }
+
+      const programData = process.env.ProgramData
+      const isProgramDataPath = /^__PROGRAMDATA__[\\/]/i.test(candidate)
+
+      if (isProgramDataPath && !programData) {
+        throw new Error('Managed rollout host-key lookup cannot resolve ProgramData.')
+      }
+
+      const expandedPath = isProgramDataPath
+        ? path.join(programData!, candidate.slice('__PROGRAMDATA__'.length + 1))
+        : /^~[\\/]/.test(candidate)
+          ? path.join(os.homedir(), candidate.slice(2))
+          : candidate
+
+      const resolved = path.resolve(expandedPath)
 
       knownHosts.add(resolved)
 
@@ -71,6 +87,18 @@ export async function readVerifiedHostKeyFingerprint(config: ManagedRolloutSshCo
   const lookups: Array<{ file: string; host: string }> = []
 
   for (const knownHostsFile of knownHosts) {
+    try {
+      if (!fs.statSync(knownHostsFile).isFile()) {
+        throw new Error('Managed rollout known-hosts path is not a file.')
+      }
+    } catch (error) {
+      // OpenSSH lists optional default files even when they have never been
+      // created. An absent file contributes no accepted key.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {continue}
+
+      throw error
+    }
+
     for (const hostName of hostNames) {
       lookups.push({ file: knownHostsFile, host: hostName })
     }

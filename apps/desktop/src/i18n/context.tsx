@@ -11,8 +11,9 @@ import {
   normalizeLocale,
   resolveInitialLocale
 } from './languages'
+import type { CatalogTranslations } from './managed-rollouts-types'
 import { setRuntimeI18nLocale } from './runtime'
-import type { Locale, Translations } from './types'
+import type { Locale } from './types'
 
 export { LOCALE_META } from './languages'
 
@@ -73,7 +74,7 @@ export interface I18nContextValue {
   locale: Locale
   saveError: Error | null
   setLocale: (next: Locale) => Promise<void>
-  t: Translations
+  t: CatalogTranslations
 }
 
 const I18nContext = createContext<I18nContextValue>({

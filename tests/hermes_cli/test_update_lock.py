@@ -99,19 +99,23 @@ def test_refused_lock_does_not_delete_the_live_owners_marker(marker, other_pid):
     assert marker.exists(), "a refused claimant must never clear the live owner's lock"
 
 
-def test_marker_naming_our_own_pid_is_adopted(marker):
+def test_marker_naming_our_own_pid_is_adopted(marker, monkeypatch):
     """A killed update's marker names the pid its retry gets (containers restart pid numbering).
 
-    No other live process can hold our pid, so the claim is ours: adopt it verbatim (like
-    ``UpdateMarkerGuard::acquire``) instead of refusing "another update" for up to 20 minutes.
+    No other live process can hold our pid, so the claim is ours: take it instead of refusing
+    "another update" for up to 20 minutes. It is a new attempt, so it is claimed fresh: a
+    nearly-expired claim must still block a second updater for our whole run.
     """
-    started_at = int(time.time()) - 60
-    _claim(marker, os.getpid(), started_at)
+    _claim(marker, os.getpid(), time.time() - UPDATE_MARKER_MAX_AGE_SECONDS + 5)
 
     lock = UpdateLock(path=marker)
     assert lock.acquire() is True
     assert lock.acquired is True
-    assert marker.read_text(encoding="utf-8").splitlines() == [str(os.getpid()), str(started_at)]
+
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 60)
+    holder = read_live_update(path=marker)
+    assert holder is not None and holder.pid == os.getpid(), "a second updater would start mid-run"
     lock.release()
     assert not marker.exists()
 

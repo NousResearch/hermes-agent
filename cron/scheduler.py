@@ -2522,7 +2522,8 @@ def run_job(
                 return _final_response_from_result(result, job_id, job_name, AIAgent)
 
             result, final_response, goal_status = run_goal_turns(
-                manager, goal_prompt, run_turn=_run_goal_turn, response_from_result=_goal_response,
+                manager, goal_prompt, initial_prompt=prompt, run_turn=_run_goal_turn,
+                response_from_result=_goal_response,
             )
             if goal_status:
                 final_response = f"{final_response}\n\n{goal_status}".strip()
@@ -3174,8 +3175,22 @@ def _run_one_job_body(
         # Detached workers transition to running while adopting; in-process paths must win the
         # claimed->running CAS here before any user script or agent side effect may begin.
         external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
-        if not external_owner and mark_execution_running(execution_id) is None:
+        from cron.scheduler_goal import goal_prompt_from_job
+
+        is_goal_job = goal_prompt_from_job(job) is not None
+        execution_started = None
+        if not external_owner:
+            execution_started = (
+                mark_execution_running(execution_id, exclusive_job=True)
+                if is_goal_job else mark_execution_running(execution_id)
+            )
+        if not external_owner and execution_started is None:
             logger.warning("Cron job %s lost execution ownership before start; skipping", job["id"])
+            if is_goal_job:
+                finish_execution(
+                    execution_id, success=False,
+                    error="Goal job is already running; execution was not started.",
+                )
             return True
 
         # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
@@ -3688,6 +3703,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_secret_scope,
     )
     from cron.executions import adopt_claimed_execution
+    from cron.scheduler_goal import goal_prompt_from_job
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
@@ -3702,7 +3718,12 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
     try:
         with use_cron_store(profile_home):
-            if adopt_claimed_execution(execution_id) is None:
+            is_goal_job = goal_prompt_from_job(job) is not None
+            adopted = (
+                adopt_claimed_execution(execution_id, exclusive_job=True)
+                if is_goal_job else adopt_claimed_execution(execution_id)
+            )
+            if adopted is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "
                     "could not be established",

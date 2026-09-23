@@ -70,7 +70,7 @@ vi.mock('@/hermes', () => ({
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
   saveHermesConfigRecord: (config: unknown, profile?: unknown) => saveHermesConfigRecord(config, profile),
-  getElevenLabsVoices: () => getElevenLabsVoices(),
+  getElevenLabsVoices: (profile?: unknown) => getElevenLabsVoices(profile),
   // use-config-record keys its query cache by scope via profileScopeKey; a
   // scoped panel reaches it, so the full-replacement mock must provide it.
   profileScopeKey: (scope?: { profile?: string; connectionId?: string } | string) =>
@@ -254,6 +254,42 @@ describe('ToolsetConfigPanel', () => {
 
     expect(saved.tts.openai.voice).toBe('marin')
     expect(forwarded).toEqual(scope)
+  })
+
+  it('fetches the ElevenLabs voice list from the profile the panel is scoped to, not the active profile', async () => {
+    // The bug: getElevenLabsVoices() ignored the `profile` prop entirely —
+    // config reads/writes correctly threaded it (see the autosave test above),
+    // but the dynamic voice-list fetch always hit the ACTIVE profile's
+    // ElevenLabs account even when this panel configures a different profile.
+    getToolsetConfig.mockResolvedValue(
+      config({
+        active_provider: 'ElevenLabs',
+        providers: [
+          {
+            name: 'ElevenLabs',
+            badge: 'paid',
+            tag: 'Most natural voices',
+            env_vars: [
+              { key: 'ELEVENLABS_API_KEY', prompt: 'ElevenLabs API key', url: 'https://x', default: null, is_set: false }
+            ],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true,
+            tts_provider: 'elevenlabs'
+          }
+        ]
+      })
+    )
+    getElevenLabsVoices.mockResolvedValue({
+      available: true,
+      voices: [{ voice_id: 'v1', label: 'Voice One' }]
+    })
+
+    const scope = { profile: 'scout', connectionId: 'gw-2' }
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} profile={scope} toolset="tts" />)
+
+    await waitFor(() => expect(getElevenLabsVoices).toHaveBeenCalled(), { timeout: 3000 })
+    expect(getElevenLabsVoices).toHaveBeenCalledWith('scout')
   })
 
   it('renders no inline voice fields for rows without tts_provider (older backend)', async () => {

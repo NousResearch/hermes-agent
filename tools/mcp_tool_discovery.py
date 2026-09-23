@@ -408,6 +408,15 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
             with _core._lock:
                 _core._server_connecting.add(_server_key(name))
             continue
+        if not names:
+            # An empty cached manifest is a MISS, not a hit. _register_from_cache_sync only records
+            # the lazy state (_lazy_server_configs et al) when something actually registered, so
+            # popping the server from eager_servers here would drop it from BOTH eager discovery and
+            # the lazy registry: it would silently never connect again, with no tools and no retry.
+            # Fall through to the eager connect, which write-through refreshes the cache.
+            with _core._lock:
+                _core._server_connecting.add(_server_key(name))
+            continue
         eager_servers.pop(name, None)
         lazy_registered += len(names)
         lazy_server_count += 1

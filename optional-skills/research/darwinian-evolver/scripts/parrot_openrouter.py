@@ -33,6 +33,10 @@ from darwinian_evolver.problem import Organism
 from darwinian_evolver.problem import Problem
 
 DEFAULT_MODEL = os.environ.get("EVOLVER_MODEL", "openai/gpt-4o-mini")
+EVALUATION_PHRASES = (
+    "Hello world.", "bla", "Bla", "bla.", '"bla bla".',
+    "Just say 'foo' once with no extra words.", "bla, but only once.", "'bla'",
+)
 
 
 def _client() -> OpenAI:
@@ -57,17 +61,23 @@ def _prompt_llm(prompt: str) -> str:
         return f"<LLM_ERROR: {type(e).__name__}: {e}>"
 
 
+def _collect_response_evidence(prompt_template: str) -> dict[str, str]:
+    """Materialize model responses before offline evaluation."""
+    responses: dict[str, str] = {}
+    for phrase in EVALUATION_PHRASES:
+        try:
+            prompt = jinja2.Template(prompt_template).render(phrase=phrase)
+        except jinja2.exceptions.TemplateError as exc:
+            responses[phrase] = f"Error rendering prompt: {exc}"
+            continue
+        responses[phrase] = _prompt_llm(prompt) if prompt else ""
+    return responses
+
+
 class ParrotOrganism(Organism):
     prompt_template: str
-
-    def run(self, phrase: str) -> str:
-        try:
-            prompt = jinja2.Template(self.prompt_template).render(phrase=phrase)
-        except jinja2.exceptions.TemplateError as e:
-            return f"Error rendering prompt: {e}"
-        if not prompt:
-            return ""
-        return _prompt_llm(prompt)
+    # The evaluator only reads these already-recorded responses.
+    responses: dict[str, str] = {}
 
 
 class ParrotEvaluationFailureCase(EvaluationFailureCase):
@@ -113,7 +123,10 @@ template in the LAST triple-backtick block of your response.
             if len(parts) < 3:
                 return []
             new_tpl = parts[-2].strip()
-            return [ParrotOrganism(prompt_template=new_tpl)]
+            return [ParrotOrganism(
+                prompt_template=new_tpl,
+                responses=_collect_response_evidence(new_tpl),
+            )]
         except Exception as e:
             print(f"mutate error: {e}", file=sys.stderr)
             return []
@@ -137,12 +150,12 @@ class ParrotEvaluator(Evaluator[ParrotOrganism, EvaluationResult, ParrotEvaluati
         train_fails: list[ParrotEvaluationFailureCase] = []
         hold_fails: list[ParrotEvaluationFailureCase] = []
         for i, p in enumerate(self.TRAINABLE_PHRASES):
-            r = organism.run(p)
+            r = organism.responses.get(p, "<MISSING_EVIDENCE>")
             if r != p:
                 train_fails.append(ParrotEvaluationFailureCase(
                     phrase=p, response=r, data_point_id=f"trainable_{i}"))
         for i, p in enumerate(self.HOLDOUT_PHRASES):
-            r = organism.run(p)
+            r = organism.responses.get(p, "<MISSING_EVIDENCE>")
             if r != p:
                 hold_fails.append(ParrotEvaluationFailureCase(
                     phrase=p, response=r, data_point_id=f"holdout_{i}"))
@@ -162,7 +175,10 @@ def make_problem() -> Problem:
     return Problem[ParrotOrganism, EvaluationResult, ParrotEvaluationFailureCase](
         evaluator=ParrotEvaluator(),
         mutators=[ImproveParrotMutator()],
-        initial_organism=ParrotOrganism(prompt_template="Say {{ phrase }}"),
+        initial_organism=ParrotOrganism(
+            prompt_template="Say {{ phrase }}",
+            responses=_collect_response_evidence("Say {{ phrase }}"),
+        ),
     )
 
 

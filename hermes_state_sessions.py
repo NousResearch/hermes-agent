@@ -661,12 +661,12 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
-    def update_session_tool_names(self, session_id: str, tools: Optional[List[Any]]) -> None:
-        """Persist the session's ``tools[]`` pin so a rebuilt AIAgent sends the same bytes; ``None``
-        clears. The array repeats across sessions like a system prompt does, so it is stored in the
-        same content-addressed ``system_prompts`` table and the column holds its hash (legacy rows:
-        an inline JSON name list); ``get_session`` resolves either."""
-        payload = json.dumps(list(tools)) if tools is not None else None
+    def update_session_tool_names(self, session_id: str, pin: Any) -> None:
+        """Persist the session's ``tools[]`` pin (JSON-serializable) so a rebuilt AIAgent sends the
+        same bytes; ``None`` clears. The array repeats across sessions like a system prompt does, so it
+        is stored in the same content-addressed ``system_prompts`` table and the column holds its hash
+        (legacy rows: an inline JSON name list); ``get_session`` resolves either."""
+        payload = json.dumps(pin) if pin is not None else None
         def _do(conn):
             conn.execute("UPDATE sessions SET tool_names = ? WHERE id = ?",
                          (self._store_system_prompt(conn, payload), session_id))

@@ -659,12 +659,20 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
 def _restore_pinned_tools(agent, session_row) -> list:
     """Pin ``agent.tools`` to the session's persisted array (tools freeze); returns the names
     this surface built BEFORE the pin merged a previous surface's tools back in."""
-    from tools.mcp_tool_agent import agent_tool_names, restore_agent_tool_prefix
+    from tools.mcp_tool_agent import agent_tool_names, persist_agent_tool_names, restore_agent_tool_prefix
     built_for_this_surface = agent_tool_names(agent)
+    saved_tools = session_row.get("tool_names") if session_row else None
     try:
-        saved_tools = session_row.get("tool_names") if session_row else None
-        if saved_tools:
-            restore_agent_tool_prefix(agent, json.loads(saved_tools))
+        pin = json.loads(saved_tools) if saved_tools else None
+    except ValueError:
+        pin = None  # a pin hash whose row an older build's cleanup swept resolves to itself
+    try:
+        if pin:
+            restore_agent_tool_prefix(agent, pin)
+        elif session_row is not None and not getattr(agent, "_persist_disabled", False):
+            # No usable pin (swept row, a session from before pins): pin what this turn sends,
+            # or every later hop re-derives tools[] until the next compaction.
+            persist_agent_tool_names(agent)
     except Exception:
         logger.debug("tool prefix restore skipped", exc_info=True)
     return built_for_this_surface

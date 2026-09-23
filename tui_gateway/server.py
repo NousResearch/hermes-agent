@@ -1843,7 +1843,8 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
     backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
-    return {"project", "desktop_ui"} if platform == "desktop" else {"project"}
+    from toolsets import CLIENT_SURFACE_TOOLSETS
+    return set(CLIENT_SURFACE_TOOLSETS) if platform == "desktop" else {"project"}
 
 
 def _with_session_toolsets(selection, platform: str | None) -> list[str]:

@@ -232,6 +232,7 @@ _check_fn_core_drop_warned: Set[tuple[Callable, Optional[str]]] = set()  # once-
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: Set[Callable] = set()
+_EXPECTED_FALSE_CHECK_FNS: Set[Callable] = set()
 _BROWSER_IDENTITY_KEYS = (
     "HERMES_SESSION_ID",
     "HERMES_BROWSER_CONTROL_PRINCIPAL",
@@ -241,6 +242,18 @@ _BROWSER_IDENTITY_KEYS = (
 def no_cache_check_fn(fn: Callable) -> Callable:
     """Mark a local, config-backed availability check as uncached."""
     _NO_CACHE_CHECK_FNS.add(fn)
+    return fn
+
+
+def expected_false_check_fn(fn: Callable) -> Callable:
+    """Mark an availability check whose ``False`` result is a normal mode gate.
+
+    Plain ``False`` verdicts from such a check are logged at DEBUG instead of
+    INFO/WARNING, so a healthy runtime (e.g. Browser Use CLI not configured)
+    does not look degraded. Exceptions and core-tool regressions keep their
+    louder levels regardless of this marker.
+    """
+    _EXPECTED_FALSE_CHECK_FNS.add(fn)
     return fn
 
 
@@ -377,7 +390,13 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "so not searchable either); dependent tools will be unavailable this turn",
                 _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
         else:
-            log = logger.warning if exc_info else logger.info
+            # Opt-in mode gates (e.g. Browser Use CLI not configured) return False
+            # by design on a healthy runtime: keep that quiet at DEBUG. Exceptions
+            # and unmarked probes retain INFO/WARNING so real problems stay visible.
+            if fn in _EXPECTED_FALSE_CHECK_FNS and not exc_info and not core_dropped:
+                log = logger.debug
+            else:
+                log = logger.warning if exc_info else logger.info
             log(
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)

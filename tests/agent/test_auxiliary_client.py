@@ -1813,6 +1813,54 @@ class TestAuxiliaryFallbackLayering:
         # Main agent fallback should NOT be needed when chain succeeds
         mock_main.assert_not_called()
 
+    def test_explicit_provider_sustained_503_uses_configured_fallback_after_retries(self):
+        """A 5xx that exhausts same-provider retries must advance the task fallback chain."""
+        primary_client = MagicMock()
+        unavailable = Exception("503 Service Unavailable: high demand")
+        unavailable.status_code = 503
+        primary_client.chat.completions.create.side_effect = unavailable
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = _DummyResponse("from 503 fallback")
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gemini-2.5-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom:gemini", "gemini-2.5-flash", None, None, None)), \
+             patch("agent.auxiliary_client._transient_retry_count", return_value=2), \
+             patch("agent.auxiliary_client.time.sleep"), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "fallback-model", "fallback_chain[0](openrouter)")) as mock_chain:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "write a title"}],
+            )
+
+        assert result.choices[0].message.content == "from 503 fallback"
+        assert primary_client.chat.completions.create.call_count == 3
+        mock_chain.assert_called_once()
+        assert fallback_client.chat.completions.create.call_count == 1
+
+    def test_explicit_provider_bad_request_does_not_use_configured_fallback(self):
+        """A non-capacity 400 remains fail-open and propagates without changing providers."""
+        primary_client = MagicMock()
+        bad_request = Exception("400 invalid request payload")
+        bad_request.status_code = 400
+        primary_client.chat.completions.create.side_effect = bad_request
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gemini-2.5-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom:gemini", "gemini-2.5-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
+            with pytest.raises(Exception, match="invalid request payload"):
+                call_llm(
+                    task="title_generation",
+                    messages=[{"role": "user", "content": "write a title"}],
+                )
+
+        mock_chain.assert_not_called()
+
 
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
